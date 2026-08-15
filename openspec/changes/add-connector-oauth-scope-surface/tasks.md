@@ -19,8 +19,11 @@ by the operator AFTER this change ratifies).
       canonical contract routes Spotify recovery through
       `/secrets?focus=u:spotify`, delegates its action to
       `POST /api/connectors/spotify/oauth/start`, and uses
-      `GET /api/connectors/spotify/oauth/callback`; only the connector flow
-      writes the secured owner `public.entity_info` token rows, while the
+      `GET /api/connectors/spotify/oauth/callback`. The connector-owned Spotify
+      OAuth lifecycle is the sole authority for the secured owner
+      `public.entity_info` token rows: the callback is the sole initial
+      token-creation writer, connector refresh is the only permitted subsequent
+      update, and connector disconnect is the only permitted delete. The
       Passport projection creates no editable User credential or token mirror.
 
 - [x] 0.3 Add a causal documentation-contract regression that reads RFC 0006
@@ -173,8 +176,11 @@ by the operator AFTER this change ratifies).
   1. `bu-fj7lx` adds the content-blind connector-owned Passport projection at
      `/secrets?focus=u:spotify`, with fixed `listening-history` capability
      evidence and connector-endpoint actions only. It must not create a User
-     credential editing surface or token mirror; the connector-owned callback
-     remains the only writer of the Tier 2 owner `public.entity_info` rows. Its
+     credential editing surface or token mirror. The connector-owned Spotify
+     OAuth lifecycle remains the sole authority for the Tier 2 owner
+     `public.entity_info` rows, with initial creation in its callback,
+     subsequent updates in connector refresh, and deletion in connector
+     disconnect. Its
      required backend/API scope includes the `secrets_v2.py` server-side fence
      for generic inventory, detail/read, rotate, disconnect, probe, and
      reauthorize; the generic Relationship entity-info fences at
@@ -190,8 +196,8 @@ by the operator AFTER this change ratifies).
      Collection queries omit Spotify types; create rejects their type before
      DB access; ID-addressed operations perform only a metadata discriminator
      before a stable non-disclosing 404. Frontend omission from
-     `PassportAddPanel` is not sufficient, and the connector callback remains
-     the sole writer.
+     `PassportAddPanel` is not sufficient; the generic routes remain outside
+     every connector-owned lifecycle mutation.
   2. `bu-3ifcj` follows `bu-fj7lx` and removes the generic OAuth Spotify
      production registry, route, configuration, UI, documentation, and test
      exemplar. It preserves a synthetic generalized-provider fixture only and

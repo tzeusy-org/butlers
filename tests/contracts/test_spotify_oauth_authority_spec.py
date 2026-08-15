@@ -9,6 +9,7 @@ exemplar and add the Passport projection.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,9 @@ _STALE_LIFECYCLE_DELTA = (
     / "spec.md"
 )
 _DASHBOARD_API_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-api" / "spec.md"
+_DASHBOARD_RELATIONSHIP_SPEC = (
+    _REPO_ROOT / "openspec" / "specs" / "dashboard-relationship" / "spec.md"
+)
 _PASSPORT_SPEC = _REPO_ROOT / "openspec" / "specs" / "butler-secrets" / "spec.md"
 _SPOTIFY_SETUP_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-spotify-setup" / "spec.md"
 _SPOTIFY_CONNECTOR_SPEC = _REPO_ROOT / "openspec" / "specs" / "connector-spotify" / "spec.md"
@@ -103,6 +107,30 @@ def _scenario(requirement: str, title: str) -> str:
     start = requirement.index(marker)
     end = requirement.find("\n#### Scenario:", start + len(marker))
     return requirement[start:] if end == -1 else requirement[start:end]
+
+
+def _router_seams(path: Path) -> set[tuple[str, str, str]]:
+    """Return method, path, and handler triples from literal router decorators."""
+    seams: set[tuple[str, str, str]] = set()
+    tree = ast.parse(_read(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call) or not decorator.args:
+                continue
+            function = decorator.func
+            if (
+                not isinstance(function, ast.Attribute)
+                or not isinstance(function.value, ast.Name)
+                or function.value.id != "router"
+                or function.attr not in {"get", "post", "patch", "delete"}
+                or not isinstance(decorator.args[0], ast.Constant)
+                or not isinstance(decorator.args[0].value, str)
+            ):
+                continue
+            seams.add((function.attr.upper(), decorator.args[0].value, node.name))
+    return seams
 
 
 def test_active_carrier_declares_spotify_connector_and_passport_boundaries() -> None:
@@ -451,48 +479,146 @@ def test_generic_relationship_entity_info_surfaces_are_fenced_and_allocated() ->
         _read(_DASHBOARD_API_SPEC),
         "Spotify exclusion from generic Relationship entity-info authority",
     )
+    dashboard_relationship = _requirement(
+        _read(_DASHBOARD_RELATIONSHIP_SPEC),
+        "Connector-managed Spotify Tier 2 exclusion from generic entity-info authority",
+    )
+    passport = _requirement(_read(_PASSPORT_SPEC), "Connector-owned Passport projections")
     carrier = _requirement(
         _read(_CARRIER_SPEC), "Spotify connector authority and Passport projection"
     )
     tasks = _collapse_whitespace(_read(_CARRIER_TASKS))
 
-    generic_relationship_routes = (
-        "GET /api/relationship/owner/entity-info",
-        "GET /api/relationship/entities/{entity_id}",
-        "POST /api/relationship/entities/{entity_id}/info",
-        "PATCH /api/relationship/entities/{entity_id}/info/{info_id}",
-        "DELETE /api/relationship/entities/{entity_id}/info/{info_id}",
-        "GET /api/relationship/entities/{entity_id}/secrets/{info_id}",
-        "GET /api/relationship/entities/{entity_id}/linked-contacts",
+    generic_relationship_seams = (
+        ("GET", "/owner/entity-info", "get_owner_entity_info"),
+        ("GET", "/entities/{entity_id}", "get_entity"),
+        ("POST", "/entities/{entity_id}/info", "create_entity_info"),
+        ("PATCH", "/entities/{entity_id}/info/{info_id}", "patch_entity_info"),
+        ("DELETE", "/entities/{entity_id}/info/{info_id}", "delete_entity_info"),
+        ("GET", "/entities/{entity_id}/secrets/{info_id}", "reveal_entity_secret"),
+        ("GET", "/entities/{entity_id}/linked-contacts", "list_entity_linked_contacts"),
     )
-    for route in generic_relationship_routes:
-        assert f"`{route}`" in dashboard_api
-        assert f"`{route}`" in carrier
-        assert route in tasks
+    actual_seams = _router_seams(_RELATIONSHIP_ROUTER)
+    for method, route, handler in generic_relationship_seams:
+        qualified_route = f"{method} /api/relationship{route}"
+        for artifact, section in (
+            ("dashboard-api", dashboard_api),
+            ("dashboard-relationship", dashboard_relationship),
+            ("active carrier", carrier),
+        ):
+            assert f"`{qualified_route}`" in section, artifact
+        assert qualified_route in tasks
+        assert (method, route, handler) in actual_seams
 
-    for section in (dashboard_api, carrier):
+    for artifact, section in (
+        ("dashboard-api", dashboard_api),
+        ("dashboard-relationship", dashboard_relationship),
+        ("active carrier", carrier),
+        ("Passport", passport),
+    ):
         normalized_section = _collapse_whitespace(section)
-        assert "stable non-disclosing HTTP 404" in section
-        assert "connector callback remains the sole writer" in section
-        assert "metadata-only type discriminator" in section
-        assert "before selecting or revealing `value`" in normalized_section
+        assert "stable non-disclosing HTTP 404" in normalized_section, artifact
+        assert "metadata-only type discriminator" in normalized_section, artifact
+        assert "before selecting or revealing `value`" in normalized_section, artifact
+        assert "connector-owned Spotify OAuth lifecycle" in normalized_section, artifact
+        assert "sole authority" in normalized_section, artifact
+        assert "callback is the sole initial token-creation writer" in normalized_section, artifact
+        assert "connector refresh is the only permitted subsequent update" in normalized_section, (
+            artifact
+        )
+        assert "connector disconnect is the only permitted delete" in normalized_section, artifact
 
     assert "`roster/relationship/api/router.py`" in carrier
     assert "`bu-fj7lx`" in tasks
     assert "generic Relationship entity-info" in tasks
 
-    # Causally pin the plan to the current implementation seams instead of a
-    # guessed route inventory that can silently drift away from the source.
-    relationship_router = _read(_RELATIONSHIP_ROUTER)
-    for route_fragment in (
-        '"/owner/entity-info"',
-        '"/entities/{entity_id}"',
-        '"/entities/{entity_id}/info"',
-        '"/entities/{entity_id}/info/{info_id}"',
-        '"/entities/{entity_id}/secrets/{info_id}"',
-        '"/entities/{entity_id}/linked-contacts"',
-    ):
-        assert route_fragment in relationship_router
+    contact_detail = _requirement(_read(_DASHBOARD_RELATIONSHIP_SPEC), "Contact detail API")
+    reveal = _requirement(_read(_DASHBOARD_RELATIONSHIP_SPEC), "Secured contact info reveal API")
+    assert "eligible generic `public.entity_info` rows" in contact_detail
+    assert "Connector-managed Spotify Tier 2 exclusion" in contact_detail
+    assert (
+        "the `entity_info` array MUST contain the entity's contact-channel entries"
+        not in contact_detail
+    )
+    assert "eligible generic secured `public.entity_info` entry" in reveal
+    assert "Connector-managed Spotify Tier 2 exclusion" in reveal
+    assert "returns the unmasked value of a secured `public.entity_info` entry" not in reveal
+
+
+def test_spotify_lifecycle_authority_rejects_callback_only_writer_language() -> None:
+    """Initial creation, refresh updates, and disconnect deletion have distinct writers."""
+    authority_artifacts = {
+        "active carrier": _read(_CARRIER_SPEC),
+        "carrier design": _read(_CARRIER_DESIGN),
+        "carrier tasks": _read(_CARRIER_TASKS),
+        "dashboard-api": _read(_DASHBOARD_API_SPEC),
+        "dashboard-relationship": _read(_DASHBOARD_RELATIONSHIP_SPEC),
+        "Passport": _read(_PASSPORT_SPEC),
+        "credential storage": _read(_CREDENTIALS_SPEC),
+        "entity identity": _read(_ENTITY_IDENTITY_SPEC),
+        "Spotify connector": _read(_SPOTIFY_CONNECTOR_SPEC),
+        "Spotify setup": _read(_SPOTIFY_SETUP_SPEC),
+        "ingestion recovery": _read(_INGESTION_SPEC),
+    }
+    forbidden = (
+        "callback remains the sole writer",
+        "connector flow as the sole writer",
+        "lifecycle is the sole writer",
+        "only writer of those rows",
+        "only writer of the tier 2 owner",
+        "only the connector flow writes",
+    )
+    for artifact, document in authority_artifacts.items():
+        normalized = _collapse_whitespace(document).casefold()
+        for stale_claim in forbidden:
+            assert stale_claim not in normalized, (artifact, stale_claim)
+
+    lifecycle_sections = {
+        "active carrier": _requirement(
+            authority_artifacts["active carrier"],
+            "Spotify connector authority and Passport projection",
+        ),
+        "dashboard-api": _requirement(
+            authority_artifacts["dashboard-api"],
+            "Spotify exclusion from generic Relationship entity-info authority",
+        ),
+        "dashboard-relationship": _requirement(
+            authority_artifacts["dashboard-relationship"],
+            "Connector-managed Spotify Tier 2 exclusion from generic entity-info authority",
+        ),
+        "Passport": _requirement(
+            authority_artifacts["Passport"], "Connector-owned Passport projections"
+        ),
+        "credential storage": _requirement(
+            authority_artifacts["credential storage"], "Spotify OAuth Token Storage"
+        ),
+        "entity identity": _requirement(
+            authority_artifacts["entity identity"],
+            "Entity info type registry (frontend ↔ backend coupling)",
+        ),
+        "Spotify connector": _requirement(
+            authority_artifacts["Spotify connector"],
+            "Connector-Owned Production Spotify PKCE",
+        ),
+        "Spotify setup": _requirement(
+            authority_artifacts["Spotify setup"],
+            "Connector-Owned Spotify OAuth 2.0 PKCE Authorization Flow",
+        ),
+        "ingestion recovery": _requirement(
+            authority_artifacts["ingestion recovery"], "Connector-owned Spotify recovery"
+        ),
+    }
+    lifecycle_claims = (
+        "connector-owned Spotify OAuth lifecycle",
+        "sole authority",
+        "callback is the sole initial token-creation writer",
+        "connector refresh is the only permitted subsequent update",
+        "connector disconnect is the only permitted delete",
+    )
+    for artifact, section in lifecycle_sections.items():
+        normalized = _collapse_whitespace(section)
+        for claim in lifecycle_claims:
+            assert claim in normalized, (artifact, claim)
 
 
 def test_scope_status_converges_to_the_canonical_recovery_state_before_ui_resolution() -> None:

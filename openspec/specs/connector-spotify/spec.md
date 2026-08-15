@@ -157,6 +157,11 @@ refresh tokens are RFC 0006 Tier 2 credentials stored in
 `resolve_owner_entity_info()`. The non-secret OAuth app client ID remains a
 Tier 1 system credential in `CredentialStore`.
 
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows. The callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
+
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
 exception to the generic User credential editor in `PassportAddPanel`.
 `PassportAddPanel` SHALL NOT offer those types through `ENTITY_INFO_TYPES`, and

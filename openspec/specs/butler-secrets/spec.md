@@ -134,10 +134,13 @@ presentation-only, not a User credential row. The `u:` focus namespace is
 presentation routing; it does not assign credential storage authority.
 Spotify access and refresh tokens are RFC 0006 Tier 2 credentials stored in
 `public.entity_info` on the owner entity and resolved through
-`resolve_owner_entity_info()`. The connector-owned PKCE flow is their only
-writer. The Passport projection is not a secret authority and SHALL NOT expose
-or mirror the backing Tier 2 rows. `CredentialStore` remains authoritative
-only for the system-level Spotify OAuth app client ID.
+`resolve_owner_entity_info()`. The connector-owned Spotify OAuth lifecycle is
+the sole authority: the callback is the sole initial token-creation writer,
+connector refresh is the only permitted subsequent update, and connector
+disconnect is the only permitted delete. The Passport projection is not a
+secret authority and SHALL NOT expose or mirror the backing Tier 2 rows.
+`CredentialStore` remains authoritative only for the system-level Spotify
+OAuth app client ID.
 
 The backing Spotify types are a connector-managed Tier 2 exception to the
 generic User credential editor in `PassportAddPanel`. That editor SHALL NOT
@@ -162,10 +165,11 @@ The generic Relationship entity-info API is also outside this authority.
 generic create, patch, delete, and secured-reveal counterparts SHALL omit or
 reject the three Spotify types server-side. Collection projections SHALL omit
 them at the SQL boundary. ID-addressed mutations or reveal MAY read only a
-metadata-only type discriminator before returning the same non-disclosing 404
-as a missing row; they SHALL NOT select or reveal `value`, write audit
-evidence, or mutate connector-owned rows. The connector callback remains the
-sole writer.
+metadata-only type discriminator before returning the stable non-disclosing
+HTTP 404 detail `Entity info entry not found`, identical to a missing row. The
+response SHALL occur before selecting or revealing `value`, writing audit
+evidence, or mutating connector-owned rows. Creation, refresh updates, and
+deletion remain confined to the connector-owned lifecycle operations above.
 
 The projection SHALL be content-blind. It may render only a closed connection
 state and the fixed `listening-history` capability evidence

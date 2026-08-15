@@ -880,9 +880,12 @@ returning credential material.
 
 ### Requirement: Spotify exclusion from generic Relationship entity-info authority
 
-The Spotify connector callback SHALL remain the sole writer of
+The connector-owned Spotify OAuth lifecycle SHALL be the sole authority for
 `spotify_oauth_access`, `spotify_oauth_refresh`, and
-`spotify_oauth_expires_at`. The generic Relationship API in
+`spotify_oauth_expires_at`. Within that lifecycle, the callback is the sole
+initial token-creation writer, connector refresh is the only permitted
+subsequent update, and connector disconnect is the only permitted delete. The
+generic Relationship API in
 `roster/relationship/api/router.py` SHALL NOT create, list, expose, reveal,
 retag, update, or delete those rows through any entity-info projection or
 mutation.
@@ -918,9 +921,11 @@ material exists.
   of those types through a generic Relationship route
 - **THEN** the route SHALL return the stable non-disclosing HTTP 404 before
   selecting or revealing `value` or changing state
-- **AND** the connector callback remains the sole writer and the
-  connector-owned Passport projection remains the only interactive recovery
-  surface
+- **AND** the connector-owned Spotify OAuth lifecycle remains the sole
+  authority with creation, refresh, and deletion confined to its callback,
+  refresh, and disconnect operations respectively
+- **AND** the connector-owned Passport projection remains the only interactive
+  recovery surface
 
 ### Requirement: Secrets Mutation Endpoints
 The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action the passport page can dispatch. Every mutation SHALL write to `public.audit_log` (see `core-credentials` Audit Action Enum requirement) with an appropriate action value.
@@ -941,7 +946,7 @@ The `/api/secrets/*` namespace SHALL expose mutation endpoints for every action 
   rotate, disconnect, or probe Spotify token material or a Spotify
   `public.entity_info` record
 - **AND** those secured owner `public.entity_info` rows remain RFC 0006 Tier 2
-  authority owned by the connector callback and read through
+  authority owned by the connector lifecycle and read through
   `resolve_owner_entity_info()`; excluding generic mutations does not make the
   Passport projection or `CredentialStore` a replacement secret authority
 - **AND** the content-blind Spotify Passport projection SHALL delegate its

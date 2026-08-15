@@ -6,23 +6,25 @@ Defines the dashboard surfaces for the Relationship butler: the contact detail A
 ## Requirements
 ### Requirement: Contact detail API
 
-The retired `public.contacts` / `public.contact_info` tables were dropped (core_134 / core_115) and there is no `GET /api/relationship/contacts/:id` endpoint. The canonical single-record read MUST be `GET /api/relationship/entities/:id` (roster/relationship/api/router.py), which joins `public.entities` with contact-fact triples from `relationship.entity_facts` and secured rows from `public.entity_info`.
+The retired `public.contacts` / `public.contact_info` tables were dropped (core_134 / core_115) and there is no `GET /api/relationship/contacts/:id` endpoint. The canonical single-record read MUST be `GET /api/relationship/entities/:id` (roster/relationship/api/router.py), which joins `public.entities` with contact-fact triples from `relationship.entity_facts` and generic Relationship-managed rows from `public.entity_info`. Connector-managed types excluded by a canonical provider authority contract MUST be omitted at the SQL boundary; see Requirement: Connector-managed Spotify Tier 2 exclusion from generic entity-info authority.
 
 The response MUST include:
 - The core entity record from `public.entities` (`id`, `canonical_name`, `entity_type`, `aliases`, `roles`, `metadata`, `state`, `created_at`, `updated_at`)
-- `entity_info` (array) -- contact-channel entries projected from `relationship.entity_facts` contact-fact triples and the backing `public.entity_info` rows, each containing `id`, `type`, `value` (masked as `"********"` when the backing row has `secured = true`), `label`, `secured`, `created_at`
+- `entity_info` (array) -- contact-channel entries projected from `relationship.entity_facts` contact-fact triples and eligible generic `public.entity_info` rows, each containing `id`, `type`, `value` (masked as `"********"` when the backing row has `secured = true`), `label`, `secured`, `created_at`
 - Activity, gifts, loans, life events, and related-entity data are NOT inlined on this read. They are served by the entity-level tab and aggregator endpoints (see Requirement: Entity-level tab APIs and Requirement: Entity activity aggregator).
 
 #### Scenario: Fetch an existing entity with full detail
 
 - **WHEN** `GET /api/relationship/entities/ent-456-uuid` is called and the entity exists
 - **THEN** the API MUST return the complete entity record including `roles` and `aliases` fields
-- **AND** the `entity_info` array MUST contain the entity's contact-channel entries with secured values masked
+- **AND** the `entity_info` array MUST contain the entity's generic contact-channel entries with secured values masked
+- **AND** it MUST omit connector-managed types excluded by a canonical provider authority contract
 - **AND** the response status MUST be 200
 
-#### Scenario: Secured entity_info values are masked
+#### Scenario: Generic secured entity_info values are masked
 
-- **WHEN** an entity has an `entity_info` entry with `secured = true` and `value = 'secret-token-123'`
+- **WHEN** an entity has an eligible generic `entity_info` entry with
+  `secured = true` and `value = 'secret-token-123'`
 - **THEN** the `entity_info` array entry MUST have `value = "********"` and `secured = true`
 
 #### Scenario: Entity does not exist
@@ -71,8 +73,8 @@ page at `/entities/:entityId` as a post-redesign contact-channel card.
 
 The entity detail contact-channel card MUST contain, for each linked contact:
 
-1. Contact methods grouped by type, including secured reveal/hide affordances for
-   secured entries.
+1. Generic Relationship-managed contact methods grouped by type, including
+   secured reveal/hide affordances for eligible secured entries.
 2. Preferred channel and primary contact summaries.
 3. Important dates and quick facts until their triple-backed replacements are
    fully cut over.
@@ -90,7 +92,10 @@ continues to live in the entity detail activity stream.
   more linked contacts
 - **THEN** the entity detail page MUST render a contact-channel card
 - **AND** the card MUST list each linked contact with its contact methods
-- **AND** secured entries MUST be masked until explicitly revealed
+- **AND** eligible generic secured entries MUST be masked until explicitly
+  revealed
+- **AND** connector-managed types excluded by a canonical provider authority
+  contract MUST NOT appear
 
 #### Scenario: Entity detail renders sparse contact data
 
@@ -216,7 +221,7 @@ defined in the `detail-page-archetype` spec.
 
 ### Requirement: Secured contact info reveal API
 
-The dashboard API SHALL expose `GET /api/relationship/entities/{entity_id}/secrets/{info_id}` which returns the unmasked value of a secured `public.entity_info` entry (rejecting non-secured rows with HTTP 400).
+The dashboard API SHALL expose `GET /api/relationship/entities/{entity_id}/secrets/{info_id}` which returns the unmasked value of an eligible generic secured `public.entity_info` entry (rejecting non-secured rows with HTTP 400). Connector-managed types excluded by a canonical provider authority contract MUST return the same non-disclosing 404 as a missing row before their value is selected; see Requirement: Connector-managed Spotify Tier 2 exclusion from generic entity-info authority.
 
 #### Scenario: Reveal a secured value
 
@@ -239,6 +244,81 @@ The dashboard API SHALL expose `GET /api/relationship/entities/{entity_id}/secre
 
 - **WHEN** `GET /api/relationship/entities/ent-456/secrets/info-456` is called but `info-456` belongs to entity `ent-789`
 - **THEN** the API MUST return a 404 response
+
+---
+
+### Requirement: Connector-managed Spotify Tier 2 exclusion from generic entity-info authority
+
+The connector-owned Spotify OAuth lifecycle SHALL be the sole authority for
+`spotify_oauth_access`, `spotify_oauth_refresh`, and
+`spotify_oauth_expires_at` rows in owner `public.entity_info`. Within that
+lifecycle, the callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete. Generic Relationship routes SHALL neither disclose
+nor mutate those rows.
+
+The exclusion applies to these method-qualified seams in
+`roster/relationship/api/router.py`:
+
+- `GET /api/relationship/owner/entity-info`
+- `GET /api/relationship/entities/{entity_id}`
+- `POST /api/relationship/entities/{entity_id}/info`
+- `PATCH /api/relationship/entities/{entity_id}/info/{info_id}`
+- `DELETE /api/relationship/entities/{entity_id}/info/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/secrets/{info_id}`
+- `GET /api/relationship/entities/{entity_id}/linked-contacts`
+
+Owner inventory, entity detail, and linked-contact queries SHALL omit the
+three Spotify types at the SQL boundary, including masked type metadata. A
+generic create SHALL reject a Spotify type before any database access. For an
+ID-addressed patch, delete, or reveal, the route MAY perform only a
+metadata-only type discriminator lookup. A patch SHALL apply the same check to
+both the stored type and an attempted retag to a Spotify type. Each rejected
+operation SHALL return the stable non-disclosing HTTP 404 detail
+`Entity info entry not found` before selecting or revealing `value`, writing
+audit evidence, or mutating state. An unknown row SHALL return the same
+response so the generic surface does not disclose whether connector-owned
+material exists.
+
+#### Scenario: Entity detail and linked contacts omit Spotify token metadata
+
+- **WHEN** an entity owns one or more connector-managed Spotify Tier 2 rows
+- **AND** a caller uses `GET /api/relationship/owner/entity-info`,
+  `GET /api/relationship/entities/{entity_id}`, or
+  `GET /api/relationship/entities/{entity_id}/linked-contacts`
+- **THEN** the SQL projection SHALL omit those rows and their type metadata
+- **AND** no token value or connector-managed row identifier SHALL enter the
+  generic response
+
+#### Scenario: Generic create rejects Spotify before database access
+
+- **WHEN** a caller submits
+  `POST /api/relationship/entities/{entity_id}/info` with one of the Spotify
+  connector-managed types
+- **THEN** the route SHALL return the stable non-disclosing HTTP 404
+- **AND** it SHALL perform no database lookup, insert, audit write, or other
+  mutation
+
+#### Scenario: Generic patch cannot edit or retag Spotify rows
+
+- **WHEN** a caller submits
+  `PATCH /api/relationship/entities/{entity_id}/info/{info_id}` for a stored
+  Spotify row or attempts to retag another row to a Spotify type
+- **THEN** the route SHALL return the stable non-disclosing HTTP 404 after at
+  most the metadata-only type discriminator
+- **AND** it SHALL not select or reveal `value`, write audit evidence, or
+  mutate state
+
+#### Scenario: Generic delete and reveal cannot address Spotify rows
+
+- **WHEN** a caller submits
+  `DELETE /api/relationship/entities/{entity_id}/info/{info_id}` or
+  `GET /api/relationship/entities/{entity_id}/secrets/{info_id}` for a Spotify
+  row
+- **THEN** the route SHALL return the stable non-disclosing HTTP 404 after at
+  most the metadata-only type discriminator
+- **AND** it SHALL not select or reveal `value`, write audit evidence, or
+  mutate state
 
 ---
 

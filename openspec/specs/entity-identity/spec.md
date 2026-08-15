@@ -562,10 +562,11 @@ The frontend `ENTITY_INFO_TYPES` array and the backend module credential lookups
 
 An `info_type` read through `resolve_owner_entity_info()` MAY instead be a
 connector-managed Tier 2 exception only when its canonical provider contract
-names the connector flow as the sole writer and supplies a dedicated setup and
-recovery surface. Such a read uses the shared Tier 2 lookup seam; it does not
-make the credential user-provisioned or move its authority to Tier 1
-`CredentialStore`.
+names one connector-owned lifecycle as the sole authority, assigns initial
+creation, subsequent updates, and deletion to explicit operations in that
+lifecycle, and supplies a dedicated setup and recovery surface. Such a read
+uses the shared Tier 2 lookup seam; it does not make the credential
+user-provisioned or move its authority to Tier 1 `CredentialStore`.
 
 #### Canonical type registry
 
@@ -591,8 +592,10 @@ make the credential user-provisioned or move its authority to Tier 1
 
 #### Connector-managed Tier 2 exceptions
 
-The Spotify connector-owned PKCE lifecycle is the sole writer for these owner
-`public.entity_info` types:
+The connector-owned Spotify OAuth lifecycle is the sole authority for these
+owner `public.entity_info` types. The callback is the sole initial
+token-creation writer, connector refresh is the only permitted subsequent
+update, and connector disconnect is the only permitted delete:
 
 - `spotify_oauth_access`
 - `spotify_oauth_refresh`

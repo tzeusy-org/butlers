@@ -531,9 +531,13 @@ flow. `POST /api/connectors/spotify/oauth/start` and
 `GET /api/connectors/spotify/oauth/callback` are the connector-owned route
 pair. Spotify access and refresh tokens are identity-bound RFC 0006 Tier 2
 credentials stored in `public.entity_info` on the owner entity and resolved
-through `resolve_owner_entity_info()`. `CredentialStore` remains authoritative
-only for the system-level Spotify OAuth app client ID. The generic OAuth
-provider surface is Google-only in production.
+through `resolve_owner_entity_info()`. The connector-owned Spotify OAuth
+lifecycle is the sole authority: the callback is the sole initial
+token-creation writer, connector refresh is the only permitted subsequent
+update, and connector disconnect is the only permitted delete.
+`CredentialStore` remains authoritative only for the system-level Spotify
+OAuth app client ID. The generic OAuth provider surface is Google-only in
+production.
 
 `/secrets?focus=u:spotify` is a content-blind connector-owned Passport
 projection, not an editable User credential identity, credential mirror,
@@ -551,9 +555,9 @@ disconnect, probe, and reauthorize. It also fences every generic Relationship
 entity-info list/detail/create/patch/delete/reveal projection in
 `roster/relationship/api/router.py`: collections omit Spotify types, create
 rejects them before DB access, and ID-addressed operations use only a metadata
-type discriminator before the stable non-disclosing 404. The connector
-callback remains the sole writer. `bu-3ifcj` then removes the generic OAuth
-Spotify registry, route, configuration, UI, documentation, and test exemplar.
+type discriminator before the stable non-disclosing 404. `bu-3ifcj` then
+removes the generic OAuth Spotify registry, route, configuration, UI,
+documentation, and test exemplar.
 The latter keeps a synthetic generalized-provider fixture and no compatibility
 alias, shim, or production registry entry.
 

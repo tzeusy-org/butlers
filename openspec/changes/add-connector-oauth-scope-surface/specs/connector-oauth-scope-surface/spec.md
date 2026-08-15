@@ -427,6 +427,11 @@ OAuth app client ID remains a Tier 1 system credential in `CredentialStore`.
 The Passport projection is content-blind and connector-owned. It SHALL remain
 a projection rather than a token authority.
 
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows. The callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
+
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
 exception to the generic User credential editor in `PassportAddPanel` under
 `/secrets`. `PassportAddPanel` SHALL NOT offer their types through
@@ -464,10 +469,9 @@ metadata-only type discriminator lookup. It SHALL return the stable
 non-disclosing HTTP 404 detail `Entity info entry not found` for a stored
 Spotify row or an attempted retag to a Spotify type, before selecting or
 revealing `value`, writing audit evidence, or mutating state. The generic
-response SHALL not distinguish that rejection from a missing row. The
-connector callback remains the sole writer; only the content-blind Passport
-projection or connector card may direct interactive work to Spotify connector
-endpoints.
+response SHALL not distinguish that rejection from a missing row. Only the
+content-blind Passport projection or connector card may direct interactive
+work to Spotify connector endpoints.
 
 The production flow SHALL begin at
 `POST /api/connectors/spotify/oauth/start` and complete at
@@ -516,7 +520,8 @@ alias, or generic OAuth provider alias.
   reveal for one of those types
 - **THEN** the route SHALL return the stable non-disclosing HTTP 404 before
   selecting or revealing `value` or changing state
-- **AND** the connector callback remains the sole writer
+- **AND** creation, refresh updates, and deletion SHALL remain confined to the
+  callback, connector refresh, and connector disconnect respectively
 
 #### Scenario: Generic OAuth Spotify cleanup contract
 

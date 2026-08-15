@@ -411,6 +411,10 @@ tokens are identity-bound RFC 0006 Tier 2 credentials: the connector-owned
 callback stores them in `public.entity_info` on the owner entity, and
 connector/runtime reads use `resolve_owner_entity_info()`. The Passport
 projection presents closed recovery state only; it is not a secret authority.
+The connector-owned Spotify OAuth lifecycle is the sole authority for those
+Tier 2 rows: the callback is the sole initial token-creation writer, connector
+refresh is the only permitted subsequent update, and connector disconnect is
+the only permitted delete.
 
 #### Scenario: Spotify recovery enters Passport before PKCE
 

@@ -199,9 +199,12 @@ Runtime authentication SHALL use either CLI-level OAuth tokens (device-code flow
 Spotify access and refresh tokens SHALL remain RFC 0006 Tier 2 credentials because they
 are bound to the owner's personal Spotify account. Their sole authoritative
 store SHALL be secured rows in `public.entity_info` on the owner entity, read
-through `resolve_owner_entity_info()`. The connector-owned Spotify PKCE flow is
-the only writer of those rows. A generic OAuth Spotify registry, Passport
-projection, User credential inventory row, `CredentialStore`, or other store
+through `resolve_owner_entity_info()`. The connector-owned Spotify OAuth
+lifecycle is the sole authority: the callback is the sole initial
+token-creation writer, connector refresh is the only permitted subsequent
+update, and connector disconnect is the only permitted delete. A generic OAuth
+Spotify registry, Passport projection, User credential inventory row,
+`CredentialStore`, or other store
 SHALL NOT duplicate, persist, or mutate Spotify token material.
 
 The Spotify OAuth app client ID is a system-level app credential rather than
@@ -232,8 +235,9 @@ server-side. That exclusion does not transfer token authority to Tier 1
 #### Scenario: Spotify authority has no token mirror
 
 - **WHEN** Spotify authorization, refresh, or disconnect changes token state
-- **THEN** only the connector-owned PKCE flow SHALL write or delete the
-  secured owner `public.entity_info` token rows
+- **THEN** the callback SHALL create the initial secured owner
+  `public.entity_info` token rows, connector refresh alone SHALL update them,
+  and connector disconnect alone SHALL delete them
 - **AND** `connector_registry` MAY contain only derived connection or scope
   metadata
 - **AND** a Passport projection MAY invoke connector actions but SHALL NOT
