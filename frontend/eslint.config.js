@@ -644,24 +644,13 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           'at',
           'concat',
           'entries',
-          'every',
-          'filter',
-          'find',
-          'findIndex',
-          'findLast',
-          'findLastIndex',
           'flat',
-          'flatMap',
           'includes',
           'indexOf',
           'join',
           'keys',
           'lastIndexOf',
-          'map',
-          'reduce',
-          'reduceRight',
           'slice',
-          'some',
           'toReversed',
           'toSorted',
           'toSpliced',
@@ -1763,6 +1752,35 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
           return value
         }
 
+        function staticStringFactoryValue(
+          node,
+          resolvingVariables = new Set(),
+          localValues = new Map(),
+        ) {
+          node = unwrapStaticExpression(node)
+          if (node.type !== 'CallExpression') return null
+
+          const factory = isGlobalMemberReference(node.callee, 'String', 'fromCharCode')
+            ? String.fromCharCode
+            : isGlobalMemberReference(node.callee, 'String', 'fromCodePoint')
+              ? String.fromCodePoint
+              : null
+          if (!factory) return null
+          if (node.arguments.some((argument) => argument.type === 'SpreadElement')) {
+            return DYNAMIC_VALUE_MARKER
+          }
+
+          const codeUnits = node.arguments.map((argument) =>
+            staticNumberValue(argument, resolvingVariables, localValues),
+          )
+          if (codeUnits.some((codeUnit) => codeUnit === null)) return DYNAMIC_VALUE_MARKER
+          try {
+            return factory(...codeUnits)
+          } catch {
+            return DYNAMIC_VALUE_MARKER
+          }
+        }
+
         function staticConstructionFragments(node, resolvingVariables = new Set()) {
           node = unwrapStaticExpression(node)
           if (node.type === 'Literal') return typeof node.value === 'string' ? [node.value] : []
@@ -1797,6 +1815,10 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               ...staticConstructionFragments(node.left, resolvingVariables),
               ...staticConstructionFragments(node.right, resolvingVariables),
             ]
+          }
+          const factoryValue = staticStringFactoryValue(node, resolvingVariables)
+          if (factoryValue !== null && factoryValue !== DYNAMIC_VALUE_MARKER) {
+            return [factoryValue]
           }
           if (node.type === 'CallExpression' || node.type === 'NewExpression') {
             const receiver =
@@ -1993,27 +2015,12 @@ const VISUAL_ROLE_GUARD_PLUGIN = {
               stringConstructionValue(node.right, resolvingVariables, localValues)
             )
           }
-          const staticStringFactory =
-            node.type === 'CallExpression' &&
-            (isGlobalMemberReference(node.callee, 'String', 'fromCharCode')
-              ? String.fromCharCode
-              : isGlobalMemberReference(node.callee, 'String', 'fromCodePoint')
-                ? String.fromCodePoint
-                : null)
-          if (staticStringFactory) {
-            if (node.arguments.some((argument) => argument.type === 'SpreadElement')) {
-              return DYNAMIC_VALUE_MARKER
-            }
-            const codeUnits = node.arguments.map((argument) =>
-              staticNumberValue(argument, resolvingVariables, localValues),
-            )
-            if (codeUnits.some((codeUnit) => codeUnit === null)) return DYNAMIC_VALUE_MARKER
-            try {
-              return staticStringFactory(...codeUnits)
-            } catch {
-              return DYNAMIC_VALUE_MARKER
-            }
-          }
+          const staticStringFactory = staticStringFactoryValue(
+            node,
+            resolvingVariables,
+            localValues,
+          )
+          if (staticStringFactory !== null) return staticStringFactory
           const indirectResolverValue = staticResolverStringValue(
             node,
             resolvingVariables,

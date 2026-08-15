@@ -745,6 +745,77 @@ const MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
 const MUTATED_CONTAINER_SEMANTIC_ROLE_RESOLVER_SOURCE =
   MUTATED_CONTAINER_PRIVATE_IDENTITY_RESOLVER_SOURCE.replaceAll("--category-1", "--categorical-1");
 
+const CALLBACK_CONTAINER_METHODS = [
+  "map",
+  "filter",
+  "every",
+  "some",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+  "reduce",
+  "reduceRight",
+] as const;
+
+function callbackMutatedResolverSource(token: string): string {
+  return CALLBACK_CONTAINER_METHODS.flatMap((method, index) => {
+    const { call, name, resolver } =
+      RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES[
+        index % RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length
+      ];
+    const callback = method.startsWith("reduce")
+      ? `(_acc: unknown, _value: unknown, _index: number, values: unknown[]) => { values[0] = ${resolver}; return _acc; }`
+      : `(_value: unknown, _index: number, values: unknown[]) => { values[0] = ${resolver}; return true; }`;
+    return [
+      `const ${name}${index}Callbacks = [semanticResolver];`,
+      `${name}${index}Callbacks.${method}(${callback});`,
+      `export const ${name}${index}CallbackResult = ${call(`${name}${index}Callbacks[0]`, token)};`,
+    ];
+  }).join("\n");
+}
+
+const CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE =
+  callbackMutatedResolverSource("--category-1");
+const CALLBACK_MUTATED_SEMANTIC_ROLE_RESOLVER_SOURCE =
+  callbackMutatedResolverSource("--categorical-1");
+
+function ambiguousFactoryResolverSource(factory: "fromCharCode" | "fromCodePoint"): string {
+  const token = `String.${factory}(45, 45, 99, 97, 116, 101, 103, 111, 114, 121, 45, 49)`;
+  const calls = {
+    arrayJoin: (resolver: string) => `${resolver}.call(["var(", ${token}, ")"], "")`,
+    cssom: (resolver: string) =>
+      `${resolver}.call(document.documentElement.style, ${token})`,
+    stringConcat: (resolver: string) => `${resolver}.call("var(", ${token}, ")")`,
+    typedOm: (resolver: string) =>
+      `${resolver}.call(document.documentElement.computedStyleMap(), ${token})`,
+  } as const;
+  return RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.flatMap(({ name, resolver }) => [
+    `declare const ${name}FactoryIndex: number;`,
+    `const ${name}FactoryResolvers = [${resolver}] as const;`,
+    `export const ${name}FactoryResult = ${calls[name](`${name}FactoryResolvers[${name}FactoryIndex]`)};`,
+  ]).join("\n");
+}
+
+const AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  ambiguousFactoryResolverSource("fromCharCode"),
+  ambiguousFactoryResolverSource("fromCodePoint"),
+].join("\n");
+
+const WRAPPED_DESCRIPTOR_PRIVATE_IDENTITY_RESOLVER_SOURCE = [
+  'export const nonNullCssom = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, "getPropertyValue")!.value.call(document.documentElement.style, "--category-1");',
+  'export const castCssom = (Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, "getPropertyValue") as PropertyDescriptor).value.call(document.documentElement.style, "--category-1");',
+  'export const nonNullTypedOm = Object.getOwnPropertyDescriptor(StylePropertyMapReadOnly.prototype, "get")!.value.call(document.documentElement.computedStyleMap(), "--category-1");',
+  'export const castTypedOm = (Object.getOwnPropertyDescriptor(StylePropertyMapReadOnly.prototype, "get") as PropertyDescriptor).value.call(document.documentElement.computedStyleMap(), "--category-1");',
+].join("\n");
+
+const WRAPPED_DESCRIPTOR_SEMANTIC_ROLE_RESOLVER_SOURCE =
+  WRAPPED_DESCRIPTOR_PRIVATE_IDENTITY_RESOLVER_SOURCE.replaceAll(
+    "--category-1",
+    "--categorical-1",
+  );
+
 function cyclicResolverAliasSource(token: string): string {
   return [
     "const firstResolver = secondResolver;",
@@ -1355,6 +1426,62 @@ describe("semantic visual-role lint", () => {
     expect(roleMessages).toEqual([]);
   });
 
+  it("fails closed when callback-bearing array methods can swap private resolvers", async () => {
+    const roleMessages = await visualRoleMessages(
+      CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityCallbackMutatedResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(CALLBACK_CONTAINER_METHODS.length);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap((line, index) =>
+        line.startsWith("export const") ? [index + 1] : [],
+      ),
+    );
+  });
+
+  it("does not broaden callback-container ambiguity to semantic roles", async () => {
+    const roleMessages = await visualRoleMessages(
+      CALLBACK_MUTATED_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticCallbackMutatedResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
+  it("fails closed for ambiguous resolver families fed private String factory values", async () => {
+    const roleMessages = await visualRoleMessages(
+      AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityAmbiguousFactoryResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(RECURSIVE_IMMUTABLE_RESOLVER_FAMILIES.length * 2);
+    expect(roleMessages.map((message) => message.line)).toEqual(
+      AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE.split("\n").flatMap((line, index) =>
+        line.startsWith("export const") ? [index + 1] : [],
+      ),
+    );
+  });
+
+  it("rejects private resolver reads through TypeScript-wrapped descriptors", async () => {
+    const roleMessages = await visualRoleMessages(
+      WRAPPED_DESCRIPTOR_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+      "src/components/ui/IdentityWrappedDescriptorResolverLeak.tsx",
+    );
+
+    expect(roleMessages).toHaveLength(4);
+    expect(roleMessages.map((message) => message.line)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("permits semantic roles through TypeScript-wrapped descriptors", async () => {
+    const roleMessages = await visualRoleMessages(
+      WRAPPED_DESCRIPTOR_SEMANTIC_ROLE_RESOLVER_SOURCE,
+      "src/components/ui/SemanticWrappedDescriptorResolver.tsx",
+    );
+
+    expect(roleMessages).toEqual([]);
+  });
+
   it("fails closed without recursing forever on cyclic private resolver aliases", async () => {
     const roleMessages = await visualRoleMessages(
       cyclicResolverAliasSource("--category-1"),
@@ -1412,6 +1539,9 @@ describe("semantic visual-role lint", () => {
         CSSOM_DIRECT_REFLECTED_PRIVATE_IDENTITY_READ_SOURCE,
         DESTRUCTURED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         RECURSIVE_IMMUTABLE_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        CALLBACK_MUTATED_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        AMBIGUOUS_FACTORY_PRIVATE_IDENTITY_RESOLVER_SOURCE,
+        WRAPPED_DESCRIPTOR_PRIVATE_IDENTITY_RESOLVER_SOURCE,
         cyclicResolverAliasSource("--category-1"),
         INDIRECT_STATIC_PRIVATE_IDENTITY_RESOLVER_SOURCE,
       ].join("\n"),
