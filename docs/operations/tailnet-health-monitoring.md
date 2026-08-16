@@ -25,6 +25,25 @@ The source proof deliberately does not claim that a particular host, certificate
 or running Serve state is currently healthy. Those are live facts requiring a
 separately authorized observation.
 
+### Monitor the stack that is actually running
+
+"Canonical" above describes the production *route derivation*, not an instruction
+to monitor production on a host where production is not up. `scripts/compose.sh`
+selects the prefix by mode, so the dev stack's equivalent route is:
+
+```text
+https://<TAILNET_DNS_NAME>/butlers-dev-api/api/health
+```
+
+Point the monitor at whichever stack is meant to be always-up on the target host.
+Monitoring a stack that is deliberately down produces a permanently failing check,
+which trains the operator to ignore the alert and is worse than no monitor at all.
+Confirm which stack is running before configuring, and substitute the matching
+prefix into the prompt below.
+
+Owner decision 2026-08-16: on the current host the dev stack is the running one,
+so the configured monitor targets `/butlers-dev-api/api/health`.
+
 ## Health response contract
 
 `GET /api/health` is a readiness check, not an aggregate diagnostic surface.
@@ -43,10 +62,14 @@ diagnostics to this endpoint.
 ## Pasteable Uptime Kuma agent prompt
 
 ```text
-Configure exactly one Uptime Kuma HTTP(s) pull monitor for the canonical
-tailnet-only endpoint:
+Configure exactly one Uptime Kuma HTTP(s) pull monitor for the tailnet-only
+health endpoint of the stack that is actually running on the target host
+(see "Monitor the stack that is actually running" above):
 
-https://<TAILNET_DNS_NAME>/butlers-api/api/health
+https://<TAILNET_DNS_NAME>/<API_PREFIX>/api/health
+
+where <API_PREFIX> is butlers-api for the production stack or butlers-dev-api
+for the dev stack. Do not configure a monitor against a stack that is down.
 
 Use strict TLS certificate and hostname validation. The monitor must remain
 tailnet-only: do not use a public, LAN, or loopback URL and do not weaken TLS
