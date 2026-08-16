@@ -60,9 +60,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # LLM runtime CLIs — pinned to exact versions for reproducibility.
+# NODE_OPTIONS scoped to this RUN only: the Docker build network is IPv4-only,
+# but registry.npmjs.org resolves both A/AAAA records, so plain npm install
+# hits ECONNRESET on the IPv6 route. Forcing IPv4-first resolution here avoids
+# leaking the override into the runtime image's environment.
 # To update: bump versions here, verify with `npm view <pkg>@<ver>`, rebuild.
 RUN --mount=type=cache,target=/root/.npm \
-    npm install -g \
+    NODE_OPTIONS=--dns-result-order=ipv4first npm install -g \
     @anthropic-ai/claude-code@2.1.179 \
     @google/gemini-cli@0.46.0 \
     @openai/codex@0.144.1 \
