@@ -281,9 +281,13 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
 
-    command.upgrade(core, "core@head")
-
     mod = _load_migration()
+    # Stop at the migration under test.  Rollback is not uniformly available
+    # across the core chain: later revisions install privileged boundaries
+    # whose rollback is deliberately bootstrap-only, so migrating to head first
+    # would make the one-revision rollback below walk them.
+    command.upgrade(core, f"core@{mod.revision}")
+
     aliases = [entry["alias"] for entry in mod._load_seed_entries()]
     assert aliases, "toml must have canonical-vocab entries for this test to mean anything"
 
@@ -297,9 +301,9 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
         assert seeded == len(aliases), "upgrade() should have seeded every toml alias"
 
         # Real downgrade(): must delete exactly the toml-derived aliases via op.get_bind().
-        # core_196 rollback/reapplication is managed-bootstrap-only.  The
-        # ordinary migration login remains NOCREATEDB/NOCREATEROLE for the
-        # initial empty-to-head upgrade above.
+        # Rollback runs on the privileged test-control path; the ordinary
+        # migration login remains NOCREATEDB/NOCREATEROLE for the bounded
+        # upgrade above.
         command.downgrade(bootstrap_core, "core_157")
         with engine.connect() as conn:
             after_downgrade = conn.execute(
@@ -310,9 +314,9 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
 
         # Real upgrade() again: proves the ON CONFLICT DO NOTHING INSERT path
         # works standalone through op.get_bind(), not just via hand-reproduced SQL.
-        # Target "core@head" (not a hardcoded revision id) so this test survives
-        # this migration being renumbered again by a parallel lane.
-        command.upgrade(bootstrap_core, "core@head")
+        # Bounded to the same revision as the upgrade above, and — like its
+        # paired rollback — on the privileged test-control path.
+        command.upgrade(bootstrap_core, f"core@{mod.revision}")
         with engine.connect() as conn:
             after_reupgrade = conn.execute(
                 text("SELECT COUNT(*) FROM public.model_catalog WHERE alias = ANY(:aliases)"),
