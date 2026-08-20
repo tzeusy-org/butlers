@@ -38,7 +38,7 @@ Scope: v1-mandatory
 - **AND** if that probe attempt fails, a fresh `runtime_failure` row extends
   the window and the breaker re-opens for another cooldown period
 
-#### Scenario: A breaker opening creates one durable attention episode
+#### Scenario: Breaker-open attention push
 
 - **WHEN** a qualifying `runtime_failure` provenance write changes a catalog
   entry's breaker from closed to open
@@ -53,8 +53,19 @@ Scope: v1-mandatory
 - **WHEN** multiple qualifying failures are recorded concurrently for one
   catalog entry
 - **THEN** serialization makes the closed-to-open transition deterministic
-  using the dispatch-attempt ID as a timestamp tie-breaker
+  by assigning each qualifying outcome's timestamp and dispatch-attempt ID
+  only after it owns the per-entry transaction lock
+- **AND** a transaction that began earlier but reached the lock later cannot
+  sort ahead of an outcome that committed first
 - **AND** exactly one resulting attention episode is appended
+
+#### Scenario: Delayed success and failure retain serialized outcome order
+
+- **WHEN** a success transaction begins before a concurrent failure but is
+  delayed before taking the per-entry recorder lock
+- **AND** the failure takes the lock and commits first
+- **THEN** the failure sorts before the later serialized success by `(ts, id)`
+- **AND** breaker derivation observes the same order as the recorder lock
 
 #### Scenario: Concurrent failed half-open probes observe one reopening edge
 

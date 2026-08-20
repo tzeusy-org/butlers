@@ -35,7 +35,7 @@ Scope: v1-mandatory
 - **AND** rows with no `session_id` render without a session door instead of a
   dead or broken link
 
-#### Scenario: A fleet-halt edge creates one durable attention episode
+#### Scenario: An attention-ledger push notifies the owner once per breach window
 
 - **WHEN** the monthly ceiling transitions from not-breached to breached — the
   first current-calendar-month `quota_skip` dispatch denial whose
@@ -56,7 +56,7 @@ Scope: v1-mandatory
 - **AND** an episode claim, Messenger failure, or bookkeeping failure never
   blocks or delays the spawner's ceiling-deny decision
 
-#### Scenario: Degraded attempts source never renders as no denials
+#### Scenario: Degraded attempts source never renders as "no denials"
 
 - **WHEN** `GET /api/dispatch/attempts` fails (network error, non-2xx)
 - **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt

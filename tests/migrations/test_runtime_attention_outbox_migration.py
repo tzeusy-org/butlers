@@ -1239,13 +1239,13 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
             )
             assert (
                 conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar_one()
-                == "core_198"
+                == "core_199"
             )
             assert (
                 conn.execute(
                     text("SELECT version_num FROM switchboard.alembic_version")
                 ).scalar_one()
-                == "core_198"
+                == "core_199"
             )
     finally:
         engine.dispose()
@@ -1297,7 +1297,7 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
                             f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
                         )
                     ).scalar_one()
-                    == "core_198"
+                    == "core_199"
                 )
     finally:
         engine.dispose()
@@ -1308,7 +1308,7 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
 def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_across_processes(
     postgres_container,
 ) -> None:
-    """One target tears down the global boundary; the other records the same downgrade."""
+    """core_199 refuses a teardown that would remove the old-binary fence."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
@@ -1333,7 +1333,11 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
         for target_schema, (returncode, _stdout, stderr) in downgrade_results.items()
         if returncode != 0
     }
-    assert not failed_downgrades, "\n".join(failed_downgrades.values())
+    assert set(failed_downgrades) == set(target_schemas)
+    assert all(
+        "core_198 downgrade requires trusted bootstrap rollback interface" in stderr
+        for stderr in failed_downgrades.values()
+    )
 
     engine = create_engine(bootstrap_url)
     try:
@@ -1345,7 +1349,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
                             f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
                         )
                     ).scalar_one()
-                    == "core_197"
+                    == "core_199"
                 )
             for relation in (
                 "public.runtime_attention_outbox",
@@ -1353,19 +1357,12 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
                 "public.idx_model_dispatch_attempts_catalog_ts_id",
                 "public.idx_model_dispatch_attempts_outcome_ts_id",
             ):
-                assert conn.execute(text(f"SELECT to_regclass('{relation}') IS NULL")).scalar_one()
+                assert conn.execute(
+                    text(f"SELECT to_regclass('{relation}') IS NOT NULL")
+                ).scalar_one()
     finally:
         engine.dispose()
-    assert not _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
-
-    reapply_results = _run_concurrent_core_head_upgrades(db_url, target_schemas)
-    failed_reapply = {
-        target_schema: stderr
-        for target_schema, (returncode, _stdout, stderr) in reapply_results.items()
-        if returncode != 0
-    }
-    assert not failed_reapply, "\n".join(failed_reapply.values())
-    assert _has_exact_finalized_runtime_attention_interface(db_url)
+    assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
 
 
 @pytest.mark.parametrize(
@@ -1405,7 +1402,7 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
             )
 
         with pytest.raises(DBAPIError, match="reserved deterministic index already exists"):
-            _upgrade_to_core_head(db_url)
+            command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
 
         with engine.connect() as conn:
             assert conn.execute(
@@ -1419,7 +1416,7 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
         # rollback may remove them before returning the installer handoff.
         with engine.begin() as conn:
             conn.execute(text(f"DROP INDEX public.{index_name}"))
-        _upgrade_to_core_head(db_url)
+        command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
         command.downgrade(_build_alembic_config(bootstrap_url, chains=["core"]), "core_197")
         with engine.connect() as conn:
             assert conn.execute(
@@ -1438,7 +1435,7 @@ def test_core_chain_rejects_preexisting_exact_index_before_install_and_on_reappl
                 )
             )
         with pytest.raises(DBAPIError, match="reserved deterministic index already exists"):
-            _upgrade_to_core_head(db_url)
+            command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
         with engine.connect() as conn:
             assert conn.execute(
                 text(f"SELECT to_regclass('public.{index_name}') IS NOT NULL")
@@ -1829,28 +1826,34 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
         execute_as(None, f"SELECT count(*) FROM {_OUTBOX}")
 
 
-def test_empty_outbox_can_downgrade_and_reupgrade_through_bootstrap(
+def test_empty_outbox_can_disable_and_reenable_producers_through_bootstrap(
     postgres_container,
 ) -> None:
-    """A bootstrap round-trip preserves the later ordinary-role no-op proof."""
+    """core_199 rollback retains the fence and reactivation remains versioned."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
     _upgrade_to_core_head(db_url)
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    command.downgrade(config, "core_197")
+    command.downgrade(config, "core_198")
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
-            assert conn.execute(text(f"SELECT to_regclass('{_OUTBOX}') IS NULL")).scalar_one()
+            assert conn.execute(text(f"SELECT to_regclass('{_OUTBOX}') IS NOT NULL")).scalar_one()
             assert conn.execute(
                 text(
-                    "SELECT to_regclass('public.idx_model_dispatch_attempts_catalog_ts_id') IS NULL"
+                    "SELECT to_regclass('public.idx_model_dispatch_attempts_catalog_ts_id') IS NOT NULL"
                 )
             ).scalar_one()
             assert conn.execute(
                 text(
-                    "SELECT to_regclass('public.idx_model_dispatch_attempts_outcome_ts_id') IS NULL"
+                    "SELECT to_regclass('public.idx_model_dispatch_attempts_outcome_ts_id') IS NOT NULL"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT producers_enabled FROM "
+                    "public.runtime_attention_producer_control WHERE singleton"
                 )
             ).scalar_one()
     finally:
@@ -1865,6 +1868,12 @@ def test_empty_outbox_can_downgrade_and_reupgrade_through_bootstrap(
     try:
         with engine.connect() as conn:
             assert conn.execute(text(f"SELECT to_regclass('{_OUTBOX}') IS NOT NULL")).scalar_one()
+            assert conn.execute(
+                text(
+                    "SELECT producers_enabled FROM "
+                    "public.runtime_attention_producer_control WHERE singleton"
+                )
+            ).scalar_one()
             assert conn.execute(
                 text(
                     "SELECT to_regclass('public.idx_model_dispatch_attempts_catalog_ts_id') IS NOT NULL"
@@ -1913,7 +1922,7 @@ def test_nonempty_outbox_rejects_downgrade_and_requires_forward_remediation(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="forward remediation"):
+    with pytest.raises(DBAPIError, match="trusted bootstrap rollback interface"):
         command.downgrade(config, "core_197")
 
     _upgrade_to_core_head(db_url)

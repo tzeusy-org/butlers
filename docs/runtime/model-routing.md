@@ -162,6 +162,21 @@ Every attempt in the failover sequence writes a row to `public.model_dispatch_at
 
 Query provenance via the API: `GET /api/dispatch/attempts?session_id=<uuid>` or directly from `public.model_dispatch_attempts`.
 
+Qualifying `runtime_failure` and `success` rows use one serialized recorder per
+catalog entry. The recorder takes the advisory transaction lock before assigning
+`clock_timestamp()` and the stable bigint ID, so `(ts, id)` reflects recorder
+order even when an older transaction reaches the lock late. A breaker opening
+and its runtime-attention episode commit in that same transaction. Fleet-halt
+denials use the same recorder and create at most one episode per UTC month; a
+month already breached before producer activation is not paged retrospectively.
+
+Migration `core_199` installs the version-2 producer control and a database
+cutover fence. New recorders set a transaction-local ABI marker. A canonical
+runtime without that marker is treated as an old direct-delivery binary: the
+fence writes only the fixed debounce marker that makes its retired breaker or
+fleet-halt helper stop before transport. Producer rollback disables new episodes
+while retaining attempts, the outbox, evidence, and this fence.
+
 ### Metrics
 
 Three counters track failover at the process level:
@@ -171,6 +186,10 @@ Three counters track failover at the process level:
 | `butlers.spawner.failover_attempts_total` | `butler, from_model, to_model, reason` | Successful failover transition (primary failed, next candidate invoked) |
 | `butlers.spawner.failover_suppressed_total` | `butler, reason` | Failover suppressed by classifier |
 | `butlers.spawner.failover_exhausted_total` | `butler, tier` | All same-tier candidates exhausted |
+
+`runtime_attention_recorder_total{outcome,edge}` separately reports bounded
+recorder results (`persisted`, `degraded`, or `rejected`) and edge outcomes; it
+does not label or log raw provider errors.
 
 ## Verification
 

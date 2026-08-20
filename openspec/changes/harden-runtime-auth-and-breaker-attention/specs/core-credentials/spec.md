@@ -135,6 +135,55 @@ Scope: v1-mandatory
 - **AND** it SHALL not reveal either credential, token fingerprint, or raw
   serialized auth document
 
+#### Scenario: Stale schema-local state cannot shadow a dashboard refresh
+
+- **WHEN** a schema-isolated daemon has an older local `cli-auth/codex` row
+  and the explicit authority contains a newer dashboard credential
+- **THEN** reconciliation and runtime-originated persistence SHALL use the
+  explicit authority
+- **AND** the local row SHALL not prevent the dashboard credential from
+  reaching the next invocation
+
+#### Scenario: Reconciliation remains credential-safe under degradation
+
+- **WHEN** the authority is absent, unreadable, malformed, exceeds the bounded
+  synchronization wait, or cannot be written locally
+- **THEN** reconciliation SHALL log only categorical safe context
+- **AND** it SHALL launch no new Codex subprocess from schema-local or
+  unverified local fallback state
+
+#### Scenario: Dashboard Codex probe binds to the canonical authority it tests
+
+- **WHEN** a dashboard runtime probe begins with authority B while the local
+  canonical auth file contains A
+- **THEN** the coordinator SHALL reconcile the file to B before provider work
+- **AND** durable health, history, and audit evidence SHALL remain conditional
+  on the same B-bound authority snapshot
+
+#### Scenario: Absent or unavailable authority is never implicitly bootstrapped
+
+- **WHEN** the explicit authority is absent, revoked, unavailable, or malformed
+  while a canonical local auth file exists
+- **THEN** preflight and post-operation reconciliation SHALL NOT recreate the
+  authority from that file
+- **AND** dashboard device authentication remains the explicit bootstrap path
+
+#### Scenario: Unknown post-crash local state is recovered conservatively
+
+- **WHEN** a fresh process lacks a launch-bound rotation baseline and local
+  auth differs from the explicit authority
+- **THEN** it SHALL apply the authority rather than infer a valid local
+  successor
+- **AND** it SHALL not persist the unknown local state back to authority
+
+#### Scenario: Invalid stored auth preserves a valid local file
+
+- **WHEN** authority contains an empty or malformed non-object auth document
+  while the canonical local file is valid
+- **THEN** reconciliation SHALL not replace that local file
+- **AND** it SHALL not use the file as fallback authority for new work or log
+  either credential value
+
 ## ADDED Requirements
 
 ### Requirement: Asymmetric Runtime-Probe Control Capability

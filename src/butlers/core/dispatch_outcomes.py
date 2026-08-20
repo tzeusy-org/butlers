@@ -14,8 +14,15 @@ import uuid
 import asyncpg
 
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
+
+runtime_attention_recorder_total = get_or_create_counter(
+    "runtime_attention_recorder_total",
+    "Serialized dispatch recorder outcomes and bounded runtime-attention edge results.",
+    labelnames=["outcome", "edge"],
+)
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
 
@@ -23,8 +30,8 @@ _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
          failure_reason, error_code, error_message,
-         tool_call_count, attempt_index, logical_session_id, duration_ms)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         tool_call_count, attempt_index, logical_session_id, duration_ms, ts)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp())
 """
 
 _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID = _DISPATCH_ATTEMPTS_INSERT + " RETURNING id"
@@ -87,6 +94,7 @@ async def record_dispatch_attempt(
             catalog_entry_id,
             outcome,
         )
+        runtime_attention_recorder_total.labels(outcome="rejected", edge="fleet_halt").inc()
         return None
 
     values = (
@@ -107,6 +115,7 @@ async def record_dispatch_attempt(
         try:
             await pool.execute(_DISPATCH_ATTEMPTS_INSERT, *values)
         except Exception:
+            runtime_attention_recorder_total.labels(outcome="degraded", edge="none").inc()
             logger.debug(
                 "Failed to write non-qualifying dispatch attempt for "
                 "butler=%s catalog_entry_id=%s outcome=%s",
@@ -115,9 +124,12 @@ async def record_dispatch_attempt(
                 outcome,
                 exc_info=True,
             )
+        else:
+            runtime_attention_recorder_total.labels(outcome="persisted", edge="none").inc()
         return None
 
     try:
+        edge_outcome = "none"
         async with pool.acquire() as connection:
             async with connection.transaction():
                 breaker_was_open = False
@@ -127,6 +139,14 @@ async def record_dispatch_attempt(
                 elif produce_fleet_halt:
                     await connection.execute(_FLEET_HALT_LOCK_SQL)
 
+                # core_199's cutover trigger treats the absence of this
+                # transaction-local ABI as an old direct-delivery binary and
+                # plants only the legacy helper's suppression marker.  Set it
+                # after serialization so both the timestamp and producer ABI
+                # describe the transaction that actually owns the outcome.
+                await connection.execute(
+                    "SELECT set_config('butlers.runtime_attention_producer_abi', '2', true)"
+                )
                 attempt_id = await connection.fetchval(
                     _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID,
                     *values,
@@ -137,15 +157,51 @@ async def record_dispatch_attempt(
                 if outcome == "runtime_failure" and not breaker_was_open:
                     breaker_is_open = (await get_breaker_state(connection, catalog_entry_id)).open
                     if breaker_is_open:
-                        await connection.fetchval(
+                        episode_id = await connection.fetchval(
                             "SELECT public.append_runtime_attention_model_breaker($1)",
                             attempt_id,
                         )
+                        edge_outcome = (
+                            "model_breaker_created"
+                            if isinstance(episode_id, uuid.UUID)
+                            else "model_breaker_suppressed"
+                        )
                 elif produce_fleet_halt:
-                    await connection.fetchval("SELECT public.append_runtime_attention_fleet_halt()")
+                    episode_id = await connection.fetchval(
+                        "SELECT public.append_runtime_attention_fleet_halt()"
+                    )
+                    edge_outcome = (
+                        "fleet_halt_created"
+                        if isinstance(episode_id, uuid.UUID)
+                        else "fleet_halt_suppressed"
+                    )
 
+        runtime_attention_recorder_total.labels(
+            outcome="persisted",
+            edge=edge_outcome,
+        ).inc()
+        logger.info(
+            "Dispatch outcome recorder committed for butler=%s "
+            "catalog_entry_id=%s outcome=%s attempt_id=%s edge=%s",
+            butler,
+            catalog_entry_id,
+            outcome,
+            attempt_id,
+            edge_outcome,
+        )
         return attempt_id
     except Exception:
+        requested_edge = (
+            "fleet_halt"
+            if produce_fleet_halt
+            else "model_breaker"
+            if outcome == "runtime_failure"
+            else "none"
+        )
+        runtime_attention_recorder_total.labels(
+            outcome="degraded",
+            edge=requested_edge,
+        ).inc()
         logger.warning(
             "Dispatch outcome provenance degraded; runtime result is unchanged "
             "for butler=%s catalog_entry_id=%s outcome=%s fleet_halt=%s",

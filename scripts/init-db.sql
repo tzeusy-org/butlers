@@ -1307,7 +1307,9 @@ BEGIN
           AND admin_function.proname IN (
               'finalize_interface',
               'install_interface',
-              'rollback_interface'
+              'rollback_interface',
+              'upgrade_producers_v2',
+              'deactivate_producers_v2'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner
@@ -2874,8 +2876,15 @@ $$;
 CREATE TABLE IF NOT EXISTS runtime_attention_admin.bootstrap_configuration (
     singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
     migration_role NAME NOT NULL,
-    bootstrap_role NAME NOT NULL
+    bootstrap_role NAME NOT NULL,
+    interface_version INTEGER NOT NULL DEFAULT 1 CHECK (interface_version IN (1, 2)),
+    producers_enabled BOOLEAN NOT NULL DEFAULT false,
+    producer_activated_at TIMESTAMPTZ
 );
+ALTER TABLE runtime_attention_admin.bootstrap_configuration
+    ADD COLUMN IF NOT EXISTS interface_version INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS producers_enabled BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS producer_activated_at TIMESTAMPTZ;
 REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC;
 
 INSERT INTO runtime_attention_admin.bootstrap_configuration (
@@ -2912,9 +2921,10 @@ DECLARE
     v_trigger_name NAME;
     v_outbox_owner OID;
     v_bootstrap_owner OID;
+    v_interface_version INTEGER;
 BEGIN
-    SELECT migration_role, bootstrap_role
-    INTO v_migration_role, v_bootstrap_role
+    SELECT migration_role, bootstrap_role, interface_version
+    INTO v_migration_role, v_bootstrap_role, v_interface_version
     FROM runtime_attention_admin.bootstrap_configuration
     WHERE singleton;
     SELECT oid INTO v_outbox_owner
@@ -3214,6 +3224,62 @@ BEGIN
         || 'IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC';
     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE runtime_attention_outbox_owner '
         || 'IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
+
+    IF v_interface_version = 1 THEN
+        -- core_198 installs the inert v1 boundary.  Preserve exactly one
+        -- short-lived path for the immediately following core_199 migration;
+        -- upgrade_producers_v2 revokes this grant before it returns.
+        EXECUTE format('GRANT USAGE ON SCHEMA runtime_attention_admin TO %I', v_migration_role);
+        EXECUTE format(
+            'GRANT EXECUTE ON FUNCTION runtime_attention_admin.upgrade_producers_v2() TO %I',
+            v_migration_role
+        );
+    ELSIF v_interface_version = 2 THEN
+        EXECUTE 'ALTER TABLE public.runtime_attention_producer_control '
+            || 'OWNER TO runtime_attention_outbox_owner';
+        EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
+            || 'public.runtime_attention_producer_control FROM PUBLIC';
+        FOREACH v_runtime_role IN ARRAY ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw',
+            'connector_writer'
+        ]::name[] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
+                EXECUTE format(
+                    'REVOKE ALL PRIVILEGES ON TABLE '
+                    || 'public.runtime_attention_producer_control FROM %I',
+                    v_runtime_role
+                );
+            END IF;
+        END LOOP;
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON TABLE '
+            || 'public.runtime_attention_producer_control FROM %I',
+            v_migration_role
+        );
+        EXECUTE 'ALTER FUNCTION public.runtime_attention_legacy_producer_fence() '
+            || 'OWNER TO runtime_attention_outbox_owner';
+        EXECUTE 'ALTER FUNCTION public.runtime_attention_legacy_producer_fence() '
+            || 'SET search_path = pg_catalog, public, pg_temp';
+        EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION '
+            || 'public.runtime_attention_legacy_producer_fence() FROM PUBLIC';
+        EXECUTE 'GRANT INSERT ON TABLE public.audit_log TO runtime_attention_outbox_owner';
+        EXECUTE 'GRANT USAGE ON SEQUENCE public.audit_log_id_seq '
+            || 'TO runtime_attention_outbox_owner';
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON FUNCTION '
+            || 'runtime_attention_admin.upgrade_producers_v2() FROM %I',
+            v_migration_role
+        );
+        EXECUTE format(
+            'REVOKE ALL PRIVILEGES ON SCHEMA runtime_attention_admin FROM %I',
+            v_migration_role
+        );
+    ELSE
+        RAISE EXCEPTION 'unsupported runtime-attention interface version %', v_interface_version;
+    END IF;
 END;
 $runtime_attention_finalizer$;
 
@@ -3760,6 +3826,343 @@ BEGIN
 END;
 $runtime_attention_installer$;
 
+CREATE OR REPLACE FUNCTION runtime_attention_admin.upgrade_producers_v2()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_upgrade_v2$
+DECLARE
+    v_migration_role NAME;
+    v_bootstrap_role NAME;
+    v_interface_version INTEGER;
+BEGIN
+    SELECT migration_role, bootstrap_role, interface_version
+    INTO v_migration_role, v_bootstrap_role, v_interface_version
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL OR v_bootstrap_role IS NULL
+       OR v_interface_version NOT IN (1, 2) THEN
+        RAISE EXCEPTION 'runtime-attention v2 upgrade requires a finalized supported interface';
+    END IF;
+    IF current_user <> v_bootstrap_role AND session_user <> v_migration_role THEN
+        RAISE EXCEPTION 'runtime-attention v2 upgrade requires its configured migration role';
+    END IF;
+    IF to_regclass('public.runtime_attention_outbox') IS NULL
+       OR to_regprocedure('public.append_runtime_attention_model_breaker(bigint)') IS NULL
+       OR to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NULL THEN
+        RAISE EXCEPTION 'runtime-attention v2 upgrade requires the complete finalized v1 interface';
+    END IF;
+    IF v_interface_version = 1
+       AND to_regclass('public.runtime_attention_producer_control') IS NOT NULL THEN
+        RAISE EXCEPTION 'runtime-attention v2 reserved producer control already exists';
+    END IF;
+
+    CREATE TABLE IF NOT EXISTS public.runtime_attention_producer_control (
+        singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+        interface_version INTEGER NOT NULL CHECK (interface_version = 2),
+        producers_enabled BOOLEAN NOT NULL,
+        producer_activated_at TIMESTAMPTZ NOT NULL
+    );
+    INSERT INTO public.runtime_attention_producer_control (
+        singleton, interface_version, producers_enabled, producer_activated_at
+    )
+    VALUES (true, 2, true, clock_timestamp())
+    ON CONFLICT (singleton) DO UPDATE SET
+        interface_version = 2,
+        producers_enabled = true,
+        producer_activated_at = EXCLUDED.producer_activated_at;
+
+    CREATE OR REPLACE FUNCTION public.append_runtime_attention_model_breaker(
+        p_triggering_attempt_id BIGINT
+    )
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_model_breaker_v2$
+    DECLARE
+        v_catalog_entry_id UUID;
+        v_alias TEXT;
+        v_model_id TEXT;
+        v_trigger_ts TIMESTAMPTZ;
+        v_count INTEGER;
+        v_all_failures BOOLEAN;
+        v_latest_ts TIMESTAMPTZ;
+        v_before_count INTEGER;
+        v_before_all_failures BOOLEAN;
+        v_before_latest_ts TIMESTAMPTZ;
+        v_episode_id UUID;
+        v_enabled BOOLEAN;
+    BEGIN
+        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) THEN
+            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+        SELECT producers_enabled INTO v_enabled
+        FROM public.runtime_attention_producer_control
+        WHERE singleton;
+        IF NOT COALESCE(v_enabled, false) THEN
+            RETURN NULL;
+        END IF;
+
+        SELECT attempt.catalog_entry_id, catalog.alias, catalog.model_id, attempt.ts
+        INTO v_catalog_entry_id, v_alias, v_model_id, v_trigger_ts
+        FROM public.model_dispatch_attempts AS attempt
+        JOIN public.model_catalog AS catalog ON catalog.id = attempt.catalog_entry_id
+        WHERE attempt.id = p_triggering_attempt_id
+          AND attempt.outcome = 'runtime_failure';
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker trigger must be a catalog-backed runtime failure'
+                USING ERRCODE = '23514';
+        END IF;
+        PERFORM pg_advisory_xact_lock(hashtextextended(v_catalog_entry_id::text, 0));
+
+        SELECT count(*)::integer, bool_and(outcome = 'runtime_failure'), max(ts)
+        INTO v_count, v_all_failures, v_latest_ts
+        FROM (
+            SELECT outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE catalog_entry_id = v_catalog_entry_id
+              AND outcome IN ('runtime_failure', 'success')
+              AND (ts, id) <= (v_trigger_ts, p_triggering_attempt_id)
+            ORDER BY ts DESC, id DESC
+            LIMIT 5
+        ) AS recent;
+        IF v_count < 5 OR NOT COALESCE(v_all_failures, false)
+           OR clock_timestamp() - v_latest_ts >= interval '15 minutes' THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker trigger is not an open breaker edge'
+                USING ERRCODE = '23514';
+        END IF;
+
+        SELECT count(*)::integer, bool_and(outcome = 'runtime_failure'), max(ts)
+        INTO v_before_count, v_before_all_failures, v_before_latest_ts
+        FROM (
+            SELECT outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE catalog_entry_id = v_catalog_entry_id
+              AND outcome IN ('runtime_failure', 'success')
+              AND (ts, id) < (v_trigger_ts, p_triggering_attempt_id)
+            ORDER BY ts DESC, id DESC
+            LIMIT 5
+        ) AS preceding;
+        IF v_before_count >= 5 AND COALESCE(v_before_all_failures, false)
+           AND clock_timestamp() - v_before_latest_ts < interval '15 minutes' THEN
+            RAISE EXCEPTION 'runtime-attention model-breaker edge was already open'
+                USING ERRCODE = '23514';
+        END IF;
+
+        INSERT INTO public.runtime_attention_outbox (
+            source, triggering_attempt_id, source_snapshot, payload
+        )
+        VALUES (
+            'model_breaker',
+            p_triggering_attempt_id,
+            jsonb_build_object(
+                'catalog_entry_id', v_catalog_entry_id::text,
+                'alias', v_alias,
+                'model_id', v_model_id,
+                'triggering_attempt_id', p_triggering_attempt_id,
+                'consecutive_failures', 5
+            ),
+            jsonb_build_object(
+                'classification', 'model_breaker_open',
+                'consecutive_failures', 5,
+                'door', '/settings/models?highlight=' || v_catalog_entry_id::text
+            )
+        )
+        ON CONFLICT (triggering_attempt_id)
+            WHERE source = 'model_breaker' AND triggering_attempt_id IS NOT NULL
+            DO NOTHING
+        RETURNING id INTO v_episode_id;
+        IF v_episode_id IS NULL THEN
+            SELECT id INTO v_episode_id
+            FROM public.runtime_attention_outbox
+            WHERE source = 'model_breaker'
+              AND triggering_attempt_id = p_triggering_attempt_id;
+        END IF;
+        RETURN v_episode_id;
+    END;
+    $runtime_attention_model_breaker_v2$;
+
+    CREATE OR REPLACE FUNCTION public.append_runtime_attention_fleet_halt()
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_fleet_halt_v2$
+    DECLARE
+        v_month DATE := date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC')::date;
+        v_denied_count INTEGER;
+        v_first_denied_at TIMESTAMPTZ;
+        v_episode_id UUID;
+        v_enabled BOOLEAN;
+        v_activated_at TIMESTAMPTZ;
+    BEGIN
+        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) THEN
+            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+        SELECT producers_enabled, producer_activated_at
+        INTO v_enabled, v_activated_at
+        FROM public.runtime_attention_producer_control
+        WHERE singleton;
+        IF NOT COALESCE(v_enabled, false) THEN
+            RETURN NULL;
+        END IF;
+
+        SELECT count(*)::integer, min(ts)
+        INTO v_denied_count, v_first_denied_at
+        FROM public.model_dispatch_attempts
+        WHERE outcome = 'quota_skip'
+          AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
+                = 'Monthly spend ceiling reached'
+          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+        IF v_denied_count < 1 THEN
+            RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
+                USING ERRCODE = '23514';
+        END IF;
+        -- A month already breached before activation remains dashboard-only;
+        -- later denials in that same window must not manufacture a rollout page.
+        IF v_activated_at IS NULL OR v_first_denied_at < v_activated_at THEN
+            RETURN NULL;
+        END IF;
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)
+        );
+        INSERT INTO public.runtime_attention_outbox (
+            source, fleet_halt_month, source_snapshot, payload
+        )
+        VALUES (
+            'fleet_halt',
+            v_month,
+            jsonb_build_object(
+                'month', v_month::text,
+                'denied_count', v_denied_count,
+                'first_denied_at', v_first_denied_at
+            ),
+            jsonb_build_object(
+                'classification', 'monthly_spend_ceiling',
+                'door', '/spend?openDrawer=fleet-halt'
+            )
+        )
+        ON CONFLICT (fleet_halt_month)
+            WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL
+            DO NOTHING
+        RETURNING id INTO v_episode_id;
+        IF v_episode_id IS NULL THEN
+            SELECT id INTO v_episode_id
+            FROM public.runtime_attention_outbox
+            WHERE source = 'fleet_halt' AND fleet_halt_month = v_month;
+        END IF;
+        RETURN v_episode_id;
+    END;
+    $runtime_attention_fleet_halt_v2$;
+
+    CREATE OR REPLACE FUNCTION public.runtime_attention_legacy_producer_fence()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_legacy_fence_v2$
+    DECLARE
+        v_active_role TEXT := COALESCE(current_setting('role', true), '');
+    BEGIN
+        IF v_active_role = ANY (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) AND COALESCE(
+            current_setting('butlers.runtime_attention_producer_abi', true), ''
+        ) <> '2' THEN
+            IF NEW.outcome = 'runtime_failure' THEN
+                INSERT INTO public.audit_log (actor, action, target, note)
+                VALUES (
+                    'runtime_attention_cutover_fence',
+                    'model_breaker_open_notified',
+                    'model_breaker:' || NEW.catalog_entry_id::text,
+                    'blocked_old_binary'
+                );
+            ELSIF NEW.outcome = 'quota_skip'
+                  AND left(
+                      COALESCE(NEW.failure_reason, ''),
+                      length('Monthly spend ceiling reached')
+                  ) = 'Monthly spend ceiling reached' THEN
+                INSERT INTO public.audit_log (actor, action, target, note)
+                VALUES (
+                    'runtime_attention_cutover_fence',
+                    'ceiling_halt_notified',
+                    'ceiling_halt',
+                    to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')
+                );
+            END IF;
+        END IF;
+        RETURN NEW;
+    END;
+    $runtime_attention_legacy_fence_v2$;
+
+    DROP TRIGGER IF EXISTS runtime_attention_legacy_producer_fence_trigger
+        ON public.model_dispatch_attempts;
+    CREATE TRIGGER runtime_attention_legacy_producer_fence_trigger
+        BEFORE INSERT ON public.model_dispatch_attempts
+        FOR EACH ROW EXECUTE FUNCTION public.runtime_attention_legacy_producer_fence();
+
+    UPDATE runtime_attention_admin.bootstrap_configuration
+    SET interface_version = 2,
+        producers_enabled = true,
+        producer_activated_at = clock_timestamp()
+    WHERE singleton;
+    PERFORM runtime_attention_admin.finalize_interface();
+END;
+$runtime_attention_upgrade_v2$;
+
+CREATE OR REPLACE FUNCTION runtime_attention_admin.deactivate_producers_v2()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_deactivate_v2$
+DECLARE
+    v_migration_role NAME;
+    v_interface_version INTEGER;
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = session_user), false) THEN
+        RAISE EXCEPTION 'core_199 downgrade requires the managed privileged bootstrap owner';
+    END IF;
+    SELECT migration_role, interface_version
+    INTO v_migration_role, v_interface_version
+    FROM runtime_attention_admin.bootstrap_configuration
+    WHERE singleton;
+    IF v_migration_role IS NULL OR v_interface_version <> 2 THEN
+        RAISE EXCEPTION 'core_199 downgrade requires the complete v2 producer interface';
+    END IF;
+    UPDATE runtime_attention_admin.bootstrap_configuration
+    SET producers_enabled = false
+    WHERE singleton;
+    UPDATE public.runtime_attention_producer_control
+    SET producers_enabled = false
+    WHERE singleton;
+    -- Keep the legacy fence and v2 functions in place.  A later re-upgrade
+    -- receives only this one-shot versioned activation path.
+    EXECUTE format('GRANT USAGE ON SCHEMA runtime_attention_admin TO %I', v_migration_role);
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION runtime_attention_admin.upgrade_producers_v2() TO %I',
+        v_migration_role
+    );
+END;
+$runtime_attention_deactivate_v2$;
+
 CREATE OR REPLACE FUNCTION runtime_attention_admin.rollback_interface()
 RETURNS void
 LANGUAGE plpgsql
@@ -3818,6 +4221,8 @@ $runtime_attention_rollback$;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_interface() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -3831,6 +4236,8 @@ BEGIN
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.finalize_interface() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM %I', v_migration_role);
 
     IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
        OR to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL

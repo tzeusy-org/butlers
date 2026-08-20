@@ -94,6 +94,76 @@ class _FailAfterAttemptPool(_RolePool):
         return _FailAfterAttemptAcquire(self._pool, self._role)
 
 
+class _DelayBeforeBreakerLockConnection:
+    """Pause one transaction after BEGIN but before it takes the recorder lock."""
+
+    def __init__(
+        self,
+        connection: asyncpg.Connection,
+        transaction_started: asyncio.Event,
+        release_lock_attempt: asyncio.Event,
+    ) -> None:
+        self._connection = connection
+        self._transaction_started = transaction_started
+        self._release_lock_attempt = release_lock_attempt
+
+    def transaction(self) -> Any:
+        return self._connection.transaction()
+
+    async def execute(self, statement: str, *args: object) -> str:
+        if "pg_advisory_xact_lock" in statement:
+            self._transaction_started.set()
+            await self._release_lock_attempt.wait()
+        return await self._connection.execute(statement, *args)
+
+    async def fetchval(self, statement: str, *args: object) -> object:
+        return await self._connection.fetchval(statement, *args)
+
+    async def fetchrow(self, statement: str, *args: object) -> asyncpg.Record | None:
+        return await self._connection.fetchrow(statement, *args)
+
+
+class _DelayBeforeBreakerLockAcquire(_RoleAcquire):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        role: str,
+        transaction_started: asyncio.Event,
+        release_lock_attempt: asyncio.Event,
+    ) -> None:
+        super().__init__(pool, role)
+        self._transaction_started = transaction_started
+        self._release_lock_attempt = release_lock_attempt
+
+    async def __aenter__(self) -> _DelayBeforeBreakerLockConnection:
+        connection = await super().__aenter__()
+        return _DelayBeforeBreakerLockConnection(
+            connection,
+            self._transaction_started,
+            self._release_lock_attempt,
+        )
+
+
+class _DelayBeforeBreakerLockPool(_RolePool):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        transaction_started: asyncio.Event,
+        release_lock_attempt: asyncio.Event,
+    ) -> None:
+        super().__init__(pool)
+        self._transaction_started = transaction_started
+        self._release_lock_attempt = release_lock_attempt
+
+    def acquire(self) -> _DelayBeforeBreakerLockAcquire:
+        return _DelayBeforeBreakerLockAcquire(
+            self._pool,
+            self._role,
+            self._transaction_started,
+            self._release_lock_attempt,
+        )
+
+
 async def _seed_catalog(pool: asyncpg.Pool, alias: str) -> uuid.UUID:
     catalog_entry_id = uuid.uuid4()
     await pool.execute(
@@ -219,6 +289,53 @@ async def test_equal_timestamp_concurrent_failures_have_one_deterministic_edge(
         )
 
 
+async def test_outcome_order_is_assigned_after_lock_not_transaction_start(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-model-catalog-001: lock order, not BEGIN time, orders outcomes."""
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as admin_pool:
+        entry_id = await _seed_catalog(admin_pool, "atomic-post-lock-order")
+        transaction_started = asyncio.Event()
+        release_lock_attempt = asyncio.Event()
+        delayed_pool = _DelayBeforeBreakerLockPool(
+            admin_pool,
+            transaction_started,
+            release_lock_attempt,
+        )
+        runtime_pool = _RolePool(admin_pool)
+
+        delayed_success = asyncio.create_task(
+            record_dispatch_attempt(
+                delayed_pool,  # type: ignore[arg-type]
+                catalog_entry_id=entry_id,
+                butler="general",
+                outcome="success",
+                attempt_index=0,
+            )
+        )
+        await asyncio.wait_for(transaction_started.wait(), timeout=5)
+
+        failure_id = await _record_failure(runtime_pool, entry_id, 1)
+        release_lock_attempt.set()
+        success_id = await delayed_success
+
+        assert isinstance(failure_id, int)
+        assert isinstance(success_id, int)
+        rows = await admin_pool.fetch(
+            """
+            SELECT id, outcome, ts
+            FROM public.model_dispatch_attempts
+            WHERE id = ANY($1::bigint[])
+            ORDER BY ts, id
+            """,
+            [failure_id, success_id],
+        )
+        assert [(row["id"], row["outcome"]) for row in rows] == [
+            (failure_id, "runtime_failure"),
+            (success_id, "success"),
+        ]
+
+
 async def test_concurrent_failed_half_open_probes_create_one_reopening_episode(
     migrated_core_postgres_pool,
 ) -> None:
@@ -334,10 +451,53 @@ async def test_fleet_halt_first_new_denial_creates_one_month_episode_without_bac
         )
         assert row is not None
         assert row["source_snapshot"]["denied_count"] >= 1
-        assert row["payload"]["classification"] == "monthly_spend_ceiling"
+        assert row["payload"] == {
+            "classification": "monthly_spend_ceiling",
+            "door": "/spend?openDrawer=fleet-halt",
+        }
         assert (
             await observer_pool.fetchval(
                 "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
             )
             == 1
+        )
+
+
+async def test_current_month_fleet_halt_before_activation_is_not_repaged(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-runtime-attention-outbox-001: current-month rollout is not history."""
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
+        runtime_pool = _RolePool(admin_pool)
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-fleet-halt-pre-activation")
+        await admin_pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts (
+                catalog_entry_id, butler, outcome, failure_reason, ts
+            ) VALUES ($1, 'general', 'quota_skip', $2, $3)
+            """,
+            entry_id,
+            f"{CEILING_DENIAL_REASON_PREFIX}: before activation",
+            await admin_pool.fetchval(
+                "SELECT date_trunc('month', clock_timestamp()) + interval '1 microsecond'"
+            ),
+        )
+
+        attempt_id = await record_dispatch_attempt(
+            runtime_pool,  # type: ignore[arg-type]
+            catalog_entry_id=entry_id,
+            butler="general",
+            outcome="quota_skip",
+            attempt_index=1,
+            failure_reason=f"{CEILING_DENIAL_REASON_PREFIX}: after activation",
+            produce_fleet_halt=True,
+        )
+
+        assert isinstance(attempt_id, int)
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
+            )
+            == 0
         )
