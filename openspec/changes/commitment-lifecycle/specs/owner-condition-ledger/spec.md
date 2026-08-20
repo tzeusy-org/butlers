@@ -21,6 +21,17 @@ Scope: v1-mandatory
   the current time and `recovered_after_s` computed from `first_detected_at`
 - **AND** `resolution_metadata` is merged into the row's `metadata` JSONB
 
+#### Scenario: Resolution metadata does not clobber creation-time metadata
+
+- **WHEN** `resolve_condition()` is called with `resolution_metadata`
+  containing keys like `evidence_closed` and `resolution_reason`
+- **THEN** the resolution metadata is merged into the existing `metadata`
+  JSONB using shallow top-level merge (`metadata || resolution_metadata`)
+- **AND** creation-time keys (`class`, `kind`, `direction`,
+  `counterparty_entity_id`, `confidence`, `evidence_opened`,
+  `identity_payload`) are preserved — resolution metadata MUST NOT include
+  keys that overwrite them; if a collision occurs the creation-time value wins
+
 #### Scenario: Resolving a non-existent or already-resolved condition
 
 - **WHEN** `resolve_condition()` is called with a `source` and `fingerprint`
@@ -34,6 +45,25 @@ Scope: v1-mandatory
 - **THEN** exactly one succeeds atomically; the other observes the updated
   state — both use the same transaction-scoped advisory lock keyed by
   `hashtext(table || ':' || source)`
+
+#### Scenario: Empty complete snapshot resolves condition already resolved explicitly
+
+- **WHEN** `resolve_condition()` resolves a condition, and subsequently
+  `reconcile_snapshot(snapshot_complete=True)` is called with an empty
+  observation list for the same source
+- **THEN** the snapshot reconciliation finds no active episodes and produces
+  no transitions — the already-resolved condition is not re-resolved or
+  reopened
+
+#### Scenario: Complete snapshot still observing a condition after explicit resolution
+
+- **WHEN** `resolve_condition()` resolves a condition, and subsequently
+  `reconcile_snapshot(snapshot_complete=True)` is called with an observation
+  list that still includes the resolved condition's fingerprint
+- **THEN** a new episode is opened for that fingerprint (episode N+1) because
+  the producer still observes the condition — the explicit resolution closed
+  episode N, and re-observation is a new occurrence per the existing
+  recurrence rule
 
 ### Requirement: Explicit Resolution MCP Tool
 
