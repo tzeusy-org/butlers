@@ -27,11 +27,11 @@ Scope: v1-mandatory
 - **WHEN** `resolve_condition()` is called with `resolution_metadata`
   containing keys like `evidence_closed` and `resolution_reason`
 - **THEN** the resolution metadata is merged into the existing `metadata`
-  JSONB using shallow top-level merge (`metadata || resolution_metadata`)
-- **AND** creation-time keys (`class`, `kind`, `direction`,
-  `counterparty_entity_id`, `confidence`, `evidence_opened`,
-  `identity_payload`) are preserved — resolution metadata MUST NOT include
-  keys that overwrite them; if a collision occurs the creation-time value wins
+  JSONB using shallow, creation-wins top-level merge
+  (`resolution_metadata || metadata`)
+- **AND** every existing top-level metadata value, including `class`, `kind`,
+  `direction`, `counterparty_entity_id`, `confidence`, `evidence_opened`, and
+  `identity_payload`, retains its value on collision
 
 #### Scenario: Resolving a non-existent or already-resolved condition
 
