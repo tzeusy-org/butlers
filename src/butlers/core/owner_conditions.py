@@ -79,6 +79,7 @@ from butlers.core.condition_ledger import compute_fingerprint as compute_fingerp
 from butlers.core.condition_ledger import get_active_condition as _get_active_condition
 from butlers.core.condition_ledger import list_conditions as _list_conditions
 from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snapshot
+from butlers.core.condition_ledger import resolve_condition as _resolve_condition
 
 __all__ = [
     "ESCALATION_LEVELS",
@@ -91,6 +92,7 @@ __all__ = [
     "get_active_condition",
     "list_conditions",
     "reconcile_snapshot",
+    "resolve_condition",
 ]
 
 _TABLE = "public.owner_conditions"
@@ -118,6 +120,29 @@ async def reconcile_snapshot(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
+    )
+
+
+async def resolve_condition(
+    pool: asyncpg.Pool,
+    *,
+    source: str,
+    fingerprint: str,
+    resolution_metadata: dict[str, Any] | None = None,
+) -> ConditionTransition | None:
+    """Explicitly resolve an active owner condition.
+
+    This thin facade binds the shared condition-ledger resolver to
+    ``table="public.owner_conditions"``. Resolution metadata is shallowly
+    merged with creation-wins semantics, so existing top-level metadata values
+    are retained while new closing evidence can be added.
+    """
+    return await _resolve_condition(
+        pool,
+        table=_TABLE,
+        source=source,
+        fingerprint=fingerprint,
+        resolution_metadata=resolution_metadata,
     )
 
 

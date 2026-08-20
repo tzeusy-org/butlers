@@ -15,11 +15,13 @@ string in each table never contends or cross-resolves).
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 
 import asyncpg
 import pytest
 
+from butlers.core.condition_ledger import resolve_condition as resolve_ledger_condition
 from butlers.core.infra_conditions import Observation as InfraObservation
 from butlers.core.infra_conditions import reconcile_snapshot as infra_reconcile_snapshot
 from butlers.core.owner_conditions import (
@@ -28,7 +30,9 @@ from butlers.core.owner_conditions import (
     get_active_condition,
     list_conditions,
     reconcile_snapshot,
+    resolve_condition,
 )
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -47,6 +51,15 @@ def migrated_db_url(postgres_container) -> str:
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
     p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
+    yield p
+    await p.close()
+
+
+@pytest.fixture
+async def codec_pool(migrated_db_url: str) -> asyncpg.Pool:
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=2, max_size=10, init=register_jsonb_codec
+    )
     yield p
     await p.close()
 
@@ -115,6 +128,278 @@ class TestOwnerConditionLifecycle:
         total, rows = await list_conditions(pool, source="finance:bill-overdue")
         episodes = sorted((r["episode"], r["state"]) for r in rows if r["fingerprint"] == fp)
         assert episodes == [(1, "resolved"), (2, "open")]
+
+
+class TestExplicitOwnerConditionResolution:
+    async def test_req_owner_condition_ledger_004_resolves_open_and_preserves_metadata(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "relationship:commitment"
+        fp = compute_fingerprint(source, 1, {"commitment": "send-book"})
+        creation_metadata = {
+            "class": "commitment",
+            "kind": "promise",
+            "direction": "owner_to_other",
+            "counterparty_entity_id": "entity-1",
+            "confidence": 0.91,
+            "evidence_opened": {"source": "conversation", "session_id": "open-1"},
+            "identity_payload": {"version": 1, "fingerprint_basis": "send-book"},
+        }
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp, metadata=creation_metadata)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+
+        transition = await resolve_condition(
+            pool,
+            source=source,
+            fingerprint=fp,
+            resolution_metadata={
+                "resolution_reason": "satisfied",
+                "evidence_closed": {"source": "owner_confirmed", "session_id": "close-1"},
+                "class": "should-not-clobber",
+                "confidence": 0.1,
+                "identity_payload": {"version": 99},
+            },
+        )
+
+        assert transition is not None
+        assert transition.transition == "resolved"
+        assert transition.state == "resolved"
+        assert transition.resolved_at is not None
+        assert transition.recovered_after_s is not None
+        assert transition.recovered_after_s >= 0
+
+        row = await pool.fetchrow(
+            "SELECT state, resolved_at, recovered_after_s, metadata "
+            "FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2 AND episode = 1",
+            source,
+            fp,
+        )
+        assert row is not None
+        assert row["state"] == "resolved"
+        assert row["resolved_at"] == transition.resolved_at
+        assert row["recovered_after_s"] == pytest.approx(transition.recovered_after_s)
+        metadata = (
+            json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
+        )
+        assert metadata == {
+            **creation_metadata,
+            "resolution_reason": "satisfied",
+            "evidence_closed": {"source": "owner_confirmed", "session_id": "close-1"},
+        }
+        assert await get_active_condition(pool, source=source, fingerprint=fp) is None
+
+    async def test_req_owner_condition_ledger_004_resolves_aging_and_supports_none_metadata(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "finance:commitment-aging"
+        fp = compute_fingerprint(source, 1, {"commitment": "renewal"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp, metadata={"class": "commitment"})],
+            snapshot_complete=False,
+            initial_grace_seconds=0,
+        )
+        escalated = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        assert escalated[0].state == "aging"
+
+        transition = await resolve_condition(
+            pool, source=source, fingerprint=fp, resolution_metadata=None
+        )
+
+        assert transition is not None
+        assert transition.transition == "resolved"
+        assert transition.state == "resolved"
+
+    async def test_req_owner_condition_ledger_004_jsonb_codec_stores_object_metadata(
+        self, codec_pool: asyncpg.Pool
+    ) -> None:
+        source = "relationship:commitment-codec"
+        fp = compute_fingerprint(source, 1, {"commitment": "codec"})
+        await reconcile_snapshot(
+            codec_pool,
+            source=source,
+            observations=[
+                Observation(
+                    fingerprint=fp,
+                    metadata={"class": "commitment", "identity_payload": {"version": 1}},
+                )
+            ],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+
+        transition = await resolve_condition(
+            codec_pool,
+            source=source,
+            fingerprint=fp,
+            resolution_metadata={"resolution_reason": "satisfied"},
+        )
+
+        assert transition is not None
+        stored = await codec_pool.fetchrow(
+            "SELECT metadata, jsonb_typeof(metadata) AS metadata_type "
+            "FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            fp,
+        )
+        assert stored is not None
+        assert stored["metadata_type"] == "object"
+        assert stored["metadata"] == {
+            "class": "commitment",
+            "identity_payload": {"version": 1},
+            "resolution_reason": "satisfied",
+        }
+
+    async def test_req_owner_condition_ledger_004_missing_and_already_resolved_are_noops(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "general:commitment"
+        fp = compute_fingerprint(source, 1, {"commitment": "call"})
+
+        assert await resolve_condition(pool, source=source, fingerprint=fp) is None
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+                source,
+                fp,
+            )
+            == 0
+        )
+
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        first = await resolve_condition(pool, source=source, fingerprint=fp)
+        assert first is not None
+        assert await resolve_condition(pool, source=source, fingerprint=fp) is None
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+                source,
+                fp,
+            )
+            == 1
+        )
+
+    async def test_req_owner_condition_ledger_004_resolution_races_empty_complete_snapshot(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "general:commitment-race"
+        fp = compute_fingerprint(source, 1, {"commitment": "race"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        start = asyncio.Barrier(2)
+
+        async def resolve_explicitly():
+            await start.wait()
+            return await resolve_condition(pool, source=source, fingerprint=fp)
+
+        async def reconcile_empty_snapshot():
+            await start.wait()
+            return await reconcile_snapshot(
+                pool,
+                source=source,
+                observations=[],
+                snapshot_complete=True,
+                initial_grace_seconds=3600,
+            )
+
+        explicit, snapshot = await asyncio.wait_for(
+            asyncio.gather(resolve_explicitly(), reconcile_empty_snapshot()), timeout=10
+        )
+        transitions = ([explicit] if explicit is not None else []) + [
+            transition for transition in snapshot if transition.fingerprint == fp
+        ]
+        assert len(transitions) == 1
+        assert transitions[0].transition == "resolved"
+        assert await get_active_condition(pool, source=source, fingerprint=fp) is None
+
+    async def test_req_owner_condition_ledger_004_resolution_then_reobservation_opens_episode_two(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "general:commitment-recurrence"
+        fp = compute_fingerprint(source, 1, {"commitment": "reobserve"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        explicit = await resolve_condition(pool, source=source, fingerprint=fp)
+        assert explicit is not None
+
+        empty = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        assert empty == []
+
+        reopened = await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        assert len(reopened) == 1
+        assert reopened[0].transition == "reopened"
+        assert reopened[0].episode == 2
+
+    async def test_req_owner_condition_ledger_004_generic_engine_resolves_owner_table(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        source = "custom:source"
+        fp = "custom-fingerprint"
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp, metadata={"created": True})],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+
+        transition = await resolve_ledger_condition(
+            pool,
+            table="public.owner_conditions",
+            source=source,
+            fingerprint=fp,
+            resolution_metadata={"closed": True},
+        )
+        assert transition is not None
+        assert transition.transition == "resolved"
+        metadata = await pool.fetchval(
+            "SELECT metadata FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            fp,
+        )
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        assert metadata == {"closed": True, "created": True}
 
 
 class TestOwnerConditionsIsolatedFromInfraConditions:

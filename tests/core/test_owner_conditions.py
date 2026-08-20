@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.core import condition_ledger, owner_conditions
 from butlers.core.owner_conditions import (
     ESCALATION_LEVELS,
     Observation,
@@ -79,6 +80,86 @@ class TestReconcileSnapshotValidation:
                 initial_grace_seconds=60,
             )
         pool.acquire.assert_not_called()
+
+
+class TestExplicitResolutionValidation:
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("table", ""),
+            ("table", "   "),
+            ("table", None),
+            ("table", 1),
+            ("source", ""),
+            ("source", "   "),
+            ("source", None),
+            ("source", 1),
+            ("fingerprint", ""),
+            ("fingerprint", "   "),
+            ("fingerprint", None),
+            ("fingerprint", 1),
+        ],
+    )
+    async def test_req_owner_condition_ledger_004_rejects_empty_identity_before_pool(
+        self, field: str, value: object
+    ) -> None:
+        pool = AsyncMock()
+        kwargs = {
+            "table": "public.owner_conditions",
+            "source": "finance:commitment",
+            "fingerprint": "fp-1",
+        }
+        kwargs[field] = value
+
+        with pytest.raises(ValueError, match=field):
+            await condition_ledger.resolve_condition(pool, **kwargs)
+
+        pool.acquire.assert_not_called()
+
+    @pytest.mark.parametrize("metadata", [[], "closed", 1, True, {"bad": object()}])
+    async def test_req_owner_condition_ledger_004_rejects_non_object_metadata_before_pool(
+        self, metadata: object
+    ) -> None:
+        pool = AsyncMock()
+
+        with pytest.raises(ValueError, match="resolution_metadata"):
+            await condition_ledger.resolve_condition(
+                pool,
+                table="public.owner_conditions",
+                source="finance:commitment",
+                fingerprint="fp-1",
+                resolution_metadata=metadata,
+            )
+
+        pool.acquire.assert_not_called()
+
+    async def test_req_owner_condition_ledger_004_facade_exports_and_binds_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        async def fake_resolve(pool, **kwargs):
+            calls.append(kwargs)
+            return "transition"
+
+        monkeypatch.setattr(owner_conditions, "_resolve_condition", fake_resolve)
+        result = await owner_conditions.resolve_condition(
+            AsyncMock(),
+            source="finance:commitment",
+            fingerprint="fp-1",
+            resolution_metadata=None,
+        )
+
+        assert result == "transition"
+        assert calls == [
+            {
+                "table": "public.owner_conditions",
+                "source": "finance:commitment",
+                "fingerprint": "fp-1",
+                "resolution_metadata": None,
+            }
+        ]
+        assert "resolve_condition" in owner_conditions.__all__
 
 
 def test_escalation_levels_are_ordered_l0_through_l3():

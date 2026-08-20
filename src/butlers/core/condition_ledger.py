@@ -40,19 +40,22 @@ Only a complete snapshot with a strictly higher declared successor version
 records reciprocal episode links and the superseded terminal reason. The
 fingerprint itself is never migrated or reinterpreted.
 
-``reconcile_snapshot`` is the single entry point: it accepts everything a
-producer currently observes for one ``source`` plus whether that observation
-is a complete, successful snapshot of the producer's authoritative scope.
-Only a ``snapshot_complete=True`` call may resolve an active episode that it
-did not observe — a failed/degraded/partial producer run
-(``snapshot_complete=False``) can still confirm evidence for what it DID see,
-but can never resolve anything by omission.
+``reconcile_snapshot`` is the snapshot-driven reconciliation entry point: it
+accepts everything a producer currently observes for one ``source`` plus
+whether that observation is a complete, successful snapshot of the producer's
+authoritative scope. Only a ``snapshot_complete=True`` call may resolve an
+active episode that it did not observe — a failed/degraded/partial producer
+run (``snapshot_complete=False``) can still confirm evidence for what it DID
+see, but can never resolve anything by omission. ``resolve_condition`` is the
+explicit-resolution entry point for closing one active identity without a
+complete producer snapshot. Both APIs emit ``ConditionTransition`` values for
+their row-level outcomes.
 
 Concurrency
 -----------
-All of one ``source``'s writes within a single ``reconcile_snapshot`` call
-run inside one transaction holding a transaction-scoped Postgres advisory
-lock keyed by ``hashtext(table || ':' || source)`` — the table prefix keeps
+All writes from either ``reconcile_snapshot`` or ``resolve_condition`` for a
+``source`` run inside one transaction holding a transaction-scoped Postgres
+advisory lock keyed by ``hashtext(table || ':' || source)`` — the table prefix keeps
 the same source string in two different condition tables (e.g. a butler
 named "finance" as an infra_conditions source vs. an owner_conditions
 source) from contending on the same lock key. That serializes every
@@ -165,7 +168,7 @@ class Observation:
 
 @dataclass(frozen=True)
 class ConditionTransition:
-    """One row's outcome from a single :func:`reconcile_snapshot` call."""
+    """One row-level outcome from snapshot reconciliation or explicit resolution."""
 
     condition_id: uuid.UUID
     source: str
@@ -182,6 +185,34 @@ class ConditionTransition:
 
 def _dumps_metadata(metadata: dict[str, Any] | None) -> str | None:
     return json.dumps(metadata) if metadata is not None else None
+
+
+def _validate_resolution_inputs(
+    *,
+    table: str,
+    source: str,
+    fingerprint: str,
+    resolution_metadata: dict[str, Any] | None,
+) -> None:
+    """Validate explicit-resolution inputs before acquiring a pool connection."""
+    for name, value in (
+        ("table", table),
+        ("source", source),
+        ("fingerprint", fingerprint),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"resolve_condition: {name} must be non-empty")
+
+    if resolution_metadata is None:
+        return
+    if not isinstance(resolution_metadata, dict):
+        raise ValueError("resolve_condition: resolution_metadata must be an object or None")
+    try:
+        json.dumps(resolution_metadata, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "resolve_condition: resolution_metadata must be JSON-serializable"
+        ) from exc
 
 
 def _metadata_with_identity_payload(obs: Observation) -> dict[str, Any] | None:
@@ -250,9 +281,12 @@ async def reconcile_snapshot(
         plain ``confirmed``.
 
     When ``snapshot_complete`` is True, every active episode for ``source``
-    that was NOT named by any ``observations`` entry resolves — this is the
-    ONLY path that can resolve a condition. Recurrence after a resolution
-    always creates the next episode, never mutates the resolved row.
+    that was NOT named by any ``observations`` entry resolves by snapshot
+    omission. This is the snapshot-driven resolution path; callers with
+    explicit recovery confirmation can use :func:`resolve_condition` to
+    resolve one active identity without a complete producer snapshot.
+    Recurrence after a resolution always creates the next episode, never
+    mutates the resolved row.
 
     Raises ``ValueError`` for an empty ``table``/``source``, a negative
     ``initial_grace_seconds``, or a duplicate fingerprint within
@@ -290,6 +324,65 @@ async def reconcile_snapshot(
                 observations=observations,
                 snapshot_complete=snapshot_complete,
                 initial_grace_seconds=initial_grace_seconds,
+            )
+
+
+async def resolve_condition(
+    pool: asyncpg.Pool,
+    *,
+    table: str,
+    source: str,
+    fingerprint: str,
+    resolution_metadata: dict[str, Any] | None = None,
+) -> ConditionTransition | None:
+    """Explicitly resolve the active episode for one condition identity.
+
+    ``table`` is a fully-qualified, caller-controlled static table name (for
+    example ``"public.owner_conditions"``), never request or tool input. The
+    resolver takes the same source-scoped transaction advisory lock as
+    :func:`reconcile_snapshot`, so an explicit resolution and a complete
+    snapshot cannot produce duplicate terminal transitions. ``resolution_metadata``
+    is shallow-merged with creation-wins semantics: existing top-level row
+    values win over keys supplied by the resolver.
+
+    Returns ``None`` when the identity has no active ``open``/``aging``
+    episode, including after a previous explicit or snapshot resolution.
+
+    Raises ``ValueError`` for a non-string or empty ``table``, ``source``, or
+    ``fingerprint``, or when ``resolution_metadata`` is not a JSON object (or
+    ``None``). Validation happens before acquiring a pool connection.
+    """
+    _validate_resolution_inputs(
+        table=table,
+        source=source,
+        fingerprint=fingerprint,
+        resolution_metadata=resolution_metadata,
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"{table}:{source}")
+            now: datetime = await conn.fetchval("SELECT now()")
+            row = await conn.fetchrow(
+                f"""
+                SELECT id, fingerprint, episode, state, escalation_level,
+                       first_detected_at, metadata
+                FROM {table}
+                WHERE source = $1 AND fingerprint = $2 AND state IN ('open', 'aging')
+                """,
+                source,
+                fingerprint,
+            )
+            if row is None:
+                return None
+            return await _resolve_episode(
+                conn,
+                row,
+                table=table,
+                source=source,
+                fingerprint=fingerprint,
+                now=now,
+                resolution_metadata=resolution_metadata,
             )
 
 
@@ -417,7 +510,7 @@ async def _open_episode(
              last_confirmed_at, escalation_level, next_reescalate_at,
              summary, metadata)
         VALUES ($1, $2, $3, 'open', $4::timestamptz, $4::timestamptz, 'L0',
-                $4::timestamptz + ($5 * INTERVAL '1 second'), $6, $7::jsonb)
+                $4::timestamptz + ($5 * INTERVAL '1 second'), $6, $7::text::jsonb)
         RETURNING id, episode, state, escalation_level, next_reescalate_at
         """,
         source,
@@ -474,15 +567,15 @@ async def _confirm_episode(
             END,
             summary = COALESCE($7, summary),
             metadata = CASE
-                WHEN $8::jsonb IS NULL THEN metadata
-                WHEN $8::jsonb ? 'identity_payload' THEN jsonb_set(
-                    $8::jsonb,
+                WHEN $8::text::jsonb IS NULL THEN metadata
+                WHEN $8::text::jsonb ? 'identity_payload' THEN jsonb_set(
+                    $8::text::jsonb,
                     '{{identity_payload}}',
                     COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb)
-                        || ($8::jsonb -> 'identity_payload'),
+                        || ($8::text::jsonb -> 'identity_payload'),
                     true
                 )
-                ELSE $8::jsonb
+                ELSE $8::text::jsonb
             END
         WHERE id = $1
         RETURNING id, episode, state, escalation_level, next_reescalate_at
@@ -518,6 +611,7 @@ async def _resolve_episode(
     fingerprint: str,
     now: datetime,
     successor: ConditionTransition | None = None,
+    resolution_metadata: dict[str, Any] | None = None,
 ) -> ConditionTransition:
     recovered_after_s = (now - row["first_detected_at"]).total_seconds()
     provenance: str | None = None
@@ -539,11 +633,18 @@ async def _resolve_episode(
             resolved_at = $2,
             recovered_after_s = $3,
             metadata = CASE
-                WHEN $4::jsonb IS NULL THEN metadata
+                WHEN $4::text::jsonb IS NULL AND $5::text::jsonb IS NULL THEN metadata
+                WHEN $5::text::jsonb IS NULL THEN
+                    COALESCE($4::text::jsonb, '{{}}'::jsonb) || COALESCE(metadata, '{{}}'::jsonb)
                 ELSE jsonb_set(
-                    COALESCE(metadata, '{{}}'::jsonb),
+                    COALESCE($4::text::jsonb, '{{}}'::jsonb)
+                        || COALESCE(metadata, '{{}}'::jsonb),
                     '{{identity_payload}}',
-                    COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb) || $4::jsonb,
+                    COALESCE(
+                        (COALESCE($4::text::jsonb, '{{}}'::jsonb)
+                            || COALESCE(metadata, '{{}}'::jsonb)) -> 'identity_payload',
+                        '{{}}'::jsonb
+                    ) || $5::text::jsonb,
                     true
                 )
             END
@@ -553,6 +654,7 @@ async def _resolve_episode(
         row["id"],
         now,
         recovered_after_s,
+        _dumps_metadata(resolution_metadata),
         provenance,
     )
     return ConditionTransition(
@@ -585,7 +687,7 @@ async def _link_identity_predecessor(
         SET metadata = jsonb_set(
             COALESCE(metadata, '{{}}'::jsonb),
             '{{identity_payload}}',
-            COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb) || $2::jsonb,
+            COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb) || $2::text::jsonb,
             true
         )
         WHERE id = $1
