@@ -6,8 +6,8 @@ The condition ledger engine SHALL support explicit resolution of an active
 condition without requiring a producer snapshot. `resolve_condition()` SHALL
 transition the active (`open`/`aging`) episode for a given `(source,
 fingerprint)` to `resolved`, recording `resolved_at`, `recovered_after_s`,
-and merging caller-supplied `resolution_metadata` into the row's `metadata`
-JSONB without replacing creation-time metadata.
+and adding caller-supplied `resolution_metadata` to the row's `metadata` JSONB
+without replacing existing top-level creation-time metadata values.
 
 ID: REQ-owner-condition-ledger-004
 Source: RFC 0026 §1 (Explicit Resolution Path)
@@ -19,7 +19,8 @@ Scope: v1-mandatory
   that match an active (`open` or `aging`) episode
 - **THEN** the episode transitions to `resolved` with `resolved_at` set to
   the current time and `recovered_after_s` computed from `first_detected_at`
-- **AND** `resolution_metadata` is merged into the row's `metadata` JSONB
+- **AND** new `resolution_metadata` keys are added to the row's `metadata` JSONB
+- **AND** an existing metadata value wins if the caller supplies the same key
 
 #### Scenario: Resolution metadata does not clobber creation-time metadata
 
@@ -38,13 +39,22 @@ Scope: v1-mandatory
   that have no active episode (never existed, or already resolved)
 - **THEN** the function returns `None` without modifying any row
 
-#### Scenario: Concurrent resolution and snapshot reconciliation
+#### Scenario: Concurrent explicit resolution and clean complete snapshot
 
 - **WHEN** `resolve_condition()` and `reconcile_snapshot()` are called
-  concurrently for the same `source`
+  concurrently for the same `source`, and the complete snapshot omits the
+  target fingerprint
 - **THEN** exactly one succeeds atomically; the other observes the updated
-  state — both use the same transaction-scoped advisory lock keyed by
+  inactive state without a duplicate resolution or deadlock — both use the
+  same transaction-scoped advisory lock keyed by
   `hashtext(table || ':' || source)`
+
+#### Scenario: Re-observing an explicitly resolved identity
+
+- **WHEN** `resolve_condition()` has resolved an episode and a later complete
+  snapshot observes the same `(source, fingerprint)` identity
+- **THEN** reconciliation creates the next episode rather than mutating the
+  resolved row
 
 #### Scenario: Empty complete snapshot resolves condition already resolved explicitly
 

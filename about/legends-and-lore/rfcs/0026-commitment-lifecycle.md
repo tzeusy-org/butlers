@@ -62,7 +62,7 @@ Semantics:
 - Transitions the active (open/aging) episode for `(source, fingerprint)` to
   `resolved`, recording `resolved_at`, `recovered_after_s`, and merging
   `resolution_metadata` into the row's existing `metadata` JSONB.
-- Returns a `ConditionTransition` with `kind="resolved"`, or `None` if no
+- Returns a `ConditionTransition` with `transition="resolved"`, or `None` if no
   active episode exists.
 - Holds the same transaction-scoped advisory lock as `reconcile_snapshot()` —
   keyed by `hashtext(table || ':' || source)` — so concurrent
@@ -70,7 +70,9 @@ Semantics:
   serialized.
 - Refuses to resolve a condition that is already `resolved` (returns `None`).
 - `resolution_metadata` is merged into the row's `metadata` column, not
-  replaced, preserving the creation-time metadata.
+  replaced. Existing top-level metadata values win on a key collision, so
+  resolution input can add closing evidence but cannot overwrite creation-time
+  metadata.
 
 This is deliberately minimal: one new function with the same concurrency
 contract as the existing reconciler. The `owner_conditions.py` facade
