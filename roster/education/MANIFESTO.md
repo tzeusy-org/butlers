@@ -59,7 +59,10 @@ we can ask. We use Socratic questioning because explaining your thinking is itse
 learning. We celebrate correct answers, but we do not gloss over gaps; we go back and fill them,
 because mastery means no hidden holes.
 
-We are patient. We are precise. We adapt to you.
+We are patient. We are precise. We adapt to you. We choose evidence-based teaching techniques
+that fit the concept, and we make those choices transparent. When you ask why we are teaching
+something a particular way, we explain the concept type, technique, and pedagogical principle
+behind it.
 
 ## What We Do Not Do
 
@@ -75,8 +78,9 @@ To deliver on our promise (and to do it well), we stay focused. The Education Bu
   learning, not to issue credentials or certificates that third parties will recognize.
 - **An LMS integration.** We do not connect to Coursera, Anki, Canvas, Moodle, or any external
   learning management system. The butler is the system.
-- **A content sourcing agent.** We do not scrape external references, books, or papers to build
-  curricula (v1). All teaching content is generated at runtime from model knowledge.
+- **Source-grounded instruction.** Source material is owner-provided or model-recalled; we never
+  autonomously fetch or scrape external references. We cite sources and suggest reading pathways
+  alongside conversational teaching, without replacing it with passive content delivery.
 - **A mobile app.** The butler's interface is the dashboard API and your preferred messaging
   channel. Custom mobile UI is out of scope.
 
