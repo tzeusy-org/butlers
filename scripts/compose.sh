@@ -248,10 +248,21 @@ if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
     fi
   fi
   RESTORE_DRILL_EXECUTOR_DB_PORT="${RESTORE_DRILL_EXECUTOR_DB_PORT:-${POSTGRES_PORT:-5432}}"
-  if [[ ! "$RESTORE_DRILL_EXECUTOR_DB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] \
-    || ((10#$RESTORE_DRILL_EXECUTOR_DB_PORT < 1 || 10#$RESTORE_DRILL_EXECUTOR_DB_PORT > 65535)); then
+  # Keep this check ASCII-only even in locales where Bash's [0-9] range also
+  # matches fullwidth digits. Never send an unchecked value into an arithmetic
+  # context: malformed 10# expressions must reject the launch.
+  if [[ ! "$RESTORE_DRILL_EXECUTOR_DB_PORT" =~ ^[0123456789]+$ ]] \
+    || [[ ! "$RESTORE_DRILL_EXECUTOR_DB_PORT" =~ ^[1-9][0123456789]{0,4}$ ]]; then
     echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535." >&2
-    exit 1
+    exit 2
+  fi
+  if ! ((restore_drill_executor_db_port_value = 10#$RESTORE_DRILL_EXECUTOR_DB_PORT)); then
+    echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535." >&2
+    exit 2
+  fi
+  if ((restore_drill_executor_db_port_value < 1 || restore_drill_executor_db_port_value > 65535)); then
+    echo "ERROR: RESTORE_DRILL_EXECUTOR_DB_PORT must use canonical decimal 1..65535." >&2
+    exit 2
   fi
   export RESTORE_DRILL_EXECUTOR_DB_HOST RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST RESTORE_DRILL_EXECUTOR_DB_PORT
   echo "Restore-drill endpoint: ${RESTORE_DRILL_EXECUTOR_DB_HOST}:${RESTORE_DRILL_EXECUTOR_DB_PORT} (TLS identity; relay firewall IPv4 ${RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST})"

@@ -1417,6 +1417,10 @@ def test_restore_drill_launcher_rejects_invalid_port_before_compose(invalid_port
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
+        # Bash's [0-9] range matches fullwidth digits in this locale. Keep the
+        # regression deterministic so the hosted check cannot mask the bug
+        # behind its runner locale.
+        "LC_ALL": "en_US.utf8",
         "RESTORE_DRILL_ENABLED": "true",
         "POSTGRES_HOST": "postgres.example.test",
         "RESTORE_DRILL_EXECUTOR_FIREWALL_DB_HOST": "10.23.4.5",
@@ -1432,7 +1436,7 @@ def test_restore_drill_launcher_rejects_invalid_port_before_compose(invalid_port
         text=True,
     )
 
-    assert completed.returncode != 0
+    assert completed.returncode == 2
     assert "1..65535" in completed.stderr
 
 
@@ -1565,6 +1569,7 @@ def test_restore_drill_firewall_rejects_noncanonical_or_invalid_port_without_rul
         check=False,
         capture_output=True,
         text=True,
+        env={**os.environ, "LC_ALL": "en_US.utf8"},
     )
 
     assert completed.returncode == 2

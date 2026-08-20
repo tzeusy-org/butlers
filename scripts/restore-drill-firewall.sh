@@ -220,8 +220,18 @@ parse_args() {
         [[ -n "$RESTORE_DRILL_DB_HOST" ]] || die "--db-host is required"
         [[ -n "$RESTORE_DRILL_DB_PORT" ]] || die "--db-port is required"
         is_remote_ipv4 "$RESTORE_DRILL_DB_HOST" || die "--db-host must be a remote IPv4 address"
-        if [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[1-9][0-9]{0,4}$ ]] \
-            || ((10#$RESTORE_DRILL_DB_PORT < 1 || 10#$RESTORE_DRILL_DB_PORT > 65535)); then
+        # Keep this check ASCII-only even in locales where Bash's [0-9]
+        # range also matches fullwidth digits.  Never send an unchecked value
+        # into an arithmetic context: malformed 10# expressions must reject
+        # the request rather than letting the policy continue.
+        if [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[0123456789]+$ ]] \
+            || [[ ! "$RESTORE_DRILL_DB_PORT" =~ ^[1-9][0123456789]{0,4}$ ]]; then
+            die "--db-port must use canonical decimal 1..65535"
+        fi
+        if ! ((port_value = 10#$RESTORE_DRILL_DB_PORT)); then
+            die "--db-port must use canonical decimal 1..65535"
+        fi
+        if ((port_value < 1 || port_value > 65535)); then
             die "--db-port must use canonical decimal 1..65535"
         fi
         if [[ "$DRY_RUN" == false && "$REQUIRE_EXECUTOR_CAPABILITY" == false ]]; then
