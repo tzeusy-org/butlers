@@ -43,8 +43,9 @@ Scope: v1-mandatory
 - **THEN** the authorized producer operation in the spawner transaction appends
   exactly one `fleet_halt` attention episode keyed to that calendar-month breach
   window and carrying only the safe denied-dispatch count and Spend drawer door
-- **AND** it does not directly page the owner, write an attention ledger row,
-  or rely on an audit-log debounce marker
+- **AND** that episode is the sole route by which the owner is notified — the
+  spawner reaches Switchboard's outbox delivery and nothing else, so it neither
+  pages the owner directly nor relies on an audit-log debounce marker
 - **AND** every later denial in that same breach window appends neither another
   episode nor another page
 

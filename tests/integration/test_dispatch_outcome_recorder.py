@@ -381,6 +381,13 @@ async def test_closed_breaker_runtime_failures_append_no_episode(
     negative half of the edge contract: the other tests here assert that an
     edge DOES emit, and none of them would notice the recorder emitting on
     every failure instead of only on the transition.
+
+    Two layers enforce this and the assertions below are deliberately
+    end-to-end across both, so neither is credited with the other's work:
+    the recorder's ``if breaker_is_open:`` guard decides not to call the
+    producer, and the model-breaker trigger's edge CHECK rejects the call
+    outright if it ever does. Dropping the Python guard alone fails this
+    test at the database, not at the outbox count.
     """
     async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
         runtime_pool = _RolePool(admin_pool)
