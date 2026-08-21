@@ -48,15 +48,21 @@ both permits and forbids the same state is worse than either.
 - `module-education-curriculum`: `curriculum_generate()` becomes the sole path
   that activates a mind map, and it must refuse to activate an empty graph.
   The lifecycle's previously unrepresentable `creation` phase becomes the
-  concrete `draft` status.
+  concrete `draft` status. This resolves a standing contradiction as a side
+  effect rather than as separate work: the spec has always declared a
+  pre-active `creation` state that the `status` CHECK constraint at
+  `roster/education/migrations/001_education_tables.py:29-30` could not store,
+  so every map jumped straight to `active`. Adding `draft` makes the declared
+  lifecycle representable; no follow-up item is filed for it.
 - `module-education-teaching-flows`: `teaching_flow_start()` creates the mind
   map row and the flow state in one transaction — both or neither. The
   staleness sweep enumerates `mind_maps` rows rather than flow-state keys, so
   a map whose flow state was never written is still reachable.
 - `dashboard-education-api`: the status endpoint refuses to activate an empty
-  map. The curriculum-request lock gains a deterministic release path and a
-  bounded lease, so LLM obedience is no longer the only thing standing between
-  the owner and a permanent 409.
+  map. The curriculum-request lock gains a deterministic release path, a
+  bounded lease, and a per-acquisition request token, so LLM obedience is no
+  longer the only thing standing between the owner and a permanent 409 — and a
+  late release from a superseded acquisition cannot free somebody else's lock.
 - `dashboard-education-ui`: the evergreen empty-state string is removed
   outright and replaced with age-aware copy keyed to the map's status and
   `created_at`. Per-map review fetch failures are surfaced instead of folding
@@ -72,7 +78,8 @@ both permits and forbids the same state is worse than either.
 - The `draft` mind map status and the transitions into and out of it.
 - The one-time legacy transition for existing `active` zero-node maps,
   including the named live phantom.
-- Deterministic release and bounded lease for `pending_curriculum_request`.
+- Deterministic release, bounded lease, and token-scoped compare-and-delete
+  for `pending_curriculum_request`.
 - Age-aware empty-curriculum copy.
 - Per-map review fetch-failure surfacing on both the `/education` Reviews tab
   and the education butler-detail Reviews tab.

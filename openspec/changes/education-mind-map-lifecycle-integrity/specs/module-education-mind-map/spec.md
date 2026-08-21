@@ -23,8 +23,35 @@ exist before their map row; therefore an `INSERT` whose row would have
 `status = 'active'` is necessarily zero-node and SHALL be rejected
 unconditionally.
 
+**Node deletion is enforced too.** The invariant is a property of the row
+pair (mind map, its node count), so a write to *either* table can break it:
+deleting the last node of an `active` map produces exactly the forbidden state
+without any write to `mind_maps`. An `AFTER DELETE` trigger on
+`education.mind_map_nodes` SHALL therefore raise, aborting the transaction,
+when the deletion leaves an `active` mind map with zero remaining nodes. The
+enforcement is a refusal, not a repair: it MUST NOT silently transition the map
+to another status, because emptying a curriculum is a larger act than the
+caller requested and MUST be made explicit.
+
+A caller that intends to empty an `active` mind map SHALL first transition it
+out of `active` via `mind_map_update_status()`, and then delete its nodes.
+
+This node-side enforcement MUST NOT fire when the mind map row itself is being
+deleted and its nodes go with it through the
+`mind_map_nodes.mind_map_id ... ON DELETE CASCADE` foreign key: a mind map that
+no longer exists cannot hold an illegal status. Because that exemption depends
+on the order in which the database runs cascade and trigger actions, the
+implementation MUST cover it with a test rather than assume it.
+
+The module currently exposes no node-deletion function. If one is added, it
+SHALL surface the same refusal as an application-level error before reaching
+the database, on the same terms as `mind_map_update_status()`.
+
 The invariant is a property of the stored data, not of any one caller. Any
-observation of an `active` zero-node mind map is a data integrity fault.
+observation of an `active` zero-node mind map is a data integrity fault. Both
+directions of the invariant — the status write and the node delete — have a
+named enforcement point above; there is no residual path by which supported
+code can produce the state.
 
 #### Scenario: Activating a mind map with no nodes is rejected
 
@@ -51,11 +78,32 @@ observation of an `active` zero-node mind map is a data integrity fault.
 - **THEN** the database trigger MUST raise an exception
 - **AND** the row's `status` MUST be unchanged
 
-#### Scenario: Deleting the last node of an active mind map does not silently violate the invariant
+#### Scenario: Deleting the last node of an active mind map is rejected
 
-- **WHEN** every node of an `active` mind map is deleted
-- **THEN** the deletion MUST also transition the mind map out of `active` to `'abandoned'` in the same transaction
-- **AND** the resulting row MUST NOT be `active` with zero nodes
+- **WHEN** a statement deletes the only remaining node of an `active` mind map
+- **THEN** the node-side trigger MUST raise an exception and the transaction MUST abort
+- **AND** the node MUST still exist
+- **AND** the mind map MUST still be `active` with one node
+- **AND** the mind map's `status` MUST NOT have been changed to any other value
+
+#### Scenario: Deleting a non-final node of an active mind map succeeds
+
+- **WHEN** one node is deleted from an `active` mind map that has three nodes
+- **THEN** the deletion MUST succeed
+- **AND** the mind map MUST remain `active` with two nodes
+
+#### Scenario: Emptying a mind map is legal once it is no longer active
+
+- **WHEN** an `active` mind map is transitioned to `'abandoned'` via `mind_map_update_status()`
+- **AND** all of its nodes are then deleted
+- **THEN** both operations MUST succeed
+- **AND** the mind map MUST end as `'abandoned'` with zero nodes
+
+#### Scenario: Cascade deletion of a mind map is not blocked by node-side enforcement
+
+- **WHEN** an `active` mind map with nodes is deleted, cascading to its rows in `mind_map_nodes`
+- **THEN** the delete MUST succeed
+- **AND** the node-side enforcement MUST NOT raise, because the mind map no longer exists to hold an illegal status
 
 ---
 

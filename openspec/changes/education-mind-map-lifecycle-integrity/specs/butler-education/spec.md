@@ -83,7 +83,7 @@ The education butler SHALL provide six domain-specific skills plus three shared 
 - **THEN** its `SKILL.md` MUST describe the two-phase curriculum generation process: LLM-driven concept decomposition producing nodes and prerequisite edges, followed by topological sort with depth and effort-weighting to produce a learning sequence
 - **AND** it MUST specify the DAG validation constraint (no cycles; acyclicity checked before persisting edges)
 - **AND** it MUST specify that the mind map is `draft` throughout decomposition and is activated only by `curriculum_generate()`, which refuses to activate an empty graph
-- **AND** it MUST NOT present clearing the `pending_curriculum_request` lock as the mechanism that releases the dashboard's one-pending-at-a-time guard; that release is owned by the dashboard API layer, and any `state_delete` the session performs is an optional idempotent early release
+- **AND** it MUST NOT instruct the session to clear the `pending_curriculum_request` lock at all; that release is owned by the dashboard API layer and is scoped to a request token the session does not hold, so a session-side `state_delete` would be an unsafe blind delete
 
 #### Scenario: teaching-session skill purpose
 

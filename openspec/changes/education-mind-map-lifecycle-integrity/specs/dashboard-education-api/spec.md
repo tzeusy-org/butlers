@@ -82,7 +82,7 @@ The `topic` field SHALL be required and non-empty (max 200 characters). The
 `goal` field SHALL be optional (max 500 characters).
 
 The endpoint SHALL write a JSON payload
-`{"topic": "<topic>", "goal": "<goal>", "requested_at": "<ISO-8601>", "lease_expires_at": "<ISO-8601>"}`
+`{"topic": "<topic>", "goal": "<goal>", "requested_at": "<ISO-8601>", "lease_expires_at": "<ISO-8601>", "request_token": "<uuid>"}`
 to the education butler's KV state store under key
 `pending_curriculum_request`, then trigger the ephemeral session that starts
 the curriculum. On success the endpoint SHALL return 202 Accepted with body
@@ -95,6 +95,11 @@ Conflict only when a `pending_curriculum_request` key is present **and** its
 treated as absent: the request proceeds and overwrites it. An expired lease
 MUST NOT produce a 409.
 
+**Every acquisition mints a fresh `request_token`.** `request_token` SHALL be
+a newly generated UUID, written at acquisition time — including when an expired
+lease is reclaimed and overwritten. It identifies which acquisition the lock
+currently belongs to.
+
 **Release is the API layer's responsibility, not the session's.** The
 dashboard API layer SHALL release the lock when the triggered session
 terminates, whatever the outcome — success, tool error, model refusal, timeout,
@@ -102,13 +107,31 @@ or exception — as an unconditional release path rather than one conditioned on
 what the session did. The release SHALL also run when the session could not be
 triggered at all.
 
-The ephemeral session MAY additionally call
-`state_delete(key="pending_curriculum_request")` as an early release, and that
-call MUST be idempotent. It MUST NOT be the only release path, and the skill
-or trigger prompt MUST NOT be relied upon as the release mechanism. An
-instruction in a prompt is a request to a language model, not a guarantee; the
-owner's ability to submit their next curriculum request MUST NOT depend on
-model obedience.
+**Release SHALL be a token-scoped compare-and-delete, never a blind key
+delete.** A releaser holds the `request_token` minted by its own acquisition,
+and SHALL delete the `pending_curriculum_request` key only if the token stored
+in that key still equals its own. If the stored token differs, or the key is
+already absent, the release SHALL be a no-op that does not raise. The compare
+and the delete SHALL be atomic with respect to concurrent acquisitions — one
+conditional statement, or a read and a delete inside a single transaction. A
+read-then-delete that is not atomic reintroduces the race it exists to close.
+
+Token scoping is a safety requirement, not a tidiness one. An unqualified
+`state_delete("pending_curriculum_request")` is wrong whenever more than one
+acquisition can be in flight across time: session A stalls past its lease, the
+owner submits again and acquires lock B, and A's late release then deletes
+**B** — leaving two drain sessions running behind a guard that reports itself
+free. Token scoping is what makes every release path idempotent *and* safe out
+of order, and therefore what allows more than one release path to exist.
+
+**The triggered session SHALL NOT be a release path.** The trigger prompt MUST
+NOT instruct the session to clear `pending_curriculum_request`, and no
+session-side clear SHALL be relied upon or retained. The only key-deleting tool
+reachable from a session is the shared `state_delete(key)` core tool, which
+takes no token and would therefore perform precisely the blind delete this
+requirement forbids. Independently of that, an instruction in a prompt is a
+request to a language model, not a guarantee; the owner's ability to submit
+their next curriculum request MUST NOT depend on model obedience.
 
 #### Scenario: Submit a new curriculum request
 
@@ -116,7 +139,7 @@ model obedience.
 - **AND** no pending curriculum request exists
 - **THEN** the response status SHALL be 202
 - **AND** the response body SHALL contain `{"status": "pending", "topic": "Python"}`
-- **AND** the KV store SHALL contain key `pending_curriculum_request` with the topic, goal, `requested_at`, and a `lease_expires_at` 15 minutes after `requested_at`
+- **AND** the KV store SHALL contain key `pending_curriculum_request` with the topic, goal, `requested_at`, a `lease_expires_at` 15 minutes after `requested_at`, and a freshly generated `request_token`
 
 #### Scenario: Submit request without goal
 
@@ -135,38 +158,46 @@ model obedience.
 #### Scenario: Lock is released when the triggered session succeeds
 
 - **WHEN** the triggered curriculum session completes successfully
-- **THEN** the API layer SHALL delete `pending_curriculum_request`
+- **THEN** the API layer SHALL delete `pending_curriculum_request`, scoped to the `request_token` its own acquisition minted
 - **AND** a subsequent POST SHALL receive 202, not 409
 
 #### Scenario: Lock is released when the triggered session fails
 
 - **WHEN** the triggered curriculum session terminates with an error, a timeout, or an exception
-- **THEN** the API layer SHALL delete `pending_curriculum_request`
+- **THEN** the API layer SHALL delete `pending_curriculum_request`, scoped to its own `request_token`
 - **AND** a subsequent POST SHALL receive 202, not 409
 
-#### Scenario: Lock is released when the session ignores the release instruction
+#### Scenario: A superseded release does not delete the current lock
 
-- **WHEN** the triggered curriculum session completes without ever calling `state_delete(key="pending_curriculum_request")`
-- **THEN** the API layer SHALL still delete the key on session termination
-- **AND** a subsequent POST SHALL receive 202, not 409
+- **WHEN** acquisition A stalls past its lease and the owner's next POST reclaims the lock, minting `request_token` B
+- **AND** acquisition A's session then terminates and its release runs
+- **THEN** the release SHALL compare `request_token` A against the stored token B, find no match, and delete nothing
+- **AND** `pending_curriculum_request` SHALL still hold acquisition B's payload
+- **AND** a POST while lease B is live SHALL still receive 409
 
-#### Scenario: Session-side early release is idempotent
+#### Scenario: Release when the key is already absent is a no-op
 
-- **WHEN** the triggered session calls `state_delete(key="pending_curriculum_request")` and the API layer subsequently runs its own release on termination
-- **THEN** the second release SHALL be a no-op
-- **AND** neither release SHALL raise
+- **WHEN** a release runs for a `request_token` whose key is no longer present
+- **THEN** the release SHALL do nothing and SHALL NOT raise
+
+#### Scenario: The trigger prompt contains no lock-clearing instruction
+
+- **WHEN** the prompt sent to the ephemeral curriculum session is inspected
+- **THEN** it SHALL contain no instruction to call `state_delete(key="pending_curriculum_request")` or otherwise clear the lock
+- **AND** the lock SHALL still be released on session termination by the API layer
 
 #### Scenario: Daemon restart mid-session does not wedge the owner
 
 - **WHEN** the butler daemon restarts while a curriculum session is in flight, so no API-layer release ever runs
 - **AND** a POST is made more than 15 minutes after `requested_at`
 - **THEN** the stale lease SHALL be reclaimed and overwritten
+- **AND** the overwritten payload SHALL carry a newly generated `request_token`
 - **AND** the response status SHALL be 202
 
 #### Scenario: Trigger unreachable releases the lock immediately
 
 - **WHEN** the API layer cannot reach the education butler to trigger the session
-- **THEN** it SHALL delete `pending_curriculum_request` rather than leaving the lease to expire
+- **THEN** it SHALL release `pending_curriculum_request` under its own `request_token` rather than leaving the lease to expire
 - **AND** the owner SHALL be able to retry immediately
 
 #### Scenario: Empty topic

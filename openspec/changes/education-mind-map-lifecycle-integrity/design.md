@@ -101,9 +101,27 @@ compensating one.
 
 A bounded lease is added on top for the case the API layer itself dies (daemon
 restart mid-session): an expired lock is reclaimed by the next request rather
-than answered with 409. The session-side `state_delete` survives as an
-idempotent early release, but it is explicitly not a release *path* the system
-depends on.
+than answered with 409.
+
+Once a lease can expire, releases can arrive out of order, and an unqualified
+`state_delete("pending_curriculum_request")` stops being merely redundant and
+becomes unsafe: a stalled session's late release would delete the *next*
+owner's lock, and two drains would run behind a guard reporting itself free.
+So the lock payload carries a `request_token` minted per acquisition, and every
+release is an atomic compare-and-delete against it.
+
+That also settles the session-side release, which is removed rather than kept
+as an early-release convenience. The only key-deleting tool a session can reach
+is the shared `state_delete(key)` core tool
+(`src/butlers/core/state.py:191`, exposed at
+`src/butlers/core_tools/_state.py:44`), which takes no predicate — so a
+session-side release is necessarily the blind delete we just outlawed. Widening
+a shared core tool's signature for one butler's lock is the wrong trade, and
+the alternative (an education-module `curriculum_request_release(token)` tool)
+would buy only a few seconds of earlier release while restoring exactly the
+prompt-obedience coupling this change exists to remove. Two release paths
+remain — the API layer's unconditional release, and lease expiry — and both are
+token-safe.
 
 ### Decision 6: draft maps stay visible in the UI
 

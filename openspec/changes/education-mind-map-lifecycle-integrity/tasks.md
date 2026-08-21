@@ -28,16 +28,25 @@ Acceptance:
 - Re-running the migration is a no-op.
 - Runs strictly before task 3.
 
-### 3. Migration: enforcement trigger
+### 3. Migration: enforcement triggers (both tables)
 
 Install a `BEFORE INSERT OR UPDATE` trigger on `education.mind_maps` that
 raises when the resulting row would be `active` with zero nodes. INSERT with
 `status = 'active'` is rejected unconditionally (nodes cannot precede their
 map row through the foreign key).
 
+Install an `AFTER DELETE` trigger on `education.mind_map_nodes` that raises
+when the deletion leaves an `active` mind map with zero nodes, and that takes
+no action when the mind map row itself no longer exists (cascade delete).
+Without this second trigger the invariant is only a transition guard: the
+node-delete direction re-creates the phantom with no enforcement point firing.
+
 Acceptance:
-- REQ "Mind map content invariant for active status" database scenarios pass.
-- Direct psql attempts to create the phantom fail.
+- REQ "Mind map content invariant for active status" database scenarios pass,
+  including the four node-deletion scenarios.
+- Direct psql attempts to create the phantom fail from both directions.
+- A test covers the cascade exemption explicitly; trigger/cascade ordering is
+  not assumed.
 
 ### 4. Migration: flip the column default to `draft`
 
@@ -85,14 +94,20 @@ Acceptance:
 
 ### 9. Curriculum-request lock: lease and deterministic release
 
-`roster/education/api/router.py`: add `lease_expires_at` (15 minutes) to the
-lock payload; 409 only on a live lease; release the lock from the API layer
-when the triggered session terminates, whatever the outcome; demote the
-prompt's `state_delete` step to an optional idempotent early release.
+`roster/education/api/router.py`: add `lease_expires_at` (15 minutes) and a
+per-acquisition `request_token` to the lock payload; 409 only on a live lease;
+release the lock from the API layer when the triggered session terminates,
+whatever the outcome. The release MUST be an atomic token-scoped
+compare-and-delete, not `state_delete(pool, _CURRICULUM_REQUEST_KEY)` — that
+includes the existing trigger-failure release at `router.py:699`. Delete step 4
+of `_drain_prompt()` entirely; the session is no longer a release path.
 
 Acceptance:
 - `dashboard-education-api` curriculum-request scenarios pass, including the
-  session-ignores-the-instruction and daemon-restart scenarios.
+  superseded-release, absent-key, prompt-has-no-clear-instruction, and
+  daemon-restart scenarios.
+- A test asserts a release carrying a superseded token leaves the current
+  lock intact.
 
 ### 10. Status endpoint 409 path
 
