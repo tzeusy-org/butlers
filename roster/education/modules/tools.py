@@ -27,6 +27,7 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     from butlers.tools.education import mind_map_nodes as _nodes
     from butlers.tools.education import mind_map_queries as _queries
     from butlers.tools.education import mind_maps as _maps
+    from butlers.tools.education import source_material as _source_material
     from butlers.tools.education import spaced_repetition as _sr
     from butlers.tools.education import teaching_flows as _flows
 
@@ -472,3 +473,35 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     async def analytics_get_cross_topic() -> dict[str, Any]:
         """Return comparative analytics across all active mind maps."""
         return await _analytics.analytics_get_cross_topic(module._get_pool())
+
+    # =================================================================
+    # Source material tools
+    # =================================================================
+
+    @_tool("source_material")
+    async def source_material_register(
+        title: str,
+        type: str,
+        authors: list[str] | str | None = None,
+        toc: Any | None = None,
+        url: str | None = None,
+    ) -> dict[str, Any]:
+        """Register owner-provided source metadata without fetching its content."""
+        return await _source_material.source_material_register(
+            module._get_pool(),
+            title=title,
+            authors=authors,
+            type=type,
+            toc=toc,
+            url=url,
+        )
+
+    @_tool("source_material")
+    async def source_material_list() -> list[dict[str, Any]]:
+        """List registered source metadata, including source IDs."""
+        return await _source_material.source_material_list(module._get_pool())
+
+    @_tool("source_material")
+    async def source_material_remove(source_id: str) -> dict[str, str]:
+        """Remove source metadata while preserving any dangling node references."""
+        return await _source_material.source_material_remove(module._get_pool(), source_id)

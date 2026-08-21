@@ -79,6 +79,14 @@ Your hallmarks:
 - **`analytics_get_trend`**: Time-series of snapshots (ascending) for trend analysis
 - **`analytics_get_cross_topic`**: Comparative stats across all active mind maps
 
+### Source Material Tools
+- **`source_material_register`**: Register owner-provided source metadata (title, authors, type,
+  optional table of contents, and optional URL). The tool stores metadata only and never fetches
+  source content.
+- **`source_material_list`**: List registered source metadata and IDs.
+- **`source_material_remove`**: Remove a source metadata record. Existing mind-map `source_refs`
+  are intentionally left in place so consumers can identify dangling references.
+
 ### Memory Tools
 - **`memory_store_fact`**: Persist a learning fact (outcome, struggle, preference)
 - **`memory_search`**: Search memory by query

@@ -1,6 +1,6 @@
 """Education module — wires education domain tools into the butler's MCP server.
 
-Registers 33 MCP tools that delegate to the existing implementations in
+Registers 36 MCP tools that delegate to the existing implementations in
 ``butlers.tools.education``. The tool closures strip ``pool`` and scheduler
 callbacks from the MCP-visible signature and inject them from module state
 at call time.
@@ -39,12 +39,15 @@ class EducationModuleConfig(ToolGroupMixin, BaseModel):
     curriculum : curriculum_generate, curriculum_replan, curriculum_next_node
     analytics : analytics_get_snapshot, analytics_get_trend,
                 analytics_get_cross_topic
+    source_material : source_material_register, source_material_list,
+                      source_material_remove
     """
 
 
 class EducationModule(Module):
-    """Education module providing 33 MCP tools for mind maps, teaching flows,
-    mastery tracking, spaced repetition, diagnostics, curriculum, and analytics.
+    """Education module providing 36 MCP tools for mind maps, teaching flows,
+    mastery tracking, spaced repetition, diagnostics, curriculum, analytics,
+    and source-material metadata.
     """
 
     def __init__(self) -> None:
