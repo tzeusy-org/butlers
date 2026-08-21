@@ -106,6 +106,7 @@ export {
   getHealth,
   getIssues,
   getIssueOccurrences,
+  getAuditIssueGroup,
   dismissIssue,
   undismissIssue,
   getMemoryActivity,

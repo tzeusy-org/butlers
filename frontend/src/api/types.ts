@@ -510,6 +510,20 @@ export interface Issue {
   occurrences?: number;
   first_seen_at?: string | null;
   last_seen_at?: string | null;
+  /**
+   * The epoch an acknowledgement of this issue is held against (bu-6jv4m.3).
+   *
+   * For audit-derived groups this equals `last_seen_at` -- a new occurrence IS
+   * the recurrence. For reachability issues the two differ on purpose:
+   * `last_seen_at` is when we last *probed* (it advances every poll), while
+   * `recurrence_at` is the ONSET of the current outage episode and stays fixed
+   * for as long as the outage is uninterrupted. Acking against `last_seen_at`
+   * there was structurally impossible to make stick, since the watermark was
+   * outrun on the very next poll.
+   *
+   * Absent on an older backend; consumers fall back to `last_seen_at`.
+   */
+  recurrence_at?: string | null;
   butlers?: string[];
   /** Stable, server-computed key identifying this issue group (ack key). */
   issue_key: string;
@@ -544,6 +558,48 @@ export interface IssuesListMeta extends ApiMeta {
 export interface IssuesListResponse {
   data: Issue[];
   meta: IssuesListMeta;
+}
+
+/**
+ * Server-computed resolution of ONE `public.audit_log` failure row to the
+ * Issues group it belongs to (GET /api/issues/group-for-audit/{audit_id},
+ * bu-6jv4m.3).
+ *
+ * The Audit Log used to link a failure to `/issues?q=<first line of the
+ * error>`, reconstructing the backend's grouping key client-side
+ * (approximately) and then substring-matching a feed already bounded by its
+ * own default window. That hop could land on an empty page that read as an
+ * all-clear. This is the exact answer instead, computed from the same
+ * `normalized_errors` CTE the feed groups on.
+ *
+ * `found` is the ONLY thing that may be read as "no group": when it is false,
+ * `reason` says why in so many words. A transport failure is an error state,
+ * NOT `found: false` -- the UI must never render an unavailable lookup as a
+ * confident absence.
+ */
+export interface AuditIssueGroupRef {
+  /** The audit_log row id this answer is about. */
+  audit_id: number;
+  /** Window the answer was computed in ("24h" | "7d" | "30d" | "all"). */
+  window: string;
+  /** True when a current group exists for this row in `window`. */
+  found: boolean;
+  /**
+   * Why no group exists, when `found` is false:
+   * - `"not-a-failure"` -- the row did not fail, so it has no error group.
+   * - `"no-current-group"` -- it failed, but no group covers it in `window`.
+   */
+  reason?: string | null;
+  /** Exact ack key of the group; null when `found` is false. */
+  issue_key?: string | null;
+  severity?: string | null;
+  error_message?: string | null;
+  occurrences?: number | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  butlers?: string[];
+  /** Ready-made `/issues?window=...&group=...` link; null when not found. */
+  issues_href?: string | null;
 }
 
 /** Result of dismissing (acking) an issue group. */

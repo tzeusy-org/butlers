@@ -4,7 +4,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { dismissIssue, getIssueOccurrences, getIssues, undismissIssue } from "@/api/index.ts";
+import {
+  dismissIssue,
+  getAuditIssueGroup,
+  getIssueOccurrences,
+  getIssues,
+  undismissIssue,
+} from "@/api/index.ts";
 import type { ApiResponse, Issue } from "@/api/types";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
@@ -117,5 +123,28 @@ export function useIssueOccurrences(
     queryKey: ["issues", "occurrences", issueKey, { window, limit }],
     queryFn: () => getIssueOccurrences(issueKey as string, { window, limit }),
     enabled: enabled && !!issueKey,
+  });
+}
+
+/**
+ * Resolve one audit_log failure row to its exact Issues group (bu-6jv4m.3).
+ *
+ * Deliberately lazy: `enabled` should be true only for the row the user has
+ * actually expanded, so opening the Audit Log does not fire one request per
+ * visible failure.
+ *
+ * `retry: false` is intentional. This query's THREE outcomes are all
+ * meaningful and must stay distinguishable at the call site: a found group, an
+ * explicit `found: false` with a reason, and an error. Silently retrying an
+ * error blurs the third into a spinner that eventually renders as one of the
+ * first two.
+ */
+export function useAuditIssueGroup(auditId: number | null, enabled: boolean, window?: string) {
+  return useQuery({
+    queryKey: ["issues", "group-for-audit", auditId, { window }],
+    queryFn: () => getAuditIssueGroup(auditId as number, { window }),
+    enabled: enabled && auditId != null,
+    retry: false,
+    staleTime: 30_000,
   });
 }
