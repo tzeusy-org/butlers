@@ -75,6 +75,7 @@ from butlers.core.model_routing import (
     price_mtd_from_ledger,
 )
 from butlers.core.sessions import (
+    CADENCE_BASIS_DESCRIPTION,
     schedule_costs,
     sessions_daily,
     sessions_summary,
@@ -1160,10 +1161,12 @@ def _schedule_costs_from_data(
                 "cron": entry.get("cron", ""),
                 "total_runs": 0,
                 "total_cost_usd": 0.0,
-                # runs_per_day is derived from the cron alone (see
-                # ``_estimate_runs_per_day``), so it is identical across every
-                # model fragment of the same schedule -- take it once, don't sum.
-                "runs_per_day": entry.get("runs_per_day", 0.0),
+                # The cadence is derived from the cron alone (see
+                # ``core.sessions._estimate_runs_per_month``), so it is identical
+                # across every model fragment of the same schedule -- take it
+                # once, don't sum.
+                "runs_per_month": entry.get("runs_per_month", 0.0),
+                "forecast_basis": entry.get("forecast_basis", CADENCE_BASIS_DESCRIPTION),
             },
         )
         bucket["total_runs"] = bucket["total_runs"] + entry.get("total_runs", 0)
@@ -1174,7 +1177,12 @@ def _schedule_costs_from_data(
         total_runs = bucket["total_runs"]
         total_cost = bucket["total_cost_usd"]
         avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
-        runs_per_day = bucket["runs_per_day"]
+        # Forecast, kept strictly separate from the measured totals above: the
+        # projected monthly cost is avg-cost-per-run x the cron's own monthly
+        # cadence, on the basis named in ``forecast_basis``. There is no bare
+        # multiplier here -- the ~30x that used to sit at this line reported a
+        # weekly schedule as thirty monthly runs (bu-6jv4m.2).
+        runs_per_month = bucket["runs_per_month"]
         costs.append(
             ScheduleCost(
                 schedule_name=schedule_name,
@@ -1183,8 +1191,9 @@ def _schedule_costs_from_data(
                 total_runs=total_runs,
                 total_cost_usd=round(total_cost, 6),
                 avg_cost_per_run=round(avg_cost, 6),
-                runs_per_day=runs_per_day,
-                projected_monthly_usd=round(avg_cost * runs_per_day * 30, 6),
+                projected_monthly_runs=round(runs_per_month, 4),
+                projected_monthly_usd=round(avg_cost * runs_per_month, 6),
+                forecast_basis=bucket["forecast_basis"],
             )
         )
     return costs

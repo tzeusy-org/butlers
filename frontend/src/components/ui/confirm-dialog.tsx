@@ -43,6 +43,13 @@ export interface ConfirmDialogProps {
   /** True while the confirmed action's mutation is in flight — disables both buttons and keeps the dialog mounted. */
   pending?: boolean;
   onConfirm: () => void;
+  /**
+   * Escape hatch for focus on close. Radix returns focus to whatever was
+   * focused when the dialog opened, which is `<body>` when the trigger was
+   * activated by a pointer click. Call `event.preventDefault()` and focus the
+   * element yourself to override it.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
   testId?: string;
 }
 
@@ -58,11 +65,12 @@ export function ConfirmDialog({
   variant = "default",
   pending = false,
   onConfirm,
+  onCloseAutoFocus,
   testId,
 }: ConfirmDialogProps) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent data-testid={testId}>
+      <AlertDialogContent data-testid={testId} onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description && <AlertDialogDescription>{description}</AlertDialogDescription>}

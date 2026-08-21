@@ -158,6 +158,13 @@ const MOCK_BREAKDOWN = {
 
 const MOCK_RULES = { data: [], meta: {} }
 
+// Mirrors butlers.core.sessions.CADENCE_BASIS_DESCRIPTION — the forecast basis
+// the API states alongside every projection (bu-6jv4m.2).
+const FORECAST_BASIS =
+  "Projected runs are the cron expression's own cadence over an average " +
+  "Gregorian calendar month (30.436875 days), sampled from a fixed anchor so " +
+  "the forecast does not change with the time of the request."
+
 const DAILY_DATA = [
   {
     date: "2026-05-16",
@@ -288,8 +295,9 @@ function setHooks({
           total_runs: 30,
           total_cost_usd: 3.0,
           avg_cost_per_run: 0.1,
-          runs_per_day: 1,
-          projected_monthly_usd: 3.0,
+          projected_monthly_runs: 30.4369,
+          projected_monthly_usd: 3.0437,
+          forecast_basis: FORECAST_BASIS,
         },
       ],
       meta: {},
@@ -1255,8 +1263,9 @@ describe("SpendPage — why (evidence layer)", () => {
             total_runs: 30,
             total_cost_usd: 3.0,
             avg_cost_per_run: 0.1,
-            runs_per_day: 1,
-            projected_monthly_usd: 3.0,
+            projected_monthly_runs: 30.4369,
+            projected_monthly_usd: 3.0437,
+            forecast_basis: FORECAST_BASIS,
           },
         ],
         meta: { unavailable_butlers: ["finance"] },
@@ -1369,8 +1378,9 @@ describe("SpendPage — why (evidence layer)", () => {
             total_runs: 30,
             total_cost_usd: 3.0,
             avg_cost_per_run: 0.1,
-            runs_per_day: 1,
-            projected_monthly_usd: 3.0,
+            projected_monthly_runs: 30.4369,
+            projected_monthly_usd: 3.0437,
+            forecast_basis: FORECAST_BASIS,
           },
         ],
         meta: {},
@@ -2113,5 +2123,414 @@ describe("SpendPage — fleet-halt banner (bu-7o89u.3)", () => {
 
     await screen.findByTestId("fleet-halt-banner")
     expect(screen.queryByTestId("fleet-halt-drawer")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Forecast vs. measured history in the By Schedule table (bu-6jv4m.2)
+//
+// The projection used to be presented as if it were another measured column.
+// It is a forecast, and the table must say so and state the basis it was
+// computed on.
+// ---------------------------------------------------------------------------
+
+describe("SpendPage — By Schedule forecast honesty (bu-6jv4m.2)", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("labels the forecast columns as a forecast, separate from the measured range", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("by-schedule-section")
+    const measured = screen.getByTestId("by-schedule-measured-group")
+    const forecast = screen.getByTestId("by-schedule-forecast-group")
+    expect(measured.textContent?.toLowerCase()).toContain("measured")
+    expect(forecast.textContent?.toLowerCase()).toContain("forecast")
+    expect(section.textContent).toContain("morning-briefing")
+  })
+
+  it("renders projected runs alongside projected cost, and states the basis", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    const runs = await screen.findByTestId("schedule-projected-runs-general-morning-briefing")
+    expect(runs.textContent).toContain("30.4")
+
+    const basis = screen.getByTestId("by-schedule-forecast-basis")
+    expect(basis.textContent).toContain("30.436875")
+  })
+
+  it("says so plainly when a schedule's cadence cannot be projected", async () => {
+    // projected_monthly_runs === 0 means the cron did not parse. Rendering "$0.00"
+    // would read as "this schedule is free", which is a different claim.
+    mockUseCostsBySchedule.mockReturnValue({
+      data: {
+        data: [
+          {
+            schedule_name: "mystery",
+            butler: "general",
+            cron: "not a cron",
+            total_runs: 5,
+            total_cost_usd: 0.5,
+            avg_cost_per_run: 0.1,
+            projected_monthly_runs: 0,
+            projected_monthly_usd: 0,
+            forecast_basis: FORECAST_BASIS,
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const runs = await screen.findByTestId("schedule-projected-runs-general-mystery")
+    expect(runs.textContent).toContain("—")
+    const cost = screen.getByTestId("schedule-projected-cost-general-mystery")
+    expect(cost.textContent).toContain("—")
+    expect(cost.textContent).not.toContain("$0.00")
+    // The measured history is still reported.
+    expect(screen.getByTestId("by-schedule-section").textContent).toContain("$0.50")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Routing-rule deletion: confirm + exact-order undo (bu-6jv4m.2)
+//
+// Deleting a first-match routing rule on a single click is unrecoverable and
+// silently re-points every dispatch the rule used to catch. The store below
+// models the real backend: DELETE compacts the positions below the removed
+// rule, POST with an explicit `position` shifts them back down. An Undo that
+// restores the rule at the wrong position is worse than no Undo, so the
+// position is what these tests pin.
+// ---------------------------------------------------------------------------
+
+function makeDeletableRulesStore(initial: RuleFixture[]) {
+  let rules = initial.map((r) => ({ ...r }))
+  let nextId = 100
+  return {
+    get: () => ({ data: [...rules].sort((a, b) => a.position - b.position), meta: {} }),
+    snapshot: () => [...rules].sort((a, b) => a.position - b.position),
+    remove(id: string) {
+      const rule = rules.find((r) => r.id === id)
+      if (!rule) return
+      const gone = rule.position
+      rules = rules
+        .filter((r) => r.id !== id)
+        .map((r) => (r.position > gone ? { ...r, position: r.position - 1 } : r))
+    },
+    insert(position: number, condition: Record<string, unknown>, action: Record<string, unknown>) {
+      rules = rules.map((r) => (r.position >= position ? { ...r, position: r.position + 1 } : r))
+      const created = {
+        id: `restored-${nextId++}`,
+        position,
+        condition,
+        action,
+        saved_7d: null,
+        created_at: "2026-05-17T00:00:00Z",
+        updated_at: "2026-05-17T00:00:00Z",
+      }
+      rules = [...rules, created]
+      return created
+    },
+  }
+}
+
+const THREE_RULES: RuleFixture[] = [
+  {
+    id: "rule-1",
+    position: 1,
+    condition: { butler: "general" },
+    action: { model: "claude-haiku" },
+    saved_7d: null,
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "rule-2",
+    position: 2,
+    condition: { complexity: "workhorse" },
+    action: { model: "claude-sonnet" },
+    saved_7d: null,
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+  {
+    id: "rule-3",
+    position: 3,
+    condition: { trigger: "route" },
+    action: { max_cost_per_call: 0.5 },
+    saved_7d: null,
+    created_at: "2026-05-01T00:00:00Z",
+    updated_at: "2026-05-01T00:00:00Z",
+  },
+]
+
+describe("SpendPage — routing-rule deletion safety (bu-6jv4m.2)", () => {
+  let store: ReturnType<typeof makeDeletableRulesStore>
+  let deleteCalls: string[]
+  let postBodies: Array<Record<string, unknown>>
+  let failDelete: boolean
+
+  beforeEach(() => {
+    setHooks()
+    store = makeDeletableRulesStore(THREE_RULES)
+    deleteCalls = []
+    postBodies = []
+    failDelete = false
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/spend/rules" && opts?.method === "POST") {
+        const body = JSON.parse(opts.body as string) as {
+          position: number
+          condition: Record<string, unknown>
+          action: Record<string, unknown>
+        }
+        postBodies.push(body)
+        return Promise.resolve({ data: store.insert(body.position, body.condition, body.action) })
+      }
+      if (path === "/spend/rules") return Promise.resolve(store.get())
+      const match = /^\/spend\/rules\/([^/]+)$/.exec(path)
+      if (match && opts?.method === "DELETE") {
+        deleteCalls.push(match[1])
+        if (failDelete) return Promise.reject(new Error("boom"))
+        store.remove(match[1])
+        return Promise.resolve(undefined)
+      }
+      if (match && opts?.method === "PUT") return Promise.resolve({})
+      return defaultApiFetch(path)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  async function openDeleteDialog(ruleId: string) {
+    await act(async () => {
+      renderPage()
+    })
+    const remove = (await screen.findByTestId(`spend-rule-remove-${ruleId}`)) as HTMLButtonElement
+    await act(async () => {
+      fireEvent.click(remove)
+    })
+    return remove
+  }
+
+  it("does not delete on one activation -- it opens a confirm dialog first", async () => {
+    await act(async () => {
+      renderPage()
+    })
+    expect(screen.queryByTestId("spend-rule-delete-dialog")).toBeNull()
+
+    const remove = await screen.findByTestId("spend-rule-remove-rule-2")
+    await act(async () => {
+      fireEvent.click(remove)
+    })
+
+    expect(screen.getByTestId("spend-rule-delete-dialog")).toBeTruthy()
+    expect(deleteCalls).toEqual([])
+    expect(store.snapshot()).toHaveLength(3)
+  })
+
+  it("shows the exact condition, action, position and first-match effect", async () => {
+    await openDeleteDialog("rule-2")
+
+    const dialog = screen.getByTestId("spend-rule-delete-dialog")
+    const text = dialog.textContent ?? ""
+    // Exact condition and action of THIS rule, not a generic warning.
+    expect(text).toContain("complexity")
+    expect(text).toContain("workhorse")
+    expect(text).toContain("claude-sonnet")
+    // Its position in the first-match order.
+    expect(text).toContain("position 2 of 3")
+    // What first-match evaluation does after the deletion.
+    expect(text).toContain("trigger")
+    expect(text.toLowerCase()).toContain("first match")
+  })
+
+  it("names default routing when the deleted rule is the last one", async () => {
+    await openDeleteDialog("rule-3")
+
+    const text = screen.getByTestId("spend-rule-delete-dialog").textContent ?? ""
+    expect(text).toContain("position 3 of 3")
+    expect(text.toLowerCase()).toContain("default")
+  })
+
+  it("cancelling deletes nothing and returns focus to the Remove button", async () => {
+    const remove = await openDeleteDialog("rule-2")
+
+    const cancel = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent === "Keep rule",
+    )!
+    await act(async () => {
+      fireEvent.click(cancel)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("spend-rule-delete-dialog")).toBeNull()
+    })
+    expect(deleteCalls).toEqual([])
+    await waitFor(() => {
+      expect(document.activeElement).toBe(remove)
+    })
+  })
+
+  it("sends exactly one DELETE even if confirm is activated repeatedly", async () => {
+    await openDeleteDialog("rule-2")
+
+    const confirm = screen.getByTestId("spend-rule-delete-dialog-confirm")
+    await act(async () => {
+      fireEvent.click(confirm)
+      fireEvent.click(confirm)
+      fireEvent.click(confirm)
+    })
+
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(["rule-2"])
+    })
+  })
+
+  it("offers an Undo that restores the rule at its EXACT original position", async () => {
+    await openDeleteDialog("rule-2")
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+
+    // Deleted, and the rules below it compacted -- rule-3 is now position 2.
+    await waitFor(() => {
+      expect(store.snapshot().map((r) => [r.id, r.position])).toEqual([
+        ["rule-1", 1],
+        ["rule-3", 2],
+      ])
+    })
+
+    const undo = await screen.findByTestId("spend-rule-undo-button")
+    await act(async () => {
+      fireEvent.click(undo)
+    })
+
+    await waitFor(() => {
+      expect(postBodies).toHaveLength(1)
+    })
+    // The load-bearing assertion: restored at position 2, not appended at 3.
+    expect(postBodies[0].position).toBe(2)
+    expect(postBodies[0].condition).toEqual({ complexity: "workhorse" })
+    expect(postBodies[0].action).toEqual({ model: "claude-sonnet" })
+
+    const restored = store.snapshot()
+    expect(restored.map((r) => r.position)).toEqual([1, 2, 3])
+    expect(restored[1].condition).toEqual({ complexity: "workhorse" })
+    expect(restored[2].id).toBe("rule-3")
+  })
+
+  it("clears the Undo affordance once used, so it cannot restore twice", async () => {
+    await openDeleteDialog("rule-2")
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+
+    const undo = await screen.findByTestId("spend-rule-undo-button")
+    await act(async () => {
+      fireEvent.click(undo)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("spend-rule-undo")).toBeNull()
+    })
+    expect(postBodies).toHaveLength(1)
+  })
+
+  it("offers no Undo when the delete failed -- nothing was destroyed to restore", async () => {
+    failDelete = true
+    await openDeleteDialog("rule-2")
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(["rule-2"])
+    })
+    expect(screen.queryByTestId("spend-rule-undo")).toBeNull()
+    expect(store.snapshot()).toHaveLength(3)
+  })
+
+  it("serializes the restore behind an in-flight reorder (bu-6jv4m.2 concurrency)", async () => {
+    // Delete, restore, and reorder all renumber positions. They share one
+    // mutation scope so a restore can never overtake a reorder that is still in
+    // flight and land the rule at a position computed from stale ordering.
+    const order: string[] = []
+    let releaseReorder: (() => void) | undefined
+    const reorderGate = new Promise<void>((resolve) => {
+      releaseReorder = resolve
+    })
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/spend/rules" && opts?.method === "POST") {
+        order.push("POST")
+        const body = JSON.parse(opts.body as string) as {
+          position: number
+          condition: Record<string, unknown>
+          action: Record<string, unknown>
+        }
+        postBodies.push(body)
+        return Promise.resolve({ data: store.insert(body.position, body.condition, body.action) })
+      }
+      if (path === "/spend/rules") return Promise.resolve(store.get())
+      const match = /^\/spend\/rules\/([^/]+)$/.exec(path)
+      if (match && opts?.method === "DELETE") {
+        deleteCalls.push(match[1])
+        store.remove(match[1])
+        return Promise.resolve(undefined)
+      }
+      if (match && opts?.method === "PUT") {
+        order.push("PUT")
+        return reorderGate.then(() => ({}))
+      }
+      return defaultApiFetch(path)
+    })
+
+    await openDeleteDialog("rule-2")
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+    const undo = await screen.findByTestId("spend-rule-undo-button")
+
+    // Start a reorder that will not settle yet, then activate Undo.
+    // Separate dispatches: grab, then move. Batching them inside one `act`
+    // would run the ArrowUp handler against a pre-grab render.
+    const row = screen.getByTestId("spend-rule-row-rule-3")
+    fireEvent.keyDown(row, { key: " " })
+    fireEvent.keyDown(row, { key: "ArrowUp" })
+    await waitFor(() => {
+      expect(order).toContain("PUT")
+    })
+
+    await act(async () => {
+      fireEvent.click(undo)
+    })
+    // The restore must not have been dispatched while the PUT is unsettled.
+    expect(order).toEqual(["PUT"])
+
+    await act(async () => {
+      releaseReorder!()
+    })
+    await waitFor(() => {
+      expect(order).toEqual(["PUT", "POST"])
+    })
   })
 })

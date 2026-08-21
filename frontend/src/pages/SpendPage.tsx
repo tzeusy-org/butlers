@@ -41,6 +41,7 @@ import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import {
   Table,
   TableBody,
@@ -190,6 +191,11 @@ function reorderRule(id: string, position: number): Promise<unknown> {
 function createRule(body: {
   condition: Record<string, unknown>
   action: Record<string, unknown>
+  /** Omitted by the create form (append). Set only by the delete Undo, which
+   *  must land the rule back at the exact position it was removed from -- the
+   *  backend shifts `position >= p` down by one, exactly inverting the
+   *  compaction DELETE performed (bu-6jv4m.2). */
+  position?: number
 }): Promise<{ data: SpendRule }> {
   return apiFetch<{ data: SpendRule }>("/spend/rules", {
     method: "POST",
@@ -214,6 +220,16 @@ const COMPLEXITY_TIERS: ComplexityTier[] = [
 
 function fmtUsdPrecise(n: number): string {
   return `$${n.toFixed(4)}`
+}
+
+/**
+ * Projected monthly runs. Kept to one decimal because the number is a cadence,
+ * not a count: a weekly schedule fires ~4.3 times an average month, and
+ * rounding that to "4" would quietly restate a forecast as an integer fact.
+ * Whole-number cadences (daily-of-month, yearly) still read cleanly.
+ */
+function fmtProjectedRuns(n: number): string {
+  return n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1)
 }
 
 function unpricedCallCount(models: readonly UnpricedModelUsage[] | undefined): number {
@@ -987,14 +1003,16 @@ function ByScheduleSection({
   // outage — not "genuinely no scheduled-task cost data" — and a populated one
   // must footnote the missing butlers (bu-h3ej9).
   const unavailableButlers = data?.meta?.unavailable_butlers ?? []
+  // Every row is computed on the same basis, so state it once beneath the table.
+  const forecastBasis = schedules.find((s) => s.forecast_basis)?.forecast_basis ?? ""
 
   return (
     <section className="border border-border" data-testid="by-schedule-section">
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Projected monthly cost per cron job, runs from {formatCostDate(from, dateKeyTimezone)} –{" "}
-          {formatCostDate(to, dateKeyTimezone)}. See which schedule is burning money.
+          What each cron job actually cost between {formatCostDate(from, dateKeyTimezone)} and{" "}
+          {formatCostDate(to, dateKeyTimezone)}, and what its cadence projects for a month.
         </p>
       </div>
       <div className="p-4">
@@ -1036,13 +1054,38 @@ function ByScheduleSection({
               <div className="flex flex-col gap-3">
                 <Table>
                   <TableHeader>
+                    {/* Two column groups, visibly separated: what was measured
+                        over the selected range, and what the cron cadence
+                        forecasts. Collapsing them into one undifferentiated row
+                        is how a projection gets read as history (bu-6jv4m.2). */}
+                    <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                      <TableHead className="py-1.5 px-2 font-normal" colSpan={3} />
+                      <TableHead
+                        className="text-right py-1.5 px-2 font-normal"
+                        colSpan={3}
+                        data-testid="by-schedule-measured-group"
+                      >
+                        Measured · selected range
+                      </TableHead>
+                      <TableHead
+                        className="text-right py-1.5 px-2 font-normal border-l border-border/60"
+                        colSpan={2}
+                        data-testid="by-schedule-forecast-group"
+                      >
+                        Forecast · per month
+                      </TableHead>
+                    </TableRow>
                     <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                       <TableHead className="text-left py-2 px-2 font-normal">Schedule</TableHead>
                       <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
                       <TableHead className="text-left py-2 px-2 font-normal">Cron</TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal">Runs</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal">Avg/run</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Projected/mo</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal border-l border-border/60">
+                        Runs
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1060,15 +1103,41 @@ function ByScheduleSection({
                         <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
+                          {formatCostUsd(s.total_cost_usd)}
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                           {formatCostUsd(s.avg_cost_per_run)}
                         </TableCell>
-                        <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
-                          {formatCostUsd(s.projected_monthly_usd)}
+                        {/* An unprojectable cadence renders an em dash, never
+                            "$0.00" -- "we cannot forecast this" and "this is
+                            free" are different claims (bu-6jv4m.2). */}
+                        <TableCell
+                          className="py-2 px-2 text-right tabular-nums text-xs border-l border-border/60"
+                          data-testid={`schedule-projected-runs-${s.butler}-${s.schedule_name}`}
+                        >
+                          {s.projected_monthly_runs > 0 ? fmtProjectedRuns(s.projected_monthly_runs) : "—"}
+                        </TableCell>
+                        <TableCell
+                          className="py-2 px-2 text-right tabular-nums font-medium"
+                          data-testid={`schedule-projected-cost-${s.butler}-${s.schedule_name}`}
+                        >
+                          {s.projected_monthly_runs > 0 ? formatCostUsd(s.projected_monthly_usd) : "—"}
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+                {/* The forecast basis, stated by the API rather than assumed
+                    here -- the defect this replaced was an unstated x30
+                    (bu-6jv4m.2). */}
+                {forecastBasis && (
+                  <p
+                    className="font-serif italic text-[11px] leading-relaxed text-muted-foreground"
+                    data-testid="by-schedule-forecast-basis"
+                  >
+                    {forecastBasis}
+                  </p>
+                )}
                 {unavailableButlers.length > 0 && (
                   // Populated but partial: some butlers' schedules are absent from
                   // the ranking (bu-h3ej9).
@@ -1149,7 +1218,13 @@ function RuleChips({
 
 interface RulesTableProps {
   rules: SpendRule[]
-  onDelete: (id: string) => void
+  /** Called only after the owner confirms, with the whole rule -- the caller
+   *  needs its condition/action/position to offer an exact-order Undo. Must
+   *  settle: the dialog closes when it resolves and stays open when it
+   *  rejects, so a failed delete can be retried or backed out of. */
+  onDelete: (rule: SpendRule) => Promise<unknown>
+  /** True while the confirmed delete is in flight. */
+  isDeleting?: boolean
   onReorder: (id: string, newPosition: number) => void
   /** True while a reorder mutation is in flight -- arrow-key moves are
    *  suspended so a fast double-press can't race the server's response with
@@ -1168,11 +1243,68 @@ interface RulesTableProps {
 // through the shell's shared sr-only live region (`announce`, bu-qvnce.10 --
 // same mechanism NewEventsPill and EntityDetailPage's merge banner already
 // use) since this row-level state change has no other accessible signal.
-function RulesTable({ rules, onDelete, onReorder, isReordering = false }: RulesTableProps) {
+function RulesTable({
+  rules,
+  onDelete,
+  isDeleting = false,
+  onReorder,
+  isReordering = false,
+}: RulesTableProps) {
   const dragIdRef = useRef<string | null>(null)
   const [grabbedId, setGrabbedId] = useState<string | null>(null)
   const grabOriginRef = useRef<number | null>(null)
   const movedDuringGrabRef = useRef<boolean>(false)
+
+  // Deletion is gated behind a confirm that shows the owner exactly what the
+  // rule matches, what it does, where it sits in the first-match order, and
+  // which rule inherits its traffic (bu-6jv4m.2). Remove used to fire the
+  // mutation on the click itself.
+  const [pendingDelete, setPendingDelete] = useState<SpendRule | null>(null)
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null)
+  // Activating confirm is synchronous, but `isDeleting` cannot become true
+  // until React re-renders -- so three activations in one tick would all see a
+  // still-enabled button and fire three DELETEs. The ref closes that window
+  // within the tick; `isDeleting` handles the visible pending state.
+  const deleteInFlightRef = useRef(false)
+
+  function requestDelete(rule: SpendRule, trigger: HTMLButtonElement) {
+    deleteTriggerRef.current = trigger
+    deleteInFlightRef.current = false
+    setPendingDelete(rule)
+  }
+
+  function closeDeleteDialog(open: boolean) {
+    // Escape and outside-dismiss route through here too; a delete already on
+    // the wire must not be abandoned mid-flight with the dialog gone.
+    if (open || deleteInFlightRef.current) return
+    setPendingDelete(null)
+  }
+
+  async function confirmDelete(rule: SpendRule) {
+    if (deleteInFlightRef.current) return
+    deleteInFlightRef.current = true
+    try {
+      await onDelete(rule)
+      setPendingDelete(null)
+    } catch {
+      // The section toasts the failure. Keep the dialog open: nothing was
+      // destroyed, and the owner can retry or back out from here.
+    } finally {
+      deleteInFlightRef.current = false
+    }
+  }
+
+  function restoreTriggerFocus(event: Event) {
+    const trigger = deleteTriggerRef.current
+    deleteTriggerRef.current = null
+    // Radix returns focus to whatever was focused when the dialog opened, which
+    // is <body> when the owner opened it with a pointer click, and the Remove
+    // button no longer exists at all after a successful delete. Put focus back
+    // on the trigger when it survived; otherwise leave Radix's default alone.
+    if (!trigger || !document.contains(trigger)) return
+    event.preventDefault()
+    trigger.focus()
+  }
 
   function handleDragStart(e: React.DragEvent, id: string) {
     dragIdRef.current = id
@@ -1323,7 +1455,9 @@ function RulesTable({ rules, onDelete, onReorder, isReordering = false }: RulesT
                     variant="ghost"
                     size="sm"
                     className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-                    onClick={() => onDelete(rule.id)}
+                    data-testid={`spend-rule-remove-${rule.id}`}
+                    aria-label={`Remove routing rule at position ${rule.position} of ${rules.length}`}
+                    onClick={(event) => requestDelete(rule, event.currentTarget)}
                   >
                     Remove
                   </Button>
@@ -1333,9 +1467,83 @@ function RulesTable({ rules, onDelete, onReorder, isReordering = false }: RulesT
           })}
         </TableBody>
       </Table>
+      {pendingDelete && (
+        <ConfirmDialog
+          open
+          onOpenChange={closeDeleteDialog}
+          title={`Remove the routing rule at position ${pendingDelete.position}?`}
+          description={deleteConsequence(pendingDelete, rules)}
+          confirmLabel="Remove rule"
+          pendingLabel="Removing…"
+          cancelLabel="Keep rule"
+          variant="destructive"
+          pending={isDeleting}
+          onConfirm={() => void confirmDelete(pendingDelete)}
+          onCloseAutoFocus={restoreTriggerFocus}
+          testId="spend-rule-delete-dialog"
+        >
+          {/* The exact rule, in the same chip vocabulary as the table row --
+              a confirm that only says "are you sure?" does not let the owner
+              check they are removing the rule they meant to. */}
+          <dl className="grid grid-cols-[auto_1fr] items-start gap-x-3 gap-y-2 border border-border p-3 text-xs">
+            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Position
+            </dt>
+            <dd className="tabular-nums">
+              position {pendingDelete.position} of {rules.length}
+            </dd>
+            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Matches
+            </dt>
+            <dd>
+              <RuleChips
+                entries={conditionChips(pendingDelete.condition)}
+                emptyLabel="any dispatch"
+              />
+            </dd>
+            <dt className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Does
+            </dt>
+            <dd>
+              <RuleChips entries={actionChips(pendingDelete.action)} emptyLabel="—" />
+            </dd>
+          </dl>
+        </ConfirmDialog>
+      )}
     </div>
   )
 }
+
+/**
+ * What removing this rule does to first-match evaluation. Rules are evaluated
+ * top-to-bottom and the first match wins, so removing one silently re-points
+ * every dispatch it used to catch -- either at the next rule down, or, if it was
+ * last, at default routing. The owner sees that sentence before confirming
+ * (bu-6jv4m.2).
+ */
+function deleteConsequence(rule: SpendRule, rules: SpendRule[]): string {
+  const successor = rules
+    .filter((r) => r.position > rule.position)
+    .sort((a, b) => a.position - b.position)[0]
+  const lead =
+    "Rules are evaluated top-to-bottom and the first match wins, so dispatches this rule " +
+    "catches today will instead "
+  if (!successor) {
+    return `${lead}fall through to default model routing. Every rule below it moves up one position.`
+  }
+  const chips = conditionChips(successor.condition)
+  const summary =
+    chips.length === 0 ? "any dispatch" : chips.map((c) => `${c.label}=${c.value}`).join(", ")
+  return `${lead}be tested against the rule now at position ${successor.position} (${summary}). Every rule below it moves up one position.`
+}
+
+// One mutation scope for every write that renumbers routing-rule positions --
+// reorder, delete, and the delete's Undo restore. TanStack Query runs same-scope
+// mutations one at a time in call order (MutationCache#canRun / #runNext), so a
+// restore is never dispatched while a reorder it would have to be consistent
+// with is still in flight (bu-mmdef established the scope; bu-6jv4m.2 brought
+// delete and restore into it).
+const RULE_ORDER_MUTATION_SCOPE = "spend-rule-order"
 
 // Common dispatch trigger sources operators may want to gate on. These mirror the
 // trigger_source values passed at the spawner call site (src/butlers/core/spawner.py
@@ -1592,13 +1800,41 @@ function SpendRulesSection() {
     refetchInterval,
   })
 
+  // The rule most recently deleted from this section, kept so the owner can put
+  // it back exactly where it was (bu-6jv4m.2). Cleared once restored, so the
+  // affordance cannot fire twice, and never set when the delete failed --
+  // offering Undo for something that was not destroyed is a lie.
+  const [restorable, setRestorable] = useState<SpendRule | null>(null)
+
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteRule(id),
-    onSuccess: () => {
+    // Delete, restore and reorder all renumber positions, so they share the
+    // reorder mutation scope below: TanStack serializes same-scope mutations in
+    // call order, and a restore that overtook an in-flight reorder would compute
+    // its position from ordering the server has already moved past.
+    scope: { id: RULE_ORDER_MUTATION_SCOPE },
+    mutationFn: (rule: SpendRule) => deleteRule(rule.id),
+    onSuccess: (_data, rule) => {
       queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
-      toast.success("Rule deleted")
+      setRestorable(rule)
+      toast.success(`Rule removed from position ${rule.position}`)
     },
     onError: () => toast.error("Failed to delete rule"),
+  })
+
+  const restoreMutation = useMutation({
+    scope: { id: RULE_ORDER_MUTATION_SCOPE },
+    mutationFn: (rule: SpendRule) =>
+      createRule({
+        position: rule.position,
+        condition: rule.condition,
+        action: rule.action,
+      }),
+    onSuccess: (_data, rule) => {
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
+      setRestorable(null)
+      toast.success(`Rule restored at position ${rule.position}`)
+    },
+    onError: () => toast.error("Failed to restore rule"),
   })
 
   const reorderMutation = useMutation({
@@ -1621,7 +1857,7 @@ function SpendRulesSection() {
     // last-applied write. List-scoped (one id for the whole table) is
     // sufficient: reorders only ever need to serialize against each other on
     // this same list, not per-row.
-    scope: { id: "spend-rule-reorder" },
+    scope: { id: RULE_ORDER_MUTATION_SCOPE },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["spend-rules"] }),
     onError: () => toast.error("Failed to reorder rule"),
   })
@@ -1674,6 +1910,44 @@ function SpendRulesSection() {
         {creating && (
           <CreateRuleForm onCancel={() => setCreating(false)} onCreated={() => setCreating(false)} />
         )}
+        {restorable && (
+          // Persistent rather than a toast action: restoring a first-match rule
+          // to the right position is the difference between an undo and a
+          // second, quieter mistake, so the affordance does not expire on a
+          // timer (bu-6jv4m.2).
+          <div
+            className="mb-3 flex flex-wrap items-center justify-between gap-3 border border-border bg-muted/30 px-3 py-2"
+            role="status"
+            data-testid="spend-rule-undo"
+          >
+            <p className="text-xs text-muted-foreground">
+              Removed the rule from position {restorable.position}. Undo puts it back at that exact
+              position, restoring the first-match order.
+            </p>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7"
+                data-testid="spend-rule-undo-button"
+                disabled={restoreMutation.isPending}
+                onClick={() => restoreMutation.mutate(restorable)}
+              >
+                {restoreMutation.isPending ? "Restoring…" : "Undo"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-7"
+                data-testid="spend-rule-undo-dismiss"
+                disabled={restoreMutation.isPending}
+                onClick={() => setRestorable(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
         {isLoading ? (
           <div className="space-y-2">
             {[1, 2].map((i) => (
@@ -1694,7 +1968,8 @@ function SpendRulesSection() {
         ) : (
           <RulesTable
             rules={rules}
-            onDelete={(id) => deleteMutation.mutate(id)}
+            onDelete={(rule) => deleteMutation.mutateAsync(rule)}
+            isDeleting={deleteMutation.isPending}
             onReorder={(id, position) => reorderMutation.mutate({ id, position })}
             isReordering={reorderMutation.isPending}
           />

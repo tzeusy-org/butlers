@@ -732,7 +732,16 @@ export interface TopSessionsResponse {
   meta: SpendFanoutMeta;
 }
 
-/** Cost analysis for a single scheduled task (GET /api/spend/by-schedule). */
+/**
+ * Cost analysis for a single scheduled task (GET /api/spend/by-schedule).
+ *
+ * Two groups that must never be rendered as one (bu-6jv4m.2): `total_runs`,
+ * `total_cost_usd` and `avg_cost_per_run` are MEASURED over the queried range;
+ * `projected_monthly_runs` and `projected_monthly_usd` are a FORECAST from the
+ * cron cadence, computed on the basis stated verbatim in `forecast_basis`.
+ * `projected_monthly_runs === 0` means the cron could not be parsed -- there is
+ * no forecast, which is not the same claim as "this schedule costs nothing".
+ */
 export interface ScheduleCost {
   schedule_name: string;
   butler: string;
@@ -740,8 +749,9 @@ export interface ScheduleCost {
   total_runs: number;
   total_cost_usd: number;
   avg_cost_per_run: number;
-  runs_per_day: number;
+  projected_monthly_runs: number;
   projected_monthly_usd: number;
+  forecast_basis: string;
 }
 
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */

@@ -551,25 +551,82 @@ def _resolve_optional_range(
     return start_at, end_exclusive
 
 
-def _estimate_runs_per_day(cron: str) -> float:
-    """Estimate average daily run frequency from a cron expression."""
+# ---------------------------------------------------------------------------
+# Schedule cadence basis (bu-6jv4m.2)
+#
+# Everything downstream that forecasts a monthly cost from a cron expression
+# multiplies by the cadence produced here, so the basis is stated once, in
+# public constants, and carried into the API response rather than left as an
+# unstated assumption. The bug this replaced was exactly that: the estimator
+# counted occurrences in the NEXT 24 HOURS (so a weekly cron read as 1 on
+# Mondays and 0 otherwise) and the router multiplied by a hardcoded 30.
+# ---------------------------------------------------------------------------
+
+#: Mean length of a Gregorian calendar month, in days (365.2425 / 12).
+AVERAGE_MONTH_DAYS = 365.2425 / 12
+
+#: Human-readable statement of the cadence basis, surfaced in the API response
+#: so a projection is never mistaken for measured history.
+CADENCE_BASIS_DESCRIPTION = (
+    "Projected runs are the cron expression's own cadence over an average "
+    "Gregorian calendar month (30.436875 days), sampled from a fixed anchor so "
+    "the forecast does not change with the time of the request."
+)
+
+#: Fixed sampling anchor: the start of a Gregorian 400-year leap cycle. Anchoring
+#: to a constant instant (rather than "now") makes the cadence a pure function of
+#: the cron string -- the same schedule projects the same monthly runs whenever
+#: the owner looks.
+_CADENCE_ANCHOR = datetime(2001, 1, 1, tzinfo=UTC)
+
+#: Sampling horizon: four years, long enough for weekly, monthly and yearly
+#: expressions to average out their calendar irregularities.
+_CADENCE_HORIZON_DAYS = 1461
+
+#: Occurrence cap. A high-frequency expression (hourly, per-minute) exits here
+#: long before the horizon; the rate is then read off the span actually sampled,
+#: which keeps the answer correct while bounding the work.
+_CADENCE_MAX_OCCURRENCES = 2000
+
+
+def _estimate_runs_per_month(cron: str, *, reference: datetime = _CADENCE_ANCHOR) -> float:
+    """Estimate how many times a cron expression fires in an average month.
+
+    The basis is ``AVERAGE_MONTH_DAYS`` (30.436875 days, the mean Gregorian
+    calendar month), described for callers by ``CADENCE_BASIS_DESCRIPTION``.
+    Occurrences are enumerated forward from ``reference`` until either the
+    four-year horizon or the occurrence cap is reached, and the observed rate is
+    scaled to one average month. ``reference`` defaults to a fixed anchor so the
+    result is a pure function of ``cron``; it is injectable only so tests can
+    demonstrate that invariance across several fixed clocks.
+
+    Returns ``0.0`` for an expression croniter cannot parse -- a schedule whose
+    cadence is unknown projects nothing rather than a fabricated number.
+    """
     if not croniter.is_valid(cron):
         return 0.0
 
-    start = datetime.now(UTC)
-    end = start + timedelta(days=1)
-    itr = croniter(cron, start)
+    horizon = reference + timedelta(days=_CADENCE_HORIZON_DAYS)
+    itr = croniter(cron, reference)
     count = 0
+    sampled_until = horizon
 
-    # Hard cap protects against pathological cron expressions.
-    while count < 5000:
+    while count < _CADENCE_MAX_OCCURRENCES:
         nxt = itr.get_next(datetime)
         if nxt.tzinfo is None:
             nxt = nxt.replace(tzinfo=UTC)
-        if nxt > end:
+        if nxt > horizon:
             break
         count += 1
-    return float(count)
+        if count == _CADENCE_MAX_OCCURRENCES:
+            # Cap reached: the sample covers (reference, nxt], not the full
+            # horizon, so measure the rate over that shorter span.
+            sampled_until = nxt
+
+    span_days = (sampled_until - reference).total_seconds() / 86400
+    if span_days <= 0 or count == 0:
+        return 0.0
+    return count / span_days * AVERAGE_MONTH_DAYS
 
 
 async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
@@ -822,7 +879,12 @@ async def schedule_costs(
                 "total_output_tokens": int(row["total_output_tokens"]),
                 "total_cached_input_tokens": int(row["total_cached_input_tokens"]),
                 "total_cache_creation_tokens": int(row["total_cache_creation_tokens"]),
-                "runs_per_day": _estimate_runs_per_day(cron),
+                # Forecast input, not measured history: the cadence the cron
+                # expression itself implies over an average calendar month
+                # (bu-6jv4m.2). Consumers must keep it separate from the
+                # measured totals above.
+                "runs_per_month": _estimate_runs_per_month(cron),
+                "forecast_basis": CADENCE_BASIS_DESCRIPTION,
             }
         )
 
