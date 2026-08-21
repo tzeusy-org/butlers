@@ -155,10 +155,37 @@ def migrated_db_url(postgres_container) -> str:
 
 
 @pytest.fixture
-def bootstrap_db_url(postgres_container, migrated_db_url: str) -> str:
+def rollback_db_url(postgres_container) -> str:
+    """Core chain stopped at ``core_175`` — the revision the rollback test owns.
+
+    Rollback is not uniformly available across the core chain: revisions after
+    ``core_175`` install privileged boundaries whose rollback is deliberately
+    bootstrap-only, so a chain migrated to head cannot be walked back to
+    ``core_174``.  Bounding the upgrade keeps this test on its own revision.
+    """
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        revisions={"core": "core_175"},
+    )
+
+
+@pytest.fixture
+def bootstrap_db_url(postgres_container, rollback_db_url: str) -> str:
     """Return the disposable control URL for privileged rollback only."""
-    db_name = urlparse(migrated_db_url).path.lstrip("/")
+    db_name = urlparse(rollback_db_url).path.lstrip("/")
     return migration_bootstrap_db_url(postgres_container, db_name)
+
+
+@pytest.fixture
+async def rollback_pool(rollback_db_url: str):
+    """asyncpg pool over the ``core_175``-bounded database (catalog reads only)."""
+    p = await asyncpg.create_pool(rollback_db_url, min_size=1, max_size=2)
+    try:
+        yield p
+    finally:
+        await p.close()
 
 
 @pytest.fixture
@@ -194,12 +221,11 @@ async def pool(migrated_db_url: str):
 
 
 async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
-    migrated_db_url: str,
     bootstrap_db_url: str,
-    pool: asyncpg.Pool,
+    rollback_pool: asyncpg.Pool,
 ) -> None:
     """core_175 drops only dead aggregates and restores their prior shape on rollback."""
-    table_exists = await pool.fetchval(
+    table_exists = await rollback_pool.fetchval(
         """
         SELECT EXISTS (
             SELECT 1
@@ -212,7 +238,7 @@ async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
 
     current_columns = {
         row["column_name"]
-        for row in await pool.fetch(
+        for row in await rollback_pool.fetch(
             """
             SELECT column_name
             FROM information_schema.columns
@@ -227,7 +253,7 @@ async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
 
     restored_columns = {
         row["column_name"]: row
-        for row in await pool.fetch(
+        for row in await rollback_pool.fetch(
             """
             SELECT column_name, data_type, is_nullable, column_default
             FROM information_schema.columns

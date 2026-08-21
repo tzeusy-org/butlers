@@ -134,10 +134,14 @@ def test_overlay_view_roundtrip_empty_and_not_updatable(postgres_container):
     bootstrap_engine = create_engine(bootstrap_db_url, isolation_level="AUTOCOMMIT")
 
     try:
-        # Upgrade to core head (includes core_140).  On a core-only DB the
+        # Stop at the migration under test (core_140).  Rollback is not
+        # uniformly available across the core chain: later revisions install
+        # privileged boundaries whose rollback is deliberately bootstrap-only,
+        # so migrating to head first would make the one-revision rollback below
+        # walk them.  On a core-only DB the
         # specialist ``state`` tables don't exist yet, so the view is created
         # via the NULL-returning stub UNION term (absent-specialist guard).
-        command.upgrade(core, "core@head")
+        command.upgrade(core, f"core@{_load_migration().revision}")
         assert _view_exists(db_url), "overlay view should exist after upgrade"
 
         with engine.connect() as conn:
@@ -161,10 +165,9 @@ def test_overlay_view_roundtrip_empty_and_not_updatable(postgres_container):
                         "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
                     )
                 )
-        # The managed rollback revokes the ordinary migration role's access to
-        # the installer, so its paired reapplication must stay on the same
-        # privileged test-control path.
-        command.upgrade(bootstrap_core, "core@head")
+        # The rollback above ran on the privileged test-control path, so its
+        # paired reapplication stays there too.
+        command.upgrade(bootstrap_core, f"core@{_load_migration().revision}")
 
         # The privileged reapplication owns the regenerated view, so inspect
         # its post-rollback shape with the disposable control connection.

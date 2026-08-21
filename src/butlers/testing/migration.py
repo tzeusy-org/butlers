@@ -291,6 +291,7 @@ def create_migrated_test_db(
     db_name: str,
     chains: list[str],
     schemas: dict[str, str] | None = None,
+    revisions: dict[str, str] | None = None,
 ) -> str:
     """Create a fresh DB and run real Alembic migrations against it.
 
@@ -315,6 +316,22 @@ def create_migrated_test_db(
         Example::
 
             schemas={"relationship": "relationship"}
+    revisions:
+        Optional mapping of chain name → target revision.  Chains not listed
+        migrate to head, which is what feature/integration fixtures want.
+
+        A test that rolls one migration back must bound the chain to the
+        revision it owns, because rollback is not uniformly available across a
+        chain: later revisions install privileged boundaries whose rollback is
+        deliberately restricted (``core_198``'s bootstrap-only runtime-attention
+        interface, ``core_196``'s restore-drill executor boundary).  Upgrading
+        to head and then downgrading past such a boundary asks for a rollback
+        the boundary is designed to refuse, which surfaces as an unrelated
+        migration failing in a test about some much older revision.
+
+        Example::
+
+            revisions={"core": "core_170"}
 
     Returns
     -------
@@ -339,14 +356,38 @@ def create_migrated_test_db(
 
     if schemas is None:
         schemas = {}
+    if revisions is None:
+        revisions = {}
 
     db_url = create_migration_db(postgres_container, db_name)
 
     for chain in chains:
         schema = schemas.get(chain)
-        asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+        revision = revisions.get(chain)
+        if revision is None:
+            asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+        else:
+            _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
 
     return db_url
+
+
+def _upgrade_chain_to_revision(
+    db_url: str, *, chain: str, schema: str | None, revision: str
+) -> None:
+    """Upgrade one chain to *revision* instead of its head.
+
+    ``run_migrations`` deliberately only knows "migrate to head" — a bounded
+    target is a test-harness concern, so it is resolved here rather than by
+    widening the production entry point.
+    """
+    # Local import avoids a circular import at module load time.
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, _normalize_schema
+
+    normalized_schema = _normalize_schema(schema)
+    config = _build_alembic_config(db_url, [chain], target_schema=normalized_schema)
+    command.upgrade(config, f"{chain}@{revision}")
 
 
 async def create_migrated_test_pool(
