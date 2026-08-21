@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers._sql_utils import escape_like_pattern as _escape_like_pattern
@@ -257,16 +258,18 @@ def test_user_credential_hit_returns_200_envelope():
     for field in (
         "id",
         "entity_id",
-        "type",
         "provider",
         "state",
-        "scopes_required",
-        "scopes_granted",
-        "feeds",
-        "breaks",
+        "capabilities_required",
+        "capabilities_granted",
+        "capabilities",
         "audit",
     ):
         assert field in data, f"missing field {field!r}"
+
+    # Content-bearing fields the content-blind contract removed.
+    for field in ("type", "label", "failure_tail", "scopes_required", "scopes_granted"):
+        assert field not in data, f"content-bearing field {field!r} must not be published"
 
     assert data["provider"] == "google"
     assert data["state"] == "ok"
@@ -297,6 +300,228 @@ def test_user_credential_hit_with_probe_test_result():
     data = resp.json()["data"]
     assert data["test"] is not None
     assert data["test"]["ok"] is True
+
+
+def test_user_credential_detail_publishes_capability_categories_not_scopes():
+    """Google scope evidence reaches the wire only as capability categories."""
+    entity_id = str(uuid4())
+    refreshed_at = _NOW - timedelta(days=2)
+    user_row = _make_entity_info_row(entity_id=entity_id, last_test_ok=True)
+    catalogue_row = _make_row(
+        provider="google",
+        required_scopes=[
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/gmail.readonly",
+        ],
+    )
+    granted_row = _make_row(
+        entity_id=entity_id,
+        granted_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+    )
+    expiry_row = _make_row(entity_id=entity_id, last_token_refresh_at=refreshed_at)
+    audit_row = _make_row(
+        target="u:google",
+        ts=_NOW,
+        actor="owner",
+        action="verified",
+        note="checked",
+    )
+    mock_db = _make_db_manager_for_per_credential(user_row=user_row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        if "granted_scopes" in sql:
+            return [granted_row]
+        if "last_token_refresh_at" in sql:
+            return [expiry_row]
+        if "public.audit_log" in sql:
+            assert args == (["u:google"], 10)
+            return [audit_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["capabilities_required"] == ["calendar", "gmail"]
+    assert data["capabilities_granted"] == ["calendar"]
+    assert datetime.fromisoformat(data["expires"]) == refreshed_at + timedelta(days=7)
+    assert [event["action"] for event in data["audit"]] == ["verified"]
+
+
+def test_user_credential_detail_maps_unknown_google_scope_to_other():
+    """An unrecognised Google scope falls to 'other' rather than leaking through."""
+    user_row = _make_entity_info_row(last_test_ok=True)
+    catalogue_row = _make_row(
+        provider="google",
+        required_scopes=["https://www.googleapis.com/auth/sentinel-unmapped-scope"],
+    )
+    mock_db = _make_db_manager_for_per_credential(user_row=user_row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["capabilities_required"] == ["other"]
+    assert "sentinel-unmapped-scope" not in response.text
+
+
+def test_user_credential_detail_maps_non_google_scopes_to_connectivity():
+    """Non-Google providers have one generic live check: 'connectivity'."""
+    user_row = _make_entity_info_row(info_type="telegram_bot_token", last_test_ok=True)
+    catalogue_row = _make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])
+    mock_db = _make_db_manager_for_per_credential(user_row=user_row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/telegram_bot")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["capabilities_required"] == ["connectivity"]
+    assert data["capabilities_granted"] == []
+    assert "telegram:bot-token" not in response.text
+
+
+def test_user_credential_detail_omits_every_raw_evidence_sentinel():
+    """No raw scope, credential type, label, or audit/probe/failure text ships.
+
+    Each evidence source is planted with a distinct sentinel; none may appear
+    anywhere in the response bytes (owner decision, 2026-08-13).
+    """
+    entity_id = str(uuid4())
+    user_row = _make_entity_info_row(
+        entity_id=entity_id,
+        info_type="google_oauth_refresh",
+        label="sentinel-label",
+        last_test_ok=False,
+        last_test_message="sentinel-failure-tail",
+    )
+    probe_row = _make_probe_row(ok=False, code=401, message="sentinel-probe-message")
+    catalogue_row = _make_row(
+        provider="google",
+        required_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+    )
+    granted_row = _make_row(
+        entity_id=entity_id,
+        granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+    )
+    audit_row = _make_row(
+        target="u:google",
+        ts=_NOW,
+        actor="owner",
+        action="verified",
+        note="sentinel-audit-note",
+    )
+    capability_row = _make_row(
+        credential_key="google_oauth_refresh:sentinel-capability",
+        ok=False,
+        code=403,
+        message="sentinel-capability-message",
+        recorded_at=_NOW,
+        latency_ms=12,
+    )
+    mock_db = _make_db_manager_for_per_credential(user_row=user_row, probe_row=probe_row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return [catalogue_row]
+        if "granted_scopes" in sql:
+            return [granted_row]
+        if "public.audit_log" in sql:
+            return [audit_row]
+        if "secret_probe_log" in sql:
+            return [capability_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 200, response.text
+    body = response.text
+    for sentinel in (
+        "calendar.readonly",  # raw required scope
+        "gmail.readonly",  # raw granted scope
+        "googleapis.com",  # provider-supplied scope namespace
+        "google_oauth_refresh",  # persisted credential type
+        "sentinel-label",
+        "sentinel-failure-tail",
+        "sentinel-probe-message",
+        "sentinel-capability-message",
+        "sentinel-audit-note",
+        "sentinel-capability",  # unmapped capability name
+    ):
+        assert sentinel not in body, f"raw evidence {sentinel!r} leaked into the response"
+
+    data = response.json()["data"]
+    assert data["capabilities_required"] == ["calendar"]
+    assert data["capabilities_granted"] == ["gmail"]
+    assert [entry["capability"] for entry in data["capabilities"]] == ["other"]
+    assert data["capabilities"][0]["test"] == {
+        "ok": False,
+        "code": 403,
+        "at": data["capabilities"][0]["test"]["at"],
+        "latency_ms": 12,
+    }
+    assert set(data["test"]) == {"ok", "code", "at", "latency_ms"}
+    assert set(data["audit"][0]) == {"ts", "actor", "action"}
+
+
+def test_user_credential_returns_503_when_audit_source_fails():
+    """An audit-read failure is unavailable evidence, never empty history."""
+    mock_db = _make_db_manager_for_per_credential(user_row=_make_entity_info_row())
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "public.audit_log" in sql:
+            raise RuntimeError("audit storage unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 503
+    assert "audit" in response.json()["detail"].lower()
+    assert "storage unavailable" not in response.text
+
+
+def test_user_credential_returns_503_when_audit_table_is_unavailable():
+    """A missing audit table is unavailable evidence, not empty history."""
+    mock_db = _make_db_manager_for_per_credential(user_row=_make_entity_info_row())
+    shared_pool = mock_db.credential_shared_pool.return_value
+
+    async def _fetch(sql, *args):
+        if "public.audit_log" in sql:
+            raise UndefinedTableError("audit table unavailable")
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 503
+    assert "audit" in response.json()["detail"].lower()
+    assert "table unavailable" not in response.text
 
 
 def test_spotify_detail_is_excluded_before_identity_lookup():

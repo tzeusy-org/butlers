@@ -814,10 +814,18 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 
 #### Scenario: Per-credential read endpoints
 - **WHEN** `GET /api/secrets/user/<provider>?identity=<uuid>` is called
-- **THEN** the response is `ApiResponse<UserSecret>` with the full evidence payload: `state`, `fingerprint`, `issued`, `expires`, `last_verified`, `last_used`, `scopes_required`, `scopes_granted`, `feeds`, `failure_tail`, `breaks[]`, `test` (most recent `TestResult`), `audit[]` (last 10), and `webhook` (when `kind=webhook`)
+- **THEN** the response is `ApiResponse<UserSecretDetail>` with the content-blind evidence payload: `id`, `entity_id`, `provider`, `state`, `fingerprint`, `issued`, `expires`, `last_verified`, `capabilities_required`, `capabilities_granted`, `test` (most recent probe outcome), `audit[]` (last 10), and `capabilities[]` (per-capability probe outcome)
+- **AND** capability evidence SHALL be published ONLY as members of the fixed vocabulary `calendar`, `gmail`, `drive`, `health`, `connectivity`, `other`; an input that maps to no known family SHALL become `other`, and the projection SHALL be a strict allowlist rather than a filtered passthrough of a persisted or provider-supplied string
+- **AND** the payload SHALL NOT contain any raw OAuth scope identifier, the persisted `entity_info.type` or `label`, the failure tail, a probe message, or an audit note — the credential's capabilities are published, never its content
+- **AND** the same content-blind payload backs `POST /api/secrets/user/<provider>/rotate`, so no mutation response reintroduces those fields
 - **AND** `GET /api/secrets/system/<key>` returns `ApiResponse<SystemSecret>` with `key`, `category`, `row_state` (one of `shared` / `local` / `missing`), `fingerprint`, `description`, `source`, `target`, `last_verified`, `used_by[]`, `breaks[]`, `test`, `audit[]`
 - **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliRuntime>` with `id`, `label`, `fingerprint`, `state`, `issued`, `expires`, `last_used`, `scopes_required`, `scopes_granted`, `test`
 - **AND** none of these endpoints return raw secret values; values are returned only by explicit mutation endpoints in the specific cases defined below
+
+#### Scenario: User-credential detail refuses to fabricate empty audit history
+- **WHEN** `GET /api/secrets/user/<provider>` cannot read `public.audit_log` (missing table or a query failure)
+- **THEN** the endpoint SHALL return a sanitized `503` naming only the unavailable source, never an empty `audit[]` presented as a truthful history, and never the underlying database error text
+- **AND** `POST /api/secrets/user/<provider>/rotate`, `/disconnect`, `/probe`, and `/reauthorize` SHALL retain their successful mutation semantics while the audit source is unavailable — audit strictness is confined to this evidence read
 
 #### Scenario: Probe-log LRU integration
 - **WHEN** any per-credential read endpoint computes the `test` field for a
