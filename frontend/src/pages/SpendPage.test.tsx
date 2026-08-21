@@ -2438,6 +2438,65 @@ describe("SpendPage — routing-rule deletion safety (bu-6jv4m.2)", () => {
     expect(restored[2].id).toBe("rule-3")
   })
 
+  it("does not promise that Undo restores the first-match order", async () => {
+    // The rule is re-inserted at the position it was removed from, but an
+    // intervening create/reorder means that is not necessarily where it sat.
+    // The affordance may claim what it does, not what it cannot guarantee.
+    await openDeleteDialog("rule-2")
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+
+    const banner = await screen.findByTestId("spend-rule-undo")
+    const text = banner.textContent ?? ""
+    expect(text).toContain("position 2")
+    expect(text).not.toMatch(/exact/i)
+    expect(text).not.toMatch(/restoring the first-match order/i)
+  })
+
+  it("surfaces the removed rule's condition and action when the restore FAILS", async () => {
+    // The rule is already gone from the server, so a bare "failed to restore"
+    // would destroy it and tell the owner nothing. The banner must keep the
+    // preimage on screen, and Undo must stay retryable.
+    await openDeleteDialog("rule-2")
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-delete-dialog-confirm"))
+    })
+    await waitFor(() => {
+      expect(store.snapshot()).toHaveLength(2)
+    })
+
+    const failing = apiFetchMock.getMockImplementation()!
+    apiFetchMock.mockImplementation((path: string, opts?: RequestInit) => {
+      if (path === "/spend/rules" && opts?.method === "POST") {
+        return Promise.reject(new Error("boom"))
+      }
+      return failing(path, opts)
+    })
+
+    const undo = await screen.findByTestId("spend-rule-undo-button")
+    await act(async () => {
+      fireEvent.click(undo)
+    })
+
+    const error = await screen.findByTestId("spend-rule-undo-error")
+    const text = error.textContent ?? ""
+    expect(text).toContain("complexity=workhorse")
+    expect(text).toContain("model=claude-sonnet")
+    // Still retryable -- the affordance is not consumed by a failure.
+    expect(screen.getByTestId("spend-rule-undo-button")).toBeTruthy()
+
+    // And retrying against a working server does restore it.
+    apiFetchMock.mockImplementation(failing)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("spend-rule-undo-button"))
+    })
+    await waitFor(() => {
+      expect(store.snapshot()).toHaveLength(3)
+    })
+    expect(postBodies[postBodies.length - 1].position).toBe(2)
+  })
+
   it("clears the Undo affordance once used, so it cannot restore twice", async () => {
     await openDeleteDialog("rule-2")
     await act(async () => {

@@ -1537,6 +1537,21 @@ function deleteConsequence(rule: SpendRule, rules: SpendRule[]): string {
   return `${lead}be tested against the rule now at position ${successor.position} (${summary}). Every rule below it moves up one position.`
 }
 
+/**
+ * One-line preimage of a rule, in the same vocabulary the table and the confirm
+ * dialog use. Shown when a restore FAILS: the rule is already gone from the
+ * server at that point, so the only thing standing between the owner and a
+ * permanently lost rule is a message they can re-create it from (bu-6jv4m.2).
+ */
+function describeRule(rule: SpendRule): string {
+  const join = (entries: { label: string; value: string }[], empty: string) =>
+    entries.length === 0 ? empty : entries.map((e) => `${e.label}=${e.value}`).join(", ")
+  return `matches ${join(conditionChips(rule.condition), "any dispatch")}; does ${join(
+    actionChips(rule.action),
+    "nothing",
+  )}`
+}
+
 // One mutation scope for every write that renumbers routing-rule positions --
 // reorder, delete, and the delete's Undo restore. TanStack Query runs same-scope
 // mutations one at a time in call order (MutationCache#canRun / #runNext), so a
@@ -1801,10 +1816,14 @@ function SpendRulesSection() {
   })
 
   // The rule most recently deleted from this section, kept so the owner can put
-  // it back exactly where it was (bu-6jv4m.2). Cleared once restored, so the
-  // affordance cannot fire twice, and never set when the delete failed --
-  // offering Undo for something that was not destroyed is a lie.
+  // it back (bu-6jv4m.2). Cleared once restored, so the affordance cannot fire
+  // twice, and never set when the delete failed -- offering Undo for something
+  // that was not destroyed is a lie.
   const [restorable, setRestorable] = useState<SpendRule | null>(null)
+  // Set when a restore fails. The rule is gone from the server by then, so the
+  // banner has to keep showing its condition and action: a failure the owner
+  // cannot read the rule back out of has destroyed it and told no one.
+  const [restoreError, setRestoreError] = useState<string | null>(null)
 
   const deleteMutation = useMutation({
     // Delete, restore and reorder all renumber positions, so they share the
@@ -1816,6 +1835,7 @@ function SpendRulesSection() {
     onSuccess: (_data, rule) => {
       queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
       setRestorable(rule)
+      setRestoreError(null)
       toast.success(`Rule removed from position ${rule.position}`)
     },
     onError: () => toast.error("Failed to delete rule"),
@@ -1829,12 +1849,22 @@ function SpendRulesSection() {
         condition: rule.condition,
         action: rule.action,
       }),
-    onSuccess: (_data, rule) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
       setRestorable(null)
-      toast.success(`Rule restored at position ${rule.position}`)
+      setRestoreError(null)
+      // Deliberately does not claim the first-match order was put back: the
+      // rule is re-inserted at the position it was removed from, which is only
+      // where it used to sit if nothing else moved in the meantime.
+      toast.success("Rule restored")
     },
-    onError: () => toast.error("Failed to restore rule"),
+    onError: (_error, rule) => {
+      // Keep `restorable` set so Undo can be retried, and surface the rule
+      // itself -- a bare "failed" would leave the owner with a deleted rule and
+      // no record of what it was.
+      setRestoreError(describeRule(rule))
+      toast.error("Failed to restore rule; its condition and action are shown above")
+    },
   })
 
   const reorderMutation = useMutation({
@@ -1920,10 +1950,21 @@ function SpendRulesSection() {
             role="status"
             data-testid="spend-rule-undo"
           >
-            <p className="text-xs text-muted-foreground">
-              Removed the rule from position {restorable.position}. Undo puts it back at that exact
-              position, restoring the first-match order.
-            </p>
+            <div className="min-w-0 space-y-1">
+              <p className="text-xs text-muted-foreground">
+                Removed the rule that was at position {restorable.position}. Undo re-creates it at
+                position {restorable.position} of the current order; if the order has changed since,
+                that is not necessarily where it sat.
+              </p>
+              {restoreError && (
+                // The wrapper already carries role="status"; a nested alert
+                // would double-announce.
+                <p className="text-xs text-destructive" data-testid="spend-rule-undo-error">
+                  Restore failed. The removed rule {restoreError}. Retry Undo, or re-create it from
+                  this description.
+                </p>
+              )}
+            </div>
             <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
@@ -1941,7 +1982,10 @@ function SpendRulesSection() {
                 className="text-xs h-7"
                 data-testid="spend-rule-undo-dismiss"
                 disabled={restoreMutation.isPending}
-                onClick={() => setRestorable(null)}
+                onClick={() => {
+                  setRestorable(null)
+                  setRestoreError(null)
+                }}
               >
                 Dismiss
               </Button>
