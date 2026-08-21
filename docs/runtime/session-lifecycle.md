@@ -62,7 +62,7 @@ The session log supports several query patterns:
 - **`sessions_summary(pool, period)`** --- Aggregate statistics grouped by model for `today`, `7d`, or `30d`. Returns total sessions, total input/output tokens, and per-model token breakdowns.
 - **`sessions_daily(pool, from_date, to_date)`** --- Per-day session counts and token usage with per-model breakdowns. Powers the dashboard usage chart.
 - **`top_sessions(pool, limit)`** --- Highest-token completed sessions, ordered by total tokens descending.
-- **`schedule_costs(pool)`** --- Joins `scheduled_tasks` with `sessions` via the `trigger_source` convention to compute per-schedule token usage, including estimated `runs_per_day` from the cron expression.
+- **`schedule_costs(pool)`** --- Joins `scheduled_tasks` with `sessions` via the `trigger_source` convention to compute per-schedule token usage, plus a forecast: `runs_per_month`, the cron expression's own cadence over an average Gregorian calendar month (30.436875 days), and `forecast_basis`, the prose statement of that basis. The cadence is sampled from a fixed anchor, so it is a pure function of the cron string and does not change with the time of the request; an unparseable cron yields `0.0` rather than raising. Keep it separate from the measured totals in the same row.
 
 ## JSONB Handling
 
