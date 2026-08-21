@@ -294,6 +294,22 @@ class Issue(BaseModel):
     occurrences: int = 1
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
+    #: The epoch identifying this condition's CURRENT recurrence, which is what
+    #: an acknowledgement is held against (bu-6jv4m.3). The two lanes disagree
+    #: about which timestamp that is, and conflating them was the bug:
+    #:
+    #: - audit groups: ``last_seen_at`` -- a newer error IS a new occurrence,
+    #:   so an ack lapses exactly when the group recurs (core_152 behaviour,
+    #:   preserved);
+    #: - reachability: the outage episode's ONSET from
+    #:   ``public.butler_reachability_conditions`` -- stable across every poll
+    #:   of one uninterrupted outage, and newer only after a real recovery +
+    #:   re-failure. Its ``last_seen_at`` is the probe clock and advances every
+    #:   poll, so holding the ack against it made acknowledgement impossible.
+    #:
+    #: ``None`` falls back to ``last_seen_at`` so issue kinds that carry no
+    #: separate condition identity keep working unchanged.
+    recurrence_at: datetime | None = None
     butlers: list[str] = Field(default_factory=list)
     dismissed: bool = False
     #: Internal override for audit-derived groups (bu-hmdqz.4). When set,
@@ -311,6 +327,44 @@ class Issue(BaseModel):
         if self.group_key is not None:
             return self.group_key
         return compute_issue_key(self.type, self.butler)
+
+
+class AuditIssueGroupRef(BaseModel):
+    """Server-computed Issues-group identity for one audit-log failure row.
+
+    The exact evidence door behind ``GET /api/issues/group-for-audit/{id}``
+    (bu-6jv4m.3). The Audit Log used to link a failure to ``/issues?q=<first
+    line of the error>``, which the Issues page then substring-matched against
+    a feed already fetched under its own default window -- fuzzy in the needle
+    AND in the haystack, and able to land on an empty page that read as an
+    all-clear.
+
+    Absence is a stated fact here, never an empty payload: ``found=False``
+    always carries a ``reason``, and ``issues_href`` is ``None`` rather than a
+    door to a group that does not exist. A lookup that could not be performed
+    is a 503 from the endpoint, never a ``found=False`` -- "we could not check"
+    and "there is nothing there" are different claims.
+    """
+
+    audit_id: int
+    #: The window this answer is scoped to, and the window the door preserves.
+    #: Auto-widened server-side to one that actually contains the audit row
+    #: when the caller does not pin it, so an old failure never resolves
+    #: against a seven-day view that structurally cannot contain its group.
+    window: str
+    found: bool
+    #: Why there is no group, when ``found`` is False. ``None`` when found.
+    reason: str | None = None
+    issue_key: str | None = None
+    severity: str | None = None
+    error_message: str | None = None
+    occurrences: int | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    butlers: list[str] = Field(default_factory=list)
+    #: Exact-group deep link, e.g. ``/issues?window=30d&group=<issue_key>``.
+    #: ``None`` whenever ``found`` is False.
+    issues_href: str | None = None
 
 
 class DismissIssueRequest(BaseModel):

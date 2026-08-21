@@ -212,6 +212,59 @@ def build_audit_group_occurrences_query() -> str:
     return normalized_cte + _OCCURRENCES_SELECT
 
 
+_GROUP_FOR_ROW_TAIL = """,
+target_row AS (
+    SELECT error_summary FROM normalized_errors WHERE id = $1
+),
+windowed AS (
+    SELECT n.*
+    FROM normalized_errors n
+    JOIN target_row t ON t.error_summary = n.error_summary
+    WHERE ($2::timestamptz IS NULL OR n.created_at >= $2)
+)
+SELECT
+    error_summary,
+    MIN(created_at) AS first_seen_at,
+    MAX(created_at) AS last_seen_at,
+    COUNT(*)::int AS occurrences,
+    ARRAY_AGG(DISTINCT butler ORDER BY butler) AS butlers,
+    BOOL_OR(is_schedule) AS has_schedule,
+    ARRAY_REMOVE(
+        ARRAY_AGG(DISTINCT schedule_name ORDER BY schedule_name),
+        NULL
+    ) AS schedule_names
+FROM windowed
+GROUP BY error_summary"""
+
+
+def build_audit_group_for_row_query() -> str:
+    """Return SQL resolving ONE ``public.audit_log`` row id to its current group.
+
+    The exact Audit -> Issues evidence door (bu-6jv4m.3). The Audit Log
+    previously linked a failure row to ``/issues?q=<first line of the error>``,
+    which reconstructed the grouping key client-side (approximately) and then
+    substring-matched a feed already bounded by its own default window. This
+    resolves the same question the way the feed itself does -- through the
+    shared ``normalized_errors`` CTE -- so the answer can never disagree with
+    the group the Issues page would show.
+
+    Two parameters, in order:
+        1. the ``public.audit_log`` row id to resolve
+        2. window lower bound as ``timestamptz``, or ``NULL`` for all history
+
+    ``target_row`` finds the row's normalized ``error_summary`` over ALL
+    history (a row outside the requested window still has an identity), then
+    ``windowed`` re-derives that one group under the caller's bound. The result
+    is at most one row, shaped exactly like ``build_audit_group_query``'s so
+    :func:`issue_from_audit_group_row` projects it unchanged. **Zero rows is a
+    real answer** -- the row is not a failure, or its group has no occurrences
+    inside the window -- and the caller must report which, not render the
+    emptiness as calm.
+    """
+    normalized_cte = _AUDIT_NORMALIZED_CTE.format(where_extra="")
+    return normalized_cte + _GROUP_FOR_ROW_TAIL
+
+
 # ---------------------------------------------------------------------------
 # Projection helpers
 # ---------------------------------------------------------------------------
@@ -339,6 +392,11 @@ def issue_from_audit_group_row(row: object) -> Issue:
         occurrences=int(row["occurrences"] or 1),  # type: ignore[index]
         first_seen_at=row["first_seen_at"],  # type: ignore[index]
         last_seen_at=row["last_seen_at"],  # type: ignore[index]
+        # For this lane the recurrence epoch IS the newest occurrence: a newer
+        # error under the same normalized message is, by definition, a new
+        # occurrence that should lapse an acknowledgement (bu-6jv4m.3 made the
+        # epoch explicit; the behaviour here is core_152's, unchanged).
+        recurrence_at=row["last_seen_at"],  # type: ignore[index]
         butlers=butlers,
         # bu-hmdqz.4: the group's identity key is the hash of the full
         # error_summary alone -- NOT compute_issue_key(type, butler), which

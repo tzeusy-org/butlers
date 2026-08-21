@@ -10,12 +10,14 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 
 import anyio
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.audit_grouping import (
+    build_audit_group_for_row_query,
     build_audit_group_occurrences_query,
     build_audit_group_query,
     issue_from_audit_group_row,
@@ -33,12 +35,18 @@ from butlers.api.deps import (
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    AuditIssueGroupRef,
     DismissIssueRequest,
     Issue,
     PaginatedResponse,
     PaginationMeta,
 )
 from butlers.api.models.audit import AuditLogEntry
+from butlers.api.reachability_ledger import (
+    ReachabilityEpisode,
+    open_condition_onset,
+    record_probe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,25 @@ _WINDOW_RE = re.compile(r"^(\d+)(h|d)$")
 # (``public.audit_log`` grouped errors + ``public.dismissed_issues`` acks).
 _SOURCE_AUDIT_GROUPS = "audit-groups"
 _SOURCE_ACKS = "acks"
+# bu-6jv4m.3: the condition ledger is a third DB-backed source. When it is
+# unavailable the feed falls back to request-time onsets, which silently
+# revives the "every poll is a new occurrence" bug -- so the fallback is
+# always accompanied by this flag rather than passing for durable truth.
+_SOURCE_REACHABILITY_LEDGER = "reachability-ledger"
+
+# Windows offered by the Issues page's own filter bar, narrowest first. The
+# audit -> issues door picks the narrowest one that actually CONTAINS the
+# failure being resolved, so an old row never resolves against a view that
+# structurally cannot hold its group (bu-6jv4m.3).
+_ISSUE_WINDOW_LADDER = ("24h", "7d", "30d", "all")
+
+# ``AuditIssueGroupRef.reason`` values. Absence is always stated, never implied
+# by an empty payload.
+_REASON_NOT_A_FAILURE = "not-a-failure"
+_REASON_NO_CURRENT_GROUP = "no-current-group"
+
+# Ack keys for the live reachability lane, ``compute_issue_key("unreachable", …)``.
+_REACHABILITY_KEY_PREFIX = "unreachable::"
 
 
 def _is_missing_relation_error(exc: Exception) -> bool:
@@ -205,23 +232,80 @@ async def _list_dismissed_acks(
     return {str(row["issue_key"]): row["last_seen_at"] for row in rows}
 
 
+async def _record_reachability_episodes(
+    db: DatabaseManager | None,
+    down: dict[str, str],
+    recovered: list[str],
+    tracker: DegradedSources | None = None,
+) -> dict[str, ReachabilityEpisode]:
+    """Apply this poll to the condition ledger and return the open episodes.
+
+    The probe is the only reachability signal this system has, so ``GET
+    /api/issues`` is also the only writer of ``public.butler_reachability_conditions``
+    (bu-6jv4m.3). That makes this GET stateful, deliberately: without a
+    persisted episode the feed has no condition identity at all, and an
+    acknowledgement cannot outlive a single request.
+
+    ``tracker``: a genuine failure flags ``reachability-ledger`` and the caller
+    falls back to request-time onsets. That fallback re-exposes the very bug
+    this ledger fixes, so it is never allowed to pass silently -- an empty
+    result would otherwise read as "your acknowledgement is holding". A
+    legitimately-absent (pre-migration) table is not a degraded source.
+    """
+    if db is None or (not down and not recovered):
+        return {}
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        return {}
+
+    try:
+        return await record_probe(pool, down=down, recovered=recovered)
+    except Exception as exc:
+        if tracker is not None and not _is_missing_relation_error(exc):
+            tracker.mark(
+                _SOURCE_REACHABILITY_LEDGER,
+                msg="Failed to record butler reachability conditions",
+            )
+        else:
+            logger.warning("Failed to record butler reachability conditions", exc_info=True)
+        return {}
+
+
+def _recurrence_epoch(issue: Issue) -> datetime | None:
+    """Return the timestamp that defines *issue*'s current recurrence.
+
+    See :attr:`butlers.api.models.Issue.recurrence_at` for why this is not
+    simply ``last_seen_at``.
+    """
+    return issue.recurrence_at if issue.recurrence_at is not None else issue.last_seen_at
+
+
 def _still_acked(issue: Issue, acked_last_seen_at: datetime | None) -> bool:
     """Return True when an acked issue has NOT recurred since it was acked.
 
     Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15): a
-    dismissal only holds while the issue's ``last_seen_at`` is no newer than
-    the value recorded at ack time. If the issue recurs (its ``last_seen_at``
-    advances), the ack is considered stale and the issue reappears in the
-    active feed automatically — the owner never has to remember to restore a
+    dismissal only holds while the issue's recurrence epoch is no newer than
+    the value recorded at ack time. If the issue recurs (that epoch advances),
+    the ack is considered stale and the issue reappears in the active feed
+    automatically — the owner never has to remember to restore a
     mistakenly-dismissed-forever group.
+
+    bu-6jv4m.3: the compared value is :func:`_recurrence_epoch`, not
+    ``last_seen_at``. For audit groups the two are identical, so that lane is
+    unchanged. For reachability they are not: ``last_seen_at`` is the probe
+    clock and advances every poll, which made this comparison
+    ``now <= ack_time`` — false immediately, so an outage could never stay
+    acknowledged. Its recurrence epoch is the outage episode's onset instead.
 
     Falls back to the old dismiss-forever behavior (always still-acked) when
     either side lacks a timestamp to compare, since there is no recurrence
     signal to act on.
     """
-    if acked_last_seen_at is None or issue.last_seen_at is None:
+    epoch = _recurrence_epoch(issue)
+    if acked_last_seen_at is None or epoch is None:
         return True
-    return _last_seen_epoch(issue.last_seen_at) <= _last_seen_epoch(acked_last_seen_at)
+    return _last_seen_epoch(epoch) <= _last_seen_epoch(acked_last_seen_at)
 
 
 def _require_pool(db: DatabaseManager | None):
@@ -355,14 +439,29 @@ async def list_issues(
     )
     audit_issues, audit_groups_truncated = audit_result
 
+    # Fold this poll into the durable condition ledger BEFORE projecting the
+    # issues, so each unreachable butler can be stamped with its outage's real
+    # onset instead of this request's clock (bu-6jv4m.3). Recovered butlers
+    # close their open condition in the same call, which is what makes a later
+    # down transition a genuinely new recurrence.
+    down_issues = [issue for issue in reachability_results if issue is not None]
+    down_details = {issue.butler: issue.description for issue in down_issues}
+    recovered = [info.name for info in configs if info.name not in down_details]
+    episodes = await _record_reachability_episodes(db, down_details, recovered, tracker)
+
     now = datetime.now(UTC)
     issues: list[Issue] = []
-    for issue in reachability_results:
-        if issue is None:
-            continue
+    for issue in down_issues:
+        episode = episodes.get(issue.butler)
         issue.error_message = issue.description
-        issue.occurrences = 1
-        issue.first_seen_at = now
+        # No episode means the ledger was unavailable (already flagged above).
+        # Falling back to `now` over-reports rather than fabricating a durable
+        # acknowledgement, which is the safe direction for a failure feed.
+        onset = episode.started_at if episode is not None else now
+        issue.occurrences = episode.observations if episode is not None else 1
+        issue.first_seen_at = onset
+        issue.recurrence_at = onset
+        # Honest: when this butler was last PROBED, which is right now.
         issue.last_seen_at = now
         issue.butlers = [issue.butler]
         issues.append(issue)
@@ -412,6 +511,53 @@ async def list_issues(
     return ApiResponse[list[Issue]](data=issues, meta=meta)
 
 
+async def _reachability_ack_watermark(
+    pool,
+    issue_key: str,
+    posted: datetime | None,
+) -> datetime | None:
+    """Return the watermark to persist for *issue_key*'s acknowledgement.
+
+    For every lane except reachability this is simply the posted value. For
+    reachability it is the open outage episode's onset read from the ledger:
+    the posted value there is the probe clock, and storing it would create an
+    acknowledgement guaranteed to lapse on the next poll (bu-6jv4m.3).
+
+    With no open episode the butler is not currently down, so there is no
+    server-side epoch to prefer and the posted value stands.
+
+    Raises:
+        HTTPException: 503 when the ledger cannot be read. Falling back to the
+            posted value would silently record a broken acknowledgement — the
+            exact failure this bead exists to remove — so this fails fast
+            instead. A legitimately-absent (pre-migration) table is not a
+            failure and yields the posted value.
+    """
+    if not issue_key.startswith(_REACHABILITY_KEY_PREFIX):
+        return posted
+
+    butler = issue_key[len(_REACHABILITY_KEY_PREFIX) :]
+    if not butler:
+        return posted
+
+    try:
+        onset = await open_condition_onset(pool, butler)
+    except Exception as exc:
+        if _is_missing_relation_error(exc):
+            logger.warning("Reachability ledger not migrated yet", exc_info=True)
+            return posted
+        logger.warning("Failed to read reachability condition for ack", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Reachability condition ledger unavailable; "
+                "acknowledgement was not recorded so it cannot silently lapse"
+            ),
+        ) from exc
+
+    return onset if onset is not None else posted
+
+
 @router.post("/dismiss", response_model=ApiResponse[dict], status_code=200)
 async def dismiss_issue(
     body: DismissIssueRequest = Body(...),
@@ -425,12 +571,19 @@ async def dismiss_issue(
     acknowledgement of the same key updates the existing row.
 
     Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15): the
-    caller should pass the issue's current ``last_seen_at`` in
-    ``body.last_seen_at`` so the ack records a recurrence watermark. If the
-    group's ``last_seen_at`` later advances past this value (a genuine new
-    occurrence), :func:`list_issues` automatically un-acks it — this is not
+    caller should pass the issue's current recurrence epoch in
+    ``body.last_seen_at`` so the ack records a recurrence watermark. If that
+    epoch later advances past this value (a genuine new occurrence),
+    :func:`list_issues` automatically un-acks it — this is not
     dismiss-forever. Omitting ``last_seen_at`` falls back to dismiss-forever
     for that row, since there is no watermark to compare against.
+
+    Reachability keys are the exception (bu-6jv4m.3): their watermark is
+    derived SERVER-side from the open outage episode, and the posted value is
+    ignored. A client that posts the issue's ``last_seen_at`` for this lane is
+    posting the probe clock, which the very next poll outruns — so honouring it
+    would record an acknowledgement that cannot survive. See
+    :func:`_reachability_ack_watermark`.
     """
     key = (body.issue_key or "").strip()
     if not key:
@@ -438,6 +591,7 @@ async def dismiss_issue(
 
     pool = _require_pool(db)
     dismissed_by = body.dismissed_by if body.dismissed_by not in (None, "") else "dashboard_user"
+    watermark = await _reachability_ack_watermark(pool, key, body.last_seen_at)
 
     await pool.execute(
         """
@@ -449,7 +603,7 @@ async def dismiss_issue(
         """,
         key,
         dismissed_by,
-        body.last_seen_at,
+        watermark,
     )
 
     return ApiResponse(data={"issue_key": key, "dismissed": True}, meta=ApiMeta())
@@ -488,6 +642,151 @@ async def undismiss_issue(
         )
 
     return ApiResponse(data={"issue_key": key, "deleted": True}, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/issues/group-for-audit/{audit_id} — exact Audit → Issues door
+# ---------------------------------------------------------------------------
+
+
+def _window_containing(ts: datetime, now: datetime) -> str:
+    """Return the narrowest window from the ladder that contains *ts*.
+
+    The Issues page's filter bar offers 24h / 7d / 30d / all, and its request
+    defaults to 7d. A failure older than that resolves against a view which
+    structurally cannot contain its group, which is how a real, still-grouped
+    failure used to produce an empty page (bu-6jv4m.3). Widening to the
+    narrowest window that DOES contain the row keeps the answer both scoped
+    and truthful.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    for window in _ISSUE_WINDOW_LADDER:
+        delta = _parse_issues_window(window)
+        if delta is None or now - delta <= ts:
+            return window
+    return "all"
+
+
+def _issues_group_href(window: str, issue_key: str) -> str:
+    """Deep link opening the Issues page on exactly one group, in *window*."""
+    return f"/issues?{urlencode({'window': window, 'group': issue_key})}"
+
+
+@router.get(
+    "/group-for-audit/{audit_id}",
+    response_model=ApiResponse[AuditIssueGroupRef],
+)
+async def group_for_audit_row(
+    audit_id: int,
+    window: str | None = Query(
+        None,
+        description=(
+            "Window to resolve the group in ('24h', '7d', '30d', 'all'). "
+            "Omitted lets the server pick the narrowest window that actually "
+            "contains the audit row, so an old failure still resolves."
+        ),
+    ),
+    db: DatabaseManager | None = Depends(_get_db_manager),
+) -> ApiResponse[AuditIssueGroupRef]:
+    """Resolve one ``public.audit_log`` failure row to its exact Issues group.
+
+    The Audit Log's "View in Issues" door used to be
+    ``/issues?q=<first line of the error>``: a client-side approximation of the
+    backend's grouping normalization, substring-matched against a feed already
+    bounded by the Issues page's own default seven-day window. It was fuzzy in
+    the needle and in the haystack, and a miss on either axis rendered as an
+    empty, calm-looking page.
+
+    This answers the same question through the shared grouping CTE
+    (:func:`~butlers.api.audit_grouping.build_audit_group_for_row_query`), so
+    the ``issue_key`` returned is byte-identical to the one the feed computes.
+
+    Three honest outcomes, never conflated:
+
+    - **found** — the exact group identity, its occurrence total within
+      ``window``, and an ``issues_href`` opening the page on that one group.
+    - **found=False with a reason** — ``not-a-failure`` (the row is not an
+      error row) or ``no-current-group`` (the failure's group has no
+      occurrences in the resolved window). Stated explicitly, with no link.
+    - **503** — the lookup could not be performed. "We could not check" is a
+      different claim from "there is nothing there", and a caller that renders
+      the first as the second is asserting calm it never established.
+
+    Raises HTTP 404 when ``audit_id`` names no audit row at all.
+    """
+    pool = _require_pool(db)
+
+    try:
+        rows = await pool.fetch(
+            "SELECT id, ts, result, error FROM public.audit_log WHERE id = $1",
+            audit_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to look up audit row %s", audit_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Audit log unavailable") from exc
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No audit row found for id {audit_id}")
+
+    audit_row = rows[0]
+    created_at = audit_row["ts"]
+    now = datetime.now(UTC)
+
+    if window is not None:
+        _parse_issues_window(window)  # 422s on a malformed window
+        effective_window = window
+    else:
+        effective_window = _window_containing(created_at, now)
+
+    if audit_row["result"] != "error" or not audit_row["error"]:
+        return ApiResponse(
+            data=AuditIssueGroupRef(
+                audit_id=audit_id,
+                window=effective_window,
+                found=False,
+                reason=_REASON_NOT_A_FAILURE,
+            ),
+            meta=ApiMeta(),
+        )
+
+    window_delta = _parse_issues_window(effective_window)
+    since = now - window_delta if window_delta is not None else None
+
+    try:
+        group_rows = await pool.fetch(build_audit_group_for_row_query(), audit_id, since)
+    except Exception as exc:
+        logger.warning("Failed to resolve issue group for audit row %s", audit_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Issue grouping unavailable") from exc
+
+    if not group_rows:
+        return ApiResponse(
+            data=AuditIssueGroupRef(
+                audit_id=audit_id,
+                window=effective_window,
+                found=False,
+                reason=_REASON_NO_CURRENT_GROUP,
+            ),
+            meta=ApiMeta(),
+        )
+
+    issue = issue_from_audit_group_row(group_rows[0])
+    return ApiResponse(
+        data=AuditIssueGroupRef(
+            audit_id=audit_id,
+            window=effective_window,
+            found=True,
+            issue_key=issue.issue_key,
+            severity=issue.severity,
+            error_message=issue.error_message,
+            occurrences=issue.occurrences,
+            first_seen_at=issue.first_seen_at,
+            last_seen_at=issue.last_seen_at,
+            butlers=issue.butlers,
+            issues_href=_issues_group_href(effective_window, issue.issue_key),
+        ),
+        meta=ApiMeta(),
+    )
 
 
 # ---------------------------------------------------------------------------
