@@ -35,8 +35,10 @@ GET /api/secrets/inventory?identity=<uuid>
 
 GET /api/secrets/user/<provider>?identity=<uuid>
     Per-credential read for a user-scoped credential (public.entity_info).
-    Returns ApiResponse<UserSecretDetail> with full evidence payload.
+    Returns ApiResponse<UserSecretDetail> — content-blind evidence, with
+    capability categories in place of raw scopes.
     404 when no matching entity_info row exists.
+    503 when the audit source backing this evidence cannot be read.
 
 GET /api/secrets/system/<key>
     Per-credential read for a system-scoped credential (butler_secrets).
@@ -230,6 +232,67 @@ def _get_db_manager() -> DatabaseManager:
 
 
 # ---------------------------------------------------------------------------
+# Fixed capability vocabulary (owner decision, 2026-08-13)
+# ---------------------------------------------------------------------------
+# Per-credential detail evidence is content-blind: it says what a credential
+# can do, never what it contains. Capability evidence is therefore published
+# only as one of these six values. Anything that does not map to a known
+# family becomes 'other' — the projection is a strict allowlist, never a
+# filtered passthrough of a persisted or provider-supplied string.
+# ---------------------------------------------------------------------------
+
+CAPABILITY_VOCABULARY: tuple[str, ...] = (
+    "calendar",
+    "gmail",
+    "drive",
+    "health",
+    "connectivity",
+    "other",
+)
+
+# Substring markers used to classify a Google OAuth scope URL into one of the
+# four probed capability families. Order matters: 'googlehealth' is checked
+# before the more generic markers so a health scope never gets misfiled.
+_GOOGLE_SCOPE_CAPABILITY_MARKERS: tuple[tuple[str, str], ...] = (
+    ("googlehealth", "health"),
+    ("calendar", "calendar"),
+    ("gmail", "gmail"),
+    ("drive", "drive"),
+)
+
+
+def _capability_for_scope(provider: str, scope: str) -> str:
+    """Map one raw OAuth scope onto the fixed capability vocabulary.
+
+    Google scopes are classified by marker; an unrecognised one is 'other'.
+    Every other provider has a single generic live check, so all of its scopes
+    map to 'connectivity' — the same capability name probe_user_credential
+    records for non-Google providers.
+    """
+    if provider == "google":
+        for marker, capability in _GOOGLE_SCOPE_CAPABILITY_MARKERS:
+            if marker in scope:
+                return capability
+        return "other"
+    return "connectivity"
+
+
+def _capability_categories(provider: str, scopes: list[str]) -> list[str]:
+    """Project raw scopes onto the fixed vocabulary, deduplicated and ordered.
+
+    The result is built by filtering CAPABILITY_VOCABULARY, so no input string
+    can reach the output even if the mapping above later gains a bug.
+    """
+    mapped = {_capability_for_scope(provider, scope) for scope in scopes}
+    return [capability for capability in CAPABILITY_VOCABULARY if capability in mapped]
+
+
+def _capability_name(capability: str) -> str:
+    """Clamp a persisted capability name to the fixed vocabulary."""
+    return capability if capability in CAPABILITY_VOCABULARY else "other"
+
+
+# ---------------------------------------------------------------------------
 # Pydantic response models
 # ---------------------------------------------------------------------------
 
@@ -391,26 +454,66 @@ class InventoryData(BaseModel):
 # ---------------------------------------------------------------------------
 # Per-credential detail models (richer payloads for single-credential reads)
 # ---------------------------------------------------------------------------
-# These extend the inventory models with the full evidence payload as defined
-# in spec §Per-credential read endpoints.  Fields not yet stored in the DB
-# (scopes, feeds, audit, breaks, etc.) are nullable and default to None/[].
+# These carry the per-credential evidence payload defined in spec
+# §Per-credential read endpoints.  The user payload is content-blind: it
+# publishes capability categories from CAPABILITY_VOCABULARY, never the raw
+# scopes, credential type, label, or audit/probe/failure text behind them.
 # ---------------------------------------------------------------------------
 
 
-class UserSecretDetail(BaseModel):
-    """Full evidence payload for a single user credential.
+class CredentialTestOutcome(BaseModel):
+    """Content-blind projection of a probe result for credential detail.
 
-    Returned by GET /api/secrets/user/<provider>.
-    Fields with an authoritative source are populated; unavailable evidence
-    remains nullable or empty rather than fabricated.
+    Carries only the machine-checkable outcome. The probe's free-text
+    ``message`` is deliberately absent: it can echo a provider response or the
+    credential's own content, and detail evidence is content-blind.
+    """
+
+    ok: bool
+    code: int | None = None
+    at: str | None = None  # human-friendly relative timestamp
+    latency_ms: int | None = None
+
+
+class CredentialCapabilityOutcome(BaseModel):
+    """Latest probe outcome for one capability family, content-blind."""
+
+    capability: str  # always a CAPABILITY_VOCABULARY member
+    test: CredentialTestOutcome | None = None
+
+
+class CredentialAuditOutcome(BaseModel):
+    """One audit-log entry for a credential, without its free-text ``note``.
+
+    ``note`` is the only operator-authored field on the row and is dropped
+    here. ``actor`` and ``action`` survive because rows under the ``u:``
+    target namespace are written solely by ``_write_credential_audit`` in this
+    router: the actor is always ``_OWNER_ACTOR`` and the action is one of its
+    lifecycle verbs, so neither can carry credential or provider content.
+    """
+
+    ts: str  # pre-formatted relative timestamp
+    actor: str
+    action: str
+
+
+class UserSecretDetail(BaseModel):
+    """Content-blind evidence payload for a single user credential.
+
+    Returned by GET /api/secrets/user/<provider> and by the rotate mutation.
+
+    Every field is a database identifier, a timestamp, a derived hash, the
+    caller's own provider slug, or a member of ``CAPABILITY_VOCABULARY``. Raw
+    scope identifiers, the persisted credential type and label, and audit /
+    probe / failure free text are never projected here (owner decision,
+    2026-08-13). Fields with no authoritative source are absent rather than
+    shipped as an always-empty placeholder.
     """
 
     # Identity
     id: str  # entity_info row id (UUID)
     entity_id: str  # entity UUID
-    type: str  # e.g. 'google_oauth_refresh'
-    provider: str  # normalised provider name (e.g. 'google')
-    label: str | None = None
+    provider: str  # the caller's own provider path segment
 
     # State
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
@@ -418,25 +521,94 @@ class UserSecretDetail(BaseModel):
 
     # Timestamps
     issued: datetime | None = None  # created_at
-    expires: datetime | None = None  # expires_at (not yet in entity_info)
+    expires: datetime | None = None  # Google test-mode only; see UserSecret
     last_verified: datetime | None = None
-    last_used: datetime | None = None  # not yet persisted
 
-    # Scope inventory. Required scopes come from the feature catalogue; granted
-    # scopes are tracked per credential only for Google.
-    scopes_required: list[str] = Field(default_factory=list)
-    scopes_granted: list[str] = Field(default_factory=list)
-
-    # Connector feeds that consume this credential (not yet persisted)
-    feeds: list[str] = Field(default_factory=list)
+    # Capability evidence, drawn only from CAPABILITY_VOCABULARY. Empty means
+    # "no capability is recorded for this credential", never "unknown".
+    capabilities_required: list[str] = Field(default_factory=list)
+    capabilities_granted: list[str] = Field(default_factory=list)
 
     # Evidence tail
-    failure_tail: str | None = None  # verbatim last_test_message
-    breaks: list[dict] = Field(default_factory=list)  # BreakEntry[] from catalogue
-    test: TestResult | None = None  # most recent probe result
-    audit: list[dict] = Field(default_factory=list)  # last 10 AuditEvent rows
-    # Per-capability probe state (bu-4v5es) — see UserSecret.capabilities.
+    test: CredentialTestOutcome | None = None  # most recent probe outcome
+    audit: list[CredentialAuditOutcome] = Field(default_factory=list)  # last 10
+    capabilities: list[CredentialCapabilityOutcome] = Field(default_factory=list)
+
+
+class _UserCredentialRecord(BaseModel):
+    """Internal, unprojected read of one user credential.
+
+    Never serialised to a client. Mutation routes need the persisted type,
+    label, and failure tail to drive OAuth revocation, guided-rotate gating,
+    and the reauthorize account hint, so the read keeps them — and
+    ``_content_blind_detail`` is the only bridge from here to the wire.
+    """
+
+    id: str
+    entity_id: str
+    type: str
+    provider: str
+    label: str | None = None
+    state: str
+    fingerprint: str | None = None
+    issued: datetime | None = None
+    expires: datetime | None = None
+    last_verified: datetime | None = None
+    scopes_required: list[str] = Field(default_factory=list)
+    scopes_granted: list[str] = Field(default_factory=list)
+    failure_tail: str | None = None
+    test: TestResult | None = None
+    audit: list[dict] = Field(default_factory=list)
     capabilities: list[CapabilityStatus] = Field(default_factory=list)
+
+
+def _test_outcome(test: TestResult | None) -> CredentialTestOutcome | None:
+    """Drop the free-text message from a probe result."""
+    if test is None:
+        return None
+    return CredentialTestOutcome(
+        ok=test.ok,
+        code=test.code,
+        at=test.at,
+        latency_ms=test.latency_ms,
+    )
+
+
+def _content_blind_detail(record: _UserCredentialRecord) -> UserSecretDetail:
+    """Project an internal credential record onto the public detail payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    the internal record must be consciously allowed through here before it can
+    reach a client.
+    """
+    return UserSecretDetail(
+        id=record.id,
+        entity_id=record.entity_id,
+        provider=record.provider,
+        state=record.state,
+        fingerprint=record.fingerprint,
+        issued=record.issued,
+        expires=record.expires,
+        last_verified=record.last_verified,
+        capabilities_required=_capability_categories(record.provider, record.scopes_required),
+        capabilities_granted=_capability_categories(record.provider, record.scopes_granted),
+        test=_test_outcome(record.test),
+        audit=[
+            CredentialAuditOutcome(
+                ts=str(event.get("ts") or ""),
+                actor=str(event.get("actor") or ""),
+                action=str(event.get("action") or ""),
+            )
+            for event in record.audit
+        ],
+        capabilities=[
+            CredentialCapabilityOutcome(
+                capability=_capability_name(entry.capability),
+                test=_test_outcome(entry.test),
+            )
+            for entry in record.capabilities
+        ],
+    )
 
 
 class SystemSecretDetail(BaseModel):
@@ -2090,7 +2262,7 @@ async def _fetch_single_user_secret(
     provider: str,
     identity: UUID | None,
     include_audit: bool = False,
-) -> UserSecretDetail | None:
+) -> _UserCredentialRecord | None:
     """Fetch a single entity_info row matching the given provider.
 
     The provider display slug maps to entity_info.type through the
@@ -2103,6 +2275,9 @@ async def _fetch_single_user_secret(
     for the user-detail GET route: it fetches history strictly so an audit
     source failure can be reported explicitly without changing mutation
     semantics.
+
+    The result is an internal record, not a response payload — route it
+    through ``_content_blind_detail`` before returning it to a client.
     """
     patterns = _provider_like_patterns(provider)
     try:
@@ -2208,7 +2383,7 @@ async def _fetch_single_user_secret(
         )
         audit = audit_map.get(audit_target, [])
 
-    return UserSecretDetail(
+    return _UserCredentialRecord(
         id=str(row["id"]),
         entity_id=entity_id,
         type=row["type"],
@@ -2452,7 +2627,7 @@ async def get_user_credential(
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    return ApiResponse[UserSecretDetail](data=detail, meta=ApiMeta())
+    return ApiResponse[UserSecretDetail](data=_content_blind_detail(detail), meta=ApiMeta())
 
 
 @router.get(
@@ -2746,16 +2921,6 @@ class BreakEntry(BaseModel):
 # Capability tagging — maps a catalogue row's required_scopes to the
 # capability family probed by probe_user_credential (bu-4v5es).
 # ---------------------------------------------------------------------------
-
-# Substring markers used to classify a Google OAuth scope URL into one of the
-# four probed capability families. Order matters: 'googlehealth' is checked
-# before the more generic markers so a health scope never gets misfiled.
-_GOOGLE_SCOPE_CAPABILITY_MARKERS: tuple[tuple[str, str], ...] = (
-    ("googlehealth", "health"),
-    ("calendar", "calendar"),
-    ("gmail", "gmail"),
-    ("drive", "drive"),
-)
 
 
 def _capability_for_scopes(provider: str, required_scopes: list[str]) -> str | None:
@@ -4234,7 +4399,7 @@ async def rotate_user_credential(
         # Should not happen; the row was just updated.
         raise HTTPException(status_code=503, detail="Credential not found after rotation")
 
-    return ApiResponse[UserSecretDetail](data=updated, meta=ApiMeta())
+    return ApiResponse[UserSecretDetail](data=_content_blind_detail(updated), meta=ApiMeta())
 
 
 # ---------------------------------------------------------------------------

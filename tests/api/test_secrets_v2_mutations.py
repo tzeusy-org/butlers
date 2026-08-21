@@ -217,7 +217,10 @@ def test_rotate_returns_200_and_writes_canonical_audit(monkeypatch):
     body = resp.json()
     assert "meta" in body
     assert body["data"]["provider"] == "google"
-    assert "type" in body["data"]
+    # The rotate response reuses the content-blind detail payload, so the
+    # persisted credential type never rides along with it.
+    assert "type" not in body["data"]
+    assert "google_oauth_refresh" not in resp.text
 
     rotated = [c for c in audit_calls if c["action"] == "rotated"]
     assert rotated, f"Expected 'rotated' audit action; got: {audit_calls}"
