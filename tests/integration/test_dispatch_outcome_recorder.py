@@ -371,6 +371,43 @@ async def test_concurrent_failed_half_open_probes_create_one_reopening_episode(
         assert (await get_breaker_state(admin_pool, entry_id)).open is True
 
 
+async def test_closed_breaker_runtime_failures_append_no_episode(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-model-catalog-001: only the closed-to-open EDGE emits an episode.
+
+    Every qualifying ``runtime_failure`` below the threshold is recorded while
+    the breaker stays CLOSED, so none of them is a transition. This is the
+    negative half of the edge contract: the other tests here assert that an
+    edge DOES emit, and none of them would notice the recorder emitting on
+    every failure instead of only on the transition.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
+        runtime_pool = _RolePool(admin_pool)
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-closed-no-edge")
+
+        for index in range(4):
+            attempt_id = await _record_failure(runtime_pool, entry_id, index)
+            assert isinstance(attempt_id, int)
+            assert (await get_breaker_state(admin_pool, entry_id)).open is False
+
+        assert (await get_breaker_state(admin_pool, entry_id)).consecutive_failures == 4
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 4
+        )
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='model_breaker'"
+            )
+            == 0
+        )
+
+
 async def test_skipped_and_suppressed_do_not_qualify_and_failed_recorder_rolls_back(
     migrated_core_postgres_pool,
 ) -> None:

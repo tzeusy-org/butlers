@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -169,11 +169,21 @@ class TestSpawnerCeilingEnforcement:
     async def test_ceiling_deny_result_survives_atomic_recorder_failure(
         self, tmp_path: Path
     ) -> None:
-        """REQ-model-catalog-001: provenance failure cannot change denial."""
+        """REQ-model-catalog-001: provenance failure cannot change denial.
+
+        The fleet-halt call site in ``Spawner.trigger`` is unguarded, so the
+        "never raises" contract has to hold inside ``record_dispatch_attempt``
+        itself. Inject the failure into the recorder's own metrics dependency
+        rather than stubbing ``_write_dispatch_attempt``: a non-raising stub
+        would exercise no boundary at all.
+        """
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
+
+        raising_counter = Mock()
+        raising_counter.labels.side_effect = RuntimeError("metrics backend unavailable")
 
         adapter = _MockAdapter(result_text="should not run")
         with (
@@ -193,9 +203,8 @@ class TestSpawnerCeilingEnforcement:
                 return_value=_ceiling_over(),
             ),
             patch(
-                "butlers.core.spawner._write_dispatch_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
+                "butlers.core.dispatch_outcomes.runtime_attention_recorder_total",
+                raising_counter,
             ),
         ):
             result = await Spawner(
@@ -206,6 +215,7 @@ class TestSpawnerCeilingEnforcement:
         assert result.error is not None
         assert "ceiling" in result.error.lower()
         assert adapter.invoke_calls == 0
+        assert raising_counter.labels.called
 
     async def test_spawn_allowed_when_under_ceiling(self, tmp_path: Path) -> None:
         """Spawn proceeds normally when MTD spend is below the ceiling."""

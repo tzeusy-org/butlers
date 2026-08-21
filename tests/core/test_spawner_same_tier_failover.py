@@ -26,7 +26,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -1217,11 +1217,20 @@ class TestAtomicBreakerOutcomeWiring:
         )
 
     async def test_degraded_atomic_recorder_does_not_break_failover(self, tmp_path: Path) -> None:
-        """A degraded recorder cannot interrupt eventual failover success."""
+        """A degraded recorder cannot interrupt eventual failover success.
+
+        The ``runtime_failure`` call site in the failover loop is unguarded, so
+        the failure is injected into the recorder's own metrics dependency
+        instead of stubbing ``_write_dispatch_attempt`` with a non-raising
+        mock — the latter would assert nothing about degradation at all.
+        """
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
+
+        raising_counter = Mock()
+        raising_counter.labels.side_effect = RuntimeError("metrics backend unavailable")
 
         adapter = _FailThenSuccessAdapter(
             fail_count=1,
@@ -1254,9 +1263,8 @@ class TestAtomicBreakerOutcomeWiring:
                 ),
             ),
             patch(
-                "butlers.core.spawner._write_dispatch_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
+                "butlers.core.dispatch_outcomes.runtime_attention_recorder_total",
+                raising_counter,
             ),
         ):
             mock_create.return_value = _SESSION_ID
@@ -1266,3 +1274,4 @@ class TestAtomicBreakerOutcomeWiring:
 
         assert result.success is True
         assert result.output == "fallback-succeeded"
+        assert raising_counter.labels.called

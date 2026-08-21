@@ -26,6 +26,26 @@ runtime_attention_recorder_total = get_or_create_counter(
 
 _QUALIFYING_BREAKER_OUTCOMES = frozenset({"runtime_failure", "success"})
 
+
+def _safe_inc(outcome: str, edge: str) -> None:
+    """Increment the recorder counter without letting a metrics failure escape.
+
+    The spawner calls this module unguarded, so a metrics backend that raises
+    must not turn provenance degradation into a caller-visible spawn failure.
+    This matters most in the degraded handler below, which increments while
+    already handling an exception.
+    """
+    try:
+        runtime_attention_recorder_total.labels(outcome=outcome, edge=edge).inc()
+    except Exception:
+        logger.debug(
+            "Runtime-attention recorder metric increment failed for outcome=%s edge=%s",
+            outcome,
+            edge,
+            exc_info=True,
+        )
+
+
 _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
@@ -80,55 +100,58 @@ async def record_dispatch_attempt(
     Non-qualifying outcomes retain the existing lightweight best-effort insert
     path.  The returned bigint is stable for transactional writes; ``None``
     means persistence degraded or the outcome was intentionally non-
-    qualifying.  This function never raises into runtime/failover handling.
+    qualifying.  This function never raises into runtime/failover handling:
+    the spawner's call sites are unguarded, so the whole body — argument
+    handling and fleet-halt provenance validation included — runs under the
+    degraded handler, and every metric increment goes through ``_safe_inc``.
     """
-    safe_error_message = error_message[:4096] if error_message else None
-    if produce_fleet_halt and (
-        outcome != "quota_skip"
-        or not (failure_reason or "").startswith(CEILING_DENIAL_REASON_PREFIX)
-    ):
-        logger.warning(
-            "Rejected invalid fleet-halt provenance request for "
-            "butler=%s catalog_entry_id=%s outcome=%s",
-            butler,
-            catalog_entry_id,
-            outcome,
-        )
-        runtime_attention_recorder_total.labels(outcome="rejected", edge="fleet_halt").inc()
-        return None
-
-    values = (
-        session_id,
-        catalog_entry_id,
-        butler,
-        outcome,
-        failure_reason,
-        error_code,
-        safe_error_message,
-        tool_call_count,
-        attempt_index,
-        logical_session_id,
-        duration_ms,
-    )
-
-    if outcome not in _QUALIFYING_BREAKER_OUTCOMES and not produce_fleet_halt:
-        try:
-            await pool.execute(_DISPATCH_ATTEMPTS_INSERT, *values)
-        except Exception:
-            runtime_attention_recorder_total.labels(outcome="degraded", edge="none").inc()
-            logger.debug(
-                "Failed to write non-qualifying dispatch attempt for "
+    try:
+        safe_error_message = error_message[:4096] if error_message else None
+        if produce_fleet_halt and (
+            outcome != "quota_skip"
+            or not (failure_reason or "").startswith(CEILING_DENIAL_REASON_PREFIX)
+        ):
+            logger.warning(
+                "Rejected invalid fleet-halt provenance request for "
                 "butler=%s catalog_entry_id=%s outcome=%s",
                 butler,
                 catalog_entry_id,
                 outcome,
-                exc_info=True,
             )
-        else:
-            runtime_attention_recorder_total.labels(outcome="persisted", edge="none").inc()
-        return None
+            _safe_inc("rejected", "fleet_halt")
+            return None
 
-    try:
+        values = (
+            session_id,
+            catalog_entry_id,
+            butler,
+            outcome,
+            failure_reason,
+            error_code,
+            safe_error_message,
+            tool_call_count,
+            attempt_index,
+            logical_session_id,
+            duration_ms,
+        )
+
+        if outcome not in _QUALIFYING_BREAKER_OUTCOMES and not produce_fleet_halt:
+            try:
+                await pool.execute(_DISPATCH_ATTEMPTS_INSERT, *values)
+            except Exception:
+                _safe_inc("degraded", "none")
+                logger.debug(
+                    "Failed to write non-qualifying dispatch attempt for "
+                    "butler=%s catalog_entry_id=%s outcome=%s",
+                    butler,
+                    catalog_entry_id,
+                    outcome,
+                    exc_info=True,
+                )
+            else:
+                _safe_inc("persisted", "none")
+            return None
+
         edge_outcome = "none"
         async with pool.acquire() as connection:
             async with connection.transaction():
@@ -176,10 +199,7 @@ async def record_dispatch_attempt(
                         else "fleet_halt_suppressed"
                     )
 
-        runtime_attention_recorder_total.labels(
-            outcome="persisted",
-            edge=edge_outcome,
-        ).inc()
+        _safe_inc("persisted", edge_outcome)
         logger.info(
             "Dispatch outcome recorder committed for butler=%s "
             "catalog_entry_id=%s outcome=%s attempt_id=%s edge=%s",
@@ -198,10 +218,7 @@ async def record_dispatch_attempt(
             if outcome == "runtime_failure"
             else "none"
         )
-        runtime_attention_recorder_total.labels(
-            outcome="degraded",
-            edge=requested_edge,
-        ).inc()
+        _safe_inc("degraded", requested_edge)
         logger.warning(
             "Dispatch outcome provenance degraded; runtime result is unchanged "
             "for butler=%s catalog_entry_id=%s outcome=%s fleet_halt=%s",
