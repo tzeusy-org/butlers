@@ -112,3 +112,42 @@ def test_estimate_is_independent_of_when_the_owner_looks():
 def test_invalid_cron_projects_no_runs(cron: str):
     """An unparseable expression must project zero, never a fabricated cadence."""
     assert _estimate_runs_per_month(cron) == 0.0
+
+
+@pytest.mark.parametrize("reference", FIXED_CLOCKS)
+def test_seasonal_high_frequency_cron_is_not_measured_over_its_dense_season(reference: datetime):
+    """`0 * * 1 *` -- hourly, but only in January -- is ~62 runs/month, not ~81.
+
+    This is the case the occurrence cap gets wrong on its own. The expression
+    fires 744 times each January, so the cap is exhausted partway through a
+    third January; the raw span sampled is bounded by a dense stretch and ends
+    inside one, and dividing by it reports about 81 runs a month against a true
+    744/12 = 62 -- roughly 31% high, and entirely plausible-looking on a page
+    whose whole purpose is forecast honesty. Truncating the window to whole
+    years before recounting puts every January and every empty month back in
+    proportion.
+    """
+    runs = _estimate_runs_per_month("0 * * 1 *", reference=reference)
+    assert runs == pytest.approx(744 / 12, rel=0.01)
+    assert runs < 70  # the untruncated-window answer was ~81
+
+
+@pytest.mark.parametrize("reference", FIXED_CLOCKS)
+def test_seasonal_cron_with_two_active_months_scales_with_the_season(reference: datetime):
+    """January + July hourly is exactly twice the January-only cadence.
+
+    Both months have 31 days, so the season is 2 x 744 firings a year.
+    """
+    runs = _estimate_runs_per_month("0 * * 1,7 *", reference=reference)
+    assert runs == pytest.approx(2 * 744 / 12, rel=0.01)
+
+
+@pytest.mark.parametrize("reference", FIXED_CLOCKS)
+def test_weekly_seasonal_high_frequency_cron_uses_a_whole_week(reference: datetime):
+    """A per-minute Monday cron exhausts the cap in days, not years.
+
+    Whole years do not fit, so the window snaps to whole weeks instead -- a
+    truncation to whole days would end mid-Monday and over-report by about 20%.
+    """
+    runs = _estimate_runs_per_month("* * * * 1", reference=reference)
+    assert runs == pytest.approx(1440 * AVERAGE_MONTH_DAYS / 7, rel=0.01)

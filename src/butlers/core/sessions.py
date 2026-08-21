@@ -583,10 +583,77 @@ _CADENCE_ANCHOR = datetime(2001, 1, 1, tzinfo=UTC)
 #: expressions to average out their calendar irregularities.
 _CADENCE_HORIZON_DAYS = 1461
 
-#: Occurrence cap. A high-frequency expression (hourly, per-minute) exits here
-#: long before the horizon; the rate is then read off the span actually sampled,
-#: which keeps the answer correct while bounding the work.
+#: Occurrence cap. A high-frequency expression (hourly, per-minute) reaches this
+#: long before the horizon; sampling then stops early and the window is snapped
+#: back to a whole cycle by ``_truncate_cadence_window`` before the rate is read.
 _CADENCE_MAX_OCCURRENCES = 2000
+
+
+def _shift_years(moment: datetime, years: int) -> datetime:
+    """``moment`` advanced by whole calendar years, clamping 29 Feb to 28 Feb."""
+    try:
+        return moment.replace(year=moment.year + years)
+    except ValueError:
+        return moment.replace(year=moment.year + years, day=28)
+
+
+def _count_occurrences(
+    cron: str, start: datetime, end: datetime, limit: int
+) -> tuple[int, datetime | None]:
+    """Count firings of ``cron`` in ``(start, end]``, stopping at ``limit``.
+
+    Returns the count, plus the instant of the limiting occurrence when the
+    limit was reached before ``end`` (i.e. the window actually sampled), and
+    ``None`` when the whole of ``(start, end]`` was covered.
+    """
+    itr = croniter(cron, start)
+    count = 0
+    latest = start
+    while count < limit:
+        nxt = itr.get_next(datetime)
+        if nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=UTC)
+        if nxt > end:
+            return count, None
+        count += 1
+        latest = nxt
+
+    # The cap stopped the loop. It only shortened the window if firings actually
+    # remain inside ``end``; a cron that happens to fire exactly ``limit`` times
+    # across the whole window was fully sampled and must not be truncated.
+    peek = itr.get_next(datetime)
+    if peek.tzinfo is None:
+        peek = peek.replace(tzinfo=UTC)
+    return (count, latest) if peek <= end else (count, None)
+
+
+def _truncate_cadence_window(reference: datetime, sampled_until: datetime) -> datetime:
+    """Snap a cap-shortened sampling window back to a whole calendar cycle.
+
+    Dividing a count by the raw span it was collected over assumes the firings
+    are spread evenly across that span. A seasonal expression breaks the
+    assumption: ``0 * * 1 *`` (hourly, but only in January) exhausts the
+    occurrence cap partway through a January, so the raw span is bounded by a
+    dense stretch and the resulting rate reads about 31% high -- a plausible
+    number, on a page whose entire purpose is forecast honesty.
+
+    Snapping the window back to the longest whole cycle that fits inside it --
+    years, else weeks, else days -- guarantees every season the window contains
+    is represented in full, so the recount inside it averages honestly. Returns
+    ``reference`` unchanged when the sample is shorter than a single day, which
+    a five-field cron (at most 1440 firings a day, well under the cap) cannot
+    produce; the caller then keeps the raw span.
+    """
+    if _shift_years(reference, 1) <= sampled_until:
+        years = 1
+        while _shift_years(reference, years + 1) <= sampled_until:
+            years += 1
+        return _shift_years(reference, years)
+
+    days = int((sampled_until - reference).total_seconds() // 86400)
+    if days >= 7:
+        return reference + timedelta(days=days - days % 7)
+    return reference + timedelta(days=days)
 
 
 def _estimate_runs_per_month(cron: str, *, reference: datetime = _CADENCE_ANCHOR) -> float:
@@ -594,36 +661,40 @@ def _estimate_runs_per_month(cron: str, *, reference: datetime = _CADENCE_ANCHOR
 
     The basis is ``AVERAGE_MONTH_DAYS`` (30.436875 days, the mean Gregorian
     calendar month), described for callers by ``CADENCE_BASIS_DESCRIPTION``.
-    Occurrences are enumerated forward from ``reference`` until either the
-    four-year horizon or the occurrence cap is reached, and the observed rate is
-    scaled to one average month. ``reference`` defaults to a fixed anchor so the
-    result is a pure function of ``cron``; it is injectable only so tests can
-    demonstrate that invariance across several fixed clocks.
+    Occurrences are enumerated forward from ``reference`` over a four-year
+    horizon and the observed rate is scaled to one average month. A
+    high-frequency expression exhausts ``_CADENCE_MAX_OCCURRENCES`` first; the
+    window is then truncated to a whole cycle (see ``_truncate_cadence_window``)
+    and recounted, so a seasonal expression is not measured over a dense stretch
+    alone.
+
+    ``reference`` defaults to a fixed anchor so the result is a pure function of
+    ``cron``; it is injectable only so tests can demonstrate that invariance
+    across several fixed clocks. The four-year horizon is not a whole number of
+    weeks (1461 days = 208.71 weeks), so a weekly expression samples 208 or 209
+    firings against an exact 208.71 -- an error of about 0.14%, immaterial next
+    to the per-run cost it multiplies.
 
     Returns ``0.0`` for an expression croniter cannot parse -- a schedule whose
-    cadence is unknown projects nothing rather than a fabricated number.
+    cadence is unknown projects nothing rather than a fabricated number. It must
+    not raise: ``_schedule_costs_from_data`` serves every row of
+    ``/api/spend/by-schedule``, so one bad cron string would take out the whole
+    response.
     """
     if not croniter.is_valid(cron):
         return 0.0
 
-    horizon = reference + timedelta(days=_CADENCE_HORIZON_DAYS)
-    itr = croniter(cron, reference)
-    count = 0
-    sampled_until = horizon
+    window_end = reference + timedelta(days=_CADENCE_HORIZON_DAYS)
+    count, capped_at = _count_occurrences(cron, reference, window_end, _CADENCE_MAX_OCCURRENCES)
+    if capped_at is not None:
+        truncated_end = _truncate_cadence_window(reference, capped_at)
+        if truncated_end > reference:
+            window_end = truncated_end
+            count, _ = _count_occurrences(cron, reference, window_end, _CADENCE_MAX_OCCURRENCES)
+        else:
+            window_end = capped_at
 
-    while count < _CADENCE_MAX_OCCURRENCES:
-        nxt = itr.get_next(datetime)
-        if nxt.tzinfo is None:
-            nxt = nxt.replace(tzinfo=UTC)
-        if nxt > horizon:
-            break
-        count += 1
-        if count == _CADENCE_MAX_OCCURRENCES:
-            # Cap reached: the sample covers (reference, nxt], not the full
-            # horizon, so measure the rate over that shorter span.
-            sampled_until = nxt
-
-    span_days = (sampled_until - reference).total_seconds() / 86400
+    span_days = (window_end - reference).total_seconds() / 86400
     if span_days <= 0 or count == 0:
         return 0.0
     return count / span_days * AVERAGE_MONTH_DAYS
