@@ -332,14 +332,14 @@ def test_bounded_chain_revision_keeps_rollback_off_the_protected_boundary(postgr
     prior_revision = "core_169"
 
     # Guard against this test going vacuous: the boundary must genuinely sit
-    # between the bounded target and head, or it was never being skipped.
-    skipped = {
+    # above the bounded target, or the bounded run was never skipping anything.
+    head_to_target = {
         script.revision
         for script in _chain_script_directory("core").iterate_revisions(
             "core@head", bounded_revision
         )
     }
-    assert _PROTECTED_BOUNDARY_REVISION in skipped
+    assert _PROTECTED_BOUNDARY_REVISION in head_to_target - {bounded_revision}
 
     db_name = migration_db_name()
     db_url = create_migrated_test_db(
