@@ -295,10 +295,19 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
 
         @_core_tool("scheduling")
         async def schedule_costs(from_date: str | None = None, to_date: str | None = None) -> dict:
-            """Return per-schedule token usage aggregates.
+            """Return per-schedule token usage aggregates and a cost forecast.
 
             When ``from_date``/``to_date`` (ISO date strings) are both provided,
             only runs started within that inclusive date range are aggregated.
             Omit both for all-time totals.
+
+            Each schedule carries what was MEASURED in that window
+            (``total_runs`` and the token totals) alongside a FORECAST derived
+            from the cron expression alone: ``runs_per_month``, how often it
+            fires in an average calendar month, and ``forecast_basis``, the
+            statement of the basis that was computed on. Do not report a
+            forecast as observed history. ``runs_per_month`` is ``0.0`` when the
+            cron expression could not be parsed, which means "cadence unknown",
+            not "never runs".
             """
             return await _schedule_costs(pool, from_date, to_date)

@@ -912,6 +912,11 @@ async def schedule_costs(
     zeroed totals) thanks to the LEFT JOIN. When both are omitted, all-time
     totals are returned (pre-existing behavior, preserved for back-compat).
     Providing only one of the two raises ``ValueError``.
+
+    Each row carries measured totals for the window plus two forecast fields
+    that must not be confused with them: ``runs_per_month`` (the cron's own
+    cadence over an average calendar month, from ``_estimate_runs_per_month``)
+    and ``forecast_basis`` (the prose statement of that basis).
     """
     start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
