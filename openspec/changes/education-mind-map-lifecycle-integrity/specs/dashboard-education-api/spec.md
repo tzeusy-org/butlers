@@ -88,12 +88,36 @@ to the education butler's KV state store under key
 the curriculum. On success the endpoint SHALL return 202 Accepted with body
 `{"status": "pending", "topic": "<topic>"}`.
 
-**The lock is a lease, not a flag.** `lease_expires_at` SHALL be
-`requested_at` plus a bounded TTL of 15 minutes. The endpoint SHALL return 409
-Conflict only when a `pending_curriculum_request` key is present **and** its
+**The lock is a lease, not a flag.** The endpoint SHALL return 409 Conflict
+only when a `pending_curriculum_request` key is present **and** its
 `lease_expires_at` is in the future. A key whose lease has expired SHALL be
 treated as absent: the request proceeds and overwrites it. An expired lease
 MUST NOT produce a 409.
+
+**The lease SHALL outlive the session it guards, and SHALL be derived from the
+model catalog rather than hardcoded.** `lease_expires_at` SHALL be
+`requested_at` plus a TTL computed at acquisition time as the longest session
+lifetime the triggered work can consume — the maximum `session_timeout_s`
+across the enabled model-catalog entries the trigger may route to for its
+requested complexity tier, including any fallback entries a single dispatch
+may chain through — plus a margin of at least 300 seconds to cover spawn
+overhead, tool latency, and the API layer's own release. If no catalog entry
+resolves, the TTL SHALL fall back to 2100 seconds (1800 + 300), matching the
+`session_timeout_s` default of 1800 at
+`src/butlers/api/routers/model_settings.py:81`.
+
+A fixed TTL SHALL NOT be used unless the specification states why that number
+exceeds the maximum session lifetime. A lease shorter than the work it guards
+fails open at exactly the wrong moment: it expires while the session is still
+legitimately working, the owner's next POST is accepted, and two drain
+sessions run on one topic — producing two mind maps for one request, which is
+the same duplicate-map defect this change exists to clean up. Deriving the TTL
+from `session_timeout_s` also means it tracks operator configuration, which is
+per-catalog-entry and adjustable, instead of drifting from it silently.
+
+Because the TTL is derived to exceed the session lifetime, in-flight lease
+renewal is NOT required. An implementation MAY renew a live lease instead of
+deriving the TTL, provided the renewal cannot lapse while the session runs.
 
 **Every acquisition mints a fresh `request_token`.** `request_token` SHALL be
 a newly generated UUID, written at acquisition time — including when an expired
@@ -139,7 +163,7 @@ their next curriculum request MUST NOT depend on model obedience.
 - **AND** no pending curriculum request exists
 - **THEN** the response status SHALL be 202
 - **AND** the response body SHALL contain `{"status": "pending", "topic": "Python"}`
-- **AND** the KV store SHALL contain key `pending_curriculum_request` with the topic, goal, `requested_at`, a `lease_expires_at` 15 minutes after `requested_at`, and a freshly generated `request_token`
+- **AND** the KV store SHALL contain key `pending_curriculum_request` with the topic, goal, `requested_at`, a `lease_expires_at` derived from the catalog session timeout plus margin, and a freshly generated `request_token`
 
 #### Scenario: Submit request without goal
 
@@ -189,10 +213,23 @@ their next curriculum request MUST NOT depend on model obedience.
 #### Scenario: Daemon restart mid-session does not wedge the owner
 
 - **WHEN** the butler daemon restarts while a curriculum session is in flight, so no API-layer release ever runs
-- **AND** a POST is made more than 15 minutes after `requested_at`
+- **AND** a POST is made after `lease_expires_at` has passed
 - **THEN** the stale lease SHALL be reclaimed and overwritten
 - **AND** the overwritten payload SHALL carry a newly generated `request_token`
 - **AND** the response status SHALL be 202
+
+#### Scenario: The lease outlives a long-running session
+
+- **WHEN** a curriculum request is submitted and the catalog entry the trigger routes to has `session_timeout_s = 1800`
+- **THEN** `lease_expires_at` SHALL be at least 2100 seconds after `requested_at`
+- **AND** a POST made 20 minutes later, while that session is still running, SHALL receive 409, not 202
+
+#### Scenario: Raising the operator's session timeout lengthens the lease
+
+- **WHEN** an operator raises `session_timeout_s` on the catalog entry the trigger routes to
+- **AND** a curriculum request is then submitted
+- **THEN** the computed TTL SHALL grow with it, so the lease still exceeds the maximum session lifetime
+- **AND** the TTL SHALL NOT be a value fixed independently of the catalog
 
 #### Scenario: Trigger unreachable releases the lock immediately
 

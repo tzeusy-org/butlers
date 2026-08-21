@@ -94,8 +94,11 @@ Acceptance:
 
 ### 9. Curriculum-request lock: lease and deterministic release
 
-`roster/education/api/router.py`: add `lease_expires_at` (15 minutes) and a
-per-acquisition `request_token` to the lock payload; 409 only on a live lease;
+`roster/education/api/router.py`: add `lease_expires_at` and a
+per-acquisition `request_token` to the lock payload. The lease TTL is computed
+from the model catalog (max eligible `session_timeout_s` + >=300s margin,
+falling back to 2100s), never hardcoded — a 15-minute lease would expire under
+an ordinary session, since `session_timeout_s` defaults to 1800. 409 only on a live lease;
 release the lock from the API layer when the triggered session terminates,
 whatever the outcome. The release MUST be an atomic token-scoped
 compare-and-delete, not `state_delete(pool, _CURRICULUM_REQUEST_KEY)` — that
@@ -108,6 +111,8 @@ Acceptance:
   daemon-restart scenarios.
 - A test asserts a release carrying a superseded token leaves the current
   lock intact.
+- A test asserts the computed TTL exceeds the catalog's `session_timeout_s`,
+  and moves when that value moves.
 
 ### 10. Status endpoint 409 path
 

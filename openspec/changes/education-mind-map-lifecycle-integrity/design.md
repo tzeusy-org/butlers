@@ -103,6 +103,16 @@ A bounded lease is added on top for the case the API layer itself dies (daemon
 restart mid-session): an expired lock is reclaimed by the next request rather
 than answered with 409.
 
+The lease length is derived, not chosen. `session_timeout_s` defaults to 1800
+and is operator-configurable per catalog entry
+(`src/butlers/api/routers/model_settings.py:81`), so any hardcoded TTL is a
+number that can silently become shorter than the session it guards — and a
+lease that expires under a live session fails open at exactly the moment it is
+doing its job, admitting a second drain on the same topic. Two drains on one
+topic is how you get two mind maps for one request, which is the defect the
+legacy migration in this change exists to clean up. So the TTL tracks the
+catalog: max eligible `session_timeout_s` plus a margin of at least 300s.
+
 Once a lease can expire, releases can arrive out of order, and an unqualified
 `state_delete("pending_curriculum_request")` stops being merely redundant and
 becomes unsafe: a stalled session's late release would delete the *next*

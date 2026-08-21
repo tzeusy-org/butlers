@@ -15,12 +15,21 @@ The tiers, evaluated against `now - created_at`:
 
 | Status | Age | Copy |
 | --- | --- | --- |
-| `draft` | under 15 minutes | "Setting up this curriculum — the butler is mapping out the concepts." |
-| `draft` | 15 minutes to under 24 hours | "Still setting up — requested {relative age}. This usually finishes within a few minutes." |
+| `draft` | under 30 minutes | "Setting up this curriculum — the butler is mapping out the concepts." |
+| `draft` | 30 minutes to under 24 hours | "Still setting up — requested {relative age}. This is taking longer than usual." |
 | `draft` | 24 hours or more | "Setup stalled — requested {relative age} and no concepts have been added yet." |
 | `abandoned` | any | "This curriculum was abandoned before any concepts were mapped." |
 | `completed` | any | "This curriculum was marked complete without any concepts." |
 | `active` | any | "This curriculum is marked active but has no concepts. That should not be possible — please report it." |
+
+The first boundary is 30 minutes because that is the default maximum lifetime
+of the session that builds the curriculum (`session_timeout_s` defaults to
+1800 at `src/butlers/api/routers/model_settings.py:81`). Below it, a working
+session explains the empty map, so the calm copy is true. Above it, no session
+that started with the request can still be running under default
+configuration, so copy promising an imminent finish would be asserting
+something the page cannot know — the same fault as the evergreen string, only
+smaller.
 
 `{relative age}` SHALL be a human-readable elapsed duration derived from
 `created_at` (for example "3 hours ago", "34 days ago"). The copy SHALL be
@@ -46,6 +55,13 @@ receives one, it SHALL surface the fault rather than dressing it as progress.
 
 - **WHEN** the Curriculum tab renders a `draft` mind map with 0 nodes created 3 hours ago
 - **THEN** the graph area SHALL display the "Still setting up" copy including a relative age of "3 hours ago"
+- **AND** the copy SHALL NOT promise that setup will finish shortly
+
+#### Scenario: A map younger than the session lifetime reads as in progress
+
+- **WHEN** the Curriculum tab renders a `draft` mind map with 0 nodes created 20 minutes ago
+- **THEN** the graph area SHALL display "Setting up this curriculum — the butler is mapping out the concepts."
+- **AND** it SHALL NOT display the "Still setting up" copy, because a session started with the request may still be running
 
 #### Scenario: Stalled setup is named as stalled
 
@@ -71,7 +87,7 @@ receives one, it SHALL surface the fault rather than dressing it as progress.
 
 #### Scenario: Copy updates without a refetch as the map ages
 
-- **WHEN** a `draft` mind map with 0 nodes crosses the 15-minute boundary while the page is open
+- **WHEN** a `draft` mind map with 0 nodes crosses the 30-minute boundary while the page is open
 - **THEN** the rendered copy SHALL move to the next tier on the next render, because it is computed from `created_at` at render time
 
 ---

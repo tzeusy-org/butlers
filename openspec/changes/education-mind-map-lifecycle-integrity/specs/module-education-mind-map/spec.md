@@ -6,15 +6,23 @@ A mind map SHALL NOT hold `status = 'active'` with zero nodes. "Active" means
 "there is a curriculum here to learn"; a map with no concepts has nothing to
 learn and MUST NOT claim otherwise.
 
-**Enforcement point.** `mind_map_update_status(pool, mind_map_id, status)` is
-the single application code path permitted to write `mind_maps.status`. When
-the target status is `active`, it MUST count the map's rows in
-`mind_map_nodes` within the same transaction as the status write and MUST
-reject the transition with an error when that count is zero, before any write
-occurs.
+The invariant is a property of the row pair (mind map, its node count), so a
+write to *either* table can break it. It therefore has **three** enforcement
+points, listed together below, and every one of them SHALL exist. Two guard
+the status-write direction and one guards the node-delete direction; a
+deployment carrying only the first two enforces a transition guard, not this
+invariant.
 
-Because a cross-table predicate cannot be expressed as a column `CHECK`
-constraint, the same invariant SHALL additionally be enforced by a
+**Enforcement point 1 — the status-write code path.**
+`mind_map_update_status(pool, mind_map_id, status)` is the single application
+code path permitted to write `mind_maps.status`. When the target status is
+`active`, it MUST count the map's rows in `mind_map_nodes` within the same
+transaction as the status write and MUST reject the transition with an error
+when that count is zero, before any write occurs.
+
+**Enforcement point 2 — a trigger on `education.mind_maps`.** Because a
+cross-table predicate cannot be expressed as a column `CHECK` constraint, the
+same invariant SHALL additionally be enforced by a
 `BEFORE INSERT OR UPDATE` trigger on `education.mind_maps`, so a direct SQL
 statement, a migration, or a future code path that bypasses
 `mind_map_update_status()` cannot create the state either. Since
@@ -23,20 +31,26 @@ exist before their map row; therefore an `INSERT` whose row would have
 `status = 'active'` is necessarily zero-node and SHALL be rejected
 unconditionally.
 
-**Node deletion is enforced too.** The invariant is a property of the row
-pair (mind map, its node count), so a write to *either* table can break it:
-deleting the last node of an `active` map produces exactly the forbidden state
-without any write to `mind_maps`. An `AFTER DELETE` trigger on
-`education.mind_map_nodes` SHALL therefore raise, aborting the transaction,
-when the deletion leaves an `active` mind map with zero remaining nodes. The
-enforcement is a refusal, not a repair: it MUST NOT silently transition the map
-to another status, because emptying a curriculum is a larger act than the
-caller requested and MUST be made explicit.
+**Enforcement point 3 — a trigger on `education.mind_map_nodes`.** Deleting
+the last node of an `active` map produces exactly the forbidden state without
+any write to `mind_maps`, so neither enforcement point above fires. A trigger
+on `education.mind_map_nodes` SHALL therefore re-check the parent map after a
+deletion and SHALL raise, aborting the transaction, when the deletion leaves
+an `active` mind map with zero remaining nodes. It MAY be an `AFTER DELETE`
+row-level trigger or a statement-level trigger that fires once per bulk
+delete; both reach the same verdict, since a non-deferred `AFTER ... FOR EACH
+ROW` trigger is queued to the end of its statement and so observes the
+statement's full effect.
+
+This enforcement is a refusal, not a repair: it MUST NOT silently transition
+the map to another status. Emptying a curriculum is a larger act than the
+caller requested, and making it happen as a side effect would destroy an
+owner's map on a write that did not ask for it.
 
 A caller that intends to empty an `active` mind map SHALL first transition it
 out of `active` via `mind_map_update_status()`, and then delete its nodes.
 
-This node-side enforcement MUST NOT fire when the mind map row itself is being
+Enforcement point 3 MUST NOT fire when the mind map row itself is being
 deleted and its nodes go with it through the
 `mind_map_nodes.mind_map_id ... ON DELETE CASCADE` foreign key: a mind map that
 no longer exists cannot hold an illegal status. Because that exemption depends
