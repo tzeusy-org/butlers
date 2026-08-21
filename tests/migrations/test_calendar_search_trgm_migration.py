@@ -106,8 +106,11 @@ def test_trgm_index_created_idempotent_and_downgrade_keeps_extension(postgres_co
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
 
-    # Upgrade to core head (includes core_138).
-    command.upgrade(core, "core@head")
+    # Stop at the migration under test.  Rollback is not uniformly available
+    # across the core chain: later revisions install privileged boundaries
+    # whose rollback is deliberately bootstrap-only, so migrating to head first
+    # would make this one-revision rollback walk them.
+    command.upgrade(core, f"core@{_load_migration().revision}")
 
     assert index_exists(db_url, "ix_calendar_events_search_trgm"), (
         "trigram index should exist after upgrade"

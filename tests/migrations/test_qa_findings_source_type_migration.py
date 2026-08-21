@@ -112,10 +112,15 @@ def test_core_migrations_accept_known_qa_sources(
 def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) -> None:
     """One-revision rollback must not delete, relabel, or reject existing findings."""
     db_name = migration_db_name()
+    infra_state_migration = _load_migration("core_170", _INFRA_STATE_MIGRATION_PATH)
+    # Stop at the migration under test: later core revisions install privileged
+    # boundaries whose rollback is deliberately bootstrap-only, so migrating to
+    # head first would make this one-revision rollback walk them.
     db_url = create_migrated_test_db(
         postgres_container,
         db_name,
         chains=["core"],
+        revisions={"core": infra_state_migration.revision},
     )
 
     async def _insert() -> uuid.UUID:

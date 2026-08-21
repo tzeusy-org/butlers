@@ -52,6 +52,24 @@ def _latest_core_revision() -> str:
     return max(revisions, key=lambda item: item[0])[1]
 
 
+# The trusted-bootstrap runtime-attention interface: installed by core_198 and
+# rolled back only under bootstrap authority, which is why rollback tests for
+# older revisions must not migrate through it.
+_PROTECTED_BOUNDARY_REVISION = "core_198"
+_PROTECTED_BOUNDARY_TABLE = "runtime_attention_outbox"
+
+
+def _stamped_versions(db_url: str) -> list[str]:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return sorted(
+                row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))
+            )
+    finally:
+        engine.dispose()
+
+
 def _quote_ident(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
@@ -292,6 +310,58 @@ def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
             }
 
     assert drift == {}, f"core-only sessions stub drift: {drift}"
+
+
+def test_bounded_chain_revision_keeps_rollback_off_the_protected_boundary(postgres_container):
+    """A bounded core target lets an old revision roll back without walking core_198.
+
+    ``core_198`` installs the runtime-attention interface through the trusted
+    bootstrap; its rollback is deliberately bootstrap-only and is allowed to
+    refuse.  Later revisions layer their own retained cutover state on top of
+    it.  So a per-migration rollback test that migrates to head first drags
+    that boundary into a rollback that is really about some far older revision,
+    and fails there for reasons unrelated to the migration under test.
+
+    ``revisions=`` is the supported way to stay off it: stop at the revision
+    the test owns, so the boundary is never installed and never asked to roll
+    back (bu-2rqrl).
+    """
+    from butlers.migrations import _build_alembic_config, _chain_script_directory
+
+    bounded_revision = "core_170"
+    prior_revision = "core_169"
+
+    # Guard against this test going vacuous: the boundary must genuinely sit
+    # above the bounded target, or the bounded run was never skipping anything.
+    head_to_target = {
+        script.revision
+        for script in _chain_script_directory("core").iterate_revisions(
+            "core@head", bounded_revision
+        )
+    }
+    assert _PROTECTED_BOUNDARY_REVISION in head_to_target - {bounded_revision}
+
+    db_name = migration_db_name()
+    db_url = create_migrated_test_db(
+        postgres_container,
+        db_name,
+        chains=["core"],
+        revisions={"core": bounded_revision},
+    )
+
+    assert _stamped_versions(db_url) == [bounded_revision]
+    assert not table_exists(db_url, _PROTECTED_BOUNDARY_TABLE), (
+        "a bounded run must not install the trusted-bootstrap runtime-attention interface"
+    )
+
+    bootstrap_config = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
+    )
+    command.downgrade(bootstrap_config, prior_revision)
+    assert _stamped_versions(db_url) == [prior_revision]
+
+    command.upgrade(bootstrap_config, f"core@{bounded_revision}")
+    assert _stamped_versions(db_url) == [bounded_revision]
 
 
 def test_core_migrations_retire_legacy_permission_default_seeds(postgres_container):
