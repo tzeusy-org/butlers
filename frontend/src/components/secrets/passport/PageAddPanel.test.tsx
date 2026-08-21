@@ -327,6 +327,7 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
     expect(screen.queryByText(/connect spotify/i)).toBeNull();
     const spotifyBtn = screen.getByText("Spotify").closest("button") as HTMLButtonElement;
     expect(spotifyBtn).toBeTruthy();
+    expect(screen.getAllByText("Spotify")).toHaveLength(1);
 
     fireEvent.click(spotifyBtn);
 
@@ -335,6 +336,10 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
       document.querySelector('[data-provider-connect-drawer="spotify"]'),
     ).toBeTruthy();
     expect(mockReauth).not.toHaveBeenCalled();
+    const drawerText = document.querySelector(
+      '[data-provider-connect-drawer="spotify"]',
+    )?.textContent ?? "";
+    expect(drawerText).not.toMatch(/access token|refresh token|expires_at|scope/i);
   });
 
   it("connect Google button is enabled when ownerEntityId is provided", () => {

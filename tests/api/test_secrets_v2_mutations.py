@@ -167,6 +167,29 @@ def _build_app(mock_db: MagicMock) -> TestClient:
     return TestClient(app)
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "json_body"),
+    [
+        ("get", "/api/secrets/user/spotify", None),
+        ("post", "/api/secrets/user/spotify/rotate", {"value": "never-written"}),
+        ("post", "/api/secrets/user/spotify/disconnect", None),
+        ("post", "/api/secrets/user/spotify/probe", None),
+        ("post", "/api/secrets/user/spotify/reauthorize", None),
+    ],
+)
+def test_all_generic_spotify_routes_reject_before_database_lookup(
+    method: str, path: str, json_body: dict | None
+) -> None:
+    mock_db = _make_db(user_row=_make_entity_info_row(info_type="spotify_oauth_access"))
+    client = _build_app(mock_db)
+
+    response = client.request(method, path, json=json_body)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Credential not found"}
+    mock_db.credential_shared_pool.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tests: POST /api/secrets/user/<provider>/rotate
 # ---------------------------------------------------------------------------
@@ -575,7 +598,7 @@ def test_reauthorize_redirect_url_carries_no_api_prefix():
     mock_db = _make_db(user_row=None, oauth_app_configured=True)
     client = _build_app(mock_db)
 
-    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
     assert not redirect_url.startswith("/api/"), (
@@ -583,7 +606,7 @@ def test_reauthorize_redirect_url_carries_no_api_prefix():
     )
 
 
-def test_reauthorize_503s_when_provider_oauth_app_is_unconfigured(monkeypatch):
+def test_spotify_reauthorize_is_hidden_from_generic_secrets(monkeypatch):
     """No app credentials → 503 with the actionable "configure <KEY>" detail, and
     no 'attempted' audit row.
 
@@ -606,10 +629,7 @@ def test_reauthorize_503s_when_provider_oauth_app_is_unconfigured(monkeypatch):
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/spotify/reauthorize")
-    assert resp.status_code == 503, resp.text
-    detail = resp.json()["detail"]
-    assert "SPOTIFY_OAUTH_CLIENT_ID" in detail, detail
-    assert "SPOTIFY_OAUTH_CLIENT_SECRET" in detail, detail
+    assert resp.status_code == 404, resp.text
     assert audit_calls == [], audit_calls
 
 
@@ -636,26 +656,13 @@ def test_reauthorize_writes_attempted_audit_row(monkeypatch):
     )
 
 
-def test_reauthorize_first_time_connect_oauth_provider_returns_start_url():
-    """First-time connect for a non-Google OAuth provider with NO entity_info row
-    returns a start/authorize redirect (not 404).
-
-    Regression for bu-vvez2: clicking 'connect' for a never-set non-Google OAuth
-    provider (e.g. spotify) used to 404 because the reauthorize endpoint required
-    a pre-existing credential row.  Google bypassed this via its own start flow;
-    the other OAuth providers had no equivalent.  Now every OAuth-kind provider
-    routes a first-time connect to the OAuth start endpoint.
-    """
+def test_reauthorize_first_time_spotify_cannot_use_generic_oauth():
+    """Spotify first-time connect cannot invoke the generic OAuth starter."""
     mock_db = _make_db(user_row=None, oauth_app_configured=True)
     client = _build_app(mock_db)
 
     resp = client.post("/api/secrets/user/spotify/reauthorize")
-    assert resp.status_code == 200, resp.text
-    redirect_url = resp.json()["data"]["redirect_url"]
-    assert redirect_url.startswith("/oauth/spotify/start"), redirect_url
-    assert "page_of_origin=secrets" in redirect_url, redirect_url
-    # No stored account → no account_hint on a first-time connect.
-    assert "account_hint" not in redirect_url, redirect_url
+    assert resp.status_code == 404, resp.text
 
 
 def test_reauthorize_unregistered_catalog_oauth_provider_returns_501():
@@ -701,7 +708,7 @@ def test_reauthorize_first_time_connect_writes_attempted_audit_row(monkeypatch):
     monkeypatch.setattr(_audit_mod, "append", _fake_append)
     client = _build_app(mock_db)
 
-    resp = client.post("/api/secrets/user/spotify/reauthorize")
+    resp = client.post("/api/secrets/user/google/reauthorize")
     assert resp.status_code == 200, resp.text
     assert any(c["action"] == "attempted" for c in audit_calls), audit_calls
 
@@ -715,6 +722,18 @@ def test_reauthorize_google_first_time_connect_still_works():
     assert resp.status_code == 200, resp.text
     redirect_url = resp.json()["data"]["redirect_url"]
     assert redirect_url.startswith("/oauth/google/start"), redirect_url
+
+
+@pytest.mark.parametrize("action", ["rotate", "disconnect", "probe", "reauthorize"])
+def test_spotify_lifecycle_is_not_addressable_through_generic_secrets(action):
+    row = _make_entity_info_row(info_type="spotify_oauth_refresh")
+    mock_db = _make_db(user_row=row, oauth_app_configured=True)
+    client = _build_app(mock_db)
+
+    kwargs = {"json": {"value": "replacement"}} if action == "rotate" else {}
+    resp = client.post(f"/api/secrets/user/spotify/{action}", **kwargs)
+
+    assert resp.status_code == 404
 
 
 def test_reauthorize_404_on_missing_non_oauth_credential():
@@ -857,7 +876,7 @@ def test_rotate_non_oauth_provider_does_not_call_revoke(monkeypatch):
     """
     import httpx
 
-    row = _make_entity_info_row(info_type="spotify_api_key", value="old-api-key")
+    row = _make_entity_info_row(info_type="github_api_key", value="old-api-key")
     mock_db = _make_db(user_row=row)
 
     revoke_calls: list[dict] = []
@@ -881,7 +900,7 @@ def test_rotate_non_oauth_provider_does_not_call_revoke(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "__aexit__", _fake_aexit)
 
     client = _build_app(mock_db)
-    resp = client.post("/api/secrets/user/spotify/rotate", json={"value": "new-api-key"})
+    resp = client.post("/api/secrets/user/github/rotate", json={"value": "new-api-key"})
 
     assert resp.status_code == 200
     assert not revoke_calls, (

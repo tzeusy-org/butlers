@@ -1,19 +1,16 @@
-"""Unit tests for Spotify credential key constants and CredentialStore integration."""
+"""Spotify credential-tier boundary tests."""
 
 from __future__ import annotations
 
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from butlers.credential_store import CredentialStore
 from butlers.spotify_credentials import (
-    SPOTIFY_ACCESS_TOKEN,
     SPOTIFY_CATEGORY,
     SPOTIFY_CLIENT_ID,
-    SPOTIFY_REFRESH_TOKEN,
-    SPOTIFY_TOKEN_EXPIRES_AT,
+    SPOTIFY_MANAGED_ENTITY_INFO_TYPES,
 )
 
 pytestmark = pytest.mark.unit
@@ -39,46 +36,26 @@ def _make_row(**kwargs) -> MagicMock:
     return row
 
 
-async def test_spotify_credentials_store_resolve_delete() -> None:
-    """Key constants unique; store with category=spotify; resolve from DB; no env fallback."""
-    keys = [
-        SPOTIFY_CLIENT_ID,
-        SPOTIFY_ACCESS_TOKEN,
-        SPOTIFY_REFRESH_TOKEN,
-        SPOTIFY_TOKEN_EXPIRES_AT,
-    ]
-    assert all(isinstance(k, str) and k for k in keys) and len(keys) == len(set(keys))
+async def test_credential_store_owns_only_spotify_client_configuration() -> None:
+    """CredentialStore is Tier 1 client configuration, never OAuth token authority."""
     assert SPOTIFY_CATEGORY == "spotify"
+    assert SPOTIFY_MANAGED_ENTITY_INFO_TYPES == {
+        "spotify_oauth_access",
+        "spotify_oauth_refresh",
+        "spotify_oauth_expires_at",
+    }
 
-    # store with category
     pool = _make_pool(execute_return="INSERT 0 1")
     store = CredentialStore(pool)
-    for key, value in {
-        SPOTIFY_CLIENT_ID: "abc123",
-        SPOTIFY_ACCESS_TOKEN: "BQD",
-        SPOTIFY_REFRESH_TOKEN: "AQA",
-        SPOTIFY_TOKEN_EXPIRES_AT: "2026-03-25",
-    }.items():
-        await store.store(key, value, category=SPOTIFY_CATEGORY)
-    assert len(pool._conn.execute.call_args_list) == len(keys)
-    assert all(call.args[3] == "spotify" for call in pool._conn.execute.call_args_list)
+    await store.store(SPOTIFY_CLIENT_ID, "client-config", category=SPOTIFY_CATEGORY)
+    assert len(pool._conn.execute.call_args_list) == 1
+    assert pool._conn.execute.call_args.args[3] == "spotify"
 
-    # resolve from DB
-    row = _make_row(secret_value="BQD_access")
+    row = _make_row(secret_value="client-config")
     assert (
-        await CredentialStore(_make_pool(fetchrow_return=row)).resolve(SPOTIFY_ACCESS_TOKEN)
-        == "BQD_access"
+        await CredentialStore(_make_pool(fetchrow_return=row)).resolve(SPOTIFY_CLIENT_ID)
+        == "client-config"
     )
 
-    # no env fallback
-    with patch.dict(os.environ, {SPOTIFY_ACCESS_TOKEN: "env-token"}):
-        assert (
-            await CredentialStore(_make_pool(fetchrow_return=None)).resolve(SPOTIFY_ACCESS_TOKEN)
-            is None
-        )
-
-    # delete all
     pool2 = _make_pool(execute_return="DELETE 1")
-    store2 = CredentialStore(pool2)
-    results = [await store2.delete(k) for k in keys]
-    assert all(results)
+    assert await CredentialStore(pool2).delete(SPOTIFY_CLIENT_ID)

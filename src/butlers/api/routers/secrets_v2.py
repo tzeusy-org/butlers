@@ -217,6 +217,7 @@ from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
+from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -1426,9 +1427,11 @@ async def _fetch_user_secrets(
                 FROM public.entity_info ei
                 WHERE ei.entity_id = $1
                   AND ei.secured = true
+                  AND NOT (ei.type = ANY($2::text[]))
                 ORDER BY ei.type
                 """,
                 identity,
+                list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES),
             )
         else:
             # Owner-default projection: include both the owner entity's credentials
@@ -1469,6 +1472,7 @@ async def _fetch_user_secrets(
                 JOIN public.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
                   AND ei.secured = true
+                  AND NOT (ei.type = ANY($1::text[]))
 
                 UNION ALL
 
@@ -1490,11 +1494,12 @@ async def _fetch_user_secrets(
                 JOIN public.google_accounts ga ON ga.entity_id = ei.entity_id
                 WHERE ga.is_primary = true
                   AND ei.secured = true
+                  AND NOT (ei.type = ANY($1::text[]))
 
                 ORDER BY priority, type
             """
             try:
-                rows = await pool.fetch(_owner_default_sql)
+                rows = await pool.fetch(_owner_default_sql, list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES))
             except UndefinedTableError as exc:
                 # google_accounts table not yet migrated — fall back to owner-only
                 # query so existing owner credentials are not hidden.
@@ -1519,8 +1524,10 @@ async def _fetch_user_secrets(
                     JOIN public.entities e ON e.id = ei.entity_id
                     WHERE 'owner' = ANY(e.roles)
                       AND ei.secured = true
+                      AND NOT (ei.type = ANY($1::text[]))
                     ORDER BY ei.type
-                    """
+                    """,
+                    list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES),
                 )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
@@ -2093,11 +2100,13 @@ async def _fetch_single_user_secret(
                 WHERE ei.entity_id = $1
                   AND ei.type LIKE ANY($2::text[])
                   AND ei.secured = true
+                  AND NOT (ei.type = ANY($3::text[]))
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
                 identity,
                 patterns,
+                list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES),
             )
         else:
             row = await pool.fetchrow(
@@ -2118,10 +2127,12 @@ async def _fetch_single_user_secret(
                 WHERE 'owner' = ANY(e.roles)
                   AND ei.type LIKE ANY($1::text[])
                   AND ei.secured = true
+                  AND NOT (ei.type = ANY($2::text[]))
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
                 patterns,
+                list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES),
             )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
@@ -2132,6 +2143,9 @@ async def _fetch_single_user_secret(
         return None
 
     if row is None:
+        return None
+    if row["type"] in SPOTIFY_MANAGED_ENTITY_INFO_TYPES:
+        # Defensive for non-SQL mocks/adapters; production filtering happens in SQL.
         return None
 
     value: str | None = row["value"]
@@ -2368,6 +2382,8 @@ async def get_user_credential(
     Returns 404 when no matching credential exists.
     Raw credential values are NEVER returned.
     """
+    if provider.casefold() == "spotify":
+        raise HTTPException(status_code=404, detail="Credential not found")
     shared_pool: Any = None
     try:
         shared_pool = db.credential_shared_pool()
@@ -4082,6 +4098,8 @@ async def rotate_user_credential(
     openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
     §User credential mutations — ``rotated`` audit action
     """
+    if provider.casefold() == "spotify":
+        raise HTTPException(status_code=404, detail="Credential not found")
     shared_pool: Any = None
     try:
         shared_pool = db.credential_shared_pool()
@@ -4204,6 +4222,8 @@ async def disconnect_user_credential(
     openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
     §User credential mutations — ``disconnected`` audit action
     """
+    if provider.casefold() == "spotify":
+        raise HTTPException(status_code=404, detail="Credential not found")
     shared_pool: Any = None
     try:
         shared_pool = db.credential_shared_pool()
@@ -4333,6 +4353,8 @@ async def probe_user_credential(
     openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
     §Cache write on probe (same-transaction invariant)
     """
+    if provider.casefold() == "spotify":
+        raise HTTPException(status_code=404, detail="Credential not found")
     shared_pool: Any = None
     try:
         shared_pool = db.credential_shared_pool()
@@ -4634,6 +4656,9 @@ async def reauthorize_user_credential(
     openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md
     §Cross-Page Reauth Bookkeeping
     """
+    if provider.casefold() == "spotify":
+        raise HTTPException(status_code=404, detail="Credential not found")
+
     shared_pool: Any = None
     try:
         shared_pool = db.credential_shared_pool()

@@ -8,7 +8,8 @@ Wraps the ``SpotifyClient`` as a butler module with 22 MCP tools across 6 groups
 - Playlist management (get, create, add/remove tracks, list tracks)
 - Library management (get/save/remove saved tracks)
 
-Credentials are resolved via ``CredentialStore`` at startup. Missing credentials
+Client configuration is resolved via ``CredentialStore`` and OAuth state via owner
+``entity_info`` at startup. Missing credentials
 produce actionable error messages rather than exceptions. Premium-required errors
 are caught and returned with account tier information.
 
@@ -29,7 +30,9 @@ from butlers.connectors.spotify_client import (
     SpotifyRateLimitError,
     SpotifyTokenRefreshUnavailableError,
 )
+from butlers.credential_store import resolve_owner_entity_info
 from butlers.modules.base import Module, ToolMeta
+from butlers.spotify_credentials import SPOTIFY_OAUTH_ACCESS, SPOTIFY_OAUTH_REFRESH
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +143,7 @@ class SpotifyModule(Module):
         db:
             Butler database instance (unused by this module).
         credential_store:
-            ``CredentialStore`` for OAuth token resolution.  When ``None``,
+            ``CredentialStore`` for client configuration and shared DB access. When ``None``,
             the module marks itself as unconfigured and tools return actionable
             errors.
         blob_store:
@@ -161,9 +164,11 @@ class SpotifyModule(Module):
             )
             return
 
-        # Verify that the essential tokens are present before constructing the client.
-        access_token = await credential_store.resolve("SPOTIFY_ACCESS_TOKEN")
-        refresh_token = await credential_store.resolve("SPOTIFY_REFRESH_TOKEN")
+        # OAuth authority is owner entity_info; CredentialStore only supplies client config.
+        access_token = await resolve_owner_entity_info(credential_store.pool, SPOTIFY_OAUTH_ACCESS)
+        refresh_token = await resolve_owner_entity_info(
+            credential_store.pool, SPOTIFY_OAUTH_REFRESH
+        )
 
         if not access_token or not refresh_token:
             logger.warning(

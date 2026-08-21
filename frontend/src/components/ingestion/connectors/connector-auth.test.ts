@@ -243,6 +243,45 @@ describe('deriveConnectorDispatchInfo — auth.status unconfigured is not mapped
   })
 })
 
+describe('deriveConnectorDispatchInfo — Spotify canonical recovery', () => {
+  it('maps only Spotify needs_reauth to the interactive recovery state', () => {
+    const c = {
+      ...BASE,
+      connector_type: 'spotify',
+      auth: {
+        status: 'needs_reauth',
+        type: 'oauth',
+        note: null,
+        expires_at: null,
+        required_scopes_version: 1,
+        manifest_version: 1,
+        alt_surface: null,
+        recovery_reason: 'rotation-needed',
+      },
+    } as ConnectorSummary
+
+    expect(deriveConnectorDispatchInfo(c).authStatus).toBe('needs_reauth')
+  })
+
+  it('leaves generic OAuth needs_reauth outside the Spotify mapping', () => {
+    const c = {
+      ...BASE,
+      connector_type: 'gmail',
+      auth: {
+        status: 'needs_reauth',
+        type: 'oauth',
+        note: null,
+        expires_at: null,
+        required_scopes_version: 1,
+        manifest_version: 1,
+        alt_surface: null,
+      },
+    } as ConnectorSummary
+
+    expect(deriveConnectorDispatchInfo(c).authStatus).toBe('ok')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // healthVerdictWord — single-word roster health verdict
 // ---------------------------------------------------------------------------

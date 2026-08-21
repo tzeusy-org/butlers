@@ -1004,9 +1004,10 @@ export function SpotifyDrawerContent() {
 
   const status = statusQuery.data;
   const isConnected = status?.state === "connected";
-  const isNotConfigured = status?.state === "not_configured";
+  const isNotConfigured = status?.state === "unconfigured";
   const isError = status?.state === "error";
-  const needsAuth = status?.state === "needs_auth" || status?.state === "needs_reauth";
+  const needsAuth =
+    status?.state === "authorization_needed" || status?.state === "needs_reauth";
 
   function handleConfigureOpen() {
     setConfigureOpen(true);
@@ -1091,12 +1092,7 @@ export function SpotifyDrawerContent() {
           }
           data-spotify-status-dot="true"
         />
-        {status?.display_name && (
-          <Mono size={11} color="var(--mfg)">{status.display_name}</Mono>
-        )}
-        {status?.spotify_user_id && !status.display_name && (
-          <Mono size={11} color="var(--mfg)">{status.spotify_user_id}</Mono>
-        )}
+        <Mono size={11} color="var(--mfg)">Spotify connector</Mono>
       </div>
 
       {/* KV band */}
@@ -1115,9 +1111,9 @@ export function SpotifyDrawerContent() {
           </Mono>
         </div>
         <div>
-          <Mono size={9} upper tracking="0.14em" color="var(--dim)">account</Mono>
+          <Mono size={9} upper tracking="0.14em" color="var(--dim)">capability</Mono>
           <Mono size={11} className="mt-1 block">
-            {isConnected ? (status?.account_type ?? "free") : "—"}
+            listening history
           </Mono>
         </div>
       </div>
@@ -1132,9 +1128,7 @@ export function SpotifyDrawerContent() {
           <Mono size={11} upper tracking="0.12em" color="var(--red)">
             Error: re-authorization needed
           </Mono>
-          <Mono size={11} color="var(--mfg)">
-            {status?.error ?? "Spotify token verification failed. Re-connect your account."}
-          </Mono>
+          <Mono size={11} color="var(--mfg)">Reconnect Spotify to continue.</Mono>
           <div className="flex gap-2">
             <PillBtn
               variant="commit"
@@ -1208,7 +1202,7 @@ export function SpotifyDrawerContent() {
           data-spotify-disconnect-confirm="true"
         >
           <Mono size={11} color="var(--red)">
-            Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.
+            Disconnect Spotify? Clears locally stored authorization state. Your client ID remains configured.
           </Mono>
           {disconnectMutation.error && (
             <Mono size={11} color="var(--red)">

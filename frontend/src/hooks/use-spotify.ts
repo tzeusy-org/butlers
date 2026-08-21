@@ -65,7 +65,7 @@ export function useSpotifyConfig() {
 /**
  * Initiate the Spotify OAuth PKCE flow.
  *
- * Calls POST /api/spotify/oauth/start and returns the authorization URL.
+ * Calls the connector-owned Spotify OAuth start endpoint and returns the authorization URL.
  * The caller is responsible for redirecting the user's browser to that URL.
  */
 export function useSpotifyOAuthStart() {
@@ -78,7 +78,7 @@ export function useSpotifyOAuthStart() {
  * Disconnect the Spotify account.
  *
  * On success, invalidates all Spotify queries so the settings card
- * transitions to the needs_auth state after local credential cleanup while
+ * transitions to authorization_needed after local credential cleanup while
  * retaining the configured client ID.
  */
 export function useSpotifyDisconnect() {

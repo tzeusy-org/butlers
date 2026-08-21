@@ -110,7 +110,7 @@ vi.mock("@/hooks/use-steam.ts", () => ({
 }))
 vi.mock("@/hooks/use-spotify.ts", () => ({
   useSpotifyStatus: vi.fn(() => ({
-    data: { state: "connected", connected: true, spotify_user_id: "testuser", display_name: "Test User", account_type: "premium", last_sync_at: null, error: null, needs_reauth: false, missing_scopes: [] },
+    data: { state: "connected", connected: true, capability_categories: ["listening-history"] },
     isLoading: false,
     error: null,
   })),

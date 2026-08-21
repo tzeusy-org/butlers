@@ -218,7 +218,11 @@ The dashboard SHALL expose REST API endpoints for Spotify account management.
   `spotify_oauth_expires_at`, and clear derived granted-scope metadata
 - **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
 - **AND** it SHALL not issue a provider-side authorization-revocation request
-- **AND** it SHALL return `{"disconnected": true}`
+- **AND** after the reachable authority executes that atomic delete, including
+  a zero-row delete, it SHALL return `{"disconnected": true}`
+- **AND** when the owner credential authority is unavailable or the transaction
+  fails, it SHALL return HTTP 503 with the fixed detail
+  `Owner credential authority is unavailable.` and SHALL NOT claim success
 
 #### Scenario: Client ID configuration endpoint
 

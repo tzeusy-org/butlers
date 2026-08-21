@@ -80,7 +80,6 @@ import {
   useDisconnectAccount,
 } from "@/hooks/use-secrets.ts";
 import { useDisconnectGoogleHealth, useGoogleHealthStatus } from "@/hooks/use-google-health.ts";
-import { useSpotifyOAuthStart } from "@/hooks/use-spotify.ts";
 import {
   getGoogleOAuthStartUrl,
   googleHealthScopeFamily,
@@ -1180,15 +1179,6 @@ export function PageUser({
   const isOauth = provider.kind === "oauth";
   const isWebhook = provider.kind === "webhook";
   const isTelegramSession = provider.id === "telegram_bot";
-  // Spotify authorizes through the connector's PKCE flow
-  // (POST /api/connectors/spotify/oauth/start — client_id only, no client
-  // secret), which is what the registered Spotify app's redirect URIs point at
-  // and what is connected today. The generalized /oauth/<provider>/start dance
-  // has its own `spotify` registry entry, but that is a confidential-client
-  // flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never provisioned — pointing
-  // this card's commit pill there (bu-5gliy) gave Spotify a connect button that
-  // could only fail. The pill stays; the flow behind it changes.
-  const usesConnectorOAuth = provider.id === "spotify";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
   const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
@@ -1196,9 +1186,8 @@ export function PageUser({
   // ── Reauthorize / Connect ───────────────────────────────────────────────────
   // Both "re-authorize" (expired/revoked) and "connect" (never_set) flow through
   // the same endpoint — POST /api/secrets/user/<provider>/reauthorize — which
-  // initiates the OAuth dance and returns a redirect_url. Connector-OAuth
-  // providers (see usesConnectorOAuth) take their own start endpoint instead.
-  const spotifyOAuthStart = useSpotifyOAuthStart();
+  // initiates the OAuth dance and returns a redirect_url. Connector-owned
+  // providers are rendered by their dedicated Passport projection instead.
   const [reauthPending, setReauthPending] = React.useState(false);
   const [reauthError, setReauthError] = React.useState<string | null>(null);
   // Honest "not yet available" notice: the backend returns HTTP 501 when a
@@ -1213,16 +1202,6 @@ export function PageUser({
     setReauthError(null);
     setReauthNotAvailable(null);
     try {
-      if (usesConnectorOAuth) {
-        // Connector PKCE flow: the start call returns the provider's own
-        // authorization URL (absolute), so there is no API path to resolve.
-        const started = await spotifyOAuthStart.mutateAsync();
-        if (!started?.authorization_url) {
-          throw new Error("No authorization URL returned from the server.");
-        }
-        window.location.href = started.authorization_url;
-        return;
-      }
       const resp = await reauthorizeUserCredential(credential.provider, credential.identity);
       // Follow the returned redirect_url to begin the OAuth dance.
       if (!resp?.data?.redirect_url) {
@@ -1559,9 +1538,6 @@ export function PageUser({
       )}
       {provider.id === "steam" && (
         <SteamDrawer onClose={() => undefined} inline />
-      )}
-      {provider.id === "spotify" && (
-        <SpotifyDrawer onClose={() => undefined} inline />
       )}
       {provider.id === "whatsapp" && (
         <WhatsAppDrawer onClose={() => undefined} inline />

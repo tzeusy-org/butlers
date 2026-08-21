@@ -31,19 +31,17 @@ endpoints needed by the Spotify connector:
 - ``check_saved_tracks()`` — Check if tracks are saved.
 
 Auth model:
-- Bearer token resolved from ``CredentialStore`` at construction time.
-- Proactive refresh 5 minutes before expiry using stored ``SPOTIFY_TOKEN_EXPIRES_AT``.
+- Bearer token resolved from secured owner ``entity_info`` at construction time.
+- Proactive refresh 5 minutes before the owner-bound expiry timestamp.
 - Automatic retry on HTTP 401: exchange refresh token for new access token via
-  ``POST https://accounts.spotify.com/api/token``, update ``CredentialStore``,
+  ``POST https://accounts.spotify.com/api/token``, update owner ``entity_info``,
   retry once.
 - Rate limit handling: honor ``Retry-After`` header on HTTP 429; fall back to
   exponential backoff with jitter (initial 30 s, max 600 s) when no header present.
 
-Environment / CredentialStore keys:
-- ``SPOTIFY_CLIENT_ID``          — Spotify OAuth app client ID.
-- ``SPOTIFY_ACCESS_TOKEN``       — Short-lived access token (expiry ~1 h).
-- ``SPOTIFY_REFRESH_TOKEN``      — Long-lived refresh token.
-- ``SPOTIFY_TOKEN_EXPIRES_AT``   — UTC ISO8601 expiry timestamp of access token.
+Credential authorities:
+- ``SPOTIFY_CLIENT_ID`` is Tier 1 application configuration.
+- Access, refresh, and expiry are Tier 2 secured owner entity_info rows.
 
 Usage::
 
@@ -61,6 +59,18 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
+
+from butlers.credential_store import (
+    resolve_owner_entity_info,
+    upsert_owner_entity_info_on_connection,
+)
+from butlers.spotify_credentials import (
+    SPOTIFY_CLIENT_ID,
+    SPOTIFY_OAUTH_ACCESS,
+    SPOTIFY_OAUTH_EXPIRES_AT,
+    SPOTIFY_OAUTH_REFRESH,
+    parse_spotify_token_response,
+)
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -82,11 +92,12 @@ _BACKOFF_INITIAL_S: float = 30.0
 _BACKOFF_MAX_S: float = 600.0
 _BACKOFF_JITTER_FRACTION = 0.25  # ± 25 % jitter
 
-# CredentialStore key names
-_KEY_ACCESS_TOKEN = "SPOTIFY_ACCESS_TOKEN"
-_KEY_REFRESH_TOKEN = "SPOTIFY_REFRESH_TOKEN"
-_KEY_CLIENT_ID = "SPOTIFY_CLIENT_ID"
-_KEY_EXPIRES_AT = "SPOTIFY_TOKEN_EXPIRES_AT"
+# Tier 1 CredentialStore key name
+_KEY_CLIENT_ID = SPOTIFY_CLIENT_ID
+
+_SAFE_OAUTH_ERROR_CODES = frozenset(
+    {"invalid_client", "invalid_grant", "server_error", "temporarily_unavailable"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +184,7 @@ class SpotifyClient:
     Parameters
     ----------
     credential_store:
-        A ``CredentialStore`` instance used to resolve and persist OAuth tokens.
+        A ``CredentialStore`` instance supplying Tier 1 client configuration and its DB pool.
     http_client:
         Optional pre-built ``httpx.AsyncClient``.  If ``None``, a new client is
         created (and closed) by the context manager.
@@ -236,21 +247,33 @@ class SpotifyClient:
 
     async def _load_credentials(self) -> None:
         """Resolve Spotify credentials from the credential store."""
-        self._access_token = await self._credential_store.resolve(_KEY_ACCESS_TOKEN)
-        self._refresh_token = await self._credential_store.resolve(_KEY_REFRESH_TOKEN)
+        self._access_token = await resolve_owner_entity_info(
+            self._credential_store.pool, SPOTIFY_OAUTH_ACCESS
+        )
+        self._refresh_token = await resolve_owner_entity_info(
+            self._credential_store.pool, SPOTIFY_OAUTH_REFRESH
+        )
         self._client_id = await self._credential_store.resolve(_KEY_CLIENT_ID)
 
-        expires_at_str = await self._credential_store.resolve(_KEY_EXPIRES_AT)
-        if expires_at_str:
+        expires_at_value = await resolve_owner_entity_info(
+            self._credential_store.pool, SPOTIFY_OAUTH_EXPIRES_AT
+        )
+        if expires_at_value:
             try:
-                self._expires_at = datetime.fromisoformat(expires_at_str)
+                if isinstance(expires_at_value, datetime):
+                    self._expires_at = expires_at_value
+                elif isinstance(expires_at_value, str):
+                    self._expires_at = datetime.fromisoformat(
+                        expires_at_value.replace("Z", "+00:00")
+                    )
+                else:
+                    raise TypeError("unsupported owner expiry type")
                 if self._expires_at.tzinfo is None:
                     self._expires_at = self._expires_at.replace(tzinfo=UTC)
-            except ValueError:
+            except (TypeError, ValueError):
                 logger.warning(
-                    "Could not parse SPOTIFY_TOKEN_EXPIRES_AT=%r; treating as expired "
-                    "and forcing refresh",
-                    expires_at_str,
+                    "Could not parse spotify_oauth_expires_at; treating as expired and "
+                    "forcing refresh"
                 )
                 # Force proactive refresh by marking the token as already expired.
                 self._expires_at = datetime.now(UTC) - timedelta(seconds=1)
@@ -276,7 +299,7 @@ class SpotifyClient:
         if not isinstance(data, dict):
             return None
         error = data.get("error")
-        return error if isinstance(error, str) else None
+        return error if isinstance(error, str) and error in _SAFE_OAUTH_ERROR_CODES else None
 
     async def _refresh_access_token(self) -> None:
         """Exchange the stored refresh token for a new access token.
@@ -309,7 +332,6 @@ class SpotifyClient:
         )
 
         if response.status_code != 200:
-            body = response.text[:200]
             oauth_error = self._oauth_error_code(response)
             if (
                 response.status_code == 429
@@ -319,19 +341,17 @@ class SpotifyClient:
                 retry_after_s = self._parse_retry_after(response, attempt=0)
                 logger.warning(
                     "Spotify token refresh temporarily unavailable: "
-                    "status=%d error=%r retry_after_s=%.1f body=%r",
+                    "status=%d error=%r retry_after_s=%.1f",
                     response.status_code,
                     oauth_error,
                     retry_after_s,
-                    body,
                 )
                 raise SpotifyTokenRefreshUnavailableError(retry_after_s)
 
             logger.error(
-                "Spotify token refresh failed: status=%d error=%r body=%r",
+                "Spotify token refresh failed: status=%d error=%r",
                 response.status_code,
                 oauth_error,
-                body,
             )
             raise SpotifyAuthError(
                 f"Spotify token refresh failed (HTTP {response.status_code}). "
@@ -339,45 +359,47 @@ class SpotifyClient:
             )
 
         try:
-            data: dict[str, Any] = response.json()
-            new_access_token: str = data["access_token"]
-        except Exception as exc:
-            logger.error(
-                "Spotify token refresh returned malformed response: %r",
-                response.text[:200],
+            token_response = parse_spotify_token_response(
+                response.json(),
+                require_refresh_token=False,
             )
+        except Exception:
+            logger.error("Spotify token refresh returned malformed response")
             raise SpotifyAuthError(
                 "Spotify token refresh returned an unexpected response. "
                 "Re-connect Spotify via dashboard settings."
-            ) from exc
+            ) from None
         # Spotify may or may not rotate the refresh token
-        new_refresh_token: str = data.get("refresh_token", self._refresh_token)
-        expires_in: int = data.get("expires_in", 3600)
-        new_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+        new_access_token = token_response.access_token
+        new_refresh_token = token_response.refresh_token or self._refresh_token
+        assert new_refresh_token is not None
+        new_expires_at = datetime.now(UTC) + timedelta(seconds=token_response.expires_in)
 
-        # Persist to CredentialStore
-        await self._credential_store.store(
-            _KEY_ACCESS_TOKEN,
-            new_access_token,
-            category="spotify",
-            description="Spotify OAuth access token",
-            is_sensitive=True,
-            expires_at=new_expires_at,
-        )
-        await self._credential_store.store(
-            _KEY_REFRESH_TOKEN,
-            new_refresh_token,
-            category="spotify",
-            description="Spotify OAuth refresh token",
-            is_sensitive=True,
-        )
-        await self._credential_store.store(
-            _KEY_EXPIRES_AT,
-            new_expires_at.isoformat(),
-            category="spotify",
-            description="Spotify access token expiry timestamp (UTC ISO8601)",
-            is_sensitive=False,
-        )
+        # Connector-owned refresh rotates secured owner OAuth rows.
+        try:
+            async with self._credential_store.pool.acquire() as conn:
+                async with conn.transaction():
+                    stored = [
+                        await upsert_owner_entity_info_on_connection(
+                            conn, SPOTIFY_OAUTH_ACCESS, new_access_token, secured=True
+                        ),
+                        await upsert_owner_entity_info_on_connection(
+                            conn, SPOTIFY_OAUTH_REFRESH, new_refresh_token, secured=True
+                        ),
+                        await upsert_owner_entity_info_on_connection(
+                            conn,
+                            SPOTIFY_OAUTH_EXPIRES_AT,
+                            new_expires_at.isoformat(),
+                            secured=True,
+                        ),
+                    ]
+                    if not all(stored):
+                        raise SpotifyAuthError("Owner credential authority is unavailable.")
+        except SpotifyAuthError:
+            raise
+        except Exception:
+            logger.error("Spotify token refresh persistence failed")
+            raise SpotifyAuthError("Owner credential authority is unavailable.") from None
 
         # Update in-memory state
         self._access_token = new_access_token

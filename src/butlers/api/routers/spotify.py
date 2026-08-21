@@ -19,7 +19,7 @@ The bootstrap flow:
      - Validates the CSRF state parameter against the stored entry.
      - Retrieves the associated code verifier from the state store.
      - Exchanges the code + verifier for tokens via Spotify's token endpoint.
-     - Stores access_token, refresh_token, and expires_at in CredentialStore.
+     - Stores access_token, refresh_token, and expires_at as secured owner entity_info.
      - Redirects to OAUTH_DASHBOARD_URL if configured, else returns JSON.
 
   4. GET /api/connectors/spotify/status
@@ -71,7 +71,18 @@ from butlers.api.models.spotify import (
     SpotifyStatusResponse,
 )
 from butlers.core.credential_keys import normalize_credential_key
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    CredentialStore,
+    resolve_owner_entity_info,
+    upsert_owner_entity_info_on_connection,
+)
+from butlers.spotify_credentials import (
+    SPOTIFY_OAUTH_ACCESS,
+    SPOTIFY_OAUTH_EXPIRES_AT,
+    SPOTIFY_OAUTH_REFRESH,
+    SpotifyTokenResponseError,
+    parse_spotify_token_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,31 +114,14 @@ _DEFAULT_SCOPES = " ".join(
     ]
 )
 
-# Set of required scopes for fast membership checks
-_REQUIRED_SCOPES: frozenset[str] = frozenset(_DEFAULT_SCOPES.split())
-
-# Credential keys used in CredentialStore
+# Tier 1 application configuration key used in CredentialStore
 _CRED_CLIENT_ID = "SPOTIFY_CLIENT_ID"
-_CRED_ACCESS_TOKEN = "SPOTIFY_ACCESS_TOKEN"
-_CRED_REFRESH_TOKEN = "SPOTIFY_REFRESH_TOKEN"
-_CRED_TOKEN_EXPIRES_AT = "SPOTIFY_TOKEN_EXPIRES_AT"
-_CRED_GRANTED_SCOPES = "SPOTIFY_GRANTED_SCOPES"
-
-# All credential keys managed by this module (used for validation/cleanup).
-_ALL_CRED_KEYS = (
-    _CRED_CLIENT_ID,
-    _CRED_ACCESS_TOKEN,
-    _CRED_REFRESH_TOKEN,
-    _CRED_TOKEN_EXPIRES_AT,
-    _CRED_GRANTED_SCOPES,
-)
 
 # Token-only keys that are cleared on disconnect (client_id is preserved).
-_TOKEN_CRED_KEYS = (
-    _CRED_ACCESS_TOKEN,
-    _CRED_REFRESH_TOKEN,
-    _CRED_TOKEN_EXPIRES_AT,
-    _CRED_GRANTED_SCOPES,
+_TOKEN_INFO_TYPES = (
+    SPOTIFY_OAUTH_ACCESS,
+    SPOTIFY_OAUTH_REFRESH,
+    SPOTIFY_OAUTH_EXPIRES_AT,
 )
 
 # ---------------------------------------------------------------------------
@@ -334,8 +328,14 @@ def _secrets_redirect(base_url: str, **params: str) -> str:
 class _TokenExchangeError(Exception):
     """Raised when Spotify token exchange fails."""
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, reason: str, status_code: int | None = None) -> None:
+        messages = {
+            "network": "Spotify token exchange transport failed.",
+            "http": "Spotify token exchange was rejected.",
+            "malformed": "Spotify token exchange returned an unexpected response.",
+        }
+        self.reason = reason if reason in messages else "unknown"
+        super().__init__(messages.get(self.reason, "Spotify token exchange failed."))
         self.status_code = status_code
 
 
@@ -384,20 +384,19 @@ async def _exchange_code_for_tokens(
                 data=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
-    except httpx.RequestError as exc:
-        raise _TokenExchangeError(f"Network error contacting Spotify: {exc}") from exc
+    except httpx.RequestError:
+        raise _TokenExchangeError("network") from None
 
     if resp.status_code != 200:
-        body = resp.text[:200]
         raise _TokenExchangeError(
-            f"Spotify token exchange failed (HTTP {resp.status_code}): {body}",
+            "http",
             status_code=resp.status_code,
         )
 
     try:
         return resp.json()
-    except Exception as exc:
-        raise _TokenExchangeError(f"Spotify token response is not valid JSON: {exc}") from exc
+    except Exception:
+        raise _TokenExchangeError("malformed", status_code=resp.status_code) from None
 
 
 async def _fetch_spotify_me(access_token: str) -> dict | None:
@@ -418,6 +417,48 @@ async def _fetch_spotify_me(access_token: str) -> dict | None:
     except Exception:
         logger.debug("Failed to contact Spotify /me", exc_info=True)
         return None
+
+
+async def _store_granted_scopes_on_connection(
+    conn: Any, endpoint_identity: str, scopes: set[str]
+) -> None:
+    """Persist derived scope state in the same transaction as OAuth authority."""
+    await conn.execute(
+        """
+        INSERT INTO switchboard.connector_registry (
+            connector_type, endpoint_identity, state, registered_via,
+            observed_scopes, observed_scopes_fetched_at, required_scopes_version
+        ) VALUES ('spotify', $1, 'unknown', 'dashboard', $2::text[], now(), 1)
+        ON CONFLICT (connector_type, endpoint_identity) DO UPDATE SET
+            observed_scopes = EXCLUDED.observed_scopes,
+            observed_scopes_fetched_at = EXCLUDED.observed_scopes_fetched_at,
+            required_scopes_version = EXCLUDED.required_scopes_version
+        """,
+        endpoint_identity,
+        sorted(scopes),
+    )
+
+
+async def _load_granted_scopes(pool: Any) -> set[str] | None:
+    """Read the newest derived Spotify scope observation, if one exists."""
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT observed_scopes
+            FROM switchboard.connector_registry
+            WHERE connector_type = 'spotify'
+              AND observed_scopes IS NOT NULL
+            ORDER BY observed_scopes_fetched_at DESC NULLS LAST
+            LIMIT 1
+            """
+        )
+    except (AttributeError, TypeError):
+        # Compatibility for deployments/tests whose shared pool predates the
+        # derived connector-registry surface. Token authority remains Tier 2.
+        return None
+    if row is None:
+        return None
+    return set(row["observed_scopes"] or [])
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +577,7 @@ async def spotify_oauth_callback(
     """Handle Spotify's OAuth callback.
 
     Validates the CSRF state, exchanges the authorization code + PKCE
-    verifier for tokens, stores them in CredentialStore, and redirects to the
+    verifier for tokens, stores them in secured owner entity_info, and redirects to the
     Spotify credential card on /secrets — the surface whose drawer starts this
     dance — carrying the same ``?toast=connected`` / ``?oauth_error=<code>``
     params the generalized OAuth callback uses (see ``_secrets_redirect``).
@@ -548,15 +589,15 @@ async def spotify_oauth_callback(
 
     # Handle user denial or provider error
     if error:
-        logger.warning("Spotify OAuth returned error: %s", error)
+        logger.warning("Spotify OAuth returned a provider error")
         if dashboard_url:
             return RedirectResponse(
-                url=_secrets_redirect(dashboard_url, oauth_error=error),
+                url=_secrets_redirect(dashboard_url, toast="connection_failed"),
                 status_code=302,
             )
         raise HTTPException(
             status_code=400,
-            detail=f"Spotify authorization denied: {error}",
+            detail="spotify_authorization_failed",
         )
 
     # Validate required parameters
@@ -571,11 +612,7 @@ async def spotify_oauth_callback(
     if state_entry is None:
         raise HTTPException(
             status_code=403,
-            detail=(
-                "Invalid or expired state token. "
-                "The authorization session may have timed out. "
-                "Retry POST /api/connectors/spotify/oauth/start."
-            ),
+            detail="spotify_state_invalid",
         )
 
     cred_store = _make_credential_store(db_manager)
@@ -603,8 +640,32 @@ async def spotify_oauth_callback(
             redirect_uri=state_entry.redirect_uri,
             client_id=client_id,
         )
+        token_response = parse_spotify_token_response(
+            token_data,
+            require_refresh_token=True,
+            require_scope=True,
+            require_token_type=True,
+        )
+    except SpotifyTokenResponseError:
+        exc = _TokenExchangeError("malformed")
+        logger.error(
+            "Spotify token exchange failed (reason=%s, status=%s)",
+            exc.reason,
+            exc.status_code,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Failed to exchange authorization code for tokens. "
+                "Retry POST /api/connectors/spotify/oauth/start."
+            ),
+        ) from None
     except _TokenExchangeError as exc:
-        logger.error("Spotify token exchange failed: %s", exc)
+        logger.error(
+            "Spotify token exchange failed (reason=%s, status=%s)",
+            exc.reason,
+            exc.status_code,
+        )
         raise HTTPException(
             status_code=502,
             detail=(
@@ -613,58 +674,55 @@ async def spotify_oauth_callback(
             ),
         ) from exc
 
-    access_token = token_data.get("access_token", "")
-    refresh_token = token_data.get("refresh_token", "")
-    expires_in = token_data.get("expires_in", 3600)
-    granted_scope = token_data.get("scope", "")
+    access_token = token_response.access_token
+    refresh_token = token_response.refresh_token
+    expires_in = token_response.expires_in
+    granted_scope = token_response.scope
+    assert refresh_token is not None
+    assert granted_scope is not None
 
-    if not access_token:
-        raise HTTPException(
-            status_code=502,
-            detail="Spotify token response did not include an access_token.",
-        )
+    profile = await _fetch_spotify_me(access_token)
+    spotify_user_id = profile.get("id") if isinstance(profile, dict) else None
+    if not isinstance(spotify_user_id, str) or not spotify_user_id:
+        raise HTTPException(status_code=502, detail="spotify_token_verification_failed")
 
     # Calculate absolute expiry timestamp
     expires_at = datetime.now(UTC) + timedelta(seconds=int(expires_in))
     expires_at_iso = expires_at.isoformat()
 
-    # Persist tokens
-    await cred_store.store(
-        _CRED_ACCESS_TOKEN,
-        access_token,
-        category="spotify",
-        description="Spotify OAuth access token",
-        is_sensitive=True,
-    )
-    if refresh_token:
-        await cred_store.store(
-            _CRED_REFRESH_TOKEN,
-            refresh_token,
-            category="spotify",
-            description="Spotify OAuth refresh token",
-            is_sensitive=True,
-        )
-    await cred_store.store(
-        _CRED_TOKEN_EXPIRES_AT,
-        expires_at_iso,
-        category="spotify",
-        description="Spotify access token expiry (ISO 8601 UTC)",
-        is_sensitive=False,
-    )
-    if granted_scope:
-        await cred_store.store(
-            _CRED_GRANTED_SCOPES,
-            granted_scope,
-            category="spotify",
-            description="Spotify OAuth granted scopes (space-separated)",
-            is_sensitive=False,
-        )
+    # OAuth token authority is the owner entity, never CredentialStore.
+    pool = cred_store.pool
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                stored = [
+                    await upsert_owner_entity_info_on_connection(
+                        conn, SPOTIFY_OAUTH_ACCESS, access_token, secured=True
+                    ),
+                    await upsert_owner_entity_info_on_connection(
+                        conn, SPOTIFY_OAUTH_REFRESH, refresh_token, secured=True
+                    ),
+                    await upsert_owner_entity_info_on_connection(
+                        conn, SPOTIFY_OAUTH_EXPIRES_AT, expires_at_iso, secured=True
+                    ),
+                ]
+                if not all(stored):
+                    raise RuntimeError("owner credential upsert failed")
+                await _store_granted_scopes_on_connection(
+                    conn, f"spotify:{spotify_user_id}", set(granted_scope.split())
+                )
+    except Exception as exc:
+        logger.error("Spotify OAuth authority transaction failed", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Owner credential authority is unavailable.",
+        ) from exc
 
     logger.info(
-        "Spotify OAuth tokens stored (expires_at=%s, has_refresh=%s, scopes=%r)",
+        "Spotify OAuth state stored (expires_at=%s, has_refresh=%s, scopes_granted=%s)",
         expires_at_iso,
         bool(refresh_token),
-        granted_scope,
+        bool(granted_scope),
     )
 
     if dashboard_url:
@@ -676,8 +734,7 @@ async def spotify_oauth_callback(
     return JSONResponse(
         content={
             "success": True,
-            "message": "Spotify authorization complete. Tokens stored.",
-            "expires_at": expires_at_iso,
+            "message": "Spotify authorization complete.",
         }
     )
 
@@ -691,71 +748,63 @@ async def spotify_oauth_callback(
 async def get_spotify_status(
     db_manager: Any = Depends(_get_db_manager),
 ) -> SpotifyStatusResponse:
-    """Return the current Spotify connection state.
-
-    Checks stored credentials in CredentialStore. If an access token is
-    present, calls Spotify GET /me to verify it is still valid and to
-    surface the user's display name and product tier.
-
-    Returns not_configured when no client_id has been stored.
-    Returns needs_auth when a client_id is stored but no tokens exist.
-    Returns needs_reauth when tokens exist but granted scopes are insufficient.
-    Returns connected when GET /me succeeds and all required scopes are granted.
-    Returns error when tokens are present but GET /me fails (token refresh /
-    verification failure requiring re-authorization).
-    """
+    """Return a fixed, non-sensitive projection of connector-owned state."""
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
         return SpotifyStatusResponse(
             connected=False,
-            state=SpotifyConnectionState.not_configured,
+            state=SpotifyConnectionState.unconfigured,
         )
 
     client_id = await cred_store.resolve(_CRED_CLIENT_ID)
     if not client_id:
         return SpotifyStatusResponse(
             connected=False,
-            state=SpotifyConnectionState.not_configured,
+            state=SpotifyConnectionState.unconfigured,
         )
 
-    access_token = await cred_store.resolve(_CRED_ACCESS_TOKEN)
-    if not access_token:
+    access_token = await resolve_owner_entity_info(cred_store.pool, SPOTIFY_OAUTH_ACCESS)
+    refresh_token = await resolve_owner_entity_info(cred_store.pool, SPOTIFY_OAUTH_REFRESH)
+    expires_at_raw = await resolve_owner_entity_info(cred_store.pool, SPOTIFY_OAUTH_EXPIRES_AT)
+    if not access_token and not refresh_token and not expires_at_raw:
         return SpotifyStatusResponse(
             connected=False,
-            state=SpotifyConnectionState.needs_auth,
+            state=SpotifyConnectionState.authorization_needed,
         )
-
-    # Check for scope mismatch before verifying connectivity
-    granted_scopes_str = await cred_store.resolve(_CRED_GRANTED_SCOPES)
-    if granted_scopes_str is not None:
-        granted_scopes = frozenset(granted_scopes_str.split())
-        missing_scopes = sorted(_REQUIRED_SCOPES - granted_scopes)
-        if missing_scopes:
-            return SpotifyStatusResponse(
-                connected=False,
-                state=SpotifyConnectionState.needs_reauth,
-                needs_reauth=True,
-                missing_scopes=missing_scopes,
-                error="Spotify authorization is missing required permissions. Re-authorize.",
-            )
-
-    # Verify token against Spotify API
-    me_data = await _fetch_spotify_me(access_token)
-    if me_data is None:
+    if not access_token or not refresh_token or not expires_at_raw:
         return SpotifyStatusResponse(
             connected=False,
             state=SpotifyConnectionState.error,
-            needs_reauth=True,
-            error="Spotify token verification failed. Re-connect your account.",
+        )
+    try:
+        expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+    except ValueError:
+        return SpotifyStatusResponse(
+            connected=False,
+            state=SpotifyConnectionState.error,
+        )
+    if expires_at <= datetime.now(UTC):
+        return SpotifyStatusResponse(
+            connected=False,
+            state=SpotifyConnectionState.needs_reauth,
+        )
+    granted_scopes = await _load_granted_scopes(cred_store.pool)
+    if granted_scopes is not None and not set(_DEFAULT_SCOPES.split()).issubset(granted_scopes):
+        return SpotifyStatusResponse(
+            connected=False,
+            state=SpotifyConnectionState.needs_reauth,
+        )
+    if await _fetch_spotify_me(access_token) is None:
+        return SpotifyStatusResponse(
+            connected=False,
+            state=SpotifyConnectionState.error,
         )
 
     return SpotifyStatusResponse(
         connected=True,
         state=SpotifyConnectionState.connected,
-        spotify_user_id=me_data.get("id"),
-        display_name=me_data.get("display_name"),
-        account_type=me_data.get("product"),
-        last_sync_at=datetime.now(UTC),
     )
 
 
@@ -768,25 +817,58 @@ async def get_spotify_status(
 async def disconnect_spotify(
     db_manager: Any = Depends(_get_db_manager),
 ) -> SpotifyDisconnectResponse:
-    """Clear locally stored Spotify OAuth state from CredentialStore.
+    """Clear connector-owned Spotify OAuth state from owner entity_info.
 
-    Deletes SPOTIFY_ACCESS_TOKEN, SPOTIFY_REFRESH_TOKEN,
-    SPOTIFY_TOKEN_EXPIRES_AT, and SPOTIFY_GRANTED_SCOPES. Preserves
-    SPOTIFY_CLIENT_ID so the user does not need to re-enter it when reconnecting.
+    Preserves SPOTIFY_CLIENT_ID so the user does not need to re-enter it when reconnecting.
     Does not call Spotify or revoke provider-side authorization.
 
-    Returns success=True even when no credentials were stored (idempotent).
+    Returns success only after the reachable owner authority executes the
+    atomic delete, including when it finds no stored credentials.
     """
     cred_store = _make_credential_store(db_manager)
     if cred_store is None:
-        # No DB — nothing to delete; treat as success
-        logger.info("Disconnect requested but credential store is unavailable; treating as success")
-        return SpotifyDisconnectResponse()
+        logger.error("Spotify disconnect failed: owner credential authority unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail="Owner credential authority is unavailable.",
+        )
 
-    deleted_count = 0
-    for key in _TOKEN_CRED_KEYS:
-        if await cred_store.delete(key):
-            deleted_count += 1
+    try:
+        deleted_count = await _delete_spotify_oauth_rows(cred_store.pool)
+    except Exception:
+        logger.error("Spotify disconnect failed: owner credential authority transaction failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Owner credential authority is unavailable.",
+        ) from None
 
     logger.info("Spotify disconnect: deleted %d credential key(s)", deleted_count)
     return SpotifyDisconnectResponse()
+
+
+async def _delete_spotify_oauth_rows(pool: Any) -> int:
+    """Delete the exact connector-managed Spotify owner rows atomically."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                DELETE FROM public.entity_info ei
+                USING public.entities e
+                WHERE ei.entity_id = e.id
+                  AND 'owner' = ANY(e.roles)
+                  AND ei.type = ANY($1::text[])
+                RETURNING ei.type
+                """,
+                list(_TOKEN_INFO_TYPES),
+            )
+            await conn.execute(
+                """
+                UPDATE switchboard.connector_registry
+                SET observed_scopes = NULL,
+                    observed_scopes_fetched_at = NULL,
+                    required_scopes_version = NULL,
+                    auth_status = NULL
+                WHERE connector_type = 'spotify'
+                """
+            )
+    return len(rows)

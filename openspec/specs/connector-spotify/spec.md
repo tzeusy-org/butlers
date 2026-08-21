@@ -130,6 +130,10 @@ The connector SHALL use an async HTTP client to communicate with the Spotify Web
 - **THEN** the connector SHALL set its heartbeat state to `error` with message "Spotify authorization expired. Re-connect via dashboard settings."
 - **AND** the connector SHALL stop polling and wait for a new token (periodic credential re-check every 60s)
 - **AND** it SHALL NOT crash or exit
+- **AND** token exchange and refresh exceptions, logs, heartbeat state, and
+  health output SHALL contain only fixed local messages, safe HTTP status, and
+  internally allowlisted OAuth error codes, never provider response bodies,
+  descriptions, or unrecognized provider-controlled error codes
 
 #### Scenario: Rate limit handling
 

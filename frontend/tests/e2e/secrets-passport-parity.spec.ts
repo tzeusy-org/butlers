@@ -67,16 +67,6 @@ const MOCK_INVENTORY_RESPONSE = {
         test: { ok: true, code: 200, at: "14:21 today" },
       },
       {
-        id: "u-spotify-tze",
-        entity_id: "tze",
-        type: "spotify_oauth_refresh",
-        label: "Spotify (tze)",
-        state: "expired",
-        fingerprint: "sha256:d4e1b8a0",
-        last_verified: "2 days ago",
-        test: { ok: false, code: 401, at: "2 days ago", message: "refresh-token expired" },
-      },
-      {
         id: "u-ha-tze",
         entity_id: "tze",
         type: "home_assistant_token",
@@ -312,7 +302,7 @@ async function mockAllSecretRoutes(page: Page) {
   });
   // Spotify
   await page.route("**/api/connectors/spotify/status**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: false }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ connected: false, state: "needs_reauth", capability_categories: ["listening-history"] }) })
   );
   await page.route("**/api/connectors/spotify/config**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) })
@@ -385,30 +375,20 @@ test.describe("PageUser (C10–C15)", () => {
     await expect(page.locator('[data-rotate-panel="true"]')).not.toBeAttached({ timeout: 5_000 });
   });
 
-  test("C15: user disconnect -- opens confirm, confirms, fires disconnect mutation", async ({ page }) => {
-    // Covers C15 -- disconnect
-    // Use spotify (expired state) which has disconnect button without Google account rows in the way
+  test("C15: connector disconnect -- opens confirm and fires connector mutation", async ({ page }) => {
     await gotoPassport(page, "/secrets?focus=u:spotify");
-    await page.locator('[data-page="user"][data-provider="spotify"]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-connector-passport="spotify"]').waitFor({ timeout: 5_000 });
 
-    // The CommitFooter disconnect (danger variant) is the first "disconnect" button
-    // in the page's commit footer section (spotify page also has SpotifyDrawer with its own disconnect).
-    // Use the data-disconnect-confirm trigger — click any "disconnect" button to open the confirm.
-    // Spotify page has the CommitFooter disconnect button AFTER the SpotifyDrawer.
-    // Use .last() to click the CommitFooter "disconnect" which opens data-disconnect-confirm.
-    const disconnectBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /^disconnect$/ }).last();
+    const disconnectBtn = page.locator('[data-spotify-drawer-content="true"] button', { hasText: /^disconnect$/ });
     await expect(disconnectBtn).toBeAttached({ timeout: 5_000 });
     await disconnectBtn.click();
 
-    // CommitFooter disconnect opens data-disconnect-confirm (PageUser inline confirm)
-    await expect(page.locator('[data-disconnect-confirm="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-spotify-disconnect-confirm="true"]')).toBeAttached({ timeout: 3_000 });
 
-    // Confirm disconnect -- mutation fires, page stays (no onSuccess that closes panel)
-    const confirmBtn = page.locator('[data-disconnect-confirm="true"] button', { hasText: /yes, disconnect/ });
+    const confirmBtn = page.locator('[data-spotify-disconnect-confirm="true"] button', { hasText: /yes, disconnect/ });
     await confirmBtn.click();
 
-    // Confirm stays attached after mutation fires
-    await expect(page.locator('[data-disconnect-confirm="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-spotify-disconnect-confirm="true"]')).toBeAttached({ timeout: 3_000 });
   });
 
   test("C13: user probe -- fires test mutation and shows result", async ({ page }) => {
@@ -445,8 +425,7 @@ test.describe("PageUser (C10–C15)", () => {
     await expect(revealBtn).not.toBeAttached({ timeout: 2_000 });
   });
 
-  test("C11: re-authorize button for expired credential starts the OAuth flow", async ({ page }) => {
-    // Covers C11 -- re-authorize for expired credentials.
+  test("C11: Spotify recovery action starts the connector OAuth flow", async ({ page }) => {
     // Spotify authorizes through the connector PKCE flow, so the deterministic
     // assertion is the POST to /api/connectors/spotify/oauth/start (not the
     // generalized /api/secrets/user/spotify/reauthorize, whose app credentials
@@ -458,11 +437,10 @@ test.describe("PageUser (C10–C15)", () => {
     await page.route("https://accounts.spotify.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
-    await expect(page.locator('[data-page="user"][data-provider="spotify"]')).toBeAttached({ timeout: 5_000 });
+    await expect(page.locator('[data-connector-passport="spotify"]')).toBeAttached({ timeout: 5_000 });
 
-    // For expired state the re-authorize button should appear
-    const reauthorizeBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /re-authorize/ });
-    await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
+    const connectBtn = page.locator('[data-spotify-drawer-content="true"] button', { hasText: /connect via spotify/ });
+    await expect(connectBtn).toBeAttached({ timeout: 5_000 });
 
     // The reauthorize POST fires as a direct consequence of the click. Asserting on
     // the request (rather than transient "redirecting" text or the location.href redirect)
@@ -472,7 +450,7 @@ test.describe("PageUser (C10–C15)", () => {
         (req) => /\/api\/connectors\/spotify\/oauth\/start/.test(req.url()) && req.method() === "POST",
         { timeout: 5_000 },
       ),
-      reauthorizeBtn.click(),
+      connectBtn.click(),
     ]);
     expect(reauthRequest).toBeTruthy();
     expect(reauthRequest.method()).toBe("POST");
@@ -1146,7 +1124,7 @@ test.describe("Provider drawers (C32-C36)", () => {
     );
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
-    await page.locator('[data-page="user"][data-provider="spotify"]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-connector-passport="spotify"]').waitFor({ timeout: 5_000 });
 
     const spotifyDrawer = page.locator('[data-spotify-drawer-content="true"]');
     await expect(spotifyDrawer).toBeAttached({ timeout: 8_000 });
@@ -1350,11 +1328,10 @@ test.describe("State and severity (C50, C02, C53)", () => {
     await expect(userPage).toBeAttached({ timeout: 5_000 });
   });
 
-  test("C50: credential state=expired renders with expired credential state", async ({ page }) => {
-    // Covers C50 -- expired state has color
+  test("C50: Spotify recovery renders only the connector projection", async ({ page }) => {
     await gotoPassport(page, "/secrets?focus=u:spotify");
-    const userPage = page.locator('[data-page="user"][data-credential-state="expired"]');
-    await expect(userPage).toBeAttached({ timeout: 5_000 });
+    await expect(page.locator('[data-connector-passport="spotify"]')).toBeAttached({ timeout: 5_000 });
+    await expect(page.locator('[data-page="user"][data-provider="spotify"]')).not.toBeAttached();
   });
 
   test("C53: No-LLM-Narration invariant -- no anthropic import in secrets surfaces (build artifact)", async ({ page }) => {
@@ -1423,23 +1400,22 @@ test.describe("Error / edge paths", () => {
   });
 
   test("User disconnect error -- error shown when disconnect fails", async ({ page }) => {
-    // Use spotify (no google account rows to conflict with) to test user disconnect error path
+    // Connector errors remain within the content-blind Spotify projection.
     await mockAllSecretRoutes(page);
-    await page.route("**/api/secrets/user/*/disconnect**", (route) =>
+    await page.route("**/api/connectors/spotify/disconnect**", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "disconnect failed" }) })
     );
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
-    await page.locator('[data-page="user"][data-provider="spotify"]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-connector-passport="spotify"]').waitFor({ timeout: 5_000 });
 
-    // Use .last() to click CommitFooter disconnect (opens data-disconnect-confirm)
-    const disconnectBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /^disconnect$/ }).last();
+    const disconnectBtn = page.locator('[data-spotify-drawer-content="true"] button', { hasText: /^disconnect$/ });
     await disconnectBtn.click();
-    await page.locator('[data-disconnect-confirm="true"]').waitFor({ timeout: 3_000 });
-    await page.locator('[data-disconnect-confirm="true"] button', { hasText: /yes, disconnect/ }).click();
+    await page.locator('[data-spotify-disconnect-confirm="true"]').waitFor({ timeout: 3_000 });
+    await page.locator('[data-spotify-disconnect-confirm="true"] button', { hasText: /yes, disconnect/ }).click();
 
     // On error the confirm panel stays open with mutation error
-    await expect(page.locator('[data-disconnect-confirm="true"]')).toBeAttached({ timeout: 5_000 });
+    await expect(page.locator('[data-spotify-disconnect-confirm="true"]')).toBeAttached({ timeout: 5_000 });
   });
 
   test("CLI revoke error -- error shown when revoke fails", async ({ page }) => {
@@ -1491,10 +1467,10 @@ test.describe("No-dead-control assertion", () => {
     await page.route("https://accounts.spotify.com/**", (route) => route.abort());
     await page.goto("/secrets?focus=u:spotify", { timeout: 15_000 });
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
-    await page.locator('[data-page="user"][data-provider="spotify"]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-connector-passport="spotify"]').waitFor({ timeout: 5_000 });
 
     // Re-authorize commit pill on expired credential
-    const reAuthBtn = page.locator('[data-page="user"][data-provider="spotify"] button', { hasText: /re-authorize/ });
+    const reAuthBtn = page.locator('[data-spotify-drawer-content="true"] button', { hasText: /connect via spotify/ });
     await expect(reAuthBtn).toBeAttached({ timeout: 3_000 });
 
     // Wait for the reauthorize POST to fire as a direct consequence of the click.

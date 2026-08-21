@@ -39,6 +39,11 @@ _SECRET_TYPE = "google_oauth_refresh"
 _REVEAL_PATH = f"/api/relationship/entities/{_ENTITY_ID}/secrets/{_INFO_ID}"
 
 BASE_URL = "http://test"
+_SPOTIFY_MANAGED_TYPES = (
+    "spotify_oauth_access",
+    "spotify_oauth_refresh",
+    "spotify_oauth_expires_at",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +198,30 @@ class TestRevealEntitySecret:
         assert resp.status_code == 404, f"Expected 404, got {resp.status_code}: {resp.text}"
         assert "not found" in resp.json().get("detail", "").lower()
 
+    async def test_connector_managed_spotify_secret_is_filtered_before_reveal(self):
+        owner_row = _make_owner_row()
+        mock_pool = AsyncMock()
+
+        async def _fetchrow(query, *args):
+            if "roles" in query:
+                return owner_row
+            assert "NOT (type = ANY" in query
+            assert "spotify_oauth_refresh" in args[2]
+            return None
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+        app = create_app()
+        for butler_name, router_module in app.state.butler_routers:
+            if butler_name == "relationship":
+                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+                break
+
+        resp = await _get(app)
+
+        assert resp.status_code == 404
+
     async def test_non_secured_entry_returns_400(self):
         """Owner present + entry exists but secured=False → 400.
 
@@ -259,3 +288,34 @@ class TestRevealEntitySecret:
 
         resp = await _get(app)
         _assert_owner_required(resp)
+
+
+@pytest.mark.parametrize("info_type", _SPOTIFY_MANAGED_TYPES)
+@pytest.mark.parametrize("method", ["post", "patch"])
+async def test_generic_relationship_writes_reject_connector_managed_spotify_types(
+    info_type: str,
+    method: str,
+) -> None:
+    mock_pool = AsyncMock()
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    path = f"/api/relationship/entities/{_ENTITY_ID}/info"
+    if method == "patch":
+        path += f"/{_INFO_ID}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+    ) as client:
+        response = await getattr(client, method)(
+            path,
+            json={"type": info_type, "value": "must-not-be-written", "secured": True},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Entity info entry not found"}
+    mock_pool.fetchrow.assert_not_awaited()

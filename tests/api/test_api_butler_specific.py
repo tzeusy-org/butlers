@@ -38,6 +38,7 @@ from butlers.api.routers.healing import _get_dispatch_fn
 from butlers.api.routers.spotify import (
     _clear_state_store as _spotify_clear_states,
 )
+from butlers.api.routers.spotify import _exchange_code_for_tokens, _TokenExchangeError
 from butlers.api.routers.spotify import (
     _get_db_manager as _spotify_get_db,
 )
@@ -164,7 +165,15 @@ class TestSpotifyAPI:
         yield
         _spotify_clear_states()
 
-    def _make_app(self, *, client_id="a" * 32, client_secret="secret", access_token=None):
+    def _make_app(
+        self,
+        *,
+        client_id="a" * 32,
+        client_secret="secret",
+        access_token=None,
+        expires_at="2999-01-01T00:00:00+00:00",
+        observed_scopes=None,
+    ):
         conn = AsyncMock()
 
         async def _fetchrow(q, *args):
@@ -172,10 +181,14 @@ class TestSpotifyAPI:
             secrets = {
                 "SPOTIFY_CLIENT_ID": client_id,
                 "SPOTIFY_CLIENT_SECRET": client_secret,
-                "SPOTIFY_ACCESS_TOKEN": access_token,
+                "spotify_oauth_access": access_token,
+                "spotify_oauth_refresh": "owner-refresh" if access_token else None,
+                "spotify_oauth_expires_at": expires_at if access_token else None,
             }
             val = secrets.get(key) if key else None
-            return {"secret_value": val} if val else None
+            if not val:
+                return None
+            return {"value": val} if "SELECT ei.value" in q else {"secret_value": val}
 
         conn.fetchrow.side_effect = _fetchrow
         # asyncpg returns a command-status string like "DELETE 1" from execute();
@@ -183,11 +196,20 @@ class TestSpotifyAPI:
         conn.execute = AsyncMock(return_value="DELETE 1")
 
         @asynccontextmanager
+        async def _transaction():
+            yield
+
+        conn.transaction = MagicMock(side_effect=_transaction)
+
+        @asynccontextmanager
         async def _acquire():
             yield conn
 
         pool = MagicMock()
         pool.acquire = _acquire
+        pool.fetchrow = AsyncMock(
+            return_value=None if observed_scopes is None else {"observed_scopes": observed_scopes}
+        )
         db = MagicMock()
         db.credential_shared_pool.return_value = pool
         app = create_app(api_key="")
@@ -211,17 +233,7 @@ class TestSpotifyAPI:
     # ------------------------------------------------------------------
 
     # Exact field set the frontend SpotifyStatusResponse interface consumes.
-    _STATUS_KEYS = {
-        "connected",
-        "state",
-        "spotify_user_id",
-        "display_name",
-        "account_type",
-        "last_sync_at",
-        "error",
-        "needs_reauth",
-        "missing_scopes",
-    }
+    _STATUS_KEYS = {"connected", "state", "capability_categories"}
 
     async def test_status_not_configured_shape(self):
         app = self._make_app(client_id=None)
@@ -234,10 +246,8 @@ class TestSpotifyAPI:
         # Spec-conformant shape: exactly the keys the FE consumes, no legacy fields.
         assert set(body) == self._STATUS_KEYS
         assert body["connected"] is False
-        assert body["state"] == "not_configured"
-        # Legacy BE-only fields must not leak.
-        for legacy in ("email", "product", "last_verified_at", "client_id_configured"):
-            assert legacy not in body
+        assert body["state"] == "unconfigured"
+        assert body["capability_categories"] == ["listening-history"]
 
     async def test_status_connected_maps_me_fields(self, monkeypatch):
         from butlers.api.routers import spotify as spotify_router
@@ -262,11 +272,10 @@ class TestSpotifyAPI:
         assert set(body) == self._STATUS_KEYS
         assert body["connected"] is True
         assert body["state"] == "connected"
-        assert body["spotify_user_id"] == "spotify_user_42"
-        assert body["display_name"] == "Ada Lovelace"
-        # account_type maps from Spotify's product field.
-        assert body["account_type"] == "premium"
-        assert body["last_sync_at"] is not None
+        assert body["capability_categories"] == ["listening-history"]
+        assert "spotify_user_id" not in body
+        assert "display_name" not in body
+        assert "account_type" not in body
 
     async def test_status_token_refresh_failure_maps_to_error_state(self, monkeypatch):
         """A failed /me verification surfaces a distinct ``error`` state (not
@@ -289,8 +298,68 @@ class TestSpotifyAPI:
         assert body["connected"] is False
         # Distinct error state, NOT collapsed to disconnected.
         assert body["state"] == "error"
-        assert body["needs_reauth"] is True
-        assert body["error"]
+        assert body["capability_categories"] == ["listening-history"]
+        assert "error" not in body
+
+    async def test_status_incomplete_stored_triplet_maps_to_error(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        async def _resolve(_pool, info_type):
+            return "access-only" if info_type == "spotify_oauth_access" else None
+
+        monkeypatch.setattr(spotify_router, "resolve_owner_entity_info", _resolve)
+        app = self._make_app(access_token="access-only")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "error"
+
+    async def test_status_access_missing_with_companion_rows_maps_to_error(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        async def _resolve(_pool, info_type):
+            values = {
+                "spotify_oauth_refresh": "orphan-refresh",
+                "spotify_oauth_expires_at": "2999-01-01T00:00:00+00:00",
+            }
+            return values.get(info_type)
+
+        monkeypatch.setattr(spotify_router, "resolve_owner_entity_info", _resolve)
+        app = self._make_app(access_token=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        assert resp.json()["state"] == "error"
+
+    async def test_status_scope_mismatch_maps_to_needs_reauth_without_scope_material(
+        self, monkeypatch
+    ):
+        from butlers.api.routers import spotify as spotify_router
+
+        monkeypatch.setattr(
+            spotify_router, "_fetch_spotify_me", AsyncMock(return_value={"id": "user-42"})
+        )
+        app = self._make_app(
+            access_token="tok-under-scoped",
+            observed_scopes=["user-read-playback-state"],
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/spotify/status")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "connected": False,
+            "state": "needs_reauth",
+            "capability_categories": ["listening-history"],
+        }
 
     async def test_callback_state_mismatch_returns_403(self):
         """Spec requires HTTP 403 (not 400) on CSRF state mismatch."""
@@ -303,6 +372,245 @@ class TestSpotifyAPI:
                 params={"code": "auth-code", "state": "never-issued-state"},
             )
         assert resp.status_code == 403
+        assert resp.json() == {"detail": "spotify_state_invalid"}
+
+    async def test_callback_provider_error_returns_fixed_local_code(self):
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"error": "provider-controlled-detail"},
+            )
+
+        assert resp.status_code == 400
+        assert resp.json() == {"detail": "spotify_authorization_failed"}
+
+    async def test_callback_provider_error_is_projected_as_fixed_local_state(self, monkeypatch):
+        monkeypatch.setenv("OAUTH_DASHBOARD_URL", "http://dashboard.test")
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"error": "provider-controlled-detail"},
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 302
+        assert "toast=connection_failed" in resp.headers["location"]
+        assert "provider-controlled-detail" not in resp.headers["location"]
+
+    async def test_token_exchange_error_does_not_expose_provider_response_text(
+        self, monkeypatch, caplog
+    ):
+        from butlers.api.routers import spotify as spotify_router
+
+        marker = "PROVIDER_TOKEN_RESPONSE_MARKER"
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 400
+        response.text = marker
+        http_client = AsyncMock(spec=httpx.AsyncClient)
+        http_client.post = AsyncMock(return_value=response)
+        client_context = AsyncMock()
+        client_context.__aenter__.return_value = http_client
+        client_context.__aexit__.return_value = None
+        monkeypatch.setattr(
+            spotify_router.httpx, "AsyncClient", MagicMock(return_value=client_context)
+        )
+
+        with pytest.raises(_TokenExchangeError) as exc_info:
+            await _exchange_code_for_tokens(
+                code="code",
+                code_verifier="verifier",
+                redirect_uri="http://callback.test",
+                client_id="a" * 32,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert marker not in str(exc_info.value)
+        assert marker not in caplog.text
+
+    async def test_callback_token_exchange_failure_logs_only_local_classification(
+        self, monkeypatch, caplog
+    ):
+        from butlers.api.routers import spotify as spotify_router
+
+        marker = "PROVIDER_CALLBACK_RESPONSE_MARKER"
+        monkeypatch.setattr(
+            spotify_router,
+            "_exchange_code_for_tokens",
+            AsyncMock(side_effect=_TokenExchangeError(marker, status_code=400)),
+        )
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            start = await client.post("/api/connectors/spotify/oauth/start")
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "code", "state": start.json()["state"]},
+            )
+
+        assert resp.status_code == 502
+        assert marker not in resp.text
+        assert marker not in caplog.text
+
+    async def test_callback_malformed_success_payload_is_content_blind_before_profile_lookup(
+        self, monkeypatch, caplog
+    ):
+        """A provider-controlled successful payload is validated before any use."""
+        from butlers.api.routers import spotify as spotify_router
+
+        marker = "PROVIDER_CALLBACK_SUCCESS_PAYLOAD_MARKER"
+        exchange = AsyncMock(
+            return_value={
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "expires_in": marker,
+                "scope": "user-read-playback-state",
+                "token_type": "Bearer",
+            }
+        )
+        fetch_profile = AsyncMock(return_value={"id": "user-42"})
+        upsert = AsyncMock(return_value=True)
+        monkeypatch.setattr(spotify_router, "_exchange_code_for_tokens", exchange)
+        monkeypatch.setattr(spotify_router, "_fetch_spotify_me", fetch_profile)
+        monkeypatch.setattr(spotify_router, "upsert_owner_entity_info_on_connection", upsert)
+
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            start = await client.post("/api/connectors/spotify/oauth/start")
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "code", "state": start.json()["state"]},
+            )
+
+        assert resp.status_code == 502
+        assert resp.json() == {
+            "detail": "Failed to exchange authorization code for tokens. "
+            "Retry POST /api/connectors/spotify/oauth/start."
+        }
+        assert marker not in resp.text
+        assert marker not in caplog.text
+        fetch_profile.assert_not_awaited()
+        upsert.assert_not_awaited()
+
+    async def test_callback_writes_only_secured_owner_oauth_rows(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        writes: list[tuple[str, str, bool]] = []
+
+        async def _upsert(_pool, info_type: str, value: str, *, secured: bool):
+            writes.append((info_type, value, secured))
+            return True
+
+        async def _exchange(**_kwargs):
+            return {
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+                "expires_in": 3600,
+                "scope": "user-read-playback-state",
+                "token_type": "Bearer",
+            }
+
+        monkeypatch.setattr(spotify_router, "upsert_owner_entity_info_on_connection", _upsert)
+        monkeypatch.setattr(spotify_router, "_exchange_code_for_tokens", _exchange)
+        monkeypatch.setattr(
+            spotify_router, "_fetch_spotify_me", AsyncMock(return_value={"id": "user-42"})
+        )
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            start = await client.post("/api/connectors/spotify/oauth/start")
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "code", "state": start.json()["state"]},
+            )
+
+        assert resp.status_code == 200
+        assert [row[0] for row in writes] == [
+            "spotify_oauth_access",
+            "spotify_oauth_refresh",
+            "spotify_oauth_expires_at",
+        ]
+        assert all(row[2] is True for row in writes)
+        assert resp.json() == {
+            "success": True,
+            "message": "Spotify authorization complete.",
+        }
+
+    async def test_callback_rejects_incomplete_token_set_before_writing(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        async def _exchange(**_kwargs):
+            return {"access_token": "access-only", "expires_in": 3600}
+
+        upsert = AsyncMock(return_value=True)
+        monkeypatch.setattr(spotify_router, "upsert_owner_entity_info_on_connection", upsert)
+        monkeypatch.setattr(spotify_router, "_exchange_code_for_tokens", _exchange)
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            start = await client.post("/api/connectors/spotify/oauth/start")
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "code", "state": start.json()["state"]},
+            )
+
+        assert resp.status_code == 502
+        upsert.assert_not_awaited()
+
+    async def test_callback_scope_persistence_failure_rolls_back_authority_transaction(
+        self, monkeypatch
+    ):
+        from butlers.api.routers import spotify as spotify_router
+
+        monkeypatch.setattr(
+            spotify_router,
+            "_exchange_code_for_tokens",
+            AsyncMock(
+                return_value={
+                    "access_token": "access-secret",
+                    "refresh_token": "refresh-secret",
+                    "expires_in": 3600,
+                    "scope": "user-read-playback-state",
+                    "token_type": "Bearer",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            spotify_router, "_fetch_spotify_me", AsyncMock(return_value={"id": "user-42"})
+        )
+        monkeypatch.setattr(
+            spotify_router,
+            "upsert_owner_entity_info_on_connection",
+            AsyncMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            spotify_router,
+            "_store_granted_scopes_on_connection",
+            AsyncMock(side_effect=RuntimeError("scope write failed")),
+        )
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            start = await client.post("/api/connectors/spotify/oauth/start")
+            resp = await client.get(
+                "/api/connectors/spotify/oauth/callback",
+                params={"code": "code", "state": start.json()["state"]},
+            )
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Owner credential authority is unavailable."}
 
     async def test_config_returns_configured_shape(self):
         app = self._make_app()
@@ -325,22 +633,66 @@ class TestSpotifyAPI:
         assert resp.status_code == 200
         assert resp.json() == {"disconnected": True}
 
+    async def test_disconnect_is_idempotent_after_zero_row_authority_delete(self, monkeypatch):
+        from butlers.api.routers import spotify as spotify_router
+
+        delete = AsyncMock(return_value=0)
+        monkeypatch.setattr(spotify_router, "_delete_spotify_oauth_rows", delete)
+        app = self._make_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/connectors/spotify/disconnect")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"disconnected": True}
+        delete.assert_awaited_once()
+
+    async def test_disconnect_reports_unavailable_when_credential_authority_is_missing(self):
+        app = self._make_app(access_token="tok-abc")
+        app.dependency_overrides[_spotify_get_db] = lambda: None
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/connectors/spotify/disconnect")
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Owner credential authority is unavailable."}
+
+    async def test_disconnect_transaction_failure_is_content_blind(self, monkeypatch, caplog):
+        from butlers.api.routers import spotify as spotify_router
+
+        marker = "DISCONNECT_TRANSACTION_MARKER"
+        monkeypatch.setattr(
+            spotify_router,
+            "_delete_spotify_oauth_rows",
+            AsyncMock(side_effect=RuntimeError(marker)),
+        )
+        app = self._make_app(access_token="tok-abc")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            resp = await client.post("/api/connectors/spotify/disconnect")
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "Owner credential authority is unavailable."}
+        assert marker not in resp.text
+        assert marker not in caplog.text
+
     async def test_disconnect_preserves_client_id_while_clearing_local_oauth_state(
         self, monkeypatch
     ):
         """Disconnect clears local token/scope rows but leaves reconnect configuration intact."""
         from butlers.api.routers import spotify as spotify_router
 
-        deleted_keys: list[str] = []
+        delete_calls: list[object] = []
 
-        class _CredentialStore:
-            async def delete(self, key: str) -> bool:
-                deleted_keys.append(key)
-                return True
+        async def _delete(pool) -> int:
+            delete_calls.append(pool)
+            return 3
 
-        monkeypatch.setattr(
-            spotify_router, "_make_credential_store", lambda _db: _CredentialStore()
-        )
+        monkeypatch.setattr(spotify_router, "_delete_spotify_oauth_rows", _delete)
         app = self._make_app(access_token="tok-abc")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -348,13 +700,7 @@ class TestSpotifyAPI:
             resp = await client.post("/api/connectors/spotify/disconnect")
 
         assert resp.status_code == 200
-        assert deleted_keys == [
-            "SPOTIFY_ACCESS_TOKEN",
-            "SPOTIFY_REFRESH_TOKEN",
-            "SPOTIFY_TOKEN_EXPIRES_AT",
-            "SPOTIFY_GRANTED_SCOPES",
-        ]
-        assert "SPOTIFY_CLIENT_ID" not in deleted_keys
+        assert len(delete_calls) == 1
 
 
 # ---------------------------------------------------------------------------

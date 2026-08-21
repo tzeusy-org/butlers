@@ -14,6 +14,9 @@ Covers:
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
 from butlers.api.oauth_scope_registry import (
@@ -26,6 +29,37 @@ from butlers.api.oauth_scope_registry import (
     get_applicability,
     get_scope_manifest,
 )
+
+
+def test_spotify_rotation_needed_is_normalized_to_interactive_reauth() -> None:
+    from butlers.api.router_discovery import _load_router_module
+
+    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
+
+    with patch(
+        "switchboard_api_router.compute_auth_status",
+        return_value="rotation-needed",
+    ):
+        auth, _ = module._build_connector_auth_blocks("spotify", [], 1)
+
+    assert auth.status == "needs_reauth"
+    assert auth.recovery_reason == "rotation-needed"
+
+
+def test_generic_oauth_rotation_needed_is_unchanged() -> None:
+    from butlers.api.router_discovery import _load_router_module
+
+    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
+
+    with patch(
+        "switchboard_api_router.compute_auth_status",
+        return_value="rotation-needed",
+    ):
+        auth, _ = module._build_connector_auth_blocks("gmail", [], 1)
+
+    assert auth.status == "rotation-needed"
+    assert auth.recovery_reason is None
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

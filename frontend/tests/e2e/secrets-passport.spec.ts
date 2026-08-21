@@ -60,16 +60,6 @@ const MOCK_INVENTORY_RESPONSE = {
         test: { ok: true, code: 200, at: "14:21 today" },
       },
       {
-        id: "u-spotify-tze",
-        entity_id: "tze",
-        type: "spotify_oauth_refresh",
-        label: "Spotify (tze)",
-        state: "expired",
-        fingerprint: "sha256:d4e1b8a0",
-        last_verified: "2 days ago",
-        test: { ok: false, code: 401, at: "2 days ago", message: "refresh-token expired" },
-      },
-      {
         id: "u-google-wei",
         entity_id: "wei",
         type: "google_oauth_refresh",

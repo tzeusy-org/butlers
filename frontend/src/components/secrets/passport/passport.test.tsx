@@ -113,7 +113,7 @@ vi.mock("@/hooks/use-steam.ts", () => ({
 // Provider-config drawer hooks [bu-ayp6v.9]
 vi.mock("@/hooks/use-spotify.ts", () => ({
   useSpotifyStatus: vi.fn(() => ({
-    data: { state: "connected", connected: true, spotify_user_id: "testuser", display_name: "Test User", account_type: "premium", last_sync_at: null, error: null, needs_reauth: false, missing_scopes: [] },
+    data: { state: "connected", connected: true, capability_categories: ["listening-history"] },
     isLoading: false,
     error: null,
   })),
@@ -510,15 +510,6 @@ describe("PageUser: renders against mocked data", () => {
     expect(html).toContain('data-state-plaque="true"');
   });
 
-  it("renders expired spotify credential with re-authorize commit", () => {
-    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
-    const html = renderInRouter(
-      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} />,
-    );
-    expect(html).toContain("expired");
-    expect(html).toContain("re-authorize");
-  });
-
   it("renders webhook owntracks credential", () => {
     const owntracks = MOCK_USER_CREDENTIALS.find((u) => u.provider === "owntracks")!;
     const html = renderInRouter(
@@ -700,6 +691,25 @@ describe("DirectionPassport: renders against mocked inventory", () => {
 
     expect(html).toContain('data-page="cli"');
     expect(html).toContain('data-cli-id="cli-auth/codex"');
+  });
+
+  it("resolves u:spotify as a connector projection without generic inventory", () => {
+    const inventory = {
+      ...MOCK_INVENTORY,
+      user: MOCK_INVENTORY.user.filter((entry) => entry.provider !== "spotify"),
+    };
+    const html = renderInRouter(
+      <DirectionPassport inventory={inventory} />,
+      ["/secrets?focus=u%3Aspotify"],
+    );
+    const projection = html.slice(html.indexOf('data-connector-passport="spotify"'));
+
+    expect(projection).toContain('data-spotify-drawer-content="true"');
+    expect(projection).toContain("listening history");
+    expect(projection).not.toContain("data-fingerprint");
+    expect(projection).not.toContain("visa permissions");
+    expect(projection).not.toContain("probe · last test");
+    expect(projection).not.toContain("stamps · audit");
   });
 });
 
@@ -1354,15 +1364,6 @@ describe("PageUser: renders provider config drawers for HA/OwnTracks/Steam", () 
     expect(html).not.toContain('data-provider-config-drawer="steam"');
   });
 
-  it("renders Spotify drawer inline inside PageUser for spotify provider", () => {
-    const spotify = MOCK_USER_CREDENTIALS.find((u) => u.provider === "spotify")!;
-    const html = renderInRouter(
-      <PageUser credential={spotify} provider={MOCK_PROVIDERS.spotify} identities={MOCK_IDENTITIES} />,
-    );
-    expect(html).toContain('data-provider-config-drawer="spotify"');
-    expect(html).toContain('data-spotify-drawer-content="true"');
-  });
-
   it("renders WhatsApp drawer inline inside PageUser for whatsapp provider", () => {
     const whatsapp = MOCK_USER_CREDENTIALS.find((u) => u.provider === "whatsapp")!;
     const html = renderInRouter(
@@ -1391,9 +1392,12 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
     expect(html).toContain('data-spotify-status-dot="true"');
   });
 
-  it("renders display name when connected", () => {
+  it("renders only the safe connector capability projection when connected", () => {
     const html = renderInRouter(<SpotifyDrawerContent />);
-    expect(html).toContain("Test User");
+    expect(html).toContain("Spotify connector");
+    expect(html).toContain("listening history");
+    expect(html).not.toContain("testuser");
+    expect(html).not.toContain("Test User");
   });
 
   it("renders configure/reconfigure action", () => {
@@ -1418,7 +1422,7 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
 
     expect(
       getByText(
-        "Disconnect Spotify? Clears locally stored access and refresh tokens, plus locally recorded scopes. Your client ID remains configured.",
+        "Disconnect Spotify? Clears locally stored authorization state. Your client ID remains configured.",
       ),
     ).toBeTruthy();
     unmount();
@@ -1430,13 +1434,7 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
       data: {
         state: "error",
         connected: false,
-        spotify_user_id: null,
-        display_name: null,
-        account_type: null,
-        last_sync_at: null,
-        error: "Spotify token verification failed. Re-connect your account.",
-        needs_reauth: true,
-        missing_scopes: [],
+        capability_categories: ["listening-history"],
       },
       isLoading: false,
       error: null,
@@ -1446,7 +1444,7 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
     expect(html).toContain('data-spotify-error-card="true"');
     expect(html).toContain("Error: re-authorization needed");
     expect(html).toContain("re-connect");
-    expect(html).toContain("Spotify token verification failed");
+    expect(html).toContain("Reconnect Spotify to continue");
   });
 
   it("renders dismiss button in standalone mode", () => {

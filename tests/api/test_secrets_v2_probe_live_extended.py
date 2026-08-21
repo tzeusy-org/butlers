@@ -778,15 +778,13 @@ class TestOwnTracksSystemProbe:
 
 
 # ---------------------------------------------------------------------------
-# Spotify unchanged — still falls back to local check
+# Spotify is connector-owned — generic probing is forbidden
 # ---------------------------------------------------------------------------
 
 
-class TestSpotifyStillFallsBack:
-    """Verify Spotify probe still uses local-state fallback (bu-xfq4r owns live verify)."""
-
+class TestSpotifyGenericProbeExcluded:
     def test_spotify_probe_no_http_calls(self, monkeypatch):
-        """Spotify probe must not make any HTTP calls (tracked by bu-xfq4r)."""
+        """Spotify probe returns the stable 404 without any provider call."""
         row = _make_entity_info_row(
             info_type="spotify_oauth_refresh",
             value="spotify-refresh-tok",
@@ -823,8 +821,6 @@ class TestSpotifyStillFallsBack:
         client = _build_app(mock_db)
         resp = client.post("/api/secrets/user/spotify/probe")
 
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        # Local state: last_test_ok=True + value set → probe_ok=True
-        assert data["ok"] is True
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Credential not found"}
         assert not http_calls, f"Spotify must not make HTTP calls; got: {http_calls}"

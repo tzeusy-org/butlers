@@ -3761,6 +3761,7 @@ export interface ConnectorAuthBlock {
     | "degraded"
     | "expired"
     | "rotation-needed"
+    | "needs_reauth"
     | "unsupported"
     | "unconfigured";
   type: string;
@@ -3774,6 +3775,7 @@ export interface ConnectorAuthBlock {
     validity_expires_at: string | null;
     remediation_path: string;
   } | null;
+  recovery_reason?: "expired" | "rotation-needed" | null;
 }
 
 /** Full connector detail (GET /api/connectors/:type/:identity). */
@@ -4995,25 +4997,16 @@ export interface WhatsAppDisconnectResponse {
 /** Connection state for the Spotify account. */
 export type SpotifyState =
   | "connected"
-  | "disconnected"
   | "error"
-  | "not_configured"
-  | "needs_auth"
+  | "unconfigured"
+  | "authorization_needed"
   | "needs_reauth";
 
 /** Response from GET /api/spotify/status */
 export interface SpotifyStatusResponse {
   connected: boolean;
   state: SpotifyState;
-  spotify_user_id: string | null;
-  display_name: string | null;
-  account_type: string | null;
-  last_sync_at: string | null;
-  error: string | null;
-  /** True when stored scopes are insufficient for current requirements. */
-  needs_reauth: boolean;
-  /** Scopes that are required but were not granted. */
-  missing_scopes: string[];
+  capability_categories: ["listening-history"];
 }
 
 /** Response from POST /api/connectors/spotify/oauth/start */

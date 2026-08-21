@@ -130,6 +130,17 @@ class ConnectorScopeRow(BaseModel):
     """Single sentence explaining the scope's purpose (no trailing period)."""
 
 
+ConnectorAuthStatus = Literal[
+    "ok",
+    "degraded",
+    "expired",
+    "rotation-needed",
+    "needs_reauth",
+    "unsupported",
+    "unconfigured",
+]
+
+
 class ConnectorAuthBlock(BaseModel):
     """The 'auth' block in a connector-detail response.
 
@@ -137,8 +148,8 @@ class ConnectorAuthBlock(BaseModel):
           specs/connector-oauth-scope-surface/spec.md §Auth block
     """
 
-    status: str
-    """ok | degraded | expired | rotation-needed | unsupported | unconfigured."""
+    status: ConnectorAuthStatus
+    """Canonical typed auth status, including Spotify-only needs_reauth."""
 
     type: str
     """'oauth' for OAuth connectors; credential model string for non-OAuth."""
@@ -157,6 +168,9 @@ class ConnectorAuthBlock(BaseModel):
 
     alt_surface: dict | None = None
     """For non-OAuth connectors: alternative credential surface block."""
+
+    recovery_reason: Literal["expired", "rotation-needed"] | None = None
+    """Original Spotify recovery cause when status is normalized to needs_reauth."""
 
 
 class ConnectorEntry(BaseModel):

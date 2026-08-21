@@ -270,6 +270,11 @@ server-side. That exclusion does not transfer token authority to Tier 1
   `spotify_oauth_expires_at` rows and clear its derived granted-scope metadata
 - **AND** it SHALL retain `SPOTIFY_CLIENT_ID` so the user can reconnect without re-entering it
 - **AND** it SHALL not issue a provider-side authorization-revocation request
+- **AND** it SHALL report success after the reachable authority executes the
+  atomic delete, including when zero rows remain
+- **AND** if the authority is unavailable or the transaction fails, it SHALL
+  return a fixed content-blind unavailable error and SHALL NOT claim that
+  disconnection occurred
 
 <!-- Source: redesign-secrets-passport -->
 

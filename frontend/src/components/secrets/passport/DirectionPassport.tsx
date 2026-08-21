@@ -23,6 +23,7 @@ import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
+import { SpotifyDrawer } from "./ProviderConfigDrawer.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
 import { formatOwnerDateTime } from "@/components/ui/time";
@@ -182,7 +183,22 @@ export function DirectionPassport({
 
   // Spine entries for current identity (or all owner-default identities).
   const entries = React.useMemo(
-    () => buildSpineEntries(inventory, spineIdentityIds),
+    () => {
+      const projected = buildSpineEntries(inventory, spineIdentityIds);
+      if (!projected.some((entry) => entry.key === "u:spotify")) {
+        projected.push({
+          key: "u:spotify",
+          family: "user",
+          label: "Spotify",
+          provider: "spotify",
+          state: "warn",
+          mono: false,
+          lastTouchOrder: 800,
+          subline: "connector-managed",
+        });
+      }
+      return projected;
+    },
     [inventory, spineIdentityIds],
   );
 
@@ -242,6 +258,7 @@ export function DirectionPassport({
 
   type ResolvedPage =
     | { kind: "user"; credential: NonNullable<(typeof inventory.user)[number]> }
+    | { kind: "spotify" }
     | { kind: "system"; credential: NonNullable<(typeof inventory.system)[number]> }
     | { kind: "cli"; credential: NonNullable<(typeof inventory.cli)[number]> }
     | { kind: null };
@@ -249,6 +266,7 @@ export function DirectionPassport({
   const resolved = React.useMemo((): ResolvedPage => {
     if (!parsed) return { kind: null };
     if (parsed.family === "u") {
+      if (parsed.id === "spotify") return { kind: "spotify" };
       // In the owner-default view, spineIdentityIds is an array of all returned
       // identities (owner + companion entities). The credential lookup must
       // search across all of them, not just the single ownerIdentityId.
@@ -515,6 +533,11 @@ export function DirectionPassport({
                   <PageSystem
                     credential={resolved.credential}
                   />
+                )}
+                {resolved.kind === "spotify" && (
+                  <div className="p-6" data-connector-passport="spotify">
+                    <SpotifyDrawer onClose={() => undefined} inline />
+                  </div>
                 )}
                 {resolved.kind === "cli" && (
                   <PageCliConnected

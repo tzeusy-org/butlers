@@ -16,6 +16,7 @@ Issue: bu-ih0f.4
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -121,12 +122,37 @@ def _make_credential_store(
     """Build a mock CredentialStore with configurable Spotify token values."""
     store = AsyncMock()
 
+    conn = AsyncMock()
+
+    async def _fetchrow(_query: str, *args: object) -> dict[str, object] | None:
+        if not args:
+            return {"id": "owner-id"}
+        values = {
+            "spotify_oauth_access": access_token,
+            "spotify_oauth_refresh": refresh_token,
+            "spotify_oauth_expires_at": expires_at,
+        }
+        value = values.get(str(args[0]))
+        return None if value is None else {"value": value}
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    conn.fetchrow = AsyncMock(side_effect=_fetchrow)
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
+    conn.transaction = MagicMock(side_effect=_transaction)
+    pool = MagicMock()
+    pool.acquire = _acquire
+    store.pool = pool
+
     async def _resolve(key: str) -> str | None:
         mapping = {
-            "SPOTIFY_ACCESS_TOKEN": access_token,
-            "SPOTIFY_REFRESH_TOKEN": refresh_token,
             "SPOTIFY_CLIENT_ID": client_id,
-            "SPOTIFY_TOKEN_EXPIRES_AT": expires_at,
         }
         return mapping.get(key)
 

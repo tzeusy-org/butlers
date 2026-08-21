@@ -82,6 +82,22 @@ export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispa
     }
   }
 
+  const auth = 'auth' in c ? c.auth : null
+  if (
+    c.connector_type === 'spotify' &&
+    auth &&
+    typeof auth === 'object' &&
+    'status' in auth &&
+    auth.status === 'needs_reauth'
+  ) {
+    return {
+      authStatus: 'needs_reauth',
+      health: c.state === 'error' ? 'error' : 'degraded',
+      needsAttention: true,
+      authNote: 'authorization expired · re-connect Spotify',
+    }
+  }
+
   // Explicit error state while live (online or stale) — a genuine auth/config issue
   if (c.state === 'error') {
     const authNote = c.error_message

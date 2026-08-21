@@ -32,6 +32,7 @@ from butlers.api.deps import (
 )
 from butlers.credential_store import assert_entity_info_secured
 from butlers.identity import channel_value_for_storage
+from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 from butlers.tools.relationship._ef_channel_helpers import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
 )
@@ -55,6 +56,7 @@ from butlers.tools.relationship.merge_review import (
 )
 
 _GUIDED_ENTITY_INFO_ONLY_TYPES = frozenset({"telegram_api_hash"})
+_CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -522,9 +524,11 @@ async def get_owner_entity_info(
         SELECT id, type, value, label, is_primary, secured
         FROM public.entity_info
         WHERE entity_id = $1
+          AND NOT (type = ANY($2::text[]))
         ORDER BY type
         """,
         owner_entity_id,
+        list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
     )
 
     entries = [
@@ -2587,9 +2591,11 @@ async def get_entity(
             SELECT id, type, value, label, is_primary, secured
             FROM public.entity_info
             WHERE entity_id = $1
+              AND NOT (type = ANY($2::text[]))
             ORDER BY type
             """,
             entity_id,
+            list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
         ),
         _classify_entity_state(pool, entity_id),
     )
@@ -2650,6 +2656,8 @@ async def create_entity_info(
                 "telegram_api_hash can only be stored through the guided Telegram session setup."
             ),
         )
+    if request.type in _CONNECTOR_MANAGED_ENTITY_INFO_TYPES:
+        raise HTTPException(status_code=404, detail="Entity info entry not found")
 
     pool = _pool(db)
 
@@ -2728,13 +2736,18 @@ async def patch_entity_info(
                 "telegram_api_hash can only be stored through the guided Telegram session setup."
             ),
         )
+    if request.type in _CONNECTOR_MANAGED_ENTITY_INFO_TYPES:
+        raise HTTPException(status_code=404, detail="Entity info entry not found")
 
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id, type FROM public.entity_info WHERE id = $1 AND entity_id = $2",
+        """SELECT id, type FROM public.entity_info
+           WHERE id = $1 AND entity_id = $2
+             AND NOT (type = ANY($3::text[]))""",
         info_id,
         entity_id,
+        list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Entity info entry not found")
@@ -2785,8 +2798,11 @@ async def patch_entity_info(
             )
 
     updated = await pool.fetchrow(
-        "SELECT id, type, value, label, is_primary, secured FROM public.entity_info WHERE id = $1",
+        """SELECT id, type, value, label, is_primary, secured
+           FROM public.entity_info WHERE id = $1
+             AND NOT (type = ANY($2::text[]))""",
         info_id,
+        list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
     )
     return EntityInfoEntry(
         id=updated["id"],
@@ -2813,9 +2829,12 @@ async def delete_entity_info(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM public.entity_info WHERE id = $1 AND entity_id = $2",
+        """SELECT id FROM public.entity_info
+           WHERE id = $1 AND entity_id = $2
+             AND NOT (type = ANY($3::text[]))""",
         info_id,
         entity_id,
+        list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Entity info entry not found")
@@ -2862,9 +2881,11 @@ async def reveal_entity_secret(
         SELECT id, type, value, secured
         FROM public.entity_info
         WHERE id = $1 AND entity_id = $2
+          AND NOT (type = ANY($3::text[]))
         """,
         info_id,
         entity_id,
+        list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
     )
 
     if row is None:
@@ -3367,9 +3388,11 @@ async def list_entity_linked_contacts(
             FROM public.entity_info
             WHERE entity_id = $1
               AND secured = true
+              AND NOT (type = ANY($2::text[]))
             ORDER BY type ASC, is_primary DESC NULLS LAST
             """,
             entity_id,
+            list(_CONNECTOR_MANAGED_ENTITY_INFO_TYPES),
         ),
         # Active preferred outbound channel — sourced from the entity-keyed
         # ``prefers-channel`` fact (entity-keyed-preferred-channel), NOT the

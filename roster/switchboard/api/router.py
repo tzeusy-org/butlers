@@ -983,12 +983,19 @@ def _build_connector_auth_blocks(
         required_scopes_version=required_scopes_version,
     )
 
+    normalized_status = auth_status
+    recovery_reason: Literal["expired", "rotation-needed"] | None = None
+    if connector_type == "spotify" and auth_status in {"expired", "rotation-needed"}:
+        normalized_status = "needs_reauth"
+        recovery_reason = auth_status
+
     auth_block = ConnectorAuthBlock(
-        status=auth_status,
+        status=normalized_status,
         type="oauth",
         note=f"{applicability.credential_model} · oauth refresh",
         required_scopes_version=required_scopes_version,
         manifest_version=manifest.version,
+        recovery_reason=recovery_reason,
     )
 
     scope_rows_raw = build_scope_rows(manifest, observed_scopes)

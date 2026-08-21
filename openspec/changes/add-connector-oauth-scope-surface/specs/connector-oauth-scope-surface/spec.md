@@ -432,6 +432,15 @@ Tier 2 rows. The callback is the sole initial token-creation writer, connector
 refresh is the only permitted subsequent update, and connector disconnect is
 the only permitted delete.
 
+Connector disconnect SHALL report success only after the reachable Tier 2
+authority executes its atomic delete, including a zero-row delete. Unavailable
+authority or transaction failure SHALL return a fixed content-blind
+unavailable error and SHALL NOT claim success. Token exchange and refresh
+exceptions, logs, heartbeat state, and health output SHALL omit provider
+response bodies, descriptions, and unrecognized provider-controlled error
+codes; only fixed local messages, safe HTTP status, and internally allowlisted
+OAuth error codes MAY cross those boundaries.
+
 The three Spotify owner `entity_info` types are a connector-managed Tier 2
 exception to the generic User credential editor in `PassportAddPanel` under
 `/secrets`. `PassportAddPanel` SHALL NOT offer their types through

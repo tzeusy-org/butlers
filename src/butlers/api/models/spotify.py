@@ -9,8 +9,8 @@ Provides request/response models for:
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,18 +24,13 @@ class SpotifyConnectionState(StrEnum):
     connected = "connected"
     """OAuth tokens present and verified against Spotify /me."""
 
-    disconnected = "disconnected"
-    """Credentials partially present but unverified or expired."""
-
     error = "error"
-    """Tokens are stored but token refresh / verification failed — re-authorization
-    needed. Distinct from ``disconnected``: the frontend renders this as a red
-    error-state card."""
+    """Stored connector state is malformed."""
 
-    not_configured = "not_configured"
+    unconfigured = "unconfigured"
     """No Spotify client_id configured — setup required."""
 
-    needs_auth = "needs_auth"
+    authorization_needed = "authorization_needed"
     """Client ID configured but no OAuth tokens — authorization required."""
 
     needs_reauth = "needs_reauth"
@@ -57,26 +52,10 @@ class SpotifyStatusResponse(BaseModel):
     state: SpotifyConnectionState
     """Machine-readable connectivity state."""
 
-    spotify_user_id: str | None = None
-    """Spotify user id of the authenticated user, or null."""
-
-    display_name: str | None = None
-    """Spotify display name of the authenticated user, or null."""
-
-    account_type: str | None = None
-    """Spotify product/account type (e.g. 'premium', 'free'), or null."""
-
-    last_sync_at: datetime | None = None
-    """ISO datetime of the last successful /me verification, or null."""
-
-    error: str | None = None
-    """Human-readable error description when the connection is unhealthy."""
-
-    needs_reauth: bool = False
-    """True when stored scopes are insufficient for current requirements."""
-
-    missing_scopes: list[str] = []
-    """List of OAuth scopes that are required but were not granted."""
+    capability_categories: list[Literal["listening-history"]] = Field(
+        default_factory=lambda: ["listening-history"]
+    )
+    """Fixed non-sensitive capability projection for the connector."""
 
 
 class SpotifyOAuthStartResponse(BaseModel):
@@ -119,4 +98,4 @@ class SpotifyDisconnectResponse(BaseModel):
     """Response for POST /api/connectors/spotify/disconnect."""
 
     disconnected: bool = True
-    """True when Spotify credentials were cleared from CredentialStore."""
+    """True when Spotify OAuth rows were cleared from owner entity_info."""

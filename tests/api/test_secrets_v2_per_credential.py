@@ -299,16 +299,16 @@ def test_user_credential_hit_with_probe_test_result():
     assert data["test"]["ok"] is True
 
 
-def test_user_credential_hit_with_identity_query_param():
-    """Hit case: ?identity= passes entity UUID filter without error."""
+def test_spotify_detail_is_excluded_before_identity_lookup():
+    """Connector-managed Spotify never resolves through generic detail."""
     entity_id = str(uuid4())
     row = _make_entity_info_row(entity_id=entity_id, info_type="spotify_oauth_refresh")
     mock_db = _make_db_manager_for_per_credential(user_row=row)
     client = _build_app(mock_db)
 
     resp = client.get(f"/api/secrets/user/spotify?identity={entity_id}")
-    assert resp.status_code == 200
-    assert resp.json()["data"]["provider"] == "spotify"
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Credential not found"}
 
 
 def test_user_credential_no_raw_value_in_response():
