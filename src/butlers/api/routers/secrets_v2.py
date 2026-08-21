@@ -486,10 +486,15 @@ class CredentialAuditOutcome(BaseModel):
     """One audit-log entry for a credential, without its free-text ``note``.
 
     ``note`` is the only operator-authored field on the row and is dropped
-    here. ``actor`` and ``action`` survive because rows under the ``u:``
-    target namespace are written solely by ``_write_credential_audit`` in this
-    router: the actor is always ``_OWNER_ACTOR`` and the action is one of its
-    lifecycle verbs, so neither can carry credential or provider content.
+    here. ``actor`` and ``action`` survive because every current writer of the
+    ``u:`` target namespace supplies constants: ``_write_credential_audit`` in
+    this router (``_OWNER_ACTOR`` plus one of its lifecycle verbs),
+    ``_emit_oauth_audit`` in ``routers/oauth.py`` (every call site passes a
+    literal action and the default ``owner`` actor), and
+    ``jobs/secrets_lifecycle.py`` (``_LIFECYCLE_ACTOR`` /
+    ``_LIFECYCLE_NOTIFIED_ACTION``). That is an audited property of today's
+    writers, not an enforced one: a new writer passing a dynamic actor or
+    action would publish it here.
     """
 
     ts: str  # pre-formatted relative timestamp
@@ -538,10 +543,18 @@ class UserSecretDetail(BaseModel):
 class _UserCredentialRecord(BaseModel):
     """Internal, unprojected read of one user credential.
 
-    Never serialised to a client. Mutation routes need the persisted type,
-    label, and failure tail to drive OAuth revocation, guided-rotate gating,
-    and the reauthorize account hint, so the read keeps them — and
-    ``_content_blind_detail`` is the only bridge from here to the wire.
+    Never serialised to a client wholesale. Mutation routes need the persisted
+    type, label, and failure tail to drive OAuth revocation, guided-rotate
+    gating, and the reauthorize account hint, so the read keeps them.
+
+    ``_content_blind_detail`` is the only bridge from here to
+    ``UserSecretDetail``, so adding a field below does not publish it on
+    ``GET /api/secrets/user/{provider}``. It is *not* the only path from this
+    record to a client: ``reauthorize`` echoes ``label`` as the ``account_hint``
+    query parameter of its redirect URL, and ``probe`` returns ``failure_tail``
+    (or provider response text) as ``TestResult.message``. Both predate the
+    content-blind contract; check them too before assuming a field here stays
+    server-side.
     """
 
     id: str
