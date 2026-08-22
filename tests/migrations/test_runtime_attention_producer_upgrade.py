@@ -74,7 +74,7 @@ def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
                 connection.execute(
                     text("SELECT version_num FROM public.alembic_version")
                 ).scalar_one()
-                == "core_199"
+                == "core_200"
             )
             assert connection.execute(
                 text(

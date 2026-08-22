@@ -35,12 +35,20 @@ interface IssuesPanelProps {
   /**
    * Names of backend feed sources that failed their query (issues
    * `meta.sources_degraded`, bu-tpudw.3). A non-empty list means the feed
-   * undercounts: the "No issues recorded." all-clear is suppressed in favour
+   * undercounts: the scoped all-clear is suppressed in favour
    * of a named {@link SourceDegradedNote}, and the note also renders above the
    * rows when some issues did survive. An honest empty feed (this absent/empty
    * + zero rows) keeps the existing empty state.
    */
   sourcesDegraded?: string[]
+  /**
+   * Human-readable description of the scope that produced these rows
+   * (bu-6jv4m.3), from `describeIssuesScope`. The empty state names it instead
+   * of claiming a fleet-wide all-clear: this feed is always bounded by a time
+   * window, and may additionally be pinned to one group by the Audit evidence
+   * door, so "nothing here" is a statement about the scope.
+   */
+  scopeLabel: string
   /**
    * The audit-derived lane exceeded GET /api/issues' 500-group public cap.
    * This is an incomplete-but-successful response, so it needs the same
@@ -208,6 +216,7 @@ export default function IssuesPanel({
   isLoading,
   isError,
   sourcesDegraded = [],
+  scopeLabel,
   truncated = false,
   onDismiss,
   isDismissing,
@@ -300,11 +309,15 @@ export default function IssuesPanel({
           {incompleteNotes ?? (
             <EmptyState
               variant="page"
-              title={dismissedView ? 'No acknowledged issues.' : 'No issues recorded.'}
+              title={
+                dismissedView
+                  ? `No acknowledged issues in ${scopeLabel}.`
+                  : `No issues in ${scopeLabel}.`
+              }
               description={
                 dismissedView
                   ? 'Issues you acknowledge appear here until they recur, or you restore them.'
-                  : 'Issues appear when butlers report errors or warnings.'
+                  : 'This view is scoped: widen the window or clear the filters to look further back.'
               }
             />
           )}

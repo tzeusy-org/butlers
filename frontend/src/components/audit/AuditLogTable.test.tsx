@@ -11,7 +11,7 @@
  */
 
 import { act } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -21,6 +21,30 @@ import type { AuditLogEntry } from "@/api/types";
 
 vi.mock("@/components/ui/time", () => ({
   Time: ({ value }: { value: string }) => <time dateTime={value}>{value}</time>,
+}));
+
+// The Audit -> Issues door asks the server which group a failure belongs to
+// (bu-6jv4m.3). Stubbed here so this file keeps testing the TABLE; the door's
+// own found / absent / unavailable states are covered in AuditIssuesDoor.test.
+const useAuditIssueGroup = vi.fn(() => ({
+  data: {
+    data: {
+      audit_id: 9,
+      window: "24h",
+      found: true,
+      issue_key: "audit_error_group:deadbeef",
+      occurrences: 3,
+      butlers: ["finance"],
+      issues_href: "/issues?window=24h&group=audit_error_group%3Adeadbeef",
+    },
+  },
+  isPending: false,
+  isError: false,
+  error: null,
+}));
+vi.mock("@/hooks/use-issues", () => ({
+  useAuditIssueGroup: (...args: unknown[]) =>
+    (useAuditIssueGroup as unknown as (...a: unknown[]) => unknown)(...args),
 }));
 
 function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
@@ -47,6 +71,13 @@ function render(entries: AuditLogEntry[]): string {
     </MemoryRouter>,
   );
 }
+
+// The door hook is a module-level spy, so its call log outlives a single
+// test. Clearing it per test is what lets "this row was never expanded, so no
+// lookup fired" be asserted at all.
+beforeEach(() => {
+  useAuditIssueGroup.mockClear();
+});
 
 describe("AuditLogTable -- actor pivot", () => {
   it("links the actor cell to /audit-log?actor=<actor>", () => {
@@ -282,7 +313,7 @@ describe("AuditLogTable -- expanded detail panel pivots", () => {
     expect(detailRow?.textContent).not.toContain("first row note");
   });
 
-  it("links a result=error row with an error message to the Issues feed", async () => {
+  it("hands a result=error row to the server-computed group door, not a text search", async () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -310,13 +341,41 @@ describe("AuditLogTable -- expanded detail panel pivots", () => {
       row!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    // bu-6jv4m.3 replaced the old `/issues?q=<first line of the error>` link.
+    // That href reconstructed the backend's grouping key client-side and then
+    // relied on the Issues page's own default window to contain the match, so
+    // a near-miss rendered as an empty (= all-clear-looking) page.
     const issuesLink = container.querySelector(
       '[data-testid="audit-log-issues-link"]',
     ) as HTMLAnchorElement;
     expect(issuesLink).toBeTruthy();
     expect(issuesLink.getAttribute("href")).toBe(
-      `/issues?q=${encodeURIComponent("OAuth token expired")}`,
+      "/issues?window=24h&group=audit_error_group%3Adeadbeef",
     );
+    expect(issuesLink.getAttribute("href")).not.toContain("q=");
+
+    // The lookup is scoped to THIS row and is lazy: it only runs because the
+    // row was expanded.
+    expect(useAuditIssueGroup).toHaveBeenCalledWith(9, true, undefined);
+  });
+
+  it("does not resolve a group for a row that has not been expanded", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[entry({ id: 11, actor: "finance", result: "error", error: "boom" })]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(useAuditIssueGroup).not.toHaveBeenCalled();
   });
 
   it("exposes a keyboard-accessible disclosure trigger that expands the row on Enter (bu-f310e task 1)", async () => {

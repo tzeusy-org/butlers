@@ -10,6 +10,13 @@ export interface IssuesVerdictOpenerProps {
   isLoading: boolean;
   isError: boolean;
   activeWindow: string;
+  /**
+   * The scope this verdict is about, rendered by
+   * {@link describeIssuesScope} (bu-6jv4m.3). The all-clear names it, because
+   * "nothing here" inside a 7d window filtered to one group is not the same
+   * claim as "the fleet is calm".
+   */
+  scopeLabel: string;
   showDismissed: boolean;
   sourcesDegraded: string[];
   auditGroupsTruncated: boolean;
@@ -73,6 +80,7 @@ export function IssuesVerdictOpener({
   isLoading,
   isError,
   activeWindow,
+  scopeLabel,
   showDismissed,
   sourcesDegraded,
   auditGroupsTruncated,
@@ -85,8 +93,8 @@ export function IssuesVerdictOpener({
       clauses={buildClauses({ issues, activeWindow, sourcesDegraded, auditGroupsTruncated })}
       allClear={
         showDismissed
-          ? `No acknowledged issues in the last ${activeWindow}`
-          : `No active issues in the last ${activeWindow}`
+          ? `No acknowledged issues in ${scopeLabel}`
+          : `No active issues in ${scopeLabel}`
       }
       className="border-b border-border/60 pb-3"
     />

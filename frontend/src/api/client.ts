@@ -27,6 +27,7 @@ import type {
   AutonomySuggestionParams,
   RuleConstraintSuggestion,
   ApiResponse,
+  AuditIssueGroupRef,
   AuditLogEntry,
   AuditLogParams,
   BoardResponse,
@@ -1350,6 +1351,29 @@ export function getIssueOccurrences(
   const qs = sp.toString();
   const path = `/issues/${encodeURIComponent(issueKey)}/occurrences`;
   return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `${path}?${qs}` : path);
+}
+
+/**
+ * Resolve ONE audit_log failure row to the exact Issues group it belongs to
+ * (bu-6jv4m.3).
+ *
+ * Replaces the old `/issues?q=<first line of the error>` guess. `window` is
+ * optional: omitted, the server picks the narrowest window that actually
+ * CONTAINS the row (so a historical failure widens to "all" instead of
+ * resolving to a confident-looking nothing).
+ *
+ * A rejected promise means the lookup was unavailable and the caller must say
+ * so; it must never be collapsed into "no group exists".
+ */
+export function getAuditIssueGroup(
+  auditId: number,
+  params?: { window?: string },
+): Promise<ApiResponse<AuditIssueGroupRef>> {
+  const sp = new URLSearchParams();
+  if (params?.window) sp.set("window", params.window);
+  const qs = sp.toString();
+  const path = `/issues/group-for-audit/${encodeURIComponent(String(auditId))}`;
+  return apiFetch<ApiResponse<AuditIssueGroupRef>>(qs ? `${path}?${qs}` : path);
 }
 
 // ---------------------------------------------------------------------------

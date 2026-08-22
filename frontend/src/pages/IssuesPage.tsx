@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import IssuesPanel from "@/components/issues/IssuesPanel";
 import { IssuesVerdictOpener } from "@/components/issues/IssuesVerdictOpener";
+import { describeIssuesScope } from "@/components/issues/issues-scope";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/ui/page";
@@ -78,8 +79,8 @@ export default function IssuesPage() {
   // Degraded feed (bu-tpudw.3): this feed's product IS failure, so a backend
   // source that errored is named in `meta.sources_degraded` rather than
   // zero-filled into an all-clear empty feed. A non-empty list means the feed
-  // undercounts, so IssuesPanel must NOT render its "No issues recorded."
-  // all-clear — it names the dropped sources via a SourceDegradedNote instead
+  // undercounts, so IssuesPanel must NOT render its scoped all-clear — it
+  // names the dropped sources via a SourceDegradedNote instead
   // (CLAUDE.md degraded-envelope convention). Absent/empty keeps the honest
   // empty state.
   const sourcesDegraded = data?.meta?.sources_degraded ?? [];
@@ -101,15 +102,23 @@ export default function IssuesPage() {
     return Array.from(names).sort();
   }, [windowedIssues]);
 
-  // ?q= deep-link (JARVIS audit move 6): a failure row on the Audit Log page
-  // links here with the first line of its error text so a failure is one hop
-  // from "root evidence" to "its issue group" without the frontend
-  // reconstructing the backend's lossy grouping slug. This is an honest
-  // substring match over the currently-loaded feed, not a precise group
-  // lookup — the closest exact match is usually the top (only) result.
+  // ?group= deep-link (bu-6jv4m.3): the Audit Log's evidence door resolves a
+  // failure row to its EXACT `issue_key` server-side and links here with it,
+  // together with the window that group actually exists in. So this is an
+  // equality match on a server-computed identity, not a guess — the fuzzy
+  // ?q= hop below is what it replaced.
+  const groupFilter = (searchParams.get("group") ?? "").trim();
+
+  // ?q= deep-link (JARVIS audit move 6): retained as a general-purpose text
+  // filter for hand-written links and pasted URLs. It is an honest substring
+  // match over the currently-loaded feed, not a precise group lookup, and its
+  // scope is named in the empty copy for exactly that reason.
   const qFilter = (searchParams.get("q") ?? "").trim();
   const issues = useMemo(() => {
     let result = windowedIssues;
+    if (groupFilter) {
+      result = result.filter((issue) => issue.issue_key === groupFilter);
+    }
     if (qFilter) {
       const needle = qFilter.toLowerCase();
       result = result.filter((issue) =>
@@ -127,7 +136,30 @@ export default function IssuesPage() {
       );
     }
     return result;
-  }, [windowedIssues, qFilter, selectedSeverities, selectedButlers]);
+  }, [windowedIssues, groupFilter, qFilter, selectedSeverities, selectedButlers]);
+
+  // Every empty result this page can render is an empty result *within these
+  // bounds*. Naming them is what keeps a one-group, seven-day view from
+  // reading as a fleet-wide all-clear (bu-6jv4m.3).
+  const scopeLabel = useMemo(
+    () =>
+      describeIssuesScope({
+        window: activeWindow,
+        group: groupFilter,
+        q: qFilter,
+        severities: Array.from(selectedSeverities).sort(),
+        butlers: Array.from(selectedButlers).sort(),
+      }),
+    [activeWindow, groupFilter, qFilter, selectedSeverities, selectedButlers],
+  );
+
+  function handleClearGroupFilter() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("group");
+      return next;
+    });
+  }
 
   function handleClearQFilter() {
     setSearchParams((prev) => {
@@ -204,7 +236,14 @@ export default function IssuesPage() {
   const undismissIssue = undismiss.mutate;
   const handleDismiss = useCallback(
     (issue: Issue) => {
-      dismissIssue({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at });
+      // The ack watermark is the issue's RECURRENCE epoch, not the probe
+      // clock (bu-6jv4m.3). They differ only for reachability, where the
+      // server re-derives the value anyway; posting the right one keeps the
+      // client's intent legible instead of relying on that override.
+      dismissIssue({
+        issueKey: issue.issue_key,
+        lastSeenAt: issue.recurrence_at ?? issue.last_seen_at,
+      });
     },
     [dismissIssue],
   );
@@ -346,6 +385,7 @@ export default function IssuesPage() {
         isLoading={isLoading}
         isError={isError}
         activeWindow={activeWindow}
+        scopeLabel={scopeLabel}
         showDismissed={showDismissed}
         sourcesDegraded={sourcesDegraded}
         auditGroupsTruncated={auditGroupsTruncated}
@@ -411,6 +451,25 @@ export default function IssuesPage() {
         )}
       </div>
 
+      {groupFilter && (
+        <div className="flex flex-wrap items-center gap-2" data-testid="group-filter">
+          <Badge
+            variant="secondary"
+            className="gap-1.5 py-1 pl-2.5 pr-1.5 text-xs"
+            data-testid="group-filter-chip"
+          >
+            one issue group
+            <button
+              type="button"
+              aria-label="Clear issue group filter"
+              className="hover:text-foreground text-muted-foreground ml-0.5 rounded-sm text-xs leading-none"
+              onClick={handleClearGroupFilter}
+            >
+              &times;
+            </button>
+          </Badge>
+        </div>
+      )}
       {qFilter && (
         <div className="flex flex-wrap items-center gap-2" data-testid="q-filter">
           <Badge
@@ -435,6 +494,7 @@ export default function IssuesPage() {
         isLoading={isLoading}
         isError={isError}
         sourcesDegraded={sourcesDegraded}
+        scopeLabel={scopeLabel}
         truncated={auditGroupsTruncated}
         dismissedView={showDismissed}
         onDismiss={handleDismiss}

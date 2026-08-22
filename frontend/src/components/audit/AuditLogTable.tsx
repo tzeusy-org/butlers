@@ -6,6 +6,7 @@ import type { MouseEvent } from "react";
 import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 import type { AuditLogEntry } from "@/api/types";
+import { AuditIssuesDoor } from "@/components/audit/AuditIssuesDoor";
 import { CollapsibleJson } from "@/components/sessions/ToolCallTimeline";
 import { DisclosureRow } from "@/components/ui/DisclosureRow";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -105,17 +106,12 @@ function OutcomeBadge({ result }: { result: string | null | undefined }) {
   );
 }
 
-/**
- * First line of an error message, matching the backend's grouping
- * normalization (audit_grouping.py: `SPLIT_PART(error, E'\n', 1)`) closely
- * enough for a "search the Issues feed for this text" hop -- not a precise
- * group-key reconstruction (that logic, including tmp-path collapsing and
- * slugging, lives server-side only), just enough to pivot a failure row to
- * its likely issue group without duplicating that normalization here.
- */
-function firstErrorLine(error: string): string {
-  return error.split("\n")[0]?.trim() || error;
-}
+// `firstErrorLine` was removed by bu-6jv4m.3. It approximated the backend's
+// grouping normalization client-side to build a `/issues?q=<text>` link, and
+// the approximation was structurally incomplete (it never collapsed tmp paths,
+// and the destination re-filtered under its OWN default window). A near-miss
+// landed the user on an empty Issues page that reads as an all-clear. The exact
+// answer now comes from the server via `AuditIssuesDoor`.
 
 // ---------------------------------------------------------------------------
 // Props
@@ -418,13 +414,10 @@ export default function AuditLogTable({
                           <CollapsibleJson label="Metadata" data={entry.metadata} />
                         )}
                         {entry.result === "error" && entry.error && (
-                          <Link
-                            to={`/issues?q=${encodeURIComponent(firstErrorLine(entry.error))}`}
-                            className="inline-flex text-xs font-medium text-[var(--red-text)] hover:underline"
-                            data-testid="audit-log-issues-link"
-                          >
-                            View in Issues →
-                          </Link>
+                          // Mounted ONLY inside the expanded detail row, so
+                          // opening the Audit Log does not fire one group
+                          // lookup per visible failure (bu-6jv4m.3).
+                          <AuditIssuesDoor auditId={entry.id} />
                         )}
                       </div>
                     </TableCell>
