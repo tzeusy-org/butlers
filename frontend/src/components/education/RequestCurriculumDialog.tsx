@@ -15,11 +15,18 @@ import { useRequestCurriculum } from "@/hooks/use-education";
 interface RequestCurriculumDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Receives the `request_id` from the 202 (bu-6jv4m.10). The dialog closes on
+   * acceptance, so without handing the id upward the page would have nothing to
+   * track and the owner would be back to trusting a toast.
+   */
+  onAccepted?: (requestId: string) => void;
 }
 
 export default function RequestCurriculumDialog({
   open,
   onOpenChange,
+  onAccepted,
 }: RequestCurriculumDialogProps) {
   const [topic, setTopic] = useState("");
   const [goal, setGoal] = useState("");
@@ -33,10 +40,11 @@ export default function RequestCurriculumDialog({
     mutation.mutate(
       { topic: trimmedTopic, goal: goal.trim() || undefined },
       {
-        onSuccess: () => {
+        onSuccess: (accepted) => {
           setTopic("");
           setGoal("");
           onOpenChange(false);
+          onAccepted?.(accepted.request_id);
         },
       },
     );
@@ -49,8 +57,9 @@ export default function RequestCurriculumDialog({
           <DialogHeader>
             <DialogTitle>Request curriculum</DialogTitle>
             <DialogDescription>
-              Tell the butler what you want to learn. It will create a personalized
-              curriculum with diagnostic assessment.
+              Tell the butler what you want to learn. Submitting records the
+              request; the page then tracks it through to a curriculum or a
+              named failure.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

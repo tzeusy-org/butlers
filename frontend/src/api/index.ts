@@ -800,6 +800,8 @@ export type {
 
 export {
   getEducationCrossTopicAnalytics,
+  getEducationCurriculumRequest,
+  getEducationLatestCurriculumRequest,
   getEducationMasterySummary,
   getEducationMindMap,
   getEducationMindMapAnalytics,
@@ -827,7 +829,9 @@ export type {
   CrossTopicAnalytics,
   CrossTopicEntry,
   CurriculumRequestBody,
+  CurriculumRequestReceipt,
   CurriculumRequestResponse,
+  CurriculumRequestStatusResponse,
   MasterySummary,
   MindMap,
   MindMapEdge,

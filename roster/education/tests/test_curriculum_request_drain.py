@@ -1,22 +1,28 @@
-"""Regression guard for the curriculum-request wiring (bu-99iek).
+"""Wiring guards for the curriculum-request spine (bu-99iek, bu-6jv4m.10).
 
 The dashboard's "Request curriculum" button POSTs to
-``/api/education/curriculum-requests``, which stores the request under the
-``pending_curriculum_request`` state key. For a long time *nothing* consumed
-that key — no schedule, job, or skill — so the success toast lied and the
-new-user first action was a silent no-op.
+``/api/education/curriculum-requests``. Two regressions have already been paid
+for on this seam and neither may silently return:
 
-The original fix polled the key every 5 minutes via a ``drain-curriculum-request``
-schedule, which burned a full ephemeral session each tick even when nothing was
-pending. That polling was replaced with an **event-driven trigger**: the endpoint
-spawns an education session immediately (via the butler's ``trigger`` MCP tool),
-which starts the curriculum and clears the key. See ``submit_curriculum_request``
-and ``_trigger_curriculum_drain`` in ``roster/education/api/router.py``.
+1. **The no-op toast** (bu-99iek). The endpoint wrote a
+   ``pending_curriculum_request`` KV key that *nothing* consumed — no schedule,
+   job, or skill — so the success toast lied. The first fix polled the key every
+   5 minutes, burning a full ephemeral session per tick; that polling was
+   replaced with an event-driven trigger fired from the endpoint itself.
 
-These tests assert that the wiring stays coherent so the no-op regression cannot
-silently return:
-- the polling schedule must NOT come back (it was the token-burn we removed);
-- the endpoint must trigger a session and still own the exact state key.
+2. **The lock with no owner** (bu-6jv4m.10). The event-driven fix still left the
+   *lifecycle* ownerless: a KV lock that the triggered LLM session had to
+   remember to ``state_delete``, a detached trigger whose failure was logged and
+   swallowed, and no durable status for the owner to read. A crashed API process
+   stranded the lock behind a permanent 409. That lifecycle now lives in
+   ``education.curriculum_requests`` (migration ``education_004``), and the
+   backend — not the session — owns the guard.
+
+These tests assert the wiring stays coherent. They read the router source
+because what is being guarded is *which components own the lifecycle*, which no
+runtime assertion on a single request can show. Behaviour is covered by
+``roster/education/tests/test_api.py`` and
+``tests/config/test_education_curriculum_receipt_db.py``.
 """
 
 from __future__ import annotations
@@ -33,11 +39,16 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _EDUCATION_CONFIG_DIR = _REPO_ROOT / "roster" / "education"
 
-# Must match roster/education/api/router.py::_CURRICULUM_REQUEST_KEY
-_CURRICULUM_REQUEST_KEY = "pending_curriculum_request"
 _DRAIN_SCHEDULE_NAME = "drain-curriculum-request"
 
+# Must match roster/education/migrations/004_curriculum_request_receipts.py
+_RECEIPT_TABLE = "education.curriculum_requests"
+_PENDING_GUARD_INDEX = "uq_curriculum_requests_one_open"
+
 _ROUTER_SRC = (_EDUCATION_CONFIG_DIR / "api" / "router.py").read_text()
+_MIGRATION_SRC = (
+    _EDUCATION_CONFIG_DIR / "migrations" / "004_curriculum_request_receipts.py"
+).read_text()
 
 
 def test_no_polling_drain_schedule():
@@ -54,7 +65,7 @@ def test_no_polling_drain_schedule():
 
 def test_endpoint_triggers_a_session():
     """Submitting a request must trigger an ephemeral education session via the
-    butler's `trigger` MCP tool — not just write a key and hope something polls it."""
+    butler's `trigger` MCP tool — not just write a row and hope something polls it."""
     assert "get_mcp_manager" in _ROUTER_SRC, (
         "router.py must depend on the MCP manager to trigger a session on submit."
     )
@@ -68,20 +79,63 @@ def test_endpoint_triggers_a_session():
     )
 
 
-def test_trigger_clears_request_key_on_failure():
-    """If the session cannot be spawned, the endpoint must clear the lock so the user
-    is not wedged behind a permanent 409 (there is no polling fallback to retry)."""
-    assert "state_delete" in _ROUTER_SRC, (
-        "router.py must clear the pending key via state_delete when the trigger fails; "
-        "without the old polling drain there is no other path to release the 409 guard."
+def test_request_persists_a_durable_receipt():
+    """Accepted work must be recorded before the detached task starts."""
+    assert _RECEIPT_TABLE in _ROUTER_SRC, (
+        f"router.py must persist accepted requests in {_RECEIPT_TABLE}; a detached task "
+        "with no durable row leaves a trigger failure invisible to the owner."
+    )
+    assert _RECEIPT_TABLE in _MIGRATION_SRC, (
+        f"migration 004 must create {_RECEIPT_TABLE} — the router writes to it."
     )
 
 
-def test_endpoint_state_key_is_stable():
-    """Guard against the endpoint's key drifting from the documented contract."""
-    assert f'_CURRICULUM_REQUEST_KEY = "{_CURRICULUM_REQUEST_KEY}"' in _ROUTER_SRC, (
-        "router.py _CURRICULUM_REQUEST_KEY drifted from the documented key; the trigger "
-        "prompt and the 409 guard both depend on this exact value."
+def test_pending_guard_is_backend_owned_not_kv():
+    """The one-pending guard must be a database constraint, not a KV key an LLM clears.
+
+    The old ``pending_curriculum_request`` key was released by the *triggered
+    session* calling ``state_delete``. A session that died, timed out, or simply
+    forgot left the owner behind a permanent 409 with no way to retry.
+    """
+    assert _PENDING_GUARD_INDEX in _MIGRATION_SRC, (
+        f"migration 004 must create the {_PENDING_GUARD_INDEX} partial unique index — "
+        "it is the single one-pending-at-a-time guard."
     )
-    # The triggered session prompt clears the same key it guards on.
-    assert _CURRICULUM_REQUEST_KEY in _ROUTER_SRC
+    assert "pending_curriculum_request" not in _ROUTER_SRC, (
+        "the KV pending lock is gone; keeping it alongside the receipt row means two "
+        "guards that can disagree, and the KV one has no owner when a session dies."
+    )
+    assert "state_delete" not in _ROUTER_SRC, (
+        "releasing the guard must be a backend write (settling the receipt), never a "
+        "state_delete the triggered LLM session has to remember to call."
+    )
+
+
+def test_detached_work_always_settles_a_terminal_state():
+    """Every exit path of the detached task must land a terminal receipt state."""
+    for marker in (
+        "_FAILURE_TRIGGER_UNREACHABLE",
+        "_FAILURE_SESSION_ERROR",
+        "_FAILURE_NO_CURRICULUM",
+        "_FAILURE_TIMED_OUT",
+    ):
+        assert marker in _ROUTER_SRC, (
+            f"router.py must define {marker}: a swallowed trigger failure with no "
+            "terminal reason is exactly the gap the receipt exists to close."
+        )
+    assert "_sweep_abandoned_receipts" in _ROUTER_SRC, (
+        "a receipt whose owning task died with the API process must be swept to a "
+        "terminal state, or the pending guard strands the owner across a restart."
+    )
+
+
+def test_status_read_is_exposed():
+    """The owner must be able to read the outcome, not just submit and hope."""
+    assert "/curriculum-requests/{request_id}" in _ROUTER_SRC, (
+        "router.py must expose a read-only receipt endpoint; a 202 with no status read "
+        "means the UI can only guess at completion."
+    )
+    assert "receipts_available" in _ROUTER_SRC, (
+        "the status read must distinguish 'store unreadable' from 'nothing in flight' — "
+        "an unavailable store rendered as empty is fabricated calm."
+    )

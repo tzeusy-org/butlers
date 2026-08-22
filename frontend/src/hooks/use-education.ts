@@ -3,6 +3,8 @@ import { toast } from "sonner";
 
 import {
   getEducationCrossTopicAnalytics,
+  getEducationCurriculumRequest,
+  getEducationLatestCurriculumRequest,
   getEducationMasterySummary,
   getEducationMindMap,
   getEducationMindMapAnalytics,
@@ -16,6 +18,7 @@ import {
 } from "@/api/index.ts";
 import type {
   CurriculumRequestBody,
+  CurriculumRequestReceipt,
   MindMapListParams,
   QuizResponseParams,
 } from "@/api/index.ts";
@@ -28,6 +31,8 @@ import type {
  */
 const EDUCATION_POLL_MS = 30_000;
 const EDUCATION_POLL_SLOW_MS = 60_000;
+/** Faster than the page cadence: an in-flight request is what the owner is watching. */
+const CURRICULUM_RECEIPT_POLL_MS = 5_000;
 
 /** List mind maps with optional status filter and pagination. */
 export function useMindMaps(params?: MindMapListParams) {
@@ -256,15 +261,28 @@ export function useMindMapAnalyticsTrend(mindMapId: string | null, days: number 
   });
 }
 
-/** Mutation: request a new curriculum. Shows toast on success/conflict. */
+/** True once a receipt can no longer change — the only states that may claim an outcome. */
+export function isCurriculumReceiptTerminal(
+  receipt: CurriculumRequestReceipt | null | undefined,
+): boolean {
+  return receipt?.status === "completed" || receipt?.status === "failed";
+}
+
+/**
+ * Mutation: request a new curriculum.
+ *
+ * The 202 is an acceptance and nothing more, so the toast says exactly that.
+ * The old copy ("the butler will set it up within a few minutes and message you
+ * to begin") claimed setup and contact from an acknowledgement — a trigger
+ * failure after the 202 left that promise standing with no way to falsify it.
+ * Completion is now claimed only from the receipt (`useCurriculumRequestReceipt`).
+ */
 export function useRequestCurriculum() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: CurriculumRequestBody) => requestEducationCurriculum(body),
     onSuccess: () => {
-      toast.success(
-        "Curriculum requested. The butler will set it up within a few minutes and message you to begin",
-      );
+      toast.success("Curriculum request accepted. Tracking it below");
       qc.invalidateQueries({ queryKey: ["education", "mind-maps"] });
     },
     onError: (error: Error & { status?: number }) => {
@@ -275,6 +293,33 @@ export function useRequestCurriculum() {
       } else {
         toast.error("Failed to submit curriculum request");
       }
+    },
+  });
+}
+
+/**
+ * Read the accepted-to-outcome receipt for a curriculum request.
+ *
+ * Pass the `request_id` returned by the 202; pass `null` to fall back to the
+ * most recent request (so a reload still shows work that is still in flight).
+ * Polls only while the receipt is non-terminal — a settled receipt cannot
+ * change, so continuing to poll it would be pure noise.
+ */
+export function useCurriculumRequestReceipt(requestId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["education", "curriculum-request", requestId],
+    queryFn: () =>
+      requestId
+        ? getEducationCurriculumRequest(requestId)
+        : getEducationLatestCurriculumRequest(),
+    enabled,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      // An unreadable store is not a terminal answer — keep asking.
+      if (data && data.receipts_available && isCurriculumReceiptTerminal(data.receipt)) {
+        return false;
+      }
+      return CURRICULUM_RECEIPT_POLL_MS;
     },
   });
 }

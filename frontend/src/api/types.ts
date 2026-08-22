@@ -4482,10 +4482,57 @@ export interface CurriculumRequestBody {
   goal?: string | null;
 }
 
-/** Response body for a submitted curriculum request. */
+/**
+ * 202 acknowledgement for a submitted curriculum request.
+ *
+ * `status` is always `"accepted"` — the request was durably recorded and handed
+ * off, nothing more. Follow `request_id` for the actual outcome; a 202 is never
+ * evidence that a curriculum exists or that the butler messaged the owner.
+ */
 export interface CurriculumRequestResponse {
-  status: string;
+  status: "accepted";
   topic: string;
+  request_id: string;
+}
+
+/** Terminal reason a curriculum request failed. */
+export type CurriculumRequestFailureReason =
+  | "trigger_unreachable"
+  | "session_error"
+  | "no_curriculum_created"
+  | "timed_out";
+
+/**
+ * Durable accepted-to-outcome receipt for one curriculum request.
+ *
+ * Evidence fields stay null until the detached curriculum work settles them. A
+ * terminal `status` always carries `settled_at`, and `failed` always carries
+ * `failure_reason`.
+ */
+export interface CurriculumRequestReceipt {
+  request_id: string;
+  topic: string;
+  goal?: string | null;
+  status: "accepted" | "running" | "completed" | "failed";
+  session_id?: string | null;
+  mind_map_id?: string | null;
+  calibration_ready_at?: string | null;
+  failure_reason?: CurriculumRequestFailureReason | string | null;
+  requested_at: string;
+  triggered_at?: string | null;
+  settled_at?: string | null;
+  updated_at: string;
+}
+
+/**
+ * Read-only status envelope for curriculum request receipts.
+ *
+ * `receipts_available: false` means the receipt store could not be read — render
+ * that as "status unavailable", never as "no request in flight".
+ */
+export interface CurriculumRequestStatusResponse {
+  receipts_available: boolean;
+  receipt: CurriculumRequestReceipt | null;
 }
 
 /** Query params for mind map list. */

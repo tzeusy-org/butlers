@@ -187,6 +187,11 @@ const REGISTRY: DegradedFlagEntry[] = [
     consumerPattern: /\.available\b/,
   },
   { flag: "catalogue_available", emittedBy: "secrets breaks-catalogue" },
+  {
+    flag: "receipts_available",
+    emittedBy: "education curriculum request status read (bu-6jv4m.10)",
+    consumerFiles: ["components/education/CurriculumRequestReceiptPanel.tsx"],
+  },
 ]
 
 // ---------------------------------------------------------------------------

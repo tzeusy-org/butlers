@@ -3978,6 +3978,7 @@ import type {
   CrossTopicAnalytics,
   CurriculumRequestBody,
   CurriculumRequestResponse,
+  CurriculumRequestStatusResponse,
   MasterySummary,
   MindMap,
   MindMapListParams,
@@ -4087,7 +4088,11 @@ export function updateEducationMindMapStatus(
   );
 }
 
-/** Submit a curriculum request for the butler to process. */
+/** Submit a curriculum request for the butler to process.
+ *
+ * Resolves on 202 with the request's durable receipt ID. Acceptance only — read
+ * the receipt via `getEducationCurriculumRequest` for the outcome.
+ */
 export function requestEducationCurriculum(
   body: CurriculumRequestBody,
 ): Promise<CurriculumRequestResponse> {
@@ -4095,6 +4100,22 @@ export function requestEducationCurriculum(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Read one curriculum request receipt by its immutable request ID. */
+export function getEducationCurriculumRequest(
+  requestId: string,
+): Promise<CurriculumRequestStatusResponse> {
+  return apiFetch<CurriculumRequestStatusResponse>(
+    `/education/curriculum-requests/${encodeURIComponent(requestId)}`,
+  );
+}
+
+/** Read the most recent curriculum request receipt, if any. */
+export function getEducationLatestCurriculumRequest(): Promise<CurriculumRequestStatusResponse> {
+  return apiFetch<CurriculumRequestStatusResponse>(
+    "/education/curriculum-requests/latest",
+  );
 }
 
 /** Get analytics trend time-series for a mind map (dedicated /analytics/trend endpoint).

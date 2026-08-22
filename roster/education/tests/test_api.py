@@ -9,12 +9,14 @@ Issue: butlers-2kmd.11
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 
@@ -1304,13 +1306,63 @@ class TestUpdateMindMapStatus:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/education/curriculum-requests
+# Curriculum requests — accepted-to-outcome receipts
+#
+# The 202 is an *acceptance*, not a completion: the receipt row exists before
+# the detached curriculum work starts, and every exit path of that work settles
+# a terminal state onto it. These tests hold both halves of that contract.
 # ---------------------------------------------------------------------------
+
+
+def _receipt_row(
+    *,
+    request_id: str | None = None,
+    topic: str = "Python",
+    goal: str | None = None,
+    status: str = "accepted",
+    session_id: str | None = None,
+    mind_map_id: str | None = None,
+    calibration_ready_at: datetime | None = None,
+    failure_reason: str | None = None,
+    triggered_at: datetime | None = None,
+    settled_at: datetime | None = None,
+) -> _MockRecord:
+    """Build an ``education.curriculum_requests`` row as asyncpg would return it."""
+    return _MockRecord(
+        {
+            "id": uuid.UUID(request_id) if request_id else uuid.uuid4(),
+            "topic": topic,
+            "goal": goal,
+            "status": status,
+            "session_id": session_id,
+            "mind_map_id": uuid.UUID(mind_map_id) if mind_map_id else None,
+            "calibration_ready_at": calibration_ready_at,
+            "failure_reason": failure_reason,
+            "requested_at": datetime.now(UTC),
+            "triggered_at": triggered_at,
+            "settled_at": settled_at,
+            "updated_at": datetime.now(UTC),
+        }
+    )
+
+
+def _trigger_result(
+    *, success: bool = True, session_id: str | None = "sess-1", error: str | None = None
+) -> MagicMock:
+    """Build an MCP ``trigger`` tool result the way FastMCP returns one."""
+    result = MagicMock()
+    result.is_error = False
+    block = MagicMock()
+    block.text = json.dumps(
+        {"success": success, "error": error, "session_id": session_id, "output": "ok"}
+    )
+    result.content = [block]
+    return result
 
 
 class TestSubmitCurriculumRequest:
     async def test_submit_new_request(self):
-        """New curriculum request should return 202 and trigger an education session."""
+        """A new request returns 202 accepted, its receipt ID, and triggers a session."""
         mock_pool = AsyncMock()
         mock_client = AsyncMock()
         mock_mgr = AsyncMock()
@@ -1318,9 +1370,16 @@ class TestSubmitCurriculumRequest:
         app = _app_with_mock_pool(mock_pool, mcp_manager=mock_mgr)
         edu = _get_education_module(app)
 
+        request_id = str(uuid.uuid4())
         with (
-            patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None),
-            patch.object(edu, "state_set", new_callable=AsyncMock, return_value=1),
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(
+                edu,
+                "_create_receipt",
+                new_callable=AsyncMock,
+                return_value=_receipt_row(request_id=request_id),
+            ),
+            patch.object(edu, "_run_curriculum_request", new_callable=AsyncMock),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1329,21 +1388,73 @@ class TestSubmitCurriculumRequest:
                     "/api/education/curriculum-requests",
                     json={"topic": "Python", "goal": "Learn web development"},
                 )
-            # Drain the fire-and-forget trigger task spawned by the handler.
-            if edu._DRAIN_TASKS:
-                await asyncio.gather(*list(edu._DRAIN_TASKS))
+            if edu._CURRICULUM_TASKS:
+                await asyncio.gather(*list(edu._CURRICULUM_TASKS))
 
         assert resp.status_code == 202
         body = resp.json()
-        assert body["status"] == "pending"
+        # "accepted", never "pending"/"done" — the 202 evidences acceptance only.
+        assert body["status"] == "accepted"
         assert body["topic"] == "Python"
+        assert body["request_id"] == request_id
 
-        # Event-driven: the handler triggered an education session immediately
-        # (no polling drain schedule) via the butler's `trigger` MCP tool.
-        mock_mgr.get_client.assert_awaited_once_with("education")
-        tool_name, tool_args = mock_client.call_tool.await_args.args
-        assert tool_name == "trigger"
-        assert "Python" in tool_args["prompt"]
+    async def test_receipt_is_persisted_before_detached_work_starts(self):
+        """The receipt must exist before the trigger task is created."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        order: list[str] = []
+
+        async def _create(pool, topic, goal):
+            order.append("create_receipt")
+            return _receipt_row(topic=topic, goal=goal)
+
+        async def _run(*args, **kwargs):
+            order.append("run_detached")
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_create_receipt", new=_create),
+            patch.object(edu, "_run_curriculum_request", new=_run),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests", json={"topic": "Python"}
+                )
+            if edu._CURRICULUM_TASKS:
+                await asyncio.gather(*list(edu._CURRICULUM_TASKS))
+
+        assert resp.status_code == 202
+        assert order == ["create_receipt", "run_detached"]
+
+    async def test_submit_sweeps_abandoned_receipts_first(self):
+        """A crashed request must not wedge the next one behind a stale guard."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        sweep = AsyncMock(return_value=1)
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new=sweep),
+            patch.object(
+                edu, "_create_receipt", new_callable=AsyncMock, return_value=_receipt_row()
+            ),
+            patch.object(edu, "_run_curriculum_request", new_callable=AsyncMock),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests", json={"topic": "Python"}
+                )
+            if edu._CURRICULUM_TASKS:
+                await asyncio.gather(*list(edu._CURRICULUM_TASKS))
+
+        assert resp.status_code == 202
+        sweep.assert_awaited()
 
     async def test_submit_without_goal(self):
         """Request without goal should still return 202."""
@@ -1352,8 +1463,14 @@ class TestSubmitCurriculumRequest:
         edu = _get_education_module(app)
 
         with (
-            patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None),
-            patch.object(edu, "state_set", new_callable=AsyncMock, return_value=1),
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(
+                edu,
+                "_create_receipt",
+                new_callable=AsyncMock,
+                return_value=_receipt_row(topic="Linear Algebra"),
+            ),
+            patch.object(edu, "_run_curriculum_request", new_callable=AsyncMock),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1362,18 +1479,22 @@ class TestSubmitCurriculumRequest:
                     "/api/education/curriculum-requests",
                     json={"topic": "Linear Algebra"},
                 )
+            if edu._CURRICULUM_TASKS:
+                await asyncio.gather(*list(edu._CURRICULUM_TASKS))
 
         assert resp.status_code == 202
         assert resp.json()["topic"] == "Linear Algebra"
 
     async def test_duplicate_request_returns_409(self):
-        """When a pending request exists, return 409 Conflict."""
+        """When the pending guard refuses the insert, return 409 Conflict."""
         mock_pool = AsyncMock()
         app = _app_with_mock_pool(mock_pool)
         edu = _get_education_module(app)
 
-        existing = {"topic": "Rust", "goal": None, "requested_at": _NOW}
-        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=existing):
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_create_receipt", new_callable=AsyncMock, return_value=None),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -1384,20 +1505,41 @@ class TestSubmitCurriculumRequest:
 
         assert resp.status_code == 409
 
-    async def test_empty_topic_returns_422(self):
-        """Empty topic should return 422."""
+    async def test_submit_returns_503_when_receipts_unavailable(self):
+        """Without a receipt store there is nothing to promise — refuse, don't fake it."""
         mock_pool = AsyncMock()
         app = _app_with_mock_pool(mock_pool)
         edu = _get_education_module(app)
 
-        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None):
+        with patch.object(
+            edu,
+            "_sweep_abandoned_receipts",
+            new_callable=AsyncMock,
+            side_effect=asyncpg.UndefinedTableError("no such table"),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
                 resp = await client.post(
                     "/api/education/curriculum-requests",
-                    json={"topic": ""},
+                    json={"topic": "Python"},
                 )
+
+        assert resp.status_code == 503
+        assert "unavailable" in resp.json()["detail"].lower()
+
+    async def test_empty_topic_returns_422(self):
+        """Empty topic should return 422."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/education/curriculum-requests",
+                json={"topic": ""},
+            )
 
         assert resp.status_code == 422
 
@@ -1405,16 +1547,338 @@ class TestSubmitCurriculumRequest:
         """Topic exceeding 200 chars should return 422."""
         mock_pool = AsyncMock()
         app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/education/curriculum-requests",
+                json={"topic": "x" * 201},
+            )
+
+        assert resp.status_code == 422
+
+
+class TestCurriculumRequestDetachedWork:
+    """The detached task must land a terminal state on every exit path."""
+
+    async def test_successful_session_settles_completed_with_evidence(self):
+        """A session that produced a calibrating curriculum settles 'completed'."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
         edu = _get_education_module(app)
 
-        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None):
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-9")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        map_id = str(uuid.uuid4())
+        settle = AsyncMock(return_value=True)
+        request_id = str(uuid.uuid4())
+
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(map_id, True),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(mock_mgr, mock_pool, request_id, "Python", None)
+
+        settle.assert_awaited_once()
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "completed"
+        assert kwargs["session_id"] == "sess-9"
+        assert kwargs["mind_map_id"] == map_id
+        assert kwargs["calibration_ready"] is True
+
+    async def test_trigger_failure_settles_failed(self):
+        """An unreachable butler must produce a terminal, owner-visible failure."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.side_effect = RuntimeError("butler unreachable")
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        settle.assert_awaited_once()
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["failure_reason"] == edu._FAILURE_TRIGGER_UNREACHABLE
+
+    async def test_session_reported_error_settles_failed(self):
+        """A session that reports its own failure must not read as completed."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(
+            success=False, session_id="sess-bad", error="teaching_flow_start raised"
+        )
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["failure_reason"] == edu._FAILURE_SESSION_ERROR
+        assert kwargs["session_id"] == "sess-bad"
+
+    async def test_clean_exit_without_curriculum_settles_failed(self):
+        """A clean exit is not evidence — no curriculum means the request failed."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-empty")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(None, False),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs["failure_reason"] == edu._FAILURE_NO_CURRICULUM
+
+    async def test_settle_failure_never_escapes_the_task(self):
+        """A settle that raises would strand the guard; it must be swallowed."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.side_effect = RuntimeError("butler unreachable")
+
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_settle_receipt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db down"),
+            ),
+        ):
+            # Must not raise.
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+    async def test_prompt_does_not_ask_the_session_to_release_the_guard(self):
+        """The guard is backend-owned; an LLM forgetting a call must not wedge it."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        prompt = edu._curriculum_prompt("Python", "web dev")
+        assert "teaching_flow_start" in prompt
+        assert "Python" in prompt
+        assert "web dev" in prompt
+        assert "state_delete" not in prompt
+
+
+class TestReadCurriculumRequest:
+    """Read-only status: terminal evidence, absence, and unavailability are distinct."""
+
+    async def test_get_receipt_by_id(self):
+        """The receipt read returns the full evidence set for a terminal request."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        request_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        row = _receipt_row(
+            request_id=request_id,
+            status="completed",
+            session_id="sess-3",
+            mind_map_id=map_id,
+            calibration_ready_at=datetime.now(UTC),
+            triggered_at=datetime.now(UTC),
+            settled_at=datetime.now(UTC),
+        )
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_get_receipt", new_callable=AsyncMock, return_value=row),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.post(
-                    "/api/education/curriculum-requests",
-                    json={"topic": "x" * 201},
-                )
+                resp = await client.get(f"/api/education/curriculum-requests/{request_id}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["receipts_available"] is True
+        receipt = body["receipt"]
+        assert receipt["request_id"] == request_id
+        assert receipt["status"] == "completed"
+        assert receipt["session_id"] == "sess-3"
+        assert receipt["mind_map_id"] == map_id
+        assert receipt["calibration_ready_at"] is not None
+        assert receipt["settled_at"] is not None
+        assert receipt["failure_reason"] is None
+
+    async def test_get_receipt_exposes_terminal_failure_reason(self):
+        """A failed request names its reason so the UI can say what went wrong."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        request_id = str(uuid.uuid4())
+        row = _receipt_row(
+            request_id=request_id,
+            status="failed",
+            failure_reason="trigger_unreachable",
+            settled_at=datetime.now(UTC),
+        )
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_get_receipt", new_callable=AsyncMock, return_value=row),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/curriculum-requests/{request_id}")
+
+        assert resp.status_code == 200
+        assert resp.json()["receipt"]["failure_reason"] == "trigger_unreachable"
+
+    async def test_unknown_receipt_returns_404(self):
+        """An unknown request ID must 404, never a fabricated empty receipt."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_get_receipt", new_callable=AsyncMock, return_value=None),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(f"/api/education/curriculum-requests/{uuid.uuid4()}")
+
+        assert resp.status_code == 404
+
+    async def test_receipts_unavailable_is_explicit(self):
+        """A pre-migration store reads as unavailable, not as 'nothing in flight'."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(
+            edu,
+            "_sweep_abandoned_receipts",
+            new_callable=AsyncMock,
+            side_effect=asyncpg.UndefinedTableError("no such table"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/education/curriculum-requests/latest")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["receipts_available"] is False
+        assert body["receipt"] is None
+
+    async def test_latest_receipt_absent_is_distinct_from_unavailable(self):
+        """No request ever made: available store, empty receipt."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_latest_receipt", new_callable=AsyncMock, return_value=None),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/education/curriculum-requests/latest")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["receipts_available"] is True
+        assert body["receipt"] is None
+
+    async def test_latest_receipt_returns_open_request(self):
+        """An in-flight request reads as accepted with no completion evidence."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        row = _receipt_row(status="accepted")
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(edu, "_latest_receipt", new_callable=AsyncMock, return_value=row),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/education/curriculum-requests/latest")
+
+        receipt = resp.json()["receipt"]
+        assert receipt["status"] == "accepted"
+        assert receipt["mind_map_id"] is None
+        assert receipt["settled_at"] is None
+
+    async def test_malformed_request_id_returns_422(self):
+        """A non-UUID path segment is a client error, not a 500."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(edu, "_sweep_abandoned_receipts", new_callable=AsyncMock, return_value=0),
+            patch.object(
+                edu,
+                "_get_receipt",
+                new_callable=AsyncMock,
+                side_effect=asyncpg.DataError("invalid input syntax for type uuid"),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/education/curriculum-requests/not-a-uuid")
 
         assert resp.status_code == 422
 

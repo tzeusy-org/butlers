@@ -154,10 +154,51 @@ class CurriculumRequestBody(BaseModel):
 
 
 class CurriculumRequestResponse(BaseModel):
-    """Response body for a submitted curriculum request."""
+    """202 acknowledgement for a submitted curriculum request.
+
+    ``status`` is always ``"accepted"`` — the request has been durably recorded
+    and the curriculum session has been handed off, nothing more. ``request_id``
+    is the receipt to follow for the actual outcome.
+    """
 
     status: str
     topic: str
+    request_id: str
+
+
+class CurriculumRequestReceipt(BaseModel):
+    """Durable accepted-to-outcome receipt for one curriculum request.
+
+    Mirrors a row of ``education.curriculum_requests``. Evidence fields stay
+    ``None`` until the detached curriculum work settles them; a terminal
+    ``status`` (``completed``/``failed``) always carries ``settled_at``, and
+    ``failed`` always carries ``failure_reason``.
+    """
+
+    request_id: str
+    topic: str
+    goal: str | None = None
+    status: str
+    session_id: str | None = None
+    mind_map_id: str | None = None
+    calibration_ready_at: str | None = None
+    failure_reason: str | None = None
+    requested_at: str
+    triggered_at: str | None = None
+    settled_at: str | None = None
+    updated_at: str
+
+
+class CurriculumRequestStatusResponse(BaseModel):
+    """Read-only status envelope for curriculum request receipts.
+
+    ``receipts_available`` is ``False`` when the receipt store cannot be read
+    (e.g. the education chain has not been migrated yet). Callers must render
+    that as "status unavailable" rather than as "no request in flight".
+    """
+
+    receipts_available: bool = True
+    receipt: CurriculumRequestReceipt | None = None
 
 
 class AnalyticsTrendEntry(BaseModel):

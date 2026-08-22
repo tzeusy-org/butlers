@@ -9,18 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import logging
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
-from butlers.core.state import state_delete, state_get, state_set
+from butlers.core.state import state_get
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
@@ -46,7 +49,9 @@ if _spec is not None and _spec.loader is not None:
     CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
     CrossTopicTopicEntry = _models.CrossTopicTopicEntry
     CurriculumRequestBody = _models.CurriculumRequestBody
+    CurriculumRequestReceipt = _models.CurriculumRequestReceipt
     CurriculumRequestResponse = _models.CurriculumRequestResponse
+    CurriculumRequestStatusResponse = _models.CurriculumRequestStatusResponse
     MasterySummaryResponse = _models.MasterySummaryResponse
     MindMapEdgeResponse = _models.MindMapEdgeResponse
     MindMapNodeResponse = _models.MindMapNodeResponse
@@ -628,23 +633,228 @@ async def update_mind_map_status(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/education/curriculum-requests — request a new curriculum
+# Curriculum requests — durable accepted-to-outcome receipts
+#
+# A dashboard curriculum request is accepted work: the owner is told the butler
+# took it, and then a *detached* session does the real work. The receipt is what
+# makes that promise falsifiable. Every request gets an immutable row in
+# ``education.curriculum_requests`` BEFORE any detached work starts, and the
+# task that runs the work settles trigger/session, curriculum, calibration and
+# failure evidence back onto that row.
+#
+# The one-pending-at-a-time guard lives on the same row (partial unique index
+# ``uq_curriculum_requests_one_open``), not in the KV store, so there is exactly
+# one guard and releasing it is a backend write rather than something an LLM has
+# to remember to do. A receipt left non-terminal past ``_RECEIPT_TIMEOUT`` (a
+# crashed API process, a session that never returns) is swept to a terminal
+# ``failed`` state, so the guard can never strand the owner behind a permanent
+# 409.
 # ---------------------------------------------------------------------------
-
-_CURRICULUM_REQUEST_KEY = "pending_curriculum_request"
 
 # Background tasks fired from the request handler must outlive the response, so we
 # hold strong references until they finish (asyncio only keeps weak refs otherwise).
-_DRAIN_TASKS: set[asyncio.Task] = set()
+_CURRICULUM_TASKS: set[asyncio.Task] = set()
+
+# How long a receipt may stay non-terminal before it is presumed abandoned. The
+# curriculum session (mind map + diagnostic plan) is minutes of work, not tens of
+# minutes; past this the owning task is either gone with its process or wedged,
+# and either way the owner deserves a terminal answer and a released guard.
+_RECEIPT_TIMEOUT = timedelta(minutes=30)
+
+_RECEIPT_OPEN_STATUSES = ("accepted", "running")
+
+# Terminal failure reasons. Stable strings — the UI renders them, so they are
+# part of the contract, not log prose.
+_FAILURE_TRIGGER_UNREACHABLE = "trigger_unreachable"
+_FAILURE_SESSION_ERROR = "session_error"
+_FAILURE_NO_CURRICULUM = "no_curriculum_created"
+_FAILURE_TIMED_OUT = "timed_out"
+
+_RECEIPT_COLUMNS = """
+    id, topic, goal, status, session_id, mind_map_id,
+    calibration_ready_at, failure_reason,
+    requested_at, triggered_at, settled_at, updated_at
+"""
+
+# Teaching-flow states at or past the diagnostic probe. Reaching one of these
+# means the calibration the owner was promised is actually live and answerable.
+_CALIBRATION_READY_FLOW_STATES = frozenset(
+    {"diagnosing", "planning", "teaching", "quizzing", "reviewing", "completed"}
+)
 
 
-def _drain_prompt(topic: str, goal: str | None) -> str:
+def _iso(value: Any) -> str | None:
+    """Render a timestamp column as ISO-8601, or None when unset."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _receipt_to_response(row: Any) -> CurriculumRequestReceipt:
+    """Convert a ``curriculum_requests`` row to its API model."""
+    return CurriculumRequestReceipt(
+        request_id=str(row["id"]),
+        topic=row["topic"],
+        goal=row["goal"],
+        status=row["status"],
+        session_id=row["session_id"],
+        mind_map_id=str(row["mind_map_id"]) if row["mind_map_id"] else None,
+        calibration_ready_at=_iso(row["calibration_ready_at"]),
+        failure_reason=row["failure_reason"],
+        requested_at=_iso(row["requested_at"]) or "",
+        triggered_at=_iso(row["triggered_at"]),
+        settled_at=_iso(row["settled_at"]),
+        updated_at=_iso(row["updated_at"]) or "",
+    )
+
+
+async def _sweep_abandoned_receipts(pool) -> int:
+    """Settle receipts that have been non-terminal past ``_RECEIPT_TIMEOUT``.
+
+    Restart safety for the pending guard: the task that owns an in-flight
+    receipt lives in the API process, so a restart kills it mid-flight and the
+    row would otherwise sit ``running`` forever, holding the one-open guard. This
+    sweep runs on every submit and every status read, so recovery needs no
+    schedule and no operator.
+
+    Idempotent by construction — it only ever moves open rows to a terminal
+    state, so a second run over the same rows matches nothing.
+    """
+    rows = await pool.fetch(
+        f"""
+        UPDATE education.curriculum_requests
+           SET status = 'failed',
+               failure_reason = COALESCE(failure_reason, $1),
+               settled_at = now(),
+               updated_at = now()
+         WHERE status = ANY($2::text[])
+           AND requested_at < now() - $3::interval
+        RETURNING {_RECEIPT_COLUMNS}
+        """,
+        _FAILURE_TIMED_OUT,
+        list(_RECEIPT_OPEN_STATUSES),
+        _RECEIPT_TIMEOUT,
+    )
+    if rows:
+        logger.warning(
+            "Swept %d abandoned curriculum request receipt(s) to failed/%s",
+            len(rows),
+            _FAILURE_TIMED_OUT,
+        )
+    return len(rows)
+
+
+async def _create_receipt(pool, topic: str, goal: str | None):
+    """Insert the accepted receipt, or return None when one is already open.
+
+    The partial unique index is the guard; a ``UniqueViolationError`` here is the
+    concurrent-submit case, not an internal error.
+    """
+    try:
+        return await pool.fetchrow(
+            f"""
+            INSERT INTO education.curriculum_requests (topic, goal, status)
+            VALUES ($1, $2, 'accepted')
+            RETURNING {_RECEIPT_COLUMNS}
+            """,
+            topic,
+            goal,
+        )
+    except asyncpg.UniqueViolationError:
+        return None
+
+
+async def _mark_receipt_running(pool, request_id: str, triggered_at: datetime) -> None:
+    """Stamp the receipt as running with the moment the trigger was handed off."""
+    await pool.execute(
+        """
+        UPDATE education.curriculum_requests
+           SET status = 'running',
+               triggered_at = COALESCE(triggered_at, $2),
+               updated_at = now()
+         WHERE id = $1::uuid
+           AND status = 'accepted'
+        """,
+        request_id,
+        triggered_at,
+    )
+
+
+async def _settle_receipt(
+    pool,
+    request_id: str,
+    *,
+    status: str,
+    session_id: str | None = None,
+    mind_map_id: str | None = None,
+    calibration_ready: bool = False,
+    failure_reason: str | None = None,
+) -> bool:
+    """Settle a receipt onto a terminal state. Returns True if this call settled it.
+
+    Idempotent: the ``status = ANY(open)`` predicate makes the first terminal
+    write win, so a retry, a duplicate callback, or a late task racing the
+    abandonment sweep is a no-op rather than a second (possibly contradictory)
+    outcome. Evidence columns are ``COALESCE``-merged so a settle never blanks
+    evidence an earlier write already recorded.
+    """
+    row = await pool.fetchrow(
+        """
+        UPDATE education.curriculum_requests
+           SET status = $2,
+               session_id = COALESCE($3, session_id),
+               mind_map_id = COALESCE($4::uuid, mind_map_id),
+               calibration_ready_at = CASE
+                   WHEN $5 THEN COALESCE(calibration_ready_at, now())
+                   ELSE calibration_ready_at
+               END,
+               failure_reason = CASE WHEN $2 = 'failed' THEN $6 ELSE NULL END,
+               settled_at = now(),
+               updated_at = now()
+         WHERE id = $1::uuid
+           AND status = ANY($7::text[])
+        RETURNING id
+        """,
+        request_id,
+        status,
+        session_id,
+        mind_map_id,
+        calibration_ready,
+        failure_reason,
+        list(_RECEIPT_OPEN_STATUSES),
+    )
+    return row is not None
+
+
+async def _get_receipt(pool, request_id: str):
+    """Read one receipt by its immutable request ID."""
+    return await pool.fetchrow(
+        f"SELECT {_RECEIPT_COLUMNS} FROM education.curriculum_requests WHERE id = $1::uuid",
+        request_id,
+    )
+
+
+async def _latest_receipt(pool):
+    """Read the most recently requested receipt, if any."""
+    return await pool.fetchrow(
+        f"""
+        SELECT {_RECEIPT_COLUMNS}
+          FROM education.curriculum_requests
+         ORDER BY requested_at DESC
+         LIMIT 1
+        """
+    )
+
+
+def _curriculum_prompt(topic: str, goal: str | None) -> str:
     """Build the prompt for the ephemeral session that starts the curriculum.
 
     Triggered directly when the request is submitted (event-driven; there is no
-    polling drain schedule). The session starts the curriculum for ``topic`` and
-    then clears the ``pending_curriculum_request`` lock so the dashboard's
-    one-pending-at-a-time guard releases.
+    polling drain schedule). The session only has to do the teaching work — the
+    request's lifecycle is settled by the backend from the trigger result, so
+    nothing here depends on the session remembering to release a lock.
     """
     goal_line = f"Goal: {goal}" if goal else "Goal: (none specified)"
     return f"""\
@@ -663,46 +873,190 @@ Topic: {topic}
    notify(channel="telegram", intent="send",
           message="Starting your {topic} curriculum. I'll run a quick calibration
           first to see what you already know — answer when you're ready.")
-4) ALWAYS clear the request lock at the end, whether you started a new map or
-   intentionally skipped as a duplicate:
-   state_delete(key="{_CURRICULUM_REQUEST_KEY}")
-   This releases the dashboard's one-pending-at-a-time guard. Do this even on the
-   duplicate-skip path; the only case where you leave it set is if
-   teaching_flow_start itself errors — then report the error and exit so the user
-   can retry.
+
+If teaching_flow_start errors, report the error and exit — do not fabricate a
+started curriculum. The dashboard reads the outcome from this session's result,
+so an honest failure here is what lets the user retry.
 """
 
 
-async def _trigger_curriculum_drain(
+def _parse_trigger_result(result: Any) -> dict[str, Any]:
+    """Extract ``{success, error, session_id}`` from an MCP ``trigger`` result.
+
+    Mirrors the parsing in ``src/butlers/api/routers/butlers.py::trigger_butler``.
+    An unparseable payload is reported as a success with no session ID rather
+    than as a failure — the session may well have run; what we lack is evidence
+    about it, and the curriculum correlation below is the authority on outcome.
+    """
+    parsed: dict[str, Any] = {"success": True, "error": None, "session_id": None}
+
+    content = getattr(result, "content", None)
+    if content:
+        text = getattr(content[0], "text", "") or ""
+        if text:
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, AttributeError):
+                data = None
+            if isinstance(data, dict):
+                parsed["success"] = bool(data.get("success", True))
+                parsed["error"] = data.get("error")
+                sid = data.get("session_id")
+                parsed["session_id"] = str(sid) if sid else None
+
+    if getattr(result, "is_error", False):
+        parsed["success"] = False
+
+    return parsed
+
+
+async def _correlate_curriculum(pool, triggered_at: datetime) -> tuple[str | None, bool]:
+    """Find the curriculum the triggered session created, and whether it is calibrating.
+
+    Correlation is by creation window: the session was handed the request at
+    ``triggered_at``, and the pending guard means no other dashboard request can
+    be starting a curriculum in parallel, so the newest mind map created at or
+    after that instant is the one this request produced. Returns
+    ``(mind_map_id, calibration_ready)`` — ``(None, False)`` when the session
+    finished without creating one.
+
+    ``calibration_ready`` reads the teaching flow's own state: the diagnostic
+    probe the owner was promised is only real once the flow has reached
+    ``diagnosing`` or beyond.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id
+          FROM education.mind_maps
+         WHERE created_at >= $1
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        triggered_at,
+    )
+    if row is None:
+        return None, False
+
+    mind_map_id = str(row["id"])
+
+    calibration_ready = False
+    try:
+        flow = await state_get(pool, f"flow:{mind_map_id}")
+    except Exception:
+        logger.exception("Failed to read teaching flow state for mind map %s", mind_map_id)
+    else:
+        if isinstance(flow, dict):
+            calibration_ready = flow.get("status") in _CALIBRATION_READY_FLOW_STATES
+
+    return mind_map_id, calibration_ready
+
+
+async def _run_curriculum_request(
     mcp_manager: MCPClientManager,
     pool,
+    request_id: str,
     topic: str,
     goal: str | None,
 ) -> None:
-    """Fire an ephemeral education session to start the requested curriculum.
+    """Run the accepted curriculum request and settle its receipt.
 
-    Runs as a detached background task so the POST returns 202 immediately rather
-    than blocking on the (slow) session spawn. The session itself clears the
-    ``pending_curriculum_request`` lock on success; if we cannot even reach the
-    butler to spawn it, we clear the lock here so the user is not wedged behind a
-    permanent 409 (there is no polling fallback to retry).
+    Detached from the POST so the handler can return 202 without blocking on the
+    (slow) session spawn — but unlike a fire-and-forget trigger, every exit path
+    here lands a terminal state on the receipt. ``trigger`` is awaited to
+    completion, so its result carries the session ID and the session's own
+    success/failure, and the curriculum correlation below turns "the session
+    said it worked" into "a curriculum exists".
     """
+    triggered_at = datetime.now(UTC)
+    try:
+        await _mark_receipt_running(pool, request_id, triggered_at)
+    except Exception:
+        logger.exception("Failed to mark curriculum request %s as running", request_id)
+
+    session_id: str | None = None
     try:
         client = await mcp_manager.get_client("education")
-        await client.call_tool(
+        result = await client.call_tool(
             "trigger",
-            {"prompt": _drain_prompt(topic, goal), "complexity": "workhorse"},
+            {"prompt": _curriculum_prompt(topic, goal), "complexity": "workhorse"},
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to trigger curriculum session for request %s (topic %r)", request_id, topic
+        )
+        await _settle_failed(pool, request_id, _FAILURE_TRIGGER_UNREACHABLE, session_id, exc)
+        return
+
+    parsed = _parse_trigger_result(result)
+    session_id = parsed["session_id"]
+    if not parsed["success"]:
+        logger.warning(
+            "Curriculum session for request %s reported failure: %s",
+            request_id,
+            parsed["error"],
+        )
+        await _settle_failed(pool, request_id, _FAILURE_SESSION_ERROR, session_id, None)
+        return
+
+    try:
+        mind_map_id, calibration_ready = await _correlate_curriculum(pool, triggered_at)
+    except Exception:
+        logger.exception("Failed to correlate curriculum for request %s", request_id)
+        mind_map_id, calibration_ready = None, False
+
+    if mind_map_id is None:
+        # The session ran and claimed success but produced no curriculum (a
+        # duplicate-topic skip, or a silent failure). "Accepted" must not become
+        # "done" on the strength of a session exiting cleanly.
+        await _settle_failed(pool, request_id, _FAILURE_NO_CURRICULUM, session_id, None)
+        return
+
+    try:
+        await _settle_receipt(
+            pool,
+            request_id,
+            status="completed",
+            session_id=session_id,
+            mind_map_id=mind_map_id,
+            calibration_ready=calibration_ready,
         )
     except Exception:
-        logger.exception(
-            "Failed to trigger curriculum drain session for topic %r; "
-            "clearing the pending lock so the request can be retried",
-            topic,
+        logger.exception("Failed to settle curriculum request %s as completed", request_id)
+
+
+async def _settle_failed(
+    pool,
+    request_id: str,
+    reason: str,
+    session_id: str | None,
+    exc: BaseException | None,
+) -> None:
+    """Settle a receipt as failed, never letting the settle itself throw.
+
+    A settle that raises would strand the receipt open and hold the pending
+    guard — exactly the failure mode the receipt exists to remove.
+    """
+    del exc  # reason is the contract; the traceback is already logged
+    try:
+        await _settle_receipt(
+            pool,
+            request_id,
+            status="failed",
+            session_id=session_id,
+            failure_reason=reason,
         )
-        try:
-            await state_delete(pool, _CURRICULUM_REQUEST_KEY)
-        except Exception:
-            logger.exception("Failed to clear pending curriculum lock after trigger failure")
+    except Exception:
+        logger.exception("Failed to settle curriculum request %s as failed/%s", request_id, reason)
+
+
+def _receipts_unavailable(exc: BaseException) -> bool:
+    """True when the receipt store is legitimately absent rather than broken.
+
+    A pre-migration education chain has no ``curriculum_requests`` table. That is
+    an explicit "status unavailable", not a failure to report as an outage — and
+    not something to render as "no request in flight".
+    """
+    return isinstance(exc, asyncpg.UndefinedTableError)
 
 
 @router.post(
@@ -716,13 +1070,12 @@ async def submit_curriculum_request(
     db: DatabaseManager = Depends(_get_db_manager),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> CurriculumRequestResponse:
-    """Submit a request for the butler to create a new curriculum.
+    """Accept a curriculum request and return its durable receipt ID.
 
-    The request is stored under the ``pending_curriculum_request`` state key as a
-    short-lived in-flight lock, then an ephemeral education session is triggered
-    immediately (event-driven — see ``_trigger_curriculum_drain``) to call
-    ``teaching_flow_start`` and kick off diagnostic calibration. That session clears
-    the key when done, releasing the one-pending-at-a-time guard (409 below).
+    202 means *accepted and recorded* — never *set up*. The receipt row exists
+    before the detached curriculum work starts, and
+    ``GET /curriculum-requests/{request_id}`` is the only place a completion
+    claim may come from.
     """
     pool = _pool(db)
 
@@ -734,29 +1087,36 @@ async def submit_curriculum_request(
     if body.goal is not None and len(body.goal) > 500:
         raise HTTPException(status_code=422, detail="Goal must be 500 characters or fewer")
 
-    existing = await state_get(pool, _CURRICULUM_REQUEST_KEY)
-    if existing is not None:
+    try:
+        # Release any receipt whose owning task died (e.g. an API restart) before
+        # testing the guard, so a crash can never wedge the owner at 409.
+        await _sweep_abandoned_receipts(pool)
+        receipt = await _create_receipt(pool, topic, body.goal)
+    except Exception as exc:
+        if _receipts_unavailable(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="Curriculum request receipts are unavailable"
+                " — the education database is not migrated",
+            )
+        raise
+
+    if receipt is None:
         raise HTTPException(
             status_code=409,
             detail="A curriculum request is already pending"
             " — please wait for the butler to process it",
         )
 
-    await state_set(
-        pool,
-        _CURRICULUM_REQUEST_KEY,
-        {
-            "topic": topic,
-            "goal": body.goal,
-            "requested_at": datetime.now(UTC).isoformat(),
-        },
-    )
+    request_id = str(receipt["id"])
 
     # Fire the curriculum-start session in the background; return 202 without
-    # waiting for the (slow) session to complete.
-    task = asyncio.create_task(_trigger_curriculum_drain(mcp_manager, pool, topic, body.goal))
-    _DRAIN_TASKS.add(task)
-    task.add_done_callback(_DRAIN_TASKS.discard)
+    # waiting for the (slow) session to complete. The task settles the receipt.
+    task = asyncio.create_task(
+        _run_curriculum_request(mcp_manager, pool, request_id, topic, body.goal)
+    )
+    _CURRICULUM_TASKS.add(task)
+    task.add_done_callback(_CURRICULUM_TASKS.discard)
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -765,9 +1125,73 @@ async def submit_curriculum_request(
         operation="curriculum_request_create",
         method="POST",
         path="/api/education/curriculum-requests",
-        body={"topic": topic},
+        body={"topic": topic, "request_id": request_id},
         response_status=202,
         request=request,
     )
 
-    return CurriculumRequestResponse(status="pending", topic=topic)
+    return CurriculumRequestResponse(status="accepted", topic=topic, request_id=request_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/curriculum-requests/latest — most recent receipt
+# ---------------------------------------------------------------------------
+
+
+@router.get("/curriculum-requests/latest", response_model=CurriculumRequestStatusResponse)
+async def get_latest_curriculum_request(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CurriculumRequestStatusResponse:
+    """Read the most recent curriculum request receipt.
+
+    ``receipt: null`` with ``receipts_available: true`` means no request has ever
+    been made. ``receipts_available: false`` means the store could not be read —
+    which the UI must render as unknown, not as "nothing in flight".
+    """
+    pool = _pool(db)
+
+    try:
+        await _sweep_abandoned_receipts(pool)
+        row = await _latest_receipt(pool)
+    except Exception as exc:
+        if _receipts_unavailable(exc):
+            return CurriculumRequestStatusResponse(receipts_available=False, receipt=None)
+        raise
+
+    return CurriculumRequestStatusResponse(
+        receipts_available=True,
+        receipt=_receipt_to_response(row) if row is not None else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/curriculum-requests/{request_id} — one receipt
+# ---------------------------------------------------------------------------
+
+
+@router.get("/curriculum-requests/{request_id}", response_model=CurriculumRequestStatusResponse)
+async def get_curriculum_request(
+    request_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CurriculumRequestStatusResponse:
+    """Read one curriculum request receipt by its immutable request ID."""
+    pool = _pool(db)
+
+    try:
+        await _sweep_abandoned_receipts(pool)
+        row = await _get_receipt(pool, request_id)
+    except Exception as exc:
+        if _receipts_unavailable(exc):
+            return CurriculumRequestStatusResponse(receipts_available=False, receipt=None)
+        if isinstance(exc, asyncpg.DataError):
+            raise HTTPException(
+                status_code=422, detail=f"Malformed curriculum request ID: {request_id}"
+            )
+        raise
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Curriculum request not found: {request_id}")
+
+    return CurriculumRequestStatusResponse(
+        receipts_available=True, receipt=_receipt_to_response(row)
+    )

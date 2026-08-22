@@ -14,6 +14,15 @@ import { MemoryRouter } from "react-router";
 
 vi.mock("@/hooks/use-education", () => ({
   useMindMaps: vi.fn(),
+  // The receipt panel (bu-6jv4m.10) reads this on every branch of the page.
+  // A readable, empty receipt store renders nothing, which keeps these
+  // state-contract assertions about the mind-map branches alone.
+  useCurriculumRequestReceipt: vi.fn(() => ({
+    data: { receipts_available: true, receipt: null },
+    isError: false,
+    isLoading: false,
+    refetch: vi.fn(),
+  })),
 }));
 
 // The command palette registry needs no provider in these branches; stub it so

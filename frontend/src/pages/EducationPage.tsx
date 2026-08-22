@@ -15,6 +15,7 @@ import MindMapGraph from "@/components/education/MindMapGraph";
 import NodeDetailPanel from "@/components/education/NodeDetailPanel";
 import CurriculumActions from "@/components/education/CurriculumActions";
 import RequestCurriculumDialog from "@/components/education/RequestCurriculumDialog";
+import CurriculumRequestReceiptPanel from "@/components/education/CurriculumRequestReceiptPanel";
 import ReviewTimeline from "@/components/education/ReviewTimeline";
 import MasterySummaryCards from "@/components/education/MasterySummaryCards";
 import MasteryTrendChart from "@/components/education/MasteryTrendChart";
@@ -30,6 +31,9 @@ export default function EducationPage() {
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
+  // The `request_id` from the 202 (bu-6jv4m.10). Null falls the receipt panel
+  // back to the latest request, so a reload still shows work in flight.
+  const [trackedRequestId, setTrackedRequestId] = useState<string | null>(null);
 
   // Auto-select first mind map when data loads
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -51,6 +55,14 @@ export default function EducationPage() {
     setSelectedMapId(mindMapId);
     setSelectedNodeId(null);
   }, []);
+
+  const receiptPanel = (
+    <CurriculumRequestReceiptPanel
+      requestId={trackedRequestId}
+      onOpenCurriculum={handleMindMapSelection}
+      onRetry={() => setRequestDialogOpen(true)}
+    />
+  );
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). The
   // one page-level action here; registered before any early return so the
@@ -119,9 +131,11 @@ export default function EducationPage() {
             </Button>
           }
         />
+        {receiptPanel}
         <RequestCurriculumDialog
           open={requestDialogOpen}
           onOpenChange={setRequestDialogOpen}
+          onAccepted={setTrackedRequestId}
         />
       </div>
     );
@@ -140,6 +154,8 @@ export default function EducationPage() {
           Request curriculum
         </Button>
       </div>
+
+      {receiptPanel}
 
       {/* Mind map selector */}
       <Select value={selectedMapId ?? ""} onValueChange={handleMindMapSelection}>
@@ -205,6 +221,7 @@ export default function EducationPage() {
       <RequestCurriculumDialog
         open={requestDialogOpen}
         onOpenChange={setRequestDialogOpen}
+        onAccepted={setTrackedRequestId}
       />
     </div>
   );
