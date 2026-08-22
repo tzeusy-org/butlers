@@ -95,6 +95,29 @@ jobs:
       - name: Check for em-dashes in doctrine + dashboard copy
         run: python3 scripts/check-no-em-dashes.py
 
+  spec-overwrite-guard:
+    # Fast, dependency-free gate (bu-s9uv3): `openspec archive` writes the WHOLE
+    # requirement block from a change into openspec/specs/, so an unarchived
+    # `## MODIFIED Requirements` block authored against an older ancestor
+    # silently deletes whatever the baseline gained in between. OpenSpec 1.9.0
+    # guards only scenario NAMES, so a block that keeps every name and rewrites
+    # the bodies validates clean and still destroys baseline content -- which has
+    # happened three times on the same axis. This compares bodies. A digest-keyed
+    # ratchet (scripts/spec-overwrite-baseline.json) freezes today's debt and
+    # re-fires as soon as an archive moves a requirement under an unarchived
+    # block. Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check unarchived MODIFIED spec blocks against the live baseline
+        run: python3 scripts/check_spec_overwrites.py
+
   check:
     runs-on: ubuntu-latest
 

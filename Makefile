@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -85,7 +85,18 @@ check-integration-coverage:
 check-em-dashes:
 	python3 scripts/check-no-em-dashes.py
 
-check: lint check-for-update-joins check-integration-coverage check-em-dashes test
+# Regression guard for bu-s9uv3: `openspec archive` writes the WHOLE requirement
+# block into the baseline, so an unarchived MODIFIED block authored against an
+# older ancestor silently deletes whatever the baseline gained since. OpenSpec
+# 1.9.0 only compares scenario NAMES, so a block that keeps every name and guts
+# the bodies validates clean. This compares bodies. A digest-keyed ratchet
+# (scripts/spec-overwrite-baseline.json) freezes today's debt; it re-fires the
+# moment an archive moves a baseline requirement under an unarchived block.
+# Mirrors the CI `spec-overwrite-guard` job.
+check-spec-overwrites:
+	python3 scripts/check_spec_overwrites.py
+
+check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

@@ -93,7 +93,20 @@ archiving it. Rebuilding means starting from the new baseline body and re-applyi
 change's own edits, then diffing the result against the baseline to prove nothing else moved.
 Archiving also *arms* the bug for any remaining change holding a block on a spec you just rewrote,
 so re-run the grep after each archive. Three instances of this had accumulated as of 2026-08-22
-(bu-97nlt, PR #3755); a body-level gate is filed as bu-s9uv3.
+(bu-97nlt, PR #3755).
+
+`make check-spec-overwrites` (CI job `spec-overwrite-guard`, `scripts/check_spec_overwrites.py`,
+bu-s9uv3) now compares **bodies**: for every unarchived MODIFIED block it walks the live baseline
+requirement clause by clause and reports each clause the block would delete on archive. Because the
+repo carries ~360 pre-existing losses, `scripts/spec-overwrite-baseline.json` freezes them. The
+ratchet is keyed on the **digest of the baseline clause being dropped**, not a count, so the moment
+an archive moves a requirement under an unarchived block those losses change identity and the gate
+fires. That is the signal, not churn: it is the arming event above. When it fires, rebuild the
+block; only re-freeze with `--update-baseline` once you have confirmed the loss is intended.
+
+The gate compares text, so it catches deletions, not contradictions: a block clause that *restates*
+a baseline clause more broadly (older wording, wider scope) still covers its characters and reads as
+preserved. Rebuilding is still the only way to be sure.
 
 General rule this is an instance of: a validator that passes is only evidence about what it
 inspects. Name-level equality was credited with an answer only a body-level diff could give.
