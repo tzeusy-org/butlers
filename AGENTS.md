@@ -68,6 +68,36 @@ General rule this is an instance of: verify against the CI job's actual steps in
 against a remembered list of commands. A verification list assembled from memory omits exactly the
 gate nobody remembers.
 
+### Two unarchived OpenSpec changes can silently overwrite each other
+
+`openspec archive` writes the **whole** requirement into the baseline. So when two unarchived
+changes each carry a `## MODIFIED Requirements` block for the *same* `### Requirement: X`, and they
+were authored against different ancestors, whichever archives **second** deletes everything the
+first added. This is not baseline lag (the normal, healthy mid-change state); it is two deltas
+racing to overwrite one requirement.
+
+`openspec validate --strict` does **not** detect it. openspec 1.9.0's `findMissingCurrentScenarios`
+guard (`dist/core/parsers/requirement-blocks.js:269`, shared by validate and archive) compares
+scenario **names** only. A change that keeps every baseline scenario name and rewrites the bodies
+inside them validates clean while overwriting. The guard therefore fires on the harmless case (a
+rename) and stays silent on the destructive one.
+
+Before archiving anything, grep the other unarchived changes for a same-named requirement block:
+
+```bash
+rg -l '^### Requirement: <Name>$' openspec/changes/*/specs/*/spec.md
+```
+
+If two hit, archive one, then **rebuild** the other's block against the refreshed baseline before
+archiving it. Rebuilding means starting from the new baseline body and re-applying only that
+change's own edits, then diffing the result against the baseline to prove nothing else moved.
+Archiving also *arms* the bug for any remaining change holding a block on a spec you just rewrote,
+so re-run the grep after each archive. Three instances of this had accumulated as of 2026-08-22
+(bu-97nlt, PR #3755); a body-level gate is filed as bu-s9uv3.
+
+General rule this is an instance of: a validator that passes is only evidence about what it
+inspects. Name-level equality was credited with an answer only a body-level diff could give.
+
 
 <!-- bv-agent-instructions-v1 -->
 
