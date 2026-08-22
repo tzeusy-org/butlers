@@ -30,18 +30,23 @@ back.
   an average Gregorian calendar month (30.436875 days). The estimate becomes a
   pure function of the cron string: it no longer moves with the time of the
   request.
-- Bound the enumeration with an occurrence cap, and truncate a cap-shortened
-  window back to a whole calendar cycle before taking the rate, so a seasonal
-  expression is not measured over its dense season alone.
+- Take the counting window from the expression rather than from the sample: a
+  5-field cron is periodic in exactly one of three lengths, decided by which
+  calendar fields it restricts (dom/month → a year, dow only → a week, neither
+  → a day), and occurrences are counted over exactly one such cycle. A window
+  chosen from what *fits* in a capped sample instead of from what the cron
+  *requires* reports `* * * 1 *` at 43,829/month against a true 3,720.
 - Delete the hardcoded `× 30` in `_schedule_costs_from_data`.
   `projected_monthly_usd` becomes exactly `avg_cost_per_run ×
   projected_monthly_runs`, with no free-floating multiplier anywhere in the
   chain.
 - **Contract change:** rename the payload key `runs_per_day` to
-  `projected_monthly_runs` and add `forecast_basis`, a human-readable statement
-  of the basis carrying the literal number `30.436875`. This is a contract
-  change on the `schedule_costs` **core MCP tool** (`src/butlers/daemon.py`), not
-  only on the HTTP response — butler LLM sessions read those output keys. No
+  `projected_monthly_runs`, and add `forecast_basis` — a human-readable
+  statement of the basis carrying the literal number `30.436875` — once on the
+  response envelope (`meta`), since it is a constant of the estimator rather
+  than a property of any one schedule. This is a contract
+  change on the `schedule_costs` **core MCP tool**
+  (`src/butlers/core_tools/_scheduling.py`), not only on the HTTP response — butler LLM sessions read those output keys. No
   migration, dual-read, or backfill is involved: the value is computed on read
   from a live query in `schedule_costs` and never persisted.
 - Render the by-schedule table under two visually separated column groups,

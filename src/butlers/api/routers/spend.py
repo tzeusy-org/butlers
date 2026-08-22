@@ -1162,11 +1162,10 @@ def _schedule_costs_from_data(
                 "total_runs": 0,
                 "total_cost_usd": 0.0,
                 # The cadence is derived from the cron alone (see
-                # ``core.sessions._estimate_runs_per_month``), so it is identical
+                # ``core.sessions._estimate_monthly_runs``), so it is identical
                 # across every model fragment of the same schedule -- take it
                 # once, don't sum.
-                "runs_per_month": entry.get("runs_per_month", 0.0),
-                "forecast_basis": entry.get("forecast_basis", CADENCE_BASIS_DESCRIPTION),
+                "projected_monthly_runs": entry.get("projected_monthly_runs", 0.0),
             },
         )
         bucket["total_runs"] = bucket["total_runs"] + entry.get("total_runs", 0)
@@ -1179,10 +1178,11 @@ def _schedule_costs_from_data(
         avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
         # Forecast, kept strictly separate from the measured totals above: the
         # projected monthly cost is avg-cost-per-run x the cron's own monthly
-        # cadence, on the basis named in ``forecast_basis``. There is no bare
-        # multiplier here -- the ~30x that used to sit at this line reported a
-        # weekly schedule as thirty monthly runs (bu-6jv4m.2).
-        runs_per_month = bucket["runs_per_month"]
+        # cadence, on the basis named in the response envelope's
+        # ``forecast_basis``. There is no bare multiplier here -- the ~30x that
+        # used to sit at this line reported a weekly schedule as thirty monthly
+        # runs (bu-6jv4m.2).
+        monthly_runs = bucket["projected_monthly_runs"]
         costs.append(
             ScheduleCost(
                 schedule_name=schedule_name,
@@ -1191,9 +1191,8 @@ def _schedule_costs_from_data(
                 total_runs=total_runs,
                 total_cost_usd=round(total_cost, 6),
                 avg_cost_per_run=round(avg_cost, 6),
-                projected_monthly_runs=round(runs_per_month, 4),
-                projected_monthly_usd=round(avg_cost * runs_per_month, 6),
-                forecast_basis=bucket["forecast_basis"],
+                projected_monthly_runs=round(monthly_runs, 4),
+                projected_monthly_usd=round(avg_cost * monthly_runs, 6),
             )
         )
     return costs
@@ -1350,7 +1349,12 @@ async def get_costs_by_schedule(
     results = await asyncio.gather(*tasks)
     all_costs = [c for butler_costs in results for c in butler_costs]
     all_costs.sort(key=lambda c: c.projected_monthly_usd, reverse=True)
-    meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
+    # The forecast basis is a constant of the estimator, not a property of any
+    # one schedule, so it is stated once on the envelope (bu-6jv4m.2).
+    meta = ApiMeta(
+        forecast_basis=CADENCE_BASIS_DESCRIPTION,
+        **({"unavailable_butlers": sorted(tracker.names)} if tracker.failed else {}),
+    )
     return ApiResponse[list[ScheduleCost]](data=all_costs, meta=meta)
 
 

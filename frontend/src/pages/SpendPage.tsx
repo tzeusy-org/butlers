@@ -34,14 +34,14 @@
 // now accept from/to, mirroring /api/spend/daily).
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef, useCallback } from "react"
-import { Link, useSearchParams } from "react-router"
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns"
+import { useState, useMemo, useRef, useCallback } from "react";
+import { Link, useSearchParams } from "react-router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { differenceInCalendarDays, isValid, parseISO, subDays } from "date-fns";
 
-import { Page } from "@/components/ui/page"
-import { Button } from "@/components/ui/button"
-import { ConfirmDialog } from "@/components/ui/confirm-dialog"
+import { Page } from "@/components/ui/page";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Table,
   TableBody,
@@ -49,17 +49,20 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { SpendUnavailableFootnote } from "@/components/spend/SpendUnavailableFootnote"
-import { SourceDegradedNote } from "@/components/ui/query-boundary"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Eyebrow } from "@/components/ui/Eyebrow"
-import { toast } from "sonner"
-import { apiFetch } from "@/api/client"
-import { useSpendTicker, type LiveUnpricedSpendEvent } from "@/hooks/use-spend-ticker"
-import { useFleetHaltStatus } from "@/hooks/use-fleet-halt"
-import { useModelCatalog } from "@/hooks/use-model-catalog"
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
+} from "@/components/ui/table";
+import { SpendUnavailableFootnote } from "@/components/spend/SpendUnavailableFootnote";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Eyebrow } from "@/components/ui/Eyebrow";
+import { toast } from "sonner";
+import { apiFetch } from "@/api/client";
+import {
+  useSpendTicker,
+  type LiveUnpricedSpendEvent,
+} from "@/hooks/use-spend-ticker";
+import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
+import { useModelCatalog } from "@/hooks/use-model-catalog";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 import {
   formatCostDate,
   SPEND_UTC_DATE_KEY_TIMEZONE,
@@ -68,19 +71,34 @@ import {
   useDailySpend,
   useTopSessions,
   useCostsBySchedule,
-} from "@/hooks/use-spend"
-import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
-import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
-import { CostStripeChart } from "@/components/costs/CostStripeChart"
-import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
-import { formatCostUsd } from "@/lib/format-cost"
-import { cn } from "@/lib/utils"
-import { Time } from "@/components/ui/time"
-import { announce } from "@/lib/shell-announcer"
-import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
-import { computeMovers, type Mover } from "@/lib/spend-movers"
-import { fetchSpendForecast, type ForecastData, type ForecastDay } from "@/lib/spend-forecast"
-import type { ComplexityTier, SpendDivergence, UnpricedModelUsage } from "@/api/types"
+} from "@/hooks/use-spend";
+import {
+  isPollingDisabled,
+  useTimeWindow,
+  OWNER_TZ_DEFAULT,
+} from "@/hooks/use-time-window";
+import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker";
+import { CostStripeChart } from "@/components/costs/CostStripeChart";
+import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener";
+import { formatCostUsd } from "@/lib/format-cost";
+import { cn } from "@/lib/utils";
+import { Time } from "@/components/ui/time";
+import { announce } from "@/lib/shell-announcer";
+import {
+  useRegisterCommands,
+  type PaletteCommand,
+} from "@/lib/command-registry";
+import { computeMovers, type Mover } from "@/lib/spend-movers";
+import {
+  fetchSpendForecast,
+  type ForecastData,
+  type ForecastDay,
+} from "@/lib/spend-forecast";
+import type {
+  ComplexityTier,
+  SpendDivergence,
+  UnpricedModelUsage,
+} from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,23 +107,23 @@ import type { ComplexityTier, SpendDivergence, UnpricedModelUsage } from "@/api/
 // can share the same shape without a page-to-component import cycle.
 
 interface SpendRule {
-  id: string
-  position: number
-  condition: Record<string, unknown>
-  action: Record<string, unknown>
-  saved_7d: number | null
-  created_at: string
-  updated_at: string
+  id: string;
+  position: number;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  saved_7d: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
 function hasExplicitSpendRange(searchParams: URLSearchParams): boolean {
-  const from = searchParams.get("from")
-  const to = searchParams.get("to")
-  if (!from || !to) return false
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+  if (!from || !to) return false;
 
-  const parsedFrom = parseISO(from)
-  const parsedTo = parseISO(to)
-  return isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo
+  const parsedFrom = parseISO(from);
+  const parsedTo = parseISO(to);
+  return isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo;
 }
 
 /**
@@ -117,33 +135,33 @@ function hasExplicitSpendRange(searchParams: URLSearchParams): boolean {
  * explicit URL parameters without shifting the untouched edge.
  */
 function parseSpendUtcDateKey(dateKey: string): Date {
-  return parseISO(`${dateKey}T00:00:00.000Z`)
+  return parseISO(`${dateKey}T00:00:00.000Z`);
 }
 
 function toExplicitSpendRangeDate(date: Date): Date {
-  return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE))
+  return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE));
 }
 
 interface BreakdownData {
-  by: string
-  breakdown: Record<string, number>
+  by: string;
+  breakdown: Record<string, number>;
   // Set only on the "purpose" dimension (bu-og0j2): true when the ledger-backed
   // query failed or the dashboard DB pool is unavailable -- there is no per-butler
   // MCP fallback for this dimension, so an empty breakdown must never be read as
   // "genuinely no purpose-tagged spend this month" (see SourceDegradedNote below).
-  source_error?: boolean
+  source_error?: boolean;
   // Set on the butler/model/feature dimensions (bu-jad4j.3): butlers whose cost
   // source failed and were dropped from the per-butler fan-out. When non-empty the
   // breakdown undercounts, so an empty result must not read as a genuine "$0 month"
   // and a populated result must footnote the missing butlers.
-  unavailable_butlers?: string[]
+  unavailable_butlers?: string[];
   /** Executed models excluded from the priced subtotal because no price exists. */
-  unpriced_models?: UnpricedModelUsage[]
+  unpriced_models?: UnpricedModelUsage[];
   /** Declared marginal-cost class for model rows, including subscription zeroes. */
-  billing_classes?: Record<string, "metered" | "subscription" | "local">
-  divergences?: SpendDivergence[]
-  divergence_source_error?: boolean
-  historical_attribution_note?: string | null
+  billing_classes?: Record<string, "metered" | "subscription" | "local">;
+  divergences?: SpendDivergence[];
+  divergence_source_error?: boolean;
+  historical_attribution_note?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,11 +171,11 @@ interface BreakdownData {
 function fetchBreakdown(
   by: "butler" | "model" | "feature" | "purpose",
 ): Promise<{ data: BreakdownData }> {
-  return apiFetch<{ data: BreakdownData }>(`/spend/breakdown?by=${by}`)
+  return apiFetch<{ data: BreakdownData }>(`/spend/breakdown?by=${by}`);
 }
 
 function fetchRules(): Promise<{ data: SpendRule[] }> {
-  return apiFetch<{ data: SpendRule[] }>("/spend/rules")
+  return apiFetch<{ data: SpendRule[] }>("/spend/rules");
 }
 
 function updateCeiling(monthly_usd: number): Promise<unknown> {
@@ -165,11 +183,11 @@ function updateCeiling(monthly_usd: number): Promise<unknown> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ monthly_usd }),
-  })
+  });
 }
 
 function deleteRule(id: string): Promise<void> {
-  return apiFetch<void>(`/spend/rules/${id}`, { method: "DELETE" })
+  return apiFetch<void>(`/spend/rules/${id}`, { method: "DELETE" });
 }
 
 function reorderRule(id: string, position: number): Promise<unknown> {
@@ -177,7 +195,7 @@ function reorderRule(id: string, position: number): Promise<unknown> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ position }),
-  })
+  });
 }
 
 // Create a routing rule. The shape mirrors the dispatch-time evaluator in
@@ -189,19 +207,19 @@ function reorderRule(id: string, position: number): Promise<unknown> {
 // dispatch routes TO) and/or `max_cost_per_call` (a hard per-call USD cap the spawner
 // enforces). At least one effect is required. Omitting `position` appends to the end.
 function createRule(body: {
-  condition: Record<string, unknown>
-  action: Record<string, unknown>
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
   /** Omitted by the create form (append). Set only by the delete Undo, which
    *  must land the rule back at the exact position it was removed from -- the
    *  backend shifts `position >= p` down by one, exactly inverting the
    *  compaction DELETE performed (bu-6jv4m.2). */
-  position?: number
+  position?: number;
 }): Promise<{ data: SpendRule }> {
   return apiFetch<{ data: SpendRule }>("/spend/rules", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  })
+  });
 }
 
 // Canonical complexity tiers (model_routing.Complexity), highest → lowest.
@@ -212,14 +230,14 @@ const COMPLEXITY_TIERS: ComplexityTier[] = [
   "specialty",
   "local",
   "legacy",
-]
+];
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
 function fmtUsdPrecise(n: number): string {
-  return `$${n.toFixed(4)}`
+  return `$${n.toFixed(4)}`;
 }
 
 /**
@@ -229,37 +247,43 @@ function fmtUsdPrecise(n: number): string {
  * Whole-number cadences (daily-of-month, yearly) still read cleanly.
  */
 function fmtProjectedRuns(n: number): string {
-  return n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1)
+  return n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1);
 }
 
-function unpricedCallCount(models: readonly UnpricedModelUsage[] | undefined): number {
-  return (models ?? []).reduce((total, model) => total + model.calls, 0)
+function unpricedCallCount(
+  models: readonly UnpricedModelUsage[] | undefined,
+): number {
+  return (models ?? []).reduce((total, model) => total + model.calls, 0);
 }
 
-function unpricedModelNames(models: readonly UnpricedModelUsage[] | undefined): string {
-  return (models ?? []).map((model) => model.model).join(", ")
+function unpricedModelNames(
+  models: readonly UnpricedModelUsage[] | undefined,
+): string {
+  return (models ?? []).map((model) => model.model).join(", ");
 }
 
 function mergeUnpricedModels(
   ledgerModels: readonly UnpricedModelUsage[] | undefined,
   liveEvents: readonly LiveUnpricedSpendEvent[],
 ): UnpricedModelUsage[] {
-  const merged = new Map<string, UnpricedModelUsage>()
+  const merged = new Map<string, UnpricedModelUsage>();
   const addUsage = (usage: UnpricedModelUsage) => {
-    const previous = merged.get(usage.model)
+    const previous = merged.get(usage.model);
     merged.set(usage.model, {
       model: usage.model,
       calls: (previous?.calls ?? 0) + usage.calls,
       input_tokens: (previous?.input_tokens ?? 0) + usage.input_tokens,
       output_tokens: (previous?.output_tokens ?? 0) + usage.output_tokens,
-      cached_input_tokens: (previous?.cached_input_tokens ?? 0) + usage.cached_input_tokens,
-      cache_creation_tokens: (previous?.cache_creation_tokens ?? 0) + usage.cache_creation_tokens,
-    })
-  }
+      cached_input_tokens:
+        (previous?.cached_input_tokens ?? 0) + usage.cached_input_tokens,
+      cache_creation_tokens:
+        (previous?.cache_creation_tokens ?? 0) + usage.cache_creation_tokens,
+    });
+  };
 
-  for (const usage of ledgerModels ?? []) addUsage(usage)
-  for (const event of liveEvents) addUsage({ ...event, calls: 1 })
-  return [...merged.values()]
+  for (const usage of ledgerModels ?? []) addUsage(usage);
+  for (const event of liveEvents) addUsage({ ...event, calls: 1 });
+  return [...merged.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -269,11 +293,11 @@ function mergeUnpricedModels(
 // ---------------------------------------------------------------------------
 
 interface KpiCellProps {
-  label: string
-  value: string
-  sub?: string
-  tone?: "fg" | "red"
-  testId?: string
+  label: string;
+  value: string;
+  sub?: string;
+  tone?: "fg" | "red";
+  testId?: string;
 }
 
 function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
@@ -297,19 +321,23 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
         </span>
       )}
     </div>
-  )
+  );
 }
 
 function KpiStrip({ forecast }: { forecast: ForecastData }) {
-  const daysRemaining = forecast.days_in_month - forecast.days_elapsed
-  const unpricedCalls = unpricedCallCount(forecast.unpriced_models)
-  const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0
+  const daysRemaining = forecast.days_in_month - forecast.days_elapsed;
+  const unpricedCalls = unpricedCallCount(forecast.unpriced_models);
+  const blindModels = forecast.ceiling_blind_to_unpriced_models ?? 0;
   const pct =
     forecast.ceiling_usd != null && forecast.ceiling_usd > 0
-      ? Math.min(100, Math.round((forecast.mtd_usd / forecast.ceiling_usd) * 100))
-      : null
+      ? Math.min(
+          100,
+          Math.round((forecast.mtd_usd / forecast.ceiling_usd) * 100),
+        )
+      : null;
   const overCeiling =
-    forecast.ceiling_usd != null && forecast.projected_eom_usd > forecast.ceiling_usd
+    forecast.ceiling_usd != null &&
+    forecast.projected_eom_usd > forecast.ceiling_usd;
 
   return (
     <div
@@ -336,7 +364,11 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
       <KpiCell
         testId="kpi-ceiling"
         label="Monthly Ceiling"
-        value={forecast.ceiling_usd != null ? formatCostUsd(forecast.ceiling_usd) : "—"}
+        value={
+          forecast.ceiling_usd != null
+            ? formatCostUsd(forecast.ceiling_usd)
+            : "—"
+        }
         sub={
           blindModels > 0
             ? `blind to ${blindModels} unpriced model${blindModels === 1 ? "" : "s"}`
@@ -352,7 +384,7 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
         sub={`${forecast.days_elapsed} elapsed / ${daysRemaining} left`}
       />
     </div>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,9 +395,9 @@ function KpiStrip({ forecast }: { forecast: ForecastData }) {
 // Hairline horizontal line = monthly ceiling
 // ---------------------------------------------------------------------------
 
-const CHART_W = 800
-const CHART_H = 200
-const CHART_PAD = { top: 16, right: 24, bottom: 32, left: 56 }
+const CHART_W = 800;
+const CHART_H = 200;
+const CHART_PAD = { top: 16, right: 24, bottom: 32, left: 56 };
 
 /**
  * Daily-spend poll fallback used by this page (bu-ep4ks.15). Explicitly
@@ -375,46 +407,60 @@ const CHART_PAD = { top: 16, right: 24, bottom: 32, left: 56 }
  * as-is (pre-existing behavior); not reclassified onto useBusAwarePollInterval
  * here, which would be a cadence behavior change outside this coverage pass.
  */
-const SPEND_DAILY_POLL_OVERRIDE_MS = 60_000
+const SPEND_DAILY_POLL_OVERRIDE_MS = 60_000;
 
 interface ForecastChartProps {
-  days: ForecastDay[]
-  ceiling_usd: number | null
+  days: ForecastDay[];
+  ceiling_usd: number | null;
 }
 
 function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
-  if (days.length === 0) return null
+  if (days.length === 0) return null;
 
-  const innerW = CHART_W - CHART_PAD.left - CHART_PAD.right
-  const innerH = CHART_H - CHART_PAD.top - CHART_PAD.bottom
+  const innerW = CHART_W - CHART_PAD.left - CHART_PAD.right;
+  const innerH = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
 
-  const maxCost = Math.max(...days.map((d) => d.cost_usd), ceiling_usd ?? 0, 0.001)
-  const scaleX = (i: number) => CHART_PAD.left + (i / (days.length - 1 || 1)) * innerW
-  const scaleY = (v: number) => CHART_PAD.top + innerH - (v / maxCost) * innerH
+  const maxCost = Math.max(
+    ...days.map((d) => d.cost_usd),
+    ceiling_usd ?? 0,
+    0.001,
+  );
+  const scaleX = (i: number) =>
+    CHART_PAD.left + (i / (days.length - 1 || 1)) * innerW;
+  const scaleY = (v: number) => CHART_PAD.top + innerH - (v / maxCost) * innerH;
 
   // Split into actual vs projected segments
-  const actualDays = days.filter((d) => !d.projected)
-  const projectedDays = days.filter((d) => d.projected)
+  const actualDays = days.filter((d) => !d.projected);
+  const projectedDays = days.filter((d) => d.projected);
 
   // Find index of first projected day to connect line segments
-  const firstProjIdx = days.findIndex((d) => d.projected)
+  const firstProjIdx = days.findIndex((d) => d.projected);
 
   function toPoints(subset: ForecastDay[], offset = 0) {
     return subset
-      .map((d, i) => `${scaleX(i + offset).toFixed(1)},${scaleY(d.cost_usd).toFixed(1)}`)
-      .join(" ")
+      .map(
+        (d, i) =>
+          `${scaleX(i + offset).toFixed(1)},${scaleY(d.cost_usd).toFixed(1)}`,
+      )
+      .join(" ");
   }
 
   // Y-axis ticks
-  const tickCount = 4
-  const yTicks = Array.from({ length: tickCount + 1 }, (_, i) => (maxCost * i) / tickCount)
+  const tickCount = 4;
+  const yTicks = Array.from(
+    { length: tickCount + 1 },
+    (_, i) => (maxCost * i) / tickCount,
+  );
 
   // X-axis labels: first day of month + today + last day
-  const xLabels: Array<{ i: number; label: string }> = []
-  if (days.length > 0) xLabels.push({ i: 0, label: days[0].date.slice(8) })
-  if (firstProjIdx > 0) xLabels.push({ i: firstProjIdx - 1, label: "today" })
+  const xLabels: Array<{ i: number; label: string }> = [];
+  if (days.length > 0) xLabels.push({ i: 0, label: days[0].date.slice(8) });
+  if (firstProjIdx > 0) xLabels.push({ i: firstProjIdx - 1, label: "today" });
   if (days.length > 1)
-    xLabels.push({ i: days.length - 1, label: days[days.length - 1].date.slice(8) })
+    xLabels.push({
+      i: days.length - 1,
+      label: days[days.length - 1].date.slice(8),
+    });
 
   return (
     <svg
@@ -425,7 +471,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
     >
       {/* Y-axis gridlines + labels */}
       {yTicks.map((v, i) => {
-        const y = scaleY(v)
+        const y = scaleY(v);
         return (
           <g key={i}>
             <line
@@ -449,7 +495,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
               {formatCostUsd(v)}
             </text>
           </g>
-        )
+        );
       })}
 
       {/* Monthly ceiling hairline */}
@@ -512,7 +558,7 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
         </text>
       ))}
     </svg>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -520,26 +566,33 @@ function ForecastChart({ days, ceiling_usd }: ForecastChartProps) {
 // ---------------------------------------------------------------------------
 
 function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
-  const queryClient = useQueryClient()
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState(String(currentCeiling ?? ""))
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(currentCeiling ?? ""));
 
   const mutation = useMutation({
     mutationFn: (usd: number) => updateCeiling(usd),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["spend-forecast"] })
-      setEditing(false)
-      toast.success("Monthly ceiling updated")
+      queryClient.invalidateQueries({ queryKey: ["spend-forecast"] });
+      setEditing(false);
+      toast.success("Monthly ceiling updated");
     },
     onError: () => toast.error("Failed to update ceiling"),
-  })
+  });
 
   if (!editing) {
     return (
-      <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => setEditing(true)}>
-        {currentCeiling != null ? `Edit ceiling (${formatCostUsd(currentCeiling)})` : "Set ceiling"}
+      <Button
+        variant="outline"
+        size="sm"
+        className="text-xs h-7"
+        onClick={() => setEditing(true)}
+      >
+        {currentCeiling != null
+          ? `Edit ceiling (${formatCostUsd(currentCeiling)})`
+          : "Set ceiling"}
       </Button>
-    )
+    );
   }
 
   return (
@@ -559,21 +612,26 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
         className="text-xs h-7"
         disabled={mutation.isPending}
         onClick={() => {
-          const parsed = parseFloat(value)
+          const parsed = parseFloat(value);
           if (isNaN(parsed) || parsed <= 0) {
-            toast.error("Enter a positive amount")
-            return
+            toast.error("Enter a positive amount");
+            return;
           }
-          mutation.mutate(parsed)
+          mutation.mutate(parsed);
         }}
       >
         Save
       </Button>
-      <Button variant="ghost" size="sm" className="text-xs h-7" onClick={() => setEditing(false)}>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-xs h-7"
+        onClick={() => setEditing(false)}
+      >
         Cancel
       </Button>
     </div>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +642,7 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
 // ---------------------------------------------------------------------------
 
 function MoverChip({ mover }: { mover: Mover }) {
-  const up = mover.delta > 0
+  const up = mover.delta > 0;
   return (
     <Link
       to={`/butlers/${mover.name}?tab=spend`}
@@ -603,11 +661,15 @@ function MoverChip({ mover }: { mover: Mover }) {
         <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
           {up ? "+" : "−"}
           {formatCostUsd(Math.abs(mover.delta))}
-          {mover.prior === 0 ? " · new" : mover.current === 0 ? " · stopped" : ""}
+          {mover.prior === 0
+            ? " · new"
+            : mover.current === 0
+              ? " · stopped"
+              : ""}
         </span>
       </span>
     </Link>
-  )
+  );
 }
 
 function MoversStrip({
@@ -619,20 +681,25 @@ function MoversStrip({
   unavailableButlers,
   unpricedModels,
 }: {
-  current: Record<string, number>
-  prior: Record<string, number>
-  windowDays: number
-  isLoading: boolean
-  isError: boolean
-  unavailableButlers: ReadonlySet<string>
-  unpricedModels: readonly UnpricedModelUsage[]
+  current: Record<string, number>;
+  prior: Record<string, number>;
+  windowDays: number;
+  isLoading: boolean;
+  isError: boolean;
+  unavailableButlers: ReadonlySet<string>;
+  unpricedModels: readonly UnpricedModelUsage[];
 }) {
-  const coverageIncomplete = unpricedModels.length > 0
-  const unpricedNames = Array.from(new Set(unpricedModels.map(({ model }) => model))).sort()
+  const coverageIncomplete = unpricedModels.length > 0;
+  const unpricedNames = Array.from(
+    new Set(unpricedModels.map(({ model }) => model)),
+  ).sort();
   const movers = useMemo(
-    () => (coverageIncomplete ? [] : computeMovers(current, prior, unavailableButlers)),
+    () =>
+      coverageIncomplete
+        ? []
+        : computeMovers(current, prior, unavailableButlers),
     [coverageIncomplete, current, prior, unavailableButlers],
-  )
+  );
 
   return (
     <section className="border border-border" data-testid="movers-strip">
@@ -650,7 +717,10 @@ function MoversStrip({
             ))}
           </div>
         ) : isError ? (
-          <SourceDegradedNote label="Movers" detail="spend comparison unavailable" />
+          <SourceDegradedNote
+            label="Movers"
+            detail="spend comparison unavailable"
+          />
         ) : coverageIncomplete ? (
           <SourceDegradedNote
             label="Movers"
@@ -667,15 +737,18 @@ function MoversStrip({
             ))}
           </div>
         )}
-        {!isLoading && !isError && !coverageIncomplete && unavailableButlers.size > 0 && (
-          <SourceDegradedNote
-            label="Movers"
-            detail={`excluded from comparison, cost source unavailable: ${Array.from(unavailableButlers).join(", ")}`}
-          />
-        )}
+        {!isLoading &&
+          !isError &&
+          !coverageIncomplete &&
+          unavailableButlers.size > 0 && (
+            <SourceDegradedNote
+              label="Movers"
+              detail={`excluded from comparison, cost source unavailable: ${Array.from(unavailableButlers).join(", ")}`}
+            />
+          )}
       </div>
     </section>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -683,23 +756,34 @@ function MoversStrip({
 // ---------------------------------------------------------------------------
 
 interface BreakdownBarProps {
-  label: string
-  value: number | null
-  maxValue: number
-  href?: string
-  billingClass?: "metered" | "subscription" | "local"
+  label: string;
+  value: number | null;
+  maxValue: number;
+  href?: string;
+  billingClass?: "metered" | "subscription" | "local";
 }
 
-function BreakdownBar({ label, value, maxValue, href, billingClass }: BreakdownBarProps) {
-  const isUnpriced = value === null
-  const pct = !isUnpriced && maxValue > 0 ? (value / maxValue) * 100 : 0
+function BreakdownBar({
+  label,
+  value,
+  maxValue,
+  href,
+  billingClass,
+}: BreakdownBarProps) {
+  const isUnpriced = value === null;
+  const pct = !isUnpriced && maxValue > 0 ? (value / maxValue) * 100 : 0;
   const labelEl = href ? (
-    <Link to={href} className="w-40 truncate text-muted-foreground font-mono text-xs hover:underline">
+    <Link
+      to={href}
+      className="w-40 truncate text-muted-foreground font-mono text-xs hover:underline"
+    >
       {label}
     </Link>
   ) : (
-    <span className="w-40 truncate text-muted-foreground font-mono text-xs">{label}</span>
-  )
+    <span className="w-40 truncate text-muted-foreground font-mono text-xs">
+      {label}
+    </span>
+  );
   return (
     <div className="flex items-center gap-3 text-sm">
       {labelEl}
@@ -710,67 +794,77 @@ function BreakdownBar({ label, value, maxValue, href, billingClass }: BreakdownB
         />
       </div>
       <span className="w-36 text-right tabular-nums text-xs">
-        {isUnpriced ? <span aria-label="unpriced">{"—"}/unpriced</span> : fmtUsdPrecise(value)}
+        {isUnpriced ? (
+          <span aria-label="unpriced">{"—"}/unpriced</span>
+        ) : (
+          fmtUsdPrecise(value)
+        )}
         {billingClass === "subscription" && " · subscription"}
         {billingClass === "local" && " · local"}
       </span>
     </div>
-  )
+  );
 }
 
-type BreakdownBy = "butler" | "model" | "feature" | "purpose"
+type BreakdownBy = "butler" | "model" | "feature" | "purpose";
 
 function BreakdownSection() {
-  const [by, setBy] = useState<BreakdownBy>("butler")
+  const [by, setBy] = useState<BreakdownBy>("butler");
   // Live path: spendPatch invalidates ["spend-breakdown"] on every spend
   // call event (bu-01r64.4, see event-cache-registry.ts) -- previously a
   // bespoke, throttled useEffect in the page's root component did this by
   // hand. The poll below is now a bus-aware reconciliation sweep, not the
   // primary update path.
-  const refetchInterval = useBusAwarePollInterval()
+  const refetchInterval = useBusAwarePollInterval();
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-breakdown", by],
     queryFn: () => fetchBreakdown(by),
     refetchInterval,
-  })
+  });
 
   const entries = useMemo(() => {
-    const breakdown = data?.data?.breakdown ?? {}
-    const priced = Object.entries(breakdown).map(([label, value]) => ({ label, value }))
+    const breakdown = data?.data?.breakdown ?? {};
+    const priced = Object.entries(breakdown).map(([label, value]) => ({
+      label,
+      value,
+    }));
     const unpriced =
       by === "model"
         ? (data?.data?.unpriced_models ?? [])
             .filter((model) => !(model.model in breakdown))
             .map((model) => ({ label: model.model, value: null }))
-        : []
-    return [...priced.sort((a, b) => b.value - a.value), ...unpriced]
-  }, [by, data])
-  const maxValue = Math.max(0, ...entries.map((entry) => entry.value ?? 0))
-  const sourceError = data?.data?.source_error === true
-  const divergenceCount = data?.data?.divergences?.length ?? 0
+        : [];
+    return [...priced.sort((a, b) => b.value - a.value), ...unpriced];
+  }, [by, data]);
+  const maxValue = Math.max(0, ...entries.map((entry) => entry.value ?? 0));
+  const sourceError = data?.data?.source_error === true;
+  const divergenceCount = data?.data?.divergences?.length ?? 0;
   // butler/model/feature dimensions name any butler dropped from the fan-out in
   // `unavailable_butlers` (purpose uses `source_error` above instead). When
   // non-empty the breakdown undercounts, so an empty result is an outage — not a
   // genuine "$0 month" — and a populated one must footnote the missing butlers
   // (bu-jad4j.3).
-  const unavailableButlers = by === "purpose" ? [] : (data?.data?.unavailable_butlers ?? [])
+  const unavailableButlers =
+    by === "purpose" ? [] : (data?.data?.unavailable_butlers ?? []);
 
   return (
     <section className="border border-border">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
         <Eyebrow>Spend Breakdown · 30d</Eyebrow>
         <div className="flex gap-1">
-          {(["butler", "model", "feature", "purpose"] as BreakdownBy[]).map((dim) => (
-            <Button
-              key={dim}
-              variant={by === dim ? "default" : "ghost"}
-              size="sm"
-              className="h-6 px-2 font-mono text-[10px] uppercase tracking-widest"
-              onClick={() => setBy(dim)}
-            >
-              {dim}
-            </Button>
-          ))}
+          {(["butler", "model", "feature", "purpose"] as BreakdownBy[]).map(
+            (dim) => (
+              <Button
+                key={dim}
+                variant={by === dim ? "default" : "ghost"}
+                size="sm"
+                className="h-6 px-2 font-mono text-[10px] uppercase tracking-widest"
+                onClick={() => setBy(dim)}
+              >
+                {dim}
+              </Button>
+            ),
+          )}
         </div>
       </div>
       <div className="p-4">
@@ -817,7 +911,9 @@ function BreakdownSection() {
                 label={label}
                 value={value}
                 maxValue={maxValue}
-                href={by === "butler" ? `/butlers/${label}?tab=spend` : undefined}
+                href={
+                  by === "butler" ? `/butlers/${label}?tab=spend` : undefined
+                }
                 billingClass={data?.data?.billing_classes?.[label]}
               />
             ))}
@@ -862,7 +958,7 @@ function BreakdownSection() {
         )}
       </div>
     </section>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -876,25 +972,34 @@ function TopSessionsSection({
   to,
   dateKeyTimezone,
 }: {
-  from: Date
-  to: Date
-  dateKeyTimezone?: string
+  from: Date;
+  to: Date;
+  dateKeyTimezone?: string;
 }) {
-  const { data, isLoading, isError } = useTopSessions(10, from, to, dateKeyTimezone)
-  const sessions = data?.data ?? []
+  const { data, isLoading, isError } = useTopSessions(
+    10,
+    from,
+    to,
+    dateKeyTimezone,
+  );
+  const sessions = data?.data ?? [];
   // Butlers dropped from the top-sessions fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their sessions, so an empty table is an
   // outage — not "genuinely no expensive sessions" — and a populated one must
   // footnote the missing butlers (bu-jad4j.3).
-  const unavailableButlers = data?.meta?.unavailable_butlers ?? []
+  const unavailableButlers = data?.meta?.unavailable_butlers ?? [];
 
   return (
-    <section className="border border-border" data-testid="top-sessions-section">
+    <section
+      className="border border-border"
+      data-testid="top-sessions-section"
+    >
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>Most Expensive Sessions</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Top sessions by cost, {formatCostDate(from, dateKeyTimezone)} – {formatCostDate(to, dateKeyTimezone)}. Click through
-          to session detail.
+          Top sessions by cost, {formatCostDate(from, dateKeyTimezone)} –{" "}
+          {formatCostDate(to, dateKeyTimezone)}. Click through to session
+          detail.
         </p>
       </div>
       <div className="p-4">
@@ -905,7 +1010,9 @@ function TopSessionsSection({
             ))}
           </div>
         ) : isError && !data ? (
-          <p className="text-sm text-muted-foreground">Failed to load top sessions.</p>
+          <p className="text-sm text-muted-foreground">
+            Failed to load top sessions.
+          </p>
         ) : (
           <>
             {/* A background refetch failing must not clobber good cached rows
@@ -937,31 +1044,58 @@ function TopSessionsSection({
                 <Table>
                   <TableHeader>
                     <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                      <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
-                      <TableHead className="text-left py-2 px-2 font-normal">Model</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Tokens</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">When</TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Butler
+                      </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Model
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Tokens
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Cost
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        When
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {sessions.map((s) => (
-                      <TableRow key={s.session_id} className="border-border/60 hover:bg-muted/30">
+                      <TableRow
+                        key={s.session_id}
+                        className="border-border/60 hover:bg-muted/30"
+                      >
                         <TableCell className="py-2 px-2">
-                          <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                          <Link
+                            to={`/butlers/${s.butler}?tab=spend`}
+                            className="hover:underline"
+                          >
                             {s.butler}
                           </Link>
                         </TableCell>
-                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.model}</TableCell>
+                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">
+                          {s.model}
+                        </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
-                          {s.input_tokens.toLocaleString()} / {s.output_tokens.toLocaleString()}
+                          {s.input_tokens.toLocaleString()} /{" "}
+                          {s.output_tokens.toLocaleString()}
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums font-medium">
                           {formatCostUsd(s.cost_usd)}
                         </TableCell>
                         <TableCell className="py-2 px-2 text-right text-xs text-muted-foreground">
-                          <Link to={`/sessions/${s.session_id}`} className="hover:underline">
-                            <Time value={s.started_at} mode="absolute" precision="minute" compact />
+                          <Link
+                            to={`/sessions/${s.session_id}`}
+                            className="hover:underline"
+                          >
+                            <Time
+                              value={s.started_at}
+                              mode="absolute"
+                              precision="minute"
+                              compact
+                            />
                           </Link>
                         </TableCell>
                       </TableRow>
@@ -984,7 +1118,7 @@ function TopSessionsSection({
         )}
       </div>
     </section>
-  )
+  );
 }
 
 function ByScheduleSection({
@@ -992,27 +1126,34 @@ function ByScheduleSection({
   to,
   dateKeyTimezone,
 }: {
-  from: Date
-  to: Date
-  dateKeyTimezone?: string
+  from: Date;
+  to: Date;
+  dateKeyTimezone?: string;
 }) {
-  const { data, isLoading, isError } = useCostsBySchedule(from, to, dateKeyTimezone)
-  const schedules = data?.data ?? []
+  const { data, isLoading, isError } = useCostsBySchedule(
+    from,
+    to,
+    dateKeyTimezone,
+  );
+  const schedules = data?.data ?? [];
   // Butlers dropped from the by-schedule fan-out (meta.unavailable_butlers).
   // When non-empty the ranking omits their schedules, so an empty table is an
   // outage — not "genuinely no scheduled-task cost data" — and a populated one
   // must footnote the missing butlers (bu-h3ej9).
-  const unavailableButlers = data?.meta?.unavailable_butlers ?? []
-  // Every row is computed on the same basis, so state it once beneath the table.
-  const forecastBasis = schedules.find((s) => s.forecast_basis)?.forecast_basis ?? ""
+  const unavailableButlers = data?.meta?.unavailable_butlers ?? [];
+  // The basis is a constant of the estimator, not a property of any one
+  // schedule, so the API states it once on the envelope and so does the table.
+  const forecastBasis = data?.meta?.forecast_basis ?? "";
 
   return (
     <section className="border border-border" data-testid="by-schedule-section">
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          What each cron job actually cost between {formatCostDate(from, dateKeyTimezone)} and{" "}
-          {formatCostDate(to, dateKeyTimezone)}, and what its cadence projects for a month.
+          What each cron job actually cost between{" "}
+          {formatCostDate(from, dateKeyTimezone)} and{" "}
+          {formatCostDate(to, dateKeyTimezone)}, and what its cadence projects
+          for a month.
         </p>
       </div>
       <div className="p-4">
@@ -1023,7 +1164,9 @@ function ByScheduleSection({
             ))}
           </div>
         ) : isError && !data ? (
-          <p className="text-sm text-muted-foreground">Failed to load schedule costs.</p>
+          <p className="text-sm text-muted-foreground">
+            Failed to load schedule costs.
+          </p>
         ) : (
           <>
             {/* A background refetch failing must not clobber good cached rows
@@ -1059,7 +1202,10 @@ function ByScheduleSection({
                         forecasts. Collapsing them into one undifferentiated row
                         is how a projection gets read as history (bu-6jv4m.2). */}
                     <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                      <TableHead className="py-1.5 px-2 font-normal" colSpan={3} />
+                      <TableHead
+                        className="py-1.5 px-2 font-normal"
+                        colSpan={3}
+                      />
                       <TableHead
                         className="text-right py-1.5 px-2 font-normal"
                         colSpan={3}
@@ -1076,16 +1222,30 @@ function ByScheduleSection({
                       </TableHead>
                     </TableRow>
                     <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                      <TableHead className="text-left py-2 px-2 font-normal">Schedule</TableHead>
-                      <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
-                      <TableHead className="text-left py-2 px-2 font-normal">Cron</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Runs</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Avg/run</TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Schedule
+                      </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Butler
+                      </TableHead>
+                      <TableHead className="text-left py-2 px-2 font-normal">
+                        Cron
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Runs
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Cost
+                      </TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Avg/run
+                      </TableHead>
                       <TableHead className="text-right py-2 px-2 font-normal border-l border-border/60">
                         Runs
                       </TableHead>
-                      <TableHead className="text-right py-2 px-2 font-normal">Cost</TableHead>
+                      <TableHead className="text-right py-2 px-2 font-normal">
+                        Cost
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1094,14 +1254,23 @@ function ByScheduleSection({
                         key={`${s.butler}-${s.schedule_name}`}
                         className="border-border/60 hover:bg-muted/30"
                       >
-                        <TableCell className="py-2 px-2 font-mono text-xs">{s.schedule_name}</TableCell>
+                        <TableCell className="py-2 px-2 font-mono text-xs">
+                          {s.schedule_name}
+                        </TableCell>
                         <TableCell className="py-2 px-2">
-                          <Link to={`/butlers/${s.butler}?tab=spend`} className="hover:underline">
+                          <Link
+                            to={`/butlers/${s.butler}?tab=spend`}
+                            className="hover:underline"
+                          >
                             {s.butler}
                           </Link>
                         </TableCell>
-                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">{s.cron}</TableCell>
-                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">{s.total_runs}</TableCell>
+                        <TableCell className="py-2 px-2 text-muted-foreground text-xs">
+                          {s.cron}
+                        </TableCell>
+                        <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
+                          {s.total_runs}
+                        </TableCell>
                         <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                           {formatCostUsd(s.total_cost_usd)}
                         </TableCell>
@@ -1115,13 +1284,17 @@ function ByScheduleSection({
                           className="py-2 px-2 text-right tabular-nums text-xs border-l border-border/60"
                           data-testid={`schedule-projected-runs-${s.butler}-${s.schedule_name}`}
                         >
-                          {s.projected_monthly_runs > 0 ? fmtProjectedRuns(s.projected_monthly_runs) : "—"}
+                          {s.projected_monthly_runs > 0
+                            ? fmtProjectedRuns(s.projected_monthly_runs)
+                            : "—"}
                         </TableCell>
                         <TableCell
                           className="py-2 px-2 text-right tabular-nums font-medium"
                           data-testid={`schedule-projected-cost-${s.butler}-${s.schedule_name}`}
                         >
-                          {s.projected_monthly_runs > 0 ? formatCostUsd(s.projected_monthly_usd) : "—"}
+                          {s.projected_monthly_runs > 0
+                            ? formatCostUsd(s.projected_monthly_usd)
+                            : "—"}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1154,7 +1327,7 @@ function ByScheduleSection({
         )}
       </div>
     </section>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,40 +1337,50 @@ function ByScheduleSection({
 // Render a condition/action JSONB object as labelled chips instead of raw JSON, so
 // the table reflects the same structured vocabulary the editor produces.
 function fmtConstraintValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map((v) => String(v)).join(" | ")
-  return String(value)
+  if (Array.isArray(value)) return value.map((v) => String(v)).join(" | ");
+  return String(value);
 }
 
-function conditionChips(condition: Record<string, unknown>): { label: string; value: string }[] {
-  const order = ["butler", "complexity", "tier", "trigger", "purpose"]
+function conditionChips(
+  condition: Record<string, unknown>,
+): { label: string; value: string }[] {
+  const order = ["butler", "complexity", "tier", "trigger", "purpose"];
   const keys = Object.keys(condition).sort(
     (a, b) => order.indexOf(a) - order.indexOf(b) || a.localeCompare(b),
-  )
-  return keys.map((k) => ({ label: k, value: fmtConstraintValue(condition[k]) }))
+  );
+  return keys.map((k) => ({
+    label: k,
+    value: fmtConstraintValue(condition[k]),
+  }));
 }
 
-function actionChips(action: Record<string, unknown>): { label: string; value: string }[] {
-  const chips: { label: string; value: string }[] = []
-  if (action.model != null) chips.push({ label: "model", value: String(action.model) })
+function actionChips(
+  action: Record<string, unknown>,
+): { label: string; value: string }[] {
+  const chips: { label: string; value: string }[] = [];
+  if (action.model != null)
+    chips.push({ label: "model", value: String(action.model) });
   if (action.max_cost_per_call != null)
-    chips.push({ label: "cap", value: `$${Number(action.max_cost_per_call)}` })
+    chips.push({ label: "cap", value: `$${Number(action.max_cost_per_call)}` });
   // Surface any unrecognized keys verbatim so nothing is silently hidden.
   for (const [k, v] of Object.entries(action)) {
-    if (k === "model" || k === "max_cost_per_call") continue
-    chips.push({ label: k, value: fmtConstraintValue(v) })
+    if (k === "model" || k === "max_cost_per_call") continue;
+    chips.push({ label: k, value: fmtConstraintValue(v) });
   }
-  return chips
+  return chips;
 }
 
 function RuleChips({
   entries,
   emptyLabel,
 }: {
-  entries: { label: string; value: string }[]
-  emptyLabel: string
+  entries: { label: string; value: string }[];
+  emptyLabel: string;
 }) {
   if (entries.length === 0) {
-    return <span className="text-xs italic text-muted-foreground">{emptyLabel}</span>
+    return (
+      <span className="text-xs italic text-muted-foreground">{emptyLabel}</span>
+    );
   }
   return (
     <div className="flex flex-wrap gap-1">
@@ -1213,23 +1396,23 @@ function RuleChips({
         </span>
       ))}
     </div>
-  )
+  );
 }
 
 interface RulesTableProps {
-  rules: SpendRule[]
+  rules: SpendRule[];
   /** Called only after the owner confirms, with the whole rule -- the caller
    *  needs its condition/action/position to offer an exact-order Undo. Must
    *  settle: the dialog closes when it resolves and stays open when it
    *  rejects, so a failed delete can be retried or backed out of. */
-  onDelete: (rule: SpendRule) => Promise<unknown>
+  onDelete: (rule: SpendRule) => Promise<unknown>;
   /** True while the confirmed delete is in flight. */
-  isDeleting?: boolean
-  onReorder: (id: string, newPosition: number) => void
+  isDeleting?: boolean;
+  onReorder: (id: string, newPosition: number) => void;
   /** True while a reorder mutation is in flight -- arrow-key moves are
    *  suspended so a fast double-press can't race the server's response with
    *  a stale `rule.position` (bu-mmdef, keyboard chassis remainder). */
-  isReordering?: boolean
+  isReordering?: boolean;
 }
 
 // Keyboard reorder (bu-mmdef, keyboard chassis remainder -- SpendPage's
@@ -1250,143 +1433,148 @@ function RulesTable({
   onReorder,
   isReordering = false,
 }: RulesTableProps) {
-  const dragIdRef = useRef<string | null>(null)
-  const [grabbedId, setGrabbedId] = useState<string | null>(null)
-  const grabOriginRef = useRef<number | null>(null)
-  const movedDuringGrabRef = useRef<boolean>(false)
+  const dragIdRef = useRef<string | null>(null);
+  const [grabbedId, setGrabbedId] = useState<string | null>(null);
+  const grabOriginRef = useRef<number | null>(null);
+  const movedDuringGrabRef = useRef<boolean>(false);
 
   // Deletion is gated behind a confirm that shows the owner exactly what the
   // rule matches, what it does, where it sits in the first-match order, and
   // which rule inherits its traffic (bu-6jv4m.2). Remove used to fire the
   // mutation on the click itself.
-  const [pendingDelete, setPendingDelete] = useState<SpendRule | null>(null)
-  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<SpendRule | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
   // Activating confirm is synchronous, but `isDeleting` cannot become true
   // until React re-renders -- so three activations in one tick would all see a
   // still-enabled button and fire three DELETEs. The ref closes that window
   // within the tick; `isDeleting` handles the visible pending state.
-  const deleteInFlightRef = useRef(false)
+  const deleteInFlightRef = useRef(false);
 
   function requestDelete(rule: SpendRule, trigger: HTMLButtonElement) {
-    deleteTriggerRef.current = trigger
-    deleteInFlightRef.current = false
-    setPendingDelete(rule)
+    deleteTriggerRef.current = trigger;
+    deleteInFlightRef.current = false;
+    setPendingDelete(rule);
   }
 
   function closeDeleteDialog(open: boolean) {
     // Escape and outside-dismiss route through here too; a delete already on
     // the wire must not be abandoned mid-flight with the dialog gone.
-    if (open || deleteInFlightRef.current) return
-    setPendingDelete(null)
+    if (open || deleteInFlightRef.current) return;
+    setPendingDelete(null);
   }
 
   async function confirmDelete(rule: SpendRule) {
-    if (deleteInFlightRef.current) return
-    deleteInFlightRef.current = true
+    if (deleteInFlightRef.current) return;
+    deleteInFlightRef.current = true;
     try {
-      await onDelete(rule)
-      setPendingDelete(null)
+      await onDelete(rule);
+      setPendingDelete(null);
     } catch {
       // The section toasts the failure. Keep the dialog open: nothing was
       // destroyed, and the owner can retry or back out from here.
     } finally {
-      deleteInFlightRef.current = false
+      deleteInFlightRef.current = false;
     }
   }
 
   function restoreTriggerFocus(event: Event) {
-    const trigger = deleteTriggerRef.current
-    deleteTriggerRef.current = null
+    const trigger = deleteTriggerRef.current;
+    deleteTriggerRef.current = null;
     // Radix returns focus to whatever was focused when the dialog opened, which
     // is <body> when the owner opened it with a pointer click, and the Remove
     // button no longer exists at all after a successful delete. Put focus back
     // on the trigger when it survived; otherwise leave Radix's default alone.
-    if (!trigger || !document.contains(trigger)) return
-    event.preventDefault()
-    trigger.focus()
+    if (!trigger || !document.contains(trigger)) return;
+    event.preventDefault();
+    trigger.focus();
   }
 
   function handleDragStart(e: React.DragEvent, id: string) {
-    dragIdRef.current = id
-    e.dataTransfer.effectAllowed = "move"
+    dragIdRef.current = id;
+    e.dataTransfer.effectAllowed = "move";
   }
 
   function handleDrop(e: React.DragEvent, targetPosition: number) {
-    e.preventDefault()
-    if (dragIdRef.current === null) return
-    const dragRule = rules.find((r) => r.id === dragIdRef.current)
-    if (!dragRule || dragRule.position === targetPosition) return
-    onReorder(dragIdRef.current, targetPosition)
-    dragIdRef.current = null
+    e.preventDefault();
+    if (dragIdRef.current === null) return;
+    const dragRule = rules.find((r) => r.id === dragIdRef.current);
+    if (!dragRule || dragRule.position === targetPosition) return;
+    onReorder(dragIdRef.current, targetPosition);
+    dragIdRef.current = null;
   }
 
   function handleDragOver(e: React.DragEvent) {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = "move"
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
   }
 
   function handleRowKeyDown(e: React.KeyboardEvent, rule: SpendRule) {
-    const isGrabbed = grabbedId === rule.id
+    const isGrabbed = grabbedId === rule.id;
 
     if (!isGrabbed) {
-      if (e.key !== " " && e.key !== "Enter") return
-      e.preventDefault()
+      if (e.key !== " " && e.key !== "Enter") return;
+      e.preventDefault();
       // Implicit drop of previously grabbed row before grabbing this one
       // (bu-mmdef keyboard reorder): if another row is grabbed, treat grabbing
       // this row as an implicit drop of the previous one. Follow ARIA pattern:
       // finish (or cancel) current reorder before starting a new one.
       if (grabbedId !== null) {
-        const prevGrabbedRule = rules.find((r) => r.id === grabbedId)
+        const prevGrabbedRule = rules.find((r) => r.id === grabbedId);
         if (prevGrabbedRule) {
-          announce(`Dropped rule at position ${prevGrabbedRule.position} of ${rules.length}.`)
+          announce(
+            `Dropped rule at position ${prevGrabbedRule.position} of ${rules.length}.`,
+          );
         }
       }
-      setGrabbedId(rule.id)
-      grabOriginRef.current = rule.position
-      movedDuringGrabRef.current = false
+      setGrabbedId(rule.id);
+      grabOriginRef.current = rule.position;
+      movedDuringGrabRef.current = false;
       announce(
         `Grabbed rule at position ${rule.position} of ${rules.length}. Use arrow keys to move, space or enter to drop, escape to cancel.`,
-      )
-      return
+      );
+      return;
     }
 
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-      e.preventDefault()
-      if (isReordering) return
-      const target = e.key === "ArrowUp" ? rule.position - 1 : rule.position + 1
-      if (target < 1 || target > rules.length) return
-      movedDuringGrabRef.current = true
-      onReorder(rule.id, target)
-      announce(`Moved rule to position ${target} of ${rules.length}.`)
-      return
+      e.preventDefault();
+      if (isReordering) return;
+      const target =
+        e.key === "ArrowUp" ? rule.position - 1 : rule.position + 1;
+      if (target < 1 || target > rules.length) return;
+      movedDuringGrabRef.current = true;
+      onReorder(rule.id, target);
+      announce(`Moved rule to position ${target} of ${rules.length}.`);
+      return;
     }
 
     if (e.key === " " || e.key === "Enter") {
-      e.preventDefault()
-      setGrabbedId(null)
-      grabOriginRef.current = null
-      movedDuringGrabRef.current = false
-      announce(`Dropped rule at position ${rule.position} of ${rules.length}.`)
-      return
+      e.preventDefault();
+      setGrabbedId(null);
+      grabOriginRef.current = null;
+      movedDuringGrabRef.current = false;
+      announce(`Dropped rule at position ${rule.position} of ${rules.length}.`);
+      return;
     }
 
     if (e.key === "Escape") {
-      e.preventDefault()
-      const origin = grabOriginRef.current
-      const moved = movedDuringGrabRef.current
-      setGrabbedId(null)
-      grabOriginRef.current = null
-      movedDuringGrabRef.current = false
+      e.preventDefault();
+      const origin = grabOriginRef.current;
+      const moved = movedDuringGrabRef.current;
+      setGrabbedId(null);
+      grabOriginRef.current = null;
+      movedDuringGrabRef.current = false;
       // Restore if we moved during grab, regardless of current rule.position.
       // If a reorder mutation is in flight when Escape fires, rule.position is
       // still at the grab origin (stale), so we can't rely on it. Instead,
       // check the `moved` flag set when arrow keys fired (bu-mmdef: Escape-
       // cancel race -- server move is in flight, position is stale).
       if (origin != null && moved) {
-        onReorder(rule.id, origin)
-        announce(`Cancelled. Restored rule to position ${origin} of ${rules.length}.`)
+        onReorder(rule.id, origin);
+        announce(
+          `Cancelled. Restored rule to position ${origin} of ${rules.length}.`,
+        );
       } else {
-        announce("Cancelled reordering.")
+        announce("Cancelled reordering.");
       }
     }
   }
@@ -1394,9 +1582,10 @@ function RulesTable({
   if (rules.length === 0) {
     return (
       <p className="font-serif italic text-muted-foreground text-sm py-4 text-center">
-        No routing rules are configured; rules evaluate top-to-bottom and the first match wins.
+        No routing rules are configured; rules evaluate top-to-bottom and the
+        first match wins.
       </p>
-    )
+    );
   }
 
   return (
@@ -1404,16 +1593,24 @@ function RulesTable({
       <Table>
         <TableHeader>
           <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            <TableHead className="text-left py-2 px-2 w-8 font-normal">Pos</TableHead>
-            <TableHead className="text-left py-2 px-2 font-normal">Condition</TableHead>
-            <TableHead className="text-left py-2 px-2 font-normal">Action</TableHead>
-            <TableHead className="text-right py-2 px-2 font-normal">Saved 7d</TableHead>
+            <TableHead className="text-left py-2 px-2 w-8 font-normal">
+              Pos
+            </TableHead>
+            <TableHead className="text-left py-2 px-2 font-normal">
+              Condition
+            </TableHead>
+            <TableHead className="text-left py-2 px-2 font-normal">
+              Action
+            </TableHead>
+            <TableHead className="text-right py-2 px-2 font-normal">
+              Saved 7d
+            </TableHead>
             <TableHead className="text-right py-2 px-2 w-16 font-normal" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {rules.map((rule) => {
-            const isGrabbed = grabbedId === rule.id
+            const isGrabbed = grabbedId === rule.id;
             return (
               <TableRow
                 key={rule.id}
@@ -1430,11 +1627,14 @@ function RulesTable({
                 className={cn(
                   "border-border/60 hover:bg-muted/30 cursor-grab active:cursor-grabbing",
                   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-fg",
-                  isGrabbed && "bg-muted/50 outline outline-2 outline-offset-[-2px] outline-fg",
+                  isGrabbed &&
+                    "bg-muted/50 outline outline-2 outline-offset-[-2px] outline-fg",
                 )}
               >
                 <TableCell className="py-2 px-2 text-muted-foreground tabular-nums">
-                  <span data-testid={`spend-rule-position-${rule.id}`}>{rule.position}</span>
+                  <span data-testid={`spend-rule-position-${rule.id}`}>
+                    {rule.position}
+                  </span>
                   {isGrabbed && (
                     <span className="ml-1.5 font-sans normal-case text-[10px] text-foreground">
                       grabbed
@@ -1442,10 +1642,16 @@ function RulesTable({
                   )}
                 </TableCell>
                 <TableCell className="py-2 px-2">
-                  <RuleChips entries={conditionChips(rule.condition)} emptyLabel="any dispatch" />
+                  <RuleChips
+                    entries={conditionChips(rule.condition)}
+                    emptyLabel="any dispatch"
+                  />
                 </TableCell>
                 <TableCell className="py-2 px-2">
-                  <RuleChips entries={actionChips(rule.action)} emptyLabel="—" />
+                  <RuleChips
+                    entries={actionChips(rule.action)}
+                    emptyLabel="—"
+                  />
                 </TableCell>
                 <TableCell className="py-2 px-2 text-right tabular-nums text-xs">
                   {rule.saved_7d != null ? fmtUsdPrecise(rule.saved_7d) : "—"}
@@ -1457,13 +1663,15 @@ function RulesTable({
                     className="h-6 px-2 text-xs text-destructive hover:text-destructive"
                     data-testid={`spend-rule-remove-${rule.id}`}
                     aria-label={`Remove routing rule at position ${rule.position} of ${rules.length}`}
-                    onClick={(event) => requestDelete(rule, event.currentTarget)}
+                    onClick={(event) =>
+                      requestDelete(rule, event.currentTarget)
+                    }
                   >
                     Remove
                   </Button>
                 </TableCell>
               </TableRow>
-            )
+            );
           })}
         </TableBody>
       </Table>
@@ -1505,13 +1713,16 @@ function RulesTable({
               Does
             </dt>
             <dd>
-              <RuleChips entries={actionChips(pendingDelete.action)} emptyLabel="—" />
+              <RuleChips
+                entries={actionChips(pendingDelete.action)}
+                emptyLabel="—"
+              />
             </dd>
           </dl>
         </ConfirmDialog>
       )}
     </div>
-  )
+  );
 }
 
 /**
@@ -1524,17 +1735,19 @@ function RulesTable({
 function deleteConsequence(rule: SpendRule, rules: SpendRule[]): string {
   const successor = rules
     .filter((r) => r.position > rule.position)
-    .sort((a, b) => a.position - b.position)[0]
+    .sort((a, b) => a.position - b.position)[0];
   const lead =
     "Rules are evaluated top-to-bottom and the first match wins, so dispatches this rule " +
-    "catches today will instead "
+    "catches today will instead ";
   if (!successor) {
-    return `${lead}fall through to default model routing. Every rule below it moves up one position.`
+    return `${lead}fall through to default model routing. Every rule below it moves up one position.`;
   }
-  const chips = conditionChips(successor.condition)
+  const chips = conditionChips(successor.condition);
   const summary =
-    chips.length === 0 ? "any dispatch" : chips.map((c) => `${c.label}=${c.value}`).join(", ")
-  return `${lead}be tested against the rule now at position ${successor.position} (${summary}). Every rule below it moves up one position.`
+    chips.length === 0
+      ? "any dispatch"
+      : chips.map((c) => `${c.label}=${c.value}`).join(", ");
+  return `${lead}be tested against the rule now at position ${successor.position} (${summary}). Every rule below it moves up one position.`;
 }
 
 /**
@@ -1545,11 +1758,13 @@ function deleteConsequence(rule: SpendRule, rules: SpendRule[]): string {
  */
 function describeRule(rule: SpendRule): string {
   const join = (entries: { label: string; value: string }[], empty: string) =>
-    entries.length === 0 ? empty : entries.map((e) => `${e.label}=${e.value}`).join(", ")
+    entries.length === 0
+      ? empty
+      : entries.map((e) => `${e.label}=${e.value}`).join(", ");
   return `matches ${join(conditionChips(rule.condition), "any dispatch")}; does ${join(
     actionChips(rule.action),
     "nothing",
-  )}`
+  )}`;
 }
 
 // One mutation scope for every write that renumbers routing-rule positions --
@@ -1558,7 +1773,7 @@ function describeRule(rule: SpendRule): string {
 // restore is never dispatched while a reorder it would have to be consistent
 // with is still in flight (bu-mmdef established the scope; bu-6jv4m.2 brought
 // delete and restore into it).
-const RULE_ORDER_MUTATION_SCOPE = "spend-rule-order"
+const RULE_ORDER_MUTATION_SCOPE = "spend-rule-order";
 
 // Common dispatch trigger sources operators may want to gate on. These mirror the
 // trigger_source values passed at the spawner call site (src/butlers/core/spawner.py
@@ -1574,76 +1789,78 @@ const TRIGGER_SOURCES: string[] = [
   "qa",
   "extraction",
   "external",
-]
+];
 
 // Purpose is an alias dimension for the same dispatch trigger_source (bu-og0j2 /
 // bu-qvnce.12) -- see model_routing._rule_condition_matches. Offers the same
 // vocabulary plus "discretion", the one purpose value stamped by a path
 // (connectors.discretion_dispatcher) that has no equivalent trigger_source.
-const PURPOSE_VALUES: string[] = [...TRIGGER_SOURCES, "discretion"]
+const PURPOSE_VALUES: string[] = [...TRIGGER_SOURCES, "discretion"];
 
 interface CreateRuleFormProps {
-  onCancel: () => void
-  onCreated: () => void
+  onCancel: () => void;
+  onCreated: () => void;
 }
 
 function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
-  const queryClient = useQueryClient()
-  const { data: catalogData } = useModelCatalog()
+  const queryClient = useQueryClient();
+  const { data: catalogData } = useModelCatalog();
 
-  const [butler, setButler] = useState("")
-  const [complexity, setComplexity] = useState<"" | ComplexityTier>("")
-  const [trigger, setTrigger] = useState("")
-  const [purpose, setPurpose] = useState("")
-  const [model, setModel] = useState("")
-  const [maxCostPerCall, setMaxCostPerCall] = useState("")
+  const [butler, setButler] = useState("");
+  const [complexity, setComplexity] = useState<"" | ComplexityTier>("");
+  const [trigger, setTrigger] = useState("");
+  const [purpose, setPurpose] = useState("");
+  const [model, setModel] = useState("");
+  const [maxCostPerCall, setMaxCostPerCall] = useState("");
 
   const createMutation = useMutation({
     mutationFn: createRule,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
-      toast.success("Rule created")
-      onCreated()
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] });
+      toast.success("Rule created");
+      onCreated();
     },
     onError: () => toast.error("Failed to create rule"),
-  })
+  });
 
   function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const targetModel = model.trim()
-    const capRaw = maxCostPerCall.trim()
+    e.preventDefault();
+    const targetModel = model.trim();
+    const capRaw = maxCostPerCall.trim();
 
     // Build the action from the supplied effects; at least one is required.
-    const action: Record<string, unknown> = {}
-    if (targetModel) action.model = targetModel
+    const action: Record<string, unknown> = {};
+    if (targetModel) action.model = targetModel;
     if (capRaw) {
-      const cap = Number(capRaw)
+      const cap = Number(capRaw);
       if (!Number.isFinite(cap) || cap <= 0) {
-        toast.error("Per-call cap must be a positive number")
-        return
+        toast.error("Per-call cap must be a positive number");
+        return;
       }
-      action.max_cost_per_call = cap
+      action.max_cost_per_call = cap;
     }
     if (Object.keys(action).length === 0) {
-      toast.error("Set at least one effect: route-to model and/or per-call cap")
-      return
+      toast.error(
+        "Set at least one effect: route-to model and/or per-call cap",
+      );
+      return;
     }
 
     // Build the condition with only the constraints the user supplied; all keys
     // are optional and ANDed by the evaluator. An empty object is a catch-all.
-    const condition: Record<string, unknown> = {}
-    if (butler.trim()) condition.butler = butler.trim()
-    if (complexity) condition.complexity = complexity
-    if (trigger) condition.trigger = trigger
-    if (purpose) condition.purpose = purpose
-    createMutation.mutate({ condition, action })
+    const condition: Record<string, unknown> = {};
+    if (butler.trim()) condition.butler = butler.trim();
+    if (complexity) condition.complexity = complexity;
+    if (trigger) condition.trigger = trigger;
+    if (purpose) condition.purpose = purpose;
+    createMutation.mutate({ condition, action });
   }
 
   // Distinct, sorted target model_ids from the catalog (dedup across tiers).
   const modelIds = useMemo(() => {
-    const models = catalogData?.data ?? []
-    return Array.from(new Set(models.map((m) => m.model_id))).sort()
-  }, [catalogData])
+    const models = catalogData?.data ?? [];
+    return Array.from(new Set(models.map((m) => m.model_id))).sort();
+  }, [catalogData]);
 
   const conditionSummary =
     butler.trim() || complexity || trigger || purpose
@@ -1655,20 +1872,20 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
         ]
           .filter(Boolean)
           .join(" and ")
-      : "any dispatch (catch-all)"
+      : "any dispatch (catch-all)";
 
   const effectSummary = [
     model.trim() ? `route to ${model.trim()}` : null,
     maxCostPerCall.trim() ? `cap each call at $${maxCostPerCall.trim()}` : null,
   ]
     .filter(Boolean)
-    .join(" and ")
+    .join(" and ");
 
   const triggerPurposeHint = trigger
     ? "Trigger selected. Clear it to choose Purpose; both target the same dispatch source."
     : purpose
       ? "Purpose selected. Clear it to choose Trigger; both target the same dispatch source."
-      : "Choose either Trigger or Purpose; both target the same dispatch source."
+      : "Choose either Trigger or Purpose; both target the same dispatch source.";
 
   return (
     <form
@@ -1695,7 +1912,9 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
             aria-label="Complexity condition"
             className="text-xs border rounded px-2 py-1 bg-background"
             value={complexity}
-            onChange={(e) => setComplexity(e.target.value as "" | ComplexityTier)}
+            onChange={(e) =>
+              setComplexity(e.target.value as "" | ComplexityTier)
+            }
           >
             <option value="">any tier</option>
             {COMPLEXITY_TIERS.map((t) => (
@@ -1786,44 +2005,58 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
         </label>
       </div>
       <p className="text-xs text-muted-foreground">
-        Matches dispatches where <span className="font-mono">{conditionSummary}</span> and{" "}
+        Matches dispatches where{" "}
+        <span className="font-mono">{conditionSummary}</span> and{" "}
         <span className="font-mono">{effectSummary || "…"}</span>.
       </p>
       <div className="flex items-center gap-2">
-        <Button type="submit" size="sm" className="text-xs h-7" disabled={createMutation.isPending}>
+        <Button
+          type="submit"
+          size="sm"
+          className="text-xs h-7"
+          disabled={createMutation.isPending}
+        >
           Create rule
         </Button>
-        <Button type="button" variant="ghost" size="sm" className="text-xs h-7" onClick={onCancel}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-xs h-7"
+          onClick={onCancel}
+        >
           Cancel
         </Button>
       </div>
     </form>
-  )
+  );
 }
 
 function SpendRulesSection() {
-  const queryClient = useQueryClient()
-  const [creating, setCreating] = useState(false)
+  const queryClient = useQueryClient();
+  const [creating, setCreating] = useState(false);
   // Live path: spendPatch invalidates ["spend-rules"] on every spend call
   // event (bu-01r64.4) -- a reconciliation nudge alongside the direct
   // mutation invalidations below (create/delete/reorder), not their
   // replacement. The poll is a bus-aware reconciliation sweep.
-  const refetchInterval = useBusAwarePollInterval()
+  const refetchInterval = useBusAwarePollInterval();
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-rules"],
     queryFn: fetchRules,
     refetchInterval,
-  })
+  });
 
   // The rule most recently deleted from this section, kept so the owner can put
   // it back (bu-6jv4m.2). Cleared once restored, so the affordance cannot fire
   // twice, and never set when the delete failed -- offering Undo for something
   // that was not destroyed is a lie.
-  const [restorable, setRestorable] = useState<SpendRule | null>(null)
-  // Set when a restore fails. The rule is gone from the server by then, so the
-  // banner has to keep showing its condition and action: a failure the owner
-  // cannot read the rule back out of has destroyed it and told no one.
-  const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [restorable, setRestorable] = useState<SpendRule | null>(null);
+  // Set to the rule itself when a restore fails. The rule is gone from the
+  // server by then, so the banner has to keep the whole definition on screen in
+  // a form the owner can select and copy: a failure they cannot rebuild the
+  // rule from has destroyed it and told no one. Visible is not enough --
+  // recoverable is the bar.
+  const [restoreError, setRestoreError] = useState<SpendRule | null>(null);
 
   const deleteMutation = useMutation({
     // Delete, restore and reorder all renumber positions, so they share the
@@ -1833,13 +2066,13 @@ function SpendRulesSection() {
     scope: { id: RULE_ORDER_MUTATION_SCOPE },
     mutationFn: (rule: SpendRule) => deleteRule(rule.id),
     onSuccess: (_data, rule) => {
-      queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
-      setRestorable(rule)
-      setRestoreError(null)
-      toast.success(`Rule removed from position ${rule.position}`)
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] });
+      setRestorable(rule);
+      setRestoreError(null);
+      toast.success(`Rule removed from position ${rule.position}`);
     },
     onError: () => toast.error("Failed to delete rule"),
-  })
+  });
 
   const restoreMutation = useMutation({
     scope: { id: RULE_ORDER_MUTATION_SCOPE },
@@ -1850,25 +2083,26 @@ function SpendRulesSection() {
         action: rule.action,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["spend-rules"] })
-      setRestorable(null)
-      setRestoreError(null)
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] });
+      setRestorable(null);
+      setRestoreError(null);
       // Deliberately does not claim the first-match order was put back: the
       // rule is re-inserted at the position it was removed from, which is only
       // where it used to sit if nothing else moved in the meantime.
-      toast.success("Rule restored")
+      toast.success("Rule restored");
     },
     onError: (_error, rule) => {
       // Keep `restorable` set so Undo can be retried, and surface the rule
       // itself -- a bare "failed" would leave the owner with a deleted rule and
       // no record of what it was.
-      setRestoreError(describeRule(rule))
-      toast.error("Failed to restore rule; its condition and action are shown above")
+      setRestoreError(rule);
+      toast.error("Failed to restore rule; its full definition is shown above");
     },
-  })
+  });
 
   const reorderMutation = useMutation({
-    mutationFn: ({ id, position }: { id: string; position: number }) => reorderRule(id, position),
+    mutationFn: ({ id, position }: { id: string; position: number }) =>
+      reorderRule(id, position),
     // Mutation scope (bu-mmdef: concurrent-restore-vs-move-race) -- Escape's
     // compensating restore (RulesTable's movedDuringGrabRef path) fires a
     // second reorderMutation.mutate() while an arrow-move mutation may still
@@ -1888,16 +2122,17 @@ function SpendRulesSection() {
     // sufficient: reorders only ever need to serialize against each other on
     // this same list, not per-row.
     scope: { id: RULE_ORDER_MUTATION_SCOPE },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["spend-rules"] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["spend-rules"] }),
     onError: () => toast.error("Failed to reorder rule"),
-  })
+  });
 
-  const rules = data?.data ?? []
+  const rules = data?.data ?? [];
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
   // this section's own existing "+ Add rule" affordance.
   const spendRuleCommands = useMemo<PaletteCommand[]>(() => {
-    if (creating) return []
+    if (creating) return [];
     return [
       {
         id: "spend-add-rule",
@@ -1905,9 +2140,9 @@ function SpendRulesSection() {
         keywords: ["new", "rule", "routing"],
         perform: () => setCreating(true),
       },
-    ]
-  }, [creating])
-  useRegisterCommands(spendRuleCommands)
+    ];
+  }, [creating]);
+  useRegisterCommands(spendRuleCommands);
 
   return (
     <section className="border border-border">
@@ -1915,8 +2150,8 @@ function SpendRulesSection() {
         <div className="flex flex-col gap-1">
           <Eyebrow>Routing Rules</Eyebrow>
           <p className="text-xs text-muted-foreground">
-            Evaluated top-to-bottom; first match wins. Drag rows to reorder, or focus a row
-            and press Space to grab it.
+            Evaluated top-to-bottom; first match wins. Drag rows to reorder, or
+            focus a row and press Space to grab it.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
@@ -1938,7 +2173,10 @@ function SpendRulesSection() {
       </div>
       <div className="p-4">
         {creating && (
-          <CreateRuleForm onCancel={() => setCreating(false)} onCreated={() => setCreating(false)} />
+          <CreateRuleForm
+            onCancel={() => setCreating(false)}
+            onCreated={() => setCreating(false)}
+          />
         )}
         {restorable && (
           // Persistent rather than a toast action: restoring a first-match rule
@@ -1952,17 +2190,41 @@ function SpendRulesSection() {
           >
             <div className="min-w-0 space-y-1">
               <p className="text-xs text-muted-foreground">
-                Removed the rule that was at position {restorable.position}. Undo re-creates it at
-                position {restorable.position} of the current order; if the order has changed since,
-                that is not necessarily where it sat.
+                Removed the rule that was at position {restorable.position}.
+                Undo re-creates it at position {restorable.position} of the
+                current order; if the order has changed since, that is not
+                necessarily where it sat.
               </p>
               {restoreError && (
                 // The wrapper already carries role="status"; a nested alert
                 // would double-announce.
-                <p className="text-xs text-destructive" data-testid="spend-rule-undo-error">
-                  Restore failed. The removed rule {restoreError}. Retry Undo, or re-create it from
-                  this description.
-                </p>
+                <>
+                  <p
+                    className="text-xs text-destructive"
+                    data-testid="spend-rule-undo-error"
+                  >
+                    Restore failed. The removed rule{" "}
+                    {describeRule(restoreError)}. Retry Undo, or re-create it by
+                    hand from the definition below.
+                  </p>
+                  {/* Selectable, copyable, and complete: the exact request body
+                      that would re-create the rule. A description the owner can
+                      read but not act on is not a recovery path. */}
+                  <pre
+                    className="max-h-40 overflow-auto whitespace-pre-wrap break-all border border-border bg-background px-2 py-1 text-[11px] font-mono text-foreground"
+                    data-testid="spend-rule-undo-preimage"
+                  >
+                    {JSON.stringify(
+                      {
+                        position: restoreError.position,
+                        condition: restoreError.condition,
+                        action: restoreError.action,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </>
               )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -1983,8 +2245,8 @@ function SpendRulesSection() {
                 data-testid="spend-rule-undo-dismiss"
                 disabled={restoreMutation.isPending}
                 onClick={() => {
-                  setRestorable(null)
-                  setRestoreError(null)
+                  setRestorable(null);
+                  setRestoreError(null);
                 }}
               >
                 Dismiss
@@ -2014,13 +2276,15 @@ function SpendRulesSection() {
             rules={rules}
             onDelete={(rule) => deleteMutation.mutateAsync(rule)}
             isDeleting={deleteMutation.isPending}
-            onReorder={(id, position) => reorderMutation.mutate({ id, position })}
+            onReorder={(id, position) =>
+              reorderMutation.mutate({ id, position })
+            }
             isReordering={reorderMutation.isPending}
           />
         )}
       </div>
     </section>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2041,11 +2305,11 @@ function FleetHaltBanner() {
   // ?openDrawer=fleet-halt link lands here with the attempts drawer already
   // expanded, instead of just landing on the page and requiring another
   // click to find the evidence the push is about.
-  const [searchParams] = useSearchParams()
+  const [searchParams] = useSearchParams();
   const [drawerOpen, setDrawerOpen] = useState(
     () => searchParams.get("openDrawer") === "fleet-halt",
-  )
-  const halt = useFleetHaltStatus()
+  );
+  const halt = useFleetHaltStatus();
 
   // A failed dispatch-attempts fetch must never render as "the fleet is not
   // halted" -- that would be a fabricated all-clear on the single most
@@ -2057,28 +2321,46 @@ function FleetHaltBanner() {
         detail="dispatch denial feed unavailable -- cannot confirm whether the monthly ceiling is halting dispatches"
         testId="fleet-halt-source-error"
       />
-    )
+    );
   }
 
-  if (halt.isLoading || !halt.active) return null
+  if (halt.isLoading || !halt.active) return null;
 
   return (
-    <div className="border border-[var(--red)]/40" data-testid="fleet-halt-banner">
+    <div
+      className="border border-[var(--red)]/40"
+      data-testid="fleet-halt-banner"
+    >
       <div
         className="attention-row flex items-center gap-3 px-4 py-3"
         data-tone="red"
         role="alert"
       >
-        <span className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]" aria-hidden />
+        <span
+          className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]"
+          aria-hidden
+        />
         <p className="text-sm flex-1">
           <span className="font-medium">Monthly ceiling reached</span> —{" "}
           <span className="tabular-nums font-medium">{halt.deniedTotal}</span>{" "}
           {halt.deniedTotal === 1 ? "dispatch" : "dispatches"} denied since{" "}
           <span className="tabular-nums font-medium">
-            {halt.since ? <Time value={halt.since} mode="absolute" precision="minute" compact /> : "unknown"}
+            {halt.since ? (
+              <Time
+                value={halt.since}
+                mode="absolute"
+                precision="minute"
+                compact
+              />
+            ) : (
+              "unknown"
+            )}
           </span>
           {" · "}
-          <span className="tabular-nums font-medium">{halt.deniedToday}</span> denied today.
+          <span className="tabular-nums font-medium">
+            {halt.deniedToday}
+          </span>{" "}
+          denied today.
         </p>
         <Button
           variant="outline"
@@ -2091,7 +2373,10 @@ function FleetHaltBanner() {
         </Button>
       </div>
       {drawerOpen && (
-        <div className="p-4 border-t border-[var(--red)]/40" data-testid="fleet-halt-drawer">
+        <div
+          className="p-4 border-t border-[var(--red)]/40"
+          data-testid="fleet-halt-drawer"
+        >
           {halt.recentAttempts.length === 0 ? (
             <p className="font-serif italic text-muted-foreground text-sm">
               No recent denied attempts loaded.
@@ -2101,10 +2386,18 @@ function FleetHaltBanner() {
               <Table>
                 <TableHeader>
                   <TableRow className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                    <TableHead className="text-left py-2 px-2 font-normal">Butler</TableHead>
-                    <TableHead className="text-left py-2 px-2 font-normal">When</TableHead>
-                    <TableHead className="text-left py-2 px-2 font-normal">Reason</TableHead>
-                    <TableHead className="text-right py-2 px-2 font-normal">Session</TableHead>
+                    <TableHead className="text-left py-2 px-2 font-normal">
+                      Butler
+                    </TableHead>
+                    <TableHead className="text-left py-2 px-2 font-normal">
+                      When
+                    </TableHead>
+                    <TableHead className="text-left py-2 px-2 font-normal">
+                      Reason
+                    </TableHead>
+                    <TableHead className="text-right py-2 px-2 font-normal">
+                      Session
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -2116,7 +2409,12 @@ function FleetHaltBanner() {
                     >
                       <TableCell className="py-2 px-2">{a.butler}</TableCell>
                       <TableCell className="py-2 px-2 text-xs text-muted-foreground">
-                        <Time value={a.ts} mode="absolute" precision="minute" compact />
+                        <Time
+                          value={a.ts}
+                          mode="absolute"
+                          precision="minute"
+                          compact
+                        />
                       </TableCell>
                       <TableCell className="py-2 px-2 text-xs text-muted-foreground">
                         {a.failure_reason ?? "—"}
@@ -2126,7 +2424,10 @@ function FleetHaltBanner() {
                             have no session_id yet -- render a plain dash instead
                             of a dead link (mirrors TopSessionsSection's pattern). */}
                         {a.session_id ? (
-                          <Link to={`/sessions/${a.session_id}`} className="hover:underline">
+                          <Link
+                            to={`/sessions/${a.session_id}`}
+                            className="hover:underline"
+                          >
                             View session
                           </Link>
                         ) : (
@@ -2142,7 +2443,7 @@ function FleetHaltBanner() {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2155,7 +2456,7 @@ export default function SpendPage() {
   // Live path: spendPatch invalidates ["spend-forecast"] on every spend call
   // event (bu-01r64.4) -- the poll below is a bus-aware reconciliation
   // sweep, not the primary update path.
-  const forecastRefetchInterval = useBusAwarePollInterval()
+  const forecastRefetchInterval = useBusAwarePollInterval();
   const {
     data: forecastData,
     isLoading: forecastLoading,
@@ -2165,14 +2466,14 @@ export default function SpendPage() {
     queryKey: ["spend-forecast"],
     queryFn: fetchSpendForecast,
     refetchInterval: forecastRefetchInterval,
-  })
-  const forecast = forecastData?.data
+  });
+  const forecast = forecastData?.data;
 
   // §5.3 — Subscribe to the shared fleet event bus's "spend" events (bu-qvnce.14
   // slice 2; formerly its own /api/spend/stream socket) and update KPIs
   // incrementally. streamedCostUsd is a monotonic cumulative counter of live
   // "call" events received since mount — it never resets on its own.
-  const { streamedCostUsd, streamedUnpricedEvents = [] } = useSpendTicker()
+  const { streamedCostUsd, streamedUnpricedEvents = [] } = useSpendTicker();
 
   // Each polled forecast (every 120s) is a fresh MTD baseline that already
   // reflects any spend that streamed in before that poll landed. Pin the
@@ -2182,41 +2483,50 @@ export default function SpendPage() {
   // every refresh (bu-qvnce.2). Adjusted during render (React's sanctioned
   // "derive state from a prop/query change" pattern) rather than a ref,
   // since refs cannot be read or written during render (react-hooks/refs).
-  const [baselineForecast, setBaselineForecast] = useState(forecast)
-  const [baselineStreamedCostUsd, setBaselineStreamedCostUsd] = useState(streamedCostUsd)
-  const [baselineStreamedUnpricedEventCount, setBaselineStreamedUnpricedEventCount] = useState(
-    streamedUnpricedEvents.length,
-  )
+  const [baselineForecast, setBaselineForecast] = useState(forecast);
+  const [baselineStreamedCostUsd, setBaselineStreamedCostUsd] =
+    useState(streamedCostUsd);
+  const [
+    baselineStreamedUnpricedEventCount,
+    setBaselineStreamedUnpricedEventCount,
+  ] = useState(streamedUnpricedEvents.length);
   if (forecast !== baselineForecast) {
-    setBaselineForecast(forecast)
-    setBaselineStreamedCostUsd(streamedCostUsd)
-    setBaselineStreamedUnpricedEventCount(streamedUnpricedEvents.length)
+    setBaselineForecast(forecast);
+    setBaselineStreamedCostUsd(streamedCostUsd);
+    setBaselineStreamedUnpricedEventCount(streamedUnpricedEvents.length);
   }
 
   const liveForecast = useMemo(() => {
-    if (!forecast) return forecast
+    if (!forecast) return forecast;
     const sinceBaseline =
-      forecast === baselineForecast ? streamedCostUsd - baselineStreamedCostUsd : 0
+      forecast === baselineForecast
+        ? streamedCostUsd - baselineStreamedCostUsd
+        : 0;
     const liveUnpricedEvents =
       forecast === baselineForecast
         ? streamedUnpricedEvents.slice(baselineStreamedUnpricedEventCount)
-        : []
-    if (sinceBaseline <= 0 && liveUnpricedEvents.length === 0) return forecast
-    const liveUnpricedModels = mergeUnpricedModels(forecast.unpriced_models, liveUnpricedEvents)
-    const hasPricedLiveSpend = sinceBaseline > 0
-    const liveMtd = forecast.mtd_usd + Math.max(sinceBaseline, 0)
+        : [];
+    if (sinceBaseline <= 0 && liveUnpricedEvents.length === 0) return forecast;
+    const liveUnpricedModels = mergeUnpricedModels(
+      forecast.unpriced_models,
+      liveUnpricedEvents,
+    );
+    const hasPricedLiveSpend = sinceBaseline > 0;
+    const liveMtd = forecast.mtd_usd + Math.max(sinceBaseline, 0);
     const liveProjected = hasPricedLiveSpend
       ? (liveMtd / Math.max(forecast.days_elapsed, 1)) * forecast.days_in_month
-      : forecast.projected_eom_usd
+      : forecast.projected_eom_usd;
     return {
       ...forecast,
-      ...(hasPricedLiveSpend ? { mtd_usd: liveMtd, projected_eom_usd: liveProjected } : {}),
+      ...(hasPricedLiveSpend
+        ? { mtd_usd: liveMtd, projected_eom_usd: liveProjected }
+        : {}),
       unpriced_models: liveUnpricedModels,
       ceiling_blind_to_unpriced_models: Math.max(
         forecast.ceiling_blind_to_unpriced_models ?? 0,
         liveUnpricedModels.length,
       ),
-    }
+    };
   }, [
     forecast,
     streamedCostUsd,
@@ -2224,7 +2534,7 @@ export default function SpendPage() {
     baselineForecast,
     baselineStreamedCostUsd,
     baselineStreamedUnpricedEventCount,
-  ])
+  ]);
 
   // NOTE: spend-breakdown invalidation on live spend events used to be a
   // bespoke, throttled useEffect here. bu-01r64.4 moved that coverage into
@@ -2241,26 +2551,26 @@ export default function SpendPage() {
   const overCeiling =
     !liveForecast?.ceiling_source_error &&
     liveForecast?.ceiling_usd != null &&
-    liveForecast.projected_eom_usd > liveForecast.ceiling_usd
+    liveForecast.projected_eom_usd > liveForecast.ceiling_usd;
 
   // What changed — explore window (daily stacked chart + movers). The shared
   // picker retains owner-timezone semantics after an operator supplies a
   // range. Its implicit fallback instead follows the Spend ledger's trailing
   // seven UTC days.
-  const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
-  const { setCustomRange } = timeWindow
-  const [spendSearchParams] = useSearchParams()
-  const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams)
-  const implicitUtcWindow = useMemo(() => utcDateWindow(7), [])
+  const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT);
+  const { setCustomRange } = timeWindow;
+  const [spendSearchParams] = useSearchParams();
+  const usesImplicitUtcWindow = !hasExplicitSpendRange(spendSearchParams);
+  const implicitUtcWindow = useMemo(() => utcDateWindow(7), []);
   const setImplicitSpendRange = useCallback(
     (from: Date, to: Date) => {
       setCustomRange(
         toExplicitSpendRangeDate(from),
         toExplicitSpendRangeDate(to),
-      )
+      );
     },
     [setCustomRange],
-  )
+  );
   const spendWindow = usesImplicitUtcWindow
     ? {
         ...timeWindow,
@@ -2269,23 +2579,23 @@ export default function SpendPage() {
         pollingDisabled: isPollingDisabled(implicitUtcWindow.to),
         setCustomRange: setImplicitSpendRange,
       }
-    : timeWindow
+    : timeWindow;
   const spendDateKeyTimezone = usesImplicitUtcWindow
     ? SPEND_UTC_DATE_KEY_TIMEZONE
-    : undefined
+    : undefined;
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
   // Reuses TimeWindowPicker's own preset setters -- "change window" from the
   // dispatch context.
   const spendWindowCommands = useMemo<PaletteCommand[]>(() => {
-    const commands: PaletteCommand[] = []
+    const commands: PaletteCommand[] = [];
     if (spendWindow.preset !== "today") {
       commands.push({
         id: "spend-window-today",
         label: "Change window: today",
         keywords: ["window", "range", "today"],
         perform: () => timeWindow.setPreset("today"),
-      })
+      });
     }
     if (spendWindow.preset !== "week") {
       commands.push({
@@ -2293,28 +2603,31 @@ export default function SpendPage() {
         label: "Change window: this week",
         keywords: ["window", "range", "week"],
         perform: () => timeWindow.setPreset("week"),
-      })
+      });
     }
-    return commands
+    return commands;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); spendWindow.preset is what actually varies the resulting command set.
-  }, [spendWindow.preset])
-  useRegisterCommands(spendWindowCommands)
+  }, [spendWindow.preset]);
+  useRegisterCommands(spendWindowCommands);
 
   const {
     data: dailyResponse,
     isLoading: dailyLoading,
     isError: dailyError,
   } = useDailySpend(spendWindow.from, spendWindow.to, {
-    refetchInterval: spendWindow.pollingDisabled ? false : SPEND_DAILY_POLL_OVERRIDE_MS,
+    refetchInterval: spendWindow.pollingDisabled
+      ? false
+      : SPEND_DAILY_POLL_OVERRIDE_MS,
     ...(spendDateKeyTimezone ? { dateKeyTimezone: spendDateKeyTimezone } : {}),
-  })
-  const dailySourceError = dailyResponse?.meta?.source_error === true
-  const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
+  });
+  const dailySourceError = dailyResponse?.meta?.source_error === true;
+  const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse]);
   // Butlers dropped from GET /api/spend/daily's fan-out — passed to the stacked
   // chart so vanished butlers are footnoted, not silently absent (bu-jad4j.3).
-  const dailyUnavailableButlers = dailyResponse?.meta?.unavailable_butlers ?? []
-  const dailyUnpricedModels = dailyResponse?.meta?.unpriced_models ?? []
-  const dailyDivergences = dailyResponse?.meta?.divergences ?? []
+  const dailyUnavailableButlers =
+    dailyResponse?.meta?.unavailable_butlers ?? [];
+  const dailyUnpricedModels = dailyResponse?.meta?.unpriced_models ?? [];
+  const dailyDivergences = dailyResponse?.meta?.divergences ?? [];
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
@@ -2322,14 +2635,22 @@ export default function SpendPage() {
   // would count the UTC end instant on an eighth local date outside UTC.
   const windowDays = usesImplicitUtcWindow
     ? 7
-    : differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1
+    : differenceInCalendarDays(spendWindow.to, spendWindow.from) + 1;
   const previousSpendWindow = useMemo(() => {
     if (usesImplicitUtcWindow) {
-      return utcDateWindow(windowDays, new Date(implicitUtcWindow.from.getTime() - 1))
+      return utcDateWindow(
+        windowDays,
+        new Date(implicitUtcWindow.from.getTime() - 1),
+      );
     }
-    const to = subDays(spendWindow.from, 1)
-    return { from: subDays(to, windowDays - 1), to }
-  }, [implicitUtcWindow.from, spendWindow.from, usesImplicitUtcWindow, windowDays])
+    const to = subDays(spendWindow.from, 1);
+    return { from: subDays(to, windowDays - 1), to };
+  }, [
+    implicitUtcWindow.from,
+    spendWindow.from,
+    usesImplicitUtcWindow,
+    windowDays,
+  ]);
 
   const {
     data: currentSummary,
@@ -2341,7 +2662,7 @@ export default function SpendPage() {
     spendWindow.to,
     undefined,
     spendDateKeyTimezone,
-  )
+  );
   const {
     data: priorSummary,
     isLoading: priorSummaryLoading,
@@ -2352,26 +2673,27 @@ export default function SpendPage() {
     previousSpendWindow.to,
     undefined,
     spendDateKeyTimezone,
-  )
-  const currentSummarySourceError = currentSummary?.data?.source_error === true
-  const priorSummarySourceError = priorSummary?.data?.source_error === true
-  const moversSourceError = currentSummarySourceError || priorSummarySourceError
+  );
+  const currentSummarySourceError = currentSummary?.data?.source_error === true;
+  const priorSummarySourceError = priorSummary?.data?.source_error === true;
+  const moversSourceError =
+    currentSummarySourceError || priorSummarySourceError;
   const comparisonUnpricedModels = useMemo(
     () => [
       ...(currentSummary?.data?.unpriced_models ?? []),
       ...(priorSummary?.data?.unpriced_models ?? []),
     ],
     [currentSummary, priorSummary],
-  )
-  const comparisonCoverageIncomplete = comparisonUnpricedModels.length > 0
+  );
+  const comparisonCoverageIncomplete = comparisonUnpricedModels.length > 0;
   const currentByButler =
     currentSummarySourceError || comparisonCoverageIncomplete
       ? {}
-      : (currentSummary?.data?.by_butler ?? {})
+      : (currentSummary?.data?.by_butler ?? {});
   const priorByButler =
     priorSummarySourceError || comparisonCoverageIncomplete
       ? {}
-      : (priorSummary?.data?.by_butler ?? {})
+      : (priorSummary?.data?.by_butler ?? {});
 
   return (
     <Page archetype="overview" title="Spend">
@@ -2394,7 +2716,9 @@ export default function SpendPage() {
           }
           comparisonUnpricedModels={comparisonUnpricedModels}
           moversLoading={currentSummaryLoading || priorSummaryLoading}
-          moversError={currentSummaryError || priorSummaryError || moversSourceError}
+          moversError={
+            currentSummaryError || priorSummaryError || moversSourceError
+          }
         />
 
         {/* Fleet-halt banner (bu-7o89u.3) — the ceiling IS denying dispatches
@@ -2409,14 +2733,20 @@ export default function SpendPage() {
             role="alert"
             aria-label="Projected spend exceeds the monthly ceiling"
           >
-            <span className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]" aria-hidden />
+            <span
+              className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]"
+              aria-hidden
+            />
             <p className="text-sm">
               Projected end-of-month spend{" "}
               <span className="tabular-nums font-medium">
                 {formatCostUsd(liveForecast.projected_eom_usd)}
               </span>{" "}
               exceeds the monthly ceiling of{" "}
-              <span className="tabular-nums font-medium">{formatCostUsd(liveForecast.ceiling_usd!)}</span>.
+              <span className="tabular-nums font-medium">
+                {formatCostUsd(liveForecast.ceiling_usd!)}
+              </span>
+              .
             </p>
           </div>
         )}
@@ -2425,7 +2755,10 @@ export default function SpendPage() {
         {forecastLoading && !liveForecast ? (
           <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
             {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60">
+              <div
+                key={i}
+                className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60"
+              >
                 <Skeleton className="h-3 w-20" />
                 <Skeleton className="h-8 w-16" />
               </div>
@@ -2460,11 +2793,16 @@ export default function SpendPage() {
             <div className="flex flex-col gap-1">
               <Eyebrow>Forecast</Eyebrow>
               <p className="text-xs text-muted-foreground">
-                Solid = actual MTD spend. Dashed = linear projection to end of month.
-                {liveForecast?.ceiling_usd != null ? " Red hairline = monthly ceiling." : ""}
+                Solid = actual MTD spend. Dashed = linear projection to end of
+                month.
+                {liveForecast?.ceiling_usd != null
+                  ? " Red hairline = monthly ceiling."
+                  : ""}
               </p>
             </div>
-            {liveForecast && <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />}
+            {liveForecast && (
+              <CeilingEdit currentCeiling={liveForecast.ceiling_usd} />
+            )}
           </div>
           <div className="p-4">
             {forecastLoading && !liveForecast ? (
@@ -2480,45 +2818,50 @@ export default function SpendPage() {
                 ceiling_usd={null}
               />
             ) : liveForecast ? (
-              <ForecastChart days={liveForecast.days} ceiling_usd={liveForecast.ceiling_usd} />
-            ) : forecastError ? (
-              // Outage already announced in the posture slot above; render
-              // nothing here rather than "No forecast data is available yet.",
-              // which would contradict it by reading as a genuine empty
-              // (bu-mkd5r, three-way state contract).
-              null
-            ) : (
+              <ForecastChart
+                days={liveForecast.days}
+                ceiling_usd={liveForecast.ceiling_usd}
+              />
+            ) : forecastError ? // Outage already announced in the posture slot above; render
+            // nothing here rather than "No forecast data is available yet.",
+            // which would contradict it by reading as a genuine empty
+            // (bu-mkd5r, three-way state contract).
+            null : (
               <p className="font-serif italic text-muted-foreground text-sm">
                 No forecast data is available yet.
               </p>
             )}
-            {liveForecast && (liveForecast.unavailable_butlers?.length ?? 0) > 0 && (
-              // Butlers dropped from the per-day fan-out powering the solid
-              // actuals above (independent of ceiling_source_error) -- the
-              // chart's actuals undercount, so name the gap (bu-jad4j.3 style).
-              <SourceDegradedNote
-                className="mt-3"
-                label="Forecast actuals"
-                detail={`excluded, cost source unavailable: ${liveForecast.unavailable_butlers!.join(", ")}`}
-                testId="forecast-unavailable-butlers"
-              />
-            )}
-            {liveForecast && (liveForecast.ceiling_blind_to_unpriced_models ?? 0) > 0 && (
-              <SourceDegradedNote
-                className="mt-3"
-                label="Monthly ceiling"
-                detail={`blind to ${liveForecast.ceiling_blind_to_unpriced_models} unpriced model${liveForecast.ceiling_blind_to_unpriced_models === 1 ? "" : "s"}: ${unpricedModelNames(liveForecast.unpriced_models)}`}
-                testId="forecast-unpriced"
-              />
-            )}
-            {liveForecast && liveForecast.divergences && liveForecast.divergences.length > 0 && (
-              <SourceDegradedNote
-                className="mt-3"
-                label="Forecast attribution"
-                detail={`ledger/session token drift in ${liveForecast.divergences.length} day-butler bucket${liveForecast.divergences.length === 1 ? "" : "s"}`}
-                testId="forecast-divergence"
-              />
-            )}
+            {liveForecast &&
+              (liveForecast.unavailable_butlers?.length ?? 0) > 0 && (
+                // Butlers dropped from the per-day fan-out powering the solid
+                // actuals above (independent of ceiling_source_error) -- the
+                // chart's actuals undercount, so name the gap (bu-jad4j.3 style).
+                <SourceDegradedNote
+                  className="mt-3"
+                  label="Forecast actuals"
+                  detail={`excluded, cost source unavailable: ${liveForecast.unavailable_butlers!.join(", ")}`}
+                  testId="forecast-unavailable-butlers"
+                />
+              )}
+            {liveForecast &&
+              (liveForecast.ceiling_blind_to_unpriced_models ?? 0) > 0 && (
+                <SourceDegradedNote
+                  className="mt-3"
+                  label="Monthly ceiling"
+                  detail={`blind to ${liveForecast.ceiling_blind_to_unpriced_models} unpriced model${liveForecast.ceiling_blind_to_unpriced_models === 1 ? "" : "s"}: ${unpricedModelNames(liveForecast.unpriced_models)}`}
+                  testId="forecast-unpriced"
+                />
+              )}
+            {liveForecast &&
+              liveForecast.divergences &&
+              liveForecast.divergences.length > 0 && (
+                <SourceDegradedNote
+                  className="mt-3"
+                  label="Forecast attribution"
+                  detail={`ledger/session token drift in ${liveForecast.divergences.length} day-butler bucket${liveForecast.divergences.length === 1 ? "" : "s"}`}
+                  testId="forecast-divergence"
+                />
+              )}
             {liveForecast?.divergence_source_error && (
               <SourceDegradedNote
                 className="mt-3"
@@ -2544,7 +2887,9 @@ export default function SpendPage() {
           prior={priorByButler}
           windowDays={windowDays}
           isLoading={currentSummaryLoading || priorSummaryLoading}
-          isError={currentSummaryError || priorSummaryError || moversSourceError}
+          isError={
+            currentSummaryError || priorSummaryError || moversSourceError
+          }
           unavailableButlers={
             new Set([
               ...(currentSummary?.data?.unavailable_butlers ?? []),
@@ -2561,7 +2906,9 @@ export default function SpendPage() {
             <TimeWindowPicker
               window={spendWindow}
               formatDate={(date) => formatCostDate(date, spendDateKeyTimezone)}
-              parseDate={usesImplicitUtcWindow ? parseSpendUtcDateKey : undefined}
+              parseDate={
+                usesImplicitUtcWindow ? parseSpendUtcDateKey : undefined
+              }
             />
           </div>
           <div className="p-4">
@@ -2626,5 +2973,5 @@ export default function SpendPage() {
         <SpendRulesSection />
       </div>
     </Page>
-  )
+  );
 }

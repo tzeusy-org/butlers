@@ -302,12 +302,13 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             Omit both for all-time totals.
 
             Each schedule carries what was MEASURED in that window
-            (``total_runs`` and the token totals) alongside a FORECAST derived
-            from the cron expression alone: ``runs_per_month``, how often it
-            fires in an average calendar month, and ``forecast_basis``, the
-            statement of the basis that was computed on. Do not report a
-            forecast as observed history. ``runs_per_month`` is ``0.0`` when the
-            cron expression could not be parsed, which means "cadence unknown",
-            not "never runs".
+            (``total_runs`` and the token totals) alongside one FORECAST field
+            derived from the cron expression alone: ``projected_monthly_runs``,
+            how often it fires in an average calendar month. The top-level
+            ``forecast_basis`` states, once, what that was computed on. Do not
+            report a forecast as observed history. ``projected_monthly_runs`` is
+            ``0.0`` when the cadence could not be established -- an unparseable
+            expression, one that never fires, or one too dense to sample -- which
+            means "cadence unknown", not "never runs".
             """
             return await _schedule_costs(pool, from_date, to_date)

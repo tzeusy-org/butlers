@@ -107,7 +107,8 @@ export interface BoardRow {
   type: "butler" | "staffer";
   description: string | null;
   status: string;
-  activity: "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown";
+  activity:
+    "running" | "idle" | "overdue" | "offline" | "quarantined" | "unknown";
   cell_tone: "green" | "amber" | "red" | "neutral";
   eligibility: "active" | "quarantined" | "stale" | "unavailable";
   quarantine_reason: string | null;
@@ -712,6 +713,12 @@ export interface TopSession {
 export interface SpendFanoutMeta extends ApiMeta {
   /** Names of butlers whose legacy evidence source failed and was omitted. */
   unavailable_butlers?: string[];
+  /**
+   * By-schedule only: prose statement of what `projected_monthly_*` was
+   * computed on. A constant of the estimator, so it is stated once here rather
+   * than copied onto every row.
+   */
+  forecast_basis?: string;
   /** Ledger-first daily attribution truthfulness metadata. */
   unpriced_models?: UnpricedModelUsage[];
   divergences?: SpendDivergence[];
@@ -738,9 +745,10 @@ export interface TopSessionsResponse {
  * Two groups that must never be rendered as one (bu-6jv4m.2): `total_runs`,
  * `total_cost_usd` and `avg_cost_per_run` are MEASURED over the queried range;
  * `projected_monthly_runs` and `projected_monthly_usd` are a FORECAST from the
- * cron cadence, computed on the basis stated verbatim in `forecast_basis`.
- * `projected_monthly_runs === 0` means the cron could not be parsed -- there is
- * no forecast, which is not the same claim as "this schedule costs nothing".
+ * cron cadence, computed on the basis stated verbatim once per response in
+ * `meta.forecast_basis` (it is a constant, so it is not repeated on each row).
+ * `projected_monthly_runs === 0` means the cadence could not be established --
+ * there is no forecast, which is not the same claim as "this costs nothing".
  */
 export interface ScheduleCost {
   schedule_name: string;
@@ -751,7 +759,6 @@ export interface ScheduleCost {
   avg_cost_per_run: number;
   projected_monthly_runs: number;
   projected_monthly_usd: number;
-  forecast_basis: string;
 }
 
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
@@ -908,9 +915,7 @@ export type CalendarWorkspaceView = "user" | "butler";
  * fetched as an additive layer, not a primary view mode.
  */
 export type CalendarWorkspaceQueryView =
-  | CalendarWorkspaceView
-  | "proposals"
-  | "overlays";
+  CalendarWorkspaceView | "proposals" | "overlays";
 
 /** Unified source categories for calendar entries. */
 export type UnifiedCalendarSourceType =
@@ -923,10 +928,7 @@ export type UnifiedCalendarSourceType =
 
 /** Freshness state returned by workspace source metadata. */
 export type CalendarWorkspaceSyncState =
-  | "fresh"
-  | "stale"
-  | "syncing"
-  | "failed";
+  "fresh" | "stale" | "syncing" | "failed";
 
 /** Normalized event row returned by GET /api/calendar/workspace. */
 /**
@@ -1122,11 +1124,7 @@ export interface CalendarWorkspaceSourceFreshness {
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */
 export type CalendarWorkspaceErrorKind =
-  | "none"
-  | "token_expired"
-  | "auth"
-  | "not_found"
-  | "transient";
+  "none" | "token_expired" | "auth" | "not_found" | "transient";
 
 /** Butler lane descriptor used by butler-view layouts. */
 export interface CalendarWorkspaceLaneDefinition {
@@ -1478,10 +1476,7 @@ export interface CalendarIcsImportResponse {
 
 /** Per-account Google Calendar connector health state. */
 export type CalendarAccountHealthState =
-  | "healthy"
-  | "degraded"
-  | "error"
-  | "unknown";
+  "healthy" | "degraded" | "error" | "unknown";
 
 /** Per-account Google Calendar connector health. */
 export interface CalendarAccountHealth {
@@ -1541,11 +1536,7 @@ export interface SetPrimaryCalendarResponse {
 
 /** Computed-status facet values accepted by GET /api/calendar/workspace. */
 export type CalendarWorkspaceStatusFacet =
-  | "active"
-  | "paused"
-  | "cancelled"
-  | "error"
-  | "completed";
+  "active" | "paused" | "cancelled" | "error" | "completed";
 
 /** Query parameters for GET /api/calendar/workspace. */
 export interface CalendarWorkspaceParams {
@@ -1632,18 +1623,11 @@ export interface CalendarWorkspaceSyncResponse {
 
 /** Allowed mutation actions for user-view calendar events. */
 export type CalendarWorkspaceUserMutationAction =
-  | "create"
-  | "update"
-  | "delete";
+  "create" | "update" | "delete";
 
 /** Allowed actions for butler-lane event mutations. */
 export type CalendarWorkspaceButlerMutationAction =
-  | "create"
-  | "update"
-  | "delete"
-  | "toggle"
-  | "dismiss"
-  | "snooze";
+  "create" | "update" | "delete" | "toggle" | "dismiss" | "snooze";
 
 /**
  * Request payload for POST /api/calendar/workspace/user-events.
@@ -1716,8 +1700,7 @@ export interface CalendarWorkspaceFindTimeResponse {
 /** Response payload for calendar workspace mutation endpoints. */
 export interface CalendarWorkspaceMutationResponse {
   action:
-    | CalendarWorkspaceUserMutationAction
-    | CalendarWorkspaceButlerMutationAction;
+    CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;
   tool_name: string;
   request_id: string | null;
   result: Record<string, unknown>;
@@ -2406,11 +2389,7 @@ export interface MeasurementTrendResponse {
 
 /** The five measurement types the Health butler recognizes for direct CRUD. */
 export type MeasurementType =
-  | "weight"
-  | "blood_pressure"
-  | "heart_rate"
-  | "blood_sugar"
-  | "temperature";
+  "weight" | "blood_pressure" | "heart_rate" | "blood_sugar" | "temperature";
 
 /**
  * Request body for logging a measurement (POST /health/measurements).
@@ -3131,15 +3110,9 @@ export interface ApprovalEvidence {
 
 export type ApprovalBlastRadius = "none" | "self" | "contact" | "external";
 export type ApprovalReversibility =
-  | "reversible"
-  | "compensable"
-  | "irreversible";
+  "reversible" | "compensable" | "irreversible";
 export type ApprovalPushOutcome =
-  | "delivered"
-  | "deferred"
-  | "collapsed"
-  | "duplicate"
-  | "failed";
+  "delivered" | "deferred" | "collapsed" | "duplicate" | "failed";
 
 export interface ApprovalAction {
   id: string;
@@ -3530,17 +3503,10 @@ export interface UpsertAppCredentialsResponse {
 // ---------------------------------------------------------------------------
 
 export type CLIAuthSessionState =
-  | "starting"
-  | "awaiting_auth"
-  | "success"
-  | "failed"
-  | "expired";
+  "starting" | "awaiting_auth" | "success" | "failed" | "expired";
 
 export type CLIAuthHealthState =
-  | "authenticated"
-  | "not_authenticated"
-  | "unavailable"
-  | "probe_failed";
+  "authenticated" | "not_authenticated" | "unavailable" | "probe_failed";
 
 export interface CLIAuthProvider {
   name: string;
@@ -3602,12 +3568,7 @@ export interface SecretEntry {
 
 /** Known secret categories for grouping. */
 export type SecretCategory =
-  | "core"
-  | "telegram"
-  | "email"
-  | "google"
-  | "gemini"
-  | "general";
+  "core" | "telegram" | "email" | "google" | "gemini" | "general";
 
 /** Predefined secret key templates with descriptions and auto-detected categories. */
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
@@ -4585,11 +4546,7 @@ export interface IngestionRuleListParams {
 
 /** Runtime priority-action vocabulary (src/butlers/ingestion_policy.py). */
 export type ChannelDefaultPriorityAction =
-  | "pass_through"
-  | "block"
-  | "skip"
-  | "metadata_only"
-  | "low_priority_queue";
+  "pass_through" | "block" | "skip" | "metadata_only" | "low_priority_queue";
 
 /** A channel's default policy document. */
 export interface ChannelDefaultPolicy {
@@ -4760,12 +4717,7 @@ export interface ConnectorRoutingRulesResponse {
 
 /** Valid complexity tier values for the model catalog (canonical six). */
 export type ComplexityTier =
-  | "reasoning"
-  | "workhorse"
-  | "cheap"
-  | "specialty"
-  | "local"
-  | "legacy";
+  "reasoning" | "workhorse" | "cheap" | "specialty" | "local" | "legacy";
 
 /** Per-model pricing (USD per 1M tokens). Keyed by model_id. */
 export interface ModelPricingEntry {
@@ -4958,10 +4910,7 @@ export interface TokenUsageDetail {
 
 /** Connection/session state for the WhatsApp account. */
 export type WhatsAppState =
-  | "connected"
-  | "disconnected"
-  | "pair_required"
-  | "not_configured";
+  "connected" | "disconnected" | "pair_required" | "not_configured";
 
 /** Status of an ongoing QR pairing attempt. */
 export type WhatsAppPairStatus = "waiting" | "paired" | "expired";
@@ -5052,7 +5001,8 @@ export interface SpotifyDisconnectResponse {
  * (src/butlers/api/models/owntracks.py) exactly — keep these literals in
  * sync with that enum.
  */
-export type OwnTracksState = "connected" | "no_events" | "stale" | "not_configured" | "offline";
+export type OwnTracksState =
+  "connected" | "no_events" | "stale" | "not_configured" | "offline";
 
 /** Response from GET /api/connectors/owntracks/status */
 export interface OwnTracksStatusResponse {
@@ -5085,9 +5035,7 @@ export interface OwnTracksTokenResponse {
 
 /** Connection state for the Home Assistant integration. */
 export type HomeAssistantState =
-  | "connected"
-  | "disconnected"
-  | "not_configured";
+  "connected" | "disconnected" | "not_configured";
 
 /** Response from GET /api/settings/home-assistant */
 export interface HomeAssistantStatusResponse {
@@ -5469,7 +5417,8 @@ export type QaPatrolStatus =
  * Patrol reads stay open to a malformed or future database value so the UI can
  * make that condition visible through its fail-closed presentation.
  */
-export type QaPatrolReadStatus = QaPatrolStatus | (string & { readonly __qaPatrolStatus?: never });
+export type QaPatrolReadStatus =
+  QaPatrolStatus | (string & { readonly __qaPatrolStatus?: never });
 
 /** Lightweight patrol record for list views — GET /api/qa/patrols */
 export interface QaPatrolSummary {
@@ -5710,7 +5659,8 @@ export interface QaJournalEvent {
 /** Full case payload for the QA dossier renderer — GET /api/qa/cases/:id */
 export interface QaCaseDossier {
   case: QaCaseSummary;
-  state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
+  state_track_stage:
+    "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
   fingerprint: string | null;
   dismissal: QaActiveDismissal | null;
@@ -5901,10 +5851,7 @@ export interface RuntimeConfigPatchResponse {
  * value over its heartbeat.
  */
 export type GoogleHealthConnectorState =
-  | "healthy"
-  | "degraded"
-  | "error"
-  | "not_configured";
+  "healthy" | "degraded" | "error" | "not_configured";
 
 /** Per-account connector state — one entry per health-scoped Google account. */
 export interface GoogleHealthAccountStatus {
@@ -6342,7 +6289,8 @@ export interface ChroniclerEvidenceChainLink {
   event_type: string;
   occurred_at: string;
   /** How the point-event relates to the activity. */
-  relation: "supports" | "boundary_start" | "boundary_end" | "evidence" | string;
+  relation:
+    "supports" | "boundary_start" | "boundary_end" | "evidence" | string;
   /** Human-readable label — the event title, else a source/type fallback. */
   descriptor: string;
   privacy: string;
@@ -6488,8 +6436,7 @@ export interface ChroniclerDayCloseRefreshQuietResponse {
 
 /** POST /aggregate/day-close/refresh success shape. */
 export type ChroniclerDayCloseRefreshResult =
-  | ChroniclerDayCloseRefreshResponse
-  | ChroniclerDayCloseRefreshQuietResponse;
+  ChroniclerDayCloseRefreshResponse | ChroniclerDayCloseRefreshQuietResponse;
 
 /** Required body for POST /api/chronicler/aggregate/day-close/refresh. */
 export interface ChroniclerDayCloseRefreshRequest {
@@ -7200,12 +7147,7 @@ export interface DeploymentFacts {
  * swallowed fetch failure can never compose "quiet".
  */
 export type BriefingStateClass =
-  | "urgent"
-  | "busy"
-  | "mild"
-  | "degraded-quiet"
-  | "degraded"
-  | "quiet";
+  "urgent" | "busy" | "mild" | "degraded-quiet" | "degraded" | "quiet";
 
 /** Whether the elaboration paragraph came from the LLM or the templated fallback. */
 export type BriefingSource = "llm" | "fallback";
@@ -7241,10 +7183,12 @@ export type ChroniclesContentStateClass = "urgent" | "busy" | "mild" | "quiet";
  * state-specific copy for these three — never a cached (fresh or stale)
  * day-close summary (clarify-chronicles-narrative-truth design.md decision 3).
  */
-export type ChroniclesNonContentStateClass = "no_data" | "unavailable" | "degraded";
+export type ChroniclesNonContentStateClass =
+  "no_data" | "unavailable" | "degraded";
 
 /** State classes the chronicles briefing classifier produces. */
-export type ChroniclesStateClass = ChroniclesContentStateClass | ChroniclesNonContentStateClass;
+export type ChroniclesStateClass =
+  ChroniclesContentStateClass | ChroniclesNonContentStateClass;
 
 /** Source of the voice paragraph in the chronicles briefing. */
 export type ChroniclesVoiceSource = "llm·cached" | "templated" | "stale";
@@ -7283,7 +7227,8 @@ export interface ChroniclesRecentDay {
   episode_count: number;
 }
 
-export type ChroniclesSubqueryAvailabilityState = "available" | "unavailable" | "not_requested";
+export type ChroniclesSubqueryAvailabilityState =
+  "available" | "unavailable" | "not_requested";
 
 /** Availability of an owned Chronicles briefing read.
  * `unavailable` is a failed source; `not_requested` is intentionally skipped
@@ -7854,9 +7799,7 @@ export interface LatencyStatsParams {
 
 /** Discriminated event type for activity feed entries. */
 export type ActivityEventType =
-  | "session_completed"
-  | "approval_raised"
-  | "memory_write";
+  "session_completed" | "approval_raised" | "memory_write";
 
 /** A single event in the butler activity feed. */
 export interface ButlerActivityEvent {
@@ -8094,10 +8037,7 @@ export interface HaloResponse {
  * - ``predicate``    — query matches a predicate label (score 30)
  */
 export type EntityFinderMatchKind =
-  | "prefix"
-  | "contact_fact"
-  | "substring"
-  | "predicate";
+  "prefix" | "contact_fact" | "substring" | "predicate";
 
 /** A single result from GET /api/butlers/relationship/entities/search. */
 export interface EntityFinderSearchResult {

@@ -3,9 +3,10 @@
 ### Requirement: Schedule Cadence Forecast
 
 The by-schedule projection SHALL be derived from the cron expression's own
-cadence over an average Gregorian calendar month, and SHALL be presented
-separately from the cost measured over the queried range, with the basis it was
-computed on carried in the payload.
+cadence over an average Gregorian calendar month, measured over a whole number
+of that expression's own repeat cycles, and SHALL be presented separately from
+the cost measured over the queried range, with the basis it was computed on
+stated once per response.
 
 ID: REQ-dashboard-spend-dashboard-002
 Source: dashboard-spend-dashboard Spend API "a code-level TODO marks the location of the smarter estimator for a future change"; bu-6jv4m.2; design.md Decisions 1-3
@@ -15,13 +16,20 @@ Scope: v1-mandatory
 
 - **WHEN** `butlers.core.sessions.schedule_costs` builds a row for a schedule
   whose `cron` croniter can parse
-- **THEN** it emits `runs_per_month`, the number of times that expression fires
-  in an average Gregorian calendar month of `365.2425 / 12 = 30.436875` days,
-  and `forecast_basis`, a human-readable statement of that basis containing the
-  literal number `30.436875`
-- **AND** `GET /api/spend/by-schedule` returns them as `projected_monthly_runs`
-  and `forecast_basis` on each `ScheduleCost`, so a reader never has to infer
-  what the projection was multiplied by
+- **THEN** it emits `projected_monthly_runs`, the number of times that
+  expression fires in an average Gregorian calendar month of
+  `365.2425 / 12 = 30.436875` days, and states `forecast_basis` once beside the
+  rows: a human-readable statement of that basis containing the literal number
+  `30.436875`
+- **AND** `GET /api/spend/by-schedule` returns `projected_monthly_runs` on each
+  `ScheduleCost` and `forecast_basis` on the response envelope
+  (`meta.forecast_basis`), so a reader never has to infer what the projection
+  was multiplied by. The basis is a constant of the estimator: it is stated once
+  per response rather than copied onto every row, where the repetition would
+  imply it could vary by schedule
+- **AND** the quantity carries the same name on both sides of the boundary --
+  `projected_monthly_runs` in the `schedule_costs` payload and in
+  `ScheduleCost` -- so one name locates every producer and consumer of it
 - **AND** `projected_monthly_usd = avg_cost_per_run × projected_monthly_runs`
   exactly — no other multiplier appears anywhere in the chain. The replaced
   behavior was a hardcoded `× 30` applied to a next-24-hours occurrence count,
@@ -39,32 +47,47 @@ Scope: v1-mandatory
   or a Thursday, where the replaced estimator read 1 run/day on Mondays and 0 on
   every other day.
 
-#### Scenario: A capped high-frequency count is measured over a whole cycle
+#### Scenario: The counting window is a whole number of the expression's own cycles
 
-- **WHEN** an expression exhausts the occurrence cap before the four-year
-  sampling horizon (an hourly or per-minute cron does)
-- **THEN** the sampling window is truncated to the longest whole calendar cycle
-  that fits inside the span actually sampled — whole years, else whole weeks,
-  else whole days — and the occurrences are recounted inside that truncated
-  window before the rate is taken
-- **AND** a seasonal expression is therefore not measured over its dense season
-  alone: `0 * * 1 *` (hourly, but only in January) projects `744 / 12 = 62` runs
-  a month, not the ~81 that dividing by the raw capped span produces
-- **AND** an expression that happens to fire exactly the cap's worth of times
-  across the whole horizon is recognised as fully sampled and is not truncated.
+- **WHEN** the estimator sizes the window it will count occurrences in
+- **THEN** the length is decided by which calendar fields the expression
+  restricts, not by how much sampling happened to fit: a restricted
+  day-of-month or month (or an `L`/`#` day-of-week form) repeats annually and is
+  measured over a calendar year; a restricted day-of-week repeats weekly and is
+  measured over seven days; an expression restricting neither repeats daily and
+  is measured over one day
+- **AND** a seasonal expression is therefore never measured over its dense
+  season alone: `0 * * 1 *` (hourly, but only in January) projects `744 / 12 =
+  62` runs a month, where taking the rate over a window that stops inside a
+  January reports ~81, and `* * * 1 *` (per-minute, January only) would report
+  ~43,829 against a true 3,720
+- **AND** a day-of-week-restricted expression is measured over a whole week
+  regardless of which weekday it names, since a window shorter than its cycle
+  under-reports every weekday except the anchor's own: `* * * * 3` measured over
+  whole days alone reads ~4,873 against a true 6,261
+- **AND** an annual expression that a single calendar year misses entirely
+  (`0 9 29 2 *`) widens to a whole four-year leap cycle rather than being
+  reported as never firing.
 
-#### Scenario: An unparseable cron projects nothing rather than a number
+#### Scenario: A cadence that cannot be established projects nothing rather than a number
 
-- **WHEN** a schedule's `cron` cannot be parsed by croniter
+- **WHEN** a schedule's `cron` cannot be parsed by croniter, can never occur
+  (`0 0 30 2 *` is well-formed and 30 February is not a date), or is too dense
+  for a whole cycle of it to be enumerated within the estimator's occurrence
+  ceiling
 - **THEN** the cadence estimator returns `0.0` and does not raise —
   `_schedule_costs_from_data` builds every row of the by-schedule response, so a
-  raised exception on one bad cron string would take out the whole response
+  raised exception on one pathological cron string would take out the whole
+  response, and croniter raises `CroniterBadDateError` while enumerating an
+  expression its own validity check accepts
 - **AND** `projected_monthly_runs` and `projected_monthly_usd` are both `0`,
   while the measured `total_runs` and `total_cost_usd` for that schedule are
   still reported truthfully
 - **AND** the UI renders the two forecast cells as an em dash rather than
   `$0.00`, because "this cadence cannot be forecast" and "this schedule costs
-  nothing" are different claims.
+  nothing" are different claims. Declining to forecast is the required
+  behaviour for a too-dense expression: a rate taken over a fraction of its
+  cycle is a plausible-looking wrong number.
 
 ### Requirement: Routing Rule Deletion Safety
 
@@ -124,10 +147,14 @@ Scope: v1-mandatory
 #### Scenario: A failed restore surfaces the rule it could not put back
 
 - **WHEN** the restore request fails
-- **THEN** the removed rule's `condition` and `action` are displayed
-  persistently, not only in a toast that expires, so the owner can re-create the
-  rule by hand — the rule is already gone from the server, and a bare "failed"
-  would have destroyed it and told no one
+- **THEN** the removed rule's `position`, `condition` and `action` are displayed
+  persistently, not only in a toast that expires — the rule is already gone from
+  the server, and a bare "failed" would have destroyed it and told no one
+- **AND** the display is recoverable, not merely visible: the complete
+  definition is rendered as selectable, copyable text equal to the request body
+  that re-creates the rule, so reconstructing it by hand is a transcription
+  rather than a guess. A prose description the owner can read but cannot act on
+  does not satisfy this
 - **AND** the restore affordance remains active so the request can be retried.
 
 #### Scenario: Delete, restore, and reorder are serialized against each other
@@ -170,9 +197,9 @@ The dashboard SHALL expose the spend endpoints.
 
 #### Scenario: Spend by-schedule aggregation
 - **WHEN** `GET /api/spend/by-schedule` (or `?by=feature` on `/api/spend/breakdown`) is called and a schedule ran under 2+ models within the queried window
-- **THEN** the response contains exactly one `ScheduleCost` entry per `(butler, schedule_name)` — the per-butler fan-out prices each `(schedule, model)` fragment individually (pricing is model-specific) but merges same-named fragments into a single bucket (summed `total_runs` and `total_cost_usd`; `projected_monthly_runs` and `forecast_basis` taken once, since they derive only from the cron) before returning
+- **THEN** the response contains exactly one `ScheduleCost` entry per `(butler, schedule_name)` — the per-butler fan-out prices each `(schedule, model)` fragment individually (pricing is model-specific) but merges same-named fragments into a single bucket (summed `total_runs` and `total_cost_usd`; `projected_monthly_runs` taken once, since it derives only from the cron) before returning
 - **AND** `avg_cost_per_run` and `projected_monthly_usd` are computed from the merged totals, not from any individual model fragment — a multi-model schedule must never under-rank its true burn or produce duplicate `(butler, schedule_name)` rows (the frontend keys table rows on `${butler}-${schedule_name}`)
-- **AND** `ScheduleCost` carries two groups of fields that are not interchangeable: `total_runs`, `total_cost_usd` and `avg_cost_per_run` are MEASURED over the queried range, while `projected_monthly_runs`, `projected_monthly_usd` and `forecast_basis` are a FORECAST, specified by "Requirement: Schedule Cadence Forecast"
+- **AND** `ScheduleCost` carries two groups of fields that are not interchangeable: `total_runs`, `total_cost_usd` and `avg_cost_per_run` are MEASURED over the queried range, while `projected_monthly_runs` and `projected_monthly_usd` are a FORECAST, specified by "Requirement: Schedule Cadence Forecast", computed on the basis stated once in `meta.forecast_basis`
 - **AND** the payload key is `projected_monthly_runs`, replacing `runs_per_day`. This is a contract change on the `schedule_costs` core MCP tool as well as on the HTTP response, since butler LLM sessions read that tool's output keys. The value is computed on read from a live query and never persisted, so no migration, dual-read, or backfill is involved.
 
 #### Scenario: DB-first evidence for top-sessions and by-schedule

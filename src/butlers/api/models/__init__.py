@@ -467,7 +467,11 @@ class ScheduleCost(BaseModel):
     ``total_cost_usd`` and ``avg_cost_per_run`` are MEASURED over the queried
     range. ``projected_monthly_runs`` and ``projected_monthly_usd`` are a
     FORECAST derived from the cron expression's cadence, on the basis stated
-    verbatim in ``forecast_basis``.
+    verbatim in the response envelope's ``meta.forecast_basis`` -- one statement
+    per response, since the basis is a constant and cannot vary by schedule.
+
+    ``projected_monthly_runs == 0`` means the cadence could not be established,
+    not that the schedule never runs.
     """
 
     schedule_name: str
@@ -480,7 +484,6 @@ class ScheduleCost(BaseModel):
     # Forecast, from the cron cadence. See butlers.core.sessions for the basis.
     projected_monthly_runs: float
     projected_monthly_usd: float
-    forecast_basis: str
 
 
 # ---------------------------------------------------------------------------
