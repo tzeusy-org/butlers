@@ -59,8 +59,7 @@ const MOCK_INVENTORY_RESPONSE = {
       {
         id: "u-google-tze",
         entity_id: "tze",
-        type: "google_oauth_refresh",
-        label: "Google (tze)",
+        provider: "google",
         state: "ok",
         fingerprint: "sha256:7a3f9e2c",
         last_verified: "14:21 today",
@@ -69,8 +68,7 @@ const MOCK_INVENTORY_RESPONSE = {
       {
         id: "u-ha-tze",
         entity_id: "tze",
-        type: "home_assistant_token",
-        label: "Home Assistant (tze)",
+        provider: "homeassistant",
         state: "never_set",
         fingerprint: null,
         last_verified: null,
@@ -1005,8 +1003,7 @@ test.describe("Provider drawers (C32-C36)", () => {
     inventoryWithOT.data.user.push({
       id: "u-owntracks-tze",
       entity_id: "tze",
-      type: "owntracks_token",
-      label: "OwnTracks (tze)",
+      provider: "owntracks",
       state: "ok",
       fingerprint: "sha256:ottrack",
       last_verified: "11:00 today",
@@ -1042,8 +1039,7 @@ test.describe("Provider drawers (C32-C36)", () => {
     inventoryWithOT.data.user.push({
       id: "u-owntracks-tze",
       entity_id: "tze",
-      type: "owntracks_token",
-      label: "OwnTracks (tze)",
+      provider: "owntracks",
       state: "ok",
       fingerprint: "sha256:ottrack",
       last_verified: "11:00 today",
@@ -1080,8 +1076,7 @@ test.describe("Provider drawers (C32-C36)", () => {
     inventoryWithSteam.data.user.push({
       id: "u-steam-tze",
       entity_id: "tze",
-      type: "steam_api_key",
-      label: "Steam (tze)",
+      provider: "steam",
       state: "ok",
       fingerprint: "sha256:steam1",
       last_verified: "10:00 today",
@@ -1146,8 +1141,7 @@ test.describe("Provider drawers (C32-C36)", () => {
     inventoryWithWA.data.user.push({
       id: "u-whatsapp-tze",
       entity_id: "tze",
-      type: "whatsapp_session",
-      label: "WhatsApp (tze)",
+      provider: "whatsapp",
       state: "ok",
       fingerprint: "sha256:wa1234",
       last_verified: "09:00 today",

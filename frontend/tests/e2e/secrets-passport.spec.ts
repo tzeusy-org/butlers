@@ -36,7 +36,9 @@ import { test, expect } from "@playwright/test";
 // must mirror the actual API shape, not the already-adapted frontend types.
 //
 // Key differences from the old frontend-only mock:
-//   - user[].type  (not .provider) — e.g. "google_oauth_refresh"
+//   - user[] is the content-blind UserSecretSummary shape (bu-iph56): a
+//     clamped provider slug, capability categories, and no entity_info type,
+//     label, probe message, or audit note
 //   - user[].entity_id (not .identity) — entity UUID
 //   - identities[].entity_id (not .id)
 //   - identities[].name (not .label)
@@ -52,8 +54,7 @@ const MOCK_INVENTORY_RESPONSE = {
       {
         id: "u-google-tze",
         entity_id: "tze",
-        type: "google_oauth_refresh",
-        label: "Google (tze)",
+        provider: "google",
         state: "ok",
         fingerprint: "sha256:7a3f9e2c",
         last_verified: "14:21 today",
@@ -62,8 +63,7 @@ const MOCK_INVENTORY_RESPONSE = {
       {
         id: "u-google-wei",
         entity_id: "wei",
-        type: "google_oauth_refresh",
-        label: "Google (wei)",
+        provider: "google",
         state: "ok",
         fingerprint: "sha256:aa1122bb",
         last_verified: "12:00 today",

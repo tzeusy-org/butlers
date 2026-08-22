@@ -52,7 +52,7 @@ import {
   USER_SECRET_TEMPLATES,
   ENTITY_INFO_TYPES,
   entityInfoTypeLabel,
-  userSecretProvenanceForTypes,
+  userSecretProvenanceForProvider,
 } from "@/lib/user-secret-templates.ts";
 import {
   useCliDeviceAuth,
@@ -360,19 +360,35 @@ function hasHealthScopes(grantedScopes: string[]): boolean {
 }
 
 /**
- * Derive the Google credential's Voice-paragraph brief from its actually
- * granted scopes (bu-eptoz) instead of a static per-provider string — the
- * static "Calendar, Gmail, Drive read." brief went stale the moment Health
- * scopes could also be granted (#2965). Falls back to the provider's static
- * `brief` when no recognized family is present in `scopesGranted` (e.g. the
- * per-credential granted-scope list is empty/untracked for this row).
+ * Display labels for the backend's fixed CAPABILITY_VOCABULARY (bu-iph56).
+ * 'other' has no honest display name — a capability the backend could not
+ * classify is not evidence of any particular access — so it is absent here
+ * and drops out of derived briefs rather than rendering as "Other access."
  */
-function deriveGoogleBrief(scopesGranted: string[], fallback: string): string {
-  const families: string[] = [];
-  if (scopesGranted.some((s) => s.includes("calendar"))) families.push("Calendar");
-  if (scopesGranted.some((s) => s.includes("gmail"))) families.push("Gmail");
-  if (scopesGranted.some((s) => s.includes("drive"))) families.push("Drive");
-  if (hasHealthScopes(scopesGranted)) families.push("Health");
+const CAPABILITY_LABELS: Record<string, string> = {
+  calendar: "Calendar",
+  gmail: "Gmail",
+  drive: "Drive",
+  health: "Health",
+  connectivity: "Connectivity",
+};
+
+/**
+ * Derive the Google credential's Voice-paragraph brief from its actually
+ * granted capabilities (bu-eptoz) instead of a static per-provider string —
+ * the static "Calendar, Gmail, Drive read." brief went stale the moment Health
+ * scopes could also be granted (#2965). Falls back to the provider's static
+ * `brief` when no recognized capability is present (e.g. the per-credential
+ * granted list is empty/untracked for this row).
+ *
+ * Reads capability categories rather than raw scope strings because the
+ * inventory no longer publishes scopes (bu-iph56); the backend does the
+ * scope→capability mapping that the substring matches here used to do.
+ */
+function deriveGoogleBrief(capabilitiesGranted: string[], fallback: string): string {
+  const families = capabilitiesGranted
+    .map((capability) => CAPABILITY_LABELS[capability])
+    .filter((label): label is string => Boolean(label));
   return families.length > 0 ? `${families.join(", ")} access.` : fallback;
 }
 
@@ -1173,15 +1189,21 @@ export function PageUser({
 }) {
   const meta = STATE_CATALOG[credential.state] ?? STATE_CATALOG.never_set;
   const color = toneColor(meta.tone);
-  const grantedSet = new Set(credential.scopesGranted);
-  const requiredSet = new Set(credential.scopesRequired);
-  const allScopes = Array.from(new Set([...credential.scopesGranted, ...credential.scopesRequired]));
+  const grantedSet = new Set(credential.capabilitiesGranted);
+  const requiredSet = new Set(credential.capabilitiesRequired);
+  const allCapabilities = Array.from(
+    new Set([...credential.capabilitiesGranted, ...credential.capabilitiesRequired]),
+  );
   const isOauth = provider.kind === "oauth";
   const isWebhook = provider.kind === "webhook";
   const isTelegramSession = provider.id === "telegram_bot";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
-  const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
+  // Provider-level rather than per-type (bu-iph56): the inventory no longer
+  // publishes the entity_info types behind this row, so the link is resolved
+  // from the provider's whole grouping and stays absent when that grouping
+  // has no single source page.
+  const provenance = userSecretProvenanceForProvider(credential.provider);
 
   // ── Reauthorize / Connect ───────────────────────────────────────────────────
   // Both "re-authorize" (expired/revoked) and "connect" (never_set) flow through
@@ -1316,8 +1338,8 @@ export function PageUser({
   if (credential.state === "expiring" && credential.expires) stateLines.push(`expires ${credential.expires}`);
   if (credential.state === "ok" && credential.lastVerified) stateLines.push(`verified ${formatPassportTimestamp(credential.lastVerified)}`);
   if (credential.state === "scope_mismatch") {
-    const missing = credential.scopesRequired.filter((s) => !grantedSet.has(s)).length;
-    stateLines.push(`${missing} scope missing`);
+    const missing = credential.capabilitiesRequired.filter((c) => !grantedSet.has(c)).length;
+    stateLines.push(`${missing} capabilit${missing === 1 ? "y" : "ies"} missing`);
   }
   if (credential.state === "never_set") stateLines.push("never connected");
 
@@ -1345,7 +1367,7 @@ export function PageUser({
       {voiceParagraph && (
         <Voice size={15} maxWidth="60ch">
           {provider.id === "google"
-            ? deriveGoogleBrief(credential.scopesGranted, provider.brief)
+            ? deriveGoogleBrief(credential.capabilitiesGranted, provider.brief)
             : provider.brief}
           {credential.feeds.length > 0 && (
             <> Feeds the {credential.feeds.join(" and ")} butler{credential.feeds.length === 1 ? "" : "s"}.</>
@@ -1408,12 +1430,16 @@ export function PageUser({
             <KV label="last verified" value={formatPassportTimestamp(credential.lastVerified) ?? "—"} />
             <KV label="last used" value={credential.lastUsed ?? "—"} />
             <div>
-              <Mono size={9} upper tracking="0.14em" color="var(--dim)">scopes</Mono>
+              <Mono size={9} upper tracking="0.14em" color="var(--dim)">capabilities</Mono>
               <div className="mt-1.5">
                 {requiredSet.size > 0 ? (
-                  <ScopeBalance granted={credential.scopesGranted} required={credential.scopesRequired} width={120} />
+                  <ScopeBalance
+                    granted={credential.capabilitiesGranted}
+                    required={credential.capabilitiesRequired}
+                    width={120}
+                  />
                 ) : (
-                  <Mono size={11} color="var(--dim)">no scope set</Mono>
+                  <Mono size={11} color="var(--dim)">no capability recorded</Mono>
                 )}
               </div>
             </div>
@@ -1428,17 +1454,23 @@ export function PageUser({
           {requiredSet.size > 0 && (
             <div>
               <BlockHead
-                eyebrow="visa permissions · scopes"
-                right={`${[...grantedSet].filter((sc) => requiredSet.has(sc)).length}/${requiredSet.size} required`}
+                eyebrow="visa permissions · capabilities"
+                right={`${[...grantedSet].filter((c) => requiredSet.has(c)).length}/${requiredSet.size} required`}
               />
               <div className="mt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                {allScopes.map((scope) => {
-                  const state = grantedSet.has(scope)
-                    ? requiredSet.has(scope)
+                {allCapabilities.map((capability) => {
+                  const state = grantedSet.has(capability)
+                    ? requiredSet.has(capability)
                       ? "granted"
                       : "extra"
                     : "missing";
-                  return <VisaRow key={scope} scope={scope} state={state} />;
+                  return (
+                    <VisaRow
+                      key={capability}
+                      scope={CAPABILITY_LABELS[capability] ?? capability}
+                      state={state}
+                    />
+                  );
                 })}
               </div>
             </div>
@@ -1656,7 +1688,7 @@ export function PageUser({
             capabilities={credential.capabilities}
             onStateChange={setDisconnectImpactState}
           />
-          {provider.id === "google" && hasHealthScopes(credential.scopesGranted) && (
+          {provider.id === "google" && credential.capabilitiesGranted.includes("health") && (
             <Mono size={10} color="var(--dim)">
               Only want to stop Google Health? Use the scope-selective health
               revoke above instead of disconnecting the whole account.

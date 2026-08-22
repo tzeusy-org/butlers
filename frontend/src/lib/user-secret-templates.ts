@@ -107,6 +107,36 @@ export function userSecretProvenanceForTypes(
   return provenance;
 }
 
+/**
+ * Entity_info types that make up each provider-level Passport row.
+ *
+ * The inventory no longer publishes the raw entity_info type behind a row
+ * (bu-iph56), so provenance is resolved from the provider's whole possible
+ * grouping rather than from the types a particular row happened to contain.
+ * Only groupings whose members share one static source page resolve to a link;
+ * `telegram_bot` deliberately does not, because it can include the
+ * interactively-managed user session, which has no source page of its own.
+ */
+const USER_PROVIDER_TEMPLATE_TYPES: Record<string, readonly string[]> = {
+  telegram_bot: ["telegram_api_id", "telegram_api_hash", "telegram_user_session"],
+  homeassistant: ["home_assistant_url", "home_assistant_token"],
+  email: ["email_password"],
+};
+
+/**
+ * Resolve an owner-credential source page from a Passport provider slug.
+ *
+ * Conservative by construction: a provider whose grouping mixes sources — or
+ * includes a type with no source page — resolves to undefined rather than
+ * showing a link that is right for only part of the row.
+ */
+export function userSecretProvenanceForProvider(
+  provider: string | undefined,
+): SecretProvenance | undefined {
+  if (!provider) return undefined;
+  return userSecretProvenanceForTypes(USER_PROVIDER_TEMPLATE_TYPES[provider]);
+}
+
 /** Entity_info types shown in the type dropdown (excludes session — managed interactively).
  *
  * Non-secret CHANNEL handles (telegram, telegram_chat_id, email, whatsapp_phone)

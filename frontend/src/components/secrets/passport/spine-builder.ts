@@ -6,17 +6,25 @@ import type { SpineEntry, InventoryResponse } from "./types.ts";
 import { severityRank } from "./constants.ts";
 
 /**
- * Real missing-scope count for a scope_mismatch credential, or a plain label
- * when the required/granted scope arrays aren't populated for this provider
+ * Real missing-capability count for a scope_mismatch credential, or a plain
+ * label when the required/granted arrays aren't populated for this provider
  * (bu-6v1hx: most providers besides Google have no granted-scope tracking
  * yet — never fabricate a count in that case).
+ *
+ * Counts capability categories, not scopes (bu-iph56): the inventory publishes
+ * 'calendar' / 'gmail' / 'drive' / 'health' / 'connectivity' / 'other', so a
+ * provider missing three calendar scopes reads as one missing capability. The
+ * subline says "capability" for that reason — do not relabel it "scope".
  */
-function scopeMismatchSubline(scopesRequired: string[], scopesGranted: string[]): string {
-  if (scopesRequired.length === 0) return "scope mismatch";
-  const granted = new Set(scopesGranted);
-  const missing = scopesRequired.filter((scope) => !granted.has(scope)).length;
+function capabilityMismatchSubline(
+  capabilitiesRequired: string[],
+  capabilitiesGranted: string[],
+): string {
+  if (capabilitiesRequired.length === 0) return "scope mismatch";
+  const granted = new Set(capabilitiesGranted);
+  const missing = capabilitiesRequired.filter((c) => !granted.has(c)).length;
   if (missing === 0) return "scope mismatch";
-  return `${missing} scope${missing === 1 ? "" : "s"} missing`;
+  return `${missing} capabilit${missing === 1 ? "y" : "ies"} missing`;
 }
 
 /**
@@ -91,11 +99,12 @@ export function buildSpineEntries(
     // failure age ("refresh failed · 2d") and a fake missing-scope count
     // ("1 scope missing") for EVERY expired / scope_mismatch credential,
     // regardless of how long ago it actually broke or how many scopes are
-    // actually missing. bu-6v1hx wired scopesRequired/scopesGranted to real
+    // actually missing. bu-6v1hx wired the required/granted arrays to real
     // sources (provider_feature_catalogue / google_accounts.granted_scopes),
-    // so a real missing-scope count can now be shown when both arrays are
-    // populated for this credential's provider; otherwise there is still no
-    // real number and the plain state label is used. Failure age is still not
+    // and bu-iph56 moved them to capability categories, so a real missing
+    // count can be shown when both arrays are populated for this credential's
+    // provider; otherwise there is still no real number and the plain state
+    // label is used. Failure age is still not
     // tracked server-side, so the last known-good verification is shown
     // instead (real data), or a plain label when even that is unavailable.
     subline:
@@ -106,7 +115,7 @@ export function buildSpineEntries(
         : s.state === "expiring" && s.expires
           ? `expires ${s.expires}`
           : s.state === "scope_mismatch"
-            ? scopeMismatchSubline(s.scopesRequired, s.scopesGranted)
+            ? capabilityMismatchSubline(s.capabilitiesRequired, s.capabilitiesGranted)
             // bu-976n0: "warn" is set-but-never-probed (see _derive_state) —
             // last_test_ok is None whenever this state is emitted, so there is
             // never a real lastVerified to show here; state a plain "unverified"

@@ -54,13 +54,16 @@ function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw
   };
 }
 
-function makeUser(overrides: Partial<SecretsUserRaw> & Pick<SecretsUserRaw, "entity_id" | "state">): SecretsUserRaw {
+function makeUser(
+  overrides: Partial<SecretsUserRaw> & Pick<SecretsUserRaw, "entity_id" | "state">,
+): SecretsUserRaw {
   return {
     id: "u1",
-    type: "google_oauth_refresh",
+    // The wire carries a clamped provider slug, never the entity_info type
+    // (bu-iph56) — the adapter has no type left to derive a provider from.
+    provider: "google",
     fingerprint: null,
     last_verified: null,
-    label: null,
     test: null,
     ...overrides,
   };
@@ -174,7 +177,7 @@ describe("adaptInventoryResponse: user credential state", () => {
   });
 });
 
-describe("adaptInventoryResponse: user provider derivation", () => {
+describe("adaptInventoryResponse: user provider derivation [bu-iph56]", () => {
   const backendProviders: Record<string, SecretsProviderInfo> = {
     google:        { id: "google",        label: "Google",         glyph: "G", kind: "oauth",   authority: "accounts.google.com",  brief: "Calendar, Gmail, Drive read.",    cadence: "on demand · refreshes hourly" },
     homeassistant: { id: "homeassistant", label: "Home Assistant", glyph: "H", kind: "token",   authority: "home.lim.local",       brief: "Smart-home state, sensors.",       cadence: "poll · 30s" },
@@ -190,15 +193,19 @@ describe("adaptInventoryResponse: user provider derivation", () => {
     },
   };
 
-  it("maps live backend credential types to provider catalog slugs", () => {
+  it("publishes the backend's provider slug verbatim", () => {
+    // The provider grouping used to be re-derived client-side from
+    // entity_info.type. The inventory no longer publishes that type
+    // (bu-iph56); the backend clamps the slug to its own vocabulary and the
+    // adapter must not second-guess it.
     const result = adaptInventoryResponse({
       cli: [],
       system: [],
       user: [
-        makeUser({ id: "u-ha", entity_id: "tze", state: "warn", type: "home_assistant_token" }),
-        makeUser({ id: "u-tg", entity_id: "tze", state: "warn", type: "telegram_user_session" }),
-        makeUser({ id: "u-gh", entity_id: "tze", state: "warn", type: "github_token" }),
-        makeUser({ id: "u-go", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
+        makeUser({ id: "u-ha", entity_id: "tze", state: "warn", provider: "homeassistant" }),
+        makeUser({ id: "u-tg", entity_id: "tze", state: "warn", provider: "telegram_bot" }),
+        makeUser({ id: "u-gh", entity_id: "tze", state: "warn", provider: "github" }),
+        makeUser({ id: "u-go", entity_id: "tze", state: "ok", provider: "google" }),
       ],
       identities: [],
       providers: backendProviders,
@@ -210,60 +217,16 @@ describe("adaptInventoryResponse: user provider derivation", () => {
       "github",
       "google",
     ]);
-    expect(result.user.map((credential) => credential.sourceTypes)).toEqual([
-      ["home_assistant_token"],
-      ["telegram_user_session"],
-      ["github_token"],
-      ["google_oauth_refresh"],
-    ]);
     for (const credential of result.user) {
       expect(result.providers[credential.provider]?.kind).toBeDefined();
     }
   });
 
-  it("requires a boundary after compact provider IDs", () => {
-    const providers = {
-      telegram: { ...backendProviders.telegram_bot, id: "telegram", label: "Telegram" },
-      ...backendProviders,
-    };
+  it("adds generic provider metadata for slugs missing from the backend catalog", () => {
     const result = adaptInventoryResponse({
       cli: [],
       system: [],
-      user: [
-        makeUser({
-          id: "tg-compact",
-          entity_id: "tze",
-          state: "ok",
-          type: "telegrambot_oauth_refresh",
-        }),
-        makeUser({
-          id: "tg-botanical",
-          entity_id: "tze",
-          state: "ok",
-          type: "telegrambotanical_token",
-        }),
-      ],
-      identities: [],
-      providers,
-    });
-
-    expect(result.user).toEqual([
-      expect.objectContaining({
-        provider: "telegram_bot",
-        sourceTypes: ["telegrambot_oauth_refresh"],
-      }),
-      expect.objectContaining({
-        provider: "telegrambotanical",
-        sourceTypes: ["telegrambotanical_token"],
-      }),
-    ]);
-  });
-
-  it("adds generic provider metadata for unknown credential families", () => {
-    const result = adaptInventoryResponse({
-      cli: [],
-      system: [],
-      user: [makeUser({ entity_id: "tze", state: "warn", type: "custom_service_token" })],
+      user: [makeUser({ entity_id: "tze", state: "warn", provider: "custom" })],
       identities: [],
       providers: {},
     });
@@ -274,16 +237,34 @@ describe("adaptInventoryResponse: user provider derivation", () => {
       label: "Custom",
       kind: "token",
     });
+    // The generic brief must not name a credential type: the row no longer
+    // carries one, so there is nothing specific to say (bu-iph56).
+    expect(result.providers.custom.brief).toBe("Stored credential.");
   });
 
-  it("groups multiple raw credential components into one provider row per identity", () => {
+  it("groups multiple backend rows sharing one provider into a single row per identity", () => {
+    // Several entity_info rows can collapse onto one published provider slug
+    // (Telegram API values plus a user session, or two uncatalogued rows both
+    // published as 'other'). The adapter still merges them per identity.
     const result = adaptInventoryResponse({
       cli: [],
       system: [],
       user: [
-        makeUser({ id: "tg-hash", entity_id: "tze", state: "warn", type: "telegram_api_hash" }),
-        makeUser({ id: "tg-session", entity_id: "tze", state: "warn", type: "telegram_user_session" }),
-        makeUser({ id: "google", entity_id: "tze", state: "ok", type: "google_oauth_refresh" }),
+        makeUser({
+          id: "tg-hash",
+          entity_id: "tze",
+          state: "warn",
+          provider: "telegram_bot",
+          capabilities_required: ["connectivity"],
+        }),
+        makeUser({
+          id: "tg-session",
+          entity_id: "tze",
+          state: "warn",
+          provider: "telegram_bot",
+          capabilities_granted: ["connectivity"],
+        }),
+        makeUser({ id: "google", entity_id: "tze", state: "ok", provider: "google" }),
       ],
       identities: [],
       providers: {
@@ -294,8 +275,100 @@ describe("adaptInventoryResponse: user provider derivation", () => {
 
     expect(result.user.map((credential) => credential.provider)).toEqual(["telegram_bot", "google"]);
     expect(result.user.filter((credential) => credential.provider === "telegram_bot")).toHaveLength(1);
-    expect(result.user[0].sourceTypes).toEqual(["telegram_api_hash", "telegram_user_session"]);
+    expect(result.user[0].capabilitiesRequired).toEqual(["connectivity"]);
+    expect(result.user[0].capabilitiesGranted).toEqual(["connectivity"]);
     expect(result.user[0].state).toBe("warn");
+  });
+
+  it("keeps rows with the same provider but different identities apart", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({ id: "u-tze", entity_id: "tze", state: "ok", provider: "google" }),
+        makeUser({ id: "u-wei", entity_id: "wei", state: "expired", provider: "google" }),
+      ],
+      identities: [],
+      providers: backendProviders,
+    });
+
+    expect(result.user).toHaveLength(2);
+    expect(result.user.map((credential) => credential.identity)).toEqual(["tze", "wei"]);
+  });
+});
+
+describe("adaptInventoryResponse: user rows are content-blind [bu-iph56]", () => {
+  it("maps capability categories, not scopes, onto the passport credential", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({
+          entity_id: "tze",
+          state: "scope_mismatch",
+          provider: "google",
+          capabilities_required: ["calendar", "gmail", "drive"],
+          capabilities_granted: ["calendar"],
+        }),
+      ],
+      identities: [],
+      providers: {},
+    });
+
+    expect(result.user[0].capabilitiesRequired).toEqual(["calendar", "gmail", "drive"]);
+    expect(result.user[0].capabilitiesGranted).toEqual(["calendar"]);
+  });
+
+  it("defaults the capability arrays to empty rather than undefined", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [makeUser({ entity_id: "tze", state: "warn", provider: "google" })],
+      identities: [],
+      providers: {},
+    });
+
+    expect(result.user[0].capabilitiesRequired).toEqual([]);
+    expect(result.user[0].capabilitiesGranted).toEqual([]);
+  });
+
+  it("renders no probe message and no audit note for a user credential", () => {
+    // Neither is on the wire: the backend drops the probe message and the
+    // audit note for every writer of the u: namespace. The adapter pins them
+    // rather than leaving a hole a future wire field could fill.
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({
+          entity_id: "tze",
+          state: "failing",
+          provider: "google",
+          test: { ok: false, code: 401, at: "2 days ago", latency_ms: 134 },
+          audit: [{ ts: "2026-05-21 06:08", actor: "system", action: "failed" }],
+          capabilities: [
+            { capability: "calendar", test: { ok: true, code: 200, at: "14:21 today" } },
+          ],
+        }),
+      ],
+      identities: [],
+      providers: {},
+    });
+
+    const credential = result.user[0];
+    expect(credential.test).toEqual({
+      ok: false,
+      code: 401,
+      message: null,
+      latencyMs: 134,
+      at: "2 days ago",
+    });
+    expect(credential.audit).toEqual([
+      { ts: "2026-05-21 06:08", actor: "system", action: "failed", note: "" },
+    ]);
+    expect(credential.capabilities).toEqual([
+      { capability: "calendar", test: { ok: true, code: 200, message: null, latencyMs: null, at: "14:21 today" } },
+    ]);
   });
 });
 

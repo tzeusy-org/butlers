@@ -8506,7 +8506,9 @@ export interface SecretsProbeAllResponse {
 /**
  * A CLI runtime token row as returned by GET /api/secrets/inventory.
  *
- * Maps to CliRuntime in the backend secrets_v2 router.
+ * Maps to CliRuntimeSummary in the backend secrets_v2 router — the published
+ * projection of CliRuntime. The probe's free-text `message` and the cached
+ * `last_test_message` are not on the wire (bu-iph56); do not add them back.
  */
 export interface SecretsCliRaw {
   key: string;
@@ -8519,13 +8521,16 @@ export interface SecretsCliRaw {
   /** butler_secrets.expires_at (real; bu-6v1hx). */
   expires?: string | null;
   last_verified: string | null;
-  test: SecretsProbeResult | null;
+  test: SecretsCredentialTestOutcome | null;
 }
 
 /**
  * A system credential row as returned by GET /api/secrets/inventory.
  *
- * Maps to SystemSecret in the backend secrets_v2 router.
+ * Maps to SystemSecretSummary in the backend secrets_v2 router — the published
+ * projection of SystemSecret. Probe messages and audit note free text are not
+ * on the wire (bu-iph56); `key` / `category` / `description` are
+ * operator-authored labels and deliberately still are.
  */
 export interface SecretsSystemRaw {
   key: string;
@@ -8535,13 +8540,14 @@ export interface SecretsSystemRaw {
   fingerprint: string | null;
   last_verified: string | null;
   butler: string;
-  test: SecretsProbeResult | null;
+  test: SecretsCredentialTestOutcome | null;
   /**
    * Last few public.audit_log rows for this credential (target='s:<key>'),
-   * newest first. Real data (bu-6v1hx); empty when nothing has ever been
-   * logged for this key. May be absent on older backends (treat as []).
+   * newest first, without their free-text notes (bu-iph56). Real data
+   * (bu-6v1hx); empty when nothing has ever been logged for this key. May be
+   * absent on older backends (treat as []).
    */
-  audit?: SecretsAuditEvent[];
+  audit?: SecretsCredentialAuditOutcome[];
   /**
    * When true, the passport renders the row read-only (generic editor suppressed).
    * Shared-public rows (butler="shared-public") are NOT flagged read_only —
@@ -8561,17 +8567,74 @@ export interface SecretsSystemRaw {
 }
 
 /**
+ * Content-blind probe outcome for a user credential (bu-iph56).
+ *
+ * Maps to CredentialTestOutcome in the backend secrets_v2 router. The
+ * distinction from `SecretsProbeResult` is deliberate and load-bearing: this
+ * shape has no `message`, because a probe message can echo a provider response
+ * or the credential's own content. Do not widen it to include one.
+ */
+export interface SecretsCredentialTestOutcome {
+  ok: boolean;
+  code?: number | null;
+  /** Pre-formatted relative timestamp (e.g. "14:21 today"). */
+  at?: string | null;
+  latency_ms?: number | null;
+}
+
+/**
+ * Latest content-blind probe outcome for one capability family of a user
+ * credential (bu-iph56).
+ *
+ * Maps to CredentialCapabilityOutcome in the backend secrets_v2 router.
+ * `capability` is always a member of the backend's fixed CAPABILITY_VOCABULARY
+ * — 'calendar' | 'gmail' | 'drive' | 'health' | 'connectivity' | 'other' —
+ * never a raw scope identifier.
+ */
+export interface SecretsCredentialCapabilityOutcome {
+  capability: string;
+  test: SecretsCredentialTestOutcome | null;
+}
+
+/**
+ * One audit-log entry for a user credential, without its free-text `note`
+ * (bu-iph56).
+ *
+ * Maps to CredentialAuditOutcome in the backend secrets_v2 router. `note` is
+ * the only operator-authored field on an audit row and the backend drops it on
+ * read, for every writer, so there is nothing here to render.
+ */
+export interface SecretsCredentialAuditOutcome {
+  ts: string;
+  actor: string;
+  action: string;
+}
+
+/**
  * A user credential row as returned by GET /api/secrets/inventory.
  *
- * Maps to UserSecret in the backend secrets_v2 router.
- * The `type` field follows the convention `<provider>_oauth_refresh` (or
- * similar); the provider slug is derived by stripping the suffix.
+ * Maps to UserSecretSummary in the backend secrets_v2 router — the
+ * content-blind projection of that router's internal UserSecret record
+ * (bu-iph56, owner decision 2026-08-13).
+ *
+ * Every field here is a database identifier, a timestamp, a derived hash, a
+ * provider slug from the backend's fixed USER_PROVIDER_VOCABULARY, or a member
+ * of its fixed CAPABILITY_VOCABULARY. The persisted credential type and label,
+ * raw OAuth scope identifiers, probe messages, and audit note free text are
+ * not on the wire and will not come back — the passport renders capability
+ * categories instead. Do not re-add them here to make a component compile.
  */
 export interface SecretsUserRaw {
   id: string;
   entity_id: string;
-  type: string;
-  label: string | null;
+  /**
+   * Provider slug clamped server-side to USER_PROVIDER_VOCABULARY (the
+   * PROVIDER_CATALOG keys plus 'email' and 'other'). Never the raw
+   * entity_info.type. Uncatalogued credentials arrive as 'other', so two of
+   * them on one entity share a single passport row — a display grouping, not
+   * a claim that they are the same credential.
+   */
+  provider: string;
   state: string;
   fingerprint: string | null;
   /** entity_info.created_at (real; bu-6v1hx). */
@@ -8584,31 +8647,31 @@ export interface SecretsUserRaw {
    */
   expires?: string | null;
   last_verified: string | null;
-  test: SecretsProbeResult | null;
+  test: SecretsCredentialTestOutcome | null;
   /**
-   * Union of public.provider_feature_catalogue.required_scopes for this
-   * credential's provider (real; bu-6v1hx). Empty when the catalogue has no
-   * entry for the provider.
+   * Capability categories this credential's provider needs, derived
+   * server-side from public.provider_feature_catalogue.required_scopes.
+   * Empty means "no capability is recorded", never "unknown".
    */
-  scopes_required?: string[];
+  capabilities_required?: string[];
   /**
-   * Scopes actually granted. Real source only exists for Google today
-   * (public.google_accounts.granted_scopes). Every other provider stays
-   * empty — there is no per-credential granted-scope tracking for them yet.
+   * Capability categories actually granted. A real source only exists for
+   * Google today (public.google_accounts.granted_scopes); every other provider
+   * stays empty — there is no per-credential granted-scope tracking for them.
    */
-  scopes_granted?: string[];
+  capabilities_granted?: string[];
   /**
    * Last few public.audit_log rows for this credential (target='u:<provider>'),
    * newest first. Real data (bu-6v1hx); empty when nothing has ever been
    * logged for this credential.
    */
-  audit?: SecretsAuditEvent[];
+  audit?: SecretsCredentialAuditOutcome[];
   /**
    * Per-capability probe state (bu-4v5es) — e.g. calendar/gmail/drive/health
    * for Google, a single 'connectivity' entry for every other provider.
    * Empty/absent until the credential has been probed at least once.
    */
-  capabilities?: SecretsCapabilityStatus[];
+  capabilities?: SecretsCredentialCapabilityOutcome[];
 }
 
 /**

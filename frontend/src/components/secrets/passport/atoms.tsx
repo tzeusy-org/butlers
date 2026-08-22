@@ -547,12 +547,18 @@ export function StampGlyph({
 
 // ── Stamp row ───────────────────────────────────────────────────────────────
 
-/** StampRow: glyph + date/time + action + actor + serif note. */
+/**
+ * StampRow: glyph + date/time + action + actor + optional serif note.
+ *
+ * The note is optional because user-credential audit rows do not carry one:
+ * the inventory drops the operator-authored note on read (bu-iph56). Render
+ * nothing rather than an empty serif line in that case.
+ */
 export function StampRow({
   event,
   last = false,
 }: {
-  event: { ts: string; actor: string; action: string; note: string };
+  event: { ts: string; actor: string; action: string; note?: string | null };
   last?: boolean;
 }) {
   const spaceIdx = event.ts.indexOf(" ");
@@ -589,16 +595,18 @@ export function StampRow({
             · {event.actor}
           </Mono>
         </div>
-        <span
-          style={{
-            fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
-            fontSize: 12,
-            color: "var(--mfg)",
-            lineHeight: 1.4,
-          }}
-        >
-          {event.note}
-        </span>
+        {event.note ? (
+          <span
+            style={{
+              fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
+              fontSize: 12,
+              color: "var(--mfg)",
+              lineHeight: 1.4,
+            }}
+          >
+            {event.note}
+          </span>
+        ) : null}
       </div>
     </div>
   );

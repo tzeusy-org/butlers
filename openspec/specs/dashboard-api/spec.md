@@ -803,7 +803,7 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 
 #### Scenario: Inventory endpoint shape
 - **WHEN** `GET /api/secrets/inventory?identity=<uuid>` is called
-- **THEN** the response is `ApiResponse<{ cli: CliRuntime[], system: SystemSecret[], user: UserSecret[] }>` with `meta` containing severity counts, aggregate tri-state `failing_count` / `unverified_count` fields, and matching `failing_count_by_family` / `unverified_count_by_family` maps keyed by `cli`, `system`, and `user` (bu-976n0; replaces the prior single `needs_hand_count`, which conflated a genuinely failed/expired/expiring credential with one that was merely set-but-never-probed)
+- **THEN** the response is `ApiResponse<{ cli: CliRuntimeSummary[], system: SystemSecretSummary[], user: UserSecretSummary[] }>` with `meta` containing severity counts, aggregate tri-state `failing_count` / `unverified_count` fields, and matching `failing_count_by_family` / `unverified_count_by_family` maps keyed by `cli`, `system`, and `user` (bu-976n0; replaces the prior single `needs_hand_count`, which conflated a genuinely failed/expired/expiring credential with one that was merely set-but-never-probed)
 - **AND** `failing_count` counts credentials in a genuinely broken or imminently-expiring state (`expired`, `failing`, `expiring`); `unverified_count` counts credentials in the `warn` state (set, but either never successfully probed or whose prior successful verification is stale) — a `warn` row is an unknown, not a failure, and MUST NOT inflate `failing_count`
 - **AND** both counts are computed over a row set deduplicated by conceptual credential (one row per system-secret key / per user provider+identity / per CLI id) — not the raw per-butler-schema row set, so the aggregate matches what the grouped UI displays
 - **AND** each family-map entry is computed over the same family-specific deduplicated row set; the passport's per-family KPI captions SHALL consume these maps rather than recomputing failure or unverified counts from adapted rows
@@ -811,6 +811,16 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 - **AND** when `?identity=` is omitted, the owner identity is used as the default
 - **AND** every credential row includes `state`, `fingerprint` (sha256 first-8 hex, computed on-read, never persisted), and per-family identity (`provider` / `key` / `id`)
 - **AND** the response does NOT include any raw secret values
+
+#### Scenario: Inventory rows are content-blind
+- **WHEN** `GET /api/secrets/inventory` builds its `user` array
+- **THEN** each row is a `UserSecretSummary` carrying only `id`, `entity_id`, `provider`, `state`, `fingerprint`, `issued`, `expires`, `last_verified`, `capabilities_required`, `capabilities_granted`, `test` (most recent probe outcome), `audit[]`, and `capabilities[]` (per-capability probe outcome) — the same content-blind contract the per-credential detail endpoint publishes, one row per credential
+- **AND** capability evidence SHALL be published ONLY as members of the fixed vocabulary `calendar`, `gmail`, `drive`, `health`, `connectivity`, `other`, built by filtering that vocabulary against the capabilities a credential's scopes map to, never by filtering the scope or provider strings themselves; an input that maps to no known family SHALL become `other`
+- **AND** `provider` SHALL be a member of a fixed published vocabulary (the provider catalogue's slugs plus `email` and `other`); an `entity_info.type` that maps to no known provider SHALL be published as `other` rather than as a prefix of its own spelling
+- **AND** the row SHALL NOT contain any raw OAuth scope identifier, the persisted `entity_info.type` or `label`, a probe message, or an audit note — including audit rows written by producers outside the secrets router, because the projection is enforced on read rather than at each writer
+- **AND** the projection SHALL be an explicit field-by-field bridge from the router's internal read record, so a new field on that record cannot reach a client without being consciously allowed through
+- **AND** the `system[]` and `cli[]` arrays of the same response SHALL likewise omit every probe message (both the cached `last_test_message` column and the probe row's free-text `message`) and every audit note, each row being an explicit field-by-field projection (`SystemSecretSummary` / `CliRuntimeSummary`) of the router's internal read record
+- **AND** operator-authored labels on system and CLI rows — `key`, `category`, `description` — are outside this contract and continue to be published; they name infrastructure keys rather than carrying evidence derived from credential content
 
 #### Scenario: Per-credential read endpoints
 - **WHEN** `GET /api/secrets/user/<provider>?identity=<uuid>` is called

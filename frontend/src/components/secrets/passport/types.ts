@@ -89,15 +89,17 @@ export interface CapabilityStatus {
   test: TestResult | null;
 }
 
-/** User credential (entity_info-based, oauth/token/apikey/webhook). */
+/**
+ * User credential (entity_info-based, oauth/token/apikey/webhook).
+ *
+ * Fed by the content-blind `user` array of GET /api/secrets/inventory
+ * (bu-iph56). The raw entity_info type, the credential label, raw OAuth scope
+ * identifiers, probe messages, and audit note free text are not on that wire
+ * and cannot be added back here — the passport shows capability categories
+ * from the backend's fixed vocabulary instead.
+ */
 export interface UserCredential {
   provider: string;
-  /**
-   * Raw entity_info types grouped into this provider-level passport row.
-   * Kept so UI provenance can remain field-specific when a provider combines
-   * distinct credential components (for example, Telegram API + session).
-   */
-  sourceTypes?: string[];
   identity: string;
   state: CredentialState;
   fingerprint: string | null;
@@ -105,8 +107,14 @@ export interface UserCredential {
   expires: string | null;
   lastVerified: string | null;
   lastUsed: string | null;
-  scopesRequired: string[];
-  scopesGranted: string[];
+  /**
+   * Capability categories this credential's provider needs, and the ones it
+   * actually has. Members of the backend's CAPABILITY_VOCABULARY —
+   * 'calendar' | 'gmail' | 'drive' | 'health' | 'connectivity' | 'other' —
+   * never raw scope strings. Empty means "nothing recorded", not "unknown".
+   */
+  capabilitiesRequired: string[];
+  capabilitiesGranted: string[];
   feeds: string[];
   test: TestResult | null;
   audit: AuditEvent[];

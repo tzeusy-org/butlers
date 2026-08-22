@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -47,6 +47,7 @@ from butlers.api.routers.secrets_v2 import (
     _SYSTEM_KEY_USED_BY,
     DEFAULT_EXPIRING_LEAD_TIME,
     DEFAULT_STALENESS_S,
+    USER_PROVIDER_VOCABULARY,
     _dedupe_most_severe,
     _derive_state,
     _failing_count,
@@ -66,6 +67,7 @@ from butlers.api.routers.secrets_v2 import (
     _get_db_manager,
     _infer_provider_from_type,
     _is_missing_secrets_schema_error,
+    _published_provider,
     _reclassify_stale_ok_state,
     _row_to_test_result,
     _unverified_count,
@@ -172,6 +174,7 @@ def _make_db_manager(
     shared_system_rows: list[MagicMock] | None = None,
     probe_row: MagicMock | None = None,
     probe_rows: list[MagicMock] | None = None,
+    audit_rows: list[MagicMock] | None = None,
     shared_pool_available: bool = True,
 ) -> MagicMock:
     """Build a mock DatabaseManager for inventory endpoint tests.
@@ -187,12 +190,15 @@ def _make_db_manager(
     - probe_row: DEPRECATED legacy single-probe row (now used only for
                  singular fetchrow callers such as per-credential detail
                  endpoints).  For inventory tests, use probe_rows instead.
+    - audit_rows: rows returned by the bulk public.audit_log query. Each
+                  must have target, ts, actor, action, note.
     """
     butler_names = butler_names or []
     system_rows = system_rows or []
     user_rows = user_rows or []
     cli_rows = cli_rows or []
     shared_system_rows = shared_system_rows or []
+    bulk_audit_rows: list[MagicMock] = audit_rows or []
     # probe_rows drives the bulk fetch path; fall back to wrapping probe_row
     # in a list so existing tests continue to work.
     if probe_rows is None and probe_row is not None:
@@ -203,6 +209,8 @@ def _make_db_manager(
     butler_pool = AsyncMock()
 
     async def _butler_fetch(sql, *args):
+        if "audit_log" in sql:
+            return bulk_audit_rows
         if "secret_probe_log" in sql:
             # Bulk probe-log query for system credentials.
             return bulk_probe_rows
@@ -218,6 +226,8 @@ def _make_db_manager(
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
+        if "audit_log" in sql:
+            return bulk_audit_rows
         if "secret_probe_log" in sql:
             # Bulk probe-log query for user/cli/shared-system credentials.
             return bulk_probe_rows
@@ -1206,7 +1216,7 @@ def test_inventory_identity_filter_restricts_user_array():
     user = body["data"]["user"]
     assert len(user) == 1
     assert user[0]["entity_id"] == target_entity
-    assert user[0]["type"] == "google_oauth_refresh"
+    assert user[0]["provider"] == "google"
 
 
 def test_inventory_no_identity_uses_owner_default():
@@ -1240,7 +1250,7 @@ def test_inventory_no_identity_uses_owner_default():
     body = resp.json()
     user = body["data"]["user"]
     assert len(user) == 1
-    assert user[0]["type"] == "google_oauth_refresh"
+    assert user[0]["provider"] == "google"
 
 
 # ---------------------------------------------------------------------------
@@ -1799,7 +1809,11 @@ def test_inventory_probe_results_match_per_row_expectations():
     assert by_key["FAIL_KEY"]["test"] is not None
     assert by_key["FAIL_KEY"]["test"]["ok"] is False
     assert by_key["FAIL_KEY"]["test"]["code"] == 401
-    assert by_key["FAIL_KEY"]["test"]["message"] == "auth error"
+    # bu-iph56: the probe's free-text message is projected away for every
+    # family, so the machine-checkable outcome survives the bulk refactor but
+    # "auth error" does not reach the wire.
+    assert "message" not in by_key["FAIL_KEY"]["test"]
+    assert "auth error" not in resp.text
 
 
 def test_inventory_credential_with_no_probe_has_null_test():
@@ -1947,12 +1961,12 @@ def test_primary_google_account_surfaces_in_owner_default():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = [u["type"] for u in user]
-    assert "google_oauth_refresh" in types, (
-        "Owner-default inventory must include google_oauth_refresh for the primary account"
+    providers = [u["provider"] for u in user]
+    assert "google" in providers, (
+        "Owner-default inventory must include the google credential for the primary account"
     )
 
-    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    google_entry = next(u for u in user if u["provider"] == "google")
     assert google_entry["entity_id"] == primary_entity_id
 
 
@@ -2004,7 +2018,7 @@ def test_non_primary_google_account_excluded_from_owner_default():
     )
 
     # Exactly one google_oauth_refresh, belonging to the primary account.
-    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    google_entries = [u for u in user if u["provider"] == "google"]
     assert len(google_entries) == 1
     assert google_entries[0]["entity_id"] == primary_entity_id
 
@@ -2054,12 +2068,12 @@ def test_owner_default_includes_existing_creds_alongside_primary_google():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = {u["type"] for u in user}
-    assert "telegram_token" in types, "telegram_token must still appear in owner-default"
-    assert "home_assistant_token" in types, (
-        "home_assistant_token must still appear in owner-default"
+    providers = {u["provider"] for u in user}
+    assert "telegram_bot" in providers, "the telegram credential must still appear in owner-default"
+    assert "homeassistant" in providers, (
+        "the home-assistant credential must still appear in owner-default"
     )
-    assert "google_oauth_refresh" in types, "google_oauth_refresh must appear for primary account"
+    assert "google" in providers, "the google credential must appear for the primary account"
     assert len(user) == 3
 
 
@@ -2093,13 +2107,13 @@ def test_expired_primary_google_account_still_surfaces_in_owner_default():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = [u["type"] for u in user]
-    assert "google_oauth_refresh" in types, (
-        "Expired primary account must still surface google_oauth_refresh "
+    providers = [u["provider"] for u in user]
+    assert "google" in providers, (
+        "Expired primary account must still surface its google credential "
         "so the owner can reach the reauth CTA (status='expired' != 'revoked')"
     )
 
-    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    google_entry = next(u for u in user if u["provider"] == "google")
     assert google_entry["entity_id"] == primary_entity_id
 
 
@@ -2138,13 +2152,13 @@ def test_revoked_primary_google_account_still_surfaces_in_owner_default():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = [u["type"] for u in user]
-    assert "google_oauth_refresh" in types, (
-        "Revoked primary account must still surface google_oauth_refresh "
+    providers = [u["provider"] for u in user]
+    assert "google" in providers, (
+        "Revoked primary account must still surface its google credential "
         "so the owner can reach the reauthorize CTA (bu-lw5fn)"
     )
 
-    google_entry = next(u for u in user if u["type"] == "google_oauth_refresh")
+    google_entry = next(u for u in user if u["provider"] == "google")
     assert google_entry["entity_id"] == primary_entity_id
     # The revoked credential is shown as needing attention, not healthy.
     assert google_entry["state"] == "failing"
@@ -2201,8 +2215,8 @@ def test_revoked_primary_with_deleted_token_row_absent_from_owner_default():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = [u["type"] for u in user]
-    assert "google_oauth_refresh" not in types, (
+    providers = [u["provider"] for u in user]
+    assert "google" not in providers, (
         "No credential row exists after the disconnect path deletes the token; "
         "the owner-default view cannot synthesize one (documented limitation)"
     )
@@ -2284,11 +2298,11 @@ def test_no_primary_google_account_no_google_entry_in_owner_default():
     assert resp.status_code == 200, resp.text
     user = resp.json()["data"]["user"]
 
-    types = [u["type"] for u in user]
-    assert "google_oauth_refresh" not in types, (
-        "google_oauth_refresh must NOT appear when no primary Google account is connected"
+    providers = [u["provider"] for u in user]
+    assert "google" not in providers, (
+        "The google credential must NOT appear when no primary Google account is connected"
     )
-    assert "telegram_token" in types
+    assert "telegram_bot" in providers
 
 
 # --- Owner identity always appears first in identities[] regardless of type sort order ---
@@ -2510,7 +2524,7 @@ def test_two_accounts_only_primary_entity_id_in_owner_default_no_token_leak():
     )
 
     # Exactly one google_oauth_refresh entry.
-    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    google_entries = [u for u in user if u["provider"] == "google"]
     assert len(google_entries) == 1, (
         f"Exactly one google_oauth_refresh must appear in owner-default; got {len(google_entries)}"
     )
@@ -2565,7 +2579,7 @@ def test_promoted_account_surfaces_in_owner_default_after_primary_disconnect():
         "must appear in owner-default inventory"
     )
 
-    google_entries = [u for u in user if u["type"] == "google_oauth_refresh"]
+    google_entries = [u for u in user if u["provider"] == "google"]
     assert len(google_entries) == 1
     assert google_entries[0]["entity_id"] == formerly_non_primary_entity_id
 
@@ -3017,7 +3031,7 @@ async def test_fetch_user_secrets_non_google_provider_has_honestly_empty_scopes_
 
 
 def test_inventory_endpoint_surfaces_new_fields_honestly_via_http():
-    """End-to-end: GET /api/secrets/inventory exposes issued/scopes/audit keys.
+    """End-to-end: GET /api/secrets/inventory exposes issued/capabilities/audit keys.
 
     With no google_accounts / provider_feature_catalogue / audit_log rows
     configured in the mock, the new fields must be present in the envelope
@@ -3043,6 +3057,367 @@ def test_inventory_endpoint_surfaces_new_fields_honestly_via_http():
     assert entry["issued"] is not None
     # Honestly empty: no provider_feature_catalogue / google_accounts / audit_log
     # rows are configured for this provider/table in this test.
-    assert entry["scopes_required"] == []
-    assert entry["scopes_granted"] == []
+    assert entry["capabilities_required"] == []
+    assert entry["capabilities_granted"] == []
     assert entry["audit"] == []
+
+
+# ---------------------------------------------------------------------------
+# bu-iph56: the inventory's user family is content-blind
+# ---------------------------------------------------------------------------
+# Owner decision Option C (2026-08-13): capability evidence may be published
+# only as the fixed CAPABILITY_VOCABULARY. Raw scope identifiers, the persisted
+# credential type and label, probe messages, and audit note free text never
+# reach the wire — the same contract PR #3660 established for
+# GET /api/secrets/user/{provider}.
+# ---------------------------------------------------------------------------
+
+
+def _make_content_blind_shared_pool(
+    *,
+    user_row: MagicMock,
+    catalogue_rows: list[MagicMock] | None = None,
+    granted_rows: list[MagicMock] | None = None,
+    audit_rows: list[MagicMock] | None = None,
+    probe_rows: list[MagicMock] | None = None,
+    capability_rows: list[MagicMock] | None = None,
+) -> AsyncMock:
+    """Shared pool returning one identity-scoped user credential plus evidence.
+
+    The two ``secret_probe_log`` queries differ only in whitespace, so they are
+    told apart by their key argument: the capability-qualified lookup passes
+    ``'<type>:<capability>'`` keys, the aggregate one passes bare types.
+    """
+    shared_pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "provider_feature_catalogue" in sql:
+            return catalogue_rows or []
+        if "granted_scopes" in sql:
+            return granted_rows or []
+        if "audit_log" in sql:
+            return audit_rows or []
+        if "secret_probe_log" in sql:
+            keys = args[1] if len(args) > 1 else []
+            if any(":" in key for key in keys):
+                return capability_rows or []
+            return probe_rows or []
+        if "category IN ('cli', 'cli-auth')" in sql:
+            return []
+        if "entity_info" in sql:
+            return [user_row]
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_fetch)
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+    return shared_pool
+
+
+def test_inventory_user_rows_omit_every_raw_evidence_sentinel():
+    """No raw scope, credential type, label, or audit/probe text ships.
+
+    Each evidence source is planted with a distinct sentinel; none may appear
+    anywhere in the response BYTES — absence from the Pydantic model is not
+    enough, because a leak can also arrive through a nested dict.
+    """
+    entity_id = str(uuid4())
+    user_row = _make_entity_info_row(
+        entity_id=entity_id,
+        info_type="google_oauth_refresh",
+        label="sentinel-label",
+        last_test_ok=False,
+        last_test_message="sentinel-failure-tail",
+    )
+    shared_pool = _make_content_blind_shared_pool(
+        user_row=user_row,
+        catalogue_rows=[
+            _make_row(
+                provider="google",
+                required_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+            )
+        ],
+        granted_rows=[
+            _make_row(
+                entity_id=entity_id,
+                granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+            )
+        ],
+        audit_rows=[
+            _make_row(
+                target="u:google",
+                ts=_NOW,
+                actor="owner",
+                action="verified",
+                note="sentinel-audit-note",
+            )
+        ],
+        probe_rows=[
+            _make_row(
+                credential_key="google_oauth_refresh",
+                ok=False,
+                code=401,
+                message="sentinel-probe-message",
+                recorded_at=_NOW,
+                latency_ms=31,
+            )
+        ],
+        capability_rows=[
+            _make_row(
+                credential_key="google_oauth_refresh:sentinel-capability",
+                ok=False,
+                code=403,
+                message="sentinel-capability-message",
+                recorded_at=_NOW,
+                latency_ms=12,
+            )
+        ],
+    )
+
+    resp = _build_app_with_shared_pool(shared_pool).get(
+        f"/api/secrets/inventory?identity={entity_id}"
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    for sentinel in (
+        "calendar.readonly",  # raw required scope
+        "gmail.readonly",  # raw granted scope
+        "googleapis.com",  # provider-supplied scope namespace
+        "google_oauth_refresh",  # persisted credential type
+        "sentinel-label",
+        "sentinel-failure-tail",
+        "sentinel-probe-message",
+        "sentinel-capability-message",
+        "sentinel-audit-note",
+        "sentinel-capability",  # unmapped capability name
+    ):
+        assert sentinel not in body, f"raw evidence {sentinel!r} leaked into the response"
+
+    entry = resp.json()["data"]["user"][0]
+    assert entry["provider"] == "google"
+    assert entry["capabilities_required"] == ["calendar"]
+    assert entry["capabilities_granted"] == ["gmail"]
+    assert [row["capability"] for row in entry["capabilities"]] == ["other"]
+    assert set(entry["test"]) == {"ok", "code", "at", "latency_ms"}
+    assert set(entry["audit"][0]) == {"ts", "actor", "action"}
+    assert set(entry) == {
+        "id",
+        "entity_id",
+        "provider",
+        "state",
+        "fingerprint",
+        "issued",
+        "expires",
+        "last_verified",
+        "capabilities_required",
+        "capabilities_granted",
+        "test",
+        "audit",
+        "capabilities",
+    }
+
+
+def test_inventory_user_rows_map_unknown_google_scope_to_other():
+    """An unrecognised Google scope falls to 'other' rather than leaking through."""
+    entity_id = str(uuid4())
+    shared_pool = _make_content_blind_shared_pool(
+        user_row=_make_entity_info_row(entity_id=entity_id, info_type="google_oauth_refresh"),
+        catalogue_rows=[
+            _make_row(
+                provider="google",
+                required_scopes=["https://www.googleapis.com/auth/sentinel-unmapped-scope"],
+            )
+        ],
+    )
+
+    resp = _build_app_with_shared_pool(shared_pool).get(
+        f"/api/secrets/inventory?identity={entity_id}"
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user"][0]["capabilities_required"] == ["other"]
+    assert "sentinel-unmapped-scope" not in resp.text
+
+
+def test_inventory_user_rows_map_non_google_scopes_to_connectivity():
+    """Non-Google providers have one generic live check: 'connectivity'."""
+    entity_id = str(uuid4())
+    shared_pool = _make_content_blind_shared_pool(
+        user_row=_make_entity_info_row(entity_id=entity_id, info_type="telegram_bot_token"),
+        catalogue_rows=[_make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])],
+    )
+
+    resp = _build_app_with_shared_pool(shared_pool).get(
+        f"/api/secrets/inventory?identity={entity_id}"
+    )
+
+    assert resp.status_code == 200, resp.text
+    entry = resp.json()["data"]["user"][0]
+    assert entry["provider"] == "telegram_bot"
+    assert entry["capabilities_required"] == ["connectivity"]
+    assert entry["capabilities_granted"] == []
+    assert "telegram:bot-token" not in resp.text
+
+
+@pytest.mark.parametrize(
+    "info_type,expected",
+    [
+        ("google_oauth_refresh", "google"),
+        ("home_assistant_token", "homeassistant"),
+        ("telegram_api_id", "telegram_bot"),
+        ("email_password", "email"),
+        ("other", "other"),
+        # A type that resolves to nothing known must not publish its own
+        # spelling — _infer_provider_from_type's last resort is a prefix of the
+        # persisted type, and that prefix is exactly what must not ship.
+        ("sentinelprovider_token", "other"),
+        ("sentinelprovider", "other"),
+    ],
+)
+def test_published_provider_is_clamped_to_the_fixed_vocabulary(info_type, expected):
+    assert _published_provider(info_type) == expected
+    assert _published_provider(info_type) in USER_PROVIDER_VOCABULARY
+
+
+def test_inventory_user_row_for_unknown_type_publishes_other_not_the_type():
+    """An uncatalogued entity_info type is published as 'other', bytes and all."""
+    entity_id = str(uuid4())
+    shared_pool = _make_content_blind_shared_pool(
+        user_row=_make_entity_info_row(entity_id=entity_id, info_type="sentineltype_token"),
+    )
+
+    resp = _build_app_with_shared_pool(shared_pool).get(
+        f"/api/secrets/inventory?identity={entity_id}"
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user"][0]["provider"] == "other"
+    assert "sentineltype" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# bu-iph56: the inventory's system and CLI families are content-blind too
+# ---------------------------------------------------------------------------
+# Owner decision Option C puts "audit/probe/failure free text" off the wire
+# with no qualification by credential family, so the system and CLI arrays of
+# this same response are bound by it as well. Operator-authored labels (key,
+# category, description) are NOT covered by that decision and deliberately
+# still ship; whether they should is an open policy question.
+# ---------------------------------------------------------------------------
+
+
+def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
+    """No probe message or audit note ships for the system or CLI families.
+
+    Each free-text source is planted with a distinct sentinel; none may appear
+    anywhere in the response BYTES. Absence from the Pydantic model is not
+    enough — ``SystemSecret.audit`` was a ``list[dict]``, so a note could
+    previously reach the wire through a nested dict that no field list guards.
+    """
+    system_row = _make_system_row(
+        key="SENTINEL_SYSTEM_KEY",
+        value="fake-system-value",
+        category="general",
+        description="sentinel-system-description",
+        last_test_ok=False,
+        last_test_code=401,
+        last_test_message="sentinel-system-cached-message",
+    )
+    cli_row = _make_system_row(
+        key="sentinel-cli-key",
+        value="fake-cli-value",
+        category="cli",
+        description="sentinel-cli-description",
+        last_test_ok=False,
+        last_test_code=401,
+        last_test_message="sentinel-cli-cached-message",
+    )
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[system_row],
+        cli_rows=[cli_row],
+        probe_rows=[
+            _make_row(
+                credential_key="SENTINEL_SYSTEM_KEY",
+                ok=False,
+                code=401,
+                message="sentinel-system-probe-message",
+                recorded_at=_NOW,
+                latency_ms=12,
+            ),
+            _make_row(
+                credential_key="sentinel-cli-key",
+                ok=False,
+                code=401,
+                message="sentinel-cli-probe-message",
+                recorded_at=_NOW,
+                latency_ms=13,
+            ),
+        ],
+        audit_rows=[
+            _make_row(
+                target="s:SENTINEL_SYSTEM_KEY",
+                ts=_NOW,
+                actor="owner",
+                action="verified",
+                note="sentinel-system-audit-note",
+            ),
+        ],
+    )
+
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    for sentinel in (
+        "sentinel-system-cached-message",
+        "sentinel-system-probe-message",
+        "sentinel-system-audit-note",
+        "sentinel-cli-cached-message",
+        "sentinel-cli-probe-message",
+    ):
+        assert sentinel not in resp.text, f"{sentinel} leaked into the inventory response"
+
+    body = resp.json()["data"]
+    system_entry = next(row for row in body["system"] if row["key"] == "SENTINEL_SYSTEM_KEY")
+    cli_entry = next(row for row in body["cli"] if row["key"] == "sentinel-cli-key")
+
+    # The published field lists, locked so a new internal field cannot ride out.
+    assert set(system_entry) == {
+        "key",
+        "category",
+        "description",
+        "state",
+        "fingerprint",
+        "last_verified",
+        "last_test_ok",
+        "last_test_code",
+        "butler",
+        "test",
+        "audit",
+        "read_only",
+        "used_by",
+    }
+    assert set(cli_entry) == {
+        "key",
+        "category",
+        "description",
+        "state",
+        "fingerprint",
+        "issued",
+        "expires",
+        "last_verified",
+        "last_test_ok",
+        "last_test_code",
+        "test",
+    }
+
+    # The machine-checkable outcome survives; only the free text is gone.
+    assert system_entry["test"] == {"ok": False, "code": 401, "at": ANY, "latency_ms": 12}
+    assert cli_entry["test"] == {"ok": False, "code": 401, "at": ANY, "latency_ms": 13}
+    assert system_entry["last_test_ok"] is False
+    assert system_entry["last_test_code"] == 401
+    assert system_entry["audit"] == [{"ts": ANY, "actor": "owner", "action": "verified"}]
+
+    # Operator-authored labels are outside the owner decision and still ship.
+    assert system_entry["description"] == "sentinel-system-description"
+    assert cli_entry["description"] == "sentinel-cli-description"

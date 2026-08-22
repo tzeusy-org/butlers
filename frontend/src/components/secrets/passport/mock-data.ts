@@ -30,20 +30,25 @@ export const MOCK_IDENTITIES: Identity[] = [
   { id: "wei", label: "Wei", role: "member", pronoun: null,  hue: "oklch(0.78 0.13 200)" },
 ];
 
+// Mirrors the content-blind wire shape of GET /api/secrets/inventory's user
+// array (bu-iph56): capability categories from the fixed vocabulary instead of
+// raw scopes, no probe messages, and no audit notes. Do not add those back
+// here — a mock that shows evidence the endpoint cannot supply invites UI that
+// renders blank against real data.
 export const MOCK_USER_CREDENTIALS: UserCredential[] = [
   {
     provider: "google", identity: "tze", state: "ok",
     fingerprint: "sha256:7a3f9e2c",
     issued: "2026-02-14", expires: null,
     lastVerified: "14:21 today", lastUsed: "14:18 today",
-    scopesRequired: ["calendar.readonly", "gmail.readonly", "drive.metadata.readonly"],
-    scopesGranted:  ["calendar.readonly", "gmail.readonly", "drive.metadata.readonly"],
+    capabilitiesRequired: ["calendar", "gmail", "drive"],
+    capabilitiesGranted:  ["calendar", "gmail", "drive"],
     feeds: ["calendar", "chronicler"],
     test: { ok: true, code: 200, latencyMs: 42, at: "14:21 today" },
     audit: [
-      { ts: "2026-05-23 14:21", actor: "system", action: "verified",  note: "200 OK · 42ms" },
-      { ts: "2026-05-21 09:04", actor: "tze",    action: "rotated",   note: "refresh-token rolled" },
-      { ts: "2026-02-14 18:30", actor: "tze",    action: "connected", note: "oauth dance · 3 scopes granted" },
+      { ts: "2026-05-23 14:21", actor: "system", action: "verified",  note: "" },
+      { ts: "2026-05-21 09:04", actor: "tze",    action: "rotated",   note: "" },
+      { ts: "2026-02-14 18:30", actor: "tze",    action: "connected", note: "" },
     ],
   },
   {
@@ -51,14 +56,14 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: "sha256:d4e1b8a0",
     issued: "2025-11-03", expires: "2026-05-20",
     lastVerified: "2 days ago", lastUsed: "2 days ago",
-    scopesRequired: ["user-read-recently-played"],
-    scopesGranted:  ["user-read-recently-played"],
+    capabilitiesRequired: ["connectivity"],
+    capabilitiesGranted:  ["connectivity"],
     feeds: ["chronicler"],
     failureTail: "401 invalid_grant · refresh-token expired",
-    test: { ok: false, code: 401, latencyMs: 134, at: "2 days ago", message: "refresh-token expired" },
+    test: { ok: false, code: 401, latencyMs: 134, at: "2 days ago" },
     audit: [
-      { ts: "2026-05-21 06:08", actor: "system", action: "failed",    note: "401 · refresh failed · marked expired" },
-      { ts: "2025-11-03 22:14", actor: "tze",    action: "connected", note: "oauth dance · 1 scope" },
+      { ts: "2026-05-21 06:08", actor: "system", action: "failed",    note: "" },
+      { ts: "2025-11-03 22:14", actor: "tze",    action: "connected", note: "" },
     ],
   },
   {
@@ -66,13 +71,13 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: "sha256:0c2a47f5",
     issued: "2025-05-27", expires: "2026-05-27",
     lastVerified: "14:00 today", lastUsed: "14:00 today",
-    scopesRequired: ["states.read", "events.fire"],
-    scopesGranted:  ["states.read", "events.fire"],
+    capabilitiesRequired: ["connectivity"],
+    capabilitiesGranted:  ["connectivity"],
     feeds: ["household", "calendar"],
     test: { ok: true, code: 200, latencyMs: 18, at: "14:00 today" },
     audit: [
-      { ts: "2026-05-23 14:00", actor: "system", action: "verified",  note: "200 OK · 18ms" },
-      { ts: "2026-05-22 09:00", actor: "system", action: "warned",    note: "token expires in 5 days" },
+      { ts: "2026-05-23 14:00", actor: "system", action: "verified",  note: "" },
+      { ts: "2026-05-22 09:00", actor: "system", action: "warned",    note: "" },
     ],
   },
   {
@@ -80,13 +85,13 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: "sha256:91e7c4b2",
     issued: "2026-04-08", expires: null,
     lastVerified: "13:58 today", lastUsed: "13:55 today",
-    scopesRequired: ["messages.read", "messages.send", "contacts.read"],
-    scopesGranted:  ["messages.read", "messages.send"],
+    capabilitiesRequired: ["connectivity", "other"],
+    capabilitiesGranted:  ["connectivity"],
     feeds: ["relationship"],
-    test: { ok: true, code: 200, latencyMs: 73, at: "13:58 today", message: "scope set incomplete" },
+    test: { ok: true, code: 200, latencyMs: 73, at: "13:58 today" },
     audit: [
-      { ts: "2026-05-19 11:12", actor: "system", action: "warned",    note: "contacts.read newly required" },
-      { ts: "2026-04-08 17:20", actor: "tze",    action: "connected", note: "oauth dance · 2 scopes granted" },
+      { ts: "2026-05-19 11:12", actor: "system", action: "warned",    note: "" },
+      { ts: "2026-04-08 17:20", actor: "tze",    action: "connected", note: "" },
     ],
   },
   {
@@ -94,21 +99,21 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: "sha256:b3d9106c",
     issued: "2025-08-12", expires: null,
     lastVerified: "14:19 today", lastUsed: "14:19 today",
-    scopesRequired: ["webhook.post"],
-    scopesGranted:  ["webhook.post"],
+    capabilitiesRequired: ["connectivity"],
+    capabilitiesGranted:  ["connectivity"],
     feeds: ["chronicler", "household"],
     webhook: "https://butlers.tze/ingest/owntracks",
     test: { ok: true, code: 200, latencyMs: 8, at: "14:19 today" },
     audit: [
-      { ts: "2026-05-23 14:19", actor: "system", action: "verified",  note: "200 OK · 8ms" },
-      { ts: "2025-08-12 20:00", actor: "tze",    action: "connected", note: "webhook token issued" },
+      { ts: "2026-05-23 14:19", actor: "system", action: "verified",  note: "" },
+      { ts: "2025-08-12 20:00", actor: "tze",    action: "connected", note: "" },
     ],
   },
   {
     provider: "steam", identity: "tze", state: "never_set",
     fingerprint: null, issued: null, expires: null,
     lastVerified: null, lastUsed: null,
-    scopesRequired: ["publisher.read"], scopesGranted: [],
+    capabilitiesRequired: ["connectivity"], capabilitiesGranted: [],
     feeds: ["chronicler"], test: null, audit: [],
   },
   // Household member — Wei
@@ -117,15 +122,19 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: "sha256:2f8e0a17",
     issued: "2026-03-02", expires: null,
     lastVerified: "13:51 today", lastUsed: "13:51 today",
-    scopesRequired: ["calendar.readonly"], scopesGranted: ["calendar.readonly"],
+    capabilitiesRequired: ["calendar"], capabilitiesGranted: ["calendar"],
     feeds: ["calendar"],
     test: { ok: true, code: 200, latencyMs: 51, at: "13:51 today" },
     audit: [
-      { ts: "2026-05-23 13:51", actor: "system", action: "verified", note: "200 OK · 51ms" },
+      { ts: "2026-05-23 13:51", actor: "system", action: "verified", note: "" },
     ],
   },
 ];
 
+// System and CLI rows are content-blind on the wire too (bu-iph56): the
+// inventory publishes no probe message and no audit note for them either.
+// Operator-authored key/category/description labels are outside that
+// decision and still ship, so they stay here.
 export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
   {
     key: "BUTLER_TELEGRAM_TOKEN", category: "telegram", rowState: "shared",
@@ -135,8 +144,8 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     usedBy: ["switchboard", "relationship", "qa"],
     test: { ok: true, code: 200, latencyMs: 41, at: "14:20 today" },
     audit: [
-      { ts: "2026-05-23 14:20", actor: "system", action: "verified", note: "getMe · 41ms" },
-      { ts: "2025-09-14 11:05", actor: "tze",    action: "rotated",  note: "token replaced" },
+      { ts: "2026-05-23 14:20", actor: "system", action: "verified", note: "" },
+      { ts: "2025-09-14 11:05", actor: "tze",    action: "rotated",  note: "" },
     ],
   },
   {
@@ -147,8 +156,8 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     usedBy: ["*"],
     test: { ok: true, code: 200, latencyMs: 220, at: "14:14 today" },
     audit: [
-      { ts: "2026-05-23 14:14", actor: "system", action: "verified", note: "1-token probe · 220ms" },
-      { ts: "2026-05-01 10:00", actor: "tze",    action: "rotated",  note: "monthly rotation" },
+      { ts: "2026-05-23 14:14", actor: "system", action: "verified", note: "" },
+      { ts: "2026-05-01 10:00", actor: "tze",    action: "rotated",  note: "" },
     ],
   },
   {
@@ -167,7 +176,7 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     plainValue: "tze@lim.house",
     test: null,
     audit: [
-      { ts: "2026-04-22 16:00", actor: "tze", action: "set", note: "changed from butlers@…" },
+      { ts: "2026-04-22 16:00", actor: "tze", action: "set", note: "" },
     ],
   },
 ];

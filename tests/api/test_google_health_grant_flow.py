@@ -310,7 +310,7 @@ async def test_google_health_grant_flow_scope_transition():
 
     Proves:
     1. Inventory (owner-default, no ?identity=) surfaces primary Google account
-       credential (google_oauth_refresh) even before health scopes are granted.
+       credential (provider="google") even before health scopes are granted.
     2. OAuth start URL for scope_set=health contains all three googlehealth.* scopes.
     3. OAuth callback (mocked token exchange) writes health scopes to google_accounts.
     4. Connector status reports ``degraded`` BEFORE the grant (scope_missing path).
@@ -332,11 +332,13 @@ async def test_google_health_grant_flow_scope_transition():
     inv_body = inv_resp.json()
     assert "data" in inv_body, "inventory must return {data: {...}}"
     user_creds = inv_body["data"].get("user", [])
-    user_types = [u["type"] for u in user_creds]
-    # The primary GA companion entity's google_oauth_refresh must be in the user array.
-    assert "google_oauth_refresh" in user_types, (
-        f"Expected google_oauth_refresh in user credentials (owner-default projection). "
-        f"Got: {user_types}"
+    user_providers = [u["provider"] for u in user_creds]
+    # The primary GA companion entity's Google credential must be in the user
+    # array. The row publishes a clamped provider slug, not the persisted
+    # entity_info.type (bu-iph56 content-blind inventory).
+    assert "google" in user_providers, (
+        f"Expected the google credential in user credentials (owner-default projection). "
+        f"Got: {user_providers}"
     )
 
     # ------------------------------------------------------------------ #

@@ -361,7 +361,16 @@ class SystemSecret(BaseModel):
 
 
 class UserSecret(BaseModel):
-    """A per-user credential stored in public.entity_info."""
+    """Internal, unprojected inventory read of one ``public.entity_info`` row.
+
+    Never serialised to a client wholesale — ``_content_blind_summary`` is the
+    only bridge from here to ``UserSecretSummary``, the row shape
+    ``GET /api/secrets/inventory`` actually publishes (bu-iph56). The persisted
+    type, label, probe message, and raw scopes stay on this record because
+    server-side consumers genuinely need them: ``jobs/secrets_lifecycle`` and
+    ``jobs/secrets_staleness`` read ``type`` to derive a provider, and
+    ``_dedupe_display_families`` groups inventory rows by it.
+    """
 
     id: str  # entity_info row id (UUID)
     entity_id: str  # entity UUID
@@ -435,22 +444,6 @@ class IdentityInfo(BaseModel):
     role: str  # 'owner' | 'member'
 
 
-class InventoryData(BaseModel):
-    """Payload returned by GET /api/secrets/inventory."""
-
-    cli: list[CliRuntime] = Field(default_factory=list)
-    system: list[SystemSecret] = Field(default_factory=list)
-    user: list[UserSecret] = Field(default_factory=list)
-    identities: list[IdentityInfo] = Field(default_factory=list)
-    providers: dict[str, ProviderMetadata] = Field(default_factory=dict)
-    """Provider display metadata catalog keyed by provider slug.
-
-    Included so the frontend never needs a separate round-trip and the
-    static FE copy stays in sync with this authoritative backend source.
-    Shape mirrors ProviderInfo in frontend/src/components/secrets/passport/types.ts.
-    """
-
-
 # ---------------------------------------------------------------------------
 # Per-credential detail models (richer payloads for single-credential reads)
 # ---------------------------------------------------------------------------
@@ -485,16 +478,27 @@ class CredentialCapabilityOutcome(BaseModel):
 class CredentialAuditOutcome(BaseModel):
     """One audit-log entry for a credential, without its free-text ``note``.
 
+    Used for every credential namespace this router publishes — ``u:`` user
+    credentials, ``s:`` system secrets, ``c:`` CLI tokens — so the reasoning
+    below is deliberately namespace-independent.
+
     ``note`` is the only operator-authored field on the row and is dropped
-    here. ``actor`` and ``action`` survive because every current writer of the
-    ``u:`` target namespace supplies constants: ``_write_credential_audit`` in
-    this router (``_OWNER_ACTOR`` plus one of its lifecycle verbs),
-    ``_emit_oauth_audit`` in ``routers/oauth.py`` (every call site passes a
-    literal action and the default ``owner`` actor), and
-    ``jobs/secrets_lifecycle.py`` (``_LIFECYCLE_ACTOR`` /
-    ``_LIFECYCLE_NOTIFIED_ACTION``). That is an audited property of today's
-    writers, not an enforced one: a new writer passing a dynamic actor or
-    action would publish it here.
+    here, whichever namespace the row belongs to. ``actor`` and ``action``
+    survive because every current writer supplies constants:
+
+    - ``u:`` — ``_write_credential_audit`` in this router (``_OWNER_ACTOR``
+      plus one of its lifecycle verbs) and ``_emit_oauth_audit`` in
+      ``routers/oauth.py`` (every call site passes a literal action and the
+      default ``owner`` actor).
+    - ``s:`` — ``_write_system_audit`` in this router (``_OWNER_ACTOR`` plus
+      an action that is always a literal or a locally-chosen one of two).
+    - ``c:`` — ``_write_cli_audit`` in this router, same shape.
+    - any namespace — ``jobs/secrets_lifecycle.py``, which writes
+      ``_LIFECYCLE_ACTOR`` / ``_LIFECYCLE_NOTIFIED_ACTION`` against whatever
+      canonical key the credential it is monitoring has.
+
+    That is an audited property of today's writers, not an enforced one: a new
+    writer passing a dynamic actor or action would publish it here.
     """
 
     ts: str  # pre-formatted relative timestamp
@@ -622,6 +626,240 @@ def _content_blind_detail(record: _UserCredentialRecord) -> UserSecretDetail:
             for entry in record.capabilities
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Inventory payload (content-blind user rows)
+# ---------------------------------------------------------------------------
+# Defined here, after the projection helpers above, because the inventory's
+# user array is the same content-blind evidence the per-credential detail
+# endpoint publishes — just one row per credential instead of one credential
+# (bu-iph56).
+# ---------------------------------------------------------------------------
+
+
+class UserSecretSummary(BaseModel):
+    """Content-blind inventory row for one user credential.
+
+    The list-shaped sibling of ``UserSecretDetail``: same contract, same fixed
+    capability vocabulary, one row per ``public.entity_info`` credential.  Kept
+    a separate model rather than reusing ``UserSecretDetail`` so per-credential
+    detail can grow richer single-read evidence (breaks, feeds) without that
+    evidence silently fanning out across every row of the inventory.
+
+    Every field is a database identifier, a timestamp, a derived hash, a
+    ``PROVIDER_CATALOG`` slug, or a member of ``CAPABILITY_VOCABULARY``. Raw
+    scope identifiers, the persisted credential type and label, and audit /
+    probe / failure free text are never projected here (owner decision,
+    2026-08-13).
+    """
+
+    # Identity
+    id: str  # entity_info row id (UUID)
+    entity_id: str  # entity UUID
+    provider: str  # a USER_PROVIDER_VOCABULARY member; 'other' when unknown
+
+    # State
+    state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
+    fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+
+    # Timestamps
+    issued: datetime | None = None  # created_at
+    expires: datetime | None = None  # Google test-mode only; see UserSecret
+    last_verified: datetime | None = None
+
+    # Capability evidence, drawn only from CAPABILITY_VOCABULARY. Empty means
+    # "no capability is recorded for this credential", never "unknown".
+    capabilities_required: list[str] = Field(default_factory=list)
+    capabilities_granted: list[str] = Field(default_factory=list)
+
+    # Evidence tail
+    test: CredentialTestOutcome | None = None  # most recent probe outcome
+    audit: list[CredentialAuditOutcome] = Field(default_factory=list)
+    capabilities: list[CredentialCapabilityOutcome] = Field(default_factory=list)
+
+
+def _content_blind_summary(record: UserSecret) -> UserSecretSummary:
+    """Project an internal inventory row onto the public inventory payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    ``UserSecret`` must be consciously allowed through here before it can reach
+    a client.
+
+    ``audit`` is re-projected here rather than trusted from its writers.  Rows
+    in the ``u:`` target namespace are written by three separate producers —
+    ``_write_credential_audit`` in this router, ``_emit_oauth_audit`` in
+    ``routers/oauth.py``, and ``jobs/secrets_lifecycle`` — and a fourth could
+    appear at any time, so read-side projection is the only chokepoint that
+    actually holds. ``note`` is dropped for every row regardless of who wrote
+    it; see ``CredentialAuditOutcome`` for why ``actor``/``action`` survive.
+    """
+    return UserSecretSummary(
+        id=record.id,
+        entity_id=record.entity_id,
+        provider=_published_provider(record.type),
+        state=record.state,
+        fingerprint=record.fingerprint,
+        issued=record.issued,
+        expires=record.expires,
+        last_verified=record.last_verified,
+        capabilities_required=_capability_categories(
+            _infer_provider_from_type(record.type), record.scopes_required
+        ),
+        capabilities_granted=_capability_categories(
+            _infer_provider_from_type(record.type), record.scopes_granted
+        ),
+        test=_test_outcome(record.test),
+        audit=[
+            CredentialAuditOutcome(
+                ts=str(event.get("ts") or ""),
+                actor=str(event.get("actor") or ""),
+                action=str(event.get("action") or ""),
+            )
+            for event in record.audit
+        ],
+        capabilities=[
+            CredentialCapabilityOutcome(
+                capability=_capability_name(entry.capability),
+                test=_test_outcome(entry.test),
+            )
+            for entry in record.capabilities
+        ],
+    )
+
+
+class SystemSecretSummary(BaseModel):
+    """Content-blind inventory row for one system credential.
+
+    The published projection of ``SystemSecret``, which stays internal so the
+    counting and grouping passes in ``get_inventory`` can keep reading the
+    unprojected row.
+
+    ``last_test_message`` and the probe's free-text ``message`` are absent, and
+    every audit row is rebuilt without its ``note``: owner decision 2026-08-13
+    puts audit / probe / failure free text off the wire for this response
+    regardless of credential family, because that text can echo a provider
+    response or the credential's own content.
+
+    ``key``, ``category`` and ``description`` deliberately survive. They are
+    operator-authored labels for infrastructure keys rather than evidence
+    derived from credential content, and the passport has no other way to name
+    a system row. Whether they belong behind the same projection is an open
+    policy question, not a decided one (bu-iph56).
+    """
+
+    key: str
+    category: str = "general"
+    description: str | None = None
+    state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
+    fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+    last_verified: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_code: int | None = None
+    butler: str  # which butler schema owns this row
+    test: CredentialTestOutcome | None = None
+    audit: list[CredentialAuditOutcome] = Field(default_factory=list)
+    read_only: bool = False
+    used_by: list[str] = Field(default_factory=list)
+
+
+def _content_blind_system(record: SystemSecret) -> SystemSecretSummary:
+    """Project an internal system row onto the public inventory payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    ``SystemSecret`` must be consciously allowed through here before it can
+    reach a client.
+
+    ``audit`` is re-projected rather than trusted from its writers, for the
+    same reason ``_content_blind_summary`` re-projects the ``u:`` namespace:
+    ``s:`` rows are written by ``_write_system_audit`` here and by
+    ``jobs/secrets_lifecycle`` (which targets whatever canonical key it is
+    monitoring, so it writes into this namespace too), and nothing stops a
+    further writer appearing, so read-side projection is the only chokepoint
+    that actually holds.
+    """
+    return SystemSecretSummary(
+        key=record.key,
+        category=record.category,
+        description=record.description,
+        state=record.state,
+        fingerprint=record.fingerprint,
+        last_verified=record.last_verified,
+        last_test_ok=record.last_test_ok,
+        last_test_code=record.last_test_code,
+        butler=record.butler,
+        test=_test_outcome(record.test),
+        audit=[
+            CredentialAuditOutcome(
+                ts=str(event.get("ts") or ""),
+                actor=str(event.get("actor") or ""),
+                action=str(event.get("action") or ""),
+            )
+            for event in record.audit
+        ],
+        read_only=record.read_only,
+        used_by=list(record.used_by),
+    )
+
+
+class CliRuntimeSummary(BaseModel):
+    """Content-blind inventory row for one CLI runtime token.
+
+    ``CliRuntime``'s published projection. Carries no ``audit`` array because
+    the inventory never populated one for this family; ``last_test_message``
+    and the probe ``message`` are dropped for the same reason as
+    ``SystemSecretSummary``.
+    """
+
+    key: str
+    category: str = "cli"
+    description: str | None = None
+    state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
+    fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+    issued: datetime | None = None
+    expires: datetime | None = None
+    last_verified: datetime | None = None
+    last_test_ok: bool | None = None
+    last_test_code: int | None = None
+    test: CredentialTestOutcome | None = None
+
+
+def _content_blind_cli(record: CliRuntime) -> CliRuntimeSummary:
+    """Project an internal CLI row onto the public inventory payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    ``CliRuntime`` must be consciously allowed through here before it can
+    reach a client.
+    """
+    return CliRuntimeSummary(
+        key=record.key,
+        category=record.category,
+        description=record.description,
+        state=record.state,
+        fingerprint=record.fingerprint,
+        issued=record.issued,
+        expires=record.expires,
+        last_verified=record.last_verified,
+        last_test_ok=record.last_test_ok,
+        last_test_code=record.last_test_code,
+        test=_test_outcome(record.test),
+    )
+
+
+class InventoryData(BaseModel):
+    """Payload returned by GET /api/secrets/inventory."""
+
+    cli: list[CliRuntimeSummary] = Field(default_factory=list)
+    system: list[SystemSecretSummary] = Field(default_factory=list)
+    user: list[UserSecretSummary] = Field(default_factory=list)
+    identities: list[IdentityInfo] = Field(default_factory=list)
+    providers: dict[str, ProviderMetadata] = Field(default_factory=dict)
+    """Provider display metadata catalog keyed by provider slug.
+
+    Included so the frontend never needs a separate round-trip and the
+    static FE copy stays in sync with this authoritative backend source.
+    Shape mirrors ProviderInfo in frontend/src/components/secrets/passport/types.ts.
+    """
 
 
 class SystemSecretDetail(BaseModel):
@@ -1194,6 +1432,32 @@ def _infer_provider_from_type(entity_type: str) -> str:
 
     idx = entity_type.find("_")
     return entity_type[:idx] if idx > 0 else entity_type
+
+
+# Provider slugs the inventory is allowed to publish for a user credential.
+# PROVIDER_CATALOG's own keys plus the two real entity_info groupings that have
+# no catalogue entry: 'email' (email_password) and 'other' (the catch-all type
+# the passport's own add-credential dropdown offers). Held as a fixed tuple so
+# _published_provider FILTERS this vocabulary rather than echoing an inferred
+# string — the last step of _infer_provider_from_type is a prefix of the
+# persisted entity_info.type, which is exactly the content the inventory must
+# not publish (owner decision, 2026-08-13).
+USER_PROVIDER_VOCABULARY: tuple[str, ...] = (*PROVIDER_CATALOG, "email", "other")
+
+
+def _published_provider(entity_type: str) -> str:
+    """Clamp an inferred provider slug to ``USER_PROVIDER_VOCABULARY``.
+
+    An entity_info type that maps to no known provider becomes 'other' rather
+    than leaking its own spelling. Two uncatalogued credentials on the same
+    entity therefore share one 'other' passport row — a display grouping, not
+    a claim that they are the same credential.
+    """
+    inferred = _infer_provider_from_type(entity_type)
+    for provider in USER_PROVIDER_VOCABULARY:
+        if provider == inferred:
+            return provider
+    return "other"
 
 
 def _provider_like_patterns(provider: str) -> list[str]:
@@ -2122,9 +2386,22 @@ async def get_inventory(
     Every credential row includes:
     - state (derived from test-state columns + expiry)
     - fingerprint (sha256 first-8 hex, computed on-read, never persisted)
-    - per-family identity (key / type / id)
+    - per-family identity (key / provider / id)
 
     Raw credential values are NEVER returned.
+
+    Every row of every family is content-blind (bu-iph56, owner decision
+    2026-08-13): probe messages and audit note free text never reach the wire,
+    for the user, system and CLI families alike.
+
+    The user family goes furthest, because its evidence is derived from
+    credential content rather than authored by an operator: each row is a
+    ``UserSecretSummary`` whose scope evidence is published as
+    ``CAPABILITY_VOCABULARY`` categories and whose provider slug is clamped to
+    ``USER_PROVIDER_VOCABULARY``, and the persisted credential type and label
+    never reach the wire either. System and CLI rows keep their operator-authored
+    ``key`` / ``category`` / ``description`` labels; whether those belong behind
+    the same projection is an open policy question, not a decided one.
 
     meta.failing_count / meta.unverified_count are computed server-side from
     a deduplicated row set (bu-976n0): failing_count counts genuinely broken
@@ -2233,10 +2510,15 @@ async def get_inventory(
     }
     severity = {k: v for k, v in counts.items() if v > 0}
 
+    # Every family is projected on the way out (bu-iph56). The rows above
+    # stay unprojected for the counting and grouping, which need the persisted
+    # type; what reaches the client carries capability categories instead of
+    # raw scopes, no credential type or label, and — for all three families —
+    # no probe message and no audit note.
     data = InventoryData(
-        cli=cli_secrets,
-        system=system_secrets,
-        user=user_secrets,
+        cli=[_content_blind_cli(secret) for secret in cli_secrets],
+        system=[_content_blind_system(secret) for secret in system_secrets],
+        user=[_content_blind_summary(secret) for secret in user_secrets],
         identities=identities,
         providers=PROVIDER_CATALOG,
     )

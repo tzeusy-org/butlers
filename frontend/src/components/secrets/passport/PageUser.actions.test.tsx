@@ -89,10 +89,11 @@ import type { ProviderInfo, UserCredential } from "./types.ts"
 /** Google credential is in "ok" state — test + rotate + disconnect visible. */
 const GOOGLE = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google" && u.identity === "tze")!
 const GOOGLE_PROVIDER = MOCK_PROVIDERS.google
+// Provenance is resolved from the provider slug alone since bu-iph56 — the
+// inventory no longer publishes the entity_info types behind a passport row.
 const EMAIL: UserCredential = {
   ...GOOGLE,
   provider: "email",
-  sourceTypes: ["email_password"],
 }
 const EMAIL_PROVIDER: ProviderInfo = {
   ...GOOGLE_PROVIDER,
@@ -104,12 +105,11 @@ const EMAIL_PROVIDER: ProviderInfo = {
 const TELEGRAM: UserCredential = {
   ...GOOGLE,
   provider: "telegram_bot",
-  sourceTypes: ["telegram_api_id", "telegram_api_hash"],
 }
 const TELEGRAM_PROVIDER = MOCK_PROVIDERS.telegram_bot
+/** Google has no static source page — an OAuth dance, not a value to copy. */
 const UNMAPPED: UserCredential = {
   ...GOOGLE,
-  sourceTypes: ["google_oauth_refresh"],
 }
 
 /** Steam credential is in "never_set" state — only connect visible. */
@@ -298,7 +298,7 @@ describe("PageUser: rotate button (value-entry panel)", () => {
     })
   })
 
-  it("does not show a provenance link for an unmapped credential type", () => {
+  it("does not show a provenance link for a provider with no static source", () => {
     renderUnmapped()
 
     fireEvent.click(getBtn("rotate"))

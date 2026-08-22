@@ -19,9 +19,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getSecretsInventory } from "@/api/client.ts";
 import type {
-  SecretsAuditEvent,
-  SecretsCapabilityStatus,
   SecretsCliRaw,
+  SecretsCredentialAuditOutcome,
+  SecretsCredentialCapabilityOutcome,
+  SecretsCredentialTestOutcome,
   SecretsIdentityInfo,
   SecretsProviderInfo,
   SecretsSystemRaw,
@@ -56,23 +57,6 @@ const STATE_RANK: Record<CredentialState, number> = {
 // Adapter helpers
 // ---------------------------------------------------------------------------
 
-const USER_TYPE_PROVIDER_ALIASES: Record<string, string> = {
-  home_assistant_token: "homeassistant",
-  home_assistant_url: "homeassistant",
-  telegram_api_hash: "telegram_bot",
-  telegram_api_id: "telegram_bot",
-  telegram_user_session: "telegram_bot",
-};
-
-const USER_TYPE_PREFIX_ALIASES: Record<string, string> = {
-  home_assistant: "homeassistant",
-  telegram: "telegram_bot",
-};
-
-function normalizeProviderId(value: string): string {
-  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
-}
-
 function titleFromProviderId(providerId: string): string {
   return providerId
     .split(/[_-]+/)
@@ -81,7 +65,14 @@ function titleFromProviderId(providerId: string): string {
     .join(" ") || "Credential";
 }
 
-function genericProvider(providerId: string, type: string): SecretsProviderInfo {
+/**
+ * Placeholder metadata for a provider slug the backend catalog does not carry.
+ *
+ * The brief is deliberately generic: the inventory no longer publishes the raw
+ * entity_info type this row came from (bu-iph56), so there is nothing specific
+ * to say about the credential beyond the slug the backend chose to publish.
+ */
+function genericProvider(providerId: string): SecretsProviderInfo {
   const label = titleFromProviderId(providerId);
   return {
     id: providerId,
@@ -89,7 +80,7 @@ function genericProvider(providerId: string, type: string): SecretsProviderInfo 
     glyph: label.slice(0, 1).toUpperCase() || "?",
     kind: "token",
     authority: "credential store",
-    brief: `Stored ${type} credential.`,
+    brief: "Stored credential.",
     cadence: "on demand",
   };
 }
@@ -136,77 +127,50 @@ function rowStateFromSystemRaw(raw: SecretsSystemRaw): SystemCredential["rowStat
 }
 
 /**
- * Extract the provider slug from an entity_info.type string.
+ * Map a content-blind probe outcome (bu-iph56) to the FE TestResult shape.
  *
- * Most OAuth-style rows use `<provider>_oauth_refresh`, but several live
- * entity_info rows predate that convention (`home_assistant_token`,
- * `telegram_user_session`). Prefer provider catalog keys and explicit aliases
- * so the passport page always has matching provider metadata.
+ * `message` is pinned to null rather than threaded: no inventory family has a
+ * probe message on the wire any more, by design. `latencyMs` stays null
+ * (never a fabricated "0ms") for probes the backend never timed; see
+ * ProbeResult's conditional render in atoms.tsx.
  */
-function extractProvider(type: string, providers: Record<string, SecretsProviderInfo>): string {
-  if (providers[type]) return type;
-
-  const exactAlias = USER_TYPE_PROVIDER_ALIASES[type];
-  if (exactAlias && providers[exactAlias]) return exactAlias;
-
-  const providerIds = Object.keys(providers);
-  const directPrefix = providerIds.find((providerId) => type === providerId || type.startsWith(`${providerId}_`));
-  if (directPrefix) return directPrefix;
-
-  for (const [prefix, providerId] of Object.entries(USER_TYPE_PREFIX_ALIASES)) {
-    if ((type === prefix || type.startsWith(`${prefix}_`)) && providers[providerId]) {
-      return providerId;
-    }
-  }
-
-  const normalizedPrefix = providerIds
-    .slice()
-    .sort((a, b) => b.length - a.length)
-    .find((providerId) => type.startsWith(`${normalizeProviderId(providerId)}_`));
-  if (normalizedPrefix) return normalizedPrefix;
-
-  const idx = type.indexOf("_");
-  return idx > 0 ? type.slice(0, idx) : type;
-}
-
-function adaptProbeResult(raw: SecretsCliRaw["test"]): TestResult | null {
+function adaptTestOutcome(raw: SecretsCredentialTestOutcome | null): TestResult | null {
   if (!raw) return null;
   return {
     ok: raw.ok,
     code: raw.code ?? null,
-    message: raw.message ?? null,
-    // Real round-trip latency (bu-6v1hx) when the backend measured one — only
-    // probes that make an actual live network call populate this column.
-    // Stays null (never a fabricated "0ms") for local-state-derived probes;
-    // see ProbeResult's conditional render in atoms.tsx.
+    message: null,
     latencyMs: raw.latency_ms ?? null,
     at: raw.at ?? "",
   };
 }
 
-/** Map backend audit_log rows to the FE AuditEvent shape (note: null → ""). */
-function adaptAuditEvents(raw: SecretsAuditEvent[] | undefined): AuditEvent[] {
+/**
+ * Map content-blind audit rows (bu-iph56) to the FE AuditEvent shape.
+ *
+ * `note` is pinned to "" because the backend drops it on read for every
+ * writer of the `u:` and `s:` audit namespaces — there is no note to render,
+ * and this must not be "fixed" by reaching for a note field that is not on
+ * the wire.
+ */
+function adaptAuditOutcomes(raw: SecretsCredentialAuditOutcome[] | undefined): AuditEvent[] {
   if (!raw) return [];
   return raw.map((event) => ({
     ts: event.ts,
     actor: event.actor,
     action: event.action,
-    note: event.note ?? "",
+    note: "",
   }));
 }
 
-/**
- * Map backend per-capability probe rows to the FE CapabilityStatus shape
- * (bu-4v5es). Absent/empty until the credential has been probed at least
- * once under the new capability-level scheme.
- */
-function adaptCapabilityStatuses(
-  raw: SecretsCapabilityStatus[] | undefined,
+/** Map content-blind per-capability probe rows (bu-iph56) to CapabilityStatus. */
+function adaptCapabilityOutcomes(
+  raw: SecretsCredentialCapabilityOutcome[] | undefined,
 ): CapabilityStatus[] {
   if (!raw) return [];
   return raw.map((c) => ({
     capability: c.capability,
-    test: adaptProbeResult(c.test),
+    test: adaptTestOutcome(c.test),
   }));
 }
 
@@ -219,10 +183,16 @@ function mergeCapabilities(a: CapabilityStatus[], b: CapabilityStatus[]): Capabi
   return Array.from(byCapability.values());
 }
 
-function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, SecretsProviderInfo>): UserCredential {
+/**
+ * Adapt one content-blind inventory row (bu-iph56).
+ *
+ * `provider` is taken straight from the wire — the backend clamps it to its
+ * own USER_PROVIDER_VOCABULARY, so there is no entity_info type left here to
+ * re-derive it from and no client-side guess to make.
+ */
+function adaptUserCredential(raw: SecretsUserRaw): UserCredential {
   return {
-    provider:       extractProvider(raw.type, providers),
-    sourceTypes:    [raw.type],
+    provider:       raw.provider,
     identity:       raw.entity_id,
     state:          normalizeCredentialState(raw.state),
     fingerprint:    raw.fingerprint ?? null,
@@ -235,18 +205,20 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
     expires:        raw.expires ?? null,
     lastVerified:   raw.last_verified ?? null,
     lastUsed:       null,
-    // Real (bu-6v1hx): union of provider_feature_catalogue.required_scopes.
-    scopesRequired: raw.scopes_required ?? [],
+    // Real (bu-6v1hx, categorised bu-iph56): provider_feature_catalogue
+    // required_scopes, mapped server-side onto CAPABILITY_VOCABULARY.
+    capabilitiesRequired: raw.capabilities_required ?? [],
     // Real for Google only (public.google_accounts.granted_scopes); every
     // other provider has no per-credential granted-scope tracking yet and
     // stays honestly empty.
-    scopesGranted:  raw.scopes_granted ?? [],
+    capabilitiesGranted:  raw.capabilities_granted ?? [],
     feeds:          [],
-    test:           adaptProbeResult(raw.test),
-    // Real (bu-6v1hx): last few public.audit_log rows for this credential.
-    audit:          adaptAuditEvents(raw.audit),
+    test:           adaptTestOutcome(raw.test),
+    // Real (bu-6v1hx): last few public.audit_log rows for this credential,
+    // without their notes.
+    audit:          adaptAuditOutcomes(raw.audit),
     // Real (bu-4v5es): per-capability probe state.
-    capabilities:   adaptCapabilityStatuses(raw.capabilities),
+    capabilities:   adaptCapabilityOutcomes(raw.capabilities),
   };
 }
 
@@ -273,9 +245,9 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     // key->consumer map. Empty means "not tracked", never "verified unused"
     // — see SystemCredential.usedBy and the "used by" band's rendering.
     usedBy:       raw.used_by ?? [],
-    test:         adaptProbeResult(raw.test),
+    test:         adaptTestOutcome(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential.
-    audit:        adaptAuditEvents(raw.audit),
+    audit:        adaptAuditOutcomes(raw.audit),
     readOnly:     raw.read_only ?? false,
   };
 }
@@ -293,7 +265,7 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     // No real source: CLI runtime tokens have no scope concept in this codebase.
     scopesGranted:  [],
     scopesRequired: [],
-    test:           adaptProbeResult(raw.test),
+    test:           adaptTestOutcome(raw.test),
   };
 }
 
@@ -374,16 +346,16 @@ function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
 
     grouped.set(key, {
       ...existing,
-      sourceTypes: Array.from(new Set([
-        ...(existing.sourceTypes ?? []),
-        ...(credential.sourceTypes ?? []),
-      ])),
       state: moreSevereState(existing.state, credential.state),
       fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
       lastVerified: existing.lastVerified ?? credential.lastVerified,
       lastUsed: existing.lastUsed ?? credential.lastUsed,
-      scopesRequired: Array.from(new Set([...existing.scopesRequired, ...credential.scopesRequired])),
-      scopesGranted: Array.from(new Set([...existing.scopesGranted, ...credential.scopesGranted])),
+      capabilitiesRequired: Array.from(
+        new Set([...existing.capabilitiesRequired, ...credential.capabilitiesRequired]),
+      ),
+      capabilitiesGranted: Array.from(
+        new Set([...existing.capabilitiesGranted, ...credential.capabilitiesGranted]),
+      ),
       feeds: Array.from(new Set([...existing.feeds, ...credential.feeds])),
       test: existing.test ?? credential.test,
       audit: [...existing.audit, ...credential.audit],
@@ -495,8 +467,8 @@ export function adaptInventoryResponse(data: {
 }): InventoryResponse {
   const providers: Record<string, SecretsProviderInfo> = { ...(data.providers ?? {}) };
   const user = data.user.map((raw) => {
-    const credential = adaptUserCredential(raw, providers);
-    providers[credential.provider] ??= genericProvider(credential.provider, raw.type);
+    const credential = adaptUserCredential(raw);
+    providers[credential.provider] ??= genericProvider(credential.provider);
     return credential;
   });
   const system = groupSystemCredentials(data.system.map(adaptSystemCredential));
