@@ -1239,13 +1239,13 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
             )
             assert (
                 conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar_one()
-                == "core_199"
+                == "core_200"
             )
             assert (
                 conn.execute(
                     text("SELECT version_num FROM switchboard.alembic_version")
                 ).scalar_one()
-                == "core_199"
+                == "core_200"
             )
     finally:
         engine.dispose()
@@ -1297,7 +1297,7 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
                             f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
                         )
                     ).scalar_one()
-                    == "core_199"
+                    == "core_200"
                 )
     finally:
         engine.dispose()
@@ -1349,7 +1349,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
                             f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
                         )
                     ).scalar_one()
-                    == "core_199"
+                    == "core_200"
                 )
             for relation in (
                 "public.runtime_attention_outbox",
