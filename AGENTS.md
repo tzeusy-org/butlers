@@ -1256,6 +1256,23 @@ migrate.
 - Calendar module mutation idempotency uses `calendar_action_log.idempotency_key` keyed by action + `request_id`; repeat requests should replay stored applied/noop results instead of re-executing side effects.
 - Butler-event MCP tools are `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, and `calendar_toggle_butler_event`; high-impact delete/toggle operations integrate with approval enqueueing and set `_approval_bypass=True` on queued replays.
 
+### knip runs before build and test — do not write code to appease it
+- The frontend gate order is `lint, lint:emdash, lint:query-coercion, knip, build, test`. Because
+  knip gates *before* the tests, an "unused export" complaint arrives with no test pressure behind
+  it, and the cheapest way to silence it is to import the export somewhere it is not needed. That is
+  dead logic written to satisfy a linter, and it ships untested.
+- Check `ignoreExportsUsedInFile: true` before reacting: an export consumed only inside its own
+  module is already exempt, so the complaint is often about a *different* symbol than the one you
+  are looking at. Delete the unused export, or leave it and fix the real consumer — never manufacture
+  a cross-file import (and the branch that comes with it) to turn the gate green.
+
+### The core `trigger` MCP tool is synchronous and returns session evidence
+- `trigger` **awaits the spawned session to completion** and returns
+  `{output, success, error, duration_ms, session_id}`. Neither the name nor the call site suggests
+  this. It is what makes server-owned outcome settlement possible without inventing a new MCP tool:
+  a caller can persist a terminal status and a `session_id` from the return value alone, instead of
+  polling or wiring a callback.
+
 ### Frontend dialog test contract
 - Radix `Dialog` content renders through a portal (`document.body`), so jsdom tests for dialog controls should query `document` (not only the mounted container) and use the native input value setter + `input` event dispatch for controlled text inputs.
 
