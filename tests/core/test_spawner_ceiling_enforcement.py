@@ -19,7 +19,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -150,9 +150,9 @@ class TestSpawnerCeilingEnforcement:
                 return_value=_ceiling_over(),
             ),
             patch(
-                "butlers.core.spawner.maybe_push_fleet_halt_attention",
+                "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
-            ) as fleet_halt_mock,
+            ) as write_attempt_mock,
         ):
             result = await Spawner(
                 config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
@@ -162,24 +162,28 @@ class TestSpawnerCeilingEnforcement:
         assert result.error is not None
         assert "ceiling" in result.error.lower()
         assert adapter.invoke_calls == 0
-        # bu-7o89u.4: the ceiling-deny branch pushes a fleet-halt attention-ledger
-        # push on every breach (debounce to once-per-window lives inside the hook
-        # itself, not the call site).
-        fleet_halt_mock.assert_awaited_once_with(mock_pool)
+        write_attempt_mock.assert_awaited_once()
+        assert write_attempt_mock.await_args.kwargs["outcome"] == "quota_skip"
+        assert write_attempt_mock.await_args.kwargs["produce_fleet_halt"] is True
 
-    async def test_ceiling_deny_result_survives_fleet_halt_hook_failure(
+    async def test_ceiling_deny_result_survives_atomic_recorder_failure(
         self, tmp_path: Path
     ) -> None:
-        """bu-7o89u.4: a raising fleet-halt push must never break the deny path.
+        """REQ-model-catalog-001: provenance failure cannot change denial.
 
-        The spawner wraps the hook call in its own try/except in addition to
-        the hook's internal one -- this pins that outer belt-and-suspenders
-        layer directly, independent of the hook's own implementation.
+        The fleet-halt call site in ``Spawner.trigger`` is unguarded, so the
+        "never raises" contract has to hold inside ``record_dispatch_attempt``
+        itself. Inject the failure into the recorder's own metrics dependency
+        rather than stubbing ``_write_dispatch_attempt``: a non-raising stub
+        would exercise no boundary at all.
         """
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
         mock_pool = AsyncMock()
+
+        raising_counter = Mock()
+        raising_counter.labels.side_effect = RuntimeError("metrics backend unavailable")
 
         adapter = _MockAdapter(result_text="should not run")
         with (
@@ -199,9 +203,8 @@ class TestSpawnerCeilingEnforcement:
                 return_value=_ceiling_over(),
             ),
             patch(
-                "butlers.core.spawner.maybe_push_fleet_halt_attention",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("boom"),
+                "butlers.core.dispatch_outcomes.runtime_attention_recorder_total",
+                raising_counter,
             ),
         ):
             result = await Spawner(
@@ -212,6 +215,7 @@ class TestSpawnerCeilingEnforcement:
         assert result.error is not None
         assert "ceiling" in result.error.lower()
         assert adapter.invoke_calls == 0
+        assert raising_counter.labels.called
 
     async def test_spawn_allowed_when_under_ceiling(self, tmp_path: Path) -> None:
         """Spawn proceeds normally when MTD spend is below the ceiling."""

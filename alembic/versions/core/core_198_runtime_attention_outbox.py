@@ -188,6 +188,24 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
                   COALESCE(admin_schema.nspacl, acldefault('n', admin_schema.nspowner))
               ) AS acl
               WHERE acl.grantee <> bootstrap_owner.oid
+                AND NOT (
+                    acl.privilege_type = 'USAGE'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM pg_proc AS v2_upgrader
+                        WHERE v2_upgrader.pronamespace = admin_schema.oid
+                          AND v2_upgrader.proname = 'upgrade_producers_v2'
+                          AND v2_upgrader.pronargs = 0
+                          AND v2_upgrader.prorettype = 'void'::regtype
+                          AND v2_upgrader.proowner = bootstrap_owner.oid
+                          AND v2_upgrader.prosecdef
+                          AND v2_upgrader.proconfig =
+                              ARRAY['search_path=pg_catalog, pg_temp']::text[]
+                          AND has_function_privilege(
+                              acl.grantee, v2_upgrader.oid, 'EXECUTE'
+                          )
+                    )
+                )
           )
           AND NOT EXISTS (
               SELECT 1
@@ -739,12 +757,21 @@ _TRUSTED_BOOTSTRAP_ROLLBACK_SQL = """
           AND rollback_interface.prosecdef
           AND rollback_interface.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           AND NOT has_function_privilege(migration_role.oid, rollback_interface.oid, 'EXECUTE')
+          -- core_199's executable old-binary fence is intentionally retained
+          -- by its downgrade.  Never tunnel through core_198 and remove the
+          -- protected boundary underneath that retained cutover contract.
+          AND to_regclass('public.runtime_attention_producer_control') IS NULL
+          AND to_regprocedure('public.runtime_attention_legacy_producer_fence()') IS NULL
           AND NOT EXISTS (
               SELECT 1
               FROM aclexplode(
                   COALESCE(admin_schema.nspacl, acldefault('n', admin_schema.nspowner))
               ) AS acl
               WHERE acl.grantee <> bootstrap_owner.oid
+                AND NOT (
+                    acl.grantee = migration_role.oid
+                    AND acl.privilege_type = 'USAGE'
+                )
           )
           AND NOT EXISTS (
               SELECT 1

@@ -2,8 +2,8 @@
 
 - [x] 1.1 Add a guarded core migration for `public.runtime_attention_outbox`, immutable source snapshots, triggering-edge and direct-reissue unique constraints, fenced-claim fields/indexes, non-cascading retention semantics, Switchboard claim grants, and fixed-search-path `SECURITY DEFINER` producer operations with `PUBLIC` execution revoked before role-specific grants; derive all pageable source/payload data server-side without claiming the shared-login `SET ROLE` topology is an unforgeable per-butler identity; write migration tests for upgraded, core-only, catalog-deletion, and role-enforced databases.
 - [x] 1.1a Stage nullable, bounded terminal delivery-error class/detail and optional scalar notification-reference fields in the inert core outbox; preserve core-only installation, no cross-schema foreign key, no runtime evidence-update grant, and no producer/worker activation; add real-Postgres migration coverage.
-- [ ] 1.2 Add a single serialized qualifying-dispatch outcome recorder used by Spawner failure/success provenance, including stable attempt-ID ordering, per-catalog-entry transaction serialization, same-transaction breaker-edge append through the authorized producer operation, and safe degraded-provenance behavior when that transaction cannot commit; replace direct model-breaker alert invocation.
-- [ ] 1.3 Move the fleet-halt breach-edge producer onto the same recorder/outbox facility and remove its direct audit-marker/ledger/notification debounce path without backfilling historic breaches.
+- [x] 1.2 Add a single serialized qualifying-dispatch outcome recorder used by Spawner failure/success provenance, including stable attempt-ID ordering, per-catalog-entry transaction serialization, same-transaction breaker-edge append through the authorized producer operation, and safe degraded-provenance behavior when that transaction cannot commit; replace direct model-breaker alert invocation.
+- [x] 1.3 Move the fleet-halt breach-edge producer onto the same recorder/outbox facility and remove its direct audit-marker/ledger/notification debounce path without backfilling historic breaches.
 
 ## 2. Canonical Codex CLI-auth authority
 

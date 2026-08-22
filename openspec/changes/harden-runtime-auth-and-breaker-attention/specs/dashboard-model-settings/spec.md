@@ -24,6 +24,14 @@ configuration behavior.
 - **AND** the call remains rate-limited to once per minute system-wide and
   appends one `models.verify_all` audit record for the accepted run
 
+#### Scenario: Verify-all parallel execution
+
+- **WHEN** `POST /api/settings/models/verify-all` is accepted
+- **THEN** enabled, authority-ready models are probed concurrently with bounded
+  concurrency of eight
+- **AND** each completed probe persists the canonical verification fields
+- **AND** the accepted manual run remains rate-limited and audited once
+
 #### Scenario: Unavailable Codex authority is skipped without poisoning verification evidence
 
 - **WHEN** the shared verification core encounters an enabled Codex entry
@@ -57,6 +65,20 @@ authority from a schema-local or fallback pool.
 - **WHEN** the core reports an authority-unavailable Codex skip
 - **THEN** the sweep returns that safe `skipped` count rather than recording a
   false model failure or excluding the entry from routing
+
+#### Scenario: Hourly sweep runs independently of the manual rate limit
+
+- **WHEN** the configured verification interval elapses
+- **THEN** the sweep calls the shared verification core directly as the
+  registered scheduler caller, outside the manual HTTP rate limit
+- **AND** its audit actor distinguishes it from an owner-initiated run
+
+#### Scenario: Sweep sleeps first and tolerates a bad tick
+
+- **WHEN** dashboard-api starts
+- **THEN** the sweep sleeps for one interval before its first run
+- **AND** one failed or authority-unavailable tick is logged safely and does
+  not terminate later intervals
 
 ## ADDED Requirements
 

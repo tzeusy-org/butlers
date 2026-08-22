@@ -31,6 +31,12 @@ Scope: v1-mandatory
 - **AND** all caller-visible routing, pricing, and provenance identity remains
   `opencode-go/minimax-m2.7`
 
+#### Scenario: Model passed via flag
+
+- **WHEN** a model string is provided to `invoke()`
+- **THEN** the command includes `--model <execution-model>` before the prompt
+- **AND** canonical caller-visible identity remains unchanged
+
 #### Scenario: Canonical OpenCode Go Mimo identity has a qualified execution argument
 
 - **WHEN** the resolved catalog model is `opencode-go/mimo-v2.5`

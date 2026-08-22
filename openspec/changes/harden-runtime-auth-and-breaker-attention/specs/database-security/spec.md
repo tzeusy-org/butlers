@@ -126,6 +126,27 @@ Scope: v1-mandatory
 - **AND** no cross-schema notification reference, worker registration, or
   external transport action is introduced by the migration
 
+#### Scenario: Versioned producer upgrade authority is one-shot
+
+- **WHEN** core_198 has finalized the v1 outbox under its membership-free
+  NOLOGIN owner
+- **THEN** the bootstrap owner grants the configured migration role only
+  schema `USAGE` plus `EXECUTE` on the zero-argument v2 upgrader
+- **AND** core_199 invokes that fixed-search-path upgrader, catalog-proves the
+  v2 producer control and legacy fence, and the upgrader revokes its own
+  migration-role access before returning
+- **AND** neither runtime roles nor the migration role gains raw access to the
+  producer-control row or bootstrap configuration
+
+#### Scenario: Legacy direct-delivery binary is fenced at provenance ingress
+
+- **WHEN** a canonical runtime role inserts breaker or fleet-halt provenance
+  without the transaction-local v2 recorder ABI
+- **THEN** a bootstrap-installed trigger appends only the fixed legacy helper
+  suppression marker needed to prevent that binary's direct send
+- **AND** the marker contains no recipient, provider error, credential, or
+  transport request and does not create an outbox episode
+
 #### Scenario: Unrelated runtime and connector roles cannot inspect episodes
 
 - **WHEN** a non-producing runtime role or `connector_writer` attempts to read

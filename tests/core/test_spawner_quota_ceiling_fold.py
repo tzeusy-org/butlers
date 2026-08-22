@@ -356,7 +356,7 @@ class TestGatePrecedenceUnchangedByConcurrentCeilingFetch:
                 return_value=_ceiling_over(),
             ),
             patch(
-                "butlers.core.spawner.maybe_push_fleet_halt_attention",
+                "butlers.core.spawner._write_dispatch_attempt",
                 new_callable=AsyncMock,
             ),
         ):

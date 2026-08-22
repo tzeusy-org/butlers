@@ -293,10 +293,9 @@ class SpendRoutingResult:
     breaker_open: BreakerState | None = None
 
 
-# Shared with the ceiling-deny message the spawner builds below AND with
-# butlers.core.fleet_halt_attention (bu-7o89u.4), which reads this exact
-# prefix back out of public.model_dispatch_attempts.failure_reason to detect
-# a breach and to count denials for the current calendar month. Also mirrored
+# Shared with the ceiling-deny message the spawner builds below and the
+# validated runtime-attention fleet-halt producer, which reads this exact
+# prefix from public.model_dispatch_attempts.failure_reason. Also mirrored
 # (as a plain string literal, cross-language) by the frontend's
 # CEILING_DENIAL_REASON_PREFIX in frontend/src/hooks/use-fleet-halt.ts — keep
 # both in sync if this text ever changes.
@@ -537,11 +536,14 @@ def _breaker_recent_cte(*, filter_by_ids: bool) -> str:
     """
 
 
-async def get_breaker_state(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> BreakerState:
+async def get_breaker_state(
+    pool: asyncpg.Pool | asyncpg.Connection,
+    catalog_entry_id: uuid.UUID,
+) -> BreakerState:
     """Return the live derived breaker state for one catalog entry.
 
-    Used by the attention-ledger push (``maybe_push_breaker_open_attention``)
-    and by the Models tab list endpoint to surface the routing consequence
+    Used transaction-locally by the atomic dispatch-outcome recorder and by
+    the Models tab list endpoint to surface the routing consequence
     ("excluded by breaker") without duplicating the threshold/cooldown logic
     baked into ``_BREAKER_OPEN_CTE``. Filters ``breaker_recent`` to this one
     entry so the query stays index-bound

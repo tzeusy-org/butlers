@@ -526,10 +526,12 @@ it does not grow a generic alert administration surface.
 - **The dashboard is disconnected from Switchboard during a probe** -> show a
   degraded coordinator state and preserve existing verification evidence rather
   than reporting a false model failure or success.
-- **Old application code is rolled back after migration** -> preserve the
-  outbox/history and document that a rollback to the legacy direct-alert binary
-  reintroduces its historical duplicate risk; prefer forward remediation over
-  deleting evidence or schema.
+- **Old application code is started after producer cutover** -> core_199 installs
+  a transaction-local recorder ABI fence on dispatch-attempt ingress. A canonical
+  runtime that lacks ABI v2 receives only fixed audit markers that make the two
+  retired direct helpers suppress themselves before transport. The fence stores
+  no recipient or provider detail, and remains installed when producers are
+  disabled for rollback.
 
 ## Migration Plan
 
@@ -588,11 +590,12 @@ it does not grow a generic alert administration surface.
    report only after that completed reconciliation.
 
 Rollback stops new producers/workers before removing consumers and leaves
-outbox rows readable for operator diagnosis. It never deletes evidence or
-secret rows. A migration downgrade is limited to the new table/grants only
-when no deployed consumer depends on it; otherwise forward remediation is the
-safe rollback path. Probe-control rollback keeps the runtime-child sandbox in
-place and disables its callers, or removes the private mount before any legacy
+outbox rows readable for operator diagnosis. The privileged core_199 downgrade
+sets producer control inactive while retaining the v2 functions and executable
+old-binary fence; it never restores the legacy read-send-write paths. A further
+core_198 teardown is rejected while that fence exists. It never deletes evidence
+or secret rows. Probe-control rollback keeps the runtime-child sandbox in place
+and disables its callers, or removes the private mount before any legacy
 Dashboard binary can run. An image without the sandbox and local-adapter
 removal cannot start while the signer mount exists.
 

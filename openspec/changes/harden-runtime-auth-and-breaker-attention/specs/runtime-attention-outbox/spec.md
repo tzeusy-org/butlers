@@ -72,8 +72,19 @@ Scope: v1-mandatory
 - **WHEN** the outbox migration is deployed while a breaker is already open or
   a calendar-month fleet halt is already active
 - **THEN** it creates no retrospective episode or external page
+- **AND** a fleet halt with current-month evidence older than the producer
+  activation boundary remains unpaged for the rest of that month
 - **AND** historical dispatch, ledger, notification, and audit evidence
   remains readable and unchanged
+
+#### Scenario: Producer rollback retains the cutover fence
+
+- **WHEN** the privileged core_199 rollback disables runtime-attention producers
+- **THEN** qualifying dispatch attempts remain recordable but append no new episodes
+- **AND** the outbox, existing evidence, v2 producer functions, and executable
+  old-binary suppression fence remain installed
+- **AND** rollback does not restore either legacy direct-delivery helper or
+  permit a further core_198 teardown beneath the retained fence
 
 ### Requirement: Switchboard-Owned At-Most-Once Attention Delivery
 
