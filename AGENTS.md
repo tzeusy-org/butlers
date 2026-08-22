@@ -46,6 +46,28 @@ there is no `bd sync` and no SQLite. See "Beads DB Mode" below.
 - Run the full test suite only when branch changes are finalized and you want a final merge-readiness signal.
 - Expand test scope incrementally if risk is broader, instead of defaulting to full-suite runs early.
 
+### Frontend CI gate order (knip masks build and test)
+
+The `frontend` job in `.github/workflows/ci.yml` runs six steps in order: lint, em-dash copy gate,
+query-result coercion gate, **Import graph (knip)**, build, test. knip sits *before* build and test,
+so a knip failure marks the job failed with Build and Test **skipped** - the frontend suite never
+runs. A local "full frontend suite green" is therefore not evidence the `frontend` job will pass,
+and the CI failure will not appear in any test output.
+
+Run `npm run knip` from `frontend/` before pushing. It flags unused exports and duplicate exports.
+Two recurring shapes:
+
+- A component with both `export function Foo` and `export default Foo` where every consumer uses the
+  named import. Reported twice, as an unused export *and* a duplicate export; deleting the default
+  clears both.
+- A helper written but never wired up. Treat "unused export" as a question, not a verdict: check the
+  bead's acceptance criteria before deleting, because the same finding covers both genuine dead code
+  and a helper whose wiring was simply forgotten.
+
+General rule this is an instance of: verify against the CI job's actual steps in `ci.yml`, not
+against a remembered list of commands. A verification list assembled from memory omits exactly the
+gate nobody remembers.
+
 
 <!-- bv-agent-instructions-v1 -->
 
