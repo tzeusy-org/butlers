@@ -214,6 +214,19 @@ Run this after creating a worktree:
 ./scripts/setup_worktree.sh
 ```
 
+**Verify the symlink actually resolves to a populated directory.** As of 2026-08-22 the main repo's
+`frontend/node_modules` on this machine is an EMPTY, root-owned directory, so the script happily
+creates a symlink to nothing and the frontend toolchain (tsc, vitest, knip) fails in the worktree
+with errors that look like missing source, not missing packages. `test -e` and `ln -s` both report
+success on this, which is why nothing catches it. Check the count, not the path:
+
+```bash
+ls -A frontend/node_modules | wc -l   # 0 means the symlink is dead; run npm install in the worktree
+```
+
+Filed as bu-87osw. Until it is fixed, a plain `npm install` inside the worktree is the working
+fallback (gitignored, costs disk per worktree).
+
 The script symlinks `frontend/node_modules` and silently skips if the main repo hasn't run `npm install` yet. It is safe to run multiple times (idempotent).
 
 ### Key Concepts
