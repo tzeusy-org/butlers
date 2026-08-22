@@ -461,15 +461,28 @@ class TopSession(BaseModel):
 
 
 class ScheduleCost(BaseModel):
-    """Cost analysis for a single scheduled task."""
+    """Cost analysis for a single scheduled task.
+
+    Two groups of fields that must not be confused (bu-6jv4m.2). ``total_runs``,
+    ``total_cost_usd`` and ``avg_cost_per_run`` are MEASURED over the queried
+    range. ``projected_monthly_runs`` and ``projected_monthly_usd`` are a
+    FORECAST derived from the cron expression's cadence, on the basis stated
+    verbatim in the response envelope's ``meta.forecast_basis`` -- one statement
+    per response, since the basis is a constant and cannot vary by schedule.
+
+    ``projected_monthly_runs == 0`` means the cadence could not be established,
+    not that the schedule never runs.
+    """
 
     schedule_name: str
     butler: str
     cron: str
+    # Measured over the queried range.
     total_runs: int
     total_cost_usd: float
     avg_cost_per_run: float
-    runs_per_day: float
+    # Forecast, from the cron cadence. See butlers.core.sessions for the basis.
+    projected_monthly_runs: float
     projected_monthly_usd: float
 
 

@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import asyncpg
-from croniter import croniter
+from croniter import CroniterBadDateError, croniter
 
 logger = logging.getLogger(__name__)
 
@@ -551,25 +551,164 @@ def _resolve_optional_range(
     return start_at, end_exclusive
 
 
-def _estimate_runs_per_day(cron: str) -> float:
-    """Estimate average daily run frequency from a cron expression."""
+# ---------------------------------------------------------------------------
+# Schedule cadence basis (bu-6jv4m.2)
+#
+# Everything downstream that forecasts a monthly cost from a cron expression
+# multiplies by the cadence produced here, so the basis is stated once, in
+# public constants, and carried into the API response rather than left as an
+# unstated assumption. The bug this replaced was exactly that: the estimator
+# counted occurrences in the NEXT 24 HOURS (so a weekly cron read as 1 on
+# Mondays and 0 otherwise) and the router multiplied by a hardcoded 30.
+# ---------------------------------------------------------------------------
+
+#: Mean length of a Gregorian calendar month, in days (365.2425 / 12).
+AVERAGE_MONTH_DAYS = 365.2425 / 12
+
+#: Human-readable statement of the cadence basis, surfaced in the API response
+#: so a projection is never mistaken for measured history.
+CADENCE_BASIS_DESCRIPTION = (
+    "Projected runs are the cron expression's own cadence over an average "
+    "Gregorian calendar month (30.436875 days), sampled from a fixed anchor so "
+    "the forecast does not change with the time of the request."
+)
+
+#: Fixed sampling anchor: the start of a Gregorian 400-year leap cycle. Anchoring
+#: to a constant instant (rather than "now") makes the cadence a pure function of
+#: the cron string -- the same schedule projects the same monthly runs whenever
+#: the owner looks.
+_CADENCE_ANCHOR = datetime(2001, 1, 1, tzinfo=UTC)
+
+#: One turn of the calendar: the window used for an expression whose pattern is
+#: annual (a restricted day-of-month or month field). It holds one of every
+#: month, which is what such an expression repeats over.
+_CADENCE_YEAR_DAYS = 365
+
+#: Widened window -- a whole Gregorian leap cycle -- used only for an annual
+#: expression that a single year misses entirely, such as ``0 9 29 2 *``.
+#: Reaching for it is cheap precisely because such an expression is rare.
+_CADENCE_HORIZON_DAYS = 1461
+
+#: Hard ceiling on how many occurrences one estimate may enumerate. Sized to
+#: admit the densest expression whose own cycle can still be sampled in full: a
+#: per-minute weekday cron fires 10,080 times in its seven-day cycle. An
+#: expression denser than this (per-minute restricted to a month or a
+#: day-of-month, whose cycle is four years) reports its cadence as unknown
+#: rather than a rate measured over a fraction of its own cycle.
+_CADENCE_MAX_OCCURRENCES = 10_100
+
+
+def _cadence_cycle_days(cron: str) -> int:
+    """Length of the shortest window over which ``cron``'s firing pattern repeats.
+
+    A five-field cron expression is periodic in exactly one of three lengths,
+    decided by which calendar fields it restricts:
+
+    * day-of-month or month restricted (or an ``L``/``#`` day-of-week form) --
+      the pattern is annual, so ``_CADENCE_YEAR_DAYS`` is used: one turn of the
+      calendar, containing one of every month;
+    * day-of-week restricted -- the pattern repeats every seven days;
+    * neither -- the pattern repeats every day.
+
+    Measuring over a whole number of these cycles is the entire reason the
+    estimate can be trusted. Taking the rate over any other window measures a
+    seasonal expression against a slice of its own season: ``0 * * 1 *``
+    (hourly, but only in January) reads about 31% high that way, and
+    ``* * * 1 *`` reads eleven times high. Both are plausible-looking numbers on
+    a page whose purpose is forecast honesty.
+
+    Falls back to the annual cycle for anything it cannot classify -- the
+    conservative choice, since a longer window is never less representative.
+    """
+    try:
+        expanded, nth_weekday_of_month = croniter.expand(cron)
+        if nth_weekday_of_month:
+            return _CADENCE_YEAR_DAYS
+        day_of_month, month, day_of_week = expanded[2], expanded[3], expanded[4]
+    except Exception:  # noqa: BLE001 - classification must never break the response
+        return _CADENCE_YEAR_DAYS
+
+    if day_of_month != ["*"] or month != ["*"]:
+        return _CADENCE_YEAR_DAYS
+    if day_of_week != ["*"]:
+        return 7
+    return 1
+
+
+def _count_occurrences(cron: str, start: datetime, end: datetime, limit: int) -> tuple[int, bool]:
+    """Count firings of ``cron`` in ``(start, end]``, stopping at ``limit``.
+
+    Returns the count and whether ``limit`` stopped the enumeration before
+    ``end`` was reached. One occurrence is peeked past the limit so that an
+    expression firing exactly ``limit`` times across the whole window is
+    recognised as fully sampled rather than mistaken for a capped one.
+
+    ``croniter.is_valid`` accepts expressions that can never fire -- ``0 0 30 2
+    *`` is well-formed and 30 February is not a date -- and enumerating one
+    raises ``CroniterBadDateError`` rather than terminating. Treating that as
+    "no further firings" is what keeps a single impossible schedule from taking
+    out every row of ``/api/spend/by-schedule``.
+    """
+    itr = croniter(cron, start)
+    count = 0
+    try:
+        while count < limit:
+            nxt = itr.get_next(datetime)
+            if nxt.tzinfo is None:
+                nxt = nxt.replace(tzinfo=UTC)
+            if nxt > end:
+                return count, False
+            count += 1
+
+        peek = itr.get_next(datetime)
+        if peek.tzinfo is None:
+            peek = peek.replace(tzinfo=UTC)
+        return count, peek <= end
+    except CroniterBadDateError:
+        return count, False
+
+
+def _estimate_monthly_runs(cron: str, *, reference: datetime = _CADENCE_ANCHOR) -> float:
+    """Estimate how many times a cron expression fires in an average month.
+
+    The basis is ``AVERAGE_MONTH_DAYS`` (30.436875 days, the mean Gregorian
+    calendar month), described for callers by ``CADENCE_BASIS_DESCRIPTION``.
+    Occurrences are counted over exactly one of the expression's own cycles
+    (``_cadence_cycle_days``) starting at ``reference``, and that rate is scaled
+    to one average month. Because the window is a whole cycle, the result is
+    exact for every expression whose cycle is a day or a week, and averages the
+    leap cycle for the rest.
+
+    ``reference`` defaults to a fixed anchor so the result is a pure function of
+    ``cron``; it is injectable only so tests can demonstrate that invariance
+    across several fixed clocks.
+
+    Returns ``0.0`` when the cadence cannot be established: an expression
+    croniter cannot parse, one that never fires (``0 0 30 2 *``), or one too
+    dense to enumerate a whole cycle of within ``_CADENCE_MAX_OCCURRENCES``
+    (per-minute confined to one month, whose cycle is a year). A
+    schedule whose cadence is unknown projects nothing rather than a fabricated
+    number, and the dashboard renders that as "not forecastable" rather than as
+    zero cost. It must not raise: ``_schedule_costs_from_data`` serves every row
+    of ``/api/spend/by-schedule``, so one bad cron string would otherwise take
+    out the whole response.
+    """
     if not croniter.is_valid(cron):
         return 0.0
 
-    start = datetime.now(UTC)
-    end = start + timedelta(days=1)
-    itr = croniter(cron, start)
-    count = 0
-
-    # Hard cap protects against pathological cron expressions.
-    while count < 5000:
-        nxt = itr.get_next(datetime)
-        if nxt.tzinfo is None:
-            nxt = nxt.replace(tzinfo=UTC)
-        if nxt > end:
-            break
-        count += 1
-    return float(count)
+    cycle_days = _cadence_cycle_days(cron)
+    count, capped = _count_occurrences(
+        cron, reference, reference + timedelta(days=cycle_days), _CADENCE_MAX_OCCURRENCES
+    )
+    if count == 0 and not capped and cycle_days == _CADENCE_YEAR_DAYS:
+        # A rare annual expression (29 February) that one calendar year misses.
+        cycle_days = _CADENCE_HORIZON_DAYS
+        count, capped = _count_occurrences(
+            cron, reference, reference + timedelta(days=cycle_days), _CADENCE_MAX_OCCURRENCES
+        )
+    if capped or count == 0:
+        return 0.0
+    return count / cycle_days * AVERAGE_MONTH_DAYS
 
 
 async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
@@ -775,7 +914,7 @@ async def schedule_costs(
     pool: asyncpg.Pool,
     from_date: str | date | None = None,
     to_date: str | date | None = None,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, Any]:
     """Return per-schedule token usage aggregates for cost analysis.
 
     When ``from_date``/``to_date`` are both provided (ISO date strings or
@@ -784,6 +923,12 @@ async def schedule_costs(
     zeroed totals) thanks to the LEFT JOIN. When both are omitted, all-time
     totals are returned (pre-existing behavior, preserved for back-compat).
     Providing only one of the two raises ``ValueError``.
+
+    Each row carries measured totals for the window plus one forecast field
+    that must not be confused with them: ``projected_monthly_runs``, the cron's
+    own cadence over an average calendar month (``_estimate_monthly_runs``).
+    ``forecast_basis`` states that basis once at the envelope level, since it is
+    a constant and does not vary by schedule.
     """
     start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
@@ -822,8 +967,15 @@ async def schedule_costs(
                 "total_output_tokens": int(row["total_output_tokens"]),
                 "total_cached_input_tokens": int(row["total_cached_input_tokens"]),
                 "total_cache_creation_tokens": int(row["total_cache_creation_tokens"]),
-                "runs_per_day": _estimate_runs_per_day(cron),
+                # Forecast input, not measured history: the cadence the cron
+                # expression itself implies over an average calendar month
+                # (bu-6jv4m.2). Consumers must keep it separate from the
+                # measured totals above.
+                "projected_monthly_runs": _estimate_monthly_runs(cron),
             }
         )
 
-    return {"schedules": schedules}
+    # The basis is a constant, so it is stated once beside the rows rather than
+    # copied into each one -- a per-row copy would imply it could vary by
+    # schedule.
+    return {"schedules": schedules, "forecast_basis": CADENCE_BASIS_DESCRIPTION}

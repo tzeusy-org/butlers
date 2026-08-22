@@ -36,6 +36,7 @@ from butlers.api.pricing import (
 from butlers.api.routers.spend import _get_db_manager as _costs_get_db
 from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
 from butlers.core.model_routing import check_monthly_ceiling
+from butlers.core.sessions import CADENCE_BASIS_DESCRIPTION, _estimate_monthly_runs
 
 pytestmark = pytest.mark.unit
 
@@ -931,7 +932,7 @@ async def test_by_schedule_contract_and_zero_division(app):
         "total_runs": 30,
         "total_input_tokens": 30000,
         "total_output_tokens": 15000,
-        "runs_per_day": 1.0,
+        "projected_monthly_runs": 30.436875,
     }
     zero_sched = {
         **sched,
@@ -956,6 +957,84 @@ async def test_by_schedule_contract_and_zero_division(app):
     assert zero["projected_monthly_usd"] == 0.0
 
 
+async def test_by_schedule_separates_forecast_from_measured_history(app):
+    """A projection must never be presented as measured history (bu-6jv4m.2).
+
+    The range-measured fields (``total_runs``, ``total_cost_usd``,
+    ``avg_cost_per_run``) and the forecast fields (``projected_monthly_runs``,
+    ``projected_monthly_usd``) are separate, and the basis the forecast was
+    computed on is stated once on the response envelope. The projected cost is
+    exactly avg-cost x projected runs -- there is no free-floating multiplier
+    anywhere in the chain.
+    """
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    weekly = {
+        "name": "weekly-review",
+        "cron": "0 9 * * 1",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 3,
+        "total_input_tokens": 3000,
+        "total_output_tokens": 1500,
+        "projected_monthly_runs": _estimate_monthly_runs("0 9 * * 1"),
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [weekly]})})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    row = next(i for i in body["data"] if i["schedule_name"] == "weekly-review")
+    ScheduleCost(**row)
+
+    # Measured history stays exactly what was measured.
+    assert row["total_runs"] == 3
+
+    # The live regression: a weekly cron projected ~4.3 runs a month, not 30.
+    assert row["projected_monthly_runs"] == pytest.approx(4.35, abs=0.05)
+
+    # The basis is a constant of the estimator, so it is stated once on the
+    # envelope rather than copied onto every row -- a per-row copy would imply
+    # it could vary by schedule (bu-6jv4m.2).
+    assert body["meta"]["forecast_basis"] == CADENCE_BASIS_DESCRIPTION
+    assert "forecast_basis" not in row
+
+    # Projected cost is derived from the two exposed numbers, nothing hidden.
+    assert row["projected_monthly_usd"] == pytest.approx(
+        row["avg_cost_per_run"] * row["projected_monthly_runs"], abs=1e-6
+    )
+    # A 30x basis would have produced ~7x this figure.
+    assert row["projected_monthly_usd"] < row["avg_cost_per_run"] * 30
+
+
+async def test_by_schedule_forecast_absent_when_cadence_unknown(app):
+    """A schedule whose cron cannot be parsed projects zero, not a guess."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    broken = {
+        "name": "mystery",
+        "cron": "not a cron",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 5,
+        "total_input_tokens": 5000,
+        "total_output_tokens": 2500,
+        "projected_monthly_runs": _estimate_monthly_runs("not a cron"),
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [broken]})})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    row = next(i for i in resp.json()["data"] if i["schedule_name"] == "mystery")
+    assert row["projected_monthly_runs"] == 0.0
+    assert row["projected_monthly_usd"] == 0.0
+    # ...but the measured history it DID accrue is still reported truthfully.
+    assert row["total_runs"] == 5
+    assert row["total_cost_usd"] > 0
+
+
 async def test_by_schedule_merges_multi_model_fragments(app):
     """A schedule that ran under 2+ models in the window must collapse into
     ONE ScheduleCost entry per (butler, schedule_name) -- the underlying DB
@@ -971,7 +1050,7 @@ async def test_by_schedule_merges_multi_model_fragments(app):
         "total_runs": 20,
         "total_input_tokens": 20000,
         "total_output_tokens": 10000,
-        "runs_per_day": 1.0,
+        "projected_monthly_runs": 30.436875,
     }
     haiku_fragment = {
         **sonnet_fragment,
@@ -1017,7 +1096,7 @@ async def test_by_schedule_tool_absent_not_marked_unavailable(app):
         "total_runs": 30,
         "total_input_tokens": 30000,
         "total_output_tokens": 15000,
-        "runs_per_day": 1.0,
+        "projected_monthly_runs": 30.436875,
     }
     mgr = _mock_mgr(
         {
@@ -1052,7 +1131,7 @@ async def test_by_schedule_reports_unavailable_butlers_for_genuine_failure(app):
         "total_runs": 30,
         "total_input_tokens": 30000,
         "total_output_tokens": 15000,
-        "runs_per_day": 1.0,
+        "projected_monthly_runs": 30.436875,
     }
     mgr = _mock_mgr(
         {
@@ -1567,7 +1646,7 @@ async def test_by_schedule_butler_filter_returns_only_that_butler(app):
                 "total_runs": 10,
                 "total_input_tokens": 10000,
                 "total_output_tokens": 5000,
-                "runs_per_day": 1.0,
+                "projected_monthly_runs": 30.436875,
             }
         ]
     }
@@ -1580,7 +1659,7 @@ async def test_by_schedule_butler_filter_returns_only_that_butler(app):
                 "total_runs": 100,
                 "total_input_tokens": 100000,
                 "total_output_tokens": 50000,
-                "runs_per_day": 24.0,
+                "projected_monthly_runs": 730.485,
             }
         ]
     }
@@ -1611,7 +1690,7 @@ async def test_by_schedule_no_butler_filter_aggregates_all(app):
                 "total_runs": 5,
                 "total_input_tokens": 5000,
                 "total_output_tokens": 2500,
-                "runs_per_day": 1.0,
+                "projected_monthly_runs": 30.436875,
             }
         ]
     }
@@ -1640,7 +1719,7 @@ async def test_by_schedule_unknown_butler_returns_empty_200(app):
                 "total_runs": 5,
                 "total_input_tokens": 5000,
                 "total_output_tokens": 2500,
-                "runs_per_day": 1.0,
+                "projected_monthly_runs": 30.436875,
             }
         ]
     }
@@ -2205,7 +2284,7 @@ _SCHEDULE_COSTS_DB_PAYLOAD = {
             "total_output_tokens": 2000,
             "total_cached_input_tokens": 0,
             "total_cache_creation_tokens": 0,
-            "runs_per_day": 1.0,
+            "projected_monthly_runs": 30.436875,
         }
     ]
 }
