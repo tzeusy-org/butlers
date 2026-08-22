@@ -24,6 +24,16 @@ from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
 )
+from butlers.tools.switchboard.routing.transport import (
+    CONFIRMED,
+    POLICY_DENIED,
+    RECIPIENT_UNAVAILABLE,
+    TransportNotAttempted,
+    TransportRejected,
+    TransportUncertain,
+    classify_transport_exception,
+    proves_transport_not_attempted,
+)
 
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
@@ -120,7 +130,15 @@ async def _call_tool_with_router_client(
                         f"Failed to call tool {tool_name} on {endpoint_url}: "
                         f"{first_exc} (reconnect failed: {exc})"
                     )
-                raise ConnectionError(message) from exc
+                # Both attempts proving the peer was never reached is the only
+                # case where a caller may safely retry (REQ-core-notify-027):
+                # a single ambiguous failure — a reset mid-request, say — could
+                # already have delivered the call.
+                not_attempted = proves_transport_not_attempted(exc) and (
+                    first_exc is None or proves_transport_not_attempted(first_exc)
+                )
+                error_type = TransportNotAttempted if not_attempted else ConnectionError
+                raise error_type(message) from exc
 
             first_exc = exc
             telemetry.retry_attempt.add(
@@ -323,7 +341,11 @@ async def route(
                     await _log_routing(
                         pool, source_butler, target_butler, tool_name, False, 0, wake_error
                     )
-                    return {"error": wake_error, "retryable": False}
+                    return {
+                        "error": wake_error,
+                        "retryable": False,
+                        "transport": POLICY_DENIED.as_dict(),
+                    }
 
             # Resolve target with registry validation
             target_row, resolve_error = await resolve_routing_target(
@@ -351,7 +373,11 @@ async def route(
                 await _log_routing(
                     pool, source_butler, target_butler, tool_name, False, 0, error_msg
                 )
-                return {"error": error_msg, "retryable": False}
+                return {
+                    "error": error_msg,
+                    "retryable": False,
+                    "transport": RECIPIENT_UNAVAILABLE.as_dict(),
+                }
 
             # Registry endpoints are self-registered as http://localhost:<port>
             # from butlers-up's own point of view (see runtime_mcp_url()).
@@ -368,51 +394,19 @@ async def route(
             if trace_context:
                 route_args = {**route_args, "trace_context": trace_context}
 
+            # Only the transport call itself belongs in this try. Everything
+            # after it is bookkeeping about a send that already happened, and
+            # REQ-core-notify-027 makes external transport truth authoritative:
+            # a failed routing-log or registry write must never reverse a
+            # confirmed delivery into a reported failure, because the caller
+            # would then retry a message the peer already received.
             try:
                 if call_fn is not None:
                     result = await call_fn(endpoint_url, tool_name, route_args)
                 else:
                     result = await _call_butler_tool(endpoint_url, tool_name, route_args)
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                span.set_attribute("routing.outcome", "success")
-                telemetry.subroute_latency_ms.record(
-                    duration_ms,
-                    {
-                        **metric_base_attrs,
-                        "outcome": "success",
-                    },
-                )
-                telemetry.subroute_result.add(
-                    1,
-                    {
-                        **metric_base_attrs,
-                        "outcome": "success",
-                    },
-                )
-                await _log_routing(
-                    pool, source_butler, target_butler, tool_name, True, duration_ms, None
-                )
-                # Update last_seen_at on successful route. Schema-qualified:
-                # route() is on deliver()'s cross-butler delivery path,
-                # invoked against pools whose search_path may not include the
-                # switchboard schema (e.g. secrets_lifecycle on a public-only
-                # pool) — a bare reference here would raise UndefinedTableError
-                # and mask an otherwise-successful delivery as a failure.
-                await pool.execute(
-                    """
-                    UPDATE switchboard.butler_registry
-                    SET last_seen_at = now(),
-                        eligibility_state = CASE
-                            WHEN eligibility_state = 'quarantined' THEN eligibility_state
-                            ELSE 'active'
-                        END,
-                        eligibility_updated_at = now()
-                    WHERE name = $1
-                    """,
-                    target_butler,
-                )
-                return {"result": result}
             except Exception as exc:
+                transport = classify_transport_exception(exc)
                 retryable = is_retryable_route_exception(exc)
                 error_class = normalize_error_class(exc)
                 span.set_status(trace.StatusCode.ERROR, str(exc))
@@ -440,7 +434,41 @@ async def route(
                 await _log_routing(
                     pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
                 )
-                return {"error": error_msg, "retryable": retryable}
+                return {
+                    "error": error_msg,
+                    "retryable": retryable,
+                    "transport": transport.as_dict(),
+                }
+
+            # Transport confirmed by the peer. From here on the result is
+            # owed to the caller no matter what the database does.
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            span.set_attribute("routing.outcome", "success")
+            telemetry.subroute_latency_ms.record(
+                duration_ms,
+                {
+                    **metric_base_attrs,
+                    "outcome": "success",
+                },
+            )
+            telemetry.subroute_result.add(
+                1,
+                {
+                    **metric_base_attrs,
+                    "outcome": "success",
+                },
+            )
+            await _record_confirmed_route(
+                pool,
+                source_butler=source_butler,
+                target_butler=target_butler,
+                tool_name=tool_name,
+                duration_ms=duration_ms,
+                span=span,
+                telemetry=telemetry,
+                metric_base_attrs=metric_base_attrs,
+            )
+            return {"result": result, "transport": CONFIRMED.as_dict()}
 
 
 async def post_mail(
@@ -564,7 +592,9 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
         error_text = _extract_mcp_error_text(result)
         if not error_text:
             error_text = f"Tool '{tool_name}' returned an error."
-        raise RuntimeError(error_text)
+        # The peer answered, so transport completed and was rejected — this is
+        # terminal, never ambiguous.
+        raise TransportRejected(error_text)
 
     # Extract text from CallToolResult.content blocks.
     # Note: iterating over CallToolResult itself yields Pydantic field tuples,
@@ -590,9 +620,82 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
         tool_name,
         content,
     )
-    raise RuntimeError(
+    raise TransportUncertain(
         f"Tool '{tool_name}' returned no text content blocks — "
         f"target may be unreachable or returning an unexpected response format"
+    )
+
+
+async def _record_confirmed_route(
+    pool: asyncpg.Pool,
+    *,
+    source_butler: str,
+    target_butler: str,
+    tool_name: str,
+    duration_ms: int,
+    span: Any,
+    telemetry: Any,
+    metric_base_attrs: dict[str, Any],
+) -> None:
+    """Record post-delivery bookkeeping for a confirmed route, best-effort.
+
+    Each write is isolated: a routing-log failure must not skip the registry
+    liveness update, and neither may propagate, because the transport has
+    already succeeded (REQ-core-notify-027).  Failures are counted and named by
+    exception *type* only — the exception text can carry a DSN, a credential,
+    or raw provider output, none of which may reach a log line (AC 8).
+    """
+    for step, write in (
+        (
+            "routing_log",
+            lambda: _log_routing(
+                pool, source_butler, target_butler, tool_name, True, duration_ms, None
+            ),
+        ),
+        ("registry", lambda: _touch_registry_liveness(pool, target_butler)),
+    ):
+        try:
+            await write()
+        except Exception as exc:  # noqa: BLE001 - transport already succeeded
+            error_class = normalize_error_class(exc)
+            logger.warning(
+                "Route to %s.%s delivered but %s bookkeeping failed (%s)",
+                target_butler,
+                tool_name,
+                step,
+                error_class,
+            )
+            span.set_attribute(f"routing.bookkeeping.{step}", "failed")
+            telemetry.subroute_result.add(
+                1,
+                {
+                    **metric_base_attrs,
+                    "outcome": "bookkeeping_degraded",
+                    "error_class": error_class,
+                },
+            )
+
+
+async def _touch_registry_liveness(pool: asyncpg.Pool, target_butler: str) -> None:
+    """Refresh registry liveness after a confirmed route.
+
+    Schema-qualified: route() is on deliver()'s cross-butler delivery path,
+    invoked against pools whose search_path may not include the switchboard
+    schema (e.g. secrets_lifecycle on a public-only pool) — a bare reference
+    here would raise UndefinedTableError.
+    """
+    await pool.execute(
+        """
+        UPDATE switchboard.butler_registry
+        SET last_seen_at = now(),
+            eligibility_state = CASE
+                WHEN eligibility_state = 'quarantined' THEN eligibility_state
+                ELSE 'active'
+            END,
+            eligibility_updated_at = now()
+        WHERE name = $1
+        """,
+        target_butler,
     )
 
 

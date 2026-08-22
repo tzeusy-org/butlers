@@ -84,8 +84,10 @@ async def test_route_default_complexity_is_workhorse_without_deprecation(
             call_fn=call_fn,
         )
 
-    # The route succeeded via the injected call_fn.
-    assert result == {"result": {"ok": True}}
+    # The route succeeded via the injected call_fn.  The typed ``transport``
+    # fragment (bu-0uqgo.3) is additive: ``result`` keeps its exact prior shape.
+    assert result["result"] == {"ok": True}
+    assert result["transport"] == {"outcome": "confirmed", "retryable": False}
 
     # Default complexity is the canonical workhorse tier, not the retired "medium".
     assert captured["routing.complexity"] == Complexity.WORKHORSE.value

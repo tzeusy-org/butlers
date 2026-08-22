@@ -616,7 +616,9 @@ class TestSwitchboardRoutingIntegration:
         assert call_log[0]["endpoint_url"] == "http://localhost:9200/mcp"
         assert call_log[0]["args"]["key"] == "test"
         assert "trace_context" in call_log[0]["args"]
-        assert result == {"result": {"status": "ok"}}
+        assert result["result"] == {"status": "ok"}
+        # Additive typed transport evidence (bu-0uqgo.3, REQ-core-notify-027).
+        assert result["transport"] == {"outcome": "confirmed", "retryable": False}
 
         rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'target-butler'")
         assert len(rows) == 1

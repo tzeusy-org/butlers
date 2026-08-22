@@ -48,3 +48,47 @@ async def test_recorder_rejection_emits_only_bounded_outcome_telemetry(
     counter.labels.assert_called_once_with(outcome="rejected", edge="fleet_halt")
     counter.labels.return_value.inc.assert_called_once_with()
     assert "raw provider sentinel" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# REQ-runtime-attention-outbox-002 AC 6: producers reach exactly one sink.
+# ---------------------------------------------------------------------------
+
+# A producer's whole job is to append a durable episode.  Delivery belongs to
+# Switchboard (RFC 0003), so any of these appearing on a producer path would be
+# a second, unfenced delivery route around the at-most-once guarantee.
+_FORBIDDEN_PRODUCER_SINKS = (
+    "telegram",
+    "messenger",
+    "attention_ledger",
+    "record_attention_event",
+    "maybe_push_breaker_open_attention",
+    "maybe_push_fleet_halt_attention",
+    "debounce",
+)
+
+
+def test_producers_reach_no_delivery_sink_directly() -> None:
+    """The breaker/fleet producers append an episode and nothing else."""
+    source = inspect.getsource(dispatch_outcomes).lower()
+
+    for sink in _FORBIDDEN_PRODUCER_SINKS:
+        assert sink not in source, f"producer path still reaches {sink} directly"
+
+    # And the one thing it *must* reach: the transactional outbox producers.
+    assert "append_runtime_attention_model_breaker" in source
+    assert "append_runtime_attention_fleet_halt" in source
+
+
+def test_attention_ledger_carries_no_breaker_debounce() -> None:
+    """The ledger stopped being the breaker's delivery-debounce sink.
+
+    Attention-ledger debounce was the old read-send-write path: it decided
+    whether to deliver by reading its own prior writes, which cannot be made
+    at-most-once across a crash.  Nothing here may know about breakers.
+    """
+    from butlers.core import attention_ledger
+
+    source = inspect.getsource(attention_ledger).lower()
+    assert "breaker" not in source
+    assert "fleet_halt" not in source

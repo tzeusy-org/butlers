@@ -21,6 +21,11 @@ from butlers.tools.switchboard.routing.contracts import (
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.route import route
+from butlers.tools.switchboard.routing.transport import (
+    PROVIDER_REJECTED,
+    TransportResult,
+    transport_result_from_envelope,
+)
 
 logger = logging.getLogger(__name__)
 MESSENGER_BUTLER_NAME = "messenger"
@@ -120,6 +125,32 @@ def _extract_notify_response(route_result: Any) -> dict[str, Any] | None:
         return nested_result["notify_response"]
 
     return None
+
+
+async def _log_notification_best_effort(pool: asyncpg.Pool, **kwargs: Any) -> str | None:
+    """Write the notification log row, returning ``None`` if the write fails.
+
+    The notification log is evidence *about* a delivery, not the delivery
+    itself.  Once Messenger has confirmed transport the caller is owed that
+    outcome (REQ-core-notify-027), so a denied grant or a dead pool degrades the
+    receipt to ``notification_id: None`` instead of reversing a send that
+    already happened.  The exception is named by type only: its text can carry a
+    DSN or credential material.
+    """
+    try:
+        return await log_notification(pool, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - evidence write is best-effort
+        logger.warning("notification_log write failed (%s)", type(exc).__name__)
+        return None
+
+
+def _transport_fragment(transport: TransportResult | None) -> dict[str, Any]:
+    """Return the additive ``transport`` envelope fragment, if one is known.
+
+    Pre-vocabulary route results yield an empty dict so existing callers see
+    exactly the envelope they saw before.
+    """
+    return {"transport": transport.as_dict()} if transport is not None else {}
 
 
 async def _write_outbound_message_inbox(
@@ -255,6 +286,8 @@ async def _deliver_via_notify_request(
         call_fn=call_fn,
     )
 
+    transport = transport_result_from_envelope(route_result)
+
     if "error" in route_result:
         route_error = route_result["error"]
         # Preserve structured error class and retryability if the route layer
@@ -267,7 +300,12 @@ async def _deliver_via_notify_request(
             error_msg = str(route_error)
             error_class = "route_error"
             retryable = False
-        notification_id = await log_notification(
+        # An uncertain send may already have reached the recipient, so the
+        # typed outcome overrides any optimistic legacy retryability
+        # (REQ-runtime-attention-outbox-002: at most once).
+        if transport is not None and not transport.retryable:
+            retryable = False
+        notification_id = await _log_notification_best_effort(
             pool,
             source_butler=source_butler,
             channel=channel,
@@ -285,6 +323,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **_transport_fragment(transport),
         }
         return result
 
@@ -299,7 +338,11 @@ async def _deliver_via_notify_request(
             error_msg = str(error_payload) if error_payload else "Messenger delivery failed."
             error_class = "delivery_error"
             retryable = False
-        notification_id = await log_notification(
+        # Messenger answered and refused the message: transport completed, so
+        # this is a terminal provider rejection, never an ambiguous send.
+        transport = PROVIDER_REJECTED
+        retryable = False
+        notification_id = await _log_notification_best_effort(
             pool,
             source_butler=source_butler,
             channel=channel,
@@ -317,9 +360,12 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **_transport_fragment(transport),
         }
 
-    notification_id = await log_notification(
+    # Messenger confirmed delivery. Everything below is bookkeeping and must
+    # not be able to turn a delivered message back into a failure.
+    notification_id = await _log_notification_best_effort(
         pool,
         source_butler=source_butler,
         channel=channel,
@@ -342,6 +388,7 @@ async def _deliver_via_notify_request(
         "notification_id": notification_id,
         "status": "sent",
         "result": notify_response or route_result.get("result"),
+        **_transport_fragment(transport),
     }
 
 
@@ -550,7 +597,7 @@ async def deliver(
         span.set_attribute("target_butler", target_butler)
 
         # 5. Determine success and log
-        notification_id = await log_notification(
+        notification_id = await _log_notification_best_effort(
             pool,
             source_butler=source_butler,
             channel=channel,
@@ -566,4 +613,5 @@ async def deliver(
             "notification_id": notification_id,
             "status": "sent",
             "result": route_result.get("result"),
+            **_transport_fragment(transport_result_from_envelope(route_result)),
         }

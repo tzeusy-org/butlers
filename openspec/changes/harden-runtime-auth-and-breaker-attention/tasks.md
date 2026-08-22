@@ -23,11 +23,11 @@
 
 ## 4. Switchboard-owned operational attention delivery
 
-- [ ] 4.1 Implement the outbox repository and Switchboard worker with a single delivery-service lease, fenced `pending` claim, `sending` pre-transport commit, pre-transport token check, bounded external transport deadline, bounded proven-pre-send retry, conditional `sent`/`failed`/`uncertain` transitions, dead-claim recovery that never replays, and safe structured observability.
-- [ ] 4.2 Refactor Switchboard notification routing so a confirmed Messenger send remains confirmed when routing-log, registry, notification-log, audit, or attention-ledger bookkeeping fails; preserve clear not-attempted versus uncertain outcomes.
-- [ ] 4.3 Add real-Postgres role-isolation and concurrency integration tests proving the authorized producer operation rejects forged source/payload data, `PUBLIC`/`connector_writer`/non-producer effective roles cannot execute it, producers have no raw outbox access, and Switchboard alone claims/delivers; document that these are effective-role checks rather than independently authenticated per-butler principal proof.
+- [x] 4.1 Implement the outbox repository and Switchboard worker with a single delivery-service lease, fenced `pending` claim, `sending` pre-transport commit, pre-transport token check, bounded external transport deadline, bounded proven-pre-send retry, conditional `sent`/`failed`/`uncertain` transitions, dead-claim recovery that never replays, and safe structured observability.
+- [x] 4.2 Refactor Switchboard notification routing so a confirmed Messenger send remains confirmed when routing-log, registry, notification-log, audit, or attention-ledger bookkeeping fails; preserve clear not-attempted versus uncertain outcomes.
+- [x] 4.3 Add real-Postgres role-isolation and concurrency integration tests proving the authorized producer operation rejects forged source/payload data, `PUBLIC`/`connector_writer`/non-producer effective roles cannot execute it, producers have no raw outbox access, and Switchboard alone claims/delivers; document that these are effective-role checks rather than independently authenticated per-butler principal proof.
 - [ ] 4.4 Add real-Postgres lifecycle tests that seed an open/cooldown-expired breaker, race distinct failed half-open attempts, and assert one new episode and one delivery claim; race two workers and assert one transport invocation; persist `sending`, restart, assert zero replay transport calls and terminal `uncertain`; and simulate slow live claimant versus recovery versus reissue to prove fencing and one successor.
-- [ ] 4.5 Add route/outbox tests proving a confirmed Messenger result survives post-send ACL bookkeeping failure, an ambiguous send is never automatically replayed, and recorder/outbox persistence failure causes no partial episode or direct delivery.
+- [x] 4.5 Add route/outbox tests proving a confirmed Messenger result survives post-send ACL bookkeeping failure, an ambiguous send is never automatically replayed, and recorder/outbox persistence failure causes no partial episode or direct delivery.
 
 ## 5. Operator-facing truth and deliberate recovery
 

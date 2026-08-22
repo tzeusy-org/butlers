@@ -318,7 +318,9 @@ async def test_route_to_known_butler_success(pool):
         return {"status": "ok", "data": 42}
 
     result = await route(pool, "target", "get_data", {"key": "x"}, call_fn=mock_call)
-    assert result == {"result": {"status": "ok", "data": 42}}
+    # `transport` is an additive typed fragment; the result payload is unchanged.
+    assert result["result"] == {"status": "ok", "data": 42}
+    assert result["transport"] == {"outcome": "confirmed", "retryable": False}
     assert captured["endpoint_url"] == "http://localhost:41200/mcp"
 
 
@@ -374,10 +376,10 @@ async def test_route_to_known_butler_marks_nontransient_os_errors_terminal(pool,
 
     result = await route(pool, "failing", "broken_tool", {}, call_fn=failing_call)
 
-    assert result == {
-        "error": f"{type(failure).__name__}: {failure}",
-        "retryable": False,
-    }
+    assert result["error"] == f"{type(failure).__name__}: {failure}"
+    assert result["retryable"] is False
+    # A non-transient OS error after handoff is ambiguous, never replayable.
+    assert result["transport"]["outcome"] == "uncertain"
 
 
 async def test_route_blocks_stale_target_by_default_and_allows_override(pool):
@@ -401,7 +403,8 @@ async def test_route_blocks_stale_target_by_default_and_allows_override(pool):
     assert "stale" in blocked["error"].lower()
 
     allowed = await route(pool, "stale-target", "ping", {}, allow_stale=True, call_fn=mock_call)
-    assert allowed == {"result": {"ok": True}}
+    assert allowed["result"] == {"ok": True}
+    assert allowed["transport"]["outcome"] == "confirmed"
 
 
 async def test_route_blocks_quarantined_target_by_default(pool):
@@ -454,7 +457,8 @@ async def test_route_allows_quarantined_target_with_explicit_override(pool):
         allow_quarantined=True,
         call_fn=mock_call,
     )
-    assert allowed == {"result": {"ok": True}}
+    assert allowed["result"] == {"ok": True}
+    assert allowed["transport"]["outcome"] == "confirmed"
 
 
 # ------------------------------------------------------------------
@@ -543,7 +547,8 @@ async def test_delegate_wake_callback_authorized_reaches_target(pool_with_delega
         call_fn=mock_call,
     )
 
-    assert result == {"result": {"status": "ok", "wake_state": "task_created"}}
+    assert result["result"] == {"status": "ok", "wake_state": "task_created"}
+    assert result["transport"]["outcome"] == "confirmed"
     assert captured["tool_name"] == "delegate_wake"
 
 
@@ -701,7 +706,9 @@ async def test_routing_log_records_failure(pool):
         raise RuntimeError("boom")
 
     result = await route(pool, "errored", "explode", {}, call_fn=bad_call)
-    assert result == {"error": "RuntimeError: boom", "retryable": False}
+    assert result["error"] == "RuntimeError: boom"
+    assert result["retryable"] is False
+    assert result["transport"]["outcome"] == "uncertain"
 
     rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'errored'")
     assert len(rows) == 1
