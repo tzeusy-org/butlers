@@ -46,8 +46,3 @@ export function describeIssuesScope(scope: IssuesScope): string {
 
   return parts.join(", ");
 }
-
-/** True when anything beyond the time window narrows the view. */
-export function isNarrowedScope(scope: IssuesScope): boolean {
-  return Boolean(scope.group || scope.q || scope.severities?.length || scope.butlers?.length);
-}

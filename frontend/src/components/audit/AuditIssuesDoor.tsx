@@ -109,5 +109,3 @@ export function AuditIssuesDoor({ auditId, window }: AuditIssuesDoorProps) {
     </Link>
   );
 }
-
-export default AuditIssuesDoor;
