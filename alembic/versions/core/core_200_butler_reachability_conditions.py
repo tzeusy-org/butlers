@@ -1,7 +1,7 @@
 """butler_reachability_conditions: durable outage-episode ledger for the Issues feed.
 
-Revision ID: core_199
-Revises: core_198
+Revision ID: core_200
+Revises: core_199
 Create Date: 2026-08-22 00:00:00.000000
 
 Backs the JARVIS pursuit run-08 move 3 (bu-6jv4m.3) condition ledger.
@@ -42,8 +42,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_199"
-down_revision = "core_198"
+revision = "core_200"
+down_revision = "core_199"
 branch_labels = None
 depends_on = None
 

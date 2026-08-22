@@ -25,13 +25,13 @@ _MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_199_butler_reachability_conditions.py"
+    / "core_200_butler_reachability_conditions.py"
 )
 
 
 def _load_migration():
     spec = importlib.util.spec_from_file_location(
-        "core_199_butler_reachability_conditions", _MIGRATION_PATH
+        "core_200_butler_reachability_conditions", _MIGRATION_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -50,8 +50,8 @@ def _executed_sql(function_name: str) -> str:
 def test_revision_chains_onto_the_current_core_head() -> None:
     module = _load_migration()
 
-    assert module.revision == "core_199"
-    assert module.down_revision == "core_198"
+    assert module.revision == "core_200"
+    assert module.down_revision == "core_199"
     assert module.branch_labels is None
     assert module.depends_on is None
 

@@ -49,7 +49,7 @@ UPDATE {_TABLE}
 
 #: Open-or-extend, atomically, for every butler that failed this poll.
 #:
-#: The conflict target names the PARTIAL unique index from core_199
+#: The conflict target names the PARTIAL unique index from core_200
 #: (``(butler) WHERE resolved_at IS NULL``), so the upsert can only ever
 #: collide with an OPEN episode -- a butler's resolved history never blocks a
 #: new one. ``started_at`` is deliberately absent from the DO UPDATE list:

@@ -3,7 +3,7 @@
 Two contracts are asserted against a *real* migrated Postgres, because both of
 them are properties of the schema and the SQL rather than of Python:
 
-1. ``public.butler_reachability_conditions`` (core_199) must let one
+1. ``public.butler_reachability_conditions`` (core_200) must let one
    uninterrupted outage stay ONE row with ONE stable onset across arbitrarily
    many probes, close on recovery, and open a genuinely NEW row (new onset) on
    the next down transition.  The partial unique index
