@@ -3,8 +3,8 @@
  * Tests for IssuesPanel.
  *
  * Covers:
- *  - isError state shows an error message (NOT the "No issues recorded" empty state)
- *  - empty state shows "No issues recorded."
+ *  - isError state shows an error message (NOT the scoped empty state)
+ *  - empty state shows "No issues in the last 7d."
  *  - Acknowledge button calls onDismiss with the full issue (real ack, not a
  *    per-browser localStorage write) -- acknowledge-until-recurrence
  *    (bu-86c4c.15), not dismiss-forever
@@ -40,7 +40,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 function renderPanel(props: Partial<ComponentProps<typeof IssuesPanel>>) {
   return render(
     <MemoryRouter>
-      <IssuesPanel issues={[]} {...props} />
+      <IssuesPanel issues={[]} scopeLabel="the last 7d" {...props} />
     </MemoryRouter>,
   );
 }
@@ -48,18 +48,18 @@ function renderPanel(props: Partial<ComponentProps<typeof IssuesPanel>>) {
 afterEach(() => cleanup());
 
 describe("IssuesPanel", () => {
-  it("shows an error state (not the empty 'No issues recorded') when isError", () => {
+  it("shows an error state (not the scoped empty state) when isError", () => {
     renderPanel({ issues: [], isError: true });
 
     expect(screen.getByText("Could not load issues.")).toBeTruthy();
     // The misleading empty state must NOT be shown on a fetch failure.
-    expect(screen.queryByText("No issues recorded.")).toBeNull();
+    expect(screen.queryByText("No issues in the last 7d.")).toBeNull();
   });
 
   it("shows the empty state when there are genuinely no issues", () => {
     renderPanel({ issues: [], isError: false });
 
-    expect(screen.getByText("No issues recorded.")).toBeTruthy();
+    expect(screen.getByText("No issues in the last 7d.")).toBeTruthy();
     expect(screen.queryByText("Could not load issues.")).toBeNull();
   });
 
@@ -105,8 +105,8 @@ describe("IssuesPanel", () => {
   it("shows an acknowledged-specific empty state in the dismissed view", () => {
     renderPanel({ issues: [], dismissedView: true });
 
-    expect(screen.getByText("No acknowledged issues.")).toBeTruthy();
-    expect(screen.queryByText("No issues recorded.")).toBeNull();
+    expect(screen.getByText("No acknowledged issues in the last 7d.")).toBeTruthy();
+    expect(screen.queryByText("No issues in the last 7d.")).toBeNull();
   });
 
   // Degraded feed (bu-tpudw.3): a backend source that failed its query is
@@ -122,7 +122,7 @@ describe("IssuesPanel", () => {
       // Mutation strength: the source name is surfaced, not swallowed.
       expect(note.textContent).toContain("audit-groups");
       // The misleading all-clear MUST NOT render while a source is degraded.
-      expect(screen.queryByText("No issues recorded.")).toBeNull();
+      expect(screen.queryByText("No issues in the last 7d.")).toBeNull();
     });
 
     it("renders the degraded note above the rows when some issues did survive", () => {
@@ -137,7 +137,7 @@ describe("IssuesPanel", () => {
     it("keeps the honest empty state when no source is degraded", () => {
       renderPanel({ issues: [], sourcesDegraded: [] });
 
-      expect(screen.getByText("No issues recorded.")).toBeTruthy();
+      expect(screen.getByText("No issues in the last 7d.")).toBeTruthy();
       expect(screen.queryByTestId("issues-feed-degraded")).toBeNull();
     });
 
@@ -421,7 +421,10 @@ describe("IssuesPanel", () => {
       render(
         <MemoryRouter initialEntries={["/issues"]}>
           <Routes>
-            <Route path="/issues" element={<IssuesPanel issues={[issue]} />} />
+            <Route
+              path="/issues"
+              element={<IssuesPanel issues={[issue]} scopeLabel="the last 7d" />}
+            />
             <Route path="/butlers/general" element={<div data-testid="butler-detail-stub" />} />
           </Routes>
         </MemoryRouter>,

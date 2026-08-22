@@ -3,9 +3,11 @@
  * IssuesPage — unit tests.
  *
  * Covers:
- * - ?q= deep-link (JARVIS audit move 6): a failure row on the Audit Log page
- *   links here with the first line of its error text; this page substring-
- *   filters the currently-loaded feed against it and renders a clearable chip.
+ * - ?q= deep-link (JARVIS audit move 6): a general-purpose substring filter
+ *   over the currently-loaded feed, rendered as a clearable chip.
+ * - ?group= deep-link (bu-6jv4m.3): the exact, server-resolved issue_key the
+ *   Audit Log's evidence door links here with — an equality match, plus copy
+ *   that names the scope it searched instead of claiming fleet-wide calm.
  * - Occurrences drill-down wiring: expand state + useIssueOccurrences results
  *   are threaded through to IssuesPanel via props.
  */
@@ -181,6 +183,116 @@ describe("IssuesPage — ?q= deep-link filter", () => {
   });
 });
 
+describe("IssuesPage — ?group= exact evidence door (bu-6jv4m.3)", () => {
+  it("pins the feed to the one issue_key the server resolved", () => {
+    setupDefaults([
+      makeIssue(),
+      makeIssue({
+        issue_key: "audit_error_group:connection-refused::health",
+        error_message: "Connection refused",
+        description: "Connection refused (health)",
+      }),
+    ]);
+    const { container, root } = renderPage(
+      "/issues?window=30d&group=" +
+        encodeURIComponent("audit_error_group:oauth-token-expired::calendar"),
+    );
+
+    expect(container.textContent).toContain("OAuth token expired");
+    expect(container.textContent).not.toContain("Connection refused");
+    expect(container.querySelector('[data-testid="group-filter-chip"]')).toBeTruthy();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("matches the whole key, never a substring of it", () => {
+    // The old ?q= hop matched substrings, so a group whose key merely contained
+    // another's would have been swept in. An exact identity cannot do that.
+    setupDefaults([makeIssue({ issue_key: "audit_error_group:oauth::calendar" })]);
+    const { container, root } = renderPage("/issues?group=audit_error_group%3Aoauth");
+
+    expect(container.textContent).not.toContain("OAuth token expired");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("states the pinned scope instead of claiming the fleet is calm", () => {
+    setupDefaults([]);
+    const { container, root } = renderPage("/issues?window=30d&group=missing-key");
+
+    expect(container.textContent).toContain(
+      "No issues in the last 30d, one selected group.",
+    );
+    expect(container.textContent).not.toContain("No issues in the last 30d.");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("clears the pin from the URL when the chip's dismiss button is activated", () => {
+    setupDefaults([
+      makeIssue(),
+      makeIssue({
+        issue_key: "k2",
+        error_message: "Connection refused",
+        description: "Connection refused (health)",
+      }),
+    ]);
+    const { container, root } = renderPage(
+      "/issues?group=" +
+        encodeURIComponent("audit_error_group:oauth-token-expired::calendar"),
+    );
+
+    expect(container.textContent).not.toContain("Connection refused");
+
+    const clearButton = container.querySelector(
+      '[data-testid="group-filter-chip"] button',
+    ) as HTMLButtonElement;
+    // A <button> with an accessible name is Enter/Space-activatable by
+    // definition; asserting the name is what keeps the affordance reachable
+    // without a mouse.
+    expect(clearButton.getAttribute("aria-label")).toBe("Clear issue group filter");
+    act(() => {
+      clearButton.click();
+    });
+
+    expect(container.textContent).toContain("Connection refused");
+    expect(container.querySelector('[data-testid="group-filter"]')).toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});
+
+describe("IssuesPage — scope-honest all-clear (bu-6jv4m.3)", () => {
+  it("names the window rather than asserting a fleet-wide, all-time calm", () => {
+    setupDefaults([]);
+    const { container, root } = renderPage("/issues");
+
+    expect(container.textContent).toContain("No issues in the last 7d.");
+    expect(container.textContent).toContain("No active issues in the last 7d");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("names every active filter, so a filtered miss cannot read as an all-clear", () => {
+    setupDefaults([]);
+    const { container, root } = renderPage(
+      "/issues?window=all&severity=critical&butler=calendar&q=oauth",
+    );
+
+    expect(container.textContent).toContain(
+      "No issues in all time, critical, calendar, matching \u201coauth\u201d.",
+    );
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});
+
 describe("IssuesPage — degraded feed threading (bu-tpudw.3)", () => {
   it("threads meta.sources_degraded into the panel so the all-clear is suppressed", () => {
     setupDefaults([], { sources_degraded: ["audit-groups"] });
@@ -189,7 +301,7 @@ describe("IssuesPage — degraded feed threading (bu-tpudw.3)", () => {
     const note = container.querySelector('[data-testid="issues-feed-degraded"]');
     expect(note).toBeTruthy();
     expect(note?.textContent).toContain("audit-groups");
-    expect(container.textContent).not.toContain("No issues recorded.");
+    expect(container.textContent).not.toContain("No issues in the last 7d.");
 
     act(() => root.unmount());
     container.remove();
@@ -200,7 +312,7 @@ describe("IssuesPage — degraded feed threading (bu-tpudw.3)", () => {
     const { container, root } = renderPage("/issues");
 
     expect(container.querySelector('[data-testid="issues-feed-degraded"]')).toBeNull();
-    expect(container.textContent).toContain("No issues recorded.");
+    expect(container.textContent).toContain("No issues in the last 7d.");
 
     act(() => root.unmount());
     container.remove();
@@ -217,7 +329,7 @@ describe("IssuesPage — capped audit-group feed", () => {
     expect(note?.getAttribute("role")).toBe("alert");
     expect(note?.textContent).toContain("500-group cap reached");
     expect(note?.textContent).toContain("some audit-derived issues may be missing");
-    expect(container.textContent).not.toContain("No issues recorded.");
+    expect(container.textContent).not.toContain("No issues in the last 7d.");
 
     act(() => root.unmount());
     container.remove();
@@ -228,7 +340,7 @@ describe("IssuesPage — capped audit-group feed", () => {
     const { container, root } = renderPage("/issues");
 
     expect(container.querySelector('[data-testid="issues-feed-truncated"]')).toBeNull();
-    expect(container.textContent).toContain("No issues recorded.");
+    expect(container.textContent).toContain("No issues in the last 7d.");
 
     act(() => root.unmount());
     container.remove();

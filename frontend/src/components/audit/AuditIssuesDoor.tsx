@@ -63,7 +63,7 @@ export function AuditIssuesDoor({ auditId, window }: AuditIssuesDoorProps) {
     return (
       <SourceDegradedNote
         label="Issue group"
-        detail="lookup unavailable — this failure may or may not have an open issue"
+        detail="lookup unavailable, so this failure may or may not have an open issue"
         testId="audit-log-issues-degraded"
       />
     );

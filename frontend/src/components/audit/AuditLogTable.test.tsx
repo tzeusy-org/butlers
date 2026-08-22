@@ -11,7 +11,7 @@
  */
 
 import { act } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -71,6 +71,13 @@ function render(entries: AuditLogEntry[]): string {
     </MemoryRouter>,
   );
 }
+
+// The door hook is a module-level spy, so its call log outlives a single
+// test. Clearing it per test is what lets "this row was never expanded, so no
+// lookup fired" be asserted at all.
+beforeEach(() => {
+  useAuditIssueGroup.mockClear();
+});
 
 describe("AuditLogTable -- actor pivot", () => {
   it("links the actor cell to /audit-log?actor=<actor>", () => {
