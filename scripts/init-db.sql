@@ -3845,7 +3845,8 @@ BEGIN
        OR v_interface_version NOT IN (1, 2) THEN
         RAISE EXCEPTION 'runtime-attention v2 upgrade requires a finalized supported interface';
     END IF;
-    IF session_user <> v_bootstrap_role AND session_user <> v_migration_role THEN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = session_user), false)
+       AND session_user <> v_migration_role THEN
         RAISE EXCEPTION 'runtime-attention v2 upgrade requires its configured migration role';
     END IF;
     IF to_regclass('public.runtime_attention_outbox') IS NULL
