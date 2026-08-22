@@ -3,7 +3,7 @@
 ### Requirement: Spend API
 The dashboard SHALL expose the spend endpoints.
 
-#### Scenario: Spend totals use executed ledger attribution
+#### Scenario: Spend totals
 - **WHEN** `GET /api/spend?period=today|7d|30d` is called (or a custom range via `from`/`to` ISO date params)
 - **THEN** the response is `ApiResponse[SpendSummary]` where `SpendSummary = {period, total_cost_usd, total_sessions, total_input_tokens, total_output_tokens, by_butler, by_model, unpriced_models, divergences, historical_attribution_note}`. There are no `total_usd`, `period_start`, or `period_end` fields.
 - **AND** every dollar amount, token actual, `by_butler` value, and `by_model` value is grouped from `public.token_usage_ledger` joined to `public.model_catalog` by `catalog_entry_id`, so it describes the model that actually consumed the tokens rather than `sessions.model`.
@@ -15,7 +15,7 @@ The dashboard SHALL expose the spend endpoints.
 - **THEN** its compatibility totals, maps, and empty daily series MUST be treated as unavailable evidence, never as a genuine `$0`, empty-state, "all systems ok", mover, per-session, model-breakdown, or trend result.
 - **AND** Dashboard/CostWidget, Sidebar, Butler spend/detail surfaces, and SpendPage/CostStripeChart render a source-degraded/unavailable state that identifies the unavailable evidence while preserving an explicitly known zero when `source_error` is absent or false.
 
-#### Scenario: Spend breakdown uses executed ledger attribution
+#### Scenario: Spend breakdown
 - **WHEN** `GET /api/spend/breakdown?by=butler|model|purpose` is called
 - **THEN** the response is `ApiResponse[{by: str, breakdown: {key: cost_usd}, unpriced_models: [], billing_classes: {model: class}, source_error: bool, divergences: [], historical_attribution_note: str | null}]` for the current month (MTD), with no guaranteed map order.
 - **AND** `butler`, `model`, and `purpose` values are grouped directly from `public.token_usage_ledger` and priced through the same executed-model pricing calculation as the monthly ceiling, not from requested session models or an MCP fan-out.
@@ -33,7 +33,7 @@ The dashboard SHALL expose the spend endpoints.
 - **THEN** `purpose` keys are the dispatch `trigger_source` values (`route`/`schedule`/`classification`/`healing`/`qa`/`extraction`/`external`/`retry`/`tick`) plus `discretion` (connector discretion screening, which has no `trigger_source` equivalent); ledger rows with a `NULL` purpose (pre-migration or unattributed) are grouped under `"unknown"`.
 - **AND** `source_error: true` when the DB-backed path is unavailable or the ledger query fails (no session or MCP fallback exists for this dimension) — the frontend renders a `SourceDegradedNote` instead of reading an empty breakdown as "no purpose-tagged spend this month".
 
-#### Scenario: Spend forecast uses ledger daily actuals
+#### Scenario: Spend forecast (naive estimator v1)
 - **WHEN** `GET /api/spend/forecast` is called
 - **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal", ceiling_source_error: bool, unpriced_models: [], ceiling_blind_to_unpriced_models: int, divergences: [], historical_attribution_note: str | null}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`).
 - **AND** `mtd_usd`, every actual `days[*].cost_usd`, and `projected_eom_usd` are priced from `public.token_usage_ledger` joined to the executed catalog entry; actual daily costs MUST NOT be reconstructed from per-butler session rows.
