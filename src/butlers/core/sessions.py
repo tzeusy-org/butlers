@@ -641,7 +641,7 @@ def _count_occurrences(cron: str, start: datetime, end: datetime, limit: int) ->
     Returns the count and whether ``limit`` stopped the enumeration before
     ``end`` was reached. One occurrence is peeked past the limit so that an
     expression firing exactly ``limit`` times across the whole window is
-    recognised as fully sampled rather than mistaken for a truncated one.
+    recognised as fully sampled rather than mistaken for a capped one.
 
     ``croniter.is_valid`` accepts expressions that can never fire -- ``0 0 30 2
     *`` is well-formed and 30 February is not a date -- and enumerating one
@@ -697,16 +697,16 @@ def _estimate_monthly_runs(cron: str, *, reference: datetime = _CADENCE_ANCHOR) 
         return 0.0
 
     cycle_days = _cadence_cycle_days(cron)
-    count, truncated = _count_occurrences(
+    count, capped = _count_occurrences(
         cron, reference, reference + timedelta(days=cycle_days), _CADENCE_MAX_OCCURRENCES
     )
-    if count == 0 and not truncated and cycle_days == _CADENCE_YEAR_DAYS:
+    if count == 0 and not capped and cycle_days == _CADENCE_YEAR_DAYS:
         # A rare annual expression (29 February) that one calendar year misses.
         cycle_days = _CADENCE_HORIZON_DAYS
-        count, truncated = _count_occurrences(
+        count, capped = _count_occurrences(
             cron, reference, reference + timedelta(days=cycle_days), _CADENCE_MAX_OCCURRENCES
         )
-    if truncated or count == 0:
+    if capped or count == 0:
         return 0.0
     return count / cycle_days * AVERAGE_MONTH_DAYS
 
