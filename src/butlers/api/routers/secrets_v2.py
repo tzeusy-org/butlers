@@ -216,6 +216,7 @@ from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
@@ -229,6 +230,40 @@ router = APIRouter(prefix="/api/secrets", tags=["secrets"])
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+# ---------------------------------------------------------------------------
+# Names the generic secrets surface does not own
+# ---------------------------------------------------------------------------
+# The runtime-probe control signing key is provisioned as a deployment secret
+# file and read only by its own loader.  A row under this name would be a
+# second, unreviewed way to obtain a signing key, and even an inventory entry
+# for it would put its existence and a value-derived fingerprint on a
+# browser-visible surface.  So this name is inert here in both directions:
+# reads behave exactly as if it were absent, and every mutation is refused.
+# Refusing by name discloses nothing --- the name is public, the key is not.
+_RESERVED_SYSTEM_KEYS: frozenset[str] = frozenset({RESERVED_SIGNING_KEY_SECRET_NAME})
+
+
+def _is_reserved_system_key(key: str) -> bool:
+    """Whether ``key`` names a credential this surface must not touch.
+
+    Matched case-insensitively so a differently-cased row cannot slip past the
+    exclusion into the inventory.
+    """
+    return key.strip().upper() in _RESERVED_SYSTEM_KEYS
+
+
+def _reject_reserved_system_key(key: str) -> None:
+    """Refuse a mutation of a deployment-provisioned credential."""
+    if _is_reserved_system_key(key):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{RESERVED_SIGNING_KEY_SECRET_NAME} is provisioned as a deployment "
+                "secret file and is not managed through the secrets surface"
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1803,6 +1838,10 @@ async def _fetch_system_secrets(
             logger.warning("Failed to fetch system secrets for butler %s: %s", butler_name, exc)
         return []
 
+    # Drop reserved names before anything derives a fingerprint or an audit
+    # target from them: the inventory must not disclose that such a row exists.
+    rows = [row for row in rows if not _is_reserved_system_key(row["secret_key"])]
+
     # Bulk-fetch probe logs for all keys in a single query (eliminates N+1).
     credential_keys = [row["secret_key"] for row in rows]
     probe_map = await _fetch_probe_logs_bulk(pool, "system", credential_keys)
@@ -2713,6 +2752,11 @@ async def _fetch_single_system_secret(
     failure without that startup marker is raised so callers cannot silently
     turn schema loss into an absent credential.
     """
+    if _is_reserved_system_key(key):
+        # Indistinguishable from absent: a reserved name is not a credential
+        # this surface knows about, and a distinct response would confirm one.
+        return None
+
     relation = _qualified_relation(source_schema, "butler_secrets")
     try:
         row = await pool.fetchrow(
@@ -3134,6 +3178,13 @@ async def get_audit_history(
         )
 
     canonical_key = normalize_credential_key(scope, key)
+
+    if scope == "system" and _is_reserved_system_key(key):
+        # Same shape as a key with no history, so the reserved name's audit
+        # reel stays as unremarkable as its absent inventory entry.
+        return ApiResponse[list[AuditEvent]](
+            data=[], meta=ApiMeta(deep_link=f"/audit-log?key={canonical_key}")
+        )
 
     try:
         pool = db.credential_shared_pool()
@@ -5412,6 +5463,8 @@ async def set_system_credential(
     openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
     §System credential mutations
     """
+    _reject_reserved_system_key(key)
+
     target = body.target
     value = body.value
     category = body.category or "general"
@@ -5684,6 +5737,8 @@ async def probe_system_credential(
     openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
     §Cache write on probe (same-transaction invariant)
     """
+    _reject_reserved_system_key(key)
+
     # Rate-limit guard (raises 429 if too recent).
     _check_system_probe_rate_limit(key)
 
@@ -5931,6 +5986,8 @@ async def delete_system_credential(
     openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
     §System credential mutations — DELETE
     """
+    _reject_reserved_system_key(key)
+
     if target == "shared":
         try:
             pool = db.pool("switchboard")

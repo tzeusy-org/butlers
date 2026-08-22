@@ -7,6 +7,7 @@
 - [Docker Deployment](docker-deployment.md) — Docker Compose setup, production deployment
 - [Deployment Posture](deployment-posture.md) — dev vs hardened posture, Grafana anon-viewer gating
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
+- [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
