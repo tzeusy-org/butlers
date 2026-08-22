@@ -834,11 +834,24 @@ CLAUDE.md gate does cover.
 
 | command | baseline (2026-08-22) |
 | --- | --- |
-| `pytest tests/ --ignore=tests/e2e` | ~13.8k passed, **21 skipped** |
+| `pytest tests/ --ignore=tests/e2e` | ~13.9k passed, **21 skipped** |
+| `pytest roster/` | ~4044 passed, **0 skipped**, 1 xfailed |
 | `pytest tests/ roster/` (unfiltered) | ~17.9k passed, **113 skipped**, 1 xfailed |
 
 Quoting the 21-skipped baseline at a `tests/ roster/` run makes a correct result look like a
 regression. Before treating a skip count as evidence of anything, confirm which command produced it.
+
+**The 21 → 113 gap is `tests/e2e`, not `roster/`.** Measured 2026-08-22: `roster/` on its own
+contributes **zero** skips, so the ~92 extra skips in the unfiltered run come from the `tests/e2e`
+directory that `--ignore=tests/e2e` excludes and the bare `tests/ roster/` form collects. Anyone
+reconciling 21 against 113 will otherwise go hunting through `roster/` and find nothing. (The 21 and
+0 figures come from one branch and the 113 from another; no branch involved added a skip, so this is
+strongly indicated by three measurements rather than proven by one controlled run.)
+
+Practical consequence: `pytest tests/ --ignore=tests/e2e` **plus** `pytest roster/` covers CI's
+`check` scope between them, and the second takes ~6 minutes. When a change touches no `roster/`
+files, that pair is far cheaper than re-running the whole ~25-minute unfiltered gate to reach the
+same coverage — and it matters when the full gate holds a serialized lock other agents are queued on.
 
 Also: `-q` prints no test names. An exit-0 `-q` run proves the suite passed; it does NOT prove the
 tests you just wrote were collected rather than skipped. Confirm new files separately with `-v` or
