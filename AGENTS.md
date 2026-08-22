@@ -808,6 +808,45 @@ make test-qg
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
 - `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
 
+### No local gate command matches CI's scope — check which one produced a number
+
+Verified 2026-08-22. The commands called "the full gate" are each narrower than CI's `check` job,
+on different axes. Treating any of them as equivalent to CI is how a green local run precedes a red
+required check.
+
+| what | actual scope |
+| --- | --- |
+| `make test-qg` (called "full-scope" above) | `pytest tests/` minus `test_db.py`, `test_migrations.py`, `tests/e2e` |
+| CLAUDE.md low-context gate | `pytest tests/ --ignore=tests/e2e` |
+| CI `check`, unit lane (`ci.yml:154`) | `pytest tests/ roster/ --ignore=tests/e2e -m "not integration and not e2e and not nightly and not bench and not perf"` |
+| CI `check`, integration lane (`ci.yml:266`) | `pytest tests/ roster/ -m "integration and not nightly and not bench and not perf" -n auto --dist loadfile` |
+
+**`tests/` does not collect `roster/`.** They are sibling top-level directories, so any local command
+rooted at `tests/` runs *nothing* under `roster/<butler>/tests/`. A change whose tests live there can
+show a fully green "full gate" with its own tests never executed. Run `tests/ roster/` whenever the
+diff touches a roster butler. `make test-qg` additionally skips the DB and migration suites, so it is
+the wrong gate for any migration work.
+
+`make lint` is likewise `ruff check src/ tests/` only — it omits `roster/` and `conftest.py`, which the
+CLAUDE.md gate does cover.
+
+**Skip-count baselines are per-scope and are NOT interchangeable:**
+
+| command | baseline (2026-08-22) |
+| --- | --- |
+| `pytest tests/ --ignore=tests/e2e` | ~13.8k passed, **21 skipped** |
+| `pytest tests/ roster/` (unfiltered) | ~17.9k passed, **113 skipped**, 1 xfailed |
+
+Quoting the 21-skipped baseline at a `tests/ roster/` run makes a correct result look like a
+regression. Before treating a skip count as evidence of anything, confirm which command produced it.
+
+Also: `-q` prints no test names. An exit-0 `-q` run proves the suite passed; it does NOT prove the
+tests you just wrote were collected rather than skipped. Confirm new files separately with `-v` or
+`-q -rs`.
+
+General rule this is an instance of: a gate is only evidence about what it collects, and "full" in a
+command's name is not a claim about scope.
+
 ### Pytest benchmark snapshot (butlers-vrs, 2026-02-13)
 - Unit-scope serial benchmark (`.venv/bin/pytest tests/ -m unit ...`) measured `114.87s` wall (`1854 passed, 358 deselected`).
 - Unit-scope parallel benchmark (`.venv/bin/pytest tests/ -m unit ... -n 4`) measured `56.12s` wall (`1854 passed`), ~51% faster than the unit serial run.
