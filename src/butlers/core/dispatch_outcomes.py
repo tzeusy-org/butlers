@@ -3,7 +3,9 @@
 Qualifying breaker outcomes are serialized per catalog entry.  The attempt
 and any resulting durable attention episode commit together; persistence is
 best-effort so an observability failure never changes the runtime result that
-the spawner already obtained.
+the spawner already obtained.  The one bounded exception to "together" is a
+producer that refuses the call outright for lack of a canonical ``SET ROLE``:
+that is rolled back to a savepoint so the attempt row still commits, edgeless.
 """
 
 from __future__ import annotations
@@ -44,6 +46,41 @@ def _safe_inc(outcome: str, edge: str) -> None:
             edge,
             exc_info=True,
         )
+
+
+async def _produce_edge(
+    connection: asyncpg.Connection,
+    statement: str,
+    *args: object,
+) -> tuple[object | None, bool]:
+    """Call a v2 attention producer inside its own savepoint.
+
+    The producer deliberately runs in the same transaction as the dispatch-
+    attempt insert so the attempt row and its operational edge commit
+    together.  Postgres poisons the whole transaction on a raised exception,
+    though, so an unauthorized producer would take the attempt row down with
+    it: both v2 producers raise ``42501`` unless ``current_setting('role')``
+    is a canonical ``butler_*_rw``, and outside hardened posture ``db.py``
+    fails open and runs the pool with no ``SET ROLE`` at all.  On a dev stack
+    that lost every breaker-edge failure row permanently, so the breaker
+    could never trip.  The nested transaction is the savepoint we roll back
+    to, leaving the outer transaction — and the attempt row — intact.
+
+    Returns ``(episode_id, unauthorized)``.  Only ``42501`` is absorbed; any
+    other producer failure propagates, so an attempt row whose edge failed
+    for a real reason still rolls back with it.
+    """
+    try:
+        async with connection.transaction():
+            return await connection.fetchval(statement, *args), False
+    except asyncpg.InsufficientPrivilegeError as exc:
+        logger.warning(
+            "Runtime-attention producer refused the call (sqlstate 42501); the "
+            "attempt row is preserved and its edge is skipped: %s -- %s",
+            statement.strip(),
+            exc,
+        )
+        return None, True
 
 
 _DISPATCH_ATTEMPTS_INSERT = """
@@ -100,7 +137,9 @@ async def record_dispatch_attempt(
     Non-qualifying outcomes retain the existing lightweight best-effort insert
     path.  The returned bigint is stable for transactional writes; ``None``
     means persistence degraded or the outcome was intentionally non-
-    qualifying.  This function never raises into runtime/failover handling:
+    qualifying.  A producer that is unauthorized to run still returns the
+    attempt id — see ``_produce_edge`` — and reports the ``*_unauthorized``
+    edge.  This function never raises into runtime/failover handling:
     the spawner's call sites are unguarded, so the whole body — argument
     handling and fleet-halt provenance validation included — runs under the
     degraded handler, and every metric increment goes through ``_safe_inc``.
@@ -180,24 +219,28 @@ async def record_dispatch_attempt(
                 if outcome == "runtime_failure" and not breaker_was_open:
                     breaker_is_open = (await get_breaker_state(connection, catalog_entry_id)).open
                     if breaker_is_open:
-                        episode_id = await connection.fetchval(
+                        episode_id, unauthorized = await _produce_edge(
+                            connection,
                             "SELECT public.append_runtime_attention_model_breaker($1)",
                             attempt_id,
                         )
-                        edge_outcome = (
-                            "model_breaker_created"
-                            if isinstance(episode_id, uuid.UUID)
-                            else "model_breaker_suppressed"
-                        )
+                        if unauthorized:
+                            edge_outcome = "model_breaker_unauthorized"
+                        elif isinstance(episode_id, uuid.UUID):
+                            edge_outcome = "model_breaker_created"
+                        else:
+                            edge_outcome = "model_breaker_suppressed"
                 elif produce_fleet_halt:
-                    episode_id = await connection.fetchval(
-                        "SELECT public.append_runtime_attention_fleet_halt()"
+                    episode_id, unauthorized = await _produce_edge(
+                        connection,
+                        "SELECT public.append_runtime_attention_fleet_halt()",
                     )
-                    edge_outcome = (
-                        "fleet_halt_created"
-                        if isinstance(episode_id, uuid.UUID)
-                        else "fleet_halt_suppressed"
-                    )
+                    if unauthorized:
+                        edge_outcome = "fleet_halt_unauthorized"
+                    elif isinstance(episode_id, uuid.UUID):
+                        edge_outcome = "fleet_halt_created"
+                    else:
+                        edge_outcome = "fleet_halt_suppressed"
 
         _safe_inc("persisted", edge_outcome)
         logger.info(

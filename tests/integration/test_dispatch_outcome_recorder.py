@@ -197,7 +197,9 @@ async def _seed_failures(
         )
 
 
-async def _record_failure(pool: _RolePool, catalog_entry_id: uuid.UUID, index: int) -> int | None:
+async def _record_failure(
+    pool: _RolePool | asyncpg.Pool, catalog_entry_id: uuid.UUID, index: int
+) -> int | None:
     return await record_dispatch_attempt(
         pool,  # type: ignore[arg-type]
         catalog_entry_id=catalog_entry_id,
@@ -539,6 +541,99 @@ async def test_current_month_fleet_halt_before_activation_is_not_repaged(
         )
 
         assert isinstance(attempt_id, int)
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
+            )
+            == 0
+        )
+
+
+async def test_unauthorized_breaker_producer_still_commits_the_attempt_row(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-model-catalog-001: a producer we may not call cannot erase the failure.
+
+    Every other test here drives the recorder through ``_RolePool``, which
+    forces a canonical ``SET ROLE`` on each acquisition.  This one passes the
+    raw pool instead, reproducing ``db.py``'s non-hardened fail-open path where
+    role enforcement is disabled and ``current_setting('role')`` is ``none``.
+    Both v2 producers raise ``42501`` there.
+
+    Without a savepoint around the producer call that raise poisons the whole
+    transaction, so the fifth consecutive ``runtime_failure`` — the breaker
+    edge itself — is rolled back and lost, and the breaker can never trip for
+    that entry.  The row must survive; only the edge may be skipped.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-unauthorized-breaker")
+        await _seed_failures(admin_pool, entry_id, 4, ts=datetime.now(UTC))
+        assert await admin_pool.fetchval("SELECT current_setting('role', true)") == "none"
+
+        fifth_id = await _record_failure(admin_pool, entry_id, 4)
+
+        assert isinstance(fifth_id, int)
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 5
+        )
+        assert (await get_breaker_state(admin_pool, entry_id)).open is True
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='model_breaker'"
+            )
+            == 0
+        )
+        # The counts above are read on a separate acquisition, so they prove the
+        # outer transaction actually committed rather than merely surviving to
+        # the end of its own statement stream.
+        assert (
+            await observer_pool.fetchval(
+                "SELECT id FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1"
+                " ORDER BY id DESC LIMIT 1",
+                entry_id,
+            )
+            == fifth_id
+        )
+
+
+async def test_unauthorized_fleet_halt_producer_still_commits_the_denial_row(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-runtime-attention-outbox-001: ceiling denials keep their provenance.
+
+    ``produce_fleet_halt=True`` calls the producer on *every* monthly-ceiling
+    denial, so with role enforcement off an unbounded producer failure loses
+    every ``quota_skip`` provenance row — the dispatch-attempts API and
+    evidence-based routing would see nothing at all.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as admin_pool:
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-unauthorized-fleet-halt")
+        assert await admin_pool.fetchval("SELECT current_setting('role', true)") == "none"
+
+        attempt_id = await record_dispatch_attempt(
+            admin_pool,
+            catalog_entry_id=entry_id,
+            butler="general",
+            outcome="quota_skip",
+            attempt_index=0,
+            failure_reason=f"{CEILING_DENIAL_REASON_PREFIX}: current",
+            produce_fleet_halt=True,
+        )
+
+        assert isinstance(attempt_id, int)
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id=$1",
+                entry_id,
+            )
+            == 1
+        )
         assert (
             await observer_pool.fetchval(
                 "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"

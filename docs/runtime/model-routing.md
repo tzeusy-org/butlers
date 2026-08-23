@@ -189,7 +189,12 @@ Three counters track failover at the process level:
 
 `runtime_attention_recorder_total{outcome,edge}` separately reports bounded
 recorder results (`persisted`, `degraded`, or `rejected`) and edge outcomes; it
-does not label or log raw provider errors.
+does not label or log raw provider errors.  `outcome=persisted` with
+`edge=model_breaker_unauthorized` / `edge=fleet_halt_unauthorized` is the
+degraded-but-durable case: the attempt row committed, but the producer refused
+the call (SQLSTATE `42501`) because the pool holds no canonical `butler_*_rw`
+`SET ROLE` — expected on a non-hardened stack, and a misconfiguration anywhere
+role enforcement is meant to be active.
 
 ## Verification
 
