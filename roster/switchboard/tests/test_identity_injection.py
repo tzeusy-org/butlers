@@ -12,11 +12,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.identity import ResolvedContact
+from butlers.identity import ResolvedContact, resolve_contacts_by_channel_bulk
+from butlers.tools.switchboard.identity import inject as identity_inject
 from butlers.tools.switchboard.identity.inject import (
     _claim_unknown_sender_notification,
     resolve_and_inject_identity,
@@ -246,6 +247,136 @@ async def test_empty_channel_value_returns_empty_result():
     assert result.is_owner is False
     assert result.is_known is False
     assert result.is_unknown is False
+
+
+async def test_batch_resolution_deduplicates_and_reuses_bulk_known_results():
+    """REQ-switchboard-identity-002: each distinct batch speaker resolves once."""
+    pool = AsyncMock()
+    known = _resolved_known()
+    unknown_result = MagicMock(
+        preamble="[Source: Unknown sender]",
+        contact_id=None,
+        entity_id=_TEMP_ENTITY_ID,
+        sender_roles=None,
+        is_owner=False,
+        is_known=False,
+        is_unknown=True,
+        new_unknown_sender=True,
+        channel_value="222@s.whatsapp.net",
+        display_name=None,
+    )
+    bulk = AsyncMock(
+        return_value={
+            ("whatsapp_jid", "111@s.whatsapp.net"): known,
+            ("whatsapp_jid", "222@s.whatsapp.net"): None,
+        }
+    )
+    reserve_unknown = AsyncMock(return_value=unknown_result)
+
+    with (
+        patch.object(
+            identity_inject,
+            "resolve_contacts_by_channel_bulk",
+            bulk,
+            create=True,
+        ),
+        patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+    ):
+        results = await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            [
+                "111@s.whatsapp.net",
+                "222@s.whatsapp.net",
+                "111@s.whatsapp.net",
+                "222@s.whatsapp.net",
+            ],
+            notify_owner_fn=AsyncMock(),
+        )
+
+    assert list(results) == ["111@s.whatsapp.net", "222@s.whatsapp.net"]
+    assert results["111@s.whatsapp.net"].entity_id == _ENTITY_ID
+    assert results["111@s.whatsapp.net"].display_name == "Chloe"
+    assert results["222@s.whatsapp.net"] is unknown_result
+    bulk.assert_awaited_once_with(
+        pool,
+        [
+            ("whatsapp_jid", "111@s.whatsapp.net"),
+            ("whatsapp_jid", "222@s.whatsapp.net"),
+        ],
+        raise_on_error=True,
+    )
+    reserve_unknown.assert_awaited_once()
+    assert reserve_unknown.await_args.args[1] == "whatsapp_jid"
+    assert reserve_unknown.await_args.kwargs.get("display_name") is None
+
+
+async def test_strict_bulk_failure_raises_instead_of_minting_unknown_entities():
+    """REQ-switchboard-identity-002: a bulk DB outage is not an unknown-sender result."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await resolve_contacts_by_channel_bulk(
+            pool,
+            [("email", "speaker@example.com")],
+            raise_on_error=True,
+        )
+
+
+async def test_batch_bulk_failure_does_not_enter_unknown_reservation_path():
+    """REQ-switchboard-identity-002: strict lookup failure cannot mint false entities."""
+    pool = AsyncMock()
+    reserve_unknown = AsyncMock()
+
+    with (
+        patch.object(
+            identity_inject,
+            "resolve_contacts_by_channel_bulk",
+            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+            create=True,
+        ),
+        patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+    ):
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await identity_inject.resolve_sender_identities(
+                pool,
+                "whatsapp_user_client",
+                ["111@s.whatsapp.net"],
+            )
+
+    reserve_unknown.assert_not_awaited()
+
+
+async def test_batch_unknown_reservation_skips_redundant_fail_open_lookup():
+    """REQ-switchboard-identity-002: a bulk miss enters reservation without re-resolving."""
+    pool = AsyncMock()
+    bulk = AsyncMock(return_value={("whatsapp_jid", "222@s.whatsapp.net"): None})
+    redundant_lookup = AsyncMock(
+        side_effect=AssertionError("batch unknown must not perform a second lookup")
+    )
+    create_unknown = AsyncMock(return_value=_temp_entity())
+
+    with (
+        patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk),
+        patch.object(identity_inject, "resolve_contact_by_channel", redundant_lookup),
+        patch.object(identity_inject, "create_temp_contact", create_unknown),
+    ):
+        results = await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            ["222@s.whatsapp.net", "222@s.whatsapp.net"],
+        )
+
+    redundant_lookup.assert_not_awaited()
+    create_unknown.assert_awaited_once_with(
+        pool,
+        "whatsapp_jid",
+        "222@s.whatsapp.net",
+        display_name=None,
+        reservation_state_key=("identity:unknown_entity:whatsapp_jid:222@s.whatsapp.net"),
+    )
+    assert results["222@s.whatsapp.net"].entity_id == _TEMP_ENTITY_ID
 
 
 async def test_empty_string_channel_value_returns_empty_result():

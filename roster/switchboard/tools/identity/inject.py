@@ -29,7 +29,7 @@ the entity-first unknown-sender path always leaves it ``None``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from html import escape
 from typing import Any
@@ -40,8 +40,10 @@ import asyncpg
 from butlers.identity import (
     ResolvedContact,
     build_identity_preamble,
+    canonical_identity_channel_type,
     create_temp_contact,
     resolve_contact_by_channel,
+    resolve_contacts_by_channel_bulk,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,9 @@ class IdentityResolutionResult:
         (entity-v3, bu-hvrt1) — switchboard ingress itself must not write
         ``relationship.entity_facts``. ``None`` when resolution was skipped
         (no channel_value supplied) or the sender was already known.
+    display_name:
+        Canonical display name for a known sender, or ``None`` when no
+        authoritative human-readable name is available.
     """
 
     preamble: str = ""
@@ -103,6 +108,7 @@ class IdentityResolutionResult:
     is_unknown: bool = False
     new_unknown_sender: bool = False
     channel_value: str | None = None
+    display_name: str | None = None
 
 
 async def resolve_and_inject_identity(
@@ -170,9 +176,33 @@ async def resolve_and_inject_identity(
             is_owner=is_owner,
             is_known=True,
             is_unknown=False,
+            display_name=resolved.name or ("Owner" if is_owner else None),
         )
 
-    # Step 2: Unknown sender — create a transitory entity.
+    return await _inject_unknown_identity(
+        pool,
+        channel_type,
+        channel_value,
+        display_name=display_name,
+        notify_owner_fn=notify_owner_fn,
+        state_pool=state_pool,
+    )
+
+
+async def _inject_unknown_identity(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_value: str,
+    *,
+    display_name: str | None,
+    notify_owner_fn: Callable[[str], Awaitable[None]] | None,
+    state_pool: asyncpg.Pool | None,
+) -> IdentityResolutionResult:
+    """Reserve and inject an already-confirmed unresolved sender.
+
+    The caller owns the lookup decision. Keeping reservation separate prevents
+    strict batch misses from falling through a second fail-open query.
+    """
     temp_contact = await create_temp_contact(
         pool,
         channel_type,
@@ -235,6 +265,71 @@ async def resolve_and_inject_identity(
             )
 
     return result
+
+
+async def resolve_sender_identities(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_values: Sequence[str],
+    *,
+    notify_owner_fn: Callable[[str], Awaitable[None]] | None = None,
+    state_pool: asyncpg.Pool | None = None,
+) -> dict[str, IdentityResolutionResult]:
+    """Resolve each distinct batch speaker through one strict bulk lookup.
+
+    Known speakers are constructed directly from the bulk result. Only values
+    that the successful bulk lookup leaves unresolved enter the existing
+    reservation and owner-notification path.
+    """
+    distinct_values: list[str] = []
+    seen: set[str] = set()
+    for raw_value in channel_values:
+        if raw_value in (None, ""):
+            continue
+        channel_value = str(raw_value)
+        if channel_value in seen:
+            continue
+        seen.add(channel_value)
+        distinct_values.append(channel_value)
+
+    if not distinct_values:
+        return {}
+
+    identity_channel = canonical_identity_channel_type(channel_type)
+    pairs = [(identity_channel, value) for value in distinct_values]
+    bulk_results = await resolve_contacts_by_channel_bulk(
+        pool,
+        pairs,
+        raise_on_error=True,
+    )
+
+    results: dict[str, IdentityResolutionResult] = {}
+    for channel_value in distinct_values:
+        resolved = bulk_results[(identity_channel, channel_value)]
+        if resolved is not None:
+            is_owner = "owner" in resolved.roles
+            results[channel_value] = IdentityResolutionResult(
+                preamble=build_identity_preamble(resolved, identity_channel),
+                contact_id=resolved.contact_id,
+                entity_id=resolved.entity_id,
+                sender_roles=resolved.roles or None,
+                is_owner=is_owner,
+                is_known=True,
+                is_unknown=False,
+                display_name=resolved.name or ("Owner" if is_owner else None),
+            )
+            continue
+
+        results[channel_value] = await _inject_unknown_identity(
+            pool,
+            identity_channel,
+            channel_value,
+            display_name=None,
+            notify_owner_fn=notify_owner_fn,
+            state_pool=state_pool,
+        )
+
+    return results
 
 
 def _safe_sender_label(display_name: str | None) -> str:

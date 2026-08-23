@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from opentelemetry import metrics, trace
@@ -33,6 +33,9 @@ from butlers.tools.switchboard.routing.telemetry import (
     normalize_error_class,
 )
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
+
+if TYPE_CHECKING:
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
 
 logger = logging.getLogger(__name__)
 
@@ -944,7 +947,7 @@ def _build_decomposition_prompt(
 
 
 def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
-    """Format raw conversation_history from a batch envelope as routing context.
+    """Format identity-enriched conversation history as routing context.
 
     Produces the same untrusted-data-fenced format as ``_format_history_context``
     so the standard routing prompt treats it identically to realtime/email history.
@@ -954,8 +957,9 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     messages:
         The ``conversation_history`` array from the batch envelope's
         ``payload.raw.conversation_history``.  Each dict has keys like
-        ``sender_id``, ``display_name``, ``text``, ``timestamp``,
-        ``message_id``.
+        ``sender_identity``, canonical-or-neutral ``sender``, ``text``,
+        ``timestamp``, and ``message_id``. ``sender_entity_id`` remains
+        structured authoritative context and is not rendered as a label.
 
     Returns
     -------
@@ -975,7 +979,7 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     ]
 
     for msg in messages:
-        sender = msg.get("display_name") or msg.get("sender_id") or msg.get("sender", "unknown")
+        sender = msg.get("sender") or "Unknown sender"
         ts = msg.get("timestamp", "")
         text = msg.get("text", "")
         lines.append(f"**{sender}** ({ts}):")
@@ -1136,21 +1140,22 @@ class MessagePipeline:
             channel_value,
         )
 
-    async def _load_decomp_conversation_history(
+    async def _load_decomp_conversation_messages(
         self,
         message_inbox_id: Any | None,
-    ) -> str | None:
-        """Load and format structured conversation history from a batch envelope.
+    ) -> list[dict[str, Any]] | None:
+        """Load structured conversation messages from a batch envelope.
 
         Reads the raw ``conversation_history`` array from
-        ``message_inbox.raw_payload`` and formats it as untrusted-data-fenced
-        text suitable for the standard routing prompt.
+        ``message_inbox.raw_payload`` while preserving the connector-provided
+        ``sender_identity`` machine key and canonical-or-neutral ``sender``
+        display label for deterministic identity enrichment.
 
         Returns
         -------
-        str | None
-            Formatted history string, or ``None`` if no structured messages
-            could be loaded (caller should short-circuit to decomposed_empty).
+        list[dict[str, Any]] | None
+            Structured message copies, or ``None`` if no messages could be
+            loaded (caller should short-circuit to decomposed_empty).
         """
         if message_inbox_id is None:
             return None
@@ -1168,7 +1173,11 @@ class MessagePipeline:
                         raw_payload = json.loads(raw_payload)
                     payload_section = raw_payload.get("payload", {})
                     raw_inner = payload_section.get("raw") or {}
-                    conversation_messages = raw_inner.get("conversation_history", [])
+                    raw_messages = raw_inner.get("conversation_history", [])
+                    if isinstance(raw_messages, list):
+                        conversation_messages = [
+                            dict(message) for message in raw_messages if isinstance(message, dict)
+                        ]
         except Exception:
             logger.debug(
                 "Failed to load conversation_history from message_inbox; falling back to empty",
@@ -1178,7 +1187,60 @@ class MessagePipeline:
         if not conversation_messages:
             return None
 
-        return _format_decomp_conversation_history(conversation_messages)
+        return conversation_messages
+
+    async def _resolve_decomp_speakers(
+        self,
+        *,
+        source_channel: str,
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, IdentityResolutionResult]]:
+        """Resolve batch speakers and attach authoritative identity fields."""
+        from butlers.identity import canonical_identity_channel_type
+        from butlers.tools.switchboard.identity.inject import resolve_sender_identities
+
+        identity_channel = canonical_identity_channel_type(source_channel)
+        channel_values = [
+            value
+            for message in messages
+            if (value := self._string_or_none(message.get("sender_identity"))) is not None
+        ]
+        resolutions = await resolve_sender_identities(
+            self._pool,
+            identity_channel,
+            channel_values,
+            notify_owner_fn=self._notify_owner_fn,
+        )
+
+        for result in resolutions.values():
+            if result.is_unknown and result.entity_id is not None and result.channel_value:
+                await self._assert_sender_channel_fact(
+                    entity_id=result.entity_id,
+                    channel_type=identity_channel,
+                    channel_value=result.channel_value,
+                )
+
+        enriched_messages: list[dict[str, Any]] = []
+        for message in messages:
+            sender_identity = self._string_or_none(message.get("sender_identity"))
+            result = resolutions.get(sender_identity) if sender_identity is not None else None
+            sender = self._string_or_none(message.get("sender")) or "Unknown sender"
+            if result is not None and result.display_name:
+                sender = result.display_name
+            elif sender_identity is not None and sender == sender_identity:
+                sender = "Unknown sender"
+
+            enriched = dict(message)
+            enriched["sender"] = sender
+            enriched["sender_identity"] = sender_identity
+            enriched["sender_entity_id"] = (
+                str(result.entity_id)
+                if result is not None and result.entity_id is not None
+                else None
+            )
+            enriched_messages.append(enriched)
+
+        return enriched_messages, resolutions
 
     async def _load_dashboard_context(
         self,
@@ -2382,11 +2444,11 @@ class MessagePipeline:
                 # --- Conversation decomposition branch ---
                 # When the ingest envelope has control.payload_type ==
                 # "conversation_history", load the structured conversation
-                # messages from the DB and format them as conversation history.
-                # Then fall through to the standard routing path which uses
-                # route_to_butler to dispatch to sub-butlers.
+                # messages from the DB and keep them structured through
+                # per-speaker identity resolution. Then format the enriched
+                # messages and fall through to the standard routing path.
                 _payload_type = request_context.get("payload_type") if request_context else None
-                _decomp_history: str | None = None
+                _decomp_messages: list[dict[str, Any]] | None = None
                 if _payload_type == "conversation_history":
                     logger.info(
                         "Pipeline entering conversation decomposition branch",
@@ -2399,10 +2461,10 @@ class MessagePipeline:
                             lifecycle_state="decomposing",
                         ),
                     )
-                    _decomp_history = await self._load_decomp_conversation_history(
+                    _decomp_messages = await self._load_decomp_conversation_messages(
                         message_inbox_id,
                     )
-                    if _decomp_history is None:
+                    if _decomp_messages is None:
                         telemetry = get_switchboard_telemetry()
                         logger.info(
                             "Decomposition: no conversation_history found; "
@@ -2450,26 +2512,13 @@ class MessagePipeline:
                 start = time.perf_counter()
                 spawn_start = time.perf_counter()
                 try:
-                    # Load conversation history — use structured batch data
-                    # from the decomposition branch if available, otherwise
-                    # load from the conversation log.
+                    # Load conversation history from the conversation log for
+                    # ordinary messages. Structured decomposition messages are
+                    # formatted only after per-speaker identity enrichment.
                     conversation_history = ""
                     source_thread_identity = self._source_thread_identity(args)
 
-                    if _decomp_history is not None:
-                        conversation_history = _decomp_history
-                        logger.debug(
-                            "Using decomposition conversation history",
-                            extra=self._log_fields(
-                                source=source,
-                                chat_id=chat_id,
-                                target_butler=None,
-                                latency_ms=0.0,
-                                request_id=request_id,
-                                history_length=len(conversation_history),
-                            ),
-                        )
-                    elif source_thread_identity:
+                    if _decomp_messages is None and source_thread_identity:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.load_history"
                         ):
@@ -2509,21 +2558,36 @@ class MessagePipeline:
                             "butlers.switchboard.routing.identity_resolution"
                         ):
                             try:
-                                from butlers.tools.switchboard.identity.inject import (
-                                    resolve_and_inject_identity,
-                                )
-
-                                sender_value = source_metadata.get(
-                                    "source_id"
-                                ) or source_metadata.get("identity")
-                                if sender_value and source:
-                                    identity_result = await resolve_and_inject_identity(
-                                        self._pool,
-                                        channel_type=source,
-                                        channel_value=sender_value,
-                                        display_name=args.get("sender_name"),
-                                        notify_owner_fn=self._notify_owner_fn,
+                                identity_result: IdentityResolutionResult | None = None
+                                if _decomp_messages is not None:
+                                    (
+                                        _decomp_messages,
+                                        batch_resolutions,
+                                    ) = await self._resolve_decomp_speakers(
+                                        source_channel=source,
+                                        messages=_decomp_messages,
                                     )
+                                    primary_sender = self._string_or_none(args.get("source_id"))
+                                    if primary_sender is not None:
+                                        identity_result = batch_resolutions.get(primary_sender)
+                                else:
+                                    from butlers.tools.switchboard.identity.inject import (
+                                        resolve_and_inject_identity,
+                                    )
+
+                                    sender_value = source_metadata.get(
+                                        "source_id"
+                                    ) or source_metadata.get("identity")
+                                    if sender_value and source:
+                                        identity_result = await resolve_and_inject_identity(
+                                            self._pool,
+                                            channel_type=source,
+                                            channel_value=sender_value,
+                                            display_name=args.get("sender_name"),
+                                            notify_owner_fn=self._notify_owner_fn,
+                                        )
+
+                                if identity_result is not None:
                                     identity_preamble = identity_result.preamble or None
                                     if identity_result.contact_id is not None:
                                         source_contact_id = str(identity_result.contact_id)
@@ -2541,7 +2605,8 @@ class MessagePipeline:
                                     # create_temp_contact) no longer writes it, so the
                                     # switchboard-identity invariant holds.
                                     if (
-                                        identity_result.is_unknown
+                                        _decomp_messages is None
+                                        and identity_result.is_unknown
                                         and identity_result.entity_id is not None
                                         and identity_result.channel_value
                                     ):
@@ -2555,6 +2620,20 @@ class MessagePipeline:
                                     "Identity resolution failed; proceeding without preamble",
                                     exc_info=True,
                                 )
+
+                    if _decomp_messages is not None:
+                        conversation_history = _format_decomp_conversation_history(_decomp_messages)
+                        logger.debug(
+                            "Using decomposition conversation history",
+                            extra=self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler=None,
+                                latency_ms=0.0,
+                                request_id=request_id,
+                                history_length=len(conversation_history),
+                            ),
+                        )
 
                     # Dashboard channel: load conversation_id/page_context (if any) so
                     # the two-lane prompt can surface them and route_to_butler /

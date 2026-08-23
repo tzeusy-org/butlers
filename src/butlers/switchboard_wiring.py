@@ -63,6 +63,8 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
 
     source_id: str | None = None
     sender_name: str | None = None
+    participants: Any = None
+    owner_sender_id: Any = None
     if sender_identity == "multiple":
         participants = ref.sender.get("participants") or {}
         owner_sender_id = ref.sender.get("owner_sender_id")
@@ -90,6 +92,10 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
     }
     if addressed:
         request_context["addressed"] = True
+    if isinstance(participants, dict) and participants:
+        request_context["source_sender_identities"] = sorted(str(key) for key in participants)
+    if owner_sender_id:
+        request_context["owner_sender_identity"] = str(owner_sender_id)
     if ref.triage_decision is not None:
         request_context["triage_decision"] = ref.triage_decision
     if ref.triage_target is not None:

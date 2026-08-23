@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from opentelemetry import metrics
@@ -42,6 +43,7 @@ from butlers.modules.pipeline import (
     _normalize_decomp_signal,
     _normalize_decomp_signals,
 )
+from butlers.tools.switchboard.identity import inject as identity_inject
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +64,202 @@ _MOCK_BUTLERS = [
     {"name": "health", "description": "Health tracking"},
     {"name": "finance", "description": "Finance"},
 ]
+
+
+def _decomp_messages(text: str = "hello") -> list[dict[str, Any]]:
+    return [
+        {
+            "message_id": "m1",
+            "sender_identity": "alice-telegram-id",
+            "sender": "Alice",
+            "text": text,
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+
+
+async def test_decomposition_loader_preserves_structured_speaker_messages():
+    """REQ-switchboard-identity-002: identity work receives structured messages."""
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "hello",
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {
+        "raw_payload": {"payload": {"raw": {"conversation_history": messages}}}
+    }
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=conn)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = acquired
+    pipeline = MessagePipeline(pool, AsyncMock(), source_butler="switchboard")
+
+    loaded = await pipeline._load_decomp_conversation_messages("inbox-1")
+
+    assert loaded == messages
+    assert loaded is not messages
+
+
+async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels():
+    """REQ-switchboard-identity-002: batch speakers reuse authoritative resolutions."""
+    known_entity = uuid4()
+    unknown_entity = uuid4()
+    known_result = MagicMock(
+        display_name="Chloe Wong",
+        entity_id=known_entity,
+        is_unknown=False,
+        channel_value=None,
+    )
+    unknown_result = MagicMock(
+        display_name=None,
+        entity_id=unknown_entity,
+        is_unknown=True,
+        channel_value="222@lid",
+    )
+    resolver = AsyncMock(
+        return_value={
+            "111@s.whatsapp.net": known_result,
+            "222@lid": unknown_result,
+        }
+    )
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "known",
+        },
+        {
+            "message_id": "m2",
+            "sender_identity": "222@lid",
+            "sender": "Unknown WhatsApp sender",
+            "text": "unknown",
+        },
+        {
+            "message_id": "m3",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "known again",
+        },
+        {
+            "message_id": "m4",
+            "sender_identity": "222@lid",
+            "sender": "Unknown WhatsApp sender",
+            "text": "unknown again",
+        },
+    ]
+    pipeline = MessagePipeline(MagicMock(), AsyncMock(), source_butler="switchboard")
+    pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
+
+    with patch.object(
+        identity_inject,
+        "resolve_sender_identities",
+        resolver,
+        create=True,
+    ):
+        enriched, resolutions = await pipeline._resolve_decomp_speakers(
+            source_channel="whatsapp_user_client",
+            messages=messages,
+        )
+
+    assert resolutions["111@s.whatsapp.net"] is known_result
+    assert enriched[0]["sender"] == "Chloe Wong"
+    assert enriched[0]["sender_identity"] == "111@s.whatsapp.net"
+    assert enriched[0]["sender_entity_id"] == str(known_entity)
+    assert enriched[1]["sender"] == "Unknown WhatsApp sender"
+    assert enriched[1]["sender_identity"] == "222@lid"
+    assert enriched[1]["sender_entity_id"] == str(unknown_entity)
+    assert enriched[2]["sender_entity_id"] == str(known_entity)
+    assert enriched[3]["sender_entity_id"] == str(unknown_entity)
+    resolver.assert_awaited_once_with(
+        pipeline._pool,
+        "whatsapp_jid",
+        ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
+        notify_owner_fn=None,
+    )
+    pipeline._assert_sender_channel_fact.assert_awaited_once_with(
+        entity_id=unknown_entity,
+        channel_type="whatsapp_jid",
+        channel_value="222@lid",
+    )
+
+
+async def test_decomposition_primary_sender_reuses_batch_resolution():
+    """REQ-switchboard-identity-002: the routing sender is not resolved twice."""
+    primary_entity = uuid4()
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Chloe Wong",
+            "sender_entity_id": str(primary_entity),
+            "text": "hello",
+        }
+    ]
+    primary_result = MagicMock(
+        preamble="[Source: Chloe Wong, via whatsapp_jid]",
+        contact_id=None,
+        entity_id=primary_entity,
+        display_name="Chloe Wong",
+        is_unknown=False,
+        channel_value=None,
+    )
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        enable_identity_resolution=True,
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[attr-defined]
+        return_value=messages
+    )
+    pipeline._resolve_decomp_speakers = AsyncMock(  # type: ignore[attr-defined]
+        return_value=(messages, {"111@s.whatsapp.net": primary_result})
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    single_resolver = AsyncMock(return_value=primary_result)
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(
+            identity_inject,
+            "resolve_and_inject_identity",
+            single_resolver,
+        ),
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": "111@s.whatsapp.net",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+    assert result.target_butler == "decomposed_empty"
+    pipeline._resolve_decomp_speakers.assert_awaited_once_with(
+        source_channel="whatsapp_user_client",
+        messages=messages,
+    )
+    single_resolver.assert_not_awaited()
+    routing_context = pipeline._set_routing_context.call_args.kwargs
+    assert routing_context["identity_preamble"] == primary_result.preamble
+    assert routing_context["source_entity_id"] == str(primary_entity)
 
 
 def _dashboard_tool_args(**overrides: Any) -> dict[str, Any]:
@@ -381,9 +579,9 @@ class TestMessagePipelineProcess:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -1344,9 +1542,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2114,9 +2312,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2194,9 +2392,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2243,13 +2441,14 @@ class TestDecompositionSignalSchema:
             preamble="",
             contact_id=None,
             entity_id=source_entity_id,
+            display_name="Alice",
             is_unknown=False,
             channel_value=None,
         )
         with patch(
-            "butlers.tools.switchboard.identity.inject.resolve_and_inject_identity",
+            "butlers.tools.switchboard.identity.inject.resolve_sender_identities",
             new_callable=AsyncMock,
-            return_value=identity_result,
+            return_value={"alice-telegram-id": identity_result},
         ):
             pipeline = MessagePipeline(
                 switchboard_pool=MagicMock(),
@@ -2281,9 +2480,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2341,9 +2540,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2397,9 +2596,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nmaybe dinner\n```",
+        return_value=_decomp_messages("maybe dinner"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2451,9 +2650,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2603,9 +2802,9 @@ class TestDecompositionEmptyMetric:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2659,9 +2858,9 @@ class TestDecompositionEmptyMetric:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

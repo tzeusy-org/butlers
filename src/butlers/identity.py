@@ -352,6 +352,8 @@ async def _resolve_entity_by_triple(
 async def _resolve_entity_by_phone_digits(
     pool: asyncpg.Pool,
     digits: str,
+    *,
+    raise_on_error: bool = False,
 ) -> asyncpg.Record | None:
     """Resolve an entity by comparing ``has-phone`` triples on digits alone.
 
@@ -360,7 +362,8 @@ async def _resolve_entity_by_phone_digits(
     (``"91153887"`` for ``"6591153887"``), hence the suffix match — bounded by
     :data:`_PHONE_SUFFIX_MIN_DIGITS` so short fragments cannot alias two people.
 
-    Returns ``None`` when not found, ambiguous, or on DB error.
+    Returns ``None`` when not found, ambiguous, or on DB error unless
+    ``raise_on_error`` is true.
     """
     if len(digits) < _PHONE_SUFFIX_MIN_DIGITS:
         return None
@@ -393,6 +396,8 @@ async def _resolve_entity_by_phone_digits(
             _PHONE_SUFFIX_MAX_DELTA,
         )
     except Exception:  # noqa: BLE001
+        if raise_on_error:
+            raise
         return None
     # An ambiguous match is worse than none: silently attributing an
     # interaction to the wrong person corrupts the Dunbar ranking.
@@ -573,6 +578,8 @@ def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str
 async def resolve_contacts_by_channel_bulk(
     pool: asyncpg.Pool,
     channels: list[tuple[str, str]],
+    *,
+    raise_on_error: bool = False,
 ) -> dict[tuple[str, str], ResolvedContact | None]:
     """Batch variant of :func:`resolve_contact_by_channel` for list views.
 
@@ -589,11 +596,14 @@ async def resolve_contacts_by_channel_bulk(
             :func:`resolve_contact_by_channel` is called with).
         channels: List of ``(channel_type, channel_value)`` pairs to resolve.
             Duplicates are fine — the underlying query is deduplicated.
+        raise_on_error: Re-raise database query failures instead of returning
+            all inputs as unresolved. Batch identity reservation uses this
+            strict mode so an outage cannot mint false unknown entities.
 
     Returns:
         A dict mapping every input pair to its ``ResolvedContact`` (or
         ``None`` when unresolved). Fail-open: on DB error, all pairs map to
-        ``None`` rather than raising.
+        ``None`` rather than raising unless ``raise_on_error`` is true.
     """
     result: dict[tuple[str, str], ResolvedContact | None] = dict.fromkeys(channels)
     if not channels:
@@ -642,6 +652,8 @@ async def resolve_contacts_by_channel_bulk(
             )
     except Exception:  # noqa: BLE001
         logger.debug("identity.contacts_bulk_resolution_query_failed")
+        if raise_on_error:
+            raise
         return result
 
     match_by_candidate: dict[tuple[str, str], asyncpg.Record] = {}
@@ -663,7 +675,11 @@ async def resolve_contacts_by_channel_bulk(
         )
     ]
     for digits in unresolved_digits:
-        digit_row = await _resolve_entity_by_phone_digits(pool, digits)
+        digit_row = await _resolve_entity_by_phone_digits(
+            pool,
+            digits,
+            raise_on_error=raise_on_error,
+        )
         if digit_row is not None:
             match_by_candidate[(_PHONE_DIGITS_PREDICATE, digits)] = digit_row
 

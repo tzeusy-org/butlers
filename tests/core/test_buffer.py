@@ -238,7 +238,7 @@ async def test_workers() -> None:
 
 
 async def test_buffer_pipeline_inputs_extract_non_owner_batch_sender() -> None:
-    """Conversation-history batches route as the non-owner participant, not 'multiple'."""
+    """REQ-switchboard-identity-002: batches preserve every structured participant."""
     ref = _MessageRef(
         request_id="r1",
         message_inbox_id="r1",
@@ -260,6 +260,8 @@ async def test_buffer_pipeline_inputs_extract_non_owner_batch_sender() -> None:
     request_context, tool_args = build_buffer_pipeline_inputs(ref)
 
     assert request_context["source_sender_identity"] == "86807245"
+    assert request_context["source_sender_identities"] == ["86807245", "owner-telegram-id"]
+    assert request_context["owner_sender_identity"] == "owner-telegram-id"
     assert tool_args["sender_identity"] == "multiple"
     assert tool_args["source_id"] == "86807245"
     assert tool_args["sender_name"] == "Chloe Wong"
