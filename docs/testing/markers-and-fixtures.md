@@ -112,9 +112,11 @@ The root conftest patches testcontainers with resilient startup and teardown han
 
 ### Teardown Resilience
 
-`_install_resilient_testcontainers_stop()` and `_patch_testcontainers_stop_with_retry()` wrap container removal to tolerate races like "did not receive an exit event", "no such container", "removal of container is already in progress". These are retried up to 4 times with exponential backoff.
+`_install_resilient_testcontainers_stop()` is the **only** patch on `DockerContainer.stop`, and it wraps the container removal (not the whole `stop`) so the retry cannot also re-run a removal that already succeeded. Failures classify through the single predicate `_is_transient_docker_teardown_error()`: a `requests` read timeout is transient by type, and otherwise the message and any docker-py `.explanation` are matched -- across the whole `__cause__`/`__context__` chain -- against `_TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS` ("did not receive an exit event", "tried to kill container", "no such container", "removal of container", "is already in progress", "is dead or marked for removal", "read timed out"). Transient failures are retried 4 times with exponential backoff (0.1s, 0.2s, 0.4s).
 
-Both patches are idempotent -- they check for sentinel attributes to avoid double-patching.
+A **final transient** failure warns and lets the run finish; that leaks a container, and the `RuntimeWarning` names it so the leak is traceable (see [Orphaned Test Containers](orphaned-testcontainers.md)). A **non-transient** failure raises on the first attempt. Both halves of that decision are pinned by `tests/scripts/test_conftest_teardown_patch.py`, which also fails if a second `DockerContainer.stop` patch is ever reintroduced (bu-1y1qs).
+
+The patches are idempotent -- they check for sentinel attributes to avoid double-patching.
 
 ## Parallel Execution Details
 

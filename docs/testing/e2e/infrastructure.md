@@ -107,12 +107,16 @@ and under pytest-xdist:
 - Retries `DockerClient.__init__` up to 3 times with 0.5s backoff
 - Handles transient `error while fetching server api version` and `read timed out`
 
-**Teardown resilience** (`_install_resilient_testcontainers_stop`):
-- Retries `DockerContainer.stop()` up to 4 times with exponential backoff
+**Teardown resilience** (`_install_resilient_testcontainers_stop`, the only
+patch on `DockerContainer.stop`):
+- Retries the container removal up to 4 times with exponential backoff
 - Handles transient `did not receive an exit event`, `no such container`,
-  `is already in progress`, `tried to kill container`, `is dead or marked for removal`
-- On final failure, emits a `RuntimeWarning` and continues rather than
-  failing the test session
+  `is already in progress`, `tried to kill container`, `is dead or marked for
+  removal`, `read timed out`, matched anywhere in the exception chain and not
+  gated on an HTTP status (docker-py raises 404/409 for several of these)
+- On final *transient* failure, emits a `RuntimeWarning` naming the leaked
+  container and continues rather than failing the test session; a non-transient
+  failure raises immediately
 
 These patches are installed at module import time in `conftest.py` and are
 idempotent (guarded by sentinel attributes on the patched methods).

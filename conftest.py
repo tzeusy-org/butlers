@@ -16,7 +16,7 @@ import uuid
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -174,15 +174,17 @@ _TESTCONTAINER_START_LOCK_PATH = os.path.join(
 )
 _DEFAULT_XDIST_AUTO_WORKERS = 3
 
-_TEARDOWN_TRANSIENT_EXIT_EVENT_SNIPPET = "did not receive an exit event"
-_TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET = "is already in progress"
-_TEARDOWN_TRANSIENT_NO_SUCH_CONTAINER_SNIPPET = "no such container"
 _TESTCONTAINER_STOP_RETRY_ATTEMPTS = 4
 _TESTCONTAINER_STOP_BASE_DELAY_SECONDS = 0.1
 _TRANSIENT_DOCKER_STARTUP_ERROR_MARKERS = (
     "error while fetching server api version",
     "read timed out",
 )
+# The one marker set for teardown. Everything that retries a container removal
+# classifies through ``_is_transient_docker_teardown_error``; do not add a second
+# list somewhere else (bu-1y1qs). "read timed out" is here as well as in the
+# startup set: a busy daemon can time out the remove call it is in fact still
+# processing.
 _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
     "did not receive an exit event",
     "tried to kill container",
@@ -190,6 +192,7 @@ _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
     "removal of container",
     "is already in progress",
     "is dead or marked for removal",
+    "read timed out",
 )
 
 
@@ -225,6 +228,29 @@ def _iter_exception_messages(exc: BaseException) -> Iterator[str]:
 
 
 def _is_transient_docker_teardown_error(exc: Exception) -> bool:
+    """True when a teardown failure is a Docker race rather than real breakage.
+
+    Two rules, both deliberate (bu-1y1qs):
+
+    - A ``requests`` read timeout is transient by *type*, independent of message
+      text. The daemon has usually completed the removal we stopped waiting for,
+      and a contended host produces these in bursts (AGENTS.md, "Do not run two
+      full backend gates concurrently").
+    - Otherwise match ``_TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS`` across the
+      whole ``__cause__``/``__context__`` chain and any docker-py
+      ``.explanation``. Deliberately *not* gated on an HTTP 500: docker-py
+      raises ``NotFound`` (404) for "No such container" and a 409 for "removal
+      of container ... is already in progress", which are exactly the races
+      worth tolerating, so a 500-only rule would call them fatal.
+    """
+    try:
+        from requests.exceptions import ReadTimeout
+    except Exception:  # pragma: no cover - requests ships as a docker-py dependency
+        pass
+    else:
+        if isinstance(exc, ReadTimeout):
+            return True
+
     return any(
         marker in message
         for message in _iter_exception_messages(exc)
@@ -289,8 +315,22 @@ def _remove_container_with_retry(
     *,
     force: bool,
     delete_volume: bool,
-    max_attempts: int = 4,
+    max_attempts: int = _TESTCONTAINER_STOP_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _TESTCONTAINER_STOP_BASE_DELAY_SECONDS,
 ) -> None:
+    """Remove a container, retrying the known transient Docker teardown races.
+
+    A final *transient* failure warns and returns instead of raising, and that
+    is the contract, not an oversight (openspec/specs/testing/spec.md, scenario
+    "Resilient testcontainer teardown"). Raising would turn a Docker race in a
+    session-scoped fixture's teardown into a red ~40-minute gate after every
+    test had already passed, while the damage it reports — one leaked container
+    — is recoverable: Ryuk reaps the ordinary case and
+    ``scripts/reap_orphaned_testcontainers.py`` sweeps the residue
+    (docs/testing/orphaned-testcontainers.md). Non-transient errors still raise
+    on the first attempt.
+    """
+    delay = base_delay_seconds
     for attempt in range(1, max_attempts + 1):
         try:
             container.remove(force=force, v=delete_volume)
@@ -299,7 +339,15 @@ def _remove_container_with_retry(
             if not _is_transient_docker_teardown_error(exc):
                 raise
             if attempt < max_attempts:
-                time.sleep(0.1 * attempt)
+                logger.warning(
+                    "Transient Docker teardown race removing %s (attempt %s/%s): %s",
+                    _container_identity(container),
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                time.sleep(delay)
+                delay *= 2
                 continue
             # Giving up here leaks a live container (bu-3zu5l): name it, so the
             # orphan is traceable to this run instead of being rediscovered
@@ -350,6 +398,17 @@ def _install_serialized_testcontainers_run() -> None:
 
 
 def _install_resilient_testcontainers_stop() -> None:
+    """Install the *only* patch this repo puts on ``DockerContainer.stop``.
+
+    ``_resilient_stop`` reimplements upstream ``stop`` (testcontainers 4.14.2)
+    exactly, with ``container.remove`` swapped for the retrying variant. The
+    retry deliberately sits around the removal call and not around the whole
+    ``stop``: a second layer wrapping ``stop`` would also re-run ``remove`` when
+    only ``client.close()`` had failed, and would multiply the attempt budget by
+    its own. This file used to carry such a layer; it was removed in bu-1y1qs
+    and ``tests/scripts/test_conftest_teardown_patch.py`` fails if one comes
+    back.
+    """
     from testcontainers.core.container import DockerContainer
 
     if getattr(DockerContainer.stop, "__butlers_resilient__", False):
@@ -393,100 +452,6 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
-
-
-def _safe_exception_text(exc: BaseException) -> str:
-    explanation_text = str(getattr(exc, "explanation", "") or "")
-    try:
-        rendered_error = str(exc)
-    except Exception:
-        rendered_error = ""
-    return " ".join(part for part in (explanation_text, rendered_error) if part)
-
-
-def _is_transient_testcontainer_teardown_error(exc: BaseException) -> bool:
-    """True for known transient Docker API teardown races from force-remove."""
-    try:
-        from requests.exceptions import ReadTimeout
-    except Exception:
-        ReadTimeout = tuple()  # type: ignore[assignment]
-
-    if isinstance(exc, ReadTimeout):
-        return True
-
-    try:
-        from docker.errors import APIError
-    except Exception:
-        return False
-
-    if not isinstance(exc, APIError):
-        return False
-
-    status_code = getattr(getattr(exc, "response", None), "status_code", None)
-    if status_code != 500:
-        return False
-
-    error_text = _safe_exception_text(exc).lower()
-    return any(
-        marker in error_text
-        for marker in (
-            _TEARDOWN_TRANSIENT_EXIT_EVENT_SNIPPET,
-            _TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET,
-            _TEARDOWN_TRANSIENT_NO_SUCH_CONTAINER_SNIPPET,
-        )
-    )
-
-
-def _retry_testcontainer_stop(
-    stop_call: Callable[[], None],
-    *,
-    max_attempts: int = _TESTCONTAINER_STOP_RETRY_ATTEMPTS,
-    base_delay_seconds: float = _TESTCONTAINER_STOP_BASE_DELAY_SECONDS,
-) -> None:
-    """Retry transient Docker teardown races with bounded backoff."""
-    if max_attempts < 1:
-        raise ValueError("max_attempts must be >= 1")
-
-    delay = base_delay_seconds
-    for attempt in range(1, max_attempts + 1):
-        try:
-            stop_call()
-            return
-        except Exception as exc:
-            if attempt >= max_attempts or not _is_transient_testcontainer_teardown_error(exc):
-                raise
-            logger.warning(
-                "Transient Docker API teardown race (attempt %s/%s): %s",
-                attempt,
-                max_attempts,
-                _safe_exception_text(exc),
-            )
-            time.sleep(delay)
-            delay *= 2
-
-
-def _patch_testcontainers_stop_with_retry() -> None:
-    """Patch testcontainers stop() to tolerate transient Docker daemon races."""
-    try:
-        from testcontainers.core.container import DockerContainer
-    except Exception:
-        return
-
-    if getattr(DockerContainer.stop, "_butlers_retry_patch", False):
-        return
-
-    original_stop = DockerContainer.stop
-
-    def _stop_with_retry(self: Any, force: bool = True, delete_volume: bool = True) -> None:
-        _retry_testcontainer_stop(
-            lambda: original_stop(self, force=force, delete_volume=delete_volume)
-        )
-
-    setattr(_stop_with_retry, "_butlers_retry_patch", True)
-    DockerContainer.stop = _stop_with_retry
-
-
-_patch_testcontainers_stop_with_retry()
 
 
 @pytest.fixture(scope="session")

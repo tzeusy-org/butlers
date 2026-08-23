@@ -229,13 +229,22 @@ Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with r
 - **THEN** `_install_resilient_testcontainers_startup()` retries `DockerClient.__init__` up to 3 times with 0.5s backoff per attempt
 
 #### Scenario: Resilient testcontainer teardown
-- **WHEN** container stop fails with transient Docker API errors ("did not receive an exit event", "tried to kill container", "no such container", "is already in progress", "is dead or marked for removal")
-- **THEN** `_install_resilient_testcontainers_stop()` retries `DockerContainer.stop()` up to 4 times with exponential backoff
-- **AND** on final failure, emits a `RuntimeWarning` and continues rather than failing the test session
+- **WHEN** container removal fails with a transient Docker API error ("did not receive an exit event", "tried to kill container", "no such container", "removal of container", "is already in progress", "is dead or marked for removal", "read timed out"), matched anywhere in the exception chain including any docker-py `explanation`, or with a `requests` read timeout
+- **THEN** `_install_resilient_testcontainers_stop()` retries the removal up to 4 times with exponential backoff
+- **AND** on final failure, emits a `RuntimeWarning` naming the leaked container and continues rather than failing the test session
+
+#### Scenario: Non-transient teardown failure fails fast
+- **WHEN** container removal fails with anything outside that set
+- **THEN** the error is raised on the first attempt rather than retried or swallowed
+
+#### Scenario: DockerContainer.stop is patched exactly once
+- **WHEN** the root conftest installs its teardown patch
+- **THEN** `DockerContainer.stop` carries exactly one Butlers-owned wrapper, sitting directly over the upstream method
+- **AND** the retry is applied around the container removal rather than around the whole `stop()`, so a failure in `client.close()` never re-runs a removal that already succeeded
 
 #### Scenario: Testcontainer patches are idempotent
 - **WHEN** the patches are installed at module import time
-- **THEN** they are guarded by sentinel attributes (`__butlers_resilient_startup__`, `__butlers_resilient__`, `_butlers_retry_patch`) on the patched methods to prevent double-patching
+- **THEN** they are guarded by sentinel attributes (`__butlers_resilient_startup__`, `__butlers_serialized_start__`, `__butlers_resilient__`) on the patched methods to prevent double-patching
 
 ### Requirement: E2E Staging Harness Architecture
 The E2E harness SHALL boot a complete disposable butler ecosystem for every test session: real ButlerDaemon processes, real PostgreSQL databases, real Alembic migrations, and real LLM calls via Haiku.
