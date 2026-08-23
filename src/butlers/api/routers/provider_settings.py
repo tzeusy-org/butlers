@@ -41,12 +41,19 @@ def _get_db_manager() -> DatabaseManager:
 
 
 class ProviderConfig(BaseModel):
-    """A single provider configuration entry."""
+    """A single provider configuration entry.
+
+    ``config_available`` is False when the stored JSONB config could not be read
+    as a JSON object. The entry is still listed — with an empty ``config`` — so a
+    corrupt row is visible rather than silently indistinguishable from a row that
+    genuinely has no settings.
+    """
 
     provider_type: str
     display_name: str
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = False
+    config_available: bool = True
 
 
 class ProviderConfigCreate(BaseModel):
@@ -82,25 +89,46 @@ class ConnectivityResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _parse_config(raw_config: Any) -> dict[str, Any]:
-    """Parse a JSONB config field from a database record."""
+def _parse_config(raw_config: Any) -> tuple[dict[str, Any], bool]:
+    """Parse a JSONB config field from a database record.
+
+    Returns ``(config, available)``. ``available`` is False when the stored value
+    is not a JSON object — an undecodable string, or valid JSON that decodes to a
+    scalar or array. Such a value cannot be represented as a config mapping, so
+    the caller gets an empty dict plus the flag rather than an exception (which
+    would fail the whole listing) or a bare ``{}`` (which would look like a
+    provider that simply has no settings).
+    """
+    if isinstance(raw_config, dict):
+        return raw_config, True
     if isinstance(raw_config, str):
         try:
-            return json.loads(raw_config)
+            parsed = json.loads(raw_config)
         except (json.JSONDecodeError, TypeError):
-            return {}
-    elif isinstance(raw_config, dict):
-        return raw_config
-    return {}
+            return {}, False
+        if isinstance(parsed, dict):
+            return parsed, True
+        return {}, False
+    return {}, False
 
 
 def _row_to_provider(row: Any) -> ProviderConfig:
     """Convert an asyncpg Record to a ProviderConfig."""
+    provider_type = row["provider_type"]
+    config, config_available = _parse_config(row["config"])
+    if not config_available:
+        logger.warning(
+            "Provider '%s' has an unreadable config (stored as %s); "
+            "reporting it as an empty degraded config",
+            provider_type,
+            type(row["config"]).__name__,
+        )
     return ProviderConfig(
-        provider_type=row["provider_type"],
+        provider_type=provider_type,
         display_name=row["display_name"],
-        config=_parse_config(row["config"]),
+        config=config,
         enabled=bool(row["enabled"]),
+        config_available=config_available,
     )
 
 
@@ -137,7 +165,11 @@ def _probe_url_for_provider(provider_type: str, config: dict[str, Any]) -> str |
 async def list_providers(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ProviderConfig]]:
-    """Return all provider configurations ordered by provider_type."""
+    """Return all provider configurations ordered by provider_type.
+
+    A row whose stored config is not a JSON object is still listed, with an empty
+    ``config`` and ``config_available: false``; it never fails the whole listing.
+    """
     pool = _shared_pool(db)
     rows = await pool.fetch(
         """
@@ -303,7 +335,15 @@ async def test_connectivity(
             detail=f"Provider not found: {provider_type}",
         )
 
-    config: dict[str, Any] = _parse_config(row["config"])
+    config, config_available = _parse_config(row["config"])
+    if not config_available:
+        return ApiResponse[ConnectivityResult](
+            data=ConnectivityResult(
+                success=False,
+                provider_type=provider_type,
+                error="Stored provider config is not a readable JSON object",
+            )
+        )
 
     probe_url = _probe_url_for_provider(provider_type, config)
     if probe_url is None:
