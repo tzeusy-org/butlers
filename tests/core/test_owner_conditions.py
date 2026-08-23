@@ -16,6 +16,7 @@ import pytest
 from butlers.core import condition_ledger, owner_conditions
 from butlers.core.owner_conditions import (
     ESCALATION_LEVELS,
+    RESOLUTION_METADATA_KEYS,
     Observation,
     compute_fingerprint,
     reconcile_snapshot,
@@ -77,6 +78,43 @@ class TestReconcileSnapshotValidation:
                     Observation(fingerprint="abc"),
                 ],
                 snapshot_complete=True,
+                initial_grace_seconds=60,
+            )
+        pool.acquire.assert_not_called()
+
+    @pytest.mark.parametrize("reserved_key", sorted(RESOLUTION_METADATA_KEYS))
+    async def test_rejects_metadata_claiming_a_reserved_resolution_key(self, reserved_key: str):
+        """REQ-owner-condition-ledger-006: the resolver's keys are not the producer's.
+
+        Creation-wins (REQ-004) is the right rule for producer evidence and the
+        wrong one for the keys resolution writes, where it would silently
+        discard the closing evidence in favour of whatever the producer put
+        there first. Rejecting here is what keeps the two rules compatible.
+        """
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match=reserved_key):
+            await reconcile_snapshot(
+                pool,
+                source="relationship:commitment",
+                observations=[
+                    Observation(fingerprint="abc", metadata={reserved_key: "preset"}),
+                ],
+                snapshot_complete=False,
+                initial_grace_seconds=60,
+            )
+        pool.acquire.assert_not_called()
+
+    async def test_reserved_key_rejection_names_the_offending_observation(self):
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="deadbeef"):
+            await reconcile_snapshot(
+                pool,
+                source="relationship:commitment",
+                observations=[
+                    Observation(fingerprint="clean", metadata={"class": "commitment"}),
+                    Observation(fingerprint="deadbeef", metadata={"evidence_closed": {}}),
+                ],
+                snapshot_complete=False,
                 initial_grace_seconds=60,
             )
         pool.acquire.assert_not_called()

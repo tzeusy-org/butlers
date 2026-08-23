@@ -62,3 +62,16 @@ with counterparty name, deadline, escalation level, and direction indicator.
 Acceptance:
 - Commitment-class conditions render with structured metadata
 - Non-commitment conditions continue rendering unchanged
+
+### 7. Reserve the resolution metadata keys
+
+Reject observations claiming `resolution_reason` or `evidence_closed` in
+`butlers.core.owner_conditions.reconcile_snapshot`, before any pool access, so
+the creation-wins merge of task 1 cannot swallow the closing evidence of task
+2. Enforced on the owner-conditions facade rather than in `condition_ledger`
+so `infra_conditions`, which has no explicit resolver, is unaffected.
+
+Acceptance:
+- REQ-owner-condition-ledger-006 scenarios pass
+- The tool-level creation-wins pin is replaced by the boundary rejection; the
+  engine-level creation-wins pin for non-reserved keys still passes unchanged

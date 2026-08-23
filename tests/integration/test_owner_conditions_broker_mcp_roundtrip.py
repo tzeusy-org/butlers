@@ -220,27 +220,74 @@ class TestResolveOwnerConditionMcpRoundTrip:
         )
         assert state == "open"
 
-    async def test_req_owner_condition_ledger_005_creation_wins_retains_prior_evidence_closed(
-        self, tools: dict[str, Any], pool: asyncpg.Pool
+    @pytest.mark.parametrize("reserved_key", ["resolution_reason", "evidence_closed"])
+    async def test_req_owner_condition_ledger_006_reserved_key_is_rejected_without_a_write(
+        self, tools: dict[str, Any], pool: asyncpg.Pool, reserved_key: str
     ) -> None:
-        """Creation-wins merge means a pre-existing top-level key keeps its creation value.
+        """A producer may not claim the keys the resolver writes (REQ-006).
 
-        The ledger merges resolution metadata as ``resolution_metadata ||
-        existing_metadata`` (REQ-owner-condition-ledger-004), so if a producer
-        already wrote ``evidence_closed`` or ``resolution_reason`` at creation
-        time, this tool's closing evidence does NOT overwrite it. The row still
-        resolves; only the metadata keys are retained. This test pins that
-        consequence so it is a known contract rather than a surprise.
+        This test replaces a pin on the opposite behaviour. Creation-wins
+        (REQ-004) used to apply to ``resolution_reason``/``evidence_closed``
+        too, so a producer that set one at creation time permanently kept its
+        own value and the resolver's closing evidence -- the ``session_id``
+        provenance REQ-005 requires included -- was dropped with no error and
+        nothing in the returned envelope to show it. The old test pinned that
+        loss as a known consequence. Reserving the two keys at this boundary
+        makes its premise unreachable: the creation call now fails instead.
+
+        Creation-wins itself is unchanged and still pinned, at the level where
+        it remains reachable -- ``tests/integration/
+        test_owner_conditions_roundtrip.py::TestExplicitOwnerConditionResolution
+        ::test_req_owner_condition_ledger_004_resolves_open_and_preserves_metadata``
+        collides ``class``, ``confidence`` and ``identity_payload`` directly
+        against the engine and asserts the creation values survive.
         """
         source = "relationship:commitment"
-        fingerprint = compute_fingerprint(source, 1, {"commitment": "pre-set-evidence"})
+        fingerprint = compute_fingerprint(source, 1, {"commitment": f"reserved-{reserved_key}"})
+
+        rejected = await _open_condition(
+            tools,
+            source=source,
+            fingerprint=fingerprint,
+            metadata={"class": "commitment", reserved_key: {"source": "producer_preset"}},
+        )
+
+        assert rejected["status"] == "error"
+        assert reserved_key in rejected["reason"]
+        assert fingerprint in rejected["reason"]
+
+        # "Without a write" is the load-bearing half: a rejected snapshot must
+        # leave no row behind, not a row missing one key.
+        row = await pool.fetchrow(
+            "SELECT id FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+            source,
+            fingerprint,
+        )
+        assert row is None
+
+    async def test_req_owner_condition_ledger_006_reserves_two_names_not_a_namespace(
+        self, tools: dict[str, Any], pool: asyncpg.Pool
+    ) -> None:
+        """The reservation is two exact key names, not a prefix or a schema.
+
+        A guard written slightly too wide -- anything starting with
+        ``resolution``, anything containing ``evidence`` -- would pass the
+        rejection test above while quietly forbidding metadata a producer is
+        entitled to. These near-misses are the ones that would be caught by
+        such a guard, so they belong in creation metadata here.
+        """
+        source = "relationship:commitment"
+        fingerprint = compute_fingerprint(source, 1, {"commitment": "near-miss-keys"})
         creation_metadata = {
-            "evidence_closed": {"source": "producer_preset", "session_id": "creation-session"},
-            "resolution_reason": "superseded",
+            "class": "commitment",
+            "resolution_window": "before Friday",
+            "evidence_opened": {"source": "conversation", "session_id": "open-session"},
         }
-        await _open_condition(
+
+        opened = await _open_condition(
             tools, source=source, fingerprint=fingerprint, metadata=creation_metadata
         )
+        assert opened["status"] == "accepted"
 
         token = set_current_runtime_session_id(SESSION_ID)
         try:
@@ -254,14 +301,16 @@ class TestResolveOwnerConditionMcpRoundTrip:
             reset_current_runtime_session_id(token)
 
         assert resolved["status"] == "resolved"
-        assert resolved["resolution_reason"] == "satisfied"
 
         row = await pool.fetchrow(
-            "SELECT state, metadata FROM public.owner_conditions "
-            "WHERE source = $1 AND fingerprint = $2",
+            "SELECT metadata FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
             source,
             fingerprint,
         )
         assert row is not None
-        assert row["state"] == "resolved"
-        assert _metadata(row) == creation_metadata
+        metadata = _metadata(row)
+        # Every creation-time key survives, near-misses included...
+        assert {k: metadata[k] for k in creation_metadata} == creation_metadata
+        # ...and the closing evidence lands, session id included.
+        assert metadata["resolution_reason"] == "satisfied"
+        assert metadata["evidence_closed"]["session_id"] == SESSION_ID

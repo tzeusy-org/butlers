@@ -59,7 +59,11 @@ durable creation instant) and the episode intact, but rewrites
 ``evidence_opened`` to the provenance of the latest observation. Resolution
 is the opposite: ``resolve_condition`` merges creation-wins, so closing
 evidence can never clobber ``evidence_opened``
-(REQ-commitment-lifecycle-001).
+(REQ-commitment-lifecycle-001). The mirror of that rule is that
+``resolution_reason`` and ``evidence_closed`` are reserved to the ledger and
+rejected in creation metadata (REQ-owner-condition-ledger-006) — which is why
+``create_commitment`` builds a closed metadata dict rather than passing a
+caller's through, and why it must keep doing so.
 
 Escalation grace
 ----------------
@@ -367,7 +371,9 @@ async def resolve_commitment(
     Both fields are written into the row's ``metadata`` by the ledger's
     creation-wins shallow merge, so closing evidence is added alongside —
     never on top of — ``evidence_opened`` and the rest of the creation-time
-    convention (REQ-commitment-lifecycle-001).
+    convention (REQ-commitment-lifecycle-001). Creation-wins cannot swallow
+    them in turn: both key names are reserved at the reconcile boundary
+    (REQ-owner-condition-ledger-006), so no producer can have claimed either.
 
     Returns the resolved ``ConditionTransition``, or ``None`` when the
     identity has no active episode — never observed, or already resolved.

@@ -73,6 +73,13 @@ concatenation is right-biased. In particular, `class`, `kind`, `direction`,
 such as a later task's `evidence_closed` and `resolution_reason` can be
 recorded without discarding creation evidence.
 
+"New keys" is doing real work in that sentence: creation-wins guarantees the
+closing evidence lands only for as long as those keys stay new. A producer
+that wrote either one at creation time would keep its own value and the
+resolver's evidence would be dropped silently. Task 7 closes that by reserving
+both names at the reconcile boundary, so the two rules hold together rather
+than one quietly defeating the other.
+
 The existing identity-version successor behavior remains intact. Extending
 the shared `_resolve_episode()` helper must preserve its current nested
 `identity_payload` update when snapshot reconciliation supplies successor
