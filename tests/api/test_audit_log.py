@@ -1140,3 +1140,159 @@ def test_kind_privileged_returns_mutation_rows():
     assert "permission.set" in actions
     assert "data.export" in actions
     assert "webhook.create" in actions
+
+
+# ---------------------------------------------------------------------------
+# Credential-target free text is withheld on read (bu-ove06)
+#
+# public.audit_log rows whose target names a credential (u:/s:/c:) carry the
+# same provider free text the secrets endpoints stopped publishing (bu-nz4sn,
+# bu-rh8z5, bu-m9s61): _write_credential_audit persists a "Probe failed: ..."
+# note and the raw failure message in `error`. The secrets audit endpoint's own
+# meta.deep_link points at /audit-log?key=<canonical-key>, so leaving that text
+# on this surface would signpost the path around the fix. Withholding is
+# enforced on the AuditLogEntry model itself so every reader of the table —
+# GET /api/audit-log, GET /api/audit-log/{id}, and the Issues occurrences
+# drill-down — is covered by one chokepoint.
+# ---------------------------------------------------------------------------
+
+
+def _credential_row(
+    *,
+    row_id: int = 1,
+    target: str = "u:google",
+    note: str | None = None,
+    error: str | None = None,
+    metadata: dict | None = None,
+    result: str | None = "error",
+) -> dict:
+    return {
+        "id": row_id,
+        "ts": datetime(2026, 8, 22, 10, 0, 0, tzinfo=UTC),
+        "actor": "owner",
+        "action": "failed",
+        "target": target,
+        "note": note,
+        "ip": None,
+        "request_id": None,
+        "metadata": metadata,
+        "result": result,
+        "error": error,
+    }
+
+
+def test_list_audit_log_withholds_credential_row_free_text():
+    """GET /api/audit-log does not publish note/error for a credential target."""
+    sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
+    app, _, _ = _make_audit_app(
+        [_credential_row(note=sentinel, error=sentinel, metadata={"detail": sentinel})]
+    )
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?key=u:google")
+
+    assert resp.status_code == 200
+    assert sentinel not in resp.text, "audit list response published withheld free text"
+    entry = resp.json()["data"][0]
+    assert entry["note"] is None
+    assert entry["error"] is None
+    assert entry["metadata"] is None
+    assert entry["redacted"] is True
+    # Non-content columns still identify the row for an operator.
+    assert entry["target"] == "u:google"
+    assert entry["action"] == "failed"
+    assert entry["result"] == "error"
+
+
+def test_get_audit_log_entry_withholds_credential_row_free_text():
+    """GET /api/audit-log/{id} does not publish note/error for a credential target."""
+    sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
+    app, _, _ = _make_audit_app_single(
+        _credential_row(
+            row_id=5,
+            target="s:BUTLER_TELEGRAM_TOKEN",
+            note=sentinel,
+            error=sentinel,
+            metadata={"detail": sentinel},
+        )
+    )
+    client = TestClient(app)
+    resp = client.get("/api/audit-log/5")
+
+    assert resp.status_code == 200
+    assert sentinel not in resp.text, "audit detail response published withheld free text"
+    entry = resp.json()["data"]
+    assert entry["note"] is None
+    assert entry["error"] is None
+    assert entry["metadata"] is None
+    assert entry["redacted"] is True
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["u:google", "s:BUTLER_TELEGRAM_TOKEN", "c:claude", "user:google", "system:X", "cli:claude"],
+)
+def test_audit_log_entry_withholds_every_credential_namespace(target):
+    """Every accepted credential-key spelling is withheld, not just the short form."""
+    sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
+    entry = AuditLogEntry.from_record(
+        _make_row(target=target, note=sentinel, error=sentinel, metadata={"detail": sentinel})
+    )
+    assert entry.note is None
+    assert entry.error is None
+    assert entry.metadata is None
+    assert entry.redacted is True
+
+
+def test_audit_log_entry_cannot_be_constructed_with_credential_free_text():
+    """The model itself is the chokepoint — direct construction is withheld too.
+
+    A future reader that builds AuditLogEntry without going through
+    from_record must not be able to reintroduce the leak.
+    """
+    sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
+    entry = AuditLogEntry(
+        id=1,
+        ts=datetime(2026, 8, 22, 10, 0, 0, tzinfo=UTC),
+        actor="owner",
+        action="failed",
+        target="u:google",
+        note=sentinel,
+        error=sentinel,
+        metadata={"detail": sentinel},
+        result="error",
+    )
+    assert entry.note is None
+    assert entry.error is None
+    assert entry.metadata is None
+    assert entry.redacted is True
+
+
+def test_audit_log_keeps_free_text_for_non_credential_rows():
+    """Non-credential operator rows keep their diagnostics — this is not a blanket gag."""
+    app, _, _ = _make_audit_app(
+        [
+            _credential_row(
+                row_id=9,
+                target="butler:qa",
+                note="Changed threshold",
+                error="boom",
+                metadata={"path": "/api/x"},
+            )
+        ]
+    )
+    client = TestClient(app)
+    resp = client.get("/api/audit-log")
+
+    entry = resp.json()["data"][0]
+    assert entry["note"] == "Changed threshold"
+    assert entry["error"] == "boom"
+    assert entry["metadata"] == {"path": "/api/x"}
+    assert entry["redacted"] is False
+
+
+def test_audit_log_credential_row_without_free_text_is_not_marked_redacted():
+    """`redacted` reports a real withholding, never a decorative flag."""
+    entry = AuditLogEntry.from_record(
+        _make_row(target="u:google", note=None, error=None, metadata=None)
+    )
+    assert entry.redacted is False

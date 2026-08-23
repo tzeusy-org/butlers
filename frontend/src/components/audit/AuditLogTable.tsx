@@ -413,10 +413,25 @@ export default function AuditLogTable({
                         {entry.metadata && (
                           <CollapsibleJson label="Metadata" data={entry.metadata} />
                         )}
-                        {entry.result === "error" && entry.error && (
+                        {entry.redacted && (
+                          // A credential row's note/error/metadata are withheld
+                          // on the wire (bu-ove06). Say so, rather than letting
+                          // three empty sections read as "nothing was recorded"
+                          // -- the text is still persisted server-side.
+                          <p
+                            className="text-muted-foreground text-xs italic"
+                            data-testid="audit-log-redacted-note"
+                          >
+                            Note, error, and metadata are withheld for credential rows. The
+                            diagnostic is still recorded in <code>public.audit_log</code>.
+                          </p>
+                        )}
+                        {entry.result === "error" && (entry.error || entry.redacted) && (
                           // Mounted ONLY inside the expanded detail row, so
                           // opening the Audit Log does not fire one group
-                          // lookup per visible failure (bu-6jv4m.3).
+                          // lookup per visible failure (bu-6jv4m.3). A withheld
+                          // credential failure still has a group to open, so
+                          // `redacted` keeps the door mounted without its text.
                           <AuditIssuesDoor auditId={entry.id} />
                         )}
                       </div>

@@ -1922,6 +1922,14 @@ export interface AuditLogEntry {
   result?: string | null;
   /** Error message persisted since core_122; only meaningful when `result` denotes a failure. */
   error?: string | null;
+  /**
+   * True when this row targets a credential (`u:` / `s:` / `c:`) and its
+   * free-text `note` / `error` / `metadata` were withheld on read (bu-ove06).
+   * A blank Note on such a row means "withheld", not "never recorded" — the
+   * text is still persisted server-side for operator forensics. Optional on
+   * this type so fixtures built before the flag existed keep compiling.
+   */
+  redacted?: boolean;
 }
 
 /** Query parameters for the audit log endpoint (GET /api/audit-log). */

@@ -5,17 +5,20 @@ Switchboard database (used by ``log_audit_entry``).
 
 ``AuditLogEntry`` maps to the new ``public.audit_log`` primitive table
 introduced in core_092.  This is the model returned by the
-``GET /api/audit-log`` and ``GET /api/audit-log/{id}`` endpoints.
+``GET /api/audit-log`` and ``GET /api/audit-log/{id}`` endpoints, and by the
+Issues occurrences drill-down (``routers/issues.py``).  It is also the
+enforcement point for the credential-target free-text rule below.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AuditEntry(BaseModel):
@@ -31,11 +34,50 @@ class AuditEntry(BaseModel):
     created_at: datetime
 
 
+#: Matches a ``public.audit_log.target`` that names a credential.  The scope
+#: segment vocabulary is ``core-credentials`` §Credential-Key Normalisation
+#: Function: canonical short prefixes ``u:``/``s:``/``c:`` plus the long-scope
+#: spellings ``normalize_key_param`` accepts, since older writers used them and
+#: the column itself is never normalised.
+_CREDENTIAL_TARGET_RE = re.compile(r"^(?:u|s|c|user|system|cli):")
+
+
+def is_credential_target(target: str | None) -> bool:
+    """Return True when *target* names a credential rather than another resource.
+
+    Non-credential audit targets in this table look like ``butler:qa``,
+    ``rule:7``, or a request path — none of which match.
+    """
+    return target is not None and _CREDENTIAL_TARGET_RE.match(target) is not None
+
+
 class AuditLogEntry(BaseModel):
     """Single entry from the ``public.audit_log`` primitive table (core_092).
 
     This is the canonical audit primitive used by every mutation endpoint
     that changes system state.
+
+    Credential-target free text is withheld on read (bu-ove06)
+    ---------------------------------------------------------
+    Rows whose ``target`` names a credential (``u:``/``s:``/``c:`` and the
+    long-scope spellings) carry the same provider free text the secrets
+    surfaces stopped publishing: ``_write_credential_audit`` persists
+    ``"Probe failed: <provider text>; probe_status=<token>"`` in ``note`` and
+    the raw failure message in ``error``.  Those three free-text columns —
+    ``note``, ``error``, ``metadata`` — are blanked here and the row is flagged
+    ``redacted``.  Every other row keeps its free text verbatim: the general
+    operator log has a real forensic claim on its own diagnostics, and this is
+    a credential-namespace carve-out rather than a blanket gag.
+
+    The rule lives on the model, not in the routes, because the credential
+    audit namespaces have five known producers (``_write_credential_audit`` /
+    ``_write_system_audit`` / ``_write_cli_audit`` in ``routers/secrets_v2.py``,
+    ``_emit_oauth_audit`` in ``routers/oauth.py``, ``jobs/secrets_lifecycle``)
+    and three readers (``GET /api/audit-log``, ``GET /api/audit-log/{id}``,
+    ``GET /api/issues/{key}/occurrences``), and either set can grow at any
+    time.  A per-route fix would have left the occurrences drill-down
+    publishing the identical text — which is exactly how the leak this closes
+    survived three sibling fixes.
     """
 
     id: int
@@ -52,6 +94,30 @@ class AuditLogEntry(BaseModel):
     metadata: dict[str, Any] | None = None
     result: str | None = None
     error: str | None = None
+    #: True when this row's free text was actually withheld above.  A silently
+    #: blank ``note`` would read as "nothing was recorded"; this says "withheld
+    #: — read it at the database", the same honesty the fleet's
+    #: ``<thing>_available`` degraded flags provide elsewhere.  False for every
+    #: non-credential row, and for a credential row that carried no free text.
+    redacted: bool = False
+
+    @model_validator(mode="after")
+    def _withhold_credential_free_text(self) -> AuditLogEntry:
+        """Blank the free-text columns of a credential-target row.
+
+        Runs on every construction, not just :meth:`from_record`, so a future
+        reader that builds this model straight from its own query cannot
+        reintroduce the leak.
+        """
+        if not is_credential_target(self.target):
+            return self
+        if self.note is None and self.error is None and self.metadata is None:
+            return self
+        self.note = None
+        self.error = None
+        self.metadata = None
+        self.redacted = True
+        return self
 
     @classmethod
     def from_record(cls, row: object) -> AuditLogEntry:
