@@ -2058,3 +2058,22 @@ Related trap in the same file: the shebang is `#!/bin/sh`, and `set -o pipefail`
 line 1 under Debian/Ubuntu `/bin/sh`. It only ever worked because the backup sidecar is Alpine
 (`ash`). Any `#!/bin/sh` script here that needs pipeline failure detection should record the
 left-hand exit status in a status file instead.
+
+### A dispatched worker's shell starts in the repo root, not in its worktree
+
+Agent tooling inherits the *session's* working directory, and this session's is the main repo root
+(`/home/tze/GitHub/butlers`) — not the `WORKTREE_PATH` the worker was handed. A worker that writes
+its first file without an explicit `cd` creates it in the root instead of the branch, which is how
+`src/butlers/oauth_token_payload.py` briefly appeared on `main`'s worktree during bu-n8gvq. The
+file is untracked, so nothing fails loudly; it just silently is not part of the branch, and the
+commit that "adds" it adds nothing.
+
+Prefix every command with an absolute `cd <worktree>`, and before handing back, check the root:
+
+```bash
+git -C /home/tze/GitHub/butlers status --porcelain   # must be empty
+git -C /home/tze/GitHub/butlers branch --show-current # must be main
+```
+
+Dispatch prompts should say this outright — it is not discoverable from inside the worker, because
+a relative path resolves fine and the file lands somewhere plausible.
