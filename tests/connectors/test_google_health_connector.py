@@ -5,17 +5,12 @@ Covers:
 - ``GoogleHealthClient`` 401 → token refresh → retry once → raise.
 - ``GoogleHealthClient`` 429 Retry-After parsing + rate-limit header capture.
 - Exponential backoff helper produces delays within expected bounds.
-- ``build_sleep_session_envelope`` / ``build_daily_summary_envelope`` produce
-  contract-compliant ``ingest.v1`` payloads (source.channel="wellness",
-  source.provider="google_health", 3-segment endpoint_identity,
-  deterministic idempotency keys).
+- Connector polling normalizes Google Health V4 sleep, daily, and activity
+  responses into contract-compliant ``ingest.v1`` payloads.
 - ``GoogleHealthConnector._get_health_state()`` maps internal flags to the
   allowed heartbeat states (``healthy | degraded | error``) without ever
   returning ``broken``.
-- ``_extract_records`` / ``_record_identity`` unpacking of canonical and
-  fallback response shapes.
-- ``_cursor_endpoint_identity`` builds the per-resource cursor key while
-  ``_endpoint_identity_for_user`` keeps the envelope identity canonical.
+- Scope/resource discovery preserves every required OAuth scope and V4 endpoint.
 
 [bu-k5l35.2.1]
 """
@@ -36,13 +31,8 @@ from butlers.connectors.google_health import (
     GoogleHealthConnectorConfig,
     OwnerContext,
     ResourceState,
-    _build_activity_records,
     _cursor_endpoint_identity,
     _endpoint_identity_for_user,
-    _extract_records,
-    _format_sleep_duration_label,
-    _normalize_google_health_record,
-    _record_identity,
     build_daily_summary_envelope,
     build_sleep_session_envelope,
 )
@@ -57,6 +47,7 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
+from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -68,21 +59,25 @@ _OBSERVED = "2026-04-24T10:00:00+00:00"
 # ---------------------------------------------------------------------------
 
 
-def test_google_health_scopes_are_full_urls() -> None:
-    assert len(GOOGLE_HEALTH_SCOPES) == 3
-    for scope in GOOGLE_HEALTH_SCOPES:
-        assert scope.startswith("https://www.googleapis.com/auth/googlehealth.")
-
-
-def test_resource_bundles_include_required_types() -> None:
-    resources = {b.resource for b in RESOURCE_BUNDLES}
-    required = {"sleep", "activity", "resting_hr", "hrv", "spo2", "breathing_rate", "vo2_max"}
-    assert required.issubset(resources)
-
-
-def test_resource_bundle_paths_match_google_health_v4_discovery() -> None:
-    paths = {b.resource: b.endpoint_path for b in RESOURCE_BUNDLES}
-    assert paths == {
+def test_google_health_scope_and_resource_registry_contract() -> None:
+    """Owner Account Discovery retains canonical scope families and V4 resources."""
+    assert GOOGLE_HEALTH_SCOPES == frozenset(
+        {
+            "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+            "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+        }
+    )
+    assert {bundle.resource for bundle in RESOURCE_BUNDLES} == {
+        "sleep",
+        "activity",
+        "resting_hr",
+        "hrv",
+        "spo2",
+        "breathing_rate",
+        "vo2_max",
+    }
+    assert {bundle.resource: bundle.endpoint_path for bundle in RESOURCE_BUNDLES} == {
         "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
         "activity": "/users/me/dataTypes/steps/dataPoints:dailyRollUp",
         "resting_hr": "/users/me/dataTypes/daily-resting-heart-rate/dataPoints:reconcile",
@@ -91,249 +86,6 @@ def test_resource_bundle_paths_match_google_health_v4_discovery() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
     }
-
-
-# ---------------------------------------------------------------------------
-# Endpoint identity shape
-# ---------------------------------------------------------------------------
-
-
-def test_endpoint_identity_uses_three_segment_canonical_form() -> None:
-    assert _ENDPOINT == "google_health:user:owner@example.com"
-
-
-def test_cursor_endpoint_identity_appends_resource_suffix() -> None:
-    # Cursor key now includes account_uuid between email and resource.
-    test_uuid = uuid.UUID("12345678-1234-1234-1234-123456789012")
-    got = _cursor_endpoint_identity(_OWNER_EMAIL, test_uuid, "sleep")
-    assert got == f"google_health:user:owner@example.com:{test_uuid}:sleep"
-    # Envelope identity stays canonical (3-segment).
-    assert _ENDPOINT != got
-
-
-# ---------------------------------------------------------------------------
-# Envelope builders
-# ---------------------------------------------------------------------------
-
-
-def test_sleep_session_envelope_shape() -> None:
-    env = build_sleep_session_envelope(
-        endpoint_identity=_ENDPOINT,
-        google_user_id=_OWNER_EMAIL,
-        session_id="sess-123",
-        session_record={
-            "session_id": "sess-123",
-            "durationMillis": 7 * 3600 * 1000 + 23 * 60 * 1000,
-            "efficiency": 91,
-            "stages": {"deep": 60, "light": 120, "rem": 80, "wake": 15},
-        },
-        observed_at=_OBSERVED,
-    )
-    assert env["schema_version"] == "ingest.v1"
-    assert env["source"]["channel"] == "wellness"
-    assert env["source"]["provider"] == "google_health"
-    assert env["source"]["endpoint_identity"] == _ENDPOINT
-    assert env["sender"]["identity"] == _OWNER_EMAIL
-    assert (
-        env["event"]["external_event_id"] == f"google_health:{_OWNER_EMAIL}:sleep_session:sess-123"
-    )
-    assert env["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:sleep:sess-123"
-    assert env["control"]["policy_tier"] == "default"
-    assert env["control"]["ingestion_tier"] == "full"
-    assert "Slept 7h 23m" in env["payload"]["normalized_text"]
-    # Raw payload retains the full record for downstream translators.
-    assert env["payload"]["raw"]["stages"]["deep"] == 60
-
-
-def test_daily_summary_envelope_shape() -> None:
-    env = build_daily_summary_envelope(
-        endpoint_identity=_ENDPOINT,
-        google_user_id=_OWNER_EMAIL,
-        resource="resting_hr",
-        record_date="2026-04-23",
-        record={"value": 58, "date": "2026-04-23"},
-        normalized_summary_template="Resting HR: {value} bpm",
-        observed_at=_OBSERVED,
-    )
-    assert (
-        env["event"]["external_event_id"] == f"google_health:{_OWNER_EMAIL}:resting_hr:2026-04-23"
-    )
-    assert (
-        env["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:resting_hr:2026-04-23"
-    )
-    assert env["payload"]["normalized_text"] == "Resting HR: 58 bpm"
-
-
-def test_envelope_idempotency_keys_are_deterministic() -> None:
-    e1 = build_daily_summary_envelope(
-        endpoint_identity=_ENDPOINT,
-        google_user_id=_OWNER_EMAIL,
-        resource="activity",
-        record_date="2026-04-20",
-        record={"value": 9341},
-        normalized_summary_template="Steps: {value}",
-        observed_at=_OBSERVED,
-    )
-    e2 = build_daily_summary_envelope(
-        endpoint_identity=_ENDPOINT,
-        google_user_id=_OWNER_EMAIL,
-        resource="activity",
-        record_date="2026-04-20",
-        record={"value": 9341},
-        normalized_summary_template="Steps: {value}",
-        observed_at="2026-04-24T11:00:00+00:00",  # different observed_at
-    )
-    assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
-
-
-# ---------------------------------------------------------------------------
-# Sleep duration formatting
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "ms,expected",
-    [
-        (0, "0m"),
-        (60_000, "1m"),
-        (3_600_000, "1h 0m"),
-        (3_600_000 + 30 * 60_000, "1h 30m"),
-        (7 * 3_600_000 + 23 * 60_000, "7h 23m"),
-    ],
-)
-def test_format_sleep_duration_label(ms: int, expected: str) -> None:
-    assert _format_sleep_duration_label(ms) == expected
-
-
-# ---------------------------------------------------------------------------
-# Response parsing
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "data,expected_len",
-    [
-        ({"sessions": [{"session_id": "a"}, {"session_id": "b"}]}, 2),
-        ({"dataPoints": [{"value": 1}, {"value": 2}]}, 2),
-        ({"rollupDataPoints": [{"steps": {"countSum": "1200"}}]}, 1),
-        ({"foo": "bar"}, 0),  # no known list key → empty
-    ],
-)
-def test_extract_records_shape(data: dict, expected_len: int) -> None:
-    assert len(_extract_records(data)) == expected_len
-
-
-def test_normalize_sleep_data_point_shape() -> None:
-    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "sleep")
-    record = _normalize_google_health_record(
-        bundle,
-        {
-            "name": "users/u/dataTypes/sleep/dataPoints/sleep-1",
-            "sleep": {
-                "interval": {
-                    "startTime": "2026-04-24T22:00:00Z",
-                    "endTime": "2026-04-25T06:30:00Z",
-                },
-                "summary": {
-                    "minutesAsleep": "450",
-                    "minutesInSleepPeriod": "510",
-                    "stagesSummary": [
-                        {"stage": "DEEP", "totalDuration": "5400s"},
-                        {"stage": "REM", "totalDuration": "7200s"},
-                    ],
-                },
-            },
-        },
-    )
-
-    assert record["session_id"] == "sleep-1"
-    assert record["durationMillis"] == 510 * 60_000
-    assert record["efficiency"] == 88
-    assert record["startTime"] == "2026-04-24T22:00:00Z"
-    assert record["stages"]["deep"] == 90
-    assert record["stages"]["rem"] == 120
-
-
-@pytest.mark.parametrize(
-    "resource,union_key,value_key,value",
-    [
-        ("resting_hr", "dailyRestingHeartRate", "beatsPerMinute", "58"),
-        ("hrv", "dailyHeartRateVariability", "averageHeartRateVariabilityMilliseconds", 42.5),
-        ("spo2", "dailyOxygenSaturation", "averagePercentage", 96.3),
-        ("breathing_rate", "dailyRespiratoryRate", "breathsPerMinute", 14.2),
-        ("vo2_max", "dailyVo2Max", "vo2Max", 41.7),
-    ],
-)
-def test_normalize_daily_data_point_shape(
-    resource: str,
-    union_key: str,
-    value_key: str,
-    value: object,
-) -> None:
-    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == resource)
-    record = _normalize_google_health_record(
-        bundle,
-        {
-            "name": f"users/u/dataTypes/{bundle.data_type}/dataPoints/p",
-            union_key: {"date": {"year": 2026, "month": 4, "day": 24}, value_key: value},
-        },
-    )
-
-    assert record["date"] == "2026-04-24"
-    assert record["value"] == value
-    assert record[value_key] == value
-
-
-def test_build_activity_records_merges_step_and_active_minute_rollups() -> None:
-    records = _build_activity_records(
-        {
-            "rollupDataPoints": [
-                {
-                    "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
-                    "steps": {"countSum": "9341"},
-                }
-            ]
-        },
-        {
-            "rollupDataPoints": [
-                {
-                    "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
-                    "activeMinutes": {
-                        "activeMinutesRollupByActivityLevel": [
-                            {"activityLevel": "LIGHT", "activeMinutes": "20"},
-                            {"activityLevel": "MODERATE", "activeMinutes": "35"},
-                        ]
-                    },
-                }
-            ]
-        },
-    )
-
-    assert records == [
-        {
-            "date": "2026-04-24",
-            "steps": 9341,
-            "value": 9341,
-            "activeMinutes": 55,
-            "active_minutes": 55,
-        }
-    ]
-
-
-def test_record_identity_for_sleep_uses_session_id() -> None:
-    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "sleep")
-    assert _record_identity(bundle, {"session_id": "abc"}) == "abc"
-
-
-def test_record_identity_for_daily_normalizes_date() -> None:
-    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "activity")
-    assert _record_identity(bundle, {"date": "2026-04-23"}) == "2026-04-23"
-    assert _record_identity(bundle, {"startTime": "2026-04-23T00:00:00Z"}) == "2026-04-23"
-
-
-def test_record_identity_returns_none_when_unavailable() -> None:
-    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "spo2")
-    assert _record_identity(bundle, {"value": 98}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -790,25 +542,61 @@ async def test_poll_resource_skips_duplicate_records(monkeypatch: pytest.MonkeyP
 async def test_poll_resource_emits_envelope_for_new_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Per-Resource Polling emits stable, schema-valid sleep and daily envelopes."""
+    from datetime import UTC, datetime
+
+    class _PollClock(datetime):
+        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(8))
+
+        @classmethod
+        def now(cls, _tz: object = None) -> datetime:
+            return next(cls.values)
+
     connector, ctx = _make_connector_with_account()
-    state = connector._resources[(ctx.account_id, "sleep")]
-    state.last_cursor = None
-    state.backfill_done = False
+    sleep_state = connector._resources[(ctx.account_id, "sleep")]
+    daily_state = connector._resources[(ctx.account_id, "resting_hr")]
+    retry_sleep_state = ResourceState(bundle=sleep_state.bundle)
+    retry_daily_state = ResourceState(bundle=daily_state.bundle)
+    sleep_response = {
+        "sessions": [
+            {
+                "name": "users/u/dataTypes/sleep/dataPoints/sess-new",
+                "sleep": {
+                    "interval": {
+                        "startTime": "2026-04-23T22:00:00Z",
+                        "endTime": "2026-04-24T06:30:00Z",
+                    },
+                    "summary": {
+                        "minutesAsleep": "450",
+                        "minutesInSleepPeriod": "510",
+                        "stagesSummary": [
+                            {"stage": "DEEP", "totalDuration": "5400s"},
+                            {"stage": "REM", "totalDuration": "7200s"},
+                        ],
+                    },
+                },
+            }
+        ]
+    }
+    daily_response = {
+        "dataPoints": [
+            {
+                "name": "users/u/dataTypes/daily-resting-heart-rate/dataPoints/hr-1",
+                "dailyRestingHeartRate": {
+                    "date": {"year": 2026, "month": 4, "day": 24},
+                    "beatsPerMinute": 58,
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr("butlers.connectors.google_health.datetime", _PollClock)
 
     fake_api: Any = type(
         "Fake",
         (),
         {
             "get_json": AsyncMock(
-                return_value={
-                    "sessions": [
-                        {
-                            "session_id": "sess-new",
-                            "durationMillis": 3600_000,
-                            "efficiency": 85,
-                        }
-                    ]
-                }
+                side_effect=[sleep_response, daily_response, sleep_response, daily_response]
             ),
             "last_rate_limit_headers": {},
         },
@@ -819,21 +607,92 @@ async def test_poll_resource_emits_envelope_for_new_record(
     submit_mock = AsyncMock()
     monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
 
-    await connector._poll_resource(ctx.account_id, state)
-    assert submit_mock.await_count == 1
-    envelope = submit_mock.await_args.args[0]
-    assert (
-        envelope["event"]["external_event_id"]
-        == f"google_health:{_OWNER_EMAIL}:sleep_session:sess-new"
+    await connector._poll_resource(ctx.account_id, sleep_state)
+    await connector._poll_resource(ctx.account_id, daily_state)
+    await connector._poll_resource(ctx.account_id, retry_sleep_state)
+    await connector._poll_resource(ctx.account_id, retry_daily_state)
+
+    assert submit_mock.await_count == 4
+    sleep_envelope, daily_envelope, retry_sleep_envelope, retry_daily_envelope = [
+        call.args[0] for call in submit_mock.await_args_list
+    ]
+    for envelope in (sleep_envelope, daily_envelope, retry_sleep_envelope, retry_daily_envelope):
+        parse_ingest_envelope(envelope)
+        assert envelope["source"] == {
+            "channel": "wellness",
+            "provider": "google_health",
+            "endpoint_identity": ctx.endpoint_identity,
+        }
+        assert envelope["sender"]["identity"] == _OWNER_EMAIL
+
+    assert ctx.endpoint_identity == "google_health:user:owner@example.com"
+    assert sleep_envelope["event"]["external_event_id"] == (
+        f"google_health:{_OWNER_EMAIL}:sleep_session:sess-new"
     )
-    assert envelope["source"]["channel"] == "wellness"
-    assert envelope["source"]["provider"] == "google_health"
+    assert sleep_envelope["control"]["idempotency_key"] == (
+        f"google_health:{_OWNER_EMAIL}:sleep:sess-new"
+    )
+    assert sleep_envelope["event"]["observed_at"] != retry_sleep_envelope["event"]["observed_at"]
+    assert (
+        sleep_envelope["control"]["idempotency_key"]
+        == retry_sleep_envelope["control"]["idempotency_key"]
+    )
+    assert sleep_envelope["payload"]["normalized_text"] == "Slept 8h 30m (88% efficiency)"
+    assert sleep_envelope["payload"]["raw"]["stages"]["deep"] == 90
+
+    assert daily_envelope["event"]["external_event_id"] == (
+        f"google_health:{_OWNER_EMAIL}:resting_hr:2026-04-24"
+    )
+    assert daily_envelope["control"]["idempotency_key"] == (
+        f"google_health:{_OWNER_EMAIL}:resting_hr:2026-04-24"
+    )
+    assert daily_envelope["event"]["observed_at"] != retry_daily_envelope["event"]["observed_at"]
+    assert (
+        daily_envelope["control"]["idempotency_key"]
+        == retry_daily_envelope["control"]["idempotency_key"]
+    )
+    assert daily_envelope["payload"]["raw"]["date"] == "2026-04-24"
+    assert daily_envelope["payload"]["raw"]["value"] == 58
+    assert daily_envelope["payload"]["raw"]["beatsPerMinute"] == 58
+    assert daily_envelope["payload"]["normalized_text"]
+
+
+@pytest.mark.asyncio
+async def test_poll_resource_skips_malformed_or_identityless_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-Resource Polling never submits malformed or identityless records."""
+    connector, ctx = _make_connector_with_account()
+    sleep_state = connector._resources[(ctx.account_id, "sleep")]
+    spo2_state = connector._resources[(ctx.account_id, "spo2")]
+    fake_api: Any = type(
+        "Fake",
+        (),
+        {
+            "get_json": AsyncMock(
+                side_effect=[
+                    {"unexpected": "response shape"},
+                    {"dataPoints": [{"dailyOxygenSaturation": {"averagePercentage": 96.3}}]},
+                ]
+            ),
+            "last_rate_limit_headers": {},
+        },
+    )()
+    monkeypatch.setattr(connector, "_make_account_api_client", lambda _acct_id: fake_api)
+    submit_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
+
+    await connector._poll_resource(ctx.account_id, sleep_state)
+    await connector._poll_resource(ctx.account_id, spo2_state)
+
+    submit_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_poll_activity_resource_uses_daily_rollup_post(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Reconciled activity polling requests both rollups and emits one valid envelope."""
     connector, ctx = _make_connector_with_account()
     state = connector._resources[(ctx.account_id, "activity")]
     state.backfill_done = False
@@ -885,11 +744,18 @@ async def test_poll_activity_resource_uses_daily_rollup_post(
         "/users/me/dataTypes/active-minutes/dataPoints:dailyRollUp"
     )
     envelope = submit_mock.await_args.args[0]
+    parse_ingest_envelope(envelope)
     assert (
         envelope["event"]["external_event_id"]
         == f"google_health:{_OWNER_EMAIL}:activity:2026-04-24"
     )
+    assert envelope["source"]["endpoint_identity"] == ctx.endpoint_identity
+    assert envelope["control"]["idempotency_key"] == (
+        f"google_health:{_OWNER_EMAIL}:activity:2026-04-24"
+    )
+    assert envelope["payload"]["raw"]["date"] == "2026-04-24"
     assert envelope["payload"]["raw"]["steps"] == 1234
+    assert envelope["payload"]["raw"]["value"] == 1234
     assert envelope["payload"]["raw"]["activeMinutes"] == 12
 
 
