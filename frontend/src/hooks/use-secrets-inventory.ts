@@ -204,7 +204,6 @@ function adaptUserCredential(raw: SecretsUserRaw): UserCredential {
     // own, so every other provider stays honestly null.
     expires:        raw.expires ?? null,
     lastVerified:   raw.last_verified ?? null,
-    lastUsed:       null,
     // Real (bu-6v1hx, categorised bu-iph56): provider_feature_catalogue
     // required_scopes, mapped server-side onto CAPABILITY_VOCABULARY.
     capabilitiesRequired: raw.capabilities_required ?? [],
@@ -212,7 +211,6 @@ function adaptUserCredential(raw: SecretsUserRaw): UserCredential {
     // other provider has no per-credential granted-scope tracking yet and
     // stays honestly empty.
     capabilitiesGranted:  raw.capabilities_granted ?? [],
-    feeds:          [],
     test:           adaptTestOutcome(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential,
     // without their notes.
@@ -258,7 +256,6 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     label:          raw.description ?? raw.key,
     fingerprint:    raw.fingerprint ?? null,
     state:          normalizeCredentialState(raw.state),
-    lastUsed:       null,
     // Real (bu-6v1hx): butler_secrets.created_at / expires_at.
     issued:         raw.issued ?? null,
     expires:        raw.expires ?? null,
@@ -294,7 +291,6 @@ function systemCliAuthToCliCredential(credential: SystemCredential): CliCredenti
     label:          credential.description ?? credential.key,
     fingerprint:    credential.fingerprint,
     state:          credential.state ?? "ok",
-    lastUsed:       null,
     issued:         null,
     expires:        null,
     test:           credential.test,
@@ -316,7 +312,6 @@ function groupCliCredentials(credentials: CliCredential[]): CliCredential[] {
       label: existing.label || credential.label,
       fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
       state: moreSevereState(existing.state, credential.state),
-      lastUsed: existing.lastUsed ?? credential.lastUsed,
       issued: existing.issued ?? credential.issued,
       expires: existing.expires ?? credential.expires,
       test: existing.test ?? credential.test,
@@ -342,14 +337,12 @@ function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
       state: moreSevereState(existing.state, credential.state),
       fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
       lastVerified: existing.lastVerified ?? credential.lastVerified,
-      lastUsed: existing.lastUsed ?? credential.lastUsed,
       capabilitiesRequired: Array.from(
         new Set([...existing.capabilitiesRequired, ...credential.capabilitiesRequired]),
       ),
       capabilitiesGranted: Array.from(
         new Set([...existing.capabilitiesGranted, ...credential.capabilitiesGranted]),
       ),
-      feeds: Array.from(new Set([...existing.feeds, ...credential.feeds])),
       test: existing.test ?? credential.test,
       audit: [...existing.audit, ...credential.audit],
       failureTail: existing.failureTail ?? credential.failureTail,

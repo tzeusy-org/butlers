@@ -444,6 +444,41 @@ describe("Spine: renders against mocked inventory", () => {
   });
 });
 
+// bu-hd1vs: no spine subline may make a usage claim.
+//
+// The CLI subline used to end at `used ${r.lastUsed ?? "—"}` and `lastUsed`
+// was hardcoded null by the adapter, so every healthy CLI row read "used —"
+// in production — a sentence that asserts usage IS tracked and there is none.
+// The mocks hid it by supplying "14:15 today" for a field no endpoint sends.
+//
+// These fixtures now carry only fields adaptUserCredential /
+// adaptCliCredential can actually fill, so what the spine says here is what
+// it says against the wire. `lastUsed` is gone from the types, so the
+// compiler is the primary guard; this pins the replacement wording.
+describe("Spine sublines make no usage claim [bu-hd1vs]", () => {
+  const spine = buildSpineEntries(MOCK_INVENTORY, "tze");
+
+  it("never renders a usage subline", () => {
+    for (const entry of spine) {
+      expect(entry.subline).not.toMatch(/^used /);
+    }
+  });
+
+  it("says what was actually probed instead", () => {
+    const byLabel = new Map(spine.map((e) => [e.label, e.subline]));
+    // Probed and healthy -> the probe's own timestamp, not a usage time.
+    expect(byLabel.get("Claude Code")).toBe("verified 14:15 today");
+    // Never set -> unchanged; this branch never depended on lastUsed.
+    expect(byLabel.get("Gemini CLI")).toBe("not set");
+  });
+
+  it("gives every user row one fixed rank, since none has a last-touch signal", () => {
+    const userRanks = spine.filter((e) => e.family === "user").map((e) => e.lastTouchOrder);
+    expect(userRanks.length).toBeGreaterThan(0);
+    expect(new Set(userRanks)).toEqual(new Set([800]));
+  });
+});
+
 // ── SpineSearch + SortPicker ─────────────────────────────────────────────────
 
 describe("SpineSearch", () => {
@@ -691,7 +726,6 @@ describe("DirectionPassport: renders against mocked inventory", () => {
           label: "Codex (OpenAI)",
           fingerprint: null,
           state: "warn" as const,
-          lastUsed: null,
           issued: null,
           expires: null,
           test: null,

@@ -35,15 +35,23 @@ export const MOCK_IDENTITIES: Identity[] = [
 // raw scopes, no probe messages, and no audit notes. Do not add those back
 // here — a mock that shows evidence the endpoint cannot supply invites UI that
 // renders blank against real data.
+//
+// bu-hd1vs is what that rule prevents. These rows used to carry `feeds`
+// (["calendar", "chronicler"], …) and `lastUsed` ("14:18 today", …) that no
+// endpoint has ever supplied. The passport's "Feeds the X butler" line and
+// "last used" cell therefore rendered perfectly here and were unconditionally
+// blank in production, so every mock-backed check of them returned a
+// confirming answer the real path was never positioned to give. Both fields
+// are gone from UserCredential/CliCredential now; do not reintroduce a mock
+// value for a field the adapter cannot fill.
 export const MOCK_USER_CREDENTIALS: UserCredential[] = [
   {
     provider: "google", identity: "tze", state: "ok",
     fingerprint: "sha256:7a3f9e2c",
     issued: "2026-02-14", expires: null,
-    lastVerified: "14:21 today", lastUsed: "14:18 today",
+    lastVerified: "14:21 today",
     capabilitiesRequired: ["calendar", "gmail", "drive"],
     capabilitiesGranted:  ["calendar", "gmail", "drive"],
-    feeds: ["calendar", "chronicler"],
     test: { ok: true, code: 200, latencyMs: 42, at: "14:21 today" },
     audit: [
       { ts: "2026-05-23 14:21", actor: "system", action: "verified",  note: "" },
@@ -55,10 +63,9 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     provider: "spotify", identity: "tze", state: "expired",
     fingerprint: "sha256:d4e1b8a0",
     issued: "2025-11-03", expires: "2026-05-20",
-    lastVerified: "2 days ago", lastUsed: "2 days ago",
+    lastVerified: "2 days ago",
     capabilitiesRequired: ["connectivity"],
     capabilitiesGranted:  ["connectivity"],
-    feeds: ["chronicler"],
     failureTail: "401 invalid_grant · refresh-token expired",
     test: { ok: false, code: 401, latencyMs: 134, at: "2 days ago" },
     audit: [
@@ -70,10 +77,9 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     provider: "homeassistant", identity: "tze", state: "expiring",
     fingerprint: "sha256:0c2a47f5",
     issued: "2025-05-27", expires: "2026-05-27",
-    lastVerified: "14:00 today", lastUsed: "14:00 today",
+    lastVerified: "14:00 today",
     capabilitiesRequired: ["connectivity"],
     capabilitiesGranted:  ["connectivity"],
-    feeds: ["household", "calendar"],
     test: { ok: true, code: 200, latencyMs: 18, at: "14:00 today" },
     audit: [
       { ts: "2026-05-23 14:00", actor: "system", action: "verified",  note: "" },
@@ -84,10 +90,9 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     provider: "whatsapp", identity: "tze", state: "scope_mismatch",
     fingerprint: "sha256:91e7c4b2",
     issued: "2026-04-08", expires: null,
-    lastVerified: "13:58 today", lastUsed: "13:55 today",
+    lastVerified: "13:58 today",
     capabilitiesRequired: ["connectivity", "other"],
     capabilitiesGranted:  ["connectivity"],
-    feeds: ["relationship"],
     test: { ok: true, code: 200, latencyMs: 73, at: "13:58 today" },
     audit: [
       { ts: "2026-05-19 11:12", actor: "system", action: "warned",    note: "" },
@@ -98,10 +103,9 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     provider: "owntracks", identity: "tze", state: "ok",
     fingerprint: "sha256:b3d9106c",
     issued: "2025-08-12", expires: null,
-    lastVerified: "14:19 today", lastUsed: "14:19 today",
+    lastVerified: "14:19 today",
     capabilitiesRequired: ["connectivity"],
     capabilitiesGranted:  ["connectivity"],
-    feeds: ["chronicler", "household"],
     webhook: "https://butlers.tze/ingest/owntracks",
     test: { ok: true, code: 200, latencyMs: 8, at: "14:19 today" },
     audit: [
@@ -112,18 +116,17 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
   {
     provider: "steam", identity: "tze", state: "never_set",
     fingerprint: null, issued: null, expires: null,
-    lastVerified: null, lastUsed: null,
+    lastVerified: null,
     capabilitiesRequired: ["connectivity"], capabilitiesGranted: [],
-    feeds: ["chronicler"], test: null, audit: [],
+    test: null, audit: [],
   },
   // Household member — Wei
   {
     provider: "google", identity: "wei", state: "ok",
     fingerprint: "sha256:2f8e0a17",
     issued: "2026-03-02", expires: null,
-    lastVerified: "13:51 today", lastUsed: "13:51 today",
+    lastVerified: "13:51 today",
     capabilitiesRequired: ["calendar"], capabilitiesGranted: ["calendar"],
-    feeds: ["calendar"],
     test: { ok: true, code: 200, latencyMs: 51, at: "13:51 today" },
     audit: [
       { ts: "2026-05-23 13:51", actor: "system", action: "verified", note: "" },
@@ -190,18 +193,18 @@ export const MOCK_CLI_CREDENTIALS: CliCredential[] = [
   {
     id: "claude-cli", label: "Claude Code", state: "ok",
     fingerprint: "sha256:11a47cd2",
-    issued: "2026-02-10", expires: null, lastUsed: "14:15 today",
+    issued: "2026-02-10", expires: null,
     test: { ok: true, code: 200, latencyMs: 95, at: "14:15 today" },
   },
   {
     id: "codex-cli", label: "Codex CLI", state: "expiring",
     fingerprint: "sha256:9f0a3b71",
-    issued: "2025-11-29", expires: "2026-05-29", lastUsed: "4d ago",
+    issued: "2025-11-29", expires: "2026-05-29",
     test: { ok: true, code: 200, latencyMs: 110, at: "4d ago" },
   },
   {
     id: "gemini-cli", label: "Gemini CLI", state: "never_set",
-    fingerprint: null, issued: null, expires: null, lastUsed: null,
+    fingerprint: null, issued: null, expires: null,
     test: null,
   },
 ];

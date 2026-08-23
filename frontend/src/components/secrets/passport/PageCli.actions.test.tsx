@@ -73,7 +73,6 @@ function cred(overrides: Partial<CliCredential> = {}): CliCredential {
     label: "Claude Code",
     fingerprint: "sha256:11a47cd2",
     state: "ok",
-    lastUsed: "today",
     issued: "2026-02-10",
     expires: null,
     test: null,

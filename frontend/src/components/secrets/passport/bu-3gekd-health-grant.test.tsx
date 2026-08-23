@@ -312,10 +312,8 @@ describe("Owner-default discoverability: Google spine entry visible without ?ide
     issued: "2026-01-01",
     expires: null,
     lastVerified: "today",
-    lastUsed: "today",
     capabilitiesRequired: [],
     capabilitiesGranted: ["calendar"],
-    feeds: [],
     test: null,
     audit: [],
   };
@@ -429,10 +427,8 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
     issued: "2026-01-01",
     expires: "2026-06-01",
     lastVerified: "5 days ago",
-    lastUsed: "5 days ago",
     capabilitiesRequired: [],
     capabilitiesGranted: ["calendar"],
-    feeds: [],
     test: null,
     audit: [],
   };
@@ -446,10 +442,8 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
     issued: "2026-02-01",
     expires: null,
     lastVerified: "today",
-    lastUsed: "today",
     capabilitiesRequired: [],
     capabilitiesGranted: [],
-    feeds: [],
     test: null,
     audit: [],
   };

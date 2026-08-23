@@ -1369,9 +1369,6 @@ export function PageUser({
           {provider.id === "google"
             ? deriveGoogleBrief(credential.capabilitiesGranted, provider.brief)
             : provider.brief}
-          {credential.feeds.length > 0 && (
-            <> Feeds the {credential.feeds.join(" and ")} butler{credential.feeds.length === 1 ? "" : "s"}.</>
-          )}
         </Voice>
       )}
 
@@ -1401,7 +1398,7 @@ export function PageUser({
         ) : (
           <div
             className="grid gap-5 items-baseline"
-            style={{ gridTemplateColumns: "180px 110px 110px 130px 130px 1fr" }}
+            style={{ gridTemplateColumns: "180px 110px 110px 130px 1fr" }}
           >
             <div>
               <Mono size={9} upper tracking="0.16em" color="var(--dim)">passport no.</Mono>
@@ -1428,7 +1425,6 @@ export function PageUser({
               }
             />
             <KV label="last verified" value={formatPassportTimestamp(credential.lastVerified) ?? "—"} />
-            <KV label="last used" value={credential.lastUsed ?? "—"} />
             <div>
               <Mono size={9} upper tracking="0.14em" color="var(--dim)">capabilities</Mono>
               <div className="mt-1.5">
@@ -1476,32 +1472,11 @@ export function PageUser({
             </div>
           )}
           <WhatBreaks provider={credential.provider} capabilities={credential.capabilities} />
-          {credential.feeds.length > 0 && (
-            <div>
-              <Mono size={9} upper tracking="0.14em" color="var(--dim)">feeds</Mono>
-              <div
-                className="flex gap-3.5 flex-wrap mt-2 pt-2"
-                style={{ borderTop: "1px solid var(--border-soft)" }}
-              >
-                {credential.feeds.map((f) => (
-                  <span key={f} className="inline-flex items-center gap-1.5">
-                    <span
-                      className="inline-flex items-center justify-center rounded-sm font-mono font-semibold text-[10px]"
-                      style={{
-                        width: 14,
-                        height: 14,
-                        background: "var(--mfg)",
-                        color: "var(--bg)",
-                      }}
-                    >
-                      {f[0].toUpperCase()}
-                    </span>
-                    <span className="font-sans text-[12.5px] text-fg">{f}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Which butlers depend on this credential is WhatBreaks' job
+              (bu-qo3sf) — it reads provider_feature_catalogue live and shows
+              the same severity-pip + butler letter-mark vocabulary. A second
+              "feeds" band used to sit right here on a hardcoded empty array
+              (bu-hd1vs), so it only ever rendered against mock data. */}
         </div>
 
         {/* Right */}
@@ -2563,9 +2538,6 @@ export function PageCli({
   if (credential.state === "expiring" && credential.expires) {
     stateLines.push(`expires ${credential.expires}`);
   }
-  if (credential.state === "ok" && credential.lastUsed) {
-    stateLines.push(`used ${credential.lastUsed}`);
-  }
   if (isMissing) stateLines.push("paste a token to enable");
 
   const envVar = credential.id.toUpperCase().replace(/-/g, "_") + "_TOKEN";
@@ -2769,7 +2741,7 @@ export function PageCli({
       >
         <div
           className="grid gap-6 items-baseline"
-          style={{ gridTemplateColumns: "200px 110px 130px 130px" }}
+          style={{ gridTemplateColumns: "200px 110px 130px" }}
         >
           <div>
             <Mono size={9} upper tracking="0.16em" color="var(--dim)">passport no.</Mono>
@@ -2785,7 +2757,6 @@ export function PageCli({
               credential.state === "expiring" ? "var(--amber-text)" : credential.expires ? "var(--fg)" : "var(--mfg)"
             }
           />
-          <KV label="last used" value={credential.lastUsed ?? "—"} />
         </div>
       </div>
 

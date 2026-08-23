@@ -61,7 +61,6 @@ function cred(overrides: Partial<CliCredential> = {}): CliCredential {
     label: "Codex (OpenAI)",
     fingerprint: null,
     state: "never_set",
-    lastUsed: null,
     issued: null,
     expires: null,
     test: null,
