@@ -936,7 +936,10 @@ class SystemSecretDetail(BaseModel):
     # Evidence
     breaks: list[dict] = Field(default_factory=list)  # BreakEntry[]
     test: TestResult | None = None  # most recent probe result
-    audit: list[dict] = Field(default_factory=list)  # last 10 AuditEvent rows
+    # Last 10 raw ``_fetch_audit_bulk`` dicts, ``note`` included. NOT the
+    # ``AuditEvent`` shape, which has no ``note`` — this record is still
+    # serialised unprojected by ``POST /api/secrets/system/<key>`` (bu-m9s61).
+    audit: list[dict] = Field(default_factory=list)
 
     # Butler attribution
     butler: str  # schema that owns this row
@@ -1533,10 +1536,15 @@ async def _fetch_audit_bulk(
     ``_fetch_probe_logs_bulk``.
 
     Returns a dict mapping target → list of ``{ts, actor, action, note}``
-    dicts (newest first, pre-formatted timestamps, matching the shape
-    ``AuditEvent`` serialises to). Targets with no audit history are absent
-    from the dict — callers should treat a missing key as "no audit rows"
-    rather than fabricate an empty placeholder with different semantics.
+    dicts (newest first, pre-formatted timestamps). This is the router's
+    internal read shape, not a wire shape — ``note`` is provider and exception
+    text, and every read endpoint drops it on projection
+    (``CredentialAuditOutcome``; ``AuditEvent`` has no such field at all). The
+    one path that still serialises these dicts unprojected is the system
+    mutation route (bu-m9s61); do not add a fourth caller that does the same.
+    Targets with no audit history are absent from the dict — callers should
+    treat a missing key as "no audit rows" rather than fabricate an empty
+    placeholder with different semantics.
 
     The inventory retains its existing best-effort behavior. A single
     credential's evidence page sets ``raise_on_failure`` so a source failure
@@ -3295,20 +3303,32 @@ _AUDIT_MAX_LIMIT = 50
 
 
 class AuditEvent(BaseModel):
-    """A single audit event for a credential.
+    """A single content-blind audit event for a credential.
 
     Per spec §Audit history endpoint:
     - ts: server pre-formatted relative timestamp (e.g. "5 minutes ago",
       "14:21 today", "yesterday 09:08")
     - actor: identity of the actor that triggered the change
     - action: short, machine-readable verb (e.g. "rotated", "connected")
-    - note: verbatim stored note; never LLM-generated (serif-italic in UI)
+
+    The stored ``note`` is deliberately not a field (bu-rh8z5). It carries
+    provider and exception text verbatim — a failed probe persists
+    ``"Probe failed: <provider text>; probe_status=<token>"`` — and this
+    endpoint is bound by the same rule as the inventory and per-credential
+    reads: audit free text does not reach the wire, including rows written by
+    producers outside this router. ``action`` already carries the verb the
+    note was being read for. The diagnostic itself is untouched server-side:
+    ``public.audit_log``, ``public.secret_probe_log``, and the
+    ``last_test_message`` cache all still record it for operators.
+
+    Absent rather than published as an always-null placeholder, on the same
+    terms as the other dropped fields on this surface: a field with no
+    authoritative source must not read as "this event had no note".
     """
 
     ts: str  # pre-formatted relative timestamp
     actor: str
     action: str
-    note: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -3354,8 +3374,13 @@ async def get_audit_history(
     --------
     ``ApiResponse<AuditEvent[]>`` with:
 
-    - ``data``: list of the most recent audit events ordered newest-first.
+    - ``data``: list of the most recent audit events ordered newest-first,
+      each carrying only ``ts``, ``actor``, and ``action``.
     - ``meta.deep_link``: ``/audit-log?key=<canonical-key>`` for the full reel.
+
+    Content-blind (bu-rh8z5): the stored ``note`` is not selected by the query
+    above, so the free text an audit writer persists — provider and exception
+    text on a failed probe — has no path into this response at all.
 
     Timestamps (``ts``) are pre-formatted server-side using the same
     calendar-day relative format as probe-log LRU
@@ -3397,7 +3422,7 @@ async def get_audit_history(
     try:
         rows = await pool.fetch(
             """
-            SELECT ts, actor, action, note
+            SELECT ts, actor, action
             FROM public.audit_log
             WHERE target = $1
             ORDER BY ts DESC
@@ -3427,7 +3452,6 @@ async def get_audit_history(
             ts=_format_probe_time(row["ts"]) or str(row["ts"]),
             actor=row["actor"],
             action=row["action"],
-            note=row["note"],
         )
         for row in rows
     ]

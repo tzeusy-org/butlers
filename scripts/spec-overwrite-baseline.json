@@ -1983,6 +1983,14 @@
       "excerpt": "- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, ..."
     }
   ],
+  "project-audit-history-content-blind/dashboard-api/Secrets Audit-History and Breaks-Catalogue Endpoints": [
+    {
+      "kind": "clause",
+      "scenario": "Audit history endpoint",
+      "digest": "95aaf609a86d",
+      "excerpt": "- **AND** each `AuditEvent` includes `ts` (server pre-formatted relative timestamp), `actor`, `action`, `note` (serif..."
+    }
+  ],
   "project-secret-read-endpoints-content-blind/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
     {
       "kind": "clause",

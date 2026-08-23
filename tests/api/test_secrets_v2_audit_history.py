@@ -9,9 +9,13 @@ Covers the acceptance scenarios from bu-kjko6:
 6. 422 on invalid scope.
 7. Timestamp pre-formatting — ts is a human-friendly string, not a raw ISO datetime.
 
+Plus the content-blind contract from bu-rh8z5: the stored audit note — provider
+and exception text on a failed probe — never reaches this endpoint's response.
+
 Spec anchor
 -----------
 openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+openspec/changes/project-audit-history-content-blind/specs/dashboard-api/spec.md
 §Audit history endpoint
 """
 
@@ -20,6 +24,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -222,10 +227,21 @@ def test_audit_history_hit_returns_rows_desc():
     assert data[1]["action"] == "connected"
 
 
-def test_audit_history_note_included_when_present():
-    """note field is forwarded verbatim; None note serialises as null."""
+def test_audit_history_never_publishes_the_stored_note():
+    """The stored audit note must not reach the wire (bu-rh8z5).
+
+    Absence sentinel.  A failed probe plants free provider text in the audit
+    row (``_write_credential_audit`` persists ``"Probe failed: <text>"``), so
+    the seeded rows here carry an obviously-synthetic stand-in for it.  The
+    endpoint is content-blind: that stand-in must appear nowhere in the
+    response bytes, and no event may carry a ``note`` key at all.
+
+    The stand-in is generated per run rather than written as a literal —
+    a test proving free text absent must not itself spell that text out.
+    """
+    sentinel = f"synthetic-audit-diagnostic-{uuid4().hex}"
     rows = [
-        _make_audit_row(action="rotated", note="rotated after breach"),
+        _make_audit_row(action="failed", note=sentinel),
         _make_audit_row(action="connected", note=None),
     ]
     mock_db = _make_db_manager_with_audit_rows(rows)
@@ -233,10 +249,14 @@ def test_audit_history_note_included_when_present():
 
     resp = client.get("/api/secrets/audit/system/KEY")
     assert resp.status_code == 200
-    body = resp.json()
-    data = body["data"]
-    assert data[0]["note"] == "rotated after breach"
-    assert data[1]["note"] is None
+
+    if sentinel.encode() in resp.content:
+        pytest.fail("Audit endpoint published the stored audit note in its response body.")
+
+    data = resp.json()["data"]
+    assert len(data) == 2
+    for event in data:
+        assert "note" not in event, "AuditEvent published a note field"
 
 
 # ---------------------------------------------------------------------------
@@ -461,18 +481,16 @@ def test_audit_history_valid_scopes_accepted(valid_scope: str):
 # ---------------------------------------------------------------------------
 
 
-def test_audit_event_model_fields_and_optional_note():
-    """AuditEvent round-trips its fields and treats note as optional (default None)."""
-    full = AuditEvent(
-        ts="yesterday 09:08",
-        actor="system",
-        action="connected",
-        note="oauth callback",
-    )
-    assert full.ts == "yesterday 09:08"
-    assert full.actor == "system"
-    assert full.action == "connected"
-    assert full.note == "oauth callback"
+def test_audit_event_model_carries_no_note_field():
+    """AuditEvent round-trips ts/actor/action and has no note field at all.
 
-    no_note = AuditEvent(ts="14:21 today", actor="owner", action="rotated")
-    assert no_note.note is None
+    Pinned at the model rather than only at the route: the free text has no
+    wire representation to reintroduce by accident (bu-rh8z5).
+    """
+    event = AuditEvent(ts="yesterday 09:08", actor="system", action="connected")
+    assert event.ts == "yesterday 09:08"
+    assert event.actor == "system"
+    assert event.action == "connected"
+
+    assert set(AuditEvent.model_fields) == {"ts", "actor", "action"}
+    assert "note" not in event.model_dump()

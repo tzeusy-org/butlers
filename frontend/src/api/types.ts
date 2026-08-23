@@ -8877,7 +8877,7 @@ export interface SecretsUserDetail {
   failure_tail: string | null;
   breaks: SecretsBreakDict[];
   test: SecretsProbeResult | null;
-  audit: SecretsAuditEvent[];
+  audit: SecretsAuditRow[];
   /** Per-capability probe state (bu-4v5es). See SecretsUserRaw.capabilities. */
   capabilities?: SecretsCapabilityStatus[];
 }
@@ -8941,7 +8941,7 @@ export interface SecretsSystemDetail {
 
   breaks: SecretsBreakDict[];
   test: SecretsProbeResult | null;
-  audit: SecretsAuditEvent[];
+  audit: SecretsAuditRow[];
 
   /** Butler schema that owns this row. */
   butler: string;
@@ -8976,13 +8976,34 @@ export interface SecretsCliDetail {
 }
 
 /**
- * A single audit event for a credential.
+ * A single content-blind audit event for a credential.
  *
  * Returned by GET /api/secrets/audit/<scope>/<key>
  * Maps to AuditEvent in secrets_v2.py.
  * `ts` is pre-formatted server-side (e.g. "14:21 today", "yesterday 09:08").
+ *
+ * There is no `note` field (bu-rh8z5): the backend does not select the stored
+ * audit note, which carries provider and exception text verbatim. `action` is
+ * the verb to render; do not "fix" this by reaching for a note that is not on
+ * the wire.
  */
 export interface SecretsAuditEvent {
+  ts: string;
+  actor: string;
+  action: string;
+}
+
+/**
+ * An UNPROJECTED audit row, as the mutation routes that still serialise the
+ * router's internal record emit it (POST /api/secrets/user/<provider>/rotate,
+ * POST /api/secrets/system/<key>).
+ *
+ * Kept separate from SecretsAuditEvent deliberately: those routes have not had
+ * the content-blind treatment yet (bu-m9s61), so a shared type would let the
+ * read endpoint's guarantee stand in for an absence they do not provide.
+ * Do not render `note`.
+ */
+export interface SecretsAuditRow {
   ts: string;
   actor: string;
   action: string;
