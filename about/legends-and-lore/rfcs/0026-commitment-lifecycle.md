@@ -73,6 +73,13 @@ Semantics:
   replaced. Existing top-level metadata values win on a key collision, so
   resolution input can add closing evidence but cannot overwrite creation-time
   metadata.
+- `resolution_reason` and `evidence_closed` are reserved to the ledger:
+  `reconcile_snapshot()` rejects an observation whose `metadata` claims either
+  key, before touching the pool. The creation-wins rule above is what makes
+  the reservation necessary — applied to the keys resolution writes, it would
+  silently discard the closing evidence, session id included, in favour of
+  whatever a producer had put there first, with no error and nothing in the
+  returned envelope to show the loss.
 
 This is deliberately minimal: one new function with the same concurrency
 contract as the existing reconciler. The `owner_conditions.py` facade
@@ -126,6 +133,10 @@ carries commitment-specific semantics:
   "resolution_reason": "satisfied | cancelled | superseded | expired"
 }
 ```
+
+The last two fields are written by resolution, never by a producer: a creation
+observation carrying `evidence_closed` or `resolution_reason` is rejected (§1).
+Everything above them is the creation-time convention.
 
 A thin helper module `butlers.core.commitments` provides convenience functions
 with validation:

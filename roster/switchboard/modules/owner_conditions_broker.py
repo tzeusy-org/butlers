@@ -133,6 +133,12 @@ class OwnerConditionsBrokerModule(Module):
                 same fingerprint), ``summary`` (optional human-readable
                 evidence), and ``metadata`` (optional JSON-serializable dict).
                 An empty list is valid (e.g. "nothing is overdue right now").
+                ``metadata`` may not carry the top-level keys
+                ``resolution_reason`` or ``evidence_closed``: those are the
+                ledger's, written when the condition is resolved, and a
+                snapshot claiming one is rejected without a database write.
+                Record why you expect the condition to close under a name of
+                your own.
             snapshot_complete:
                 True when ``observations`` is your FULL, successful
                 enumeration of everything you currently observe for
@@ -251,8 +257,12 @@ class OwnerConditionsBrokerModule(Module):
             Notes
             -----
             The closing evidence is merged into the row's existing metadata
-            with creation-wins semantics, so a top-level key the producer
-            already set at creation time keeps its original value.
+            with creation-wins semantics, so every top-level key the producer
+            set at creation time keeps its original value. The two keys this
+            writes — ``resolution_reason`` and ``evidence_closed`` — are
+            reserved at the ``reconcile_owner_condition`` boundary precisely
+            so creation-wins can never apply to them: the closing evidence,
+            session id included, always lands.
             """
             if resolution_reason not in RESOLUTION_REASONS:
                 return {

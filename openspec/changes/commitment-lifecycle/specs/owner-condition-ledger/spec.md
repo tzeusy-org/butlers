@@ -105,3 +105,45 @@ Scope: v1-mandatory
   the allowed set (`satisfied`, `cancelled`, `superseded`, `expired`)
 - **THEN** it returns `{"status": "error", "reason": "..."}` without
   attempting a database write
+
+### Requirement: Reserved Resolution Metadata Keys
+
+The owner condition ledger SHALL reserve the top-level `metadata` keys
+`resolution_reason` and `evidence_closed` for the closing evidence written by
+`resolve_condition()`. `reconcile_snapshot()` — and the
+`reconcile_owner_condition` MCP tool over it — SHALL reject an observation
+whose `metadata` claims either key, before any database access. Creation-wins
+merging (REQ-owner-condition-ledger-004) therefore never applies to these two
+keys, so resolution evidence — including the session-id provenance
+REQ-owner-condition-ledger-005 requires — always lands.
+
+ID: REQ-owner-condition-ledger-006
+Source: RFC 0026 §1 (Explicit Resolution Path), complement of the creation-wins merge
+Scope: v1-mandatory
+
+#### Scenario: A producer claiming a reserved key is rejected
+
+- **WHEN** `reconcile_owner_condition` is called with an observation whose
+  `metadata` contains a top-level `resolution_reason` or `evidence_closed`
+- **THEN** it returns `{"status": "error", "reason": "..."}` naming the
+  offending key and the observation's fingerprint, without attempting a
+  database write
+- **AND** the whole snapshot is rejected, not just the offending observation,
+  matching the existing all-or-nothing handling of a missing or duplicate
+  fingerprint
+
+#### Scenario: Closing evidence lands because the key cannot be pre-claimed
+
+- **WHEN** a condition is opened through `reconcile_owner_condition` and later
+  closed through `resolve_owner_condition`
+- **THEN** the row's `metadata` carries the resolver's `resolution_reason` and
+  `evidence_closed` values, because no accepted creation-time metadata could
+  have occupied those keys
+
+#### Scenario: Every other creation-time key still wins on collision
+
+- **WHEN** `resolve_condition()` is called with `resolution_metadata`
+  containing a non-reserved key the producer already set at creation time
+- **THEN** the creation-time value is retained, unchanged from
+  REQ-owner-condition-ledger-004 — the reservation narrows which keys a
+  producer may claim, it does not weaken creation-wins for the keys it may
