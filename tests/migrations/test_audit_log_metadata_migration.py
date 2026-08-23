@@ -3,7 +3,8 @@
 Covers:
 - Migration revision chain metadata is correct (down_revision → core_121).
 - Upgrade adds metadata (JSONB), result (TEXT), error (TEXT) to public.audit_log.
-- audit.append() round-trips metadata/result/error into the new columns.
+- audit.append() round-trips metadata/result/error into the new columns
+  (against the head schema, since append() is the live writer).
 - Omitting the new fields still inserts a row (backward compatible → NULLs).
 - Downgrade drops the three columns.
 """
@@ -25,6 +26,7 @@ pytestmark = pytest.mark.integration
 _VERSIONS = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "core"
 _CORE_092 = _VERSIONS / "core_092_audit_log.py"
 _CORE_122 = _VERSIONS / "core_122_audit_log_metadata_result_error.py"
+_CORE_202 = _VERSIONS / "core_202_audit_log_failure_category.py"
 
 
 def _load_migration(name: str, path: Path):
@@ -59,8 +61,27 @@ def test_migration_revision_chain() -> None:
 
 
 async def _upgrade_to_122(pool: asyncpg.Pool) -> None:
+    """Build the table exactly as it stood at core_122, and no further.
+
+    Used by the tests that assert what core_122 itself did, which must keep
+    describing that revision no matter what later migrations add.
+    """
     await _apply(pool, _load_migration("core_092", _CORE_092), "upgrade")
     await _apply(pool, _load_migration("core_122", _CORE_122), "upgrade")
+
+
+async def _upgrade_for_append(pool: asyncpg.Pool) -> None:
+    """Build every ``audit_log`` column the live ``append()`` writes.
+
+    The two tests below exercise the real function rather than a snapshot of
+    it, so their schema has to track the migration head rather than core_122:
+    ``append()`` gained ``failure_category`` in core_202 and inserts it
+    unconditionally. Any future column on this table lands here too, which is
+    the honest coupling — a partial schema would only make these tests pass
+    against a writer that no longer exists.
+    """
+    await _upgrade_to_122(pool)
+    await _apply(pool, _load_migration("core_202", _CORE_202), "upgrade")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -88,7 +109,7 @@ async def test_columns_added(audit_log_pool: asyncpg.Pool) -> None:
 async def test_append_round_trips_new_fields(audit_log_pool: asyncpg.Pool) -> None:
     """append() persists metadata/result/error and they read back unchanged."""
     pool = audit_log_pool
-    await _upgrade_to_122(pool)
+    await _upgrade_for_append(pool)
 
     metadata = {"path": "/api/settings", "trigger_source": "dashboard"}
     row_id = await append(
@@ -120,7 +141,7 @@ async def test_append_round_trips_new_fields(audit_log_pool: asyncpg.Pool) -> No
 async def test_append_without_new_fields_inserts_nulls(audit_log_pool: asyncpg.Pool) -> None:
     """Omitting the new fields stores SQL NULLs (backward compatible)."""
     pool = audit_log_pool
-    await _upgrade_to_122(pool)
+    await _upgrade_for_append(pool)
 
     row_id = await append(pool, "owner", "setting_change")
     row = await pool.fetchrow(
