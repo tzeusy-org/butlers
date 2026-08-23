@@ -1,9 +1,14 @@
 # Runtime-Probe Control Keys
 
 > **Scope:** provisioning and rotating the deployment keys behind runtime-probe
-> control capabilities (REQ-core-credentials-002, REQ-database-security-008).
-> **Status:** the representation exists; **nothing is mounted or activated yet.**
-> Mounting the documents into production Compose is a separate, deliberate step.
+> control capabilities (REQ-core-credentials-002, REQ-database-security-008),
+> and the control plane those keys authorise
+> (REQ-dashboard-model-settings-001).
+> **Status:** the keys, the endpoint, and the client all exist; **nothing is
+> mounted or activated yet.** Without a verifier mount Switchboard answers every
+> control request `503/unavailable`, and without a signing mount the client signs
+> nothing. Mounting the documents into production Compose is a separate,
+> deliberate step, gated on the condition in [Activation](#activation).
 
 A runtime-probe control capability is a short-lived signed statement that lets
 Dashboard or the scheduler ask Switchboard to probe one model-catalog entry. It
@@ -132,6 +137,69 @@ stops **issuing** at `sign_until` (inclusive, no extra skew) but keeps
 **verifying** until `accept_until`, so a capability minted a moment before
 cutover still works.
 
+## What the keys authorise
+
+A capability buys exactly one thing: a bounded probe of one model-catalog entry.
+
+```
+POST /_control/runtime-probe/v1
+Authorization: Bearer <compact JWS>
+```
+
+on Switchboard's own port — a plain route beside `/health`, deliberately **not**
+an MCP tool, so no model session and no ordinary MCP client can enumerate or
+call it. The request carries no query string, no body, and no cookies; the
+catalog entry comes from the signed claim, and there is no parameter for a
+prompt, a model, or runtime arguments. Anything else in the request is a `401`.
+
+Switchboard verifies the capability, commits a SHA-256 nonce receipt, and only
+then resolves the entry and launches it — in the same shared runtime home, with
+the same authority, adapter construction, canonical-to-execution mapping,
+generated configuration, and catalog arguments a new daemon invocation would
+get, minus every domain MCP tool. The probe runs under a 30-second deadline,
+global concurrency 8, and per-entry concurrency 1.
+
+| Response | Meaning |
+| --- | --- |
+| `200` `{"status": "completed", "ok": …}` | a probe ran; `ok` is its verdict |
+| `401` `{"status": "unauthorized"}` | the capability or the request shape was refused |
+| `409` `{"status": "replay"}` | this capability had already been used |
+| `429` `{"status": "busy"}` | probe capacity is saturated; nothing ran |
+| `503` `{"status": "unavailable"}` | no verifier mount, unknown entry, or missing authority |
+| `504` `{"status": "timeout"}` | the probe exceeded its deadline |
+
+**Only `200` writes anything.** A completed probe updates the four
+`model_catalog` verification columns through a `SECURITY DEFINER` function that
+cannot reach `enabled`, `priority`, or breaker state — so a probe never closes
+an open breaker, and never creates a dispatch attempt, routed provenance, or a
+session. Every other outcome leaves the entry's verification history exactly as
+it was. A `504` in particular records **nothing**: a probe the coordinator
+abandoned at its own deadline is evidence about the coordinator, not the model,
+and recording it would let a slow afternoon evict a healthy model from routing.
+
+A capability is single-use, and the receipt is taken **before** the busy gate.
+A request that arrives while capacity is saturated therefore spends its
+capability and gets a `429`. That is intentional: if a rejected request could
+keep its nonce, one capability could be retried until a slot opened and would no
+longer be single-use.
+
+## Activation
+
+Do not mount either document yet. The production signing-key mount is gated on
+every Dashboard runtime-CLI child path being removed or forced through the
+per-invocation identity and kernel-containment launcher that
+REQ-core-credentials-002 requires. Until then:
+
+* the code path is exercised only against **isolated fixture keys generated
+  inside tests** — see `butlers/testing/runtime_probe_control.py`;
+* production Compose contains no signer or verifier mount, and a test pins that;
+* Dashboard `Test`, `verify-all`, and the scheduled sweep still use their
+  existing local verification path and are **not** cut over.
+
+Rolling back after activation retains the child sandbox and makes
+model-verification callers unavailable; it does not restore a local adapter
+probe.
+
 ## Troubleshooting
 
 Every failure is reported with a fixed diagnostic string that never contains key
@@ -149,6 +217,13 @@ material, a key id, a timestamp, or file content. Read them as categories:
 | `retiring overlap is outside 70s..5m` | the `accept_until - sign_until` window |
 | `keyring cutover instants disagree` | `current.sign_from` vs `retiring.sign_until` |
 | `signer does not match the current verifier` | the keyring was published from a different key |
+
+Capability rejections are logged the same way — a fixed reason such as
+`capability signature does not verify` or `capability has expired`, never the
+capability, a segment of it, a nonce, a key, or a fingerprint. Nothing in a log
+line, a telemetry span, an API payload, or a runtime prompt reproduces the
+material it is describing, and the receipt table stores only a digest, so a
+leaked receipt cannot be reconstructed into a working capability.
 
 ## Related
 

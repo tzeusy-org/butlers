@@ -587,6 +587,7 @@ class ButlerDaemon:
             self.mcp,
             butler_name=self.config.name,
             approval_push_runtime=self._approval_push_runtime,
+            runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
         )
         config = uvicorn.Config(
             app,
@@ -671,6 +672,31 @@ class ButlerDaemon:
 
         return False
 
+    def _build_runtime_probe_coordinator(self) -> Any | None:
+        """Build Switchboard's runtime-probe coordinator, or ``None`` elsewhere.
+
+        Only Switchboard owns this control plane: ``core_201`` grants the
+        replay-receipt table to ``butler_switchboard_rw`` alone, so no other
+        butler could commit a receipt even if it exposed the route.
+
+        The coordinator is built whether or not a verifier keyring is mounted.
+        Without one it answers every request ``503/unavailable``, which is the
+        deployed state in this phase --- the route exists, verified by tests
+        against fixture keys, and does nothing in production.
+        """
+        if self.config.name != "switchboard":
+            return None
+        pool = self.db.pool if self.db is not None else None
+        if pool is None:
+            return None
+
+        from butlers.core.runtime_probe_control.coordinator import RuntimeProbeCoordinator
+
+        # The credential store is passed as the Codex authority explicitly, the
+        # same way the dashboard's verification path passes it: a probe must
+        # never infer authority from the pool it happens to hold.
+        return RuntimeProbeCoordinator(pool, codex_auth_authority=self._credential_store)
+
     @classmethod
     def _build_mcp_http_app(
         cls,
@@ -678,6 +704,7 @@ class ButlerDaemon:
         *,
         butler_name: str,
         approval_push_runtime: Any | None = None,
+        runtime_probe_coordinator: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -718,6 +745,18 @@ class ButlerDaemon:
         health_route = Route("/health", _health_endpoint, methods=["GET"])
         if not cls._attach_route_via_public_api(streamable_app, health_route):
             streamable_app.routes.append(health_route)
+
+        # Switchboard's private runtime-probe control plane.  Attached beside
+        # /health rather than registered as an MCP tool, so it is invisible to
+        # tool enumeration and unreachable from a model session.
+        if runtime_probe_coordinator is not None:
+            from butlers.core.runtime_probe_control.endpoint import (
+                build_runtime_probe_control_route,
+            )
+
+            control_route = build_runtime_probe_control_route(runtime_probe_coordinator)
+            if not cls._attach_route_via_public_api(streamable_app, control_route):
+                streamable_app.routes.append(control_route)
 
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
