@@ -32,6 +32,120 @@ _SCHEMA_TOPOLOGY_DOC = _REPO_ROOT / "docs" / "data_and_storage" / "schema-topolo
 _COMPOSE_FILE = _REPO_ROOT / "docker-compose.yml"
 
 
+# ---------------------------------------------------------------------------
+# Restore-script invocation detection
+#
+# PR #3708 removed the hand-run ``scripts/pg_restore.sh`` escape hatch from the
+# operations doc.  The ban that replaced it pinned the *substring*
+# ``pg_restore.sh``, so the doc could not name the path it was describing.  What
+# has to stay banned is the runnable form: a command line an operator can copy
+# out of the doc.
+#
+# Caught:
+#   * a path-executable reference -- ``./scripts/pg_restore.sh``,
+#     ``../scripts/pg_restore.sh``, ``~/butlers/scripts/pg_restore.sh``,
+#     ``/opt/butlers/scripts/pg_restore.sh``
+#   * an interpreter prefix -- ``bash scripts/pg_restore.sh``,
+#     ``sh -x pg_restore.sh``
+#   * the name followed by an argument-shaped token rather than by the next word
+#     of a sentence: a flag, a path, a shell variable, a quote, a
+#     ``<placeholder>``, or a dotted filename
+#   * any line naming the script inside a fenced code block, runnable or not
+#
+# NOT caught, deliberately -- a narrowed boundary whose holes go unrecorded reads
+# as more precise than it is:
+#   * a bare or repo-relative mention in prose (``pg_restore.sh``,
+#     ``scripts/pg_restore.sh``); permitting this is the point of the narrowing
+#   * a four-space-indented code block or an HTML ``<pre>`` block.  This doc uses
+#     neither, and indented blocks are indistinguishable from nested list items
+#     without a full Markdown parse
+#   * indirection -- ``SCRIPT=pg_restore.sh`` followed by ``./$SCRIPT``, or a
+#     name assembled from fragments
+#   * an invocation split so the name and its argument never share a line
+#   * ``source pg_restore.sh`` / ``. pg_restore.sh``
+#   * prose urging a hand-run restore without showing the command, and any
+#     invocation of a renamed copy of the script
+# ---------------------------------------------------------------------------
+
+_RESTORE_SCRIPT_NAME = "pg_restore.sh"
+
+# A token that reads as an argument rather than as the next word of a sentence.
+_ARGUMENT_TOKEN = r"""(?:-{1,2}\w|[<{$"']|[.~]{0,2}/|\w[\w.-]*\.\w)"""
+
+_RESTORE_SCRIPT_INVOCATION_PATTERNS = (
+    # Path-executable reference: ./x, ../x, ~/x, /abs/x.
+    re.compile(
+        rf"(?<![\w.~/-])(?:\.{{1,2}}|~)?/(?:[\w.~-]+/)*{re.escape(_RESTORE_SCRIPT_NAME)}"
+    ),
+    # Interpreter prefix, with or without flags and a leading directory.
+    re.compile(
+        rf"\b(?:ba|da|k|z)?sh\b[ \t]+(?:-\S+[ \t]+)*(?:[\w.~/-]*/)?"
+        rf"{re.escape(_RESTORE_SCRIPT_NAME)}"
+    ),
+    # The name followed by an argument instead of by prose.
+    re.compile(rf"{re.escape(_RESTORE_SCRIPT_NAME)}[ \t]+{_ARGUMENT_TOKEN}"),
+)
+
+
+def _fenced_code_blocks(markdown: str) -> list[str]:
+    """Return the body of every fenced code block in *markdown*."""
+    blocks: list[str] = []
+    fence: str | None = None
+    body: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.lstrip()
+        if fence is None:
+            if stripped.startswith(("```", "~~~")):
+                fence, body = stripped[:3], []
+            continue
+        if stripped.startswith(fence):
+            blocks.append("\n".join(body))
+            fence = None
+            continue
+        body.append(line)
+    if fence is not None:  # Unterminated fence: treat the remainder as a block.
+        blocks.append("\n".join(body))
+    return blocks
+
+
+def _restore_script_invocations(markdown: str) -> list[str]:
+    """Return every runnable reference to the restore script in *markdown*.
+
+    Naming the script in prose is not runnable and is not returned.  The comment
+    above this helper enumerates both the caught and the uncaught shapes.
+    """
+    found: set[str] = set()
+    for block in _fenced_code_blocks(markdown):
+        found.update(
+            line.strip() for line in block.splitlines() if _RESTORE_SCRIPT_NAME in line
+        )
+    for pattern in _RESTORE_SCRIPT_INVOCATION_PATTERNS:
+        found.update(match.group(0) for match in pattern.finditer(markdown))
+    return sorted(found)
+
+
+_DESCRIPTIVE_RESTORE_SCRIPT_MENTIONS = (
+    "The restore path is `pg_restore.sh`, and it is never driven by hand.",
+    "`scripts/pg_restore.sh` audits ownership once the restore has completed.",
+    "pg_restore.sh restores only to a named scratch database.",
+    "Ownership is pinned by tests/scripts/test_pg_restore_definer_ownership.py.",
+)
+
+_RESTORE_SCRIPT_INVOCATIONS = (
+    "./scripts/pg_restore.sh",
+    "Run ./scripts/pg_restore.sh dump.sql.gz --target-db butlers_restore by hand.",
+    "/opt/butlers/scripts/pg_restore.sh dump.sql.gz",
+    "../scripts/pg_restore.sh",
+    "~/butlers/scripts/pg_restore.sh",
+    "bash scripts/pg_restore.sh dump.sql.gz",
+    "sh -x pg_restore.sh /backups/latest.sql.gz",
+    "pg_restore.sh <backup-file.sql.gz> --target-db <name>",
+    "pg_restore.sh --env-file .env.production",
+    "pg_restore.sh $BACKUP_FILE",
+    "```bash\npg_restore.sh\n```",
+)
+
+
 def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -> None:
     """REQ-database-security-006 keeps every normal login NOCREATEDB."""
     source = _INIT_DB.read_text(encoding="utf-8")
@@ -309,7 +423,31 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "rolls back its ledger insert" in source
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
-    assert "pg_restore.sh" not in source
+    assert _restore_script_invocations(source) == []
+
+
+@pytest.mark.parametrize("mention", _DESCRIPTIVE_RESTORE_SCRIPT_MENTIONS)
+def test_ops_docs_may_name_the_restore_script_descriptively(mention: str) -> None:
+    """Naming the restore path is precision, not an escape hatch."""
+    assert _restore_script_invocations(mention) == []
+
+
+@pytest.mark.parametrize("invocation", _RESTORE_SCRIPT_INVOCATIONS)
+def test_ops_docs_may_not_show_a_runnable_restore_script_invocation(invocation: str) -> None:
+    """REQ-database-security-006 keeps the hand-run escape hatch unreachable.
+
+    This is the load-bearing half of the narrowing: it fails if the invocation
+    ban is dropped or weakened back toward allowing a runnable command line.
+    """
+    assert _restore_script_invocations(invocation), f"invocation not caught: {invocation!r}"
+
+
+def test_operations_doc_names_the_restore_script_it_describes() -> None:
+    """The doc has to be able to say which path it is imposing a precondition on."""
+    source = _OPERATIONS_DOC.read_text(encoding="utf-8")
+
+    assert _RESTORE_SCRIPT_NAME in source
+    assert _restore_script_invocations(source) == []
 
 
 def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_user() -> None:
