@@ -3,8 +3,8 @@
 ### Requirement: Credential-Target Audit Groups Are Identified Without Free Text
 Every surface that derives an audit-error **group** from `public.audit_log`
 SHALL identify a credential-target group by a synthetic title composed only from
-columns that are already published for that row — its `action` and its `target`
-— and SHALL NOT use the row's error text as any part of that identity. A
+structured columns persisted on that row, and SHALL NOT use the row's free text
+— its `error`, `note`, or `metadata` — as any part of that identity. A
 credential target is the same namespace this capability's `Credential-Target
 Audit Free Text Is Withheld On Read` requirement governs: any `target` whose
 scope segment is a credential-key scope from `core-credentials` §Credential-Key
@@ -50,15 +50,6 @@ the provider's words at the database, which is where they belong.
 - **AND** a blanket constant summary is NOT an acceptable implementation, since
   it would collapse every credential failure in the fleet into one group and
   make one acknowledgement silently cover unrelated broken credentials.
-
-#### Scenario: Identity is the credential, not the cause
-- **WHEN** one credential fails twice for different reasons (e.g. a `401` and a
-  `429` on `u:google`)
-- **THEN** both rows fall in the same group, and its `occurrences` count
-  reports both
-- **BECAUSE** the only per-cause signal on the row is the withheld text itself;
-  the per-occurrence detail remains available at `public.audit_log` and
-  `public.secret_probe_log`.
 
 #### Scenario: Non-credential groups keep their normalized error verbatim
 - **WHEN** a `result = 'error'` row whose `target` is absent or names a

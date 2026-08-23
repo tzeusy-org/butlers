@@ -23,7 +23,7 @@ further out.
 ## The decision
 
 > A credential-target error row's group identity is a synthetic title composed
-> only from columns that are already published for that row — its `action` and
+> only from structured columns persisted on that row — here its `action` and
 > its `target` — rather than from its error text. Every other row keeps
 > grouping on its normalized error verbatim.
 
