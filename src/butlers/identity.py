@@ -448,11 +448,7 @@ async def resolve_contact_by_channel(
         try:
             row = await _resolve_entity_by_triple(pool, predicate, channel_value)
         except Exception:  # noqa: BLE001
-            logger.debug(
-                "resolve_contact_by_channel: DB query failed "
-                "(table may not exist yet); returning None",
-                exc_info=True,
-            )
+            logger.debug("identity.contact_resolution_query_failed")
             return None
 
     if row is None and canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
@@ -508,10 +504,7 @@ async def resolve_contact_by_channel(
                 try:
                     row = await _resolve_entity_by_triple(pool, "has-phone", phone)
                 except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "resolve_contact_by_channel: phone fallback query failed; returning None",
-                        exc_info=True,
-                    )
+                    logger.debug("identity.contact_resolution_phone_fallback_failed")
                     return None
                 if row is None:
                     # Exact equality misses the common stored formats
@@ -648,11 +641,7 @@ async def resolve_contacts_by_channel_bulk(
                 objects,
             )
     except Exception:  # noqa: BLE001
-        logger.debug(
-            "resolve_contacts_by_channel_bulk: DB query failed "
-            "(table may not exist yet); returning all-unresolved",
-            exc_info=True,
-        )
+        logger.debug("identity.contacts_bulk_resolution_query_failed")
         return result
 
     match_by_candidate: dict[tuple[str, str], asyncpg.Record] = {}
@@ -738,7 +727,7 @@ async def resolve_owner_channel_via_definer(
         for variant in _telegram_username_candidates(channel_value):
             if variant not in candidates:
                 candidates.append(variant)
-    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         for variant in list(candidates):
             prefixed = _telegram_prefixed_value(variant)
             if prefixed not in candidates:
@@ -751,11 +740,7 @@ async def resolve_owner_channel_via_definer(
             candidates,
         )
     except Exception:  # noqa: BLE001
-        logger.debug(
-            "resolve_owner_channel_via_definer: lookup failed "
-            "(function may not exist yet); returning None",
-            exc_info=True,
-        )
+        logger.debug("identity.owner_channel_resolution_failed")
         return None
 
     if row is None:
