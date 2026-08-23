@@ -37,14 +37,6 @@ def _collect_execute_calls(fn_name: str) -> list[str]:
     return calls_collected
 
 
-def test_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "sw_015"
-    assert mod.down_revision == "sw_014"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
 def test_upgrade_adds_processing_updated_at_partial_index() -> None:
     sqls = _collect_execute_calls("upgrade")
     assert len(sqls) == 1

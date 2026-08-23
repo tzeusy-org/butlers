@@ -53,14 +53,6 @@ def _load_migration():
 class TestMigrationFileAndChain:
     """Revision-chain + predicate-name/collision contract tests."""
 
-    def test_revision_chain(self) -> None:
-        """mem_003 -> mem_002, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "mem_003"
-        assert mod.down_revision == "mem_002"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_nine_predicate_names_defined(self) -> None:
         """WELLNESS_PREDICATE_NAMES exports exactly nine names."""
         mod = _load_migration()

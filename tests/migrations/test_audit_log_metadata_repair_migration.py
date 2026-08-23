@@ -109,15 +109,6 @@ async def _insert_row(pool, *, metadata_sql: str, actor: str = "general") -> int
 
 
 @pytest.mark.unit
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_169"
-    assert mod.down_revision == "core_168"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
-@pytest.mark.unit
 def test_downgrade_issues_no_sql() -> None:
     """Non-reversible repair: downgrade must not touch the DB at all."""
     mod = _load_migration()

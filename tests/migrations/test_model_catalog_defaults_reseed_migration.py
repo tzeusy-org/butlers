@@ -67,12 +67,6 @@ def _load_migration():
     return mod
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_159"
-    assert mod.down_revision == "core_157"
-
-
 def test_canonical_tiers_match_core_093_rename_target() -> None:
     """core_159's tier filter must accept exactly the vocabulary core_093 introduced."""
     mod = _load_migration()

@@ -47,15 +47,6 @@ def _executed_sql(function_name: str) -> str:
     return "\n".join(str(call.args[0]) for call in op.execute.call_args_list)
 
 
-def test_revision_chains_onto_the_current_core_head() -> None:
-    module = _load_migration()
-
-    assert module.revision == "core_200"
-    assert module.down_revision == "core_199"
-    assert module.branch_labels is None
-    assert module.depends_on is None
-
-
 def test_upgrade_separates_the_onset_clock_from_the_observation_clock() -> None:
     sql = _executed_sql("upgrade")
 

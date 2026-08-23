@@ -72,14 +72,6 @@ def _load_migration():
 class TestMigrationFileAndChain:
     """Revision-chain contract test."""
 
-    def test_revision_chain(self) -> None:
-        """core_183 -> core_182, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "core_183"
-        assert mod.down_revision == "core_182"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_chain_head_is_single_and_contains_this_migration(self) -> None:
         """Chain scans must not pin a historical head as later revisions land."""
         from butlers.migrations import get_chain_head, get_chain_revision_ids

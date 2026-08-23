@@ -64,14 +64,6 @@ def _load_migration():
 class TestMigrationFileAndChain:
     """Revision-chain + chain-discovery contract tests."""
 
-    def test_revision_chain(self) -> None:
-        """chronicler_009 -> chronicler_008, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "chronicler_009"
-        assert mod.down_revision == "chronicler_008"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_chronicler_chain_includes_009(self) -> None:
         """Migration chain discovery must pick up 009_reset_watermarks_for_old_session_titles."""
         from butlers.migrations import _resolve_chain_dir

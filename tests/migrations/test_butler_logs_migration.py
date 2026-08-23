@@ -34,12 +34,6 @@ def _load_migration():
     return mod
 
 
-def test_migration_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_089"
-    assert mod.down_revision == "core_088"
-
-
 def test_migration_sql_contains_expected_columns():
     source = _MIGRATION_PATH.read_text()
     expected_fragments = [

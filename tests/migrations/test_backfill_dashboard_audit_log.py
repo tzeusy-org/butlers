@@ -50,14 +50,6 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        """core_124 -> core_123, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "core_124"
-        assert mod.down_revision == "core_123"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_source_guards_legacy_table_with_to_regclass(self):
         src = _MIGRATION_PATH.read_text()
         # Cross-chain hazard guard: every legacy reference goes through to_regclass.

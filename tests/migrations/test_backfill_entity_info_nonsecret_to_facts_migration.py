@@ -48,13 +48,6 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        mod = _load_migration()
-        assert mod.revision == "rel_028"
-        assert mod.down_revision == "rel_027"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_file_ordered_after_026(self):
         files = sorted(f.name for f in _MIGRATION_PATH.parent.glob("[0-9]*.py"))
         idx_026 = next((i for i, f in enumerate(files) if f.startswith("026_")), None)

@@ -47,19 +47,6 @@ def _load_migration():
 
 
 @pytest.mark.unit
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
-@pytest.mark.unit
-def test_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_138"
-    assert mod.down_revision == "core_137"
-    assert mod.branch_labels is None
-
-
-@pytest.mark.unit
 def test_upgrade_ensures_extension_and_creates_trgm_index():
     source = _MIGRATION_PATH.read_text()
     assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in source

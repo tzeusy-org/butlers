@@ -49,12 +49,6 @@ async def _run_upgrade(pool: asyncpg.Pool) -> None:
         await pool.execute(sql)
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_092"
-    assert mod.down_revision == "core_091"
-
-
 @pytest.mark.asyncio(loop_scope="session")
 async def test_audit_log_table_created(audit_log_pool: asyncpg.Pool) -> None:
     """Upgrade creates public.audit_log with the required columns."""

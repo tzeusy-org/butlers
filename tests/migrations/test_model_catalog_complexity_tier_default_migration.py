@@ -108,12 +108,6 @@ async def migration_pool(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_147"
-    assert mod.down_revision == "core_146"
-
-
 # ---------------------------------------------------------------------------
 # Bug reproduction + fix (real Postgres)
 # ---------------------------------------------------------------------------

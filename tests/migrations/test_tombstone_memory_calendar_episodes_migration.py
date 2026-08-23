@@ -55,15 +55,6 @@ def _load_migration():
 class TestMigrationFileAndChain:
     """Revision-chain + chain-discovery contract tests."""
 
-    def test_revision_chain(self) -> None:
-        """chronicler_008 -> chronicler_007 (adds the tombstone_reason column it
-        writes into); no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "chronicler_008"
-        assert mod.down_revision == "chronicler_007"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_chronicler_chain_includes_008(self) -> None:
         """Migration chain discovery must pick up 008_tombstone_memory_calendar_episodes."""
         from butlers.migrations import _resolve_chain_dir

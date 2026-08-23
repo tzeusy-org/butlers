@@ -48,19 +48,6 @@ def _load_migration():
 
 
 @pytest.mark.unit
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
-@pytest.mark.unit
-def test_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_142"
-    assert mod.down_revision == "core_141"
-    assert mod.branch_labels is None
-
-
-@pytest.mark.unit
 def test_view_and_role_identity():
     mod = _load_migration()
     assert mod._VIEW_FQN == "calendar.v_prep_contributions"

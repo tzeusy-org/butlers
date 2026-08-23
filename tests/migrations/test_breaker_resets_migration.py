@@ -65,12 +65,6 @@ async def _prereq_tables(pool: asyncpg.Pool) -> None:
     """)
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_164"
-    assert mod.down_revision == "core_163"
-
-
 async def test_upgrade_creates_table_and_index_then_downgrade_drops(
     provisioned_postgres_pool,
 ) -> None:

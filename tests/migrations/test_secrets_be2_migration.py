@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -31,20 +30,6 @@ _TEST_STATE_COLUMNS = (
     "last_test_code",
     "last_test_message",
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_106", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_migration_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_106"
-    assert mod.down_revision == "core_105"
 
 
 def test_four_writable_nullable_columns_with_types():

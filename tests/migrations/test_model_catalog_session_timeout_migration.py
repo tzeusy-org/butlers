@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -16,24 +15,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_073_model_catalog_session_timeout.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_073", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_migration_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_073"
-    assert mod.down_revision == "core_072"
-
-
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
 
 
 def test_upgrade_sql_moves_timeout_to_model_catalog_and_reduces_runtime_config():

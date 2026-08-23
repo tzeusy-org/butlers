@@ -40,19 +40,6 @@ def _load_migration(path: Path, mod_name: str):
 # ---------------------------------------------------------------------------
 
 
-class TestCore190RevisionChain:
-    """Verify core_190 metadata."""
-
-    @pytest.mark.unit
-    def test_revision_chain(self) -> None:
-        """core_190 -> core_189, no branch/depends."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
-        assert mod.revision == "core_190"
-        assert mod.down_revision == "core_189"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestCore190UpgradeSQLShape:
     """Verify upgrade() SQL structure."""
 

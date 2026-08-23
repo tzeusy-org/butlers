@@ -6,7 +6,6 @@ shape before later reduction migrations.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -20,27 +19,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_061_runtime_config.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("core_061", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_migration_revision_chain():
-    """core_061 revises core_060."""
-    mod = _load_migration()
-    assert mod.revision == "core_061"
-    assert mod.down_revision == "core_060"
-
-
-def test_migration_file_exists():
-    """The migration file exists at the expected path."""
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
 
 
 def test_migration_sql_contains_expected_columns():

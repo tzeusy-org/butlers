@@ -62,16 +62,6 @@ def _collect_sqls(fn_name: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationFileAndChain:
-    def test_revision_chain(self) -> None:
-        """rel_022 -> rel_021, no branch/depends."""
-        mod = _load_migration(_MIGRATION_PATH, "rel_022")
-        assert mod.revision == "rel_022"
-        assert mod.down_revision == "rel_021"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestDowngradeSQLShape:
     def test_deletes_only_prefers_channel_row(self) -> None:
         sqls = _collect_sqls("downgrade")

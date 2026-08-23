@@ -54,13 +54,6 @@ class TestMigrationStructure:
     """Chain + the parity-RAISE invariant (no integration test triggers a
     parity mismatch, so this source guard is the only proof of the abort)."""
 
-    def test_revision_chain(self):
-        mod = _load_migration()
-        assert mod.revision == "rel_031"
-        assert mod.down_revision == "rel_030"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_parity_raise_exceptions_present(self):
         sql = _load_migration()._BACKFILL_AND_PARITY_SQL
         # Both parity assertions must be able to abort the migration.

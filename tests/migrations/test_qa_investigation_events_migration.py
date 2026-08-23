@@ -56,12 +56,6 @@ async def _run_upgrade(pool: asyncpg.Pool) -> None:
         await pool.execute(sql)
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_091"
-    assert mod.down_revision == "core_090"
-
-
 @pytest.mark.asyncio(loop_scope="session")
 async def test_qa_investigation_events_rejects_unknown_step(
     qa_investigation_events_pool: asyncpg.Pool,

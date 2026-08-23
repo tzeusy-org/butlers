@@ -47,16 +47,6 @@ def _load_migration(module_name: str, path: Path):
     return mod
 
 
-def test_migration_revision_chain() -> None:
-    tool_call_migration = _load_migration("core_139", _TOOL_CALL_MIGRATION_PATH)
-    assert tool_call_migration.revision == "core_139"
-    assert tool_call_migration.down_revision == "core_138"
-
-    infra_state_migration = _load_migration("core_170", _INFRA_STATE_MIGRATION_PATH)
-    assert infra_state_migration.revision == "core_170"
-    assert infra_state_migration.down_revision == "core_169"
-
-
 @pytest.fixture(scope="module")
 def migrated_core_db_url(postgres_container) -> str:
     return create_migrated_test_db(

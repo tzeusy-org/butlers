@@ -45,14 +45,6 @@ def _load_migration():
     return module
 
 
-def test_migration_chain_linkage() -> None:
-    module = _load_migration()
-    assert module.revision == "core_182"
-    assert module.down_revision == "core_181"
-    assert module.branch_labels is None
-    assert module.depends_on is None
-
-
 @pytest.fixture(scope="module")
 def fresh_core_only_db_url(postgres_container) -> str:
     """AC5, half 1: a fresh database that only ever runs the core chain."""

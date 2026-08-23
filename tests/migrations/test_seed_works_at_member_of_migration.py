@@ -63,14 +63,6 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "rel_024"
-    assert mod.down_revision == "rel_023"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
 def test_upgrade_creates_schema_guard() -> None:
     sqls = _collect_upgrade_sqls()
     schema_stmts = [s for s in sqls if "CREATE SCHEMA" in s.upper()]

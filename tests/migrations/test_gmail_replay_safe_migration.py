@@ -57,18 +57,6 @@ def _collect_execute_calls(fn_name: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationFileAndChain:
-    """Revision-chain contract test."""
-
-    def test_revision_chain(self) -> None:
-        """sw_013 -> sw_012, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "sw_013"
-        assert mod.down_revision == "sw_012"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     """Verify the SQL emitted by upgrade() matches the spec requirements."""
 

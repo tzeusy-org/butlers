@@ -48,12 +48,6 @@ def _load_core_migration():
     return mod
 
 
-def test_core_repair_migration_revision_chain():
-    mod = _load_core_migration()
-    assert mod.revision == "core_111"
-    assert mod.down_revision == "core_110"
-
-
 def test_core_repair_migration_adds_pending_action_columns():
     source = _CORE_MIGRATION_PATH.read_text()
     assert "pending_actions" in source

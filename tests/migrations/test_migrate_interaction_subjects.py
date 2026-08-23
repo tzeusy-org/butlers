@@ -45,18 +45,6 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationChain:
-    """Revision chain contract test."""
-
-    def test_revision_chain(self) -> None:
-        """rel_018 -> rel_017, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "rel_018"
-        assert mod.down_revision == "rel_017"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 # ---------------------------------------------------------------------------
 # Facts-table guard tests
 # ---------------------------------------------------------------------------

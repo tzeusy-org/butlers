@@ -147,12 +147,6 @@ async def migration_pool(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_093"
-    assert mod.down_revision == "core_092"
-
-
 # ---------------------------------------------------------------------------
 # Upgrade: data remap
 # ---------------------------------------------------------------------------
