@@ -51,11 +51,11 @@ _V2_CATALOG_SQL = """
          AND fleet_halt.proname = 'append_runtime_attention_fleet_halt'
          AND fleet_halt.pronargs = 0
          AND fleet_halt.prorettype = 'uuid'::regtype
-        JOIN pg_proc AS legacy_fence
-          ON legacy_fence.pronamespace = public_schema.oid
-         AND legacy_fence.proname = 'runtime_attention_legacy_producer_fence'
-         AND legacy_fence.pronargs = 0
-         AND legacy_fence.prorettype = 'trigger'::regtype
+        JOIN pg_proc AS debounce_marker
+          ON debounce_marker.pronamespace = public_schema.oid
+         AND debounce_marker.proname = 'runtime_attention_plant_legacy_debounce_marker'
+         AND debounce_marker.pronargs = 0
+         AND debounce_marker.prorettype = 'trigger'::regtype
         WHERE outbox_owner.rolname = 'runtime_attention_outbox_owner'
           AND NOT outbox_owner.rolcanlogin
           AND NOT outbox_owner.rolsuper
@@ -65,30 +65,30 @@ _V2_CATALOG_SQL = """
           AND producer_control.relowner = outbox_owner.oid
           AND model_breaker.proowner = outbox_owner.oid
           AND fleet_halt.proowner = outbox_owner.oid
-          AND legacy_fence.proowner = outbox_owner.oid
+          AND debounce_marker.proowner = outbox_owner.oid
           AND model_breaker.prosecdef
           AND fleet_halt.prosecdef
-          AND legacy_fence.prosecdef
+          AND debounce_marker.prosecdef
           AND model_breaker.proconfig = ARRAY[
               'search_path=pg_catalog, public, pg_temp'
           ]::text[]
           AND fleet_halt.proconfig = ARRAY[
               'search_path=pg_catalog, public, pg_temp'
           ]::text[]
-          AND legacy_fence.proconfig = ARRAY[
+          AND debounce_marker.proconfig = ARRAY[
               'search_path=pg_catalog, public, pg_temp'
           ]::text[]
           AND EXISTS (
               SELECT 1
-              FROM pg_trigger AS producer_fence_trigger
-              WHERE producer_fence_trigger.tgrelid =
+              FROM pg_trigger AS marker_trigger
+              WHERE marker_trigger.tgrelid =
                     'public.model_dispatch_attempts'::regclass
-                AND producer_fence_trigger.tgname =
-                    'runtime_attention_legacy_producer_fence_trigger'
-                AND producer_fence_trigger.tgfoid = legacy_fence.oid
-                AND NOT producer_fence_trigger.tgisinternal
-                AND (producer_fence_trigger.tgtype & 2) = 2
-                AND (producer_fence_trigger.tgtype & 4) = 4
+                AND marker_trigger.tgname =
+                    'runtime_attention_plant_legacy_debounce_marker_trigger'
+                AND marker_trigger.tgfoid = debounce_marker.oid
+                AND NOT marker_trigger.tgisinternal
+                AND (marker_trigger.tgtype & 2) = 2
+                AND (marker_trigger.tgtype & 4) = 4
           )
           AND (
               SELECT count(*)

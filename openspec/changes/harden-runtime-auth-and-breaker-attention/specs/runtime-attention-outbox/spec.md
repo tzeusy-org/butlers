@@ -77,14 +77,17 @@ Scope: v1-mandatory
 - **AND** historical dispatch, ledger, notification, and audit evidence
   remains readable and unchanged
 
-#### Scenario: Producer rollback retains the cutover fence
+#### Scenario: Producer rollback retains the legacy debounce-marker planter
 
 - **WHEN** the privileged core_199 rollback disables runtime-attention producers
 - **THEN** qualifying dispatch attempts remain recordable but append no new episodes
-- **AND** the outbox, existing evidence, v2 producer functions, and executable
-  old-binary suppression fence remain installed
+- **AND** the outbox, existing evidence, v2 producer functions, and the
+  old-binary debounce-marker planter remain installed
+- **AND** the planter blocks no insert; it records the marker rows a legacy
+  direct-delivery helper debounces itself on, so suppression holds only while
+  such a helper honours its own debounce
 - **AND** rollback does not restore either legacy direct-delivery helper or
-  permit a further core_198 teardown beneath the retained fence
+  permit a further core_198 teardown beneath the retained planter
 
 ### Requirement: Switchboard-Owned At-Most-Once Attention Delivery
 

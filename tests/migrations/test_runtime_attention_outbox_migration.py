@@ -1913,3 +1913,123 @@ def test_nonempty_outbox_rejects_downgrade_and_requires_forward_remediation(
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
     finally:
         engine.dispose()
+
+
+def test_init_db_rerun_adopts_the_renamed_debounce_marker_planter(
+    postgres_container,
+) -> None:
+    """bu-kww1r's rename must converge a database bootstrapped under the old name.
+
+    The marker planter's body lives in ``upgrade_producers_v2``, which does not
+    re-run once a database is at v2, so the rename cannot arrive that way.
+    ``finalize_interface`` adopts it instead.  Every other test here bootstraps
+    under the new name and never exercises that branch, so this one puts the
+    database back into the pre-rename shape first and proves the rerun both
+    renames the objects and leaves the trigger planting.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            # Regress to exactly the shape the previous bootstrap left behind.
+            conn.execute(
+                text(
+                    "ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() "
+                    "RENAME TO runtime_attention_legacy_producer_fence"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TRIGGER runtime_attention_plant_legacy_debounce_marker_trigger "
+                    "ON public.model_dispatch_attempts "
+                    "RENAME TO runtime_attention_legacy_producer_fence_trigger"
+                )
+            )
+            assert conn.execute(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.runtime_attention_plant_legacy_debounce_marker()'"
+                    ") IS NULL"
+                )
+            ).scalar_one(), "the pre-rename shape was not actually restored"
+    finally:
+        admin.dispose()
+
+    _rerun_actual_init_db(bootstrap_url, db_url)
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.runtime_attention_plant_legacy_debounce_marker()'"
+                    ") IS NOT NULL"
+                )
+            ).scalar_one(), "the rerun did not adopt the new function name"
+            assert conn.execute(
+                text(
+                    "SELECT to_regprocedure("
+                    "'public.runtime_attention_legacy_producer_fence()'"
+                    ") IS NULL"
+                )
+            ).scalar_one(), "the old function name survived the rerun"
+            assert conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_trigger
+                        WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
+                          AND tgname =
+                              'runtime_attention_plant_legacy_debounce_marker_trigger'
+                          AND NOT tgisinternal
+                    )
+                    """
+                )
+            ).scalar_one(), "the rerun did not adopt the new trigger name"
+
+            # The rename is OID-preserving, so the planter must still plant.  A
+            # pre-v2 writer sets no ABI marker, which is the branch that fires.
+            entry_id = uuid.uuid4()
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
+                    VALUES (:id, 'rename-adoption', 'codex', 'rename-adoption-model')
+                    """
+                ),
+                {"id": entry_id},
+            )
+            conn.execute(text(f"SET ROLE {_quote_ident(_MODEL_PRODUCER)}"))
+            try:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO public.model_dispatch_attempts (
+                            catalog_entry_id, butler, outcome
+                        ) VALUES (:id, 'general', 'runtime_failure')
+                        """
+                    ),
+                    {"id": entry_id},
+                )
+            finally:
+                conn.execute(text("RESET ROLE"))
+            assert (
+                conn.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM public.audit_log
+                        WHERE action = 'model_breaker_open_notified'
+                          AND target = :target
+                        """
+                    ),
+                    {"target": f"model_breaker:{entry_id}"},
+                ).scalar_one()
+                == 1
+            ), "the renamed planter stopped planting its debounce marker"
+    finally:
+        admin.dispose()

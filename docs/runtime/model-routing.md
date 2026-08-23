@@ -171,17 +171,33 @@ denials use the same recorder and create at most one episode per UTC month; a
 month already breached before producer activation is not paged retrospectively.
 
 Migration `core_199` installs the version-2 producer control and a database
-cutover fence. New recorders set a transaction-local ABI marker. A canonical
-runtime without that marker is treated as an old direct-delivery binary: the
-fence writes only the fixed debounce marker that makes its retired breaker or
-fleet-halt helper stop before transport. Producer rollback disables new episodes
-while retaining attempts, the outbox, evidence, and this fence.
+trigger, `public.runtime_attention_plant_legacy_debounce_marker()`. New
+recorders set a transaction-local ABI marker. A canonical runtime without that
+marker is treated as an old direct-delivery binary, and the trigger plants one
+`public.audit_log` row for it.
+
+**That trigger blocks nothing.** It returns `NEW` unconditionally; every insert
+it sees proceeds. Suppression is cooperative: the retired
+`model_breaker_attention` and `fleet_halt_attention` helpers debounced on
+`(target, action)` in `audit_log` with no actor filter, so a row planted under a
+different actor still satisfied their lookup and they skipped before transport.
+The old binary suppresses itself. Nothing in the database compels it, and a
+producer that never performs that lookup, that hits a lookup error (both helpers
+failed open), or that is past the window — 15 minutes for the breaker, the
+current UTC month for the ceiling — is unaffected. Both helpers were retired in
+PR 3742, so nothing in this repository reads the markers today; they matter only
+against a deployed binary older than that. It was previously named
+`runtime_attention_legacy_producer_fence` and two reviewers read that name as an
+ingress gate, which is why it was renamed.
+
+Producer rollback disables new episodes while retaining attempts, the outbox,
+evidence, and this trigger.
 
 Applying `core_199` closes the `core_198` teardown permanently. The `core_199`
 downgrade clears `producers_enabled` but deliberately leaves
 `public.runtime_attention_producer_control` and
-`public.runtime_attention_legacy_producer_fence()` installed, and no migration,
-bootstrap, or script drops either one. The `core_198` downgrade precondition
+`public.runtime_attention_plant_legacy_debounce_marker()` installed, and no
+migration, bootstrap, or script drops either one. The `core_198` downgrade precondition
 requires both to be absent, so on any database that has ever reached `core_199`
 it refuses:
 
@@ -193,10 +209,12 @@ Downgrading below `core_198` is not a supported operation on such a database,
 and no rollback restores the pre-outbox schema.
 
 To stop paging, downgrade `core_199` alone. Episode production stops; the
-outbox, the delivery lease, the attempt rows, and the cutover fence stay in
-place, and every repair from there is forward remediation. Retaining the fence
-is the point of the design, because removing it would let an old
-direct-delivery binary reach transport again.
+outbox, the delivery lease, the attempt rows, and the marker planter stay in
+place, and every repair from there is forward remediation. Retaining the planter
+is the point of the design: removing it would stop planting the markers an old
+direct-delivery binary debounces itself on, so such a binary would reach
+transport again. It is worth being exact about that — retention keeps a
+cooperating old binary quiet, it does not make an uncooperative one impossible.
 
 ### Metrics
 
