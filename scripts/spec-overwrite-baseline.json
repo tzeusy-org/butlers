@@ -1548,31 +1548,31 @@
     },
     {
       "kind": "clause",
-      "scenario": "An attention-ledger push notifies the owner once per breach window",
+      "scenario": "The owner is notified exactly once per breach window",
       "digest": "1786095837c3",
       "excerpt": "- **WHEN** the monthly ceiling transitions from not-breached to breached — the first `quota_skip` dispatch denial wit..."
     },
     {
       "kind": "clause",
-      "scenario": "An attention-ledger push notifies the owner once per breach window",
+      "scenario": "The owner is notified exactly once per breach window",
       "digest": "369dc0422a47",
       "excerpt": "- **THEN** exactly one `public.attention_ledger` row is written with `source=\"notify\"`, `outcome=\"delivered\"`, `prior..."
     },
     {
       "kind": "clause",
-      "scenario": "An attention-ledger push notifies the owner once per breach window",
+      "scenario": "The owner is notified exactly once per breach window",
       "digest": "e320f5211109",
       "excerpt": "- **AND** the owner is paged through the same notify-boundary gating/dispatch primitives `notify()` uses (quiet hours..."
     },
     {
       "kind": "clause",
-      "scenario": "An attention-ledger push notifies the owner once per breach window",
+      "scenario": "The owner is notified exactly once per breach window",
       "digest": "c1045ea7f932",
       "excerpt": "- **AND** every subsequent ceiling denial in the same calendar month writes NEITHER another `attention_ledger` row NO..."
     },
     {
       "kind": "clause",
-      "scenario": "An attention-ledger push notifies the owner once per breach window",
+      "scenario": "The owner is notified exactly once per breach window",
       "digest": "fa09704515f3",
       "excerpt": "- **AND** the entire push is best-effort and failure-isolated: any failure (ledger write, debounce lookup, delivery) ..."
     },

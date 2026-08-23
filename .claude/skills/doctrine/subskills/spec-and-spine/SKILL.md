@@ -82,6 +82,27 @@ rg -n "<keyword>|^### Requirement:|^#### Scenario:" openspec/changes
 - If the spec is vague, resolve the ambiguity in the spec and scenarios rather than encoding hidden assumptions in code.
 - Role specs define stable behavioral contracts; frequently changing operational values belong in roster config or runtime state, not in the role spec.
 
+## Authoring Delta Blocks
+
+A `## MODIFIED Requirements` block replaces the **whole** requirement, and
+OpenSpec 1.9.0 matches scenarios by NAME only. Two consequences bind every
+author:
+
+- A MODIFIED block must reproduce every scenario name the baseline still
+  carries, verbatim. Carried-over scenarios unrelated to your change are
+  required, not accidental duplication. Deleting them makes archive drop them
+  from the baseline.
+- **A scenario heading can never be renamed by a delta.** So write headings
+  that name the GUARANTEE, not the MECHANISM: "The owner is notified exactly
+  once per breach window", never "An attention-ledger push notifies the owner
+  once per breach window". Mechanisms get replaced and headings cannot follow.
+
+Correcting a heading that is already wrong takes two changes archived in
+order, plus a rebuild of every open MODIFIED block against that requirement.
+The validated procedure, its verified costs, and the exact error strings are in
+[references/renaming-a-baseline-scenario.md](references/renaming-a-baseline-scenario.md).
+Read it before attempting a rename; prevention is much cheaper.
+
 ## OpenSpec Workflow Hand-off
 
 Use the OpenSpec workflow commands (installed and kept current by the `openspec` CLI under

@@ -35,7 +35,7 @@ Scope: v1-mandatory
 - **AND** rows with no `session_id` render without a session door instead of a
   dead or broken link
 
-#### Scenario: An attention-ledger push notifies the owner once per breach window
+#### Scenario: The owner is notified exactly once per breach window
 
 - **WHEN** the monthly ceiling transitions from not-breached to breached — the
   first current-calendar-month `quota_skip` dispatch denial whose
