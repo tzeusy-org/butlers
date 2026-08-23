@@ -1958,6 +1958,26 @@ stopped agent is neither authoritative nor worthless: re-verify its factual clai
 yourself, and diff its abandoned openspec delta against the surviving one before deleting it —
 "redundant" is the assumption most likely to be wrong.
 
+A corollary that bites separately: **never run a test gate against a worktree a live worker owns.**
+A suite executed while the worker is mid-edit imports a half-written module and fails in ways that
+have nothing to do with the code under review. This produced 8 "failures" on `agent/bu-uqipv` that
+became 12 passes minutes later, with no fix in between. Before reading any gate result as a verdict
+on a branch, confirm the tree is settled: `git status --porcelain | wc -l` must be `0`, and it must
+still be `0` when the run ends. A failure observed on an unsettled tree is not evidence of a
+regression, and re-running is diagnosis, not denial.
+
+### `scripts/emit_worker_report.py` deadlocks any worker that must not push
+
+The script hard-requires a `Branch-Pushed: yes` header for every `completed-*` status. Under the
+beads-coordinator protocol the coordinator is the sole mutation authority and dispatched workers are
+forbidden to push, so a worker following its contract can never produce a valid report: the script
+rejects it, the worker has no other reporting channel wired up, and it goes **silent** rather than
+erroring visibly. From the coordinator's side this is indistinguishable from a worker that hung.
+
+Until that is fixed (`bu-1ajs6`), dispatch prompts must tell workers to skip the script and report
+via `SendMessage` instead. Four workers were lost to this before it was diagnosed, each one looking
+like a different incident.
+
 ### httpx logs every request URL at INFO, so a query parameter is a log leak
 
 `httpx/_client.py:117` binds `logger = logging.getLogger("httpx")`, and `_send_single_request`
