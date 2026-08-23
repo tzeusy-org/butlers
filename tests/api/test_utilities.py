@@ -369,3 +369,47 @@ class TestDepsModuleGlobalIsolation:
         monkeypatch.setattr(deps_mod, singleton, None)
         with pytest.raises(RuntimeError, match="not initialized"):
             getattr(deps_mod, getter)()
+
+
+# ---------------------------------------------------------------------------
+# Provider connectivity probe URL (bu-qdi56)
+#
+# ``config`` is operator-supplied JSON that round-trips through the
+# provider_config JSONB column. ``config.get("base_url", "")`` only returns the
+# default when the key is ABSENT; a present ``null``/list/int reaches
+# ``.rstrip`` and raises AttributeError out of the test-connectivity handler,
+# which documents "no HTTP 5xx unless the DB itself is unavailable".
+# ---------------------------------------------------------------------------
+
+
+class TestProbeUrlForProvider:
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"base_url": "http://ollama.local:11434/"}, "http://ollama.local:11434/api/version"),
+            ({"base_url": "http://ollama.local:11434"}, "http://ollama.local:11434/api/version"),
+            ({}, None),
+            ({"base_url": ""}, None),
+        ],
+    )
+    def test_string_base_url(self, config, expected):
+        """A string base_url (or an absent one) behaves as documented."""
+        from butlers.api.routers.provider_settings import _probe_url_for_provider
+
+        assert _probe_url_for_provider("ollama", config) == expected
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [None, 11434, ["http://ollama.local:11434"], {"host": "ollama.local"}, True],
+    )
+    def test_non_string_base_url_yields_no_probe_url(self, base_url):
+        """A non-string base_url degrades to "no probe URL", never AttributeError."""
+        from butlers.api.routers.provider_settings import _probe_url_for_provider
+
+        assert _probe_url_for_provider("ollama", {"base_url": base_url}) is None
+
+    def test_unknown_provider_type_needs_no_config(self):
+        """Non-ollama provider types return None without reading base_url."""
+        from butlers.api.routers.provider_settings import _probe_url_for_provider
+
+        assert _probe_url_for_provider("openai", {"base_url": None}) is None

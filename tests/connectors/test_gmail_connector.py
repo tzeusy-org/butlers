@@ -827,3 +827,132 @@ async def test_submission_error_retains_raw_payload(
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == {"message_id": "msg123"}
+
+
+# ---------------------------------------------------------------------------
+# Provider-supplied header entries with non-string fields (bu-qdi56)
+#
+# Gmail header entries arrive as untrusted provider JSON. ``.get("name", "")``
+# only returns the default when the key is ABSENT: a present ``null``/list/int
+# is returned as-is and the following string method raises AttributeError.
+# ---------------------------------------------------------------------------
+
+_MALFORMED_HEADER_ENTRIES: list[Any] = [
+    "Content-Type: text/plain",  # entry is not a dict at all
+    ["Content-Type", "text/plain"],
+    {"name": None, "value": "text/plain; charset=iso-8859-1"},
+    {"name": ["Content-Type"], "value": "text/plain; charset=iso-8859-1"},
+    {"name": 42, "value": "text/plain; charset=iso-8859-1"},
+]
+
+
+@pytest.mark.parametrize("header", _MALFORMED_HEADER_ENTRIES)
+def test_charset_from_headers_skips_malformed_entries(header: Any) -> None:
+    """A malformed header entry is skipped, not crashed on."""
+    assert GmailConnectorRuntime._charset_from_headers([header]) == "utf-8"
+
+
+@pytest.mark.parametrize("bad_value", [None, 42, ["utf-8"], {"charset": "utf-8"}])
+def test_charset_from_headers_skips_non_string_value(bad_value: Any) -> None:
+    """A Content-Type header whose value is not a string falls back to utf-8."""
+    headers = [{"name": "Content-Type", "value": bad_value}]
+    assert GmailConnectorRuntime._charset_from_headers(headers) == "utf-8"
+
+
+def test_charset_from_headers_still_reads_declared_charset() -> None:
+    """The happy path is unchanged: a declared, known charset is returned."""
+    headers = [
+        {"name": None, "value": "junk"},
+        {"name": "Content-Type", "value": "text/plain; charset=iso-8859-1"},
+    ]
+    assert GmailConnectorRuntime._charset_from_headers(headers) == "iso-8859-1"
+
+
+@pytest.mark.parametrize("bad_name", [None, 42, ["Subject"]])
+def test_get_subject_skips_header_with_non_string_name(bad_name: Any) -> None:
+    """A non-string header ``name`` is skipped instead of raising."""
+    message_data = {"payload": {"headers": [{"name": bad_name, "value": "Hello"}]}}
+    assert GmailConnectorRuntime._get_subject(message_data) == "(no subject)"
+
+
+@pytest.mark.parametrize("bad_value", [None, 42, ["Hello"]])
+def test_get_subject_rejects_non_string_value(bad_value: Any) -> None:
+    """A non-string Subject value degrades to the documented default."""
+    message_data = {"payload": {"headers": [{"name": "Subject", "value": bad_value}]}}
+    assert GmailConnectorRuntime._get_subject(message_data) == "(no subject)"
+
+
+@pytest.mark.parametrize("bad_name", [None, 42, ["From"]])
+def test_get_from_header_skips_header_with_non_string_name(bad_name: Any) -> None:
+    """A non-string header ``name`` is skipped instead of raising."""
+    message_data = {"payload": {"headers": [{"name": bad_name, "value": "a@example.com"}]}}
+    assert GmailConnectorRuntime._get_from_header(message_data) == ""
+
+
+@pytest.mark.parametrize("bad_value", [None, 42, ["a@example.com"]])
+def test_get_from_header_rejects_non_string_value(bad_value: Any) -> None:
+    """A non-string From value degrades to the empty string."""
+    message_data = {"payload": {"headers": [{"name": "From", "value": bad_value}]}}
+    assert GmailConnectorRuntime._get_from_header(message_data) == ""
+
+
+def test_get_subject_and_from_still_read_valid_headers() -> None:
+    """The happy path is unchanged when a malformed entry precedes a valid one."""
+    message_data = {
+        "payload": {
+            "headers": [
+                {"name": None, "value": "junk"},
+                {"name": "Subject", "value": "Quarterly report"},
+                {"name": "From", "value": "sender@example.com"},
+            ]
+        }
+    }
+    assert GmailConnectorRuntime._get_subject(message_data) == "Quarterly report"
+    assert GmailConnectorRuntime._get_from_header(message_data) == "sender@example.com"
+
+
+def _fake_http_for_sent_raw(headers_by_id: dict[str, list[Any]]) -> MagicMock:
+    """Fake httpx client serving one SENT page plus verbatim header lists."""
+
+    def _make_resp(payload: dict[str, Any]) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value=payload)
+        return resp
+
+    async def fake_get(url: str, **kwargs: Any) -> MagicMock:
+        if url.endswith("/messages"):
+            return _make_resp(
+                {"messages": [{"id": mid} for mid in headers_by_id], "nextPageToken": None}
+            )
+        mid = url.rsplit("/", 1)[-1]
+        return _make_resp({"payload": {"headers": headers_by_id[mid]}})
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=fake_get)
+    return client
+
+
+async def test_fetch_sent_message_ids_skips_malformed_headers(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Malformed SENT headers are skipped; valid Message-IDs still collected.
+
+    An AttributeError here escapes into ``_refresh_sent_message_ids``'s broad
+    handler, which misreports it as a source-API/auth failure and flips the
+    connector's health to degraded.
+    """
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._get_access_token = AsyncMock(return_value="tok")  # type: ignore[method-assign]
+    runtime._http_client = _fake_http_for_sent_raw(  # type: ignore[assignment]
+        {
+            "s1": [{"name": None, "value": "<sent-1@example.com>"}],
+            "s2": [{"name": "Message-ID", "value": ["<sent-2@example.com>"]}],
+            "s3": ["Message-ID: <sent-3@example.com>"],
+            "s4": [{"name": "Message-ID", "value": "<sent-4@example.com>"}],
+        }
+    )
+
+    sent = await runtime._fetch_sent_message_ids()
+
+    assert sent == frozenset({"<sent-4@example.com>"})
