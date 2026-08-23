@@ -2372,6 +2372,22 @@ async def _check_credential_status_for_account(
     )
 
 
+def _malformed_probe_payload(detail: str) -> OAuthCredentialStatus:
+    """Degraded status for a token-endpoint 200 whose body is unusable.
+
+    ``detail`` is operator-facing and must be composed locally -- a type name is
+    fine, a provider-supplied value is not. Nothing from the payload reaches the
+    log line or the response body.
+    """
+    logger.warning("OAuth status probe: malformed token payload (%s)", detail)
+    return OAuthCredentialStatus(
+        state=OAuthCredentialState.unknown_error,
+        scopes_granted=None,
+        remediation="Received an unexpected response from Google. Please try again later.",
+        detail=detail,
+    )
+
+
 async def _probe_google_token(
     *,
     client_id: str,
@@ -2432,6 +2448,12 @@ async def _probe_google_token(
             detail=f"JSON decode error: {exc}",
         )
 
+    if not isinstance(token_data, dict):
+        # A 200 whose body is a list or a bare scalar cannot be `.get`-ed at all.
+        return _malformed_probe_payload(
+            f"Token response is {type(token_data).__name__}, not a JSON object."
+        )
+
     # --- Token refresh succeeded — check scopes ---
     # Google may omit the `scope` field on refresh responses when scopes are unchanged.
     # When absent, we cannot verify scope coverage so we treat the token as connected
@@ -2444,6 +2466,22 @@ async def _probe_google_token(
             scopes_granted=None,
             remediation=None,
             detail=None,
+        )
+
+    if not isinstance(granted_scope_str, str):
+        # `is None` is not a type check. A list, dict, int, float, or bool is not
+        # None, so it passed the guard above and reached `.split()` -- turning a
+        # read-only status probe into a 500 for the one caller who asked whether
+        # the credential was healthy. Answer with the degraded status instead.
+        #
+        # Not routed through `validate_oauth_token_payload`: that contract is an
+        # all-or-nothing verdict over access_token/refresh_token/expires_in, none
+        # of which this probe reads, and it rejects a null or blank `scope` --
+        # both of which have a correct, deliberate verdict here (connected and
+        # missing_scope respectively). Borrowing it would flip verdicts this
+        # function already gets right, for reasons unrelated to scope.
+        return _malformed_probe_payload(
+            f"Token response 'scope' is {type(granted_scope_str).__name__}, not a string."
         )
 
     granted_scopes = [s for s in granted_scope_str.split() if s]
