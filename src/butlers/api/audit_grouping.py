@@ -1,8 +1,10 @@
 """Shared audit-error grouping logic for the dashboard.
 
 Both the Issues router and the Briefing router aggregate audit-log errors by
-normalized first-line message. This module owns the shared CTE SQL and the
-row-to-domain projection helpers so the two consumers stay in sync.
+normalized first-line message — except credential-target rows, which group on a
+synthetic content-blind title instead (see below). This module owns the shared
+CTE SQL and the row-to-domain projection helpers so the two consumers stay in
+sync.
 
 Key normalization rule
 ----------------------
@@ -11,6 +13,67 @@ before grouping. Without this step, the same underlying error produces a
 distinct group for every ephemeral temp directory, inflating the issues count
 and making the Issues page and the Briefing disagree on the number of distinct
 problems.
+
+Credential-target groups are identified without free text (bu-uqipv)
+--------------------------------------------------------------------
+A group's identity *is* its ``error_summary``, and for a credential-target row
+that string was the provider's own failure text: ``_write_credential_audit``
+hands the raw probe message to ``credential_lifecycle_outcome``, which stores it
+in ``error``. So the text ``AuditLogEntry`` stopped publishing (bu-ove06) came
+straight back out as a group title, in ``Issue.error_message``, in the composed
+``description``, and in the briefing attention item.
+
+It could not simply be blanked: a constant summary would collapse every
+credential failure in the fleet into one group with one occurrence count and one
+acknowledgement covering unrelated broken credentials. Instead, credential-target
+rows group on a synthetic title built from two columns that are already on the
+wire for that row — ``action`` and ``target``, both of which bu-ove06 publishes
+unchanged so the row stays identifiable and ``?key=``-filterable. The result
+reads ``Credential failed: u:google (diagnostic withheld)``: distinct per
+credential, stable across windows, and derived from nothing a provider wrote.
+
+The identity is the credential, not the message. Two different causes on one
+credential (a 401 and a 429 on ``u:google``) fold into one group — the accepted
+cost of a content-blind identity, since the only per-cause signal on the row is
+the withheld text itself. The per-occurrence detail remains readable at
+``public.audit_log`` and ``public.secret_probe_log``: this is content blindness
+on the wire, not destruction of evidence.
+
+Alternatives rejected
+~~~~~~~~~~~~~~~~~~~~~
+- **Group on a ``PROBE_FAILURE_VOCABULARY`` token plus the target namespace.**
+  The token is not on the row. It lives inside the ``note`` free text as
+  ``probe_status=<token>``, only two of the ten endpoints that write credential
+  audit rows put it there (``probe_user_credential`` and
+  ``probe_system_credential``; the other eight — rotate, disconnect,
+  reauthorize, set, delete — never emit a token at all), and the token itself
+  (``live_failed:403``) is not a vocabulary member: the category is derived at
+  *response* time by ``_probe_failure_category`` from the token plus the
+  provider HTTP code, and that code is never persisted.
+  Recovering it here would mean substring-parsing the very free text this rule
+  withholds, which is what owner Option C forbids: the published value must be
+  selected out of a closed vocabulary, never derived from an input string.
+  Persisting the category at write time is a real option, but it is a
+  five-producer change that leaves every historic row uncategorised, so it is a
+  follow-up rather than this fix.
+- **Blank the summary to a constant.** Rejected: it breaks a working surface,
+  per above.
+- **Hash the error text into an opaque identity.** Rejected: it withholds the
+  text and keeps the groups distinct, but the feed then shows an operator a row
+  they cannot act on — an unreadable token where a title belongs — and the
+  briefing would repeat it. Content blindness should cost detail, not meaning.
+- **Normalise the scope prefix (``user:`` -> ``u:``) before grouping.** The
+  ``target`` column is never normalised on write, so in principle one credential
+  could fork into two groups. Rejected as unnecessary: every live producer
+  builds its target through ``normalize_credential_key``, so the long spellings
+  are historical/defensive only — and the predicate still *matches* them, so
+  the fork's worst case is a duplicate group, never a leak. Doing it would
+  copy ``credential_keys._SCOPE_TO_PREFIX`` into SQL as a second source of
+  truth, which is the drift this module just spent a shared pattern avoiding.
+
+Because the rule lives in the shared CTE below, the Issues feed, the briefing,
+the occurrences drill-down, and the audit-row resolver all inherit it by
+construction and cannot disagree about a group's title.
 
 Severity model
 --------------
@@ -28,6 +91,7 @@ import re
 from urllib.parse import urlencode
 
 from butlers.api.models import Issue
+from butlers.api.models.audit import CREDENTIAL_TARGET_PATTERN
 
 # ---------------------------------------------------------------------------
 # SQL building-block
@@ -61,7 +125,7 @@ from butlers.api.models import Issue
 #:   actor    -> butler          action   -> operation
 #:   ts       -> created_at      metadata -> request_summary
 #:   error    -> error           result   -> result
-_AUDIT_NORMALIZED_CTE = """
+_AUDIT_NORMALIZED_CTE_SRC = """
 WITH audit_source AS (
     SELECT
         id,
@@ -90,17 +154,21 @@ normalized_errors AS (
         operation,
         request_summary,
         result,
-        COALESCE(
-            NULLIF(BTRIM(
-                REGEXP_REPLACE(
-                    SPLIT_PART(error, E'\\n', 1),
-                    '/tmp/tmp[a-zA-Z0-9_]+/',
-                    '/tmp/.../',
-                    'g'
-                )
-            ), ''),
-            'Unknown error'
-        ) AS error_summary,
+        CASE
+            WHEN target ~ '__CREDENTIAL_TARGET_PATTERN__' THEN
+                'Credential ' || operation || ': ' || target || ' (diagnostic withheld)'
+            ELSE COALESCE(
+                NULLIF(BTRIM(
+                    REGEXP_REPLACE(
+                        SPLIT_PART(error, E'\\n', 1),
+                        '/tmp/tmp[a-zA-Z0-9_]+/',
+                        '/tmp/.../',
+                        'g'
+                    )
+                ), ''),
+                'Unknown error'
+            )
+        END AS error_summary,
         (
             operation = 'session'
             AND COALESCE(request_summary->>'trigger_source', '') LIKE 'schedule:%'
@@ -113,6 +181,15 @@ normalized_errors AS (
     WHERE result = 'error'{where_extra}
 )
 """
+
+#: ``_AUDIT_NORMALIZED_CTE_SRC`` carries the credential predicate as a sentinel
+#: rather than an inline literal so the pattern has exactly one definition
+#: (:data:`~butlers.api.models.audit.CREDENTIAL_TARGET_PATTERN`).  A plain
+#: ``.replace`` is used instead of ``.format`` because the template's remaining
+#: braces belong to ``{where_extra}`` and to ``'{{}}'::jsonb``.
+_AUDIT_NORMALIZED_CTE = _AUDIT_NORMALIZED_CTE_SRC.replace(
+    "__CREDENTIAL_TARGET_PATTERN__", CREDENTIAL_TARGET_PATTERN
+)
 
 _GROUPED_CTE_TAIL = """,
 grouped_errors AS (

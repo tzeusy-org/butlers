@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -22,10 +23,12 @@ import pytest
 from butlers.api.audit_grouping import (
     attention_item_from_audit_group_row,
     audit_group_key,
+    build_audit_group_for_row_query,
     build_audit_group_occurrences_query,
     build_audit_group_query,
     issue_from_audit_group_row,
 )
+from butlers.api.models.audit import CREDENTIAL_TARGET_PATTERN
 
 pytestmark = pytest.mark.unit
 
@@ -565,3 +568,159 @@ class TestAttentionItemFromAuditGroupRow:
         item = attention_item_from_audit_group_row(row)
         assert item["butler"] == "multiple"
         assert "2 butlers" in item["description"]
+
+
+# ---------------------------------------------------------------------------
+# Credential-target group identity is content-blind (bu-uqipv)
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialTargetGroupIdentity:
+    """A credential-target error row's group identity must not be its raw error.
+
+    ``grouped_errors`` groups by ``error_summary`` and ``error_summary`` is
+    derived from the ``error`` column — which, for a ``u:``/``s:``/``c:`` row,
+    is the provider's failure text (``_write_credential_audit`` passes the raw
+    probe message straight through ``credential_lifecycle_outcome``). bu-ove06
+    stopped ``AuditLogEntry`` publishing that column, but the group *title*
+    built from it is one surface further out.
+
+    These pin the SQL *shape*; the semantics are executed against a real
+    Postgres in ``test_audit_grouping_credential_blind_db.py``.
+    """
+
+    def _cte(self, sql: str) -> str:
+        """Return just the ``normalized_errors`` CTE body of a built query."""
+        start = sql.index("normalized_errors AS (")
+        return sql[start : sql.index("FROM audit_source", start)]
+
+    def _credential_branch(self, sql: str) -> str:
+        """Return the THEN arm of ``error_summary``'s credential-target CASE."""
+        cte = self._cte(sql)
+        assert "WHEN target ~ " in cte, (
+            "error_summary has no credential-target branch; a probe failure's "
+            "provider text is still the group title"
+        )
+        start = cte.index("WHEN target ~ ")
+        return cte[start : cte.index("ELSE", start)]
+
+    def test_credential_targets_do_not_group_on_the_error_column(self):
+        branch = self._credential_branch(build_audit_group_query())
+        assert "error" not in branch, (
+            f"the credential branch still reads the error column: {branch!r}"
+        )
+
+    def test_credential_predicate_matches_the_model_s_own_regex(self):
+        """One definition of 'this target names a credential', not two.
+
+        ``AuditLogEntry`` withholds free text on exactly this predicate; if the
+        grouping CTE carried a hand-copied second spelling the two could drift
+        and a namespace would be blind on one surface and loud on the other.
+        """
+        sql = build_audit_group_query()
+        assert f"target ~ '{CREDENTIAL_TARGET_PATTERN}'" in sql
+
+    def test_every_grouping_consumer_shares_one_identity_definition(self):
+        """Feed, drill-down and audit-row resolver must compute the same title.
+
+        ``build_audit_group_occurrences_query`` filters ``error_summary = $1``
+        with the value the feed published, so a credential branch present in
+        one builder and absent in another would 404 the drill-down on a group
+        the feed had just shown.
+        """
+        feed = self._cte(build_audit_group_query())
+        occurrences = self._cte(build_audit_group_occurrences_query())
+        for_row = self._cte(build_audit_group_for_row_query())
+        assert feed == occurrences == for_row
+
+    def test_group_title_names_the_credential_so_groups_stay_distinguishable(self):
+        """The synthetic title must vary with the target, not collapse to one.
+
+        Blanking would make every credential failure in the fleet a single
+        indistinguishable group — the failure mode this bead exists to avoid.
+        """
+        branch = self._credential_branch(build_audit_group_query())
+        assert "|| target" in branch, (
+            f"synthetic credential title does not include the target: {branch!r}"
+        )
+
+    def test_non_credential_rows_keep_the_verbatim_normalized_error(self):
+        """The carve-out is a namespace rule, not a blanket gag."""
+        sql = build_audit_group_query()
+        assert "SPLIT_PART(error, E'\\n', 1)" in sql
+        assert "'/tmp/.../'" in sql
+        assert "'Unknown error'" in sql
+
+    def test_credential_branch_reads_only_already_published_columns(self):
+        """The synthetic title may only be built from columns already on the wire.
+
+        ``AuditLogEntry`` publishes ``action`` and ``target`` verbatim for a
+        credential row and withholds ``note``/``error``/``metadata``
+        (bu-ove06). A title composed from anything in the second set would
+        re-publish, through the group's identity, exactly what that model
+        stopped publishing per row.
+        """
+        branch = self._credential_branch(build_audit_group_query())
+        withheld = ("error", "note", "request_summary")
+        for column in withheld:
+            assert column not in branch, (
+                f"the credential group title reads the withheld column {column!r}: {branch!r}"
+            )
+        assert "operation" in branch and "target" in branch, (
+            f"the credential group title names neither the action nor the credential: {branch!r}"
+        )
+
+    def test_two_credentials_project_to_two_distinct_groups(self):
+        """Distinguishability, asserted at the end of the pipeline.
+
+        Blanking the summary would have made every credential failure in the
+        fleet one group — one occurrence count, and one acknowledgement
+        covering unrelated broken credentials. The identity key is a hash of
+        the summary, so two credentials must not collide in it either.
+        """
+        rows = [
+            _make_row(
+                {
+                    "error_summary": f"Credential failed: {target} (diagnostic withheld)",
+                    "butlers": ["owner"],
+                    "schedule_names": [],
+                    "has_schedule": False,
+                    "occurrences": 4,
+                    "first_seen_at": datetime(2026, 8, 1, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 8, 2, tzinfo=UTC),
+                }
+            )
+            for target in ("u:google", "u:notion")
+        ]
+        issues = [issue_from_audit_group_row(row) for row in rows]
+
+        assert len({issue.issue_key for issue in issues}) == 2, (
+            "two credentials share one issue_key; acking one would ack the other"
+        )
+        assert "u:google" in issues[0].description
+        assert "u:notion" in issues[1].description
+
+    def test_projection_publishes_the_summary_the_sql_computed(self):
+        """No second title is invented downstream.
+
+        The DB-level absence sentinel in
+        ``test_audit_grouping_credential_blind_db.py`` proves the *SQL* emits
+        no provider text; this pins that the projection ships that string
+        unchanged rather than reaching for another column, so the two
+        assertions together cover the whole path.
+        """
+        summary = "Credential failed: u:google (diagnostic withheld)"
+        row = _make_row(
+            {
+                "error_summary": summary,
+                "butlers": ["owner"],
+                "schedule_names": [],
+                "has_schedule": False,
+                "occurrences": 4,
+                "first_seen_at": datetime(2026, 8, 1, tzinfo=UTC),
+                "last_seen_at": datetime(2026, 8, 2, tzinfo=UTC),
+            }
+        )
+        issue = issue_from_audit_group_row(row)
+        assert issue.error_message == summary
+        assert summary in json.dumps(attention_item_from_audit_group_row(row))

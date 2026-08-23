@@ -39,7 +39,18 @@ class AuditEntry(BaseModel):
 #: Function: canonical short prefixes ``u:``/``s:``/``c:`` plus the long-scope
 #: spellings ``normalize_key_param`` accepts, since older writers used them and
 #: the column itself is never normalised.
-_CREDENTIAL_TARGET_RE = re.compile(r"^(?:u|s|c|user|system|cli):")
+#:
+#: Exported as a bare string because ``audit_grouping`` embeds this exact
+#: pattern in the grouping CTE's ``target ~ '...'`` predicate (bu-uqipv): the
+#: same rows whose free text this model withholds must also not have that text
+#: become their audit-group *title*.  Two hand-copied spellings of "this target
+#: names a credential" could drift, leaving a namespace blind on one surface
+#: and loud on the other.  The syntax is a common subset of Python ``re`` and
+#: Postgres ARE — anchors, alternation, a non-capturing group — so one literal
+#: serves both.
+CREDENTIAL_TARGET_PATTERN = r"^(?:u|s|c|user|system|cli):"
+
+_CREDENTIAL_TARGET_RE = re.compile(CREDENTIAL_TARGET_PATTERN)
 
 
 def is_credential_target(target: str | None) -> bool:
