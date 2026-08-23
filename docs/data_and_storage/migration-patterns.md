@@ -144,6 +144,21 @@ outbox must refuse rollback with forward-remediation guidance. Avoid foreign
 keys/cascades to mutable source records when the evidence must survive source
 catalog or attempt deletion.
 
+A string literal inside a stored function body is not reachable the way a schema
+object is. `ALTER ... RENAME` is expressible against an existing object, so a
+rename converges through a finalizer that re-runs; a literal baked into the text
+a one-shot upgrader emits does not, and editing that upgrader reaches fresh
+bootstraps only. Define such a body once, in a bootstrap-owned installer both the
+one-shot upgrader and the re-runnable finalizer call — see
+`runtime_attention_admin.install_legacy_debounce_marker()` — so the two paths
+cannot drift. `CREATE OR REPLACE FUNCTION` preserves the OID, owner, and ACL, so
+triggers stay bound across the rewrite. Adopt the body *after* the finalizer's
+rename step has proven the object exists; adopting it first would let a missing
+rename create a second function under the new name while the trigger still points
+at the old OID, which looks like convergence and is not. And rewrite the body, not
+the rows: a backfill corrects history and then drifts again on the next insert, so
+assert on a row written *after* the change, never on historical rows alone.
+
 A later revision may pin such a teardown shut. `core_199` installs
 `public.runtime_attention_producer_control` and
 `public.runtime_attention_plant_legacy_debounce_marker()`; its downgrade

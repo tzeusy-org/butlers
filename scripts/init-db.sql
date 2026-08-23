@@ -2862,7 +2862,8 @@ BEGIN
               'install_interface',
               'rollback_interface',
               'upgrade_producers_v2',
-              'deactivate_producers_v2'
+              'deactivate_producers_v2',
+              'install_legacy_debounce_marker'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner
@@ -2905,6 +2906,122 @@ VALUES (
 ON CONFLICT (singleton) DO UPDATE SET
     migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- Single source of truth for the legacy debounce-marker planter's body.
+--
+-- The body cannot live only in upgrade_producers_v2: that upgrader is invoked
+-- once, by core_199, and never re-runs on a database already at version 2, so a
+-- literal edited there reaches fresh bootstraps only.  finalize_interface does
+-- re-run -- scripts/init-db.sql calls it on every rerun of an installed
+-- database -- so it adopts this definition too, and fresh and pre-existing
+-- databases converge on one body by construction rather than by review.
+--
+-- CREATE OR REPLACE preserves the function's OID, owner, and ACL, so the
+-- trigger stays bound and the finalizer's ownership work is not undone.
+CREATE OR REPLACE FUNCTION runtime_attention_admin.install_legacy_debounce_marker()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_install_legacy_debounce_marker$
+BEGIN
+    -- Plants the debounce markers that make a pre-v2 runtime suppress its own
+    -- runtime-attention sends.  Read the next paragraph before trusting the name
+    -- of anything in this block.
+    --
+    -- THIS BLOCKS NOTHING.  It is a BEFORE INSERT trigger that returns NEW
+    -- unconditionally, so every row it sees is inserted; it has no reject path
+    -- and no ingress gate.  Its entire effect is to write at most one
+    -- public.audit_log row.  It was previously called
+    -- runtime_attention_legacy_producer_fence and wrote actor
+    -- 'runtime_attention_cutover_fence' with a note of 'blocked_old_binary';
+    -- two reviewers independently read that name plus SECURITY DEFINER and
+    -- concluded an enforcement boundary existed here, which is why it was
+    -- renamed (bu-kww1r) and why the audit vocabulary followed (bu-95gq7).
+    -- Behaviour is unchanged; audit_log rows written before bu-95gq7 keep the
+    -- old actor and note, so any query over them must accept both.
+    --
+    -- The real mechanism is cooperative self-suppression.  The retired
+    -- model_breaker_attention and fleet_halt_attention helpers each debounced on
+    --     SELECT ... FROM public.audit_log WHERE target = $1 AND action = $2
+    --     ORDER BY ts DESC LIMIT 1
+    -- with NO actor filter, so a row planted here under a different actor still
+    -- satisfies their lookup and they skip before transport.  The old binary
+    -- suppresses itself; nothing in the database compels it.
+    --
+    -- That holds only while an old binary honours its own debounce, so it fails
+    -- in at least four ways that a real fence would not:
+    --   * a producer that never performs the lookup is entirely unaffected;
+    --   * both helpers failed OPEN on any lookup error -- they treated a failed
+    --     debounce read as "not yet notified" and sent anyway;
+    --   * the breaker debounce expired after a 15-minute cooldown, so this
+    --     suppresses re-notification for a window, not permanently;
+    --   * the ceiling debounce only matched within the same UTC month.
+    -- Both helpers were retired in #3742 and no longer exist in this repository,
+    -- so in the current tree nothing reads these markers at all.  They matter
+    -- only against a deployed binary older than that commit.
+    CREATE OR REPLACE FUNCTION public.runtime_attention_plant_legacy_debounce_marker()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    -- SECURITY DEFINER is retained deliberately, and not for capability: the
+    -- canonical butler_*_rw roles already hold INSERT on public.audit_log via the
+    -- broad public-schema grant above, so the invoker could write this row itself.
+    -- It earns its keep as blast-radius isolation.  This runs BEFORE INSERT on
+    -- model_dispatch_attempts, so a failed marker write aborts the dispatch-attempt
+    -- INSERT with it.  Executing as the NOLOGIN, non-inherit
+    -- runtime_attention_outbox_owner decouples the marker from the invoker's
+    -- grants, so tightening that broad public-schema grant -- exactly what the ACL
+    -- finalizer exists to do -- cannot turn this into a fleet-wide failure to
+    -- record dispatch attempts.  core_199's catalog proof also asserts prosecdef.
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_plant_legacy_debounce_marker_v2$
+    DECLARE
+        v_active_role TEXT := COALESCE(current_setting('role', true), '');
+    BEGIN
+        IF v_active_role = ANY (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) AND COALESCE(
+            current_setting('butlers.runtime_attention_producer_abi', true), ''
+        ) <> '2' THEN
+            IF NEW.outcome = 'runtime_failure' THEN
+                -- (target, action) are the load-bearing pair -- they are what
+                -- the retired helper's debounce matched on.  This note is read
+                -- by nobody, so bu-95gq7 was free to replace the previous
+                -- 'blocked_old_binary' with something that does not claim an
+                -- enforcement that never existed.
+                INSERT INTO public.audit_log (actor, action, target, note)
+                VALUES (
+                    'runtime_attention_legacy_debounce_marker',
+                    'model_breaker_open_notified',
+                    'model_breaker:' || NEW.catalog_entry_id::text,
+                    'legacy_debounce_planted'
+                );
+            ELSIF NEW.outcome = 'quota_skip'
+                  AND left(
+                      COALESCE(NEW.failure_reason, ''),
+                      length('Monthly spend ceiling reached')
+                  ) = 'Monthly spend ceiling reached' THEN
+                -- Here the note IS load-bearing: the retired fleet-halt helper
+                -- compared it against the current window and skipped on a match.
+                -- Do not change this format.
+                INSERT INTO public.audit_log (actor, action, target, note)
+                VALUES (
+                    'runtime_attention_legacy_debounce_marker',
+                    'ceiling_halt_notified',
+                    'ceiling_halt',
+                    to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')
+                );
+            END IF;
+        END IF;
+        RETURN NEW;
+    END;
+    $runtime_attention_plant_legacy_debounce_marker_v2$;
+END;
+$runtime_attention_install_legacy_debounce_marker$;
 
 CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_interface()
 RETURNS void
@@ -3265,8 +3382,8 @@ BEGIN
         -- is what the trigger binds to, so this is a pure rename and the marker
         -- keeps planting across it.  Without this the ALTERs below would raise
         -- "function does not exist" on every rerun of an existing v2 database.
-        -- The stored body keeps the old dollar-quote tag and audit literals;
-        -- only pg_get_functiondef can see that.
+        -- The rename alone leaves the stored body untouched; the adoption
+        -- below refreshes it, which is what converges the audit literals.
         IF to_regprocedure('public.runtime_attention_plant_legacy_debounce_marker()') IS NULL
            AND to_regprocedure('public.runtime_attention_legacy_producer_fence()') IS NOT NULL
         THEN
@@ -3289,6 +3406,12 @@ BEGIN
             || 'SET search_path = pg_catalog, public, pg_temp';
         EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION '
             || 'public.runtime_attention_plant_legacy_debounce_marker() FROM PUBLIC';
+        -- Adopt the current body last, after the ALTERs above have proven the
+        -- renamed function exists.  Doing it earlier would let a missing rename
+        -- adoption create a second function under the new name while the trigger
+        -- stayed bound to the old OID -- convergence that silently did nothing.
+        -- CREATE OR REPLACE keeps the OID, owner, and ACL just re-asserted.
+        PERFORM runtime_attention_admin.install_legacy_debounce_marker();
         EXECUTE 'GRANT INSERT ON TABLE public.audit_log TO runtime_attention_outbox_owner';
         EXECUTE 'GRANT USAGE ON SEQUENCE public.audit_log_id_seq '
             || 'TO runtime_attention_outbox_owner';
@@ -4094,103 +4217,10 @@ BEGIN
     END;
     $runtime_attention_fleet_halt_v2$;
 
-    -- Plants the debounce markers that make a pre-v2 runtime suppress its own
-    -- runtime-attention sends.  Read the next paragraph before trusting the name
-    -- of anything in this block.
-    --
-    -- THIS BLOCKS NOTHING.  It is a BEFORE INSERT trigger that returns NEW
-    -- unconditionally, so every row it sees is inserted; it has no reject path
-    -- and no ingress gate.  Its entire effect is to write at most one
-    -- public.audit_log row.  It was previously called
-    -- runtime_attention_legacy_producer_fence and wrote a note of
-    -- 'blocked_old_binary'; two reviewers independently read that name plus
-    -- SECURITY DEFINER and concluded an enforcement boundary existed here, which
-    -- is why it was renamed (bu-kww1r).  Behaviour is unchanged.
-    --
-    -- The real mechanism is cooperative self-suppression.  The retired
-    -- model_breaker_attention and fleet_halt_attention helpers each debounced on
-    --     SELECT ... FROM public.audit_log WHERE target = $1 AND action = $2
-    --     ORDER BY ts DESC LIMIT 1
-    -- with NO actor filter, so a row planted here under a different actor still
-    -- satisfies their lookup and they skip before transport.  The old binary
-    -- suppresses itself; nothing in the database compels it.
-    --
-    -- That holds only while an old binary honours its own debounce, so it fails
-    -- in at least four ways that a real fence would not:
-    --   * a producer that never performs the lookup is entirely unaffected;
-    --   * both helpers failed OPEN on any lookup error -- they treated a failed
-    --     debounce read as "not yet notified" and sent anyway;
-    --   * the breaker debounce expired after a 15-minute cooldown, so this
-    --     suppresses re-notification for a window, not permanently;
-    --   * the ceiling debounce only matched within the same UTC month.
-    -- Both helpers were retired in #3742 and no longer exist in this repository,
-    -- so in the current tree nothing reads these markers at all.  They matter
-    -- only against a deployed binary older than that commit.
-    CREATE OR REPLACE FUNCTION public.runtime_attention_plant_legacy_debounce_marker()
-    RETURNS trigger
-    LANGUAGE plpgsql
-    -- SECURITY DEFINER is retained deliberately, and not for capability: the
-    -- canonical butler_*_rw roles already hold INSERT on public.audit_log via the
-    -- broad public-schema grant above, so the invoker could write this row itself.
-    -- It earns its keep as blast-radius isolation.  This runs BEFORE INSERT on
-    -- model_dispatch_attempts, so a failed marker write aborts the dispatch-attempt
-    -- INSERT with it.  Executing as the NOLOGIN, non-inherit
-    -- runtime_attention_outbox_owner decouples the marker from the invoker's
-    -- grants, so tightening that broad public-schema grant -- exactly what the ACL
-    -- finalizer exists to do -- cannot turn this into a fleet-wide failure to
-    -- record dispatch attempts.  core_199's catalog proof also asserts prosecdef.
-    SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
-    AS $runtime_attention_plant_legacy_debounce_marker_v2$
-    DECLARE
-        v_active_role TEXT := COALESCE(current_setting('role', true), '');
-    BEGIN
-        IF v_active_role = ANY (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
-        ]) AND COALESCE(
-            current_setting('butlers.runtime_attention_producer_abi', true), ''
-        ) <> '2' THEN
-            IF NEW.outcome = 'runtime_failure' THEN
-                -- (target, action) are the load-bearing pair -- they are what
-                -- the retired helper's debounce matched on.  The note is read by
-                -- nobody.  Both the actor and the note below are misnomers: this
-                -- planted nothing that "blocked" anything.  They are retained
-                -- because this body is only ever recreated by
-                -- upgrade_producers_v2, which does not re-run on a database
-                -- already at v2, so changing them would make fresh and existing
-                -- databases write different actors forever with no convergence
-                -- path.  Correcting them needs a migration (bu-kww1r follow-up),
-                -- not a rename.
-                INSERT INTO public.audit_log (actor, action, target, note)
-                VALUES (
-                    'runtime_attention_cutover_fence',
-                    'model_breaker_open_notified',
-                    'model_breaker:' || NEW.catalog_entry_id::text,
-                    'blocked_old_binary'
-                );
-            ELSIF NEW.outcome = 'quota_skip'
-                  AND left(
-                      COALESCE(NEW.failure_reason, ''),
-                      length('Monthly spend ceiling reached')
-                  ) = 'Monthly spend ceiling reached' THEN
-                -- Here the note IS load-bearing: the retired fleet-halt helper
-                -- compared it against the current window and skipped on a match.
-                -- Do not change this format.
-                INSERT INTO public.audit_log (actor, action, target, note)
-                VALUES (
-                    'runtime_attention_cutover_fence',
-                    'ceiling_halt_notified',
-                    'ceiling_halt',
-                    to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')
-                );
-            END IF;
-        END IF;
-        RETURN NEW;
-    END;
-    $runtime_attention_plant_legacy_debounce_marker_v2$;
+    -- The planter's body is defined once, in
+    -- runtime_attention_admin.install_legacy_debounce_marker, so that this
+    -- one-shot upgrader and the re-runnable finalizer cannot drift apart.
+    PERFORM runtime_attention_admin.install_legacy_debounce_marker();
 
     DROP TRIGGER IF EXISTS runtime_attention_legacy_producer_fence_trigger
         ON public.model_dispatch_attempts;
@@ -4306,6 +4336,7 @@ REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_interface() FR
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_legacy_debounce_marker() FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -4321,6 +4352,7 @@ BEGIN
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_legacy_debounce_marker() FROM %I', v_migration_role);
 
     IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
        OR to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL

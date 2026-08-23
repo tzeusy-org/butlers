@@ -168,7 +168,7 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
             """
             SELECT actor, action, target, note
             FROM public.audit_log
-            WHERE actor = 'runtime_attention_cutover_fence'
+            WHERE actor = 'runtime_attention_legacy_debounce_marker'
             ORDER BY id
             """
         )
@@ -178,6 +178,22 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
         ]
         assert rows[0]["target"] == f"model_breaker:{entry_id}"
         assert rows[1]["target"] == "ceiling_halt"
+        # The breaker note is read by nobody, so bu-95gq7 renamed it.  The
+        # ceiling note is the retired fleet-halt helper's debounce key and must
+        # stay the current UTC month, formatted exactly this way.
+        assert rows[0]["note"] == "legacy_debounce_planted"
+        assert rows[1]["note"] == await pool.fetchval(
+            "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')"
+        )
+        assert not await pool.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM public.audit_log
+                WHERE actor = 'runtime_attention_cutover_fence'
+                   OR note = 'blocked_old_binary'
+            )
+            """
+        ), "the retired audit vocabulary is still being planted"
     finally:
         await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
 

@@ -2033,3 +2033,226 @@ def test_init_db_rerun_adopts_the_renamed_debounce_marker_planter(
             ), "the renamed planter stopped planting its debounce marker"
     finally:
         admin.dispose()
+
+
+_LEGACY_MARKER_ACTOR = "runtime_attention_cutover_fence"
+_MARKER_ACTOR = "runtime_attention_legacy_debounce_marker"
+
+# The exact body a database bootstrapped before bu-95gq7 carries: the pre-rename
+# audit vocabulary, everything else identical.  Restoring it with CREATE OR
+# REPLACE keeps the OID the trigger binds to, so the regressed database is the
+# real pre-migration shape rather than a look-alike.
+_LEGACY_MARKER_BODY = """
+CREATE OR REPLACE FUNCTION public.runtime_attention_plant_legacy_debounce_marker()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $legacy_marker$
+DECLARE
+    v_active_role TEXT := COALESCE(current_setting('role', true), '');
+BEGIN
+    IF v_active_role = ANY (ARRAY[
+        'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+        'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+        'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+        'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+    ]) AND COALESCE(
+        current_setting('butlers.runtime_attention_producer_abi', true), ''
+    ) <> '2' THEN
+        IF NEW.outcome = 'runtime_failure' THEN
+            INSERT INTO public.audit_log (actor, action, target, note)
+            VALUES (
+                'runtime_attention_cutover_fence',
+                'model_breaker_open_notified',
+                'model_breaker:' || NEW.catalog_entry_id::text,
+                'blocked_old_binary'
+            );
+        ELSIF NEW.outcome = 'quota_skip'
+              AND left(
+                  COALESCE(NEW.failure_reason, ''),
+                  length('Monthly spend ceiling reached')
+              ) = 'Monthly spend ceiling reached' THEN
+            INSERT INTO public.audit_log (actor, action, target, note)
+            VALUES (
+                'runtime_attention_cutover_fence',
+                'ceiling_halt_notified',
+                'ceiling_halt',
+                to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')
+            );
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$legacy_marker$;
+"""
+
+_MARKER_DEFINITION_SQL = (
+    "SELECT pg_get_functiondef("
+    "'public.runtime_attention_plant_legacy_debounce_marker()'::regprocedure)"
+)
+_MARKER_OID_SQL = (
+    "SELECT 'public.runtime_attention_plant_legacy_debounce_marker()'::regprocedure::oid"
+)
+
+
+def _plant_marker_for_legacy_writer(conn, entry_id: uuid.UUID, alias: str) -> None:
+    """Insert one dispatch attempt per marker branch as a pre-v2 writer.
+
+    A pre-v2 writer sets no ABI marker, which is the branch the planter fires
+    on.  Both INSERTs land: the trigger returns NEW unconditionally.
+    """
+    conn.execute(
+        text(
+            """
+            INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
+            VALUES (:id, :alias, 'codex', :alias)
+            """
+        ),
+        {"id": entry_id, "alias": alias},
+    )
+    conn.execute(text(f"SET ROLE {_quote_ident(_MODEL_PRODUCER)}"))
+    try:
+        conn.execute(
+            text(
+                """
+                INSERT INTO public.model_dispatch_attempts (
+                    catalog_entry_id, butler, outcome, failure_reason
+                ) VALUES (:id, 'general', 'runtime_failure', 'legacy writer')
+                """
+            ),
+            {"id": entry_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO public.model_dispatch_attempts (
+                    catalog_entry_id, butler, outcome, failure_reason
+                ) VALUES (
+                    :id, 'general', 'quota_skip',
+                    'Monthly spend ceiling reached: legacy writer'
+                )
+                """
+            ),
+            {"id": entry_id},
+        )
+    finally:
+        conn.execute(text("RESET ROLE"))
+
+
+def _marker_rows(conn, entry_id: uuid.UUID) -> list[tuple[str, str, str]]:
+    return [
+        (row[0], row[1], row[2])
+        for row in conn.execute(
+            text(
+                """
+                SELECT actor, action, note
+                FROM public.audit_log
+                WHERE target IN (:breaker_target, 'ceiling_halt')
+                ORDER BY id
+                """
+            ),
+            {"breaker_target": f"model_breaker:{entry_id}"},
+        ).all()
+    ]
+
+
+def test_init_db_rerun_converges_the_debounce_marker_audit_vocabulary(
+    postgres_container,
+) -> None:
+    """bu-95gq7: an existing v2 database must adopt the new actor and note.
+
+    The literals live inside the planter's stored body, which
+    ``upgrade_producers_v2`` emits once and never re-runs, so editing
+    ``init-db.sql`` alone would reach fresh bootstraps only.  Both callers now
+    share one definition in
+    ``runtime_attention_admin.install_legacy_debounce_marker``, and
+    ``finalize_interface`` adopts it on every init-db rerun.
+
+    This is a body rewrite, not a row backfill: the assertions below are on rows
+    planted *after* the rerun, and the pre-existing row is asserted to keep the
+    old vocabulary.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+
+    legacy_entry_id = uuid.uuid4()
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            fresh_definition = conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one()
+            assert _MARKER_ACTOR in fresh_definition, (
+                "a fresh bootstrap does not plant the current actor; init-db.sql and this "
+                "test disagree about the canonical vocabulary"
+            )
+            marker_oid = conn.execute(text(_MARKER_OID_SQL)).scalar_one()
+
+            # Regress to exactly what a database bootstrapped before bu-95gq7
+            # carries.  ``::regprocedure`` above already raised if the planter
+            # was missing, so this cannot silently install a look-alike.
+            conn.exec_driver_sql(_LEGACY_MARKER_BODY)
+            assert conn.execute(text(_MARKER_OID_SQL)).scalar_one() == marker_oid, (
+                "restoring the legacy body replaced the function instead of rewriting it, "
+                "so the trigger is no longer bound to the object under test"
+            )
+            legacy_definition = conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one()
+            assert _LEGACY_MARKER_ACTOR in legacy_definition, (
+                "the pre-migration audit vocabulary was not actually restored"
+            )
+
+            # One row planted while the legacy body is live.  It must survive the
+            # rerun unchanged -- convergence is forward-only.
+            _plant_marker_for_legacy_writer(conn, legacy_entry_id, "pre-convergence")
+            assert _marker_rows(conn, legacy_entry_id) == [
+                (_LEGACY_MARKER_ACTOR, "model_breaker_open_notified", "blocked_old_binary"),
+                (
+                    _LEGACY_MARKER_ACTOR,
+                    "ceiling_halt_notified",
+                    conn.execute(
+                        text("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')")
+                    ).scalar_one(),
+                ),
+            ]
+    finally:
+        admin.dispose()
+
+    _rerun_actual_init_db(bootstrap_url, db_url)
+
+    entry_id = uuid.uuid4()
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            assert conn.execute(text(_MARKER_OID_SQL)).scalar_one() == marker_oid, (
+                "the rerun replaced the planter instead of rewriting it in place"
+            )
+            _plant_marker_for_legacy_writer(conn, entry_id, "post-convergence")
+            current_month = conn.execute(
+                text("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM')")
+            ).scalar_one()
+            assert _marker_rows(conn, entry_id)[-2:] == [
+                (_MARKER_ACTOR, "model_breaker_open_notified", "legacy_debounce_planted"),
+                # Byte-identical to the retired fleet-halt helper's debounce key.
+                (_MARKER_ACTOR, "ceiling_halt_notified", current_month),
+            ]
+            assert conn.execute(text(_MARKER_DEFINITION_SQL)).scalar_one() == fresh_definition, (
+                "a migrated database and a fresh bootstrap disagree on the planter body"
+            )
+
+            # The historical row is untouched, which is why any query filtering
+            # on actor has to tolerate both vocabularies.
+            assert (
+                conn.execute(
+                    text(
+                        """
+                        SELECT count(*) FROM public.audit_log
+                        WHERE actor = :legacy_actor AND note = 'blocked_old_binary'
+                        """
+                    ),
+                    {"legacy_actor": _LEGACY_MARKER_ACTOR},
+                ).scalar_one()
+                == 1
+            ), "the rerun rewrote history instead of only rewriting the planter body"
+    finally:
+        admin.dispose()
