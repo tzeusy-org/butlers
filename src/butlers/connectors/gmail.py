@@ -93,6 +93,7 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
+from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -1826,11 +1827,12 @@ class GmailConnectorRuntime:
                 else:
                     logger.error("OAuth token refresh failed status=%s", response.status_code)
             response.raise_for_status()
-            token_data = response.json()
+            # Validate the whole payload before touching connector state, so a
+            # malformed 200 cannot leave a stale token paired with a fresh expiry.
+            token = validate_oauth_token_payload(response.json())
 
-            self._access_token = token_data["access_token"]
-            expires_in = token_data.get("expires_in", 3600)
-            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+            self._access_token = token.access_token
+            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
 
             # Mark API as connected on successful token refresh
             self._source_api_ok = True
@@ -1838,7 +1840,7 @@ class GmailConnectorRuntime:
             self._auth_error = False
             self._metrics.record_source_api_call(api_method="token_refresh", status="success")
 
-            logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
+            logger.debug("Refreshed OAuth access token (expires in %ds)", token.expires_in)
             return self._access_token
         except Exception as exc:
             # Mark API as disconnected on failure

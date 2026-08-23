@@ -127,6 +127,10 @@ from butlers.google_credentials import (
     store_app_credentials,
     store_google_credentials,
 )
+from butlers.oauth_token_payload import (
+    OAuthTokenValidationError,
+    validate_oauth_token_payload,
+)
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG
 from butlers.spotify_credentials import (
     SPOTIFY_ACCESS_TOKEN,
@@ -3130,9 +3134,35 @@ async def oauth_provider_callback(
             ).model_dump(),
         )
 
-    refresh_token = token_data.get("refresh_token")
-    access_token = token_data.get("access_token")
-    scope = token_data.get("scope")
+    # Validate the whole payload before anything derived from it is used for a
+    # profile fetch or written to the credential store, so a malformed 200
+    # cannot persist a partial or unusable credential set.
+    try:
+        token = validate_oauth_token_payload(token_data)
+    except OAuthTokenValidationError:
+        # Deliberately no provider-supplied content in the log, the audit note,
+        # or the response body.
+        logger.warning("OAuth token response failed validation (provider=%s)", provider)
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider=provider,
+            note="Invalid token payload",
+        )
+        return JSONResponse(
+            status_code=502,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "invalid_token_payload",
+                    "message": "The provider returned an invalid token response. Please restart.",
+                }
+            ).model_dump(),
+        )
+
+    refresh_token = token.refresh_token
+    access_token = token.access_token
+    scope = token.scope
 
     # --- Fetch account identity via profile URL if available ---
     account_email: str | None = None
@@ -3172,13 +3202,7 @@ async def oauth_provider_callback(
         # the canonical SPOTIFY_* keys. Persist the generalized callback result
         # to that established authority instead of inventing a parallel key that
         # no runtime consumer reads.
-        if not access_token:
-            raise HTTPException(
-                status_code=502,
-                detail="Spotify token response did not include an access token.",
-            )
-        expires_in = int(token_data.get("expires_in", 3600))
-        expires_at = (datetime.now(UTC) + timedelta(seconds=expires_in)).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(seconds=token.expires_in)).isoformat()
         await cred_store.store(
             SPOTIFY_ACCESS_TOKEN,
             access_token,

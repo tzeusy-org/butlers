@@ -458,6 +458,97 @@ async def test_spotify_callback_token_exchange_failure_writes_failed_audit(app):
     assert "failed" in actions
 
 
+# ---------------------------------------------------------------------------
+# Successful-token-payload validation on the generic provider callback
+# [bu-n8gvq]
+# ---------------------------------------------------------------------------
+
+_MALFORMED_TOKEN_PAYLOADS = {
+    "missing_access_token": {"refresh_token": "AQD-fake-refresh", "expires_in": 3600},
+    "non_string_access_token": {"access_token": 12345, "expires_in": 3600},
+    "blank_access_token": {"access_token": "   ", "expires_in": 3600},
+    "blank_refresh_token": {"access_token": "BQD-fake", "refresh_token": "", "expires_in": 3600},
+    "string_expires_in": {"access_token": "BQD-fake", "expires_in": "3600"},
+    "bool_expires_in": {"access_token": "BQD-fake", "expires_in": True},
+    "float_expires_in": {"access_token": "BQD-fake", "expires_in": 3600.5},
+    "negative_expires_in": {"access_token": "BQD-fake", "expires_in": -1},
+    "absurd_expires_in": {"access_token": "BQD-fake", "expires_in": 10**12},
+}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    list(_MALFORMED_TOKEN_PAYLOADS.values()),
+    ids=list(_MALFORMED_TOKEN_PAYLOADS),
+)
+async def test_generic_callback_rejects_malformed_token_payload(app, payload):
+    """A malformed 200 from the token endpoint persists nothing and leaks nothing."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=payload)),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()) as mock_audit,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["data"]["error_code"] == "invalid_token_payload"
+
+    # AC5: no partial persistence — the credential store is never touched.
+    mock_cred_store.store.assert_not_awaited()
+
+    # AC4: no provider-supplied value reaches the response body or the audit note.
+    rendered = resp.text
+    for value in payload.values():
+        if isinstance(value, str) and not value.strip():
+            continue
+        assert str(value) not in rendered
+    notes = [c.kwargs.get("note") for c in mock_audit.call_args_list]
+    assert notes == ["Invalid token payload"]
+    assert [c.kwargs.get("action") for c in mock_audit.call_args_list] == ["failed"]
+
+
+async def test_generic_callback_accepts_a_valid_token_payload(app):
+    """The validated happy path still persists the canonical Spotify credentials."""
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, provider="spotify")
+
+    mock_cred_store = AsyncMock()
+    mock_cred_store.store = AsyncMock()
+
+    with (
+        patch(_RESOLVE_PROVIDER_CREDS_PATCH, AsyncMock(return_value=("cid", "csec"))),
+        patch(_EXCHANGE_PATCH, AsyncMock(return_value=dict(_SPOTIFY_TOKEN))),
+        patch("butlers.api.routers.oauth._make_credential_store", return_value=mock_cred_store),
+        patch(_EMIT_AUDIT_PATCH, AsyncMock()),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/spotify/callback", params={"code": "auth-code", "state": state}
+            )
+
+    assert resp.status_code in (302, 307)
+    stored = {call.args[0] for call in mock_cred_store.store.await_args_list}
+    assert "SPOTIFY_ACCESS_TOKEN" in stored
+    assert "SPOTIFY_REFRESH_TOKEN" in stored
+
+
 # ===========================================================================
 # 8. page_of_origin callback routing
 # ===========================================================================

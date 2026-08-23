@@ -132,6 +132,10 @@ from butlers.google_credentials import (
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.oauth_token_payload import (
+    OAuthTokenValidationError,
+    validate_oauth_token_payload,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1416,17 +1420,18 @@ class GoogleHealthConnector:
                 f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
             )
 
-        data = resp.json()
-        access_token = data.get("access_token")
-        if not access_token:
+        # Validate the whole payload before touching the account context, so a
+        # malformed 200 cannot leave a stale token paired with a fresh expiry.
+        try:
+            token = validate_oauth_token_payload(resp.json())
+        except OAuthTokenValidationError as exc:
             raise GoogleHealthCredentialError(
-                f"Token response missing access_token for account {ctx.email}"
-            )
+                f"Google token refresh returned an invalid token payload for {ctx.email}"
+            ) from exc
 
-        expires_in = int(data.get("expires_in", 3600))
-        ctx.cached_access_token = access_token
-        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
-        return access_token
+        ctx.cached_access_token = token.access_token
+        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
+        return token.access_token
 
     async def _get_access_token(self, account_uuid: uuid.UUID) -> str:
         """Return a usable access token for the given account, refreshing if near expiry."""

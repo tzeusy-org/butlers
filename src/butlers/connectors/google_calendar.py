@@ -68,6 +68,10 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
 from butlers.google_credentials import InvalidGoogleCredentialsError, load_google_credentials
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.oauth_token_payload import (
+    OAuthTokenValidationError,
+    validate_oauth_token_payload,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1228,10 +1232,16 @@ class CalendarConnectorRuntime:
             self._record_source_api_failure(error)
             raise error
 
-        data = resp.json()
-        self._access_token = data["access_token"]
-        expires_in = int(data.get("expires_in", 3600))
-        self._token_expires_at = now + timedelta(seconds=expires_in)
+        # Validate the whole payload before touching connector state, so a
+        # malformed 200 cannot leave a stale token paired with a fresh expiry.
+        try:
+            token = validate_oauth_token_payload(resp.json())
+        except OAuthTokenValidationError as exc:
+            self._record_source_api_failure(exc)
+            raise
+
+        self._access_token = token.access_token
+        self._token_expires_at = now + timedelta(seconds=token.expires_in)
         self._record_source_api_success()
         logger.debug("Calendar: token refreshed for email=%s", self._config.email)
         return self._access_token

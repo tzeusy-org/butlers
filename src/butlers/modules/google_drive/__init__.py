@@ -34,6 +34,10 @@ from butlers.google_credentials import (
     resolve_google_credentials,
 )
 from butlers.modules.base import Module, ToolMeta
+from butlers.oauth_token_payload import (
+    OAuthTokenValidationError,
+    validate_oauth_token_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -236,12 +240,19 @@ class _DriveTokenCache:
                 f"{_redact_creds(response.text[:200])}"
             )
 
-        data = response.json()
-        self._access_token = data["access_token"]
-        expires_in = int(data.get("expires_in", 3600))
-        self._expires_at = time.monotonic() + expires_in
+        # Validate the whole payload before touching module state, so a
+        # malformed 200 cannot leave a stale token paired with a fresh expiry.
+        try:
+            token = validate_oauth_token_payload(response.json())
+        except OAuthTokenValidationError as exc:
+            raise RuntimeError(
+                "Google Drive token refresh returned an invalid token payload"
+            ) from exc
 
-        logger.debug("Google Drive token refreshed (expires_in=%ds)", expires_in)
+        self._access_token = token.access_token
+        self._expires_at = time.monotonic() + token.expires_in
+
+        logger.debug("Google Drive token refreshed (expires_in=%ds)", token.expires_in)
 
         # Update last_token_refresh_at in google_accounts (spec §3.4)
         if on_refreshed is not None:
