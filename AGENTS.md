@@ -1817,3 +1817,31 @@ uv run openspec validate <change-name> --strict
 Remember what it does *not* prove: `openspec validate` and `scripts/check_spec_overwrites.py` read
 no Python, so neither is evidence about an implementation, and `check_spec_overwrites.py` never
 inspects `openspec/specs/**`.
+
+### Two-dot `git diff origin/main` on an agent branch invents deletions
+
+Reviewing a worker branch with `git diff origin/main` compares two *tips*, so every commit that
+landed on `main` after the branch forked shows up as a **deletion by the branch**. On an
+append-only file like this one that reads as sabotage: a branch forked at `2fb816d6e` showed
+`AGENTS.md | 43 ------` purely because `main` had moved to `f9698f219`.
+
+Before believing a diff, ask what it was positioned to tell you. To see what a branch actually did:
+
+```sh
+git show --stat --format= HEAD          # this commit only
+git diff --stat origin/main...HEAD      # three dots: branch-side changes since the fork
+git merge-base HEAD origin/main         # confirm how stale the fork point is
+```
+
+`git merge-tree --write-tree --name-only origin/main HEAD` still answers mergeability without
+moving HEAD, and a clean probe here is a second signal the "deletion" is an artifact.
+
+### The DB-touch grep is conservative in only one direction
+
+`grep -lE 'asyncpg|docker|create_migrated_test_db' tests/api/*.py` is the right way to pick files
+that must hold the serialized DB slot, but it over-matches: `tests/api/test_audit_log.py` hits it
+while being fully mocked, because it imports `asyncpg.exceptions.UndefinedTableError` for an
+`pytest.raises` and mentions asyncpg in docstrings. Excluding a false positive only costs
+parallelism, so keep excluding on the grep — but when you need to *run* a matched file without the
+slot, confirm by reading the hits rather than by the filename or the module name alone. The rule
+stays structural: a real database connection needs the slot; an imported exception class does not.
