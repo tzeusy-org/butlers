@@ -31,6 +31,10 @@ from butlers._sql_utils import escape_like_pattern as _escape_like_pattern
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
+    CliRuntimeDetail,
+    SystemSecretDetail,
+    _content_blind_cli_detail,
+    _content_blind_system_detail,
     _get_db_manager,
 )
 
@@ -576,8 +580,8 @@ def test_user_credential_miss_no_shared_pool_returns_404():
 
 
 def test_system_credential_hit_returns_200_envelope():
-    """Hit case: 200 with {data, meta} envelope; required SystemSecretDetail fields
-    present, key matches path, fingerprint is 8-char hex, row_state='shared'."""
+    """Hit case: 200 with {data, meta} envelope; required SystemCredentialDetail
+    fields present, key matches path, fingerprint is 8-char hex, row_state='shared'."""
     row = _make_system_row(key="OPENAI_API_KEY", value="secretvalue", last_test_ok=True)
     mock_db = _make_db_manager_for_per_credential(system_row=row)
     client = _build_app(mock_db)
@@ -588,8 +592,14 @@ def test_system_credential_hit_returns_200_envelope():
     assert "meta" in body
     data = body["data"]
 
-    for field in ("key", "category", "state", "row_state", "used_by", "breaks", "audit"):
+    for field in ("key", "category", "state", "row_state", "used_by", "audit", "butler"):
         assert field in data, f"missing field {field!r}"
+
+    # Dropped by the content-blind projection: 'breaks' was an always-empty
+    # passthrough of unallowlisted dicts (each of which carries raw scopes),
+    # and last_test_message is probe free text.
+    for field in ("breaks", "last_test_message", "last_test_ok", "last_test_code"):
+        assert field not in data, f"unallowlisted field {field!r} must not be published"
 
     assert data["key"] == "OPENAI_API_KEY"
     assert data["row_state"] == "shared"
@@ -622,7 +632,7 @@ def test_system_credential_stale_successful_probe_is_warn():
 
 
 def test_system_credential_hit_with_probe():
-    """Hit case: test field populated from probe_log."""
+    """Hit case: test field populated from probe_log, without its free text."""
     row = _make_system_row(key="TESTED_KEY", last_test_ok=False)
     probe = _make_probe_row(ok=False, code=401, message="Unauthorized")
     mock_db = _make_db_manager_for_per_credential(system_row=row, probe_row=probe)
@@ -633,6 +643,7 @@ def test_system_credential_hit_with_probe():
     assert data["test"] is not None
     assert data["test"]["ok"] is False
     assert data["test"]["code"] == 401
+    assert "message" not in data["test"]
 
 
 def test_system_credential_no_raw_value_in_response():
@@ -644,6 +655,71 @@ def test_system_credential_no_raw_value_in_response():
     resp = client.get("/api/secrets/system/SECRET_KEY")
     body_text = resp.text
     assert "very_secret_system_value_xyz" not in body_text
+
+
+def test_system_credential_omits_every_free_text_sentinel():
+    """No probe or cached failure text reaches the system detail response bytes.
+
+    Each free-text source the row can carry is planted with a distinct
+    sentinel; none may appear anywhere in the response (owner decision,
+    2026-08-13).
+    """
+    row = _make_system_row(
+        key="SENTINEL_KEY",
+        last_test_ok=False,
+        last_test_code=401,
+        last_test_message="sentinel-system-failure-tail",
+    )
+    probe = _make_probe_row(ok=False, code=401, message="sentinel-system-probe-message")
+    mock_db = _make_db_manager_for_per_credential(system_row=row, probe_row=probe)
+
+    response = _build_app(mock_db).get("/api/secrets/system/SENTINEL_KEY")
+
+    assert response.status_code == 200, response.text
+    for sentinel in ("sentinel-system-failure-tail", "sentinel-system-probe-message"):
+        assert sentinel not in response.text, f"{sentinel!r} leaked onto the wire"
+
+
+def test_content_blind_system_detail_drops_audit_notes_and_breaks():
+    """The projector holds even when a future writer populates audit or breaks.
+
+    ``_fetch_single_system_secret`` populates neither today, which is exactly
+    why the allowlist is asserted against the projector rather than only
+    end-to-end: the endpoint cannot yet plant these, but a later change can.
+    """
+    record = SystemSecretDetail(
+        key="SENTINEL_KEY",
+        state="failing",
+        butler="general",
+        test={"ok": False, "code": 401, "message": "sentinel-probe-message"},
+        audit=[
+            {
+                "ts": "12:00 today",
+                "actor": "owner",
+                "action": "rotated",
+                "note": "sentinel-audit-note",
+            }
+        ],
+        breaks=[
+            {
+                "butler": "general",
+                "feature": "sentinel-feature-label",
+                "severity": "high",
+                "required_scopes": ["https://www.googleapis.com/auth/sentinel-scope"],
+            }
+        ],
+    )
+
+    published = _content_blind_system_detail(record).model_dump_json()
+
+    for sentinel in (
+        "sentinel-probe-message",
+        "sentinel-audit-note",
+        "sentinel-feature-label",
+        "sentinel-scope",
+    ):
+        assert sentinel not in published, f"{sentinel!r} leaked onto the wire"
+    assert '"action":"rotated"' in published
 
 
 # ---------------------------------------------------------------------------
@@ -675,8 +751,9 @@ def test_system_credential_miss_no_butlers_returns_404():
 
 
 def test_cli_credential_hit_returns_200_envelope():
-    """Hit case: 200 with {data, meta} envelope; required CLISecretDetail fields
-    present, id matches path, fingerprint 8-char hex, label from description, expires set."""
+    """Hit case: 200 with {data, meta} envelope; required CliCredentialDetail
+    fields present, id matches path, fingerprint 8-char hex, label from
+    description, expires set."""
     expires = _NOW + timedelta(days=30)
     row = _make_cli_row(
         key="cli-xyz789", value="mysecretclitoken", description="My Dev Token", expires_at=expires
@@ -690,8 +767,13 @@ def test_cli_credential_hit_returns_200_envelope():
     assert "meta" in body
     data = body["data"]
 
-    for field in ("id", "state", "scopes_required", "scopes_granted"):
+    for field in ("id", "state", "capabilities_required", "capabilities_granted"):
         assert field in data, f"missing field {field!r}"
+
+    # Raw scope arrays are replaced by the fixed capability vocabulary, and
+    # last_used is absent rather than an always-null placeholder.
+    for field in ("scopes_required", "scopes_granted", "last_used", "last_test_message"):
+        assert field not in data, f"unallowlisted field {field!r} must not be published"
 
     assert data["id"] == "cli-xyz789"
     assert data["label"] == "My Dev Token"
@@ -757,6 +839,69 @@ def test_cli_credential_no_raw_value_in_response():
     resp = client.get("/api/secrets/cli/cli-sec")
     body_text = resp.text
     assert "very_secret_cli_token_xyz" not in body_text
+
+
+def test_cli_credential_omits_every_free_text_sentinel():
+    """No probe or cached failure text reaches the CLI detail response bytes."""
+    row = _make_cli_row(
+        key="cli-sentinel",
+        last_test_ok=False,
+        last_test_code=401,
+        last_test_message="sentinel-cli-failure-tail",
+    )
+    probe = _make_probe_row(ok=False, code=401, message="sentinel-cli-probe-message")
+    mock_db = _make_db_manager_for_per_credential(cli_row=row, probe_row=probe)
+
+    response = _build_app(mock_db).get("/api/secrets/cli/cli-sentinel")
+
+    assert response.status_code == 200, response.text
+    for sentinel in ("sentinel-cli-failure-tail", "sentinel-cli-probe-message"):
+        assert sentinel not in response.text, f"{sentinel!r} leaked onto the wire"
+
+
+def test_content_blind_cli_detail_publishes_capabilities_not_scopes():
+    """Scopes recorded against a CLI token surface only as vocabulary names.
+
+    Nothing persists CLI scopes today; the projector is asserted directly so
+    the guarantee is pinned before a future writer starts populating them.
+    Every CLI provider is verified by one generic liveness call, so any scope
+    classifies as 'connectivity' — including a Google-shaped one, which must
+    not be mistaken for a per-capability Google probe.
+    """
+    record = CliRuntimeDetail(
+        id="cli-auth/codex",
+        label="CLI auth token",
+        state="ok",
+        scopes_required=[
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "sentinel-required-scope",
+        ],
+        scopes_granted=["sentinel-granted-scope"],
+        test={"ok": True, "code": 200, "message": "sentinel-probe-message"},
+    )
+
+    published = _content_blind_cli_detail(record)
+    payload = published.model_dump_json()
+
+    assert published.capabilities_required == ["connectivity"]
+    assert published.capabilities_granted == ["connectivity"]
+    for sentinel in (
+        "sentinel-required-scope",
+        "sentinel-granted-scope",
+        "sentinel-probe-message",
+        "googleapis.com",
+    ):
+        assert sentinel not in payload, f"{sentinel!r} leaked onto the wire"
+
+
+def test_content_blind_cli_detail_publishes_no_capability_without_scopes():
+    """Empty scope inventories publish empty capability lists, not a placeholder."""
+    record = CliRuntimeDetail(id="cli-auth/claude", state="ok")
+
+    published = _content_blind_cli_detail(record)
+
+    assert published.capabilities_required == []
+    assert published.capabilities_granted == []
 
 
 # ---------------------------------------------------------------------------

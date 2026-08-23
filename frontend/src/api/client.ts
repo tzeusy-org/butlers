@@ -6464,7 +6464,7 @@ import type {
   SecretsCliDetail,
   SecretsProbeAllResponse,
   SecretsProbeResult,
-  SecretsSystemDetail,
+  SecretsSystemCredentialDetail,
   SecretsUserDetail,
 } from "./types.ts";
 
@@ -6489,13 +6489,16 @@ export function getUserCredential(
 /**
  * GET /api/secrets/system/<key>
  *
- * Returns the full evidence payload for a single system-scoped credential.
- * Raw values are NEVER returned — fingerprint + evidence only.
+ * Returns the content-blind evidence payload for a single system-scoped
+ * credential. Raw values are NEVER returned — fingerprint + evidence only,
+ * with probe and audit free text dropped server-side.
  *
  * Returns 404 when no matching credential exists.
  */
-export function getSystemCredential(key: string): Promise<ApiResponse<SecretsSystemDetail>> {
-  return apiFetch<ApiResponse<SecretsSystemDetail>>(
+export function getSystemCredential(
+  key: string,
+): Promise<ApiResponse<SecretsSystemCredentialDetail>> {
+  return apiFetch<ApiResponse<SecretsSystemCredentialDetail>>(
     `/secrets/system/${encodeURIComponent(key)}`,
   );
 }
@@ -6503,8 +6506,9 @@ export function getSystemCredential(key: string): Promise<ApiResponse<SecretsSys
 /**
  * GET /api/secrets/cli/<id>
  *
- * Returns the full evidence payload for a single CLI runtime token.
- * Raw values are NEVER returned — fingerprint + evidence only.
+ * Returns the content-blind evidence payload for a single CLI runtime token.
+ * Raw values are NEVER returned — fingerprint + evidence only, with capability
+ * categories in place of raw scopes.
  *
  * Returns 404 when no matching token exists.
  */
@@ -6622,6 +6626,7 @@ export function probeUserCredential(
 
 import type {
   SecretsSystemDeleteStatus,
+  SecretsSystemDetail,
   SecretsSystemSetRequest,
 } from "./types.ts";
 

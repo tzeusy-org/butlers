@@ -8510,6 +8510,31 @@ export interface SecretsProbeResult {
 }
 
 /**
+ * Content-blind projection of a probe result, as returned by the
+ * per-credential detail reads. Maps to CredentialTestOutcome in secrets_v2.py.
+ *
+ * The probe's free-text `message` is deliberately absent: it can echo a
+ * provider response or the credential's own content.
+ */
+export interface SecretsProbeOutcome {
+  ok: boolean;
+  code: number | null;
+  at: string | null;
+  latency_ms?: number | null;
+}
+
+/**
+ * One audit-log entry without its free-text `note`, as returned by the
+ * per-credential detail reads. Maps to CredentialAuditOutcome in
+ * secrets_v2.py. `ts` is pre-formatted server-side.
+ */
+export interface SecretsAuditOutcome {
+  ts: string;
+  actor: string;
+  action: string;
+}
+
+/**
  * Latest probe result for one capability family of a user credential
  * (bu-4v5es). Maps to CapabilityStatus in the backend secrets_v2 router.
  *
@@ -8858,10 +8883,45 @@ export interface SecretsUserDetail {
 }
 
 /**
- * Full evidence payload for a single system-scoped credential.
+ * Content-blind evidence payload for a single system-scoped credential.
  *
  * Returned by GET /api/secrets/system/<key>
- * Maps to SystemSecretDetail in secrets_v2.py.
+ * Maps to SystemCredentialDetail in secrets_v2.py.
+ *
+ * The probe's free-text `message` and every audit `note` are absent: audit /
+ * probe / failure free text is off this wire regardless of credential family
+ * (owner decision, 2026-08-13). `breaks` is absent too — nothing ever
+ * populated it, so it was dropped rather than published as an empty array.
+ */
+export interface SecretsSystemCredentialDetail {
+  key: string;
+  category: string;
+  description: string | null;
+
+  state: string;
+  fingerprint: string | null;
+
+  /** "shared" | "local" | "missing". */
+  row_state: string;
+  source: string | null;
+  target: string | null;
+
+  last_verified: string | null;
+  used_by: string[];
+
+  test: SecretsProbeOutcome | null;
+  audit: SecretsAuditOutcome[];
+
+  /** Butler schema that owns this row. */
+  butler: string;
+}
+
+/**
+ * Unprojected system-credential payload returned by the system *mutation*
+ * routes (POST /api/secrets/system/<key> and its probe).
+ *
+ * Maps to SystemSecretDetail in secrets_v2.py. The read route publishes the
+ * narrower SecretsSystemCredentialDetail above.
  */
 export interface SecretsSystemDetail {
   key: string;
@@ -8888,10 +8948,14 @@ export interface SecretsSystemDetail {
 }
 
 /**
- * Full evidence payload for a single CLI runtime token.
+ * Content-blind evidence payload for a single CLI runtime token.
  *
  * Returned by GET /api/secrets/cli/<id>
- * Maps to CliRuntimeDetail in secrets_v2.py.
+ * Maps to CliCredentialDetail in secrets_v2.py.
+ *
+ * Capability evidence is published as fixed-vocabulary capability names, never
+ * as raw OAuth scope identifiers. `last_used` is absent because nothing
+ * persists it, and the probe's free-text `message` is off this wire.
  */
 export interface SecretsCliDetail {
   /** secret_key (the credential identifier). */
@@ -8903,12 +8967,12 @@ export interface SecretsCliDetail {
 
   issued: string | null;
   expires: string | null;
-  last_used: string | null;
 
-  scopes_required: string[];
-  scopes_granted: string[];
+  /** CAPABILITY_VOCABULARY members. Empty means "none recorded". */
+  capabilities_required: string[];
+  capabilities_granted: string[];
 
-  test: SecretsProbeResult | null;
+  test: SecretsProbeOutcome | null;
 }
 
 /**

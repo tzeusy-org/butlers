@@ -1983,6 +1983,20 @@
       "excerpt": "- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, ..."
     }
   ],
+  "project-secret-read-endpoints-content-blind/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
+    {
+      "kind": "clause",
+      "scenario": "Per-credential read endpoints",
+      "digest": "c7e0ad36223a",
+      "excerpt": "- **AND** `GET /api/secrets/system/<key>` returns `ApiResponse<SystemSecret>` with `key`, `category`, `row_state` (on..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Per-credential read endpoints",
+      "digest": "6b023e3b5c2b",
+      "excerpt": "- **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliRuntime>` with `id`, `label`, `fingerprint`, `state`, `..."
+    }
+  ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
     {
       "kind": "clause",

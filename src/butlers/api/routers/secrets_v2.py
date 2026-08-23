@@ -42,13 +42,15 @@ GET /api/secrets/user/<provider>?identity=<uuid>
 
 GET /api/secrets/system/<key>
     Per-credential read for a system-scoped credential (butler_secrets).
-    Returns ApiResponse<SystemSecretDetail>.  The first matching row across
+    Returns ApiResponse<SystemCredentialDetail> — content-blind evidence,
+    with probe and audit free text dropped.  The first matching row across
     all butler schemas is returned; row_state reflects shared/local/missing.
     404 when no matching row exists across any butler schema.
 
 GET /api/secrets/cli/<id>
     Per-credential read for a CLI runtime token (butler_secrets category='cli').
-    Returns ApiResponse<CliRuntimeDetail>.
+    Returns ApiResponse<CliCredentialDetail> — content-blind evidence, with
+    capability categories in place of raw scopes.
     404 when no matching row exists.
 
 GET /api/secrets/audit/<scope>/<key>?limit=50
@@ -899,9 +901,14 @@ class InventoryData(BaseModel):
 
 
 class SystemSecretDetail(BaseModel):
-    """Full evidence payload for a single system credential.
+    """Internal, unprojected read of one system credential.
 
-    Returned by GET /api/secrets/system/<key>.
+    ``GET /api/secrets/system/<key>`` publishes ``SystemCredentialDetail``
+    instead; ``_content_blind_system_detail`` is the only bridge from here to
+    that payload, so adding a field below does not publish it on the read
+    route. The system mutation routes (set / probe / delete) still serialise
+    this model directly.
+
     row_state reflects whether this key is shared (switchboard) or has a
     per-butler override, or is missing.
     """
@@ -936,9 +943,11 @@ class SystemSecretDetail(BaseModel):
 
 
 class CliRuntimeDetail(BaseModel):
-    """Full evidence payload for a single CLI runtime token.
+    """Internal, unprojected read of one CLI runtime token.
 
-    Returned by GET /api/secrets/cli/<id>.
+    ``GET /api/secrets/cli/<id>`` publishes ``CliCredentialDetail`` instead;
+    ``_content_blind_cli_detail`` is the only bridge from here to that payload,
+    so adding a field below does not publish it on the read route.
     """
 
     # Identity
@@ -960,6 +969,186 @@ class CliRuntimeDetail(BaseModel):
 
     # Evidence
     test: TestResult | None = None  # most recent probe result
+
+
+# ---------------------------------------------------------------------------
+# Content-blind detail payloads (system + CLI)
+# ---------------------------------------------------------------------------
+# The published projections of the two records above, mirroring what
+# ``_content_blind_detail`` does for the ``u:`` namespace. Defined here, next
+# to the records they project, rather than beside the inventory summaries: the
+# detail read and the inventory publish the same rows but not the same
+# evidence, and each pairing is easier to keep honest when it sits together.
+# ---------------------------------------------------------------------------
+
+
+class SystemCredentialDetail(BaseModel):
+    """Content-blind evidence payload for a single system credential.
+
+    Returned by ``GET /api/secrets/system/{key}``. ``SystemSecretDetail`` stays
+    internal so the mutation routes that build one can keep reading the
+    unprojected row.
+
+    Field parity with ``SystemSecretSummary`` is deliberate — the inventory and
+    the detail read publish the same ``s:`` row, so they publish the same
+    fields:
+
+    - The probe's free-text ``message``, ``last_test_message``, and every audit
+      ``note`` are dropped (owner decision, 2026-08-13): audit / probe /
+      failure free text can echo a provider response or the credential's own
+      content, whichever credential family it belongs to.
+    - ``key``, ``category`` and ``description`` survive for the reason recorded
+      on ``SystemSecretSummary``: they are operator-authored labels for
+      infrastructure keys rather than evidence derived from credential content,
+      and the passport has no other way to name a system row. Whether they
+      belong behind the same projection is an open policy question for both
+      surfaces at once, not one this endpoint answers alone.
+
+    ``breaks`` is absent rather than projected. Nothing has ever populated it
+    on ``SystemSecretDetail``, and an always-empty passthrough of
+    unallowlisted dicts is precisely the shape a future writer leaks through.
+    """
+
+    key: str
+    category: str = "general"
+    description: str | None = None
+
+    # State
+    state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
+    fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+
+    # Row provenance
+    row_state: str = "shared"  # 'shared' | 'local' | 'missing'
+    source: str | None = None  # butler that owns the canonical value
+    target: str | None = None  # butler that the override targets (overrides only)
+
+    # Timestamps
+    last_verified: datetime | None = None
+
+    # Statically known consumers (bu-xzaxm) — see _SYSTEM_KEY_USED_BY. Empty
+    # means "no known consumer in the static map", not "verified unused".
+    used_by: list[str] = Field(default_factory=list)
+
+    # Evidence
+    test: CredentialTestOutcome | None = None
+    audit: list[CredentialAuditOutcome] = Field(default_factory=list)
+
+    # Butler attribution
+    butler: str  # schema that owns this row
+
+
+def _content_blind_system_detail(record: SystemSecretDetail) -> SystemCredentialDetail:
+    """Project an internal system detail record onto the public payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    ``SystemSecretDetail`` must be consciously allowed through here before it
+    can reach a client on this route. The system mutation routes still
+    serialise that record directly, so this is not yet the only path from it to
+    a client — see the note on the record itself.
+
+    ``audit`` is re-projected rather than trusted from its writers, for the
+    reason recorded on ``_content_blind_system``: ``s:`` rows are written from
+    more than one place and read-side projection is the only chokepoint that
+    actually holds.
+    """
+    return SystemCredentialDetail(
+        key=record.key,
+        category=record.category,
+        description=record.description,
+        state=record.state,
+        fingerprint=record.fingerprint,
+        row_state=record.row_state,
+        source=record.source,
+        target=record.target,
+        last_verified=record.last_verified,
+        used_by=list(record.used_by),
+        test=_test_outcome(record.test),
+        audit=[
+            CredentialAuditOutcome(
+                ts=str(event.get("ts") or ""),
+                actor=str(event.get("actor") or ""),
+                action=str(event.get("action") or ""),
+            )
+            for event in record.audit
+        ],
+        butler=record.butler,
+    )
+
+
+#: Capability-classification provider for CLI runtime tokens. Every provider in
+#: ``cli_auth.registry`` is verified by one generic liveness call
+#: (``POST /api/cli-auth/{provider}/test``) rather than by Google's per-scope
+#: capability probes, so any scope ever recorded against a CLI token classifies
+#: as the single 'connectivity' capability ``_capability_for_scope`` gives every
+#: non-Google provider. Deliberately not a real provider slug: it selects the
+#: classification branch, and it is never published.
+_CLI_CAPABILITY_PROVIDER = "cli"
+
+
+class CliCredentialDetail(BaseModel):
+    """Content-blind evidence payload for a single CLI runtime token.
+
+    Returned by ``GET /api/secrets/cli/{credential_id}``. ``CliRuntimeDetail``
+    stays internal, as ``SystemSecretDetail`` does.
+
+    Capability evidence is published as ``CAPABILITY_VOCABULARY`` members, never
+    as the raw ``scopes_required`` / ``scopes_granted`` the internal record
+    carries. Nothing populates those today, which is exactly why the projection
+    has to exist now: a future writer that starts filling them in must not be
+    able to put raw scope identifiers on this wire simply by doing so.
+
+    ``last_used`` is absent rather than shipped as an always-null placeholder —
+    nothing persists it. The probe's free-text ``message`` and
+    ``last_test_message`` are dropped for the same reason as on
+    ``SystemCredentialDetail``. ``label`` survives for the reason
+    ``description`` survives on ``CliRuntimeSummary``: it is the row's only
+    human-readable name and the inventory already publishes it for these same
+    rows — the same open policy question, not a separate one.
+    """
+
+    # Identity
+    id: str  # secret_key (CLI token identifier)
+    label: str | None = None  # description field
+
+    # State
+    state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
+    fingerprint: str | None = None  # sha256[:8] hex, computed on-read
+
+    # Timestamps
+    issued: datetime | None = None  # created_at
+    expires: datetime | None = None  # expires_at
+
+    # Capability evidence, drawn only from CAPABILITY_VOCABULARY. Empty means
+    # "no capability is recorded for this token", never "unknown".
+    capabilities_required: list[str] = Field(default_factory=list)
+    capabilities_granted: list[str] = Field(default_factory=list)
+
+    # Evidence
+    test: CredentialTestOutcome | None = None  # most recent probe outcome
+
+
+def _content_blind_cli_detail(record: CliRuntimeDetail) -> CliCredentialDetail:
+    """Project an internal CLI detail record onto the public payload.
+
+    Deliberately field-by-field rather than ``model_dump()``: a new field on
+    ``CliRuntimeDetail`` must be consciously allowed through here before it can
+    reach a client.
+    """
+    return CliCredentialDetail(
+        id=record.id,
+        label=record.label,
+        state=record.state,
+        fingerprint=record.fingerprint,
+        issued=record.issued,
+        expires=record.expires,
+        capabilities_required=_capability_categories(
+            _CLI_CAPABILITY_PROVIDER, record.scopes_required
+        ),
+        capabilities_granted=_capability_categories(
+            _CLI_CAPABILITY_PROVIDER, record.scopes_granted
+        ),
+        test=_test_outcome(record.test),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2972,21 +3161,24 @@ async def get_user_credential(
 
 @router.get(
     "/system/{key}",
-    response_model=ApiResponse[SystemSecretDetail],
+    response_model=ApiResponse[SystemCredentialDetail],
 )
 async def get_system_credential(
     key: str,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[SystemSecretDetail]:
-    """Return full evidence payload for a single system-scoped credential.
+) -> ApiResponse[SystemCredentialDetail]:
+    """Return the content-blind evidence payload for one system credential.
 
     Searches across all registered butler schemas and then the shared credential
     pool (public.butler_secrets) for a butler_secrets row with the given key.
     Returns the first match found.
 
+    The row is published through ``_content_blind_system_detail``: probe
+    messages and audit notes never reach the wire, and raw credential values
+    are NEVER returned.
+
     Returns 404 when no matching credential exists in any butler schema or the
     shared pool.
-    Raw credential values are NEVER returned.
     """
     for butler_name in db.butler_names:
         try:
@@ -3009,7 +3201,9 @@ async def get_system_credential(
                 detail=f"System credential source unavailable for butler {butler_name!r}",
             ) from exc
         if detail is not None:
-            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+            return ApiResponse[SystemCredentialDetail](
+                data=_content_blind_system_detail(detail), meta=ApiMeta()
+            )
 
     # Also search the shared credential pool (public.butler_secrets).
     try:
@@ -3032,7 +3226,9 @@ async def get_system_credential(
                 detail="System credential source unavailable for shared-public",
             ) from exc
         if detail is not None:
-            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+            return ApiResponse[SystemCredentialDetail](
+                data=_content_blind_system_detail(detail), meta=ApiMeta()
+            )
 
     raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -3042,19 +3238,22 @@ async def get_system_credential(
     # persistence-key convention) survive route matching — a plain
     # `{credential_id}` only captures one path segment and 404s on the slash.
     "/cli/{credential_id:path}",
-    response_model=ApiResponse[CliRuntimeDetail],
+    response_model=ApiResponse[CliCredentialDetail],
 )
 async def get_cli_credential(
     credential_id: str,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CliRuntimeDetail]:
-    """Return full evidence payload for a single CLI runtime token.
+) -> ApiResponse[CliCredentialDetail]:
+    """Return the content-blind evidence payload for one CLI runtime token.
 
     CLI tokens are stored in the shared credential pool under
     butler_secrets with category='cli'.
 
+    The row is published through ``_content_blind_cli_detail``: the probe
+    message never reaches the wire, capability categories stand in for raw
+    scopes, and raw credential values are NEVER returned.
+
     Returns 404 when no matching token exists.
-    Raw credential values are NEVER returned.
     """
     shared_pool: Any = None
     try:
@@ -3080,7 +3279,7 @@ async def get_cli_credential(
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    return ApiResponse[CliRuntimeDetail](data=detail, meta=ApiMeta())
+    return ApiResponse[CliCredentialDetail](data=_content_blind_cli_detail(detail), meta=ApiMeta())
 
 
 # ---------------------------------------------------------------------------
