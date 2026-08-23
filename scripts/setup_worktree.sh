@@ -38,6 +38,11 @@ _find_main_repo_root() {
 MAIN_REPO_ROOT="$(_find_main_repo_root)"
 WORKTREE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+if [ "$WORKTREE_ROOT" = "$MAIN_REPO_ROOT" ]; then
+  echo "Error: scripts/setup_worktree.sh must run from a linked worktree, not the main checkout." >&2
+  exit 2
+fi
+
 # List of cache directories to symlink (relative paths from repo root).
 # Each entry should be a gitignored directory in the main repo.
 CACHE_DIRS=(
