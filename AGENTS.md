@@ -1684,3 +1684,25 @@ the same loop worked purely because it happened to use a literal list.
 The diagnosis only became possible after the empty-data branch printed a visible marker instead of
 being swallowed: the marker read `PR#3762 3763 3764 3765: <no data>`, which named the word-splitting
 bug directly. When a poll loop can see nothing, make it SAY it saw nothing.
+
+### `gh pr merge --delete-branch` abandons BOTH branches when a worktree holds the local one
+
+If a linked worktree still has the branch checked out, `gh pr merge --squash --delete-branch` merges
+the PR, then fails the local delete with `cannot delete branch 'X' used by worktree at ...` -- and that
+failure aborts the whole cleanup step, so the REMOTE branch is left behind too. The error names only
+the local branch, which reads as if the remote half succeeded. It did not.
+
+Observed side by side in one session: a PR whose worktree was removed before merging had its remote
+branch deleted; a PR merged with the worktree still attached left `agent/<id>` on origin.
+
+Remove the worktree first, then merge:
+
+```sh
+git worktree remove --force .worktrees/parallel-agents/<id>
+gh pr merge <n> --squash --delete-branch
+git branch -D agent/<id> 2>/dev/null   # usually already gone
+```
+
+If you merged in the wrong order, clean up explicitly and verify, since `--delete-branch` reported no
+error for the remote: `git push origin --delete agent/<id>` then
+`git ls-remote --heads origin agent/<id> | wc -l` should print 0.
