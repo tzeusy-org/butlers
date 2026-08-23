@@ -277,6 +277,13 @@ def _serialize_testcontainer_startup() -> Iterator[None]:
             os.close(fd)
 
 
+def _container_identity(container: object) -> str:
+    """Best-effort ``name (short-id)`` for a docker-py container, for warnings."""
+    name = getattr(container, "name", None) or "<unnamed>"
+    container_id = getattr(container, "id", None) or "<unknown-id>"
+    return f"{name} ({container_id[:12]})"
+
+
 def _remove_container_with_retry(
     container: object,
     *,
@@ -294,9 +301,15 @@ def _remove_container_with_retry(
             if attempt < max_attempts:
                 time.sleep(0.1 * attempt)
                 continue
+            # Giving up here leaks a live container (bu-3zu5l): name it, so the
+            # orphan is traceable to this run instead of being rediscovered
+            # weeks later by `docker ps`. Sweep with
+            # `python3 scripts/reap_orphaned_testcontainers.py`.
             warnings.warn(
-                "Ignoring transient Docker teardown error after retries: "
-                f"{exc}. This can happen under pytest-xdist container shutdown races.",
+                f"Leaked test container {_container_identity(container)}: ignoring transient "
+                f"Docker teardown error after retries: {exc}. This can happen under "
+                "pytest-xdist container shutdown races. Sweep leftovers with "
+                "`python3 scripts/reap_orphaned_testcontainers.py`.",
                 RuntimeWarning,
                 stacklevel=2,
             )

@@ -2077,3 +2077,62 @@ git -C /home/tze/GitHub/butlers branch --show-current # must be main
 
 Dispatch prompts should say this outright — it is not discoverable from inside the worker, because
 a relative path resolves fine and the file lands somewhere plausible.
+
+
+### Orphaned testcontainers (do not write an age-based reaper)
+
+`docker ps --filter ancestor=pgvector/pgvector:pg17` showing many-day-old containers is a **leak**,
+not normal: DB tests start one pgvector container per pytest *process* (addopts carry `-n 3 --dist
+loadfile`), and a run SIGKILLed mid-flight never reaches teardown.
+
+A run that *reaches* teardown leaks nothing — verified, not assumed: a DB-backed suite run to
+completion left the host container count at 12 before and 12 after. The leak is confined to killed
+runs, which is the case a process cannot handle on its own, and is why the fix belongs in a sidecar
+rather than in teardown. Do not generalise that count delta into a leak detector, though: concurrent
+sessions legitimately raise the count mid-run, and a count that returns to baseline can still hide a
+leak a peer's Ryuk cleaned up meanwhile. The rule below counts nothing, so it stays correct under
+concurrency.
+
+**Ryuk is enabled for local runs and you should not "re-enable" it or replace it.** There is no
+`~/.testcontainers.properties` and no `TESTCONTAINERS_RYUK_DISABLED` in the shell, so
+`config.ryuk_disabled` falls through to its `False` default; every local run starts
+`testcontainers-ryuk-<SESSION_ID>`, which holds a TCP socket and reaps by session-id label when the
+socket drops (a SIGKILL closes it via the kernel). Note the exception before you grep and conclude
+otherwise: CI **does** set `TESTCONTAINERS_RYUK_DISABLED: "true"` (`.github/workflows/ci.yml` in the
+`check` job's smoke and integration steps, and `nightly.yml`). That is fine there and cannot leak
+here, because those jobs are `runs-on: ubuntu-latest` — throwaway VMs. The `gha-runner-*` containers
+on this box belong to a different project, not to butlers CI.
+
+Ryuk's one real gap: it runs with `auto_remove=True` (`testcontainers/core/container.py:348`) and
+`Reaper.delete_instance()` (:326) is defined but **called from nowhere** in testcontainers-python
+4.14.2 or in this repo. A Ryuk that dies before its containers do vanishes without a trace or a
+second chance, and the pgvector containers it guarded (`AutoRemove=false`, `RestartPolicy=no`)
+survive indefinitely. Why Ryuk died in a given case is not recoverable after the fact, for exactly
+that reason — do not expect to find out from logs.
+
+**Never key cleanup on age.** The oldest orphan can be a live investigation: on this box
+`codex-pr3708-acl-repro-11668` runs the *same pgvector image* and is older than four of the leaks.
+Ownership is exact instead. A container is provably unowned only if **all** hold:
+
+1. `org.testcontainers=true` **and** a non-empty `org.testcontainers.session-id` — only the library
+   stamps these; a hand-run container carries `{}` labels and is excluded by this predicate alone.
+2. No `com.docker.compose.*` label (spares `butlers-dev-*`, `property_agent-postgres-1`,
+   `gha-runner-*`).
+3. No `dev.butlers.keep` label — the documented human pin, honoured for any value.
+4. Name matches Docker's generator shape `^[a-z]+(_[a-z]+){1,2}$`; digits and hyphens never occur
+   there, so a human-authored name reads as human on its face.
+5. **No running `testcontainers-ryuk-<session-id>` for that session id.** Load-bearing: a live pytest
+   session always has a live Ryuk, so a missing Ryuk is positive evidence the owner is dead rather
+   than an inference from elapsed time.
+6. Older than `--min-age-hours` (default 4, past the ~40 min full gate). Backstop only — it covers
+   the one case where (5) can lie, which is a run launched with `TESTCONTAINERS_RYUK_DISABLED=true`.
+   That is not hypothetical: it is what CI does, so anyone copying the CI env into a local run
+   defeats (5) and leaves (6) as the only guard.
+
+Sweep with `python3 scripts/reap_orphaned_testcontainers.py` (report-only; `--reap` to remove,
+`--json` for per-container reasons). Safe for an agent to run unattended: the predicates are
+conjunctive and every failure mode — missing label, unparseable timestamp, a `docker` call that
+errors — resolves to "not reapable", so the script's way of being wrong is to leave an orphan
+running, never to kill a live one. Pin anything you want kept:
+`docker run --name my-repro --label dev.butlers.keep=<bead> ...`. Full rationale:
+`docs/testing/orphaned-testcontainers.md` (bu-3zu5l).

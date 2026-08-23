@@ -6,4 +6,5 @@
 
 - [Testing Strategy](testing-strategy.md) — test pyramid, unit vs integration vs E2E
 - [Markers and Fixtures](markers-and-fixtures.md) — pytest markers, shared fixtures, parallel execution
+- [Orphaned Test Containers](orphaned-testcontainers.md) — how pytest leaks Docker containers, how to tell a leak from a kept container, safe sweeping
 - [E2E Suite](e2e/) — end-to-end test documentation
