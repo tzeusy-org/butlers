@@ -128,6 +128,7 @@ from butlers.google_credentials import (
     store_google_credentials,
 )
 from butlers.oauth_token_payload import (
+    OAuthTokenPayload,
     OAuthTokenValidationError,
     validate_oauth_token_payload,
 )
@@ -1448,6 +1449,46 @@ async def _check_account_limit(pool: Any) -> None:
             )
 
 
+def _validate_google_token_payload(token_data: object) -> OAuthTokenPayload:
+    """Validate a Google token success payload without losing ``no_refresh_token``.
+
+    Both Google callbacks used to read ``access_token``/``refresh_token``/``scope``
+    with a bare ``.get`` behind, at most, a truthiness guard. Truthiness is not a
+    type check: an ``int``, a ``list``, or a ``dict`` is truthy, so it passed the
+    guard and was **persisted** by ``_update_account_refresh_token`` /
+    ``create_google_account``, and a non-string ``access_token`` was formatted
+    into an ``Authorization: Bearer`` header before anything confirmed its type.
+    Routing both callbacks through the shared validator closes that.
+
+    The one adjustment is ``refresh_token``. The shared contract rejects any
+    optional field that is *present but unusable*, which is the right default and
+    is what the generic provider callback enforces. Here it would destroy
+    behaviour these two callbacks are built around: Google omits the key on a
+    repeat authorization, and a ``null`` or blank value means the same thing --
+    the user was not asked to consent again. Both callbacks answer that case with
+    their own ``no_refresh_token``, which tells the user to re-authorize with
+    ``force_consent=true``; folding it into a generic invalid-payload rejection
+    would replace an actionable answer with a worse one.
+
+    So an absent, ``None``, or blank refresh token is normalised to absent
+    *before* validation -- exactly where the old truthiness guard already sent
+    it, so no accepted payload changes verdict. Every other shape is rejected
+    rather than persisted, which is the hole this closes.
+
+    Raises
+    ------
+    OAuthTokenValidationError
+        Propagated from :func:`validate_oauth_token_payload`. Its message carries
+        fixed local text only, never a provider-supplied value.
+    """
+    if isinstance(token_data, dict) and "refresh_token" in token_data:
+        candidate = token_data["refresh_token"]
+        if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
+            # Copy rather than mutate: the caller's payload is not ours to edit.
+            token_data = {k: v for k, v in token_data.items() if k != "refresh_token"}
+    return validate_oauth_token_payload(token_data)
+
+
 # ---------------------------------------------------------------------------
 # Callback endpoint
 # ---------------------------------------------------------------------------
@@ -1552,29 +1593,44 @@ async def oauth_google_callback(
         )
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
-    refresh_token = token_data.get("refresh_token")
-    access_token = token_data.get("access_token")
-    scope = token_data.get("scope")
+    # --- Validate the token payload before any field of it is used ---
+    # A 200 only proves the transport worked. Validate before the access token
+    # reaches a Bearer header and before the refresh token reaches the account
+    # registry or the credential store, so a malformed body cannot be persisted.
+    try:
+        token = _validate_google_token_payload(token_data)
+    except OAuthTokenValidationError:
+        logger.warning("Google OAuth token response failed validation")
+        error_payload = OAuthCallbackError(
+            error_code="invalid_token_payload",
+            message="Google returned an invalid token response. Please restart the OAuth flow.",
+        )
+        return JSONResponse(status_code=502, content=error_payload.model_dump())
+
+    refresh_token = token.refresh_token
+    access_token = token.access_token
+    scope = token.scope
 
     # --- Call Google userinfo to resolve account email ---
-    # When access_token is available, call userinfo to get the authenticated email.
     # This is the authoritative source — ignore the account_hint from state.
+    # No `if access_token:` guard: validation guarantees a non-empty string, and
+    # a guard that can never be false is how the previous one earned credit for
+    # a check it did not perform.
     account_email: str | None = None
     account_display_name: str | None = None
 
-    if access_token:
-        try:
-            userinfo = await _fetch_google_userinfo(access_token)
-            account_email = userinfo.get("email")
-            account_display_name = userinfo.get("name")
-        except _UserinfoError as exc:
-            logger.warning("Google userinfo call failed: %s", exc)
-            error_payload = OAuthCallbackError(
-                error_code="userinfo_failed",
-                message="Failed to retrieve account information from Google. "
-                "Please restart the OAuth flow.",
-            )
-            return JSONResponse(status_code=502, content=error_payload.model_dump())
+    try:
+        userinfo = await _fetch_google_userinfo(access_token)
+        account_email = userinfo.get("email")
+        account_display_name = userinfo.get("name")
+    except _UserinfoError as exc:
+        logger.warning("Google userinfo call failed: %s", exc)
+        error_payload = OAuthCallbackError(
+            error_code="userinfo_failed",
+            message="Failed to retrieve account information from Google. "
+            "Please restart the OAuth flow.",
+        )
+        return JSONResponse(status_code=502, content=error_payload.model_dump())
 
     # --- Resolve or create account in registry ---
     shared_pool = _get_shared_pool(db_manager)
@@ -3356,37 +3412,67 @@ async def _google_callback_from_state(
             ).model_dump(),
         )
 
-    refresh_token = token_data.get("refresh_token")
-    access_token = token_data.get("access_token")
-    scope = token_data.get("scope")
+    # --- Validate the token payload before any field of it is used ---
+    # Same contract as the generic provider callback above: nothing derived from
+    # the body reaches a Bearer header, the account registry, or the credential
+    # store until the whole payload has passed its format check.
+    try:
+        token = _validate_google_token_payload(token_data)
+    except OAuthTokenValidationError:
+        # Deliberately no provider-supplied content in the log, the audit note,
+        # or the response body.
+        logger.warning("Google OAuth token response failed validation")
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider="google",
+            # The provider answered 200; its payload is what fails. Not
+            # `provider_error` -- see the identical call in the generic path.
+            failure_category="malformed",
+            note="Invalid token payload",
+        )
+        return JSONResponse(
+            status_code=502,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "invalid_token_payload",
+                    "message": "The provider returned an invalid token response. Please restart.",
+                }
+            ).model_dump(),
+        )
+
+    refresh_token = token.refresh_token
+    access_token = token.access_token
+    scope = token.scope
 
     account_email: str | None = None
     account_display_name: str | None = None
 
-    if access_token:
-        try:
-            userinfo = await _fetch_google_userinfo(access_token)
-            account_email = userinfo.get("email")
-            account_display_name = userinfo.get("name")
-        except _UserinfoError as exc:
-            logger.warning("Google userinfo call failed: %s", exc)
-            await _emit_oauth_audit(
-                shared_pool,
-                action="failed",
-                provider="google",
-                failure_category="provider_error",
-                note="Userinfo call failed",
-            )
-            return JSONResponse(
-                status_code=502,
-                content=ApiResponse(
-                    data={
-                        "success": False,
-                        "error_code": "userinfo_failed",
-                        "message": "Failed to retrieve account information. Please restart.",
-                    }
-                ).model_dump(),
-            )
+    # No `if access_token:` guard: validation guarantees a non-empty string.
+    try:
+        userinfo = await _fetch_google_userinfo(access_token)
+        account_email = userinfo.get("email")
+        account_display_name = userinfo.get("name")
+    except _UserinfoError as exc:
+        logger.warning("Google userinfo call failed: %s", exc)
+        await _emit_oauth_audit(
+            shared_pool,
+            action="failed",
+            provider="google",
+            failure_category="provider_error",
+            note="Userinfo call failed",
+        )
+        return JSONResponse(
+            status_code=502,
+            content=ApiResponse(
+                data={
+                    "success": False,
+                    "error_code": "userinfo_failed",
+                    "message": "Failed to retrieve account information. Please restart.",
+                }
+            ).model_dump(),
+        )
 
     # Reuse the full account-registry + credential persistence path.
     is_new_account: bool | None = None

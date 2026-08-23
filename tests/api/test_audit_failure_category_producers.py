@@ -190,7 +190,7 @@ def test_the_census_is_the_size_this_module_documents(call_sites: list[_CallSite
 
     assert by_file == {
         "secrets_v2.py": 15,
-        "oauth.py": 11,
+        "oauth.py": 12,
         "secrets_lifecycle.py": 1,
     }, f"the credential-audit call-site census moved: {by_file}"
 
@@ -229,10 +229,13 @@ def test_success_only_producers_stay_uncategorised(call_sites: list[_CallSite]) 
     )
 
 
-def test_failure_producers_are_the_ten_sites_the_docs_name(call_sites: list[_CallSite]) -> None:
+def test_failure_producers_are_the_named_sites(call_sites: list[_CallSite]) -> None:
     """Which sites can fail, by name, so the docstring census stays checkable."""
     failing = sorted((site.path.name, site.enclosing) for site in call_sites if site.can_fail)
     assert failing == [
+        # Five, not four: bu-z6udd added the malformed-token-payload producer,
+        # the sibling of the one oauth_provider_callback already had.
+        ("oauth.py", "_google_callback_from_state"),
         ("oauth.py", "_google_callback_from_state"),
         ("oauth.py", "_google_callback_from_state"),
         ("oauth.py", "_google_callback_from_state"),
@@ -261,7 +264,7 @@ def test_literal_categories_are_vocabulary_members() -> None:
         and node.arg == "failure_category"
         and isinstance(node.value, ast.Constant)
     ]
-    assert len(literals) == 8, f"expected eight OAuth failure categories, found {literals}"
+    assert len(literals) == 9, f"expected nine OAuth failure categories, found {literals}"
     assert all(value in PROBE_FAILURE_VOCABULARY for value in literals), (
         f"a producer persists a non-vocabulary failure category: {literals}"
     )
