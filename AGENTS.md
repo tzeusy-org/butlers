@@ -1720,7 +1720,7 @@ git branch -D agent/<id> 2>/dev/null   # usually already gone
 If you merged in the wrong order, clean up explicitly and verify, since `--delete-branch` reported no
 error for the remote: `git push origin --delete agent/<id>` then
 `git ls-remote --heads origin agent/<id> | wc -l` should print 0.
-||||||| parent of 77b8a2fd3 (docs(agents): record the role-gated SECURITY DEFINER savepoint census [bu-74pxv])
+
 ### `find` here is bfs, not findutils: GNU relative timestamps fail AND exit 0
 
 `find` on this machine resolves to **bfs**, which rejects GNU findutils' relative timestamp syntax:
