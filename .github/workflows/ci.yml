@@ -118,6 +118,31 @@ jobs:
       - name: Check unarchived MODIFIED spec blocks against the live baseline
         run: python3 scripts/check_spec_overwrites.py
 
+  archived-requirements-guard:
+    # Fast, dependency-free gate (bu-966by): the other side of the ledger from
+    # spec-overwrite-guard. Archiving a change is supposed to write its
+    # requirements into openspec/specs/, and 488 of them across 44 changes never
+    # got there while every check stayed green -- `openspec validate` reads delta
+    # syntax, `openspec archive` reports what it wrote and not what it skipped,
+    # and check_spec_overwrites.py never looks at the baseline side at all. This
+    # asserts each archived `## ADDED` requirement exists in the baseline by name
+    # and each `## MODIFIED` block's content reached it, failing per requirement
+    # so a half-applied archive cannot look green. A digest-keyed ratchet
+    # (scripts/archived-requirements-baseline.json) freezes today's debt for
+    # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose.
+    # Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check archived change requirements reached the baseline
+        run: python3 scripts/check_archived_requirements_landed.py
+
   check:
     runs-on: ubuntu-latest
 
