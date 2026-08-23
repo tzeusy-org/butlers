@@ -70,6 +70,17 @@ def _evidence(session: str) -> dict[str, str]:
     }
 
 
+def _metadata(row: asyncpg.Record) -> dict:
+    """Decode a row's JSONB metadata regardless of whether a codec is registered.
+
+    The ``pool`` fixture registers none, so asyncpg hands back JSONB as text;
+    the guard mirrors tests/integration/test_owner_conditions_roundtrip.py so
+    this file does not silently depend on that.
+    """
+    raw = row["metadata"]
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
 async def _rows_for(pool: asyncpg.Pool, source: str) -> list[asyncpg.Record]:
     return await pool.fetch(
         "SELECT id, fingerprint, episode, state, first_detected_at, last_confirmed_at, "
@@ -102,7 +113,7 @@ class TestCommitmentCreation:
 
         rows = await _rows_for(pool, source)
         assert len(rows) == 1
-        metadata = json.loads(rows[0]["metadata"])
+        metadata = _metadata(rows[0])
         assert metadata["class"] == "commitment"
         assert metadata["kind"] == "promise"
         assert metadata["direction"] == "owner_to_other"
@@ -265,7 +276,7 @@ class TestCommitmentResolution:
         assert resolved.recovered_after_s >= 0
 
         rows = await _rows_for(pool, source)
-        metadata = json.loads(rows[0]["metadata"])
+        metadata = _metadata(rows[0])
         assert rows[0]["state"] == "resolved"
         assert metadata["evidence_opened"]["session_id"] == "session-open"
         assert metadata["evidence_closed"]["session_id"] == "session-close"
@@ -317,7 +328,7 @@ class TestCommitmentResolution:
 
         rows = await _rows_for(pool, source)
         assert len(rows) == 1
-        assert json.loads(rows[0]["metadata"])["resolution_reason"] == "satisfied"
+        assert _metadata(rows[0])["resolution_reason"] == "satisfied"
 
 
 class TestCommitmentQuerySurface:

@@ -81,7 +81,17 @@ from typing import Any
 import asyncpg
 
 from butlers.core import owner_conditions
-from butlers.core.condition_ledger import ConditionTransition, Observation, _row_to_dict
+from butlers.core.condition_ledger import (
+    ConditionTransition,
+    Observation,
+    # The engine's row decoder, imported deliberately: this module is a third
+    # facade over ``condition_ledger`` alongside ``owner_conditions`` and
+    # ``infra_conditions``, so its query results must have exactly the row
+    # shape (JSONB metadata decoded whether or not the pool registered a
+    # codec) those facades' readers already return. Re-deriving it here would
+    # be a second decoder free to drift from the one the ledger writes with.
+    _row_to_dict,
+)
 
 __all__ = [
     "COMMITMENT_DIRECTIONS",
