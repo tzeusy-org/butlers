@@ -3,6 +3,7 @@
 - [x] 1.1 Add requirement-ID citations to focused tests for every mandatory delta requirement.
 - [x] 1.2 Record red test evidence for the transport alias, LID history leak, excerpt identity loss,
   JID-shaped fact entity creation, and unsafe reconciliation cases.
+  Evidence: [`verification.md`](verification.md).
 
 ## 2. Canonical WhatsApp Identity
 

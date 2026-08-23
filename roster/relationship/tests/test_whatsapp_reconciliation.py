@@ -308,7 +308,7 @@ def _count(plan, category: ReconciliationCategory) -> int:
 
 
 async def test_planner_enumerates_distinct_phone_and_lid_candidates(reconciliation_pool) -> None:
-    """Exact/bounded matches and mapped LIDs plan; ambiguity never picks row one."""
+    """REQ-entity-identity-002: exact matches plan; ambiguity never picks row one."""
     pool = reconciliation_pool
     unique_source, unique_target = await _source_with_target(pool, "6591234567")
 
@@ -648,6 +648,7 @@ async def test_review_reference_to_a_different_pair_protects_the_source(
 
 
 async def test_digest_is_stable_and_changes_with_pair_state(reconciliation_pool) -> None:
+    """REQ-entity-identity-002: stale plan digests authorize zero mutations."""
     pool = reconciliation_pool
     source, target = await _source_with_target(pool, "6593000001")
 
@@ -836,6 +837,7 @@ async def test_writer_before_apply_yields_content_blind_drift_without_mutation(
 async def test_apply_audits_tombstone_and_removes_pair_from_fresh_plan(
     reconciliation_pool,
 ) -> None:
+    """REQ-entity-identity-002: apply is audited and removes the reconciled shell."""
     pool = reconciliation_pool
     source, target = await _source_with_target(pool, "6595000001")
     plan = await build_whatsapp_reconciliation_plan(pool)

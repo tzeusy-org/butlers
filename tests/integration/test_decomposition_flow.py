@@ -13,6 +13,7 @@ mock only the LLM dispatch and route() calls to keep the test deterministic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -21,12 +22,14 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
 )
+from butlers.db import register_jsonb_codec
 
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -55,20 +58,40 @@ async def pool(postgres_container):
 
 
 @pytest.fixture
-async def identity_pool(postgres_container):
-    """Provision the real identity, Switchboard, and Relationship topology."""
-    from butlers.testing.migration import create_migrated_test_pool
+async def identity_pools(postgres_container):
+    """Provision the real Switchboard, memory, and Relationship topology."""
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
-    p = await create_migrated_test_pool(
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
         postgres_container,
-        chains=["core", "switchboard", "relationship"],
-        schemas={"switchboard": "switchboard", "relationship": "relationship"},
-        pool_schema="switchboard",
+        migration_db_name(),
+        ["core", "switchboard", "memory", "relationship"],
+        {
+            "switchboard": "switchboard",
+            "memory": "memory",
+            "relationship": "relationship",
+        },
+    )
+    identity_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
+    memory_pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "memory,public"},
     )
     try:
-        yield p
+        yield identity_pool, memory_pool
     finally:
-        await p.close()
+        await memory_pool.close()
+        await identity_pool.close()
 
 
 # ---------------------------------------------------------------------------
@@ -452,16 +475,18 @@ async def test_decomposition_flow_full_pipeline(pool):
 
 
 @pytest.mark.integration
-async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchors(identity_pool):
+async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchors(identity_pools):
     """Prove the mixed-speaker WhatsApp contract from connector to routed excerpts.
 
     Spec anchors: REQ-connector-base-spec-001, REQ-switchboard-identity-001,
-    REQ-switchboard-identity-002, REQ-conversation-decomposition-001,
-    REQ-entity-identity-001, and REQ-entity-identity-002.
+    REQ-switchboard-identity-002, REQ-conversation-decomposition-001, and
+    REQ-entity-identity-001.
     """
+    from butlers.modules.memory.tools.writing import memory_store_fact
     from butlers.modules.pipeline import MessagePipeline
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
+    identity_pool, memory_pool = identity_pools
     envelope, known_identity, unknown_identity = _build_mixed_whatsapp_envelope()
     messages = envelope["payload"]["raw"]["conversation_history"]
     assert [message["sender_identity"] for message in messages] == [
@@ -524,13 +549,36 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
         },
     ]
 
+    dispatch_prompts: list[str] = []
+
     async def mock_dispatch(**kwargs):
+        dispatch_prompts.append(kwargs["prompt"])
         return FakeSpawnerResult(output=json.dumps(signals), model="test-model")
 
-    routed_messages: list[dict[str, Any]] = []
+    class _EmbeddingEngine:
+        model_name = "task-8-test"
+
+        def embed(self, _text: str) -> list[float]:
+            return [0.0] * 384
+
+    routed_messages: list[tuple[str, dict[str, Any]]] = []
 
     async def mock_route(pool_arg, *, target_butler, tool_name, args, source_butler):
-        routed_messages.append(args["__conceptual_message"])
+        conceptual_message = args["__conceptual_message"]
+        routed_messages.append((target_butler, conceptual_message))
+        excerpt = conceptual_message["excerpts"][0]
+        predicate = {
+            "finance": "paid_for_lunch",
+            "health": "reported_shoulder_pain",
+        }[target_butler]
+        await memory_store_fact(
+            memory_pool,
+            _EmbeddingEngine(),
+            excerpt["sender"],
+            predicate,
+            excerpt["text"],
+            entity_id=excerpt["sender_entity_id"],
+        )
         return {"status": "ok"}
 
     with (
@@ -562,9 +610,11 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
     assert result.target_butler == "multi"
     assert set(result.acked_targets) == {"finance", "health"}
     assert len(routed_messages) == 2
-    routed_by_type = {message["signal_type"]: message for message in routed_messages}
-    known_excerpt = routed_by_type["finance"]["excerpts"][0]
-    unknown_excerpt = routed_by_type["health"]["excerpts"][0]
+    routed_by_target = dict(routed_messages)
+    assert routed_by_target["finance"]["signal_type"] == "finance"
+    assert routed_by_target["health"]["signal_type"] == "health"
+    known_excerpt = routed_by_target["finance"]["excerpts"][0]
+    unknown_excerpt = routed_by_target["health"]["excerpts"][0]
     assert known_excerpt["sender"] == "Known speaker"
     assert known_excerpt["sender_identity"] == known_identity
     assert known_excerpt["sender_entity_id"] == str(known_entity_id)
@@ -572,6 +622,14 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
     assert unknown_excerpt["sender_identity"] == unknown_identity
     unknown_entity_id = uuid.UUID(unknown_excerpt["sender_entity_id"])
     assert unknown_entity_id != known_entity_id
+    assert len(dispatch_prompts) == 1
+    prompt = dispatch_prompts[0]
+    assert "Known speaker" in prompt
+    assert "Unknown WhatsApp sender 2" in prompt
+    assert known_identity not in prompt
+    assert unknown_identity not in prompt
+    assert str(known_entity_id) not in prompt
+    assert str(unknown_entity_id) not in prompt
 
     persisted_unknown = await identity_pool.fetchrow(
         "SELECT canonical_name, metadata FROM public.entities WHERE id = $1",
@@ -579,6 +637,25 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
     )
     assert persisted_unknown is not None
     assert persisted_unknown["metadata"]["unidentified"] is True
+    stored_facts = await identity_pool.fetch(
+        """
+        SELECT entity_id, subject, predicate, content
+        FROM memory.facts
+        ORDER BY predicate
+        """
+    )
+    assert [
+        (row["entity_id"], row["subject"], row["predicate"], row["content"])
+        for row in stored_facts
+    ] == [
+        (known_entity_id, "Known speaker", "paid_for_lunch", "I paid for lunch"),
+        (
+            unknown_entity_id,
+            "Unknown WhatsApp sender 2",
+            "reported_shoulder_pain",
+            "My shoulder hurts",
+        ),
+    ]
     transport_named_count = await identity_pool.fetchval(
         """
         SELECT count(*)

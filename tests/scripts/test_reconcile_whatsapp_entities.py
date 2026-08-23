@@ -62,6 +62,7 @@ def _dry_report(digest: str = "a" * 64) -> ContentBlindReconciliationReport:
 
 @pytest.mark.asyncio
 async def test_run_defaults_to_write_free_plan(script_module, monkeypatch) -> None:
+    """REQ-entity-identity-002: the operator command defaults to a write-free plan."""
     pool = _Pool()
     create_pool = AsyncMock(return_value=pool)
     plan = WhatsAppReconciliationPlan(
@@ -110,6 +111,7 @@ async def test_run_rejects_missing_environment_dsn(script_module, monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_run_apply_passes_only_the_authorized_digest(script_module, monkeypatch) -> None:
+    """REQ-entity-identity-002: apply forwards only the explicitly reviewed digest."""
     pool = _Pool()
     applied = ContentBlindReconciliationReport(
         mode="apply",
