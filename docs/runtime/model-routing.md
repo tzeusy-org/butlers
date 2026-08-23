@@ -208,7 +208,12 @@ The body is defined once, in
 emits it on a fresh bootstrap and `finalize_interface` re-adopts it on every
 `scripts/init-db.sql` rerun, so a database that predates a change to the body
 converges the next time the bootstrap runs. `upgrade_producers_v2` alone could
-not do this: it never re-runs once a database is at version 2.
+not do this: it never re-runs once a database is at version 2, and Alembic cannot
+do it either — the planter is owned by the NOLOGIN `runtime_attention_outbox_owner`
+and the migration role is deliberately not a member. That rerun is an operator
+action, not part of an Alembic deploy: until it happens, an existing database keeps
+planting the old actor and note. Nothing breaks in the meantime — no code in this
+repository reads either literal.
 
 Producer rollback disables new episodes while retaining attempts, the outbox,
 evidence, and this trigger.
