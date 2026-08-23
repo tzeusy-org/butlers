@@ -280,7 +280,7 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 - Recovering a file deleted by a bad commit: use `git checkout <deleting-commit>^ -- <paths>`, never copy from a leftover `bu-*/` bd worktree. A bead worktree is pinned at its branch point, so its copies are silently *older* than what was deleted — restoring from one reverts every commit that landed in between. Confirm a recovery with `git diff <deleting-commit>^ -- <paths>` (empty = exact) and blob-match suspect files with `git hash-object` against `git log --format=%H -- <path>` before trusting them.
 - Two paths carry outsized blast radius and are easy to delete by an over-broad path glob: `src/butlers/api/app.py` (imported by ~132 test files via `create_app`) and `src/butlers/core_tools/_delegation.py` (imported by `core_tools/_dispatcher.py`, so losing it fails *every* butler daemon at import). Any bulk `git rm`/cleanup touching `src/` or `pr/` should be reviewed with `git show --stat` before pushing — see bu-q0po2.
-- `GET /api/secrets/user/{provider}` is a **content-blind** contract (owner decision 2026-08-13): it publishes capability categories from `CAPABILITY_VOCABULARY` (`calendar`/`gmail`/`drive`/`health`/`connectivity`/`other`), never raw OAuth scopes, the persisted `entity_info.type` or `label`, or any audit `note` / probe `message` / failure tail. `_fetch_single_user_secret` returns an internal `_UserCredentialRecord` (mutation routes need `type`/`label`/`failure_tail` for OAuth revocation, guided-rotate gating, and the reauthorize account hint); `_content_blind_detail` is the only bridge from that record to *this endpoint's* DTO and builds it field by field on purpose, so adding a field to the record does NOT publish it here, and must not, without re-running the security review. It is **not** the only path from that record to a client: `POST .../reauthorize` returns the persisted `label` as `account_hint` inside `redirect_url`, and `POST .../probe` returns `failure_tail` (or provider response text) as `TestResult.message`. Both predate the content-blind work and are sanctioned by the current spec; audit them before assuming a value cannot escape. `GET /api/secrets/inventory` still ships raw `scopes_required`/`scopes_granted`, `type`, `label`, `last_test_message` and audit notes for the same credentials, and the system and CLI detail endpoints have NOT had this treatment either.
+- `GET /api/secrets/user/{provider}` is a **content-blind** contract (owner decision 2026-08-13): it publishes capability categories from `CAPABILITY_VOCABULARY` (`calendar`/`gmail`/`drive`/`health`/`connectivity`/`other`), never raw OAuth scopes, the persisted `entity_info.type` or `label`, or any audit `note` / probe `message` / failure tail. `_fetch_single_user_secret` returns an internal `_UserCredentialRecord` (mutation routes need `type`/`label`/`failure_tail` for OAuth revocation, guided-rotate gating, and the reauthorize account hint); `_content_blind_detail` is the only bridge from that record to *this endpoint's* DTO and builds it field by field on purpose, so adding a field to the record does NOT publish it here, and must not, without re-running the security review. It is **not** the only path from that record to a client: `POST .../reauthorize` returns the persisted `label` as `account_hint` inside `redirect_url`, and `POST .../probe` returns `failure_tail` (or provider response text) as `TestResult.message`. Both predate the content-blind work and are sanctioned by the current spec; audit them before assuming a value cannot escape. The content-blind treatment has since been extended: `GET /api/secrets/inventory` now returns `InventoryData` built from `_content_blind_summary` / `_content_blind_cli`, whose `UserSecretSummary`, `SystemSecretSummary`, and `CliRuntimeSummary` rows carry capability categories rather than raw scopes and drop `type`, `label`, `last_test_message`, and the probe message; the inventory's `CredentialAuditOutcome` carries only `ts`/`actor`/`action`, never a note. The system and CLI detail endpoints have had it too. Every one of those projections is written field by field on purpose -- adding a field to an internal record does not publish it, and must not, without re-running the security review.
 
 ### Steam presence events are metadata-only AND routing-skipped
 - Steam `status_change` / `online_status` envelopes keep `payload.raw = null` and `control.ingestion_tier = "metadata"` (persistence shape only — a metadata-only ref row still lands in `message_inbox`/`public.ingestion_events`).
@@ -1845,3 +1845,23 @@ while being fully mocked, because it imports `asyncpg.exceptions.UndefinedTableE
 parallelism, so keep excluding on the grep — but when you need to *run* a matched file without the
 slot, confirm by reading the hits rather than by the filename or the module name alone. The rule
 stays structural: a real database connection needs the slot; an imported exception class does not.
+
+### `public.audit_log` has three readers, and the wire chokepoint is the model
+
+`GET /api/audit-log`, `GET /api/audit-log/{id}`, **and** `GET /api/issues/{key}/occurrences`
+(`routers/issues.py::list_issue_occurrences`, which returns `PaginatedResponse[AuditLogEntry]`) all
+publish rows from the same table. A per-route projection fix silently misses the occurrences
+drill-down -- which is plausibly how credential free text survived three sibling content-blindness
+fixes. Enforce on `AuditLogEntry` in `src/butlers/api/models/audit.py`; that covers all three
+readers, direct construction, and any future one.
+
+Two related traps in that area:
+
+- The bead and spec text say `/api/audit`; the **real router prefix is `/api/audit-log`**, so
+  grepping for the former finds nothing.
+- `audit_grouping.py` renames the column mid-pipeline: `_AUDIT_NORMALIZED_CTE` aliases `ts AS
+  created_at`, then `_OCCURRENCES_SELECT` re-aliases back to the `AuditLogEntry` shape. Grepping for
+  `ts` in that file misleads.
+- The `target` column is **never normalised on write**, so any predicate over it must accept the
+  long-scope spellings (`user:`/`system:`/`cli:`) that `normalize_key_param` tolerates, not just
+  `u:`/`s:`/`c:`.
