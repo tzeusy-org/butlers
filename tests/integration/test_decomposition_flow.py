@@ -87,18 +87,24 @@ def _build_conversation_history_envelope(
                 "conversation_history": [
                     {
                         "sender": "Alice",
+                        "sender_identity": "6591111111@s.whatsapp.net",
+                        "sender_entity_id": "11111111-1111-1111-1111-111111111111",
                         "text": "I spent $80 on groceries today",
                         "timestamp": "2026-03-30T09:00:00Z",
                         "message_id": "msg-int-1",
                     },
                     {
                         "sender": "Bob",
+                        "sender_identity": "6592222222@s.whatsapp.net",
+                        "sender_entity_id": "22222222-2222-2222-2222-222222222222",
                         "text": "My knee is hurting again",
                         "timestamp": "2026-03-30T09:01:00Z",
                         "message_id": "msg-int-2",
                     },
                     {
                         "sender": "Alice",
+                        "sender_identity": "6591111111@s.whatsapp.net",
+                        "sender_entity_id": "11111111-1111-1111-1111-111111111111",
                         "text": "Let's split the restaurant bill",
                         "timestamp": "2026-03-30T09:02:00Z",
                         "message_id": "msg-int-3",
@@ -124,9 +130,11 @@ def _build_mock_signals() -> list[dict[str, Any]]:
             "confidence": "HIGH",
             "excerpts": [
                 {
-                    "sender": "Alice",
-                    "text": "I spent $80 on groceries today",
-                    "timestamp": "2026-03-30T09:00:00Z",
+                    "sender": "Mallory",
+                    "sender_identity": "attacker@lid",
+                    "sender_entity_id": "attacker",
+                    "text": "changed by model",
+                    "timestamp": "2099-01-01T00:00:00Z",
                     "message_id": "msg-int-1",
                 },
                 {
@@ -266,6 +274,7 @@ async def test_decomposition_flow_full_pipeline(pool):
                 "target_butler": target_butler,
                 "tool_name": tool_name,
                 "fanout_mode": args.get("__switchboard_route_context", {}).get("fanout_mode"),
+                "conceptual_message": args.get("__conceptual_message"),
             }
         )
         return {"status": "ok"}
@@ -320,6 +329,16 @@ async def test_decomposition_flow_full_pipeline(pool):
     routed_butlers = {c["target_butler"] for c in route_call_log}
     assert routed_butlers == {"finance", "health"}
 
+    finance_call = next(call for call in route_call_log if call["target_butler"] == "finance")
+    assert finance_call["conceptual_message"]["excerpts"][0] == {
+        "message_id": "msg-int-1",
+        "sender": "Alice",
+        "sender_identity": "6591111111@s.whatsapp.net",
+        "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+        "text": "I spent $80 on groceries today",
+        "timestamp": "2026-03-30T09:00:00Z",
+    }
+
     # --- Acceptance criterion 5: decomposition_output stored with metadata ---
     row = await pool.fetchrow(
         "SELECT decomposition_output, lifecycle_state FROM message_inbox WHERE id = $1",
@@ -336,6 +355,14 @@ async def test_decomposition_flow_full_pipeline(pool):
     # Verify required metadata fields
     assert "signals" in decomp, f"decomposition_output missing 'signals' key: {decomp}"
     assert len(decomp["signals"]) == 2, f"Expected 2 signals, got {len(decomp['signals'])}"
+    assert decomp["signals"][0]["excerpts"][0] == {
+        "message_id": "msg-int-1",
+        "sender": "Alice",
+        "sender_identity": "6591111111@s.whatsapp.net",
+        "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+        "text": "I spent $80 on groceries today",
+        "timestamp": "2026-03-30T09:00:00Z",
+    }
     assert "model" in decomp, f"decomposition_output missing 'model': {decomp}"
     assert decomp["model"] == "claude-test-3-haiku"
     assert "latency_ms" in decomp, f"decomposition_output missing 'latency_ms': {decomp}"

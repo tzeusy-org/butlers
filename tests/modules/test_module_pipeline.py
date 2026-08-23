@@ -42,6 +42,7 @@ from butlers.modules.pipeline import (
     _extract_routed_butlers,
     _format_decomp_conversation_history,
     _infer_fallback_target_from_cc_output,
+    _normalize_decomp_excerpts,
     _normalize_decomp_signal,
     _normalize_decomp_signals,
 )
@@ -2304,6 +2305,172 @@ class TestDecompositionSignalSchema:
             assert field_name in prompt
         assert "sender" in prompt and "message_id" in prompt
 
+    def test_decomposition_prompt_exposes_authoritative_message_ids_as_selectors(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        history = _format_decomp_conversation_history(
+            [
+                {
+                    "message_id": "m-authoritative-1",
+                    "sender": "Alice",
+                    "text": "Dinner at seven",
+                    "timestamp": "2026-08-24T10:00:00Z",
+                }
+            ]
+        )
+
+        prompt = _build_decomposition_prompt("hi", _MOCK_BUTLERS, history, None)
+
+        assert "m-authoritative-1" in prompt
+
+    def test_model_cannot_replace_authoritative_excerpt_fields(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_excerpts(
+            [
+                {
+                    "message_id": "m1",
+                    "sender": "Mallory",
+                    "sender_identity": "attacker@lid",
+                    "sender_entity_id": "attacker",
+                    "text": "changed",
+                    "timestamp": "2099-01-01T00:00:00Z",
+                }
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert result == [authoritative["m1"]]
+
+    def test_authoritative_excerpt_join_drops_invalid_and_repeated_selectors(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_excerpts(
+            [
+                {},
+                {"message_id": None},
+                {"message_id": ""},
+                {"message_id": "   "},
+                {"message_id": "unknown"},
+                {"message_id": "m1"},
+                {"message_id": "m1"},
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert result == [authoritative["m1"]]
+
+    def test_duplicate_concepts_reuse_one_authoritative_speaker_anchor(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_signals(
+            [
+                {
+                    "target_butler": "finance",
+                    "excerpts": [{"message_id": "m1", "sender_entity_id": "attacker-1"}],
+                },
+                {
+                    "target_butler": "relationship",
+                    "excerpts": [{"message_id": "m1", "sender_entity_id": "attacker-2"}],
+                },
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert [signal["excerpts"] for signal in result] == [
+            [authoritative["m1"]],
+            [authoritative["m1"]],
+        ]
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_messages",
+        new_callable=AsyncMock,
+        return_value=[
+            {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "text": "first",
+                "timestamp": "2026-08-24T10:00:00Z",
+            },
+            {
+                "message_id": "m1",
+                "sender": "Bob",
+                "sender_identity": "6592222222@s.whatsapp.net",
+                "text": "collision",
+                "timestamp": "2026-08-24T10:01:00Z",
+            },
+        ],
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_colliding_authoritative_message_ids_are_not_selectable(
+        self, mock_route, mock_load, mock_history
+    ):
+        """Spec: REQ-conversation-decomposition-001."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=json.dumps(
+                    [{"target_butler": "finance", "excerpts": [{"message_id": "m1"}]}]
+                ),
+                success=True,
+                tool_calls=[],
+            )
+
+        pipeline = MessagePipeline(MagicMock(), mock_dispatch, source_butler="switchboard")
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000002",
+        )
+
+        conceptual = mock_route.await_args.kwargs["args"]["__conceptual_message"]
+        assert conceptual["excerpts"] == []
+
     def test_normalize_signal_enforces_full_schema(self):
         norm = _normalize_decomp_signal(
             {
@@ -2403,7 +2570,7 @@ class TestDecompositionSignalSchema:
         MessagePipeline,
         "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value=_decomp_messages(),
+        return_value=_decomp_messages("Let's split the dinner bill"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

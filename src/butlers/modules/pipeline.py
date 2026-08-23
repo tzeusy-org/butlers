@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -778,20 +778,50 @@ _CALENDAR_PROPOSAL_CONFIDENCE_FLOOR = 0.7
 _CALENDAR_PROPOSAL_SNIPPET_MAX_CHARS = 500
 
 
-def _normalize_decomp_excerpts(raw: Any) -> list[dict[str, Any]]:
+def _normalize_decomp_excerpts(
+    raw: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Normalize the ``excerpts`` field of a decomposition signal.
 
-    Per the conversation-decomposition spec each excerpt is a
-    ``{sender, text, timestamp, message_id}`` object cherry-picked from the
-    conversation window. Non-dict entries are dropped; each kept entry is
-    projected onto exactly those four keys so downstream consumers see a
-    stable shape.
+    With authoritative input, model-provided message IDs are selectors only:
+    every excerpt field is projected from the matching source message. Invalid,
+    unknown, or repeated selectors are dropped. Without authoritative input,
+    preserve the legacy four-field projection for compatible callers.
     """
     if not isinstance(raw, list):
         return []
     excerpts: list[dict[str, Any]] = []
+    selected_message_ids: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
+            continue
+        if authoritative_by_message_id is not None:
+            message_id = item.get("message_id")
+            if (
+                not isinstance(message_id, str)
+                or not message_id.strip()
+                or message_id in selected_message_ids
+            ):
+                continue
+            selected_message_ids.add(message_id)
+            authoritative = authoritative_by_message_id.get(message_id)
+            if (
+                not isinstance(authoritative, Mapping)
+                or authoritative.get("message_id") != message_id
+            ):
+                continue
+            excerpts.append(
+                {
+                    "message_id": authoritative.get("message_id"),
+                    "sender": authoritative.get("sender"),
+                    "sender_identity": authoritative.get("sender_identity"),
+                    "sender_entity_id": authoritative.get("sender_entity_id"),
+                    "text": authoritative.get("text"),
+                    "timestamp": authoritative.get("timestamp"),
+                }
+            )
             continue
         excerpts.append(
             {
@@ -804,7 +834,11 @@ def _normalize_decomp_excerpts(raw: Any) -> list[dict[str, Any]]:
     return excerpts
 
 
-def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
+def _normalize_decomp_signal(
+    sig: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Normalize one raw decomposition signal into the full conceptual-message schema.
 
     The conversation-decomposition spec requires each conceptual message to carry
@@ -838,12 +872,19 @@ def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
         "target_butler": target,
         "tool_name": tool_name,
         "tool_args": tool_args,
-        "excerpts": _normalize_decomp_excerpts(sig.get("excerpts")),
+        "excerpts": _normalize_decomp_excerpts(
+            sig.get("excerpts"),
+            authoritative_by_message_id=authoritative_by_message_id,
+        ),
         "confidence": confidence,
     }
 
 
-def _normalize_decomp_signals(raw: Any) -> list[dict[str, Any]]:
+def _normalize_decomp_signals(
+    raw: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Normalize a parsed signal payload into full-schema conceptual messages.
 
     Accepts the shapes LLMs commonly emit even when told to return a bare array:
@@ -860,7 +901,10 @@ def _normalize_decomp_signals(raw: Any) -> list[dict[str, Any]]:
         return []
     normalized: list[dict[str, Any]] = []
     for item in raw:
-        norm = _normalize_decomp_signal(item)
+        norm = _normalize_decomp_signal(
+            item,
+            authoritative_by_message_id=authoritative_by_message_id,
+        )
         if norm is not None:
             normalized.append(norm)
     return normalized
@@ -916,10 +960,11 @@ def _build_decomposition_prompt(
         "- target_butler: destination butler name (must be one listed below)\n"
         "- tool_name: MCP tool to call on the target butler\n"
         "- tool_args: JSON object of tool arguments\n"
-        "- excerpts: array of {sender, text, timestamp, message_id} objects, "
-        "cherry-picked from the conversation. Include ONLY the messages relevant to "
-        "this concept; a message relevant to multiple concepts is duplicated into each "
-        "conceptual message.\n"
+        '- excerpts: array of {"message_id": "..."} selectors, cherry-picked from the '
+        "conversation. Include ONLY the messages relevant to this concept; a message "
+        "relevant to multiple concepts is duplicated into each conceptual message. "
+        "Do not supply sender, identity, text, or timestamp fields: the pipeline injects "
+        "those fields from the authoritative source after extraction.\n"
         "- confidence: one of HIGH, MEDIUM, LOW\n\n"
         "If no supported signals are present, return [].\n\n"
     ]
@@ -982,6 +1027,9 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
         sender = msg.get("sender") or "Unknown sender"
         ts = msg.get("timestamp", "")
         text = msg.get("text", "")
+        message_id = msg.get("message_id")
+        if isinstance(message_id, str) and message_id.strip():
+            lines.append(f"Message ID selector: {json.dumps(message_id, ensure_ascii=False)}")
         lines.append(f"**{sender}** ({ts}):")
         lines.append("```")
         lines.append(text)
@@ -2868,7 +2916,27 @@ class MessagePipeline:
                             # excerpts, confidence). _normalize_decomp_signals
                             # accepts list / single-object / wrapper-object shapes
                             # and drops entries without a routable target.
-                            _decomp_signals = _normalize_decomp_signals(_parsed)
+                            authoritative_by_message_id: dict[str, Mapping[str, Any]] = {}
+                            colliding_message_ids: set[str] = set()
+                            for authoritative_message in _decomp_messages or []:
+                                authoritative_message_id = authoritative_message.get("message_id")
+                                if (
+                                    not isinstance(authoritative_message_id, str)
+                                    or not authoritative_message_id.strip()
+                                    or authoritative_message_id in colliding_message_ids
+                                ):
+                                    continue
+                                if authoritative_message_id in authoritative_by_message_id:
+                                    authoritative_by_message_id.pop(authoritative_message_id)
+                                    colliding_message_ids.add(authoritative_message_id)
+                                    continue
+                                authoritative_by_message_id[authoritative_message_id] = (
+                                    authoritative_message
+                                )
+                            _decomp_signals = _normalize_decomp_signals(
+                                _parsed,
+                                authoritative_by_message_id=authoritative_by_message_id,
+                            )
                         except (json.JSONDecodeError, ValueError):
                             pass
 
