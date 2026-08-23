@@ -122,6 +122,64 @@ A restore of one of these dumps therefore reconstitutes the application schema
 and data only. Re-run the managed bootstrap procedure to restore the executor
 boundary itself.
 
+### Ownership precondition
+
+The exclusion set above covers fenced *relations*. It does not — and cannot —
+cover the fenced `SECURITY DEFINER` **functions** in `public`: `pg_dump` has no
+way to exclude a function by name, and the dump role can read them, so every
+one of them is in the dump together with an `ALTER FUNCTION … OWNER TO
+<fenced role>` line.
+
+**Restoring a Butlers dump requires that the fenced owner roles already exist on
+the target and that the restoring login can assume them.** A target that does
+not meet that precondition does not merely lose the fence, it *inverts* it: the
+dump is `--format=plain`, `psql` does not stop on error while reading a script
+and exits `0` regardless, so a failed `ALTER … OWNER TO` leaves the function
+behind owned by whoever ran the restore. A body written to run with a
+constrained `NOLOGIN` owner's privileges then runs with the restorer's.
+
+Two fixes that look obvious do not work, and both were measured against a real
+dump before the guard below was written:
+
+- **`psql -v ON_ERROR_STOP=1` is not the answer.** The dump assigns ownership
+  from its opening statements — the first `ALTER … OWNER TO` lands before the
+  first `CREATE TABLE`. On a target missing the roles, `ON_ERROR_STOP` halts
+  there and the restore recovers *nothing*: one schema, zero tables. That trades
+  a silent privilege escalation for a disaster-recovery path that cannot run.
+- **Pre-creating the roles on the target is not enough either.** Assigning
+  ownership to a role requires membership in it, and *not* being a member is
+  precisely what the fence is, so the `ALTER` still fails — with `must be able
+  to SET ROLE "…"` rather than `role "…" does not exist` — and the function
+  still lands on the restorer.
+
+`--no-owner` on the dump side is rejected for a third reason: it would drop the
+ownership assignments from the artifact entirely, making every restore place
+objects under the restoring login *by design* rather than by accident, and
+removing the only record of what the owner was supposed to be.
+
+So the restore path lets the restore complete and then **audits** it. It compares
+the owners the dump declares for functions in `public` against the owners the
+target actually ended up with, and exits non-zero — naming each function and the
+owner the backup declared for it — if any `SECURITY DEFINER` function fell to the
+restoring login. It repairs nothing: the next move may well be to create the
+roles and reassign ownership deliberately, and a disaster-recovery path must not
+quietly rewrite the database it just produced.
+
+(This section states a precondition; it is not an invitation to drive a restore
+by hand. The managed `restore-drill-executor` below remains the only supported
+scratch-database lifecycle, and this doc deliberately names no host-side restore
+command — see `tests/config/test_init_db_restore_drill_role_boundary.py`.)
+
+If the audit fails, the restored database is **not** safe to promote or expose
+to application roles. Recover by restoring onto a target a cluster superuser has
+already bootstrapped with `scripts/init-db.sql`, as a login that can assume
+those owners; or re-run `scripts/init-db.sql` against the restored database as a
+cluster superuser to rebuild the fences.
+
+`tests/scripts/test_pg_restore_definer_ownership.py` pins all of this against
+real dumps and real clusters, including both rejected alternatives, so neither
+can be reintroduced without the test saying why it was rejected.
+
 ## Managed restore drill
 
 The `restore-drill-executor` is the only process allowed to perform the
