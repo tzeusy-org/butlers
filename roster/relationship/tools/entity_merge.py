@@ -58,12 +58,6 @@ class AuditEntityOrderError(EntityMergeError):
         super().__init__("audit_entity_order_mismatch")
 
 
-# Compatibility names for callers that describe the missing state rather than
-# the endpoint's historic "not found" response.
-SourceEntityMissingError = SourceEntityNotFoundError
-TargetEntityMissingError = TargetEntityNotFoundError
-
-
 _CLASSIFICATION_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
