@@ -14,7 +14,7 @@ then-current `main` checkout. It is intentionally separate from the historical
 phase snapshots below; re-run the commands in
 [discovery.md](discovery.md) after pulling a newer head.
 
-- **Static test-function count:** **12,189** `def test_` / `async def test_`
+- **Static test-function count:** **12,195** `def test_` / `async def test_`
   functions under `tests/`. This is not a pytest collection count.
 - **CI-selection collection:** **18,790 total** tests, with **14,819 selected**
   and **3,971 deselected**, measured with:

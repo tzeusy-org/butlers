@@ -10,11 +10,11 @@ staleness check first if resuming from a previous session.
 # Phase 1 (bu-rhztl) baseline 2026-04-05: 13,675 tests; closed at 2,196.
 # Phase 2 (bu-hg8rl) baseline 2026-05-03: 3,704; CLOSED 2026-05-05.
 # Historical Phase 3 snapshot 2026-06-21: 7,494 def-test funcs / 8,107 collected, 657 files.
-# Current cycle baseline 2026-08-24: 12,189 test functions.
+# Current cycle baseline 2026-08-24: 12,195 test functions.
 # The explicit optional `async` keeps both `def test_` and `async def test_`.
 TEST_DEF_PATTERN='^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_'
 CURRENT=$(grep -rEc "$TEST_DEF_PATTERN" tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
-echo "Current: $CURRENT | current-cycle baseline (2026-08-24): 12189 | Delta: $((CURRENT - 12189))"
+echo "Current: $CURRENT | current-cycle baseline (2026-08-24): 12195 | Delta: $((CURRENT - 12195))"
 
 # CI-selection collection (population only, not test-execution timing):
 uv run --no-sync pytest tests/ roster/ --collect-only -q \
