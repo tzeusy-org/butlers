@@ -1556,3 +1556,82 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 
 - **A baseline spec that contradicts the code is NOT drift while its OpenSpec change is open.** `openspec/` is delta-based: proposals live in `openspec/changes/<change>/specs/<capability>/spec.md` as `## ADDED` / `## MODIFIED` / `## REMOVED` blocks, and `openspec archive` is what rewrites the baselines under `openspec/specs/`. So a baseline lagging an in-flight PR is the *normal* mid-change state, not a defect — before filing spec drift or blocking a merge on it, grep `openspec/changes/` for a staged delta that already covers it (observed 2026-08-22: a fleet-halt requirement flagged as drift was already retracted verbatim in the open change's `## MODIFIED` block). Two corollaries: hand-editing a baseline while a change is open risks colliding at archive, so only do it for a requirement that change does not touch; and never "refresh" a superseded baseline requirement cosmetically — repointing a module name without correcting the THEN clauses makes a stale guarantee look freshly verified, which is worse than leaving it visibly stale.
 - **`cmd 2>&1 > file` does NOT capture stderr** — it points stderr at the *terminal* and only stdout at the file. Redirection is evaluated left to right, so the correct form is `cmd > file 2>&1`. This bites hardest with tools that report on stderr (`openspec validate` among them): a before/after comparison written the wrong way diffs two empty files and returns a confident, entirely vacuous "identical". Same shape as the killed-gate-with-no-summary trap above — absence of output read as a clean result. When a check's value depends on its output, assert the output is non-empty before trusting what it says.
+
+### CI is advisory: `main` is not branch-protected
+
+`gh api repos/Tzeusy/butlers/branches/main/protection` returns 404 "Branch not protected", and
+`ci.yml` contains no `continue-on-error` anywhere. So no check in `ci.yml` actually blocks a merge --
+a red `check` will not stop `gh pr merge`. Waiting for green is a discipline, not an enforced gate.
+Do not describe a CI job as "required" or "blocking"; when adding a new job, "advisory like every
+other check here" is the accurate phrasing.
+
+### CI's `check` job runs named make targets, NOT `make check`
+
+`.github/workflows/ci.yml` invokes individual targets (`make check-for-update-joins`, an explicit
+`uv run pytest tests/ roster/ ...` step, a smoke step) rather than `make check` wholesale.
+**Adding a target to the `check` aggregate in the Makefile does NOT make it run in CI** -- that needs
+a dedicated job. Verify by reading the job's `run:` steps, never by reading the Makefile.
+
+Scope table, because the four "run the tests" incantations differ and are easy to conflate:
+
+| what | actual scope |
+| --- | --- |
+| `make test-qg` | `pytest tests/` minus `test_db.py`, `test_migrations.py`, `tests/e2e` |
+| CLAUDE.md low-context gate | `pytest tests/ --ignore=tests/e2e` |
+| CI `check` unit lane | `pytest tests/ roster/ --ignore=tests/e2e -m "not integration and not e2e and not nightly and not bench and not perf"` |
+| CI `check` integration lane | `pytest tests/ roster/ -m "integration and not nightly and not bench and not perf" -n auto --dist loadfile` |
+
+`make lint` is only `ruff check src/ tests/` -- it omits `roster/` and `conftest.py`. The 21-vs-113
+skip-count gap between gate runs is `tests/e2e`, not `roster/`. **Exit 0 is the only acceptance
+criterion; no skip count is pass/fail.**
+
+### Judge a background run on its `.exit` file, in its own worktree
+
+Long runs must be detached (`nohup sh -c '<cmd> >"$LOG" 2>&1; echo $? > "$LOG.exit"' &`) -- the
+agent-tool foreground cap kills at exactly 10m00s and a foreground `timeout` also applies (SIGTERM,
+exit 143). A detached run survives the death of the agent that launched it.
+
+When several agents run gates concurrently, the session task directory accumulates finished gate
+output from *other* agents' runs. Reading those harvests someone else's verdict and misattributes it.
+**Judge strictly on the `.exit` file inside the worktree you are attesting**, never on a task-output
+file. Also beware timing: "no such file" answers "had it launched by the instant I looked", not
+"did it ever launch" -- compare timestamps before concluding a run never started.
+
+### `git merge-tree` probes mergeability without moving HEAD
+
+`git merge-tree --write-tree --name-only origin/main <branch>` reports conflicts without checking
+anything out, so it respects Repo Root Discipline. Exit 0 plus a tree hash means clean; on a clean
+merge the file list is empty. Use it to check two live branches against each other before merging.
+
+Ordering that avoids rework: rebase onto current `main` **before** running the gate. Division of
+labour -- the local gate attests *the worker's change*; PR CI attests *the merged tree*.
+`gh pr merge --squash --delete-branch` fails while a worktree still holds the branch; remove the
+worktree first.
+
+### `check_spec_overwrites.py` cannot see baseline hand-edits
+
+The gate (`scripts/check_spec_overwrites.py`, landed 2026-08-23) walks `## MODIFIED Requirements`
+blocks under `openspec/changes/**` and compares them to the live baseline body. It never inspects
+`openspec/specs/**` for direct modification. So editing a live baseline by hand passes the gate --
+not because the edit is safe, but because it is out of scope. Never cite a green run of this gate as
+evidence that a baseline edit is sound; the two do not overlap.
+
+Corollary for reviewers: a branch that changes wire shape and has NO folder under `openspec/changes/`
+is the shape to be suspicious of. Contract movement belongs in a delta; the baseline moves only at
+`openspec archive`.
+
+### Secrets: CLI `label` is an alias for the `description` column
+
+`_fetch_single_cli_secret` (`src/butlers/api/routers/secrets_v2.py`) builds `CliRuntimeDetail(...,
+label=row["description"], ...)`. CLI `label` is not an independent field. This matters for Option C
+content-blindness arguments: publishing CLI `label` publishes exactly the operator-authored
+`description` column that the dashboard-api baseline already permits, so it is not a widening of the
+leak surface. Note the collision with USER rows, where the baseline explicitly FORBIDS publishing the
+persisted `entity_info.label` -- same word, different provenance, opposite rule. Check which surface
+you are on before reasoning about `label`.
+
+### `jq 'select(.conclusion != null)'` miscounts GitHub check steps
+
+Steps that have not finished carry `conclusion: ""`, not `conclusion: null`. Filtering on `!= null`
+therefore counts pending steps as done and reports a job as fully finished while it is still running.
+Filter on the bucket/status field, or list conclusions directly and read them.
