@@ -61,6 +61,7 @@ _VERSIONS_DIR = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "
 _CASCADE_ACTION = "ingestion.priority_contact.cascade_remove"
 _REMOVE_ACTION = "ingestion.priority_contact.remove"
 _TRIGGER_FN = "priority_contacts_cascade_audit"
+_RETIRE_MIGRATION = "core_203_priority_contacts_drop_cascade_audit"
 
 
 def _load_migration(name: str):
@@ -144,6 +145,9 @@ async def _provision_tables(pool: asyncpg.Pool) -> None:
     await _run_upgrade_sqls(pool, _load_migration("core_131_priority_contacts_add_entity_id"))
     await _run_upgrade_sqls(pool, _load_migration("core_134_drop_public_contacts"))
 
+    # Retire the now-unreachable cascade-audit trigger (core_203).
+    await _run_upgrade_sqls(pool, _load_migration(_RETIRE_MIGRATION))
+
 
 @pytest.fixture
 async def cascade_pool(provisioned_postgres_pool):
@@ -187,7 +191,7 @@ async def _seed_priority_contact(pool: asyncpg.Pool, name: str = "Alice") -> UUI
 
 
 def test_migration_revision_chain():
-    """Migration revision metadata links core_101 → core_129."""
+    """Migration revision metadata links core_101 → core_129 → core_203."""
     mod = _load_migration("core_101_priority_contacts")
     assert mod.revision == "core_101"
     assert mod.down_revision == "core_100"
@@ -195,6 +199,10 @@ def test_migration_revision_chain():
     drop = _load_migration("core_129_priority_contacts_drop_butler")
     assert drop.revision == "core_129"
     assert drop.down_revision == "core_128"
+
+    retire = _load_migration(_RETIRE_MIGRATION)
+    assert retire.revision == "core_203"
+    assert retire.down_revision == "core_202"
 
 
 @pytest.mark.asyncio(loop_scope="session")
