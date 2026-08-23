@@ -92,7 +92,8 @@ POST /api/secrets/cli/<id>/reauthorize
 POST /api/secrets/system/<key>
     Set (first-time create), rotate (value replaced), or override (per-butler).
     Body: { value, target: "shared" | "shared-public" | "<butler>" }
-    Returns ApiResponse<SystemSecretDetail> (updated).
+    Returns ApiResponse<SystemCredentialDetail> (updated) — the same
+    content-blind payload the GET route publishes for the row.
     Audit: set (first-time), rotated (existing key), overrode (override).
 
     target="shared-public" writes to the public credential pool
@@ -903,11 +904,12 @@ class InventoryData(BaseModel):
 class SystemSecretDetail(BaseModel):
     """Internal, unprojected read of one system credential.
 
-    ``GET /api/secrets/system/<key>`` publishes ``SystemCredentialDetail``
-    instead; ``_content_blind_system_detail`` is the only bridge from here to
-    that payload, so adding a field below does not publish it on the read
-    route. The system mutation routes (set / probe / delete) still serialise
-    this model directly.
+    Never serialised to a client. ``GET /api/secrets/system/<key>`` and
+    ``POST /api/secrets/system/<key>`` both publish ``SystemCredentialDetail``,
+    and ``_content_blind_system_detail`` is the only bridge from here to it, so
+    adding a field below does not publish it anywhere. The remaining readers
+    are internal: the system probe and delete routes consult this record to
+    decide what they are acting on, and return their own status payloads.
 
     row_state reflects whether this key is shared (switchboard) or has a
     per-butler override, or is missing.
@@ -937,8 +939,9 @@ class SystemSecretDetail(BaseModel):
     breaks: list[dict] = Field(default_factory=list)  # BreakEntry[]
     test: TestResult | None = None  # most recent probe result
     # Last 10 raw ``_fetch_audit_bulk`` dicts, ``note`` included. NOT the
-    # ``AuditEvent`` shape, which has no ``note`` — this record is still
-    # serialised unprojected by ``POST /api/secrets/system/<key>`` (bu-m9s61).
+    # ``AuditEvent`` shape, which has no ``note``. Nothing publishes either
+    # field: ``_content_blind_system_detail`` drops ``breaks`` outright and
+    # rebuilds ``audit`` as ``CredentialAuditOutcome`` (bu-m9s61).
     audit: list[dict] = Field(default_factory=list)
 
     # Butler attribution
@@ -988,9 +991,10 @@ class CliRuntimeDetail(BaseModel):
 class SystemCredentialDetail(BaseModel):
     """Content-blind evidence payload for a single system credential.
 
-    Returned by ``GET /api/secrets/system/{key}``. ``SystemSecretDetail`` stays
-    internal so the mutation routes that build one can keep reading the
-    unprojected row.
+    Returned by ``GET /api/secrets/system/{key}`` and by
+    ``POST /api/secrets/system/{key}``, which re-reads the row it just wrote:
+    one row, one published shape. ``SystemSecretDetail`` stays internal so the
+    probe and delete routes can keep reading the unprojected row.
 
     Field parity with ``SystemSecretSummary`` is deliberate — the inventory and
     the detail read publish the same ``s:`` row, so they publish the same
@@ -1045,9 +1049,8 @@ def _content_blind_system_detail(record: SystemSecretDetail) -> SystemCredential
 
     Deliberately field-by-field rather than ``model_dump()``: a new field on
     ``SystemSecretDetail`` must be consciously allowed through here before it
-    can reach a client on this route. The system mutation routes still
-    serialise that record directly, so this is not yet the only path from it to
-    a client — see the note on the record itself.
+    can reach a client. This is the only path from that record to a client
+    (bu-m9s61) — the read and write routes both go through it.
 
     ``audit`` is re-projected rather than trusted from its writers, for the
     reason recorded on ``_content_blind_system``: ``s:`` rows are written from
@@ -5759,13 +5762,13 @@ async def _write_system_audit(
 
 @router.post(
     "/system/{key}",
-    response_model=ApiResponse[SystemSecretDetail],
+    response_model=ApiResponse[SystemCredentialDetail],
 )
 async def set_system_credential(
     key: str,
     body: SystemSetRequest,
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[SystemSecretDetail]:
+) -> ApiResponse[SystemCredentialDetail]:
     """Set (first-time), rotate (update existing), or override (per-butler) a system credential.
 
     Behaviour depends on ``body.target``:
@@ -5784,7 +5787,13 @@ async def set_system_credential(
       ``butler_secrets`` table (the butler schema).  The override takes
       precedence over the shared row for that butler.  Audit ``overrode``.
 
-    Returns ``ApiResponse<SystemSecretDetail>`` (updated) reflecting the new state.
+    Returns ``ApiResponse<SystemCredentialDetail>`` (updated) reflecting the new
+    state — the same content-blind payload ``GET /api/secrets/system/<key>``
+    publishes for the same row, projected through
+    ``_content_blind_system_detail`` (bu-m9s61). The write path re-reads the row
+    it just wrote, so publishing the internal record here would have put the
+    audit note and the ``breaks[]`` raw scopes on a wire the read route already
+    closed.
     Returns 404 when ``target = "<butler>"`` and the butler is not registered.
 
     Spec anchor
@@ -5870,7 +5879,9 @@ async def set_system_credential(
         )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after write")
-        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+        return ApiResponse[SystemCredentialDetail](
+            data=_content_blind_system_detail(detail), meta=ApiMeta()
+        )
 
     elif target == "shared-public":
         # Public credential pool — the pool modules read via CredentialStore.
@@ -5957,7 +5968,9 @@ async def set_system_credential(
         detail = await _fetch_single_system_secret(pool, "shared-public", key)
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after write")
-        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+        return ApiResponse[SystemCredentialDetail](
+            data=_content_blind_system_detail(detail), meta=ApiMeta()
+        )
 
     else:
         # Per-butler override — write to the target butler's schema.
@@ -6019,10 +6032,13 @@ async def set_system_credential(
         )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after override write")
-        # Mark the returned detail as a local (per-butler) override.
+        # Mark the returned detail as a local (per-butler) override before it
+        # is projected, so the published payload carries the override marking.
         detail.row_state = "local"
         detail.target = butler_name
-        return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
+        return ApiResponse[SystemCredentialDetail](
+            data=_content_blind_system_detail(detail), meta=ApiMeta()
+        )
 
 
 # ---------------------------------------------------------------------------

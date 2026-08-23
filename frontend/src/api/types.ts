@@ -8844,8 +8844,9 @@ export interface SecretsInventoryParams {
 // Secrets v2 — per-credential detail + mutation types (bu-ayp6v.1)
 //
 // These types mirror the Pydantic models in secrets_v2.py:
-//   UserSecretDetail, SystemSecretDetail, CliRuntimeDetail, CliRotateResult,
-//   DisconnectStatus, SystemDeleteStatus, CliRevokeResult, AuditEvent.
+//   UserSecretDetail, SystemCredentialDetail, CliCredentialDetail,
+//   CliRotateResult, DisconnectStatus, SystemDeleteStatus, CliRevokeResult,
+//   AuditEvent.
 // ---------------------------------------------------------------------------
 
 /**
@@ -8925,37 +8926,6 @@ export interface SecretsSystemCredentialDetail {
 }
 
 /**
- * Unprojected system-credential payload returned by the system *mutation*
- * routes (POST /api/secrets/system/<key> and its probe).
- *
- * Maps to SystemSecretDetail in secrets_v2.py. The read route publishes the
- * narrower SecretsSystemCredentialDetail above.
- */
-export interface SecretsSystemDetail {
-  key: string;
-  category: string;
-  description: string | null;
-
-  state: string;
-  fingerprint: string | null;
-
-  /** "shared" | "local" | "missing". */
-  row_state: string;
-  source: string | null;
-  target: string | null;
-
-  last_verified: string | null;
-  used_by: string[];
-
-  breaks: SecretsBreakDict[];
-  test: SecretsProbeResult | null;
-  audit: SecretsAuditRow[];
-
-  /** Butler schema that owns this row. */
-  butler: string;
-}
-
-/**
  * Content-blind evidence payload for a single CLI runtime token.
  *
  * Returned by GET /api/secrets/cli/<id>
@@ -9002,14 +8972,15 @@ export interface SecretsAuditEvent {
 }
 
 /**
- * An UNPROJECTED audit row, as the mutation routes that still serialise the
- * router's internal record emit it (POST /api/secrets/user/<provider>/rotate,
- * POST /api/secrets/system/<key>).
+ * An UNPROJECTED audit row, carrying the operator-authored `note`.
  *
- * Kept separate from SecretsAuditEvent deliberately: those routes have not had
- * the content-blind treatment yet (bu-m9s61), so a shared type would let the
- * read endpoint's guarantee stand in for an absence they do not provide.
- * Do not render `note`.
+ * No /api/secrets endpoint emits this shape any more: the system write route
+ * was the last one, and it now publishes SecretsSystemCredentialDetail
+ * (bu-m9s61). Only SecretsUserDetail below still references it, and that type
+ * has drifted from the content-blind UserSecretDetail the backend returns.
+ * Kept separate from SecretsAuditEvent deliberately, so a shared type cannot
+ * let the projected endpoints' guarantee stand in for an absence an
+ * unprojected payload does not provide. Do not render `note`.
  */
 export interface SecretsAuditRow {
   ts: string;

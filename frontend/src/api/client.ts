@@ -6624,11 +6624,9 @@ export function probeUserCredential(
 // Secrets v2 — system credential mutations (bu-ayp6v.1)
 // ---------------------------------------------------------------------------
 
-import type {
-  SecretsSystemDeleteStatus,
-  SecretsSystemDetail,
-  SecretsSystemSetRequest,
-} from "./types.ts";
+// SecretsSystemCredentialDetail is imported by the read block above; the
+// write route publishes the same payload.
+import type { SecretsSystemDeleteStatus, SecretsSystemSetRequest } from "./types.ts";
 
 /**
  * POST /api/secrets/system/<key>
@@ -6641,14 +6639,16 @@ import type {
  *
  * Audit actions: "set" (first-time), "rotated" (existing), "overrode" (override).
  *
- * Returns ApiResponse<SecretsSystemDetail> (updated).
+ * Returns ApiResponse<SecretsSystemCredentialDetail> (updated) — the same
+ * content-blind payload the GET route publishes for the row, so no probe
+ * message, audit note, or breaks entry rides back on the write.
  * Returns 404 when target is a butler name that is not registered.
  */
 export function setSystemCredential(
   key: string,
   body: SecretsSystemSetRequest,
-): Promise<ApiResponse<SecretsSystemDetail>> {
-  return apiFetch<ApiResponse<SecretsSystemDetail>>(
+): Promise<ApiResponse<SecretsSystemCredentialDetail>> {
+  return apiFetch<ApiResponse<SecretsSystemCredentialDetail>>(
     `/secrets/system/${encodeURIComponent(key)}`,
     {
       method: "POST",

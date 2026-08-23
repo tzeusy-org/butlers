@@ -32,7 +32,13 @@ from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.secrets_v2 import _get_db_manager, _system_probe_timestamps
+from butlers.api.routers import secrets_v2
+from butlers.api.routers.secrets_v2 import (
+    SystemCredentialDetail,
+    SystemSecretDetail,
+    _get_db_manager,
+    _system_probe_timestamps,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -960,3 +966,156 @@ def test_probe_shared_public_writes_to_public_pool_not_switchboard():
 
     # db.pool() must not have been called — the key was found via the public pool.
     mock_db.pool.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: POST /api/secrets/system/<key>  — content-blind response projection
+# ---------------------------------------------------------------------------
+# The write route publishes the same content-blind payload the read route does
+# (bu-m9s61). Every sentinel below is synthetic text planted by the test; the
+# assertions are absence assertions, so nothing real is ever reproduced here.
+# ---------------------------------------------------------------------------
+
+
+def test_set_system_credential_publishes_only_the_projected_fields():
+    """The POST response carries SystemCredentialDetail's fields and nothing else.
+
+    ``breaks`` is the field that matters most: it was a bare ``list[dict]`` on
+    the internal record, so an extra column on a future writer would have
+    ridden straight onto this wire.
+    """
+    existing_row = _make_butler_secrets_row(secret_key="PROJECTED_KEY", last_test_ok=True)
+    mock_db = _make_db(switchboard_row=existing_row)
+
+    resp = _build_app(mock_db).post(
+        "/api/secrets/system/PROJECTED_KEY", json={"value": "synthetic-post-value"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert set(data) == set(SystemCredentialDetail.model_fields)
+    assert "breaks" not in data
+    assert "synthetic-post-value" not in resp.text
+
+
+def test_set_system_credential_omits_every_free_text_sentinel():
+    """No probe or cached failure text reaches the POST response bytes.
+
+    Mirrors the GET-side sentinel test: each free-text source the re-fetched
+    row can carry is planted distinctly, and none may appear anywhere in the
+    response (owner decision, 2026-08-13).
+    """
+    existing_row = _make_butler_secrets_row(
+        secret_key="SENTINEL_KEY",
+        last_test_ok=False,
+        last_test_code=401,
+        last_test_message="sentinel-system-failure-tail",
+    )
+    probe_row = _make_row(
+        ok=False,
+        code=401,
+        message="sentinel-system-probe-message",
+        recorded_at=_NOW,
+        latency_ms=None,
+    )
+    mock_db = _make_db(switchboard_row=existing_row, probe_row=probe_row)
+
+    resp = _build_app(mock_db).post(
+        "/api/secrets/system/SENTINEL_KEY", json={"value": "synthetic-post-value"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    for sentinel in ("sentinel-system-failure-tail", "sentinel-system-probe-message"):
+        assert sentinel not in resp.text, f"{sentinel!r} leaked onto the wire"
+
+
+def test_set_system_credential_drops_planted_audit_notes_and_breaks(monkeypatch):
+    """A record carrying audit notes and breaks entries publishes neither.
+
+    ``_fetch_single_system_secret`` populates neither field today, so the
+    record the route actually receives is stubbed here: asserting against an
+    un-plantable field would be green for the wrong reason, while this run
+    still fails if a future fetch starts filling them in.
+    """
+    planted = SystemSecretDetail(
+        key="PLANTED_KEY",
+        description="sentinel-operator-description",
+        state="failing",
+        butler="switchboard",
+        test={"ok": False, "code": 401, "message": "sentinel-probe-message"},
+        audit=[
+            {
+                "ts": "12:00 today",
+                "actor": "owner",
+                "action": "rotated",
+                "note": "sentinel-audit-note",
+            }
+        ],
+        breaks=[
+            {
+                "butler": "switchboard",
+                "feature": "sentinel-feature-label",
+                "severity": "high",
+                "required_scopes": ["https://www.googleapis.com/auth/sentinel-scope"],
+            }
+        ],
+    )
+
+    async def _fake_fetch(pool, butler_name, key, **kwargs):
+        return planted.model_copy(deep=True)
+
+    monkeypatch.setattr(secrets_v2, "_fetch_single_system_secret", _fake_fetch)
+
+    mock_db = _make_db(switchboard_row=_make_butler_secrets_row(secret_key="PLANTED_KEY"))
+    resp = _build_app(mock_db).post(
+        "/api/secrets/system/PLANTED_KEY", json={"value": "synthetic-post-value"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    for sentinel in (
+        "sentinel-probe-message",
+        "sentinel-audit-note",
+        "sentinel-feature-label",
+        "sentinel-scope",
+    ):
+        assert sentinel not in resp.text, f"{sentinel!r} leaked onto the wire"
+    data = resp.json()["data"]
+    assert data["audit"] == [{"ts": "12:00 today", "actor": "owner", "action": "rotated"}]
+    # `description` is published, deliberately and identically to the read
+    # route: the read requirement establishes `key` / `category` /
+    # `description` as operator-authored naming for an infrastructure key
+    # rather than evidence derived from credential content. Pinned here so a
+    # later decision to withhold it is a conscious edit to both surfaces
+    # rather than a silent divergence between GET and POST on one row.
+    assert data["description"] == "sentinel-operator-description"
+
+
+def test_set_shared_public_response_is_projected():
+    """The shared-public branch publishes the projection too, not the record."""
+    existing_row = _make_butler_secrets_row(secret_key="PUBLIC_KEY", last_test_ok=True)
+    mock_db = _make_db(switchboard_row=existing_row)
+
+    resp = _build_app(mock_db).post(
+        "/api/secrets/system/PUBLIC_KEY",
+        json={"value": "synthetic-post-value", "target": "shared-public"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["data"]) == set(SystemCredentialDetail.model_fields)
+
+
+def test_override_response_is_projected_and_still_marks_local():
+    """The override branch projects without losing its row_state/target marking."""
+    butler_row = _make_butler_secrets_row(secret_key="OVERRIDE_KEY", last_test_ok=True)
+    mock_db = _make_db(butler_row=butler_row, butler_names=["health"])
+
+    resp = _build_app(mock_db).post(
+        "/api/secrets/system/OVERRIDE_KEY",
+        json={"value": "synthetic-post-value", "target": "health"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert set(data) == set(SystemCredentialDetail.model_fields)
+    assert data["row_state"] == "local"
+    assert data["target"] == "health"
