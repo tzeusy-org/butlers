@@ -47,10 +47,12 @@ action.
 
 - **WHEN** a connector token-rotation request carries no authorized credential
   reference or deterministic provider rotation command
-- **THEN** the endpoint returns a failure before queue insertion
+- **THEN** the dashboard connector lifecycle endpoint returns HTTP 409 before
+  calling the approvals park path
 - **AND** it appends an error audit signal that names the unreplayable rotation
   without exposing a credential value
 - **AND** no `connector_rotate_token` pending action is persisted
+- **AND** no `connector_rotate_token` action can reach owner approval
 
 ### Requirement: Historic malformed commands remain truthful evidence
 

@@ -369,14 +369,6 @@
       "excerpt": "- **AND** `key` filters by normalised credential key; `kind=privileged` excludes `*_heartbeat` and `GET /*` noise rows"
     }
   ],
-  "consolidate-owner-attention-policy/core-notify/Owner-Default-Page Deferred Delivery": [
-    {
-      "kind": "scenario",
-      "scenario": "Owner Attention Policy quiet hours parks the full envelope",
-      "digest": "b5795e76162a",
-      "excerpt": "\"Owner Attention Policy quiet hours parks the full envelope\" is not in the block"
-    }
-  ],
   "consolidate-owner-attention-policy/proactive-insight-engine/Priority-Urgent Bypass of Quiet Hours and the Context Bus": [
     {
       "kind": "prose",
@@ -2329,18 +2321,6 @@
       "scenario": null,
       "digest": "a8501c5eb432",
       "excerpt": "Connector authentication with the Switchboard SHALL use bearer tokens with scope enforcement"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "[TARGET-STATE] Token scope enforcement",
-      "digest": "a2c59a9e924b",
-      "excerpt": "\"[TARGET-STATE] Token scope enforcement\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "[TARGET-STATE] Token security requirements",
-      "digest": "8bf1068b8b55",
-      "excerpt": "\"[TARGET-STATE] Token security requirements\" is not in the block"
     }
   ],
   "true-bidirectional-email-correspondence/module-email/Email Tools": [
@@ -2353,16 +2333,16 @@
   ],
   "true-bidirectional-email-correspondence/module-email/SMTP Email Sending": [
     {
-      "kind": "scenario",
+      "kind": "clause",
       "scenario": "Send email",
-      "digest": "e0622cb6890a",
-      "excerpt": "\"Send email\" is not in the block"
+      "digest": "82ddcab8c20b",
+      "excerpt": "- **AND** the response includes `{\"status\": \"sent\", \"to\": ..., \"subject\": ...}`"
     },
     {
-      "kind": "scenario",
+      "kind": "clause",
       "scenario": "Reply to thread",
-      "digest": "c76905c285e7",
-      "excerpt": "\"Reply to thread\" is not in the block"
+      "digest": "8c2366a367bc",
+      "excerpt": "- **AND** the `thread_id` is included in the response"
     }
   ]
 }

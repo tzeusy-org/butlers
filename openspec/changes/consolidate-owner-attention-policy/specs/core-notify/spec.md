@@ -24,10 +24,11 @@ High-priority, explicitly targeted, and other-intent notifications SHALL retain
 their existing behavior. Missing, incomplete, invalid, or unreadable Owner
 Attention Policy data SHALL retain the existing fail-open immediate path.
 
-#### Scenario: Owner Attention Policy parks through its exact end
+#### Scenario: Owner Attention Policy quiet hours parks the full envelope
 - **WHEN** `notify(message="Heads up", priority="medium")` is called with no
   `entity_id` and no `recipient`
-- **AND** the current local time is inside the Owner Attention Policy window
+- **AND** the current local time falls inside the Owner Attention Policy
+  quiet-hours window
 - **THEN** the fully resolved `notify.v1` envelope is inserted into the
   originating butler's `deferred_notifications` table with `status="pending"`
   and the exact local policy end converted to UTC as `deliver_at`
