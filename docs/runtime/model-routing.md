@@ -196,12 +196,13 @@ note is the current UTC month as `YYYY-MM`, which is load-bearing — the retire
 fleet-halt helper compared it against the current window — and must not be
 reformatted.
 
-**Rows written before the audit vocabulary changed keep the old strings.** They carry actor
-`runtime_attention_cutover_fence`, and on the `runtime_failure` branch note
-`blocked_old_binary`. Nothing rewrites them: the convergence is a rewrite of the
-planter's stored body, not a backfill, so the two vocabularies coexist in
-`public.audit_log` forever. Any query that filters on actor must accept both.
-Neither retired helper filtered on actor, which is why changing it was safe.
+**Rows written before the audit vocabulary changed keep the old strings.** They
+carry actor `runtime_attention_cutover_fence`, and on the `runtime_failure`
+branch note `blocked_old_binary`. Nothing rewrites them: the convergence is a
+rewrite of the planter's stored body, not a backfill, so the two vocabularies
+coexist in `public.audit_log` forever. Any query that filters on actor must
+accept both. Neither retired helper filtered on actor, which is why changing it
+was safe.
 
 The body is defined once, in
 `runtime_attention_admin.install_legacy_debounce_marker()`. `upgrade_producers_v2`
@@ -209,11 +210,11 @@ emits it on a fresh bootstrap and `finalize_interface` re-adopts it on every
 `scripts/init-db.sql` rerun, so a database that predates a change to the body
 converges the next time the bootstrap runs. `upgrade_producers_v2` alone could
 not do this: it never re-runs once a database is at version 2, and Alembic cannot
-do it either — the planter is owned by the NOLOGIN `runtime_attention_outbox_owner`
-and the migration role is deliberately not a member. That rerun is an operator
-action, not part of an Alembic deploy: until it happens, an existing database keeps
-planting the old actor and note. Nothing breaks in the meantime — no code in this
-repository reads either literal.
+do it either — the planter is owned by the NOLOGIN
+`runtime_attention_outbox_owner` and the migration role is deliberately not a
+member. That rerun is an operator action, not part of an Alembic deploy: until it
+happens, an existing database keeps planting the old actor and note. Nothing
+breaks in the meantime — no code in this repository reads either literal.
 
 Producer rollback disables new episodes while retaining attempts, the outbox,
 evidence, and this trigger.
