@@ -37,7 +37,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 import asyncpg
-from sqlalchemy import create_engine, text
+from sqlalchemy import Connection, create_engine, text
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
@@ -279,6 +279,50 @@ def get_column_info(
             "is_nullable": row[2],
         }
     return None
+
+
+def _quote_ident(identifier: str) -> str:
+    """Quote a schema/table identifier for interpolation into raw SQL."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def assert_at_chain_head(
+    connection: Connection, schema: str = "public", *, chain: str = "core"
+) -> None:
+    """Assert *schema*'s ``alembic_version`` is stamped at *chain*'s codebase head.
+
+    Tests that upgrade to ``<chain>@head`` must not spell the expected revision
+    as a literal.  A literal encodes whatever the head happened to be the day
+    the test was written, so the next migration breaks the assertion even when
+    that migration is entirely correct — and a bare ``core_NNN`` is ambiguous by
+    inspection, since it sometimes names *that* revision and sometimes names
+    *the head*.  :func:`butlers.migrations.get_chain_head` resolves the head
+    from the Alembic script directory (a filesystem scan, no database), which
+    keeps these assertions self-maintaining across every renumber.
+
+    Use this only where the test really means "the head".  An assertion that
+    pins a specific revision on purpose — a partial upgrade, or a refused
+    downgrade that must leave the schema behind — should keep its literal and
+    say so with a ``# pinned-revision: <why>`` comment on or above the
+    assertion, which is what ``tests/config/test_migration_chain_head.py``
+    looks for.  The reason is mandatory: a bare marker does not excuse the
+    literal, because articulating *which* of the two readings it has is the
+    whole point of the annotation.
+    """
+    # Local import avoids a circular import at module load time.
+    from butlers.migrations import get_chain_head
+
+    expected = get_chain_head(chain)
+    stamped = [
+        row[0]
+        for row in connection.execute(
+            text(f"SELECT version_num FROM {_quote_ident(schema)}.alembic_version")
+        )
+    ]
+    assert stamped == [expected], (
+        f"{schema}.alembic_version holds {stamped!r}; expected exactly the "
+        f"{chain} chain head [{expected!r}]"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ for the error paths (unknown chain, multiple unmerged heads).
 from __future__ import annotations
 
 import ast
+import re
 import textwrap
 from fnmatch import fnmatchcase
 from functools import cache
@@ -240,3 +241,325 @@ def test_get_chain_head_raises_on_multiple_unmerged_heads(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="has 2 head"):
         get_chain_head("fake_chain")
+
+
+# ---------------------------------------------------------------------------
+# Head-literal guard (bu-4sgl8)
+#
+# A bare revision literal is ambiguous by inspection: ``core_201`` sometimes
+# names *that* revision (correct to leave alone) and sometimes names *the
+# head* (invalidated by the next migration). No grep disambiguates the two,
+# which is why every core migration kept breaking head assertions written as
+# literals — twice in two days, at core_200 and core_201. This guard removes
+# the ambiguity by requiring every ``alembic_version`` comparison to either
+# derive the head or declare in the source that it pins a revision on purpose.
+#
+# It is deliberately AST-based rather than a regex: most of these assertions
+# put the ``SELECT`` and the literal on different lines, so a line-scoped
+# regex under-counts them (2 found where 5 existed).
+# ---------------------------------------------------------------------------
+
+_GUARDED_SOURCE_ROOTS = ("src", "tests", "roster", "alembic")
+_VERSION_NUM_READ_MARKERS = ("version_num", "alembic_version")
+_PINNED_REVISION_PRAGMA = "pinned-revision:"
+# The reason is mandatory. A bare marker would let the guard be silenced without
+# anyone articulating which of the two readings the literal has — and that
+# articulation is the entire point, since the ambiguity is the defect.
+_PINNED_REVISION_DECLARATION = re.compile(
+    rf"#.*{re.escape(_PINNED_REVISION_PRAGMA)}\s*(?P<reason>\S.*)"
+)
+
+
+@cache
+def _all_revision_ids() -> frozenset[str]:
+    """Every revision id in the codebase, across every chain."""
+    return frozenset().union(*(get_chain_revision_ids(chain) for chain in get_all_chains()))
+
+
+def _string_constants(node: ast.AST) -> list[str]:
+    """Every string constant anywhere inside *node*, f-string parts included."""
+    return [
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    ]
+
+
+def _revision_literals(node: ast.AST) -> set[str]:
+    """Revision ids spelled as literals inside *node* (``["core_201"]`` included)."""
+    return {value for value in _string_constants(node) if value in _all_revision_ids()}
+
+
+def _reads_alembic_version(node: ast.AST, bindings: dict[str, ast.AST]) -> bool:
+    """True when *node* evaluates a ``SELECT version_num FROM ...alembic_version``.
+
+    ``bindings`` resolves one level of local assignment so the two-statement
+    form (``versions = [... SELECT version_num ...]`` then ``assert
+    "core_201" in versions``) is caught alongside the inline form.
+    """
+    candidates = [node]
+    if isinstance(node, ast.Name) and node.id in bindings:
+        candidates.append(bindings[node.id])
+    return any(
+        all(
+            marker in " ".join(_string_constants(candidate)).lower()
+            for marker in _VERSION_NUM_READ_MARKERS
+        )
+        for candidate in candidates
+    )
+
+
+def _scope_nodes(scope: ast.AST) -> list[ast.AST]:
+    """Every node belonging to *scope*, without descending into nested functions.
+
+    Nested functions are separate scopes with their own bindings, and visiting
+    them once each here (rather than again for every enclosing scope) keeps the
+    whole-repo sweep linear in the size of the tree.
+    """
+    nodes: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return nodes
+
+
+def _local_bindings(nodes: list[ast.AST]) -> dict[str, ast.AST]:
+    """Map simple ``name = <expr>`` assignments among *nodes* to their value nodes."""
+    bindings: dict[str, ast.AST] = {}
+    for node in nodes:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bindings[target.id] = node.value
+    return bindings
+
+
+def _pin_declaration(statement: ast.stmt, lines: list[str]) -> tuple[bool, str | None]:
+    """Find a deliberate-pin declaration on, or in the comment block above, *statement*.
+
+    Returns ``(marker_present, reason)``. A marker with no reason after the
+    colon does not excuse the literal, and is reported differently so the
+    author is told what is missing rather than just that the guard fired.
+    """
+    start = statement.lineno - 1
+    while start > 0 and lines[start - 1].lstrip().startswith("#"):
+        start -= 1
+    end = statement.end_lineno or statement.lineno
+    span = lines[start:end]
+    for line in span:
+        match = _PINNED_REVISION_DECLARATION.search(line)
+        if match is not None:
+            return True, match.group("reason").strip()
+    return any(_PINNED_REVISION_PRAGMA in line for line in span), None
+
+
+def _parent_map(tree: ast.Module) -> dict[int, ast.AST]:
+    return {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _enclosing_statement(node: ast.AST, parents: dict[int, ast.AST]) -> ast.stmt:
+    """The statement a comparison belongs to — where a reader looks, and comments."""
+    current: ast.AST | None = node
+    while current is not None and not isinstance(current, ast.stmt):
+        current = parents.get(id(current))
+    assert isinstance(current, ast.stmt)
+    return current
+
+
+def _scopes(tree: ast.Module) -> list[ast.AST]:
+    """The module plus every function body, so local bindings stay scoped."""
+    return [tree] + [
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+
+
+def head_literal_findings(path: Path, source: str) -> list[str]:
+    """Report every revision literal compared against an ``alembic_version`` read."""
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    parents = _parent_map(tree)
+    findings: dict[int, str] = {}
+    for scope in _scopes(tree):
+        nodes = _scope_nodes(scope)
+        bindings = _local_bindings(nodes)
+        for node in nodes:
+            if not isinstance(node, ast.Compare):
+                continue
+            operands = [node.left, *node.comparators]
+            literals = {
+                index: found
+                for index, operand in enumerate(operands)
+                if (found := _revision_literals(operand))
+            }
+            if not literals:
+                continue
+            reads = {
+                index
+                for index, operand in enumerate(operands)
+                if _reads_alembic_version(operand, bindings)
+            }
+            if not (reads - set(literals)):
+                continue
+            statement = _enclosing_statement(node, parents)
+            marker, reason = _pin_declaration(statement, lines)
+            if marker and reason:
+                continue
+            spelled = ", ".join(sorted(value for found in literals.values() for value in found))
+            detail = (
+                f" (its '# {_PINNED_REVISION_PRAGMA}' comment states no reason)" if marker else ""
+            )
+            findings[statement.lineno] = (
+                f"{path}:{statement.lineno} compares alembic_version to {spelled}{detail}"
+            )
+    return [findings[lineno] for lineno in sorted(findings)]
+
+
+def _guarded_python_sources() -> list[Path]:
+    repo_root = Path(__file__).resolve().parents[2]
+    return sorted(
+        path for root in _GUARDED_SOURCE_ROOTS for path in (repo_root / root).rglob("*.py")
+    )
+
+
+def test_no_alembic_version_assertion_hardcodes_a_revision_literal():
+    """Head assertions must derive the head, not spell today's revision.
+
+    ``assert_at_chain_head`` (or ``get_chain_head``) resolves the head from the
+    script directory, so the assertion survives the next migration. A test that
+    genuinely pins an older revision keeps its literal and says why with a
+    ``# pinned-revision: <reason>`` comment.
+    """
+    findings = []
+    for path in _guarded_python_sources():
+        source = path.read_text(encoding="utf-8")
+        # The detector needs both markers spelled in the source, so a file
+        # without "alembic_version" in it cannot produce a finding.
+        if "alembic_version" not in source:
+            continue
+        findings.extend(head_literal_findings(path, source))
+
+    assert findings == [], (
+        "Hardcoded alembic_version revision literals found. Use "
+        "butlers.testing.migration.assert_at_chain_head() (or compare against "
+        "butlers.migrations.get_chain_head(chain)) when the assertion means "
+        '"the head", or annotate a deliberate pin with a '
+        f"'# {_PINNED_REVISION_PRAGMA} <reason>' comment — the reason is required, "
+        "and must sit on the marker line:\n" + "\n".join(findings)
+    )
+
+
+_STALE_HEAD_LITERAL_SOURCE = textwrap.dedent(
+    """
+    def test_upgrade_lands_on_head(connection):
+        command.upgrade(config, "core@head")
+        assert (
+            connection.execute(
+                text("SELECT version_num FROM general.alembic_version")
+            ).scalar_one()
+            == {head!r}
+        )
+    """
+)
+
+
+def test_guard_fires_on_a_multiline_head_literal(tmp_path):
+    """The guard must catch the multi-line shape a line-scoped regex misses."""
+    head = get_chain_head("core")
+    source = _STALE_HEAD_LITERAL_SOURCE.format(head=head)
+    assert not any("version_num" in line and head in line for line in source.splitlines()), (
+        "the fixture must keep the SELECT and the literal on separate lines — "
+        "that separation is what a line-scoped regex misses"
+    )
+
+    findings = head_literal_findings(tmp_path / "test_stale.py", source)
+
+    assert len(findings) == 1
+    assert head in findings[0]
+
+
+def test_guard_fires_on_a_head_literal_bound_through_a_local_name(tmp_path):
+    """The two-statement ``versions = [...]`` / ``assert literal in versions`` shape."""
+    source = textwrap.dedent(
+        f"""
+        def test_upgrade_lands_on_head(conn):
+            versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
+            assert {get_chain_head("approvals")!r} in versions
+        """
+    )
+
+    findings = head_literal_findings(tmp_path / "test_stale.py", source)
+
+    assert len(findings) == 1
+
+
+def test_guard_accepts_a_deliberate_pin_declared_in_the_source(tmp_path):
+    """The pragma is honoured anywhere in the comment block above the statement."""
+    source = textwrap.dedent(
+        f"""
+        def test_failed_upgrade_leaves_the_schema_behind(connection):
+            # {_PINNED_REVISION_PRAGMA} the head upgrade is expected to fail,
+            # so this schema must stay where it was.
+            assert (
+                connection.execute(
+                    text("SELECT version_num FROM general.alembic_version")
+                ).scalar_one()
+                == {get_chain_head("core")!r}
+            )
+        """
+    )
+
+    assert head_literal_findings(tmp_path / "test_pinned.py", source) == []
+
+
+def test_guard_rejects_a_pin_declared_without_a_reason(tmp_path):
+    """A bare marker must not silence the guard — the reason is the point."""
+    source = textwrap.dedent(
+        f"""
+        def test_failed_upgrade_leaves_the_schema_behind(connection):
+            # {_PINNED_REVISION_PRAGMA}
+            assert (
+                connection.execute(
+                    text("SELECT version_num FROM general.alembic_version")
+                ).scalar_one()
+                == {get_chain_head("core")!r}
+            )
+        """
+    )
+
+    findings = head_literal_findings(tmp_path / "test_bare_pin.py", source)
+
+    assert len(findings) == 1
+    assert "states no reason" in findings[0]
+
+
+def test_guard_accepts_a_derived_head_assertion(tmp_path):
+    source = textwrap.dedent(
+        """
+        def test_upgrade_lands_on_head(connection):
+            assert_at_chain_head(connection, "general")
+            assert (
+                connection.execute(
+                    text("SELECT version_num FROM general.alembic_version")
+                ).scalar_one()
+                == get_chain_head("core")
+            )
+        """
+    )
+
+    assert head_literal_findings(tmp_path / "test_derived.py", source) == []
+
+
+def test_guard_ignores_a_revision_literal_unrelated_to_alembic_version(tmp_path):
+    source = textwrap.dedent(
+        f"""
+        def test_migration_declares_its_place_in_the_chain(module):
+            assert module.revision == {get_chain_head("core")!r}
+            assert module.down_revision == "core_200"
+        """
+    )
+
+    assert head_literal_findings(tmp_path / "test_contract.py", source) == []

@@ -30,6 +30,7 @@ from sqlalchemy.exc import DBAPIError
 from alembic import command
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
+    assert_at_chain_head,
     create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
@@ -1237,16 +1238,8 @@ def test_core_chain_is_idempotent_for_two_target_schemas_without_switchboard_dep
                 ).scalar_one()
                 == 0
             )
-            assert (
-                conn.execute(text("SELECT version_num FROM general.alembic_version")).scalar_one()
-                == "core_201"
-            )
-            assert (
-                conn.execute(
-                    text("SELECT version_num FROM switchboard.alembic_version")
-                ).scalar_one()
-                == "core_201"
-            )
+            assert_at_chain_head(conn, "general")
+            assert_at_chain_head(conn, "switchboard")
     finally:
         engine.dispose()
 
@@ -1291,14 +1284,7 @@ def test_core_chain_serializes_global_runtime_attention_install_across_processes
                 )
             ).scalar_one()
             for target_schema in target_schemas:
-                assert (
-                    conn.execute(
-                        text(
-                            f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
-                        )
-                    ).scalar_one()
-                    == "core_201"
-                )
+                assert_at_chain_head(conn, target_schema)
     finally:
         engine.dispose()
 
@@ -1343,14 +1329,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                assert (
-                    conn.execute(
-                        text(
-                            f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
-                        )
-                    ).scalar_one()
-                    == "core_201"
-                )
+                assert_at_chain_head(conn, target_schema)
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
@@ -1513,6 +1492,8 @@ def test_core_chain_rejects_partial_runtime_attention_index_across_processes(
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
+                # pinned-revision: the poisoned head upgrade must fail, leaving
+                # both schemas stamped at the pre-core_198 boundary.
                 assert (
                     conn.execute(
                         text(

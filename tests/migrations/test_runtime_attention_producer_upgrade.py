@@ -18,6 +18,7 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
+    assert_at_chain_head,
     create_migrated_test_db,
     create_migration_db,
     migration_bootstrap_db_url,
@@ -70,12 +71,7 @@ def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
-            assert (
-                connection.execute(
-                    text("SELECT version_num FROM public.alembic_version")
-                ).scalar_one()
-                == "core_201"
-            )
+            assert_at_chain_head(connection)
             assert connection.execute(
                 text(
                     """

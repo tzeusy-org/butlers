@@ -271,7 +271,7 @@ class TestApprovalsMigration:
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import run_migrations
+        from butlers.migrations import get_chain_head, run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
@@ -280,7 +280,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_013" in versions
+        assert get_chain_head("approvals") in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -352,7 +352,7 @@ class TestApprovalsMigration:
         from sqlalchemy import create_engine, exc, text
 
         from alembic import command
-        from butlers.migrations import _build_alembic_config
+        from butlers.migrations import _build_alembic_config, get_chain_head
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
@@ -415,7 +415,7 @@ class TestApprovalsMigration:
                 {"action_id": str(action_id)},
             )
 
-        assert versions == ["approvals_013"]
+        assert versions == [get_chain_head("approvals")]
         assert "abandoned" in index_sql
 
         with pytest.raises(exc.IntegrityError):
@@ -444,7 +444,7 @@ class TestApprovalsMigration:
 
         from sqlalchemy import create_engine, text
 
-        from butlers.migrations import run_migrations
+        from butlers.migrations import get_chain_head, run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
@@ -502,7 +502,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_013" in versions
+        assert get_chain_head("approvals") in versions
 
     def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
         self, postgres_container
@@ -512,7 +512,7 @@ class TestApprovalsMigration:
 
         from sqlalchemy import create_engine, exc, text
 
-        from butlers.migrations import run_migrations
+        from butlers.migrations import get_chain_head, run_migrations
 
         db_name = _unique_db_name()
         db_url = _create_db(postgres_container, db_name)
@@ -582,7 +582,7 @@ class TestApprovalsMigration:
         ]
         assert row["blast_radius"] is None
         assert row["reversibility"] is None
-        assert "approvals_013" in versions
+        assert get_chain_head("approvals") in versions
 
         with pytest.raises(exc.IntegrityError):
             with engine.begin() as conn:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import re
 import shutil
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from alembic import command
+from butlers.migrations import get_chain_head
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
@@ -39,17 +39,13 @@ RUNTIME_ROLES = {
 
 
 def _latest_core_revision() -> str:
-    core_dir = Path("alembic/versions/core")
-    revisions: list[tuple[int, str]] = []
-    for path in core_dir.glob("core_*.py"):
-        match = re.match(r"core_(\d+)", path.stem)
-        if match is not None:
-            revisions.append((int(match.group(1)), f"core_{match.group(1)}"))
+    """The core chain head, resolved from the Alembic revision graph.
 
-    if not revisions:
-        raise AssertionError("No core migrations found")
-
-    return max(revisions, key=lambda item: item[0])[1]
+    Deliberately not "the highest-numbered ``core_NNN`` file in the versions
+    directory": that reads the naming convention rather than the chain itself,
+    and it resolved the directory relative to the working directory.
+    """
+    return get_chain_head("core")
 
 
 # The trusted-bootstrap runtime-attention interface: installed by core_198 and
