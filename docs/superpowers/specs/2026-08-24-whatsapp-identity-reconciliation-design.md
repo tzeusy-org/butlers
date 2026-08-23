@@ -1,7 +1,7 @@
 # WhatsApp Identity Resolution and Reconciliation Design
 
 **Date:** 2026-08-24  
-**Status:** Approved design, pending written-spec review  
+**Status:** Approved for implementation
 **Scope:** WhatsApp sender identity resolution, conversation decomposition identity propagation,
 fact-storage protection, and guarded cleanup of existing false transitory entities
 
