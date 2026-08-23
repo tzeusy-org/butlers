@@ -1220,11 +1220,20 @@ class MessagePipeline:
                     channel_value=result.channel_value,
                 )
 
+        return self._enrich_decomp_speaker_messages(messages, resolutions), resolutions
+
+    @classmethod
+    def _enrich_decomp_speaker_messages(
+        cls,
+        messages: list[dict[str, Any]],
+        resolutions: dict[str, IdentityResolutionResult],
+    ) -> list[dict[str, Any]]:
+        """Attach canonical-or-neutral speaker fields from authoritative results."""
         enriched_messages: list[dict[str, Any]] = []
         for message in messages:
-            sender_identity = self._string_or_none(message.get("sender_identity"))
+            sender_identity = cls._string_or_none(message.get("sender_identity"))
             result = resolutions.get(sender_identity) if sender_identity is not None else None
-            sender = self._string_or_none(message.get("sender")) or "Unknown sender"
+            sender = cls._string_or_none(message.get("sender")) or "Unknown sender"
             if result is not None and result.display_name:
                 sender = result.display_name
             elif sender_identity is not None and sender == sender_identity:
@@ -1240,7 +1249,7 @@ class MessagePipeline:
             )
             enriched_messages.append(enriched)
 
-        return enriched_messages, resolutions
+        return enriched_messages
 
     async def _load_dashboard_context(
         self,
@@ -2615,11 +2624,24 @@ class MessagePipeline:
                                             channel_type=source,
                                             channel_value=identity_result.channel_value,
                                         )
-                            except Exception:
-                                logger.debug(
-                                    "Identity resolution failed; proceeding without preamble",
-                                    exc_info=True,
-                                )
+                            except Exception as exc:
+                                if _decomp_messages is not None:
+                                    _decomp_messages = self._enrich_decomp_speaker_messages(
+                                        _decomp_messages,
+                                        {},
+                                    )
+                                    logger.warning(
+                                        "pipeline.decomposition_identity_resolution_failed",
+                                        extra={
+                                            "source_channel": source,
+                                            "failure_class": type(exc).__name__,
+                                        },
+                                    )
+                                else:
+                                    logger.debug(
+                                        "Identity resolution failed; proceeding without preamble",
+                                        exc_info=True,
+                                    )
 
                     if _decomp_messages is not None:
                         conversation_history = _format_decomp_conversation_history(_decomp_messages)

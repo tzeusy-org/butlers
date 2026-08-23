@@ -166,18 +166,7 @@ async def resolve_and_inject_identity(
     )
 
     if resolved is not None:
-        is_owner = "owner" in resolved.roles
-        preamble = build_identity_preamble(resolved, channel_type)
-        return IdentityResolutionResult(
-            preamble=preamble,
-            contact_id=resolved.contact_id,
-            entity_id=resolved.entity_id,
-            sender_roles=resolved.roles or None,
-            is_owner=is_owner,
-            is_known=True,
-            is_unknown=False,
-            display_name=resolved.name or ("Owner" if is_owner else None),
-        )
+        return _result_from_resolved_contact(resolved, channel_type)
 
     return await _inject_unknown_identity(
         pool,
@@ -256,15 +245,51 @@ async def _inject_unknown_identity(
         )
         try:
             await notify_owner_fn(notification_msg)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to notify owner about unknown sender %s/%s",
-                channel_type,
-                channel_value,
-                exc_info=True,
+                "identity.unknown_sender_notification_failed",
+                extra={
+                    "channel_type": channel_type,
+                    "failure_class": type(exc).__name__,
+                },
             )
 
     return result
+
+
+def _result_from_resolved_contact(
+    resolved: ResolvedContact,
+    channel_type: str,
+) -> IdentityResolutionResult:
+    """Classify one explicit resolver result for presentation and routing."""
+    if resolved.is_unidentified:
+        return IdentityResolutionResult(
+            preamble=build_identity_preamble(
+                None,
+                channel_type,
+                temp_contact_id=resolved.contact_id,
+                temp_entity_id=resolved.entity_id,
+            ),
+            contact_id=resolved.contact_id,
+            entity_id=resolved.entity_id,
+            sender_roles=None,
+            is_owner=False,
+            is_known=False,
+            is_unknown=True,
+            display_name=None,
+        )
+
+    is_owner = "owner" in resolved.roles
+    return IdentityResolutionResult(
+        preamble=build_identity_preamble(resolved, channel_type),
+        contact_id=resolved.contact_id,
+        entity_id=resolved.entity_id,
+        sender_roles=resolved.roles or None,
+        is_owner=is_owner,
+        is_known=True,
+        is_unknown=False,
+        display_name=resolved.name or ("Owner" if is_owner else None),
+    )
 
 
 async def resolve_sender_identities(
@@ -307,16 +332,9 @@ async def resolve_sender_identities(
     for channel_value in distinct_values:
         resolved = bulk_results[(identity_channel, channel_value)]
         if resolved is not None:
-            is_owner = "owner" in resolved.roles
-            results[channel_value] = IdentityResolutionResult(
-                preamble=build_identity_preamble(resolved, identity_channel),
-                contact_id=resolved.contact_id,
-                entity_id=resolved.entity_id,
-                sender_roles=resolved.roles or None,
-                is_owner=is_owner,
-                is_known=True,
-                is_unknown=False,
-                display_name=resolved.name or ("Owner" if is_owner else None),
+            results[channel_value] = _result_from_resolved_contact(
+                resolved,
+                identity_channel,
             )
             continue
 

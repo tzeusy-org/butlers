@@ -119,6 +119,56 @@ async def test_resolve_contact_by_channel():
     assert r5 is not None and isinstance(r5.entity_id, uuid.UUID) and r5.entity_id == _ENTITY_ID
 
 
+async def test_single_and_bulk_resolution_preserve_unidentified_entity_metadata():
+    """REQ-switchboard-identity-002: transitory status survives every lookup shape."""
+    single_pool = _make_pool_with_row(
+        {
+            "entity_id": _ENTITY_ID,
+            "name": "15551234567@s.whatsapp.net",
+            "roles": [],
+            "is_unidentified": True,
+        }
+    )
+
+    single = await resolve_contact_by_channel(
+        single_pool,
+        "whatsapp_user_client",
+        "15551234567@s.whatsapp.net",
+    )
+
+    assert single is not None
+    assert single.is_unidentified is True
+    assert "metadata" in single_pool.fetchrow.await_args.args[0]
+    assert "is_unidentified" in single_pool.fetchrow.await_args.args[0]
+
+    bulk_pool = AsyncMock()
+    bulk_pool.fetch = AsyncMock(
+        return_value=[
+            _mk_bulk_row(
+                {
+                    "predicate": "has-handle",
+                    "object": "15551234567@s.whatsapp.net",
+                    "entity_id": _ENTITY_ID,
+                    "name": "15551234567@s.whatsapp.net",
+                    "roles": [],
+                    "is_unidentified": True,
+                }
+            )
+        ]
+    )
+
+    bulk = await resolve_contacts_by_channel_bulk(
+        bulk_pool,
+        [("whatsapp_user_client", "15551234567@s.whatsapp.net")],
+    )
+
+    resolved = bulk[("whatsapp_user_client", "15551234567@s.whatsapp.net")]
+    assert resolved is not None
+    assert resolved.is_unidentified is True
+    assert "metadata" in bulk_pool.fetch.await_args.args[0]
+    assert "is_unidentified" in bulk_pool.fetch.await_args.args[0]
+
+
 @pytest.mark.parametrize(
     ("channel", "value", "predicate", "roles"),
     [

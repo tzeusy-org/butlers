@@ -198,18 +198,40 @@ async def test_claim_failure_is_observable_and_does_not_send_unclaimed_notificat
 async def test_delivery_failure_is_sealed_after_the_claim_and_does_not_block_result(
     caplog: pytest.LogCaptureFixture,
 ):
-    """A transport failure is logged but leaves identity injection usable and sealed."""
+    """A transport failure warning is stable and contains no sender identifier."""
+    sentinel = "15551234567@s.whatsapp.net"
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value={"key": "identity:unknown_notified:telegram:12345"})
-    notify_owner_fn = AsyncMock(side_effect=RuntimeError("messenger unavailable"))
+    pool.fetchrow = AsyncMock(
+        return_value={"key": f"identity:unknown_notified:whatsapp_jid:{sentinel}"}
+    )
+    notify_owner_fn = AsyncMock(side_effect=RuntimeError(f"messenger unavailable for {sentinel}"))
 
-    with caplog.at_level(logging.WARNING):
-        result = await _resolve_unknown(pool, notify_owner_fn=notify_owner_fn)
+    with (
+        patch.object(identity_inject, "resolve_contact_by_channel", AsyncMock(return_value=None)),
+        patch.object(
+            identity_inject, "create_temp_contact", AsyncMock(return_value=_temp_entity())
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await resolve_and_inject_identity(
+            pool,
+            "whatsapp_jid",
+            sentinel,
+            notify_owner_fn=notify_owner_fn,
+        )
 
     assert result.is_unknown is True
     assert result.new_unknown_sender is True
     notify_owner_fn.assert_awaited_once()
-    assert "Failed to notify owner about unknown sender" in caplog.text
+    assert "identity.unknown_sender_notification_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    failure_record = next(
+        record
+        for record in caplog.records
+        if record.message == "identity.unknown_sender_notification_failed"
+    )
+    assert failure_record.failure_class == "RuntimeError"
 
 
 async def test_atomic_claim_allows_only_one_concurrent_winner():
@@ -377,6 +399,57 @@ async def test_batch_unknown_reservation_skips_redundant_fail_open_lookup():
         reservation_state_key=("identity:unknown_entity:whatsapp_jid:222@s.whatsapp.net"),
     )
     assert results["222@s.whatsapp.net"].entity_id == _TEMP_ENTITY_ID
+
+
+async def test_second_batch_reuses_transitory_entity_without_displaying_identifier():
+    """REQ-switchboard-identity-002: reserved entities stay neutral across batches."""
+    sentinel = "15551234567@s.whatsapp.net"
+    transitory = MagicMock(
+        contact_id=None,
+        roles=[],
+        entity_id=_TEMP_ENTITY_ID,
+        is_unidentified=True,
+    )
+    transitory.name = sentinel
+    first_result = MagicMock(
+        preamble=f"[Source: Unknown sender (entity_id: {_TEMP_ENTITY_ID})]",
+        contact_id=None,
+        entity_id=_TEMP_ENTITY_ID,
+        sender_roles=None,
+        is_owner=False,
+        is_known=False,
+        is_unknown=True,
+        new_unknown_sender=True,
+        channel_value=sentinel,
+        display_name=None,
+    )
+    pair = ("whatsapp_jid", sentinel)
+    bulk = AsyncMock(side_effect=[{pair: None}, {pair: transitory}])
+    reserve_unknown = AsyncMock(return_value=first_result)
+
+    with (
+        patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk),
+        patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+    ):
+        first_batch = await identity_inject.resolve_sender_identities(
+            AsyncMock(),
+            "whatsapp_user_client",
+            [sentinel],
+        )
+        second_batch = await identity_inject.resolve_sender_identities(
+            AsyncMock(),
+            "whatsapp_user_client",
+            [sentinel],
+        )
+
+    assert first_batch[sentinel].entity_id == _TEMP_ENTITY_ID
+    reused = second_batch[sentinel]
+    assert reused.entity_id == _TEMP_ENTITY_ID
+    assert reused.is_unknown is True
+    assert reused.is_known is False
+    assert reused.display_name is None
+    assert sentinel not in reused.preamble
+    reserve_unknown.assert_awaited_once()
 
 
 async def test_empty_string_channel_value_returns_empty_result():

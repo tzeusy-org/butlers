@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,6 +40,7 @@ from butlers.modules.pipeline import (
     _build_routing_prompt,
     _extract_bug_report_calls,
     _extract_routed_butlers,
+    _format_decomp_conversation_history,
     _infer_fallback_target_from_cc_output,
     _normalize_decomp_signal,
     _normalize_decomp_signals,
@@ -260,6 +262,93 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
     routing_context = pipeline._set_routing_context.call_args.kwargs
     assert routing_context["identity_preamble"] == primary_result.preamble
     assert routing_context["source_entity_id"] == str(primary_entity)
+
+
+async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_history(
+    caplog: pytest.LogCaptureFixture,
+):
+    """REQ-switchboard-identity-002: strict batch outages stay neutral and fail-open."""
+    sentinel = "15551234567@s.whatsapp.net"
+    sentinel_error = f"database unavailable for {sentinel}"
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": sentinel,
+            "sender": "Unknown WhatsApp sender",
+            "text": "hello",
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+    captured_messages: list[dict[str, Any]] = []
+    captured_dispatch: dict[str, Any] = {}
+
+    def format_history(enriched: list[dict[str, Any]]) -> str:
+        captured_messages.extend(enriched)
+        return _format_decomp_conversation_history(enriched)
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        captured_dispatch.update(kwargs)
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        enable_identity_resolution=True,
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=messages
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    reserve_unknown = AsyncMock()
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(
+            identity_inject,
+            "resolve_sender_identities",
+            new=AsyncMock(side_effect=RuntimeError(sentinel_error)),
+        ),
+        patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+        patch(
+            "butlers.modules.pipeline._format_decomp_conversation_history",
+            side_effect=format_history,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": sentinel,
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000098",
+        )
+
+    assert result.target_butler == "decomposed_empty"
+    assert captured_messages[0]["sender"] == "Unknown WhatsApp sender"
+    assert captured_messages[0]["sender_identity"] == sentinel
+    assert captured_messages[0]["sender_entity_id"] is None
+    assert "Unknown WhatsApp sender" in captured_dispatch["prompt"]
+    assert sentinel not in captured_dispatch["prompt"]
+    routing_context = pipeline._set_routing_context.call_args.kwargs
+    assert routing_context["identity_preamble"] is None
+    assert routing_context["source_entity_id"] is None
+    reserve_unknown.assert_not_awaited()
+    assert "pipeline.decomposition_identity_resolution_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    warning_record = next(
+        record
+        for record in caplog.records
+        if record.message == "pipeline.decomposition_identity_resolution_failed"
+    )
+    assert warning_record.failure_class == "RuntimeError"
 
 
 def _dashboard_tool_args(**overrides: Any) -> dict[str, Any]:

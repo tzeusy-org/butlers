@@ -310,12 +310,24 @@ class ResolvedContact:
         Sourced from ``public.entities.roles``.
     entity_id:
         UUID of the linked entity in public.entities, or ``None`` if not linked.
+    is_unidentified:
+        ``True`` when ``public.entities.metadata.unidentified`` explicitly marks
+        this as a transitory entity awaiting disambiguation.
     """
 
     contact_id: UUID | None
     name: str | None
     roles: list[str]
     entity_id: UUID | None
+    is_unidentified: bool = False
+
+
+def _row_is_unidentified(row: Any) -> bool:
+    """Read the explicit transitory marker from a resolver query row."""
+    try:
+        return row["is_unidentified"] is True
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 async def _resolve_entity_by_triple(
@@ -325,15 +337,18 @@ async def _resolve_entity_by_triple(
 ) -> asyncpg.Record | None:
     """Query ``relationship.entity_facts`` for an active triple and join entity info.
 
-    Returns a row with ``entity_id``, ``name`` (canonical_name), and ``roles``,
-    or ``None`` when not found or on DB error.
+    Returns a row with ``entity_id``, ``name`` (canonical_name), ``roles``, and
+    the explicit ``is_unidentified`` metadata marker, or ``None`` when not
+    found or on DB error.
     """
     try:
         return await pool.fetchrow(
             """
             SELECT ef.subject                     AS entity_id,
                    e.canonical_name               AS name,
-                   COALESCE(e.roles, '{}')        AS roles
+                   COALESCE(e.roles, '{}')        AS roles,
+                   COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                   AS is_unidentified
             FROM   relationship.entity_facts ef
             JOIN   public.entities e ON e.id = ef.subject
             WHERE  ef.predicate    = $1
@@ -380,7 +395,9 @@ async def _resolve_entity_by_phone_digits(
             )
             SELECT DISTINCT stored.entity_id         AS entity_id,
                    e.canonical_name                  AS name,
-                   COALESCE(e.roles, '{}')           AS roles
+                   COALESCE(e.roles, '{}')           AS roles,
+                   COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                       AS is_unidentified
             FROM   stored
             JOIN   public.entities e ON e.id = stored.entity_id
             WHERE  length(stored.digits) >= $2
@@ -536,6 +553,7 @@ async def resolve_contact_by_channel(
         name=row["name"] or None,
         roles=roles,
         entity_id=entity_id,
+        is_unidentified=_row_is_unidentified(row),
     )
 
 
@@ -639,7 +657,9 @@ async def resolve_contacts_by_channel_bulk(
                        ef.object               AS object,
                        ef.subject              AS entity_id,
                        e.canonical_name        AS name,
-                       COALESCE(e.roles, '{}') AS roles
+                       COALESCE(e.roles, '{}') AS roles,
+                       COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                AS is_unidentified
                 FROM   relationship.entity_facts ef
                 JOIN   public.entities e ON e.id = ef.subject
                 JOIN   unnest($1::text[], $2::text[]) AS wanted(predicate, object)
@@ -701,6 +721,7 @@ async def resolve_contacts_by_channel_bulk(
                 name=row["name"] or None,
                 roles=roles,
                 entity_id=entity_id,
+                is_unidentified=_row_is_unidentified(row),
             )
             break
 
@@ -901,7 +922,12 @@ async def create_temp_contact(
                         if reserved_entity_id is not None:
                             reserved_entity = await conn.fetchrow(
                                 """
-                                SELECT canonical_name, roles
+                                SELECT canonical_name,
+                                       roles,
+                                       COALESCE(
+                                           (metadata ->> 'unidentified') = 'true',
+                                           false
+                                       ) AS is_unidentified
                                 FROM public.entities
                                 WHERE id = $1
                                 """,
@@ -918,6 +944,7 @@ async def create_temp_contact(
                                         else []
                                     ),
                                     entity_id=reserved_entity_id,
+                                    is_unidentified=_row_is_unidentified(reserved_entity),
                                 )
 
                             logger.warning(
@@ -996,6 +1023,7 @@ async def create_temp_contact(
             name=name,
             roles=[],
             entity_id=entity_id,
+            is_unidentified=True,
         )
 
     except Exception:  # noqa: BLE001
