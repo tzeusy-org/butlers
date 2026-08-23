@@ -45,6 +45,21 @@ def _synthetic_pair() -> tuple[bytes, bytes]:
     return seed, private_key.public_key().public_bytes_raw()
 
 
+# A fixed seed whose STANDARD-alphabet base64 spelling contains both "+" and "/".
+#
+# The [standard-alphabet] case below is only a test of the url-safe alphabet if
+# the standard spelling actually differs from the url-safe one -- and the two
+# alphabets differ *only* in "+/" versus "-_".  A random 32-byte seed encodes
+# without either character about 26% of the time (measured: 52857/200000), and on
+# those runs the "standard" spelling IS valid unpadded base64url, so the parser
+# rightly does not raise and the case fails.  Drawing the seed from
+# ``_synthetic_pair()`` therefore made the assertion a coin flip rather than a
+# check.  ``_synthetic_pair()`` stays random for every other test.  See bu-tuxbb.
+_DISCRIMINATING_SEED = bytes.fromhex(
+    "523e33980110914273105ce1f2e968e71a8479f1f215bf888591b4849efbeffe"
+)
+
+
 def _stamp(value: datetime) -> str:
     return keys.format_utc_second(value)
 
@@ -296,12 +311,27 @@ def test_key_id_must_be_a_string() -> None:
     ],
 )
 def test_key_material_must_be_unpadded_base64url_of_32_bytes(encoded) -> None:
-    seed, _ = _synthetic_pair()
+    seed = _DISCRIMINATING_SEED
     document = _signer_document(seed)
     document["private_key_b64u"] = encoded(seed)
 
     with pytest.raises(keys.RuntimeProbeControlKeyError):
         keys.parse_signer_document(_encode(document))
+
+
+def test_the_standard_alphabet_case_actually_exercises_the_alphabet_difference() -> None:
+    """The [standard-alphabet] case is vacuous unless the two spellings differ.
+
+    Standard and url-safe base64 differ only in "+/" versus "-_", so a seed whose
+    encoding uses neither character produces byte-identical spellings and the
+    parser is right not to raise.  Pin the seed's discriminating property here
+    rather than trusting it, or the case silently degrades into a tautology.
+    """
+    standard = base64.b64encode(_DISCRIMINATING_SEED).rstrip(b"=").decode()
+
+    assert "+" in standard
+    assert "/" in standard
+    assert standard != _b64u(_DISCRIMINATING_SEED)
 
 
 def test_key_material_rejects_a_non_canonical_spelling_of_the_same_bytes() -> None:
