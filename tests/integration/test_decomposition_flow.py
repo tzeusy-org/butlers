@@ -645,8 +645,7 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
         """
     )
     assert [
-        (row["entity_id"], row["subject"], row["predicate"], row["content"])
-        for row in stored_facts
+        (row["entity_id"], row["subject"], row["predicate"], row["content"]) for row in stored_facts
     ] == [
         (known_entity_id, "Known speaker", "paid_for_lunch", "I paid for lunch"),
         (
