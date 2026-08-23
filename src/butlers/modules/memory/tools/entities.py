@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -17,6 +18,15 @@ from butlers.modules.memory.tools._helpers import _serialize_row
 logger = logging.getLogger(__name__)
 
 VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
+
+_WHATSAPP_TRANSPORT_IDENTIFIER_RE = re.compile(
+    r"^(?:\d+(?::\d+)?@s\.whatsapp\.net|\d+(?::\d+)?@lid)$"
+)
+
+
+def is_whatsapp_transport_identifier(value: str) -> bool:
+    """Return whether value is a numeric individual WhatsApp JID or LID."""
+    return bool(_WHATSAPP_TRANSPORT_IDENTIFIER_RE.fullmatch(value.strip()))
 
 
 def _parse_metadata(raw: Any) -> dict[str, Any]:

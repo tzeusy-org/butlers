@@ -17,6 +17,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.memory.tools.entities import is_whatsapp_transport_identifier
 
 
 def _coerce_json_list(v: Any) -> Any:
@@ -1491,6 +1492,20 @@ class MemoryModule(Module):
             Returns:
                 Dict with key entity_id (UUID string).
             """
+            if (
+                entity_type == "person"
+                and metadata is not None
+                and metadata.get("source") == "fact_storage"
+                and is_whatsapp_transport_identifier(canonical_name)
+            ):
+                return {
+                    "error": "transport_identifier_not_entity_name",
+                    "message": (
+                        "Cannot create a person from a WhatsApp transport identifier. "
+                        "Use the conceptual excerpt's sender_entity_id; if it is absent, skip "
+                        "the fact."
+                    ),
+                }
             try:
                 return await _entities.entity_create(
                     module._get_pool(),

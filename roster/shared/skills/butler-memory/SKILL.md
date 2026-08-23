@@ -12,7 +12,9 @@ Extract facts from conversational messages and store them using the butler's dom
 
 ### Sender Entity Resolution
 
-When the identity preamble contains an `entity_id` (e.g., `[Source: Owner (contact_id: ..., entity_id: <uuid>), via telegram]`), use that `entity_id` for facts **about the sender** — their preferences, health, habits, etc. Do not store `subject="user"` as a string; anchor to the sender's entity.
+For conceptual excerpts, `sender_entity_id` is authoritative for facts **about the sender** — their preferences, health, habits, etc. Use it directly; do not resolve or create an entity from `sender_identity`, which is transport data and may be a WhatsApp JID or LID. If `sender_entity_id` is absent, skip any fact whose subject would be the sender.
+
+When the identity preamble contains an `entity_id` (e.g., `[Source: Owner (contact_id: ..., entity_id: <uuid>), via telegram]`), use that `entity_id` for facts **about the sender**. Do not store `subject="user"` as a string; anchor to the sender's entity.
 
 For unidentified senders (`[Source: Unknown sender (contact_id: ..., entity_id: <uuid>), via telegram -- pending disambiguation]`), an entity is auto-created. Use that `entity_id` to anchor facts. The entity will appear in the dashboard for the owner to identify later.
 

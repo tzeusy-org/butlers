@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -686,6 +687,106 @@ class TestRegisterTools:
             )
 
         entities.entity_find_by_canonical.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "transport_identifier",
+        [
+            "15551234567@s.whatsapp.net",
+            "15551234567:12@s.whatsapp.net",
+            "123456789@lid",
+        ],
+    )
+    async def test_memory_entity_create_rejects_fact_storage_whatsapp_transport_person(
+        self, transport_identifier
+    ):
+        """REQ-entity-identity-001: fact storage must not name people from transport IDs."""
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, _fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="person",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {
+            "error": "transport_identifier_not_entity_name",
+            "message": (
+                "Cannot create a person from a WhatsApp transport identifier. "
+                "Use the conceptual excerpt's sender_entity_id; if it is absent, skip the fact."
+            ),
+        }
+        assert transport_identifier not in json.dumps(result)
+        entities.entity_create.assert_not_awaited()
+
+    @pytest.mark.parametrize("canonical_name", ["alice@example.com", "Ava @ Work"])
+    async def test_memory_entity_create_allows_ordinary_at_sign_fact_storage_names(
+        self, canonical_name
+    ):
+        """REQ-entity-identity-001: the guard must not reject ordinary at-sign names."""
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=canonical_name,
+            entity_type="person",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {"entity_id": "created-entity"}
+        entities.entity_create.assert_awaited_once_with(
+            fake_db.pool,
+            canonical_name,
+            "person",
+            aliases=None,
+            metadata={"source": "fact_storage"},
+        )
+
+    async def test_memory_entity_create_allows_non_fact_storage_transport_person(self):
+        """REQ-entity-identity-001: direct unknown-sender creation remains available."""
+        transport_identifier = "15551234567@s.whatsapp.net"
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="person",
+            metadata={"source": "unknown_sender"},
+        )
+
+        assert result == {"entity_id": "created-entity"}
+        entities.entity_create.assert_awaited_once_with(
+            fake_db.pool,
+            transport_identifier,
+            "person",
+            aliases=None,
+            metadata={"source": "unknown_sender"},
+        )
+
+    async def test_memory_entity_create_allows_fact_storage_transport_non_person(self):
+        """REQ-entity-identity-001: the transport-name guard applies only to people."""
+        transport_identifier = "15551234567@s.whatsapp.net"
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="other",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {"entity_id": "created-entity"}
+        entities.entity_create.assert_awaited_once_with(
+            fake_db.pool,
+            transport_identifier,
+            "other",
+            aliases=None,
+            metadata={"source": "fact_storage"},
+        )
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
