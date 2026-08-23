@@ -16,15 +16,15 @@ HTTP status code, a provider string, or any audit free text. The value is
 new provider message cannot widen what the column can contain.
 
 This requirement REVISES this capability's `Credential-Target Audit Groups Are
-Identified Without Free Text`, and specifically supersedes its scenario
-**"Identity is the credential, not the cause"**. That scenario's reasoning —
-"the only per-cause signal on the row is the withheld text itself" — described
-the row as it was then written, not the failure: the category was already being
-derived for `TestResult.message` and discarded instead of stored. Where the two
-speak about the same row, this requirement governs. Everything else in that
-requirement stands unchanged, including its content-blindness rule, its
-distinguishability rule, its non-credential carve-out, and its single-predicate
-rule.
+Identified Without Free Text`, which fixes group identity to the structured
+columns persisted on the row without naming which of them participate. This
+requirement names `failure_category` as one of them, so two rows on one
+credential carrying different persisted causes are two groups rather than one.
+Persisting it costs nothing new: the category was already being derived for
+`TestResult.message` and discarded instead of stored. Where the two speak about
+the same row, this requirement governs. Everything else in that requirement
+stands unchanged, including its content-blindness rule, its distinguishability
+rule, its non-credential carve-out, and its single-predicate rule.
 
 The rule SHALL be enforced in the shared grouping CTE
 (`src/butlers/api/audit_grouping.py`), for the same reason its predecessor is:
