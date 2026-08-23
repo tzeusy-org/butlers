@@ -1897,3 +1897,39 @@ Across `tests/api/test_secrets*.py` this scores 19 files at 0 and exactly one �
 `_schema_drift_db.py` suffix — at 8. A bare `import asyncpg` for an exception class scores 0 and
 correctly stays out of the slot. Feed pytest the surviving files as an **explicit path list**; an
 `--ignore` list built from belief is not a DB-free scope.
+
+### Never put the Claude session URL in a PR body here, and an edit will not clear it
+
+`scripts/session_link_guard.py` (CI job `session-link-guard`, bu-mr5t5) fails a PR when a
+`https://claude.ai/code/session_...` link appears in the PR **title, body, review comments, or
+non-trailer commit text**. The *only* permitted place is an exact
+`Claude-Session: https://claude.ai/code/session_...` line inside a terminal git commit-trailer block.
+
+This directly contradicts the generic Claude Code instruction to end PR bodies with that URL. **The
+repo rule wins**: commit trailer yes, PR body no.
+
+Two follow-on traps once it has fired:
+
+- `.github/workflows/ci.yml` uses a bare `pull_request:` trigger, which defaults to
+  `opened, synchronize, reopened` — **not `edited`**. `gh pr edit --body-file` fixes the PR but
+  fires nothing.
+- `gh run rerun` replays the *same event payload*, so the job re-reads the stale body and fails
+  again.
+
+What actually works: `gh pr close` + `gh pr reopen` (a `reopened` event carries a fresh payload), or
+push another commit (`synchronize`). Note `concurrency.cancel-in-progress: true` means either one
+cancels the in-flight run and restarts every job, so expect to pay for `check` again.
+
+Verify the fix locally before spending that:
+
+```sh
+gh pr view <N> --json title -q .title > /tmp/t.txt
+gh pr view <N> --json body  -q .body  > /tmp/b.txt
+echo '[]' > /tmp/rc.json
+python3 scripts/session_link_guard.py --pr-title-file /tmp/t.txt --pr-body-file /tmp/b.txt \
+  --commit-range "$(git rev-parse origin/main)..$(git rev-parse origin/<branch>)" \
+  --review-comments-file /tmp/rc.json
+```
+
+Never point that scanner at a checked-out file tree — its self-match safety depends on only ever
+seeing PR/commit/comment metadata.
