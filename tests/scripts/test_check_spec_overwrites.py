@@ -312,3 +312,263 @@ def test_repo_tree_carries_no_unfrozen_baseline_losses() -> None:
     result = _run()
 
     assert result.returncode == 0, result.stdout
+
+
+# --- Pending-parent lineage: the baseline may not exist yet (bu-9w5eu) --------
+#
+# A MODIFIED block may target a capability that no baseline file carries yet
+# because the requirement is created by an unarchived SIBLING change's ADDED
+# block. The pair archives fine in order. Resolving the ancestor from
+# ``openspec/specs/`` alone misses it, and the miss used to skip the body
+# comparison outright -- so the block most able to gut a brand-new requirement
+# got the least scrutiny.
+
+PARENT_ADDED_DOC = """## ADDED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]`
+- **AND** every count is grouped from `public.gadget_ledger`, so it describes the
+  gadget that actually did the work
+
+#### Scenario: Gadget drill-down
+- **WHEN** a caller opens one gadget
+- **THEN** the occurrences resolve against the same ledger the summary used
+"""
+
+
+def test_pending_parent_modified_is_compared_against_its_siblings_added_block(
+    tmp_path: Path,
+) -> None:
+    """A superset of the pending parent's block is clean -- and stops being noted.
+
+    Pins the no-cry-wolf half: the ancestor RESOLVES through the sibling, so the
+    skip note disappears rather than being emitted for a legitimate pattern.
+    """
+    _write_delta(tmp_path, "parent-change", "gadgets", PARENT_ADDED_DOC)
+    _write_delta(
+        tmp_path,
+        "child-change",
+        "gadgets",
+        """## MODIFIED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints, and SHALL say so honestly.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]` with a nullable `total_cost`
+- **AND** every count is grouped from `public.gadget_ledger`, so it describes the
+  gadget that actually did the work
+
+#### Scenario: Gadget drill-down
+- **WHEN** a caller opens one gadget
+- **THEN** the occurrences resolve against the same ledger the summary used
+- **AND** an unpriced gadget stays visibly unpriced
+""",
+    )
+
+    found, skipped = gate.collect(tmp_path)
+
+    assert found == {}
+    assert skipped == []
+
+
+def test_pending_parent_modified_that_drops_a_sibling_clause_is_caught(
+    tmp_path: Path,
+) -> None:
+    """The coverage the skip forgave: a clause the pending parent introduced, deleted.
+
+    This is the whole point of the fallback. Delete the sibling lookup and this
+    block resolves to no ancestor, the gate skips it, ``found`` is empty, and the
+    deletion ships.
+    """
+    _write_delta(tmp_path, "parent-change", "gadgets", PARENT_ADDED_DOC)
+    _write_delta(
+        tmp_path,
+        "child-change",
+        "gadgets",
+        """## MODIFIED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]`
+
+#### Scenario: Gadget drill-down
+- **WHEN** a caller opens one gadget
+- **THEN** the occurrences resolve against the same ledger the summary used
+""",
+    )
+
+    found, skipped = gate.collect(tmp_path)
+
+    losses = found["child-change/gadgets/Gadget API"]
+    assert "public.gadget_ledger" in " ".join(finding.excerpt for finding in losses)
+    assert skipped == []
+
+
+def test_pending_parent_modified_that_drops_a_whole_sibling_scenario_is_caught(
+    tmp_path: Path,
+) -> None:
+    """Scenario-level deletion against a pending parent, which no baseline file holds.
+
+    OpenSpec's own ``findMissingCurrentScenarios`` compares against
+    ``openspec/specs/`` too, so for a not-yet-archived parent this drop is
+    invisible to the CLI as well -- the gate is the only thing that can see it.
+    """
+    _write_delta(tmp_path, "parent-change", "gadgets", PARENT_ADDED_DOC)
+    _write_delta(
+        tmp_path,
+        "child-change",
+        "gadgets",
+        """## MODIFIED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]`
+- **AND** every count is grouped from `public.gadget_ledger`, so it describes the
+  gadget that actually did the work
+""",
+    )
+
+    found, skipped = gate.collect(tmp_path)
+
+    losses = found["child-change/gadgets/Gadget API"]
+    assert any(finding.kind == "scenario" for finding in losses)
+    assert "Gadget drill-down" in " ".join(finding.scenario or "" for finding in losses)
+    assert skipped == []
+
+
+def test_live_baseline_wins_over_a_sibling_added_block_of_the_same_name(
+    tmp_path: Path,
+) -> None:
+    """The fallback is a fallback: an archived baseline is still the ancestor.
+
+    Without this, adding the sibling lookup could silently re-point blocks that
+    already resolved correctly, which would move findings the ratchet has frozen.
+    """
+    _write_spec(tmp_path, "demo", BASELINE_DOC)
+    _write_delta(
+        tmp_path,
+        "decoy-change",
+        "demo",
+        """## ADDED Requirements
+
+### Requirement: Widget API
+Something else entirely, with no clause the baseline carries.
+
+#### Scenario: Widget totals
+- **WHEN** an unrelated call happens
+- **THEN** an unrelated thing is true
+""",
+    )
+    _write_delta(
+        tmp_path,
+        "demo-change",
+        "demo",
+        """## MODIFIED Requirements
+
+### Requirement: Widget API
+The dashboard SHALL expose the widget endpoints.
+
+#### Scenario: Widget totals
+- **WHEN** `GET /api/widgets` is called
+- **THEN** the response is `ApiResponse[WidgetSummary]`
+""",
+    )
+
+    found, _skipped = gate.collect(tmp_path)
+
+    # Resolved against the real baseline, so the loss is the baseline's clause.
+    losses = found["demo-change/demo/Widget API"]
+    assert "public.widget_ledger" in losses[0].excerpt
+
+
+def test_requirement_with_no_baseline_and_no_sibling_still_reports_the_skip(
+    tmp_path: Path,
+) -> None:
+    """A genuine orphan keeps its note; the fallback narrows the notes, not removes them."""
+    _write_spec(tmp_path, "demo", BASELINE_DOC)
+    _write_delta(
+        tmp_path,
+        "demo-change",
+        "demo",
+        """## MODIFIED Requirements
+
+### Requirement: Nonexistent API
+The dashboard SHALL expose something no baseline and no sibling declares.
+
+#### Scenario: Nothing
+- **WHEN** nothing happens
+- **THEN** nothing is true
+""",
+    )
+
+    found, skipped = gate.collect(tmp_path)
+
+    assert found == {}
+    assert skipped == [
+        'demo-change/demo: MODIFIED "Nonexistent API" has no baseline requirement to overwrite'
+    ]
+
+
+def test_two_siblings_adding_one_requirement_are_all_compared_against(
+    tmp_path: Path,
+) -> None:
+    """Ambiguous lineage: satisfy every candidate, because only one can ever archive.
+
+    Two unarchived changes ADDing the same heading for one capability is itself
+    an error -- ``openspec archive`` aborts the second with "already exists" --
+    so exactly one will become the baseline and the gate cannot know which.
+    Reporting the union of the candidates' losses is the only answer that is safe
+    under either outcome. Picking one silently would make the verdict depend on
+    directory ordering.
+    """
+    _write_delta(tmp_path, "parent-a", "gadgets", PARENT_ADDED_DOC)
+    _write_delta(
+        tmp_path,
+        "parent-b",
+        "gadgets",
+        """## ADDED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]`
+- **AND** the payload carries `public.rival_ledger` provenance
+""",
+    )
+    _write_delta(
+        tmp_path,
+        "child-change",
+        "gadgets",
+        """## MODIFIED Requirements
+
+### Requirement: Gadget API
+The dashboard SHALL expose the gadget endpoints.
+
+#### Scenario: Gadget totals
+- **WHEN** `GET /api/gadgets` is called
+- **THEN** the response is `ApiResponse[GadgetSummary]`
+""",
+    )
+
+    found, skipped = gate.collect(tmp_path)
+
+    excerpts = " ".join(f.excerpt for f in found["child-change/gadgets/Gadget API"])
+    # Both candidates' dropped clauses are reported, not whichever sorts first.
+    assert "public.gadget_ledger" in excerpts
+    assert "public.rival_ledger" in excerpts
+    # And the ambiguity itself is surfaced rather than resolved silently.
+    assert any("parent-a" in note and "parent-b" in note for note in skipped)

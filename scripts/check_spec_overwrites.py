@@ -40,6 +40,15 @@ change identity, the gate fires, and the block has to be rebuilt on the
 refreshed baseline (or the loss re-frozen once a human has confirmed it is
 intended). That movement is the signal, not noise.
 
+Ancestor resolution
+-------------------
+A MODIFIED block's ancestor is the live ``openspec/specs/`` requirement when one
+exists. When none does, the block may still be legitimate: the requirement can be
+created by an unarchived SIBLING change's ``## ADDED`` block, which archives
+first (*pending-parent lineage*). Those siblings are the fallback ancestor, so
+such a block is body-compared rather than skipped. Only a block with neither a
+baseline nor a sibling parent is reported as unresolvable.
+
 Limits
 ------
 This compares text, so it finds deletions, not contradictions. A block clause
@@ -195,6 +204,19 @@ def modified_requirements(text: str) -> dict[str, list[str]]:
         if section and "MODIFIED" in section.upper():
             modified.update(requirements)
     return modified
+
+
+def added_requirements(text: str) -> dict[str, list[str]]:
+    """Requirements under a change delta's ``## ADDED Requirements`` header.
+
+    These are the ancestors for a *pending-parent* MODIFIED block: a sibling
+    change that has not archived yet is the only place the requirement exists.
+    """
+    added: dict[str, list[str]] = {}
+    for section, requirements in parse_document(text).items():
+        if section and "ADDED" in section.upper():
+            added.update(requirements)
+    return added
 
 
 def rename_map(text: str) -> dict[str, str]:
@@ -377,12 +399,24 @@ def collect(root: Path) -> tuple[dict[str, list[Finding]], list[str]]:
     for spec_file in sorted(specs_dir.glob("*/spec.md")):
         baselines[spec_file.parent.name] = baseline_requirements(spec_file.read_text("utf-8"))
 
+    change_dirs = [p for p in sorted(changes_dir.iterdir()) if p.is_dir() and p.name != "archive"]
+
+    # Pending parents: {spec: {requirement: [(change, body), ...]}} over every
+    # unarchived ADDED block, so a MODIFIED block whose target is created by a
+    # sibling still has an ancestor to be compared against.
+    pending: dict[str, dict[str, list[tuple[str, list[str]]]]] = {}
+    for change_dir in change_dirs:
+        for delta_file in sorted(change_dir.glob("specs/*/spec.md")):
+            spec = delta_file.parent.name
+            for requirement, body in added_requirements(delta_file.read_text("utf-8")).items():
+                pending.setdefault(spec, {}).setdefault(requirement, []).append(
+                    (change_dir.name, body)
+                )
+
     found: dict[str, list[Finding]] = {}
     skipped: list[str] = []
 
-    for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
-        if change_dir.name == "archive":
-            continue
+    for change_dir in change_dirs:
         for delta_file in sorted(change_dir.glob("specs/*/spec.md")):
             spec = delta_file.parent.name
             text = delta_file.read_text("utf-8")
@@ -390,15 +424,45 @@ def collect(root: Path) -> tuple[dict[str, list[Finding]], list[str]]:
             for requirement, block_body in modified_requirements(text).items():
                 baseline_name = renames.get(requirement, requirement)
                 baseline_body = baselines.get(spec, {}).get(baseline_name)
-                if baseline_body is None:
-                    skipped.append(
-                        f"{change_dir.name}/{spec}: MODIFIED "
-                        f'"{requirement}" has no baseline requirement to overwrite'
-                    )
-                    continue
-                findings = find_losses(baseline_body, block_body)
+
+                if baseline_body is not None:
+                    ancestors = [baseline_body]
+                else:
+                    # A change that both ADDs and MODIFIEs one requirement is an
+                    # authoring error OpenSpec rejects outright; comparing such a
+                    # block against itself would pass vacuously, so only siblings
+                    # count as parents.
+                    parents = [
+                        (name, body)
+                        for name, body in pending.get(spec, {}).get(baseline_name, [])
+                        if name != change_dir.name
+                    ]
+                    if not parents:
+                        skipped.append(
+                            f"{change_dir.name}/{spec}: MODIFIED "
+                            f'"{requirement}" has no baseline requirement to overwrite'
+                        )
+                        continue
+                    if len(parents) > 1:
+                        # Only one of these can ever archive -- the second aborts
+                        # with "already exists" -- and which one is not encoded
+                        # anywhere. Report the union so the verdict is safe under
+                        # either outcome instead of depending on scan order.
+                        rivals = ", ".join(name for name, _ in parents)
+                        skipped.append(
+                            f"{change_dir.name}/{spec}: MODIFIED "
+                            f'"{requirement}" has no baseline yet and {len(parents)} '
+                            f"unarchived changes ADD it ({rivals}); "
+                            "compared against all of them"
+                        )
+                    ancestors = [body for _, body in parents]
+
+                findings: dict[tuple[str, str | None, str], Finding] = {}
+                for ancestor in ancestors:
+                    for finding in find_losses(ancestor, block_body):
+                        findings.setdefault(finding.key(), finding)
                 if findings:
-                    found[f"{change_dir.name}/{spec}/{requirement}"] = findings
+                    found[f"{change_dir.name}/{spec}/{requirement}"] = list(findings.values())
 
     return found, skipped
 
