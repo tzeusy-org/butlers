@@ -302,6 +302,28 @@ async def test_whatsapp_user_client_resolution_failure_log_is_content_blind(
     assert sentinel_error not in caplog.text
 
 
+async def test_whatsapp_user_client_phone_fallback_failure_log_is_content_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spec: REQ-switchboard-identity-001."""
+    sentinel_jid = "15551234567@s.whatsapp.net"
+    sentinel_error = "sentinel SQL parameter: 15551234567"
+    caplog.set_level(logging.DEBUG)
+
+    with patch(
+        "butlers.identity._resolve_entity_by_triple",
+        new_callable=AsyncMock,
+        side_effect=[None, RuntimeError(sentinel_error)],
+    ):
+        result = await resolve_contact_by_channel(MagicMock(), "whatsapp_user_client", sentinel_jid)
+
+    assert result is None
+    assert "identity.contact_resolution_phone_fallback_failed" in caplog.messages
+    assert sentinel_jid not in caplog.text
+    assert "15551234567" not in caplog.text
+    assert sentinel_error not in caplog.text
+
+
 async def test_bulk_whatsapp_user_client_resolution_failure_log_is_content_blind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
