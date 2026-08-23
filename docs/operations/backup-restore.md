@@ -102,13 +102,47 @@ every one is owned by a fenced role the restoring login is not a member of, so
 the dump's `ALTER ... OWNER TO` statements would fail and leave the object owned
 by whoever ran the restore, dissolving the fence.
 
-What that costs, stated plainly: **restore-drill history is not backed up.** The
-`restore_drill_executor.restore_drill_results` ledger is recovery *evidence* —
-whether a drill has ever passed — and a disaster that loses the database loses
-that history with it. It is not needed to recover the application, and a restore
-drill run after recovery re-establishes the evidence from scratch. Everything
-else in the table above is either reconstructed by the bootstrap or expiring
-runtime state. No ordinary application data is excluded.
+What that costs, stated plainly: **the ledger is not backed up — the drill
+history is.** Neither half of that sentence is self-evident, so both are
+measured against a real bootstrapped database rather than asserted, in
+`tests/scripts/test_restore_drill_evidence_backup.py`.
+
+The `restore_drill_executor.restore_drill_results` table really is absent from
+every artifact. The backup login cannot select from it, is not a member of the
+role that owns it, and the published dump contains no `CREATE SCHEMA
+restore_drill_executor` and not one ledger row. That is measured by dumping a
+database that holds real drill results and reading the artifact, not by reading
+the exclusion list back. The ledger is not recoverable from a backup and is not
+meant to be.
+
+The history it holds survives anyway, in `public.audit_log`, which is **not**
+excluded. `restore_drill_executor.record_result()` writes its audit projection
+in the same transaction as the ledger insert, so the projection cannot fall
+behind the ledger: if the projection fails, the result never reaches the ledger
+either, and there is nothing for the backup to have missed. Every drill outcome
+therefore lands in the nightly dump as one `restore_drill` /
+`restore_drill_result` audit row carrying the timestamp and the pass/fail
+verdict, and restoring that dump into an empty database yields the drill history
+back.
+
+What does **not** survive is the ledger's *authority*. `public.audit_log` is
+writable by ordinary runtime roles — which is the whole reason the fenced ledger
+exists — so the projection is evidence of what happened, not proof that it could
+not have been manufactured. That distinction is a property of the live fence,
+and no export can carry it into a file: a dumped copy of the ledger sitting on
+the backup volume would be exactly as forgeable as the projection already there.
+So "has a drill ever passed" survives a disaster; "prove nobody could have
+written that" does not, and is re-established by running a drill after recovery.
+
+Because the evidence rides in the main artifact, it needs no second export, no
+second cadence, and no second freshness signal: `last_run.json` and
+`GET /api/system/backups` already report whether last night's dump — evidence
+included — was published. Adding `public.audit_log` to the exclusion set is the
+one change that would silently empty this path, and it fails four tests across
+two files.
+
+Everything else in the table above is either reconstructed by the bootstrap or
+expiring runtime state. No ordinary application data is excluded.
 
 `tests/scripts/test_pg_dump_backup.py` pins that claim against a real
 bootstrapped database, in both directions: it fails if a fenced object appears
