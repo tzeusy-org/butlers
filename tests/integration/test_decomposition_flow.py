@@ -23,6 +23,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.connectors.whatsapp_user_client import (
+    WhatsAppUserClientConnector,
+    WhatsAppUserClientConnectorConfig,
+)
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -41,6 +46,23 @@ async def pool(postgres_container):
         postgres_container,
         chains=["core", "switchboard"],
         schemas={"switchboard": "switchboard"},
+        pool_schema="switchboard",
+    )
+    try:
+        yield p
+    finally:
+        await p.close()
+
+
+@pytest.fixture
+async def identity_pool(postgres_container):
+    """Provision the real identity, Switchboard, and Relationship topology."""
+    from butlers.testing.migration import create_migrated_test_pool
+
+    p = await create_migrated_test_pool(
+        postgres_container,
+        chains=["core", "switchboard", "relationship"],
+        schemas={"switchboard": "switchboard", "relationship": "relationship"},
         pool_schema="switchboard",
     )
     try:
@@ -161,6 +183,51 @@ def _build_mock_signals() -> list[dict[str, Any]]:
             ],
         },
     ]
+
+
+def _build_mixed_whatsapp_envelope() -> tuple[dict[str, Any], str, str]:
+    """Build one connector envelope with mapped and unmapped LID speakers."""
+    connector = WhatsAppUserClientConnector(
+        config=WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://switchboard.test/mcp",
+            provider="whatsapp",
+            channel="whatsapp_user_client",
+            endpoint_identity="wa:test",
+            bridge_socket="/tmp/test-wa-bridge.sock",
+            flush_interval_s=3600,
+            buffer_max_messages=50,
+        )
+    )
+    known_lid = "111111111111111"
+    known_identity = "15551112222@s.whatsapp.net"
+    unknown_identity = "222222222222222@lid"
+    connector._lid_to_phone[known_lid] = "15551112222"
+    events = [
+        {
+            "event_type": "message",
+            "message_id": "msg-known",
+            "chat_jid": "120363000000000@g.us",
+            "sender_jid": f"{known_lid}:7@lid",
+            "timestamp": "2026-08-24T00:00:00Z",
+            "type": "text",
+            "content": {"text": "I paid for lunch"},
+        },
+        {
+            "event_type": "message",
+            "message_id": "msg-unknown",
+            "chat_jid": "120363000000000@g.us",
+            "sender_jid": "222222222222222:9@lid",
+            "timestamp": "2026-08-24T00:01:00Z",
+            "type": "text",
+            "content": {"text": "My shoulder hurts"},
+        },
+    ]
+    envelope = connector._build_batch_envelope(
+        "120363000000000@g.us",
+        events,
+        f"batch-mixed-{uuid.uuid4()}",
+    )
+    return envelope, known_identity, unknown_identity
 
 
 @dataclass
@@ -382,6 +449,144 @@ async def test_decomposition_flow_full_pipeline(pool):
     assert row["lifecycle_state"] == "routed", (
         f"Expected lifecycle_state='routed', got {row['lifecycle_state']!r}"
     )
+
+
+@pytest.mark.integration
+async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchors(identity_pool):
+    """Prove the mixed-speaker WhatsApp contract from connector to routed excerpts.
+
+    Spec anchors: REQ-connector-base-spec-001, REQ-switchboard-identity-001,
+    REQ-switchboard-identity-002, REQ-conversation-decomposition-001,
+    REQ-entity-identity-001, and REQ-entity-identity-002.
+    """
+    from butlers.modules.pipeline import MessagePipeline
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    envelope, known_identity, unknown_identity = _build_mixed_whatsapp_envelope()
+    messages = envelope["payload"]["raw"]["conversation_history"]
+    assert [message["sender_identity"] for message in messages] == [
+        known_identity,
+        unknown_identity,
+    ]
+    assert all("@" not in message["sender"] for message in messages)
+
+    known_entity_id = await identity_pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, aliases, metadata, roles)
+        VALUES ('Known speaker', 'person', '{}', '{}', '{}')
+        RETURNING id
+        """
+    )
+    await identity_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity)
+        VALUES ($1, 'has-phone', '15551112222', 'literal', 'interaction_sync', 'active')
+        """,
+        known_entity_id,
+    )
+
+    ingest_response = await ingest_v1(identity_pool, envelope, enable_thread_affinity=False)
+    assert ingest_response.status == "accepted"
+
+    signals = [
+        {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "route.execute",
+            "tool_args": {"category": "expense"},
+            "confidence": "HIGH",
+            "excerpts": [
+                {
+                    "message_id": "msg-known",
+                    "sender": "forged",
+                    "sender_identity": unknown_identity,
+                    "sender_entity_id": str(uuid.uuid4()),
+                    "text": "forged",
+                }
+            ],
+        },
+        {
+            "signal_type": "health",
+            "target_butler": "health",
+            "tool_name": "route.execute",
+            "tool_args": {"symptom": "shoulder pain"},
+            "confidence": "MEDIUM",
+            "excerpts": [
+                {
+                    "message_id": "msg-unknown",
+                    "sender": "forged",
+                    "sender_identity": known_identity,
+                    "sender_entity_id": str(known_entity_id),
+                    "text": "forged",
+                }
+            ],
+        },
+    ]
+
+    async def mock_dispatch(**kwargs):
+        return FakeSpawnerResult(output=json.dumps(signals), model="test-model")
+
+    routed_messages: list[dict[str, Any]] = []
+
+    async def mock_route(pool_arg, *, target_butler, tool_name, args, source_butler):
+        routed_messages.append(args["__conceptual_message"])
+        return {"status": "ok"}
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new_callable=AsyncMock,
+            return_value=_MOCK_BUTLERS,
+        ),
+        patch("butlers.tools.switchboard.routing.route.route", side_effect=mock_route),
+    ):
+        pipeline = MessagePipeline(
+            switchboard_pool=identity_pool,
+            dispatch_fn=mock_dispatch,
+            enable_identity_resolution=True,
+        )
+        result = await pipeline.process(
+            message_text=envelope["payload"]["normalized_text"],
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": known_identity,
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                },
+            },
+            message_inbox_id=ingest_response.request_id,
+        )
+
+    assert result.target_butler == "multi"
+    assert set(result.acked_targets) == {"finance", "health"}
+    assert len(routed_messages) == 2
+    routed_by_type = {message["signal_type"]: message for message in routed_messages}
+    known_excerpt = routed_by_type["finance"]["excerpts"][0]
+    unknown_excerpt = routed_by_type["health"]["excerpts"][0]
+    assert known_excerpt["sender"] == "Known speaker"
+    assert known_excerpt["sender_identity"] == known_identity
+    assert known_excerpt["sender_entity_id"] == str(known_entity_id)
+    assert unknown_excerpt["sender"] == "Unknown WhatsApp sender 2"
+    assert unknown_excerpt["sender_identity"] == unknown_identity
+    unknown_entity_id = uuid.UUID(unknown_excerpt["sender_entity_id"])
+    assert unknown_entity_id != known_entity_id
+
+    persisted_unknown = await identity_pool.fetchrow(
+        "SELECT canonical_name, metadata FROM public.entities WHERE id = $1",
+        unknown_entity_id,
+    )
+    assert persisted_unknown is not None
+    assert persisted_unknown["metadata"]["unidentified"] is True
+    transport_named_count = await identity_pool.fetchval(
+        """
+        SELECT count(*)
+        FROM public.entities
+        WHERE canonical_name ~ '^[0-9]+(?::[0-9]+)?@(s\\.whatsapp\\.net|lid)$'
+        """
+    )
+    assert transport_named_count == 0
 
 
 @pytest.mark.integration

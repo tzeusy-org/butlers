@@ -111,6 +111,43 @@ def _make_connector(
 
 
 class TestConnectorBridgeAndIngest:
+    def test_mixed_lid_batch_keeps_normalized_identities_out_of_speaker_labels(self):
+        """REQ-connector-base-spec-001: mapped and opaque LIDs stay structured."""
+        connector = _make_connector()
+        connector._lid_to_phone["111111111111111"] = "15551112222"
+        events = [
+            _make_bridge_sse_event(
+                message_id="msg-known",
+                chat_jid="120363000000000@g.us",
+                sender_jid="111111111111111:7@lid",
+                text="known speaker",
+            ),
+            _make_bridge_sse_event(
+                message_id="msg-unknown",
+                chat_jid="120363000000000@g.us",
+                sender_jid="222222222222222:9@lid",
+                text="unknown speaker",
+            ),
+        ]
+
+        envelope = connector._build_batch_envelope(
+            "120363000000000@g.us",
+            events,
+            "batch-mixed-lids",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert [message["sender_identity"] for message in history] == [
+            "15551112222@s.whatsapp.net",
+            "222222222222222@lid",
+        ]
+        assert [message["sender"] for message in history] == [
+            "Unknown WhatsApp sender 1",
+            "Unknown WhatsApp sender 2",
+        ]
+        assert "111111111111111" not in envelope["payload"]["normalized_text"]
+        assert "222222222222222" not in envelope["payload"]["normalized_text"]
+
     async def test_connector_buffers_and_tracks_events(self):
         """Events buffered per-chat JID; last_event_id tracks latest message_id."""
         connector = _make_connector()
