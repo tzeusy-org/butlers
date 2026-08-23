@@ -42,6 +42,51 @@ The `butlers_backups` volume remains the local recovery artifact store. Keep a
 separate, owner-controlled off-host copy for disaster recovery: a host failure
 can otherwise destroy both the database and the volume that holds its dumps.
 
+### What the backup does not contain
+
+The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login
+is deliberately fenced away from the trusted-bootstrap control plane, and
+`pg_dump` locks every relation in scope before writing a byte — so an
+unexcluded fenced object aborts the entire run and publishes **no file at all**,
+not a partial one. `deploy/backup/pg_dump.sh` therefore excludes that control
+plane by name:
+
+| Excluded | What it holds |
+|---|---|
+| `restore_drill_executor` schema | The restore-drill result ledger and its three constrained functions |
+| `restore_drill_executor_admin`, `dnd_generation_admin`, `runtime_attention_admin` schemas | Bootstrap configuration rows and the fixed installer/finalizer functions |
+| `public.dnd_generation_mutations` | DND generation mutation audit |
+| `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
+| `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
+
+This is a deliberate completeness decision, not a workaround for a failing
+command. These objects are not recovered from a dump in the first place: the
+cluster-superuser bootstrap (`scripts/init-db.sql`) is the only supported way to
+reconstruct them, and restoring a dumped copy would be worse than omitting it —
+every one is owned by a fenced role the restoring login is not a member of, so
+the dump's `ALTER ... OWNER TO` statements would fail and leave the object owned
+by whoever ran the restore, dissolving the fence.
+
+What that costs, stated plainly: **restore-drill history is not backed up.** The
+`restore_drill_executor.restore_drill_results` ledger is recovery *evidence* —
+whether a drill has ever passed — and a disaster that loses the database loses
+that history with it. It is not needed to recover the application, and a restore
+drill run after recovery re-establishes the evidence from scratch. Everything
+else in the table above is either reconstructed by the bootstrap or expiring
+runtime state. No ordinary application data is excluded.
+
+`tests/scripts/test_pg_dump_backup.py` pins that claim against a real
+bootstrapped database, in both directions: it fails if a fenced object appears
+that the script does not exclude (which would silently stop producing backups),
+and equally if the script excludes something the dump role can in fact read
+(which would silently narrow them). Do not add an entry to that set to make a
+red run go green — an entry there is a decision that data will not be in the
+backup.
+
+A restore of one of these dumps therefore reconstitutes the application schema
+and data only. Re-run the managed bootstrap procedure to restore the executor
+boundary itself.
+
 ## Managed restore drill
 
 The `restore-drill-executor` is the only process allowed to perform the
