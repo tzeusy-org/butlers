@@ -52,11 +52,15 @@ a ``dispatch_mode="job"`` handler with a raw ``asyncpg.Pool``) call
 those jobs already use for ``propose_insight_candidate`` (a plain Python
 import, no MCP round-trip: ``public`` is readable/writable by every butler
 role per the schema-isolation model). An LLM-driven butler session has no
-such raw pool; for it, the Switchboard's ``reconcile_owner_condition`` MCP
-tool (``roster/switchboard/modules/owner_conditions_broker.py``) is the
-doorway, consistent with "butlers stay MCP-only" for interactive/session
-code — mirroring how ``propose_insight_candidate`` is itself exposed as an
-MCP tool alongside its direct-import path.
+such raw pool; for it, the Switchboard's ``reconcile_owner_condition`` and
+``resolve_owner_condition`` MCP tools
+(``roster/switchboard/modules/owner_conditions_broker.py``) are the doorway,
+consistent with "butlers stay MCP-only" for interactive/session code —
+mirroring how ``propose_insight_candidate`` is itself exposed as an MCP tool
+alongside its direct-import path. A conversational session cannot honestly
+produce a complete snapshot, so ``resolve_condition`` below (and the
+``resolve_owner_condition`` tool over it) is how such a session closes one
+known identity without resolving anything else by omission.
 
 See ``butlers.core.condition_ledger`` for the full lifecycle contract this
 module implements (identity fingerprinting, concurrency, snapshot-complete

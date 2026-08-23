@@ -7,8 +7,10 @@ Each module is implemented in a dedicated sub-module:
                             extraction audit, backfill, and dead-letter tools.
 - ``InsightBrokerModule`` — proactive insight candidate submission tool
                             (``propose_insight_candidate``).
-- ``OwnerConditionsBrokerModule`` — owner condition ledger reconciliation
-                            tool (``reconcile_owner_condition``).
+- ``OwnerConditionsBrokerModule`` — owner condition ledger tools
+                            (``reconcile_owner_condition`` for snapshot
+                            reconciliation, ``resolve_owner_condition`` for
+                            explicit closure of one identity).
 
 The tool closures strip infrastructure arguments (pool, conn) from the
 MCP-visible signature and inject them from module state at call time.

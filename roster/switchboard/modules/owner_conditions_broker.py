@@ -1,7 +1,9 @@
 """Owner conditions broker module — the MCP doorway onto the owner condition ledger.
 
-Registers the ``reconcile_owner_condition`` MCP tool on the Switchboard
-butler (bu-ep4ks.6), mirroring ``InsightBrokerModule``'s shape exactly. An
+Registers the ``reconcile_owner_condition`` (bu-ep4ks.6) and
+``resolve_owner_condition`` (bu-vdv7j, REQ-owner-condition-ledger-005) MCP
+tools on the Switchboard butler, mirroring ``InsightBrokerModule``'s shape
+exactly. An
 LLM-driven butler session has no raw database pool of its own, so this tool
 is the way such a session reconciles a standing owner-facing concern (an
 overdue bill, a refill due, an expiring document, an overloaded day) against
@@ -21,9 +23,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
+
+# The resolution vocabulary REQ-owner-condition-ledger-005 allows. Kept as a
+# runtime-checked tuple rather than a ``Literal`` annotation on the tool
+# signature on purpose: a ``Literal`` would make FastMCP reject the call at the
+# schema boundary, whereas the spec requires the tool itself to answer an
+# unknown reason with ``{"status": "error", "reason": ...}`` and no DB write.
+RESOLUTION_REASONS: tuple[str, ...] = ("satisfied", "cancelled", "superseded", "expired")
 
 
 class OwnerConditionsBrokerConfig(BaseModel):
@@ -31,12 +41,14 @@ class OwnerConditionsBrokerConfig(BaseModel):
 
 
 class OwnerConditionsBrokerModule(Module):
-    """Module that registers the reconcile_owner_condition MCP tool.
+    """Module that registers the owner-condition ledger MCP tools.
 
     Wires the Switchboard's owner-condition ledger into the MCP server so an
     LLM-driven butler session (not just a deterministic scheduled job) can
     open, confirm, escalate, or resolve a standing owner-facing concern
-    against ``public.owner_conditions``.
+    against ``public.owner_conditions``: ``reconcile_owner_condition`` for
+    level-triggered snapshot reconciliation, and ``resolve_owner_condition``
+    for explicit, snapshot-free closure of one known identity.
     """
 
     def __init__(self) -> None:
@@ -80,9 +92,9 @@ class OwnerConditionsBrokerModule(Module):
         return self._db.pool
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
-        """Register the reconcile_owner_condition MCP tool."""
+        """Register the reconcile_owner_condition and resolve_owner_condition MCP tools."""
         self._db = db
-        from butlers.core.owner_conditions import Observation, reconcile_snapshot
+        from butlers.core.owner_conditions import Observation, reconcile_snapshot, resolve_condition
 
         @mcp.tool()
         async def reconcile_owner_condition(
@@ -181,4 +193,101 @@ class OwnerConditionsBrokerModule(Module):
                     }
                     for t in transitions
                 ],
+            }
+
+        @mcp.tool()
+        async def resolve_owner_condition(
+            source: str,
+            fingerprint: str,
+            resolution_reason: str,
+            resolution_detail: str | None = None,
+        ) -> dict[str, Any]:
+            """Explicitly resolve one active owner condition you know is closed.
+
+            Use this when the owner (or unambiguous evidence in your session)
+            tells you a standing concern is finished — the bill was paid, the
+            promise was kept, the plan was cancelled — and you are NOT in a
+            position to enumerate everything you observe for ``source``.
+            ``reconcile_owner_condition`` resolves by omission from a complete
+            snapshot, which a conversational session cannot honestly produce;
+            this tool closes exactly one identity and touches nothing else.
+
+            Like ``reconcile_owner_condition`` this is a STATE ledger write,
+            not a delivery mechanism: resolving a condition does not tell the
+            owner anything. It is idempotent — resolving an already-resolved
+            or never-seen identity is a harmless ``"not_found"``.
+
+            Parameters
+            ----------
+            source:
+                The producer identity the condition was opened under (e.g.
+                ``"finance:bill-overdue"``). Must match exactly; resolution is
+                scoped to one ``(source, fingerprint)`` pair.
+            fingerprint:
+                The stable identity string of the condition to close, as
+                returned by ``reconcile_owner_condition`` or listed by the
+                ledger. Must match exactly.
+            resolution_reason:
+                Why the condition is closing. One of ``"satisfied"`` (the
+                concern was actually addressed), ``"cancelled"`` (it no longer
+                applies), ``"superseded"`` (another condition replaced it), or
+                ``"expired"`` (its window passed without action). Any other
+                value is rejected before any database access.
+            resolution_detail:
+                Optional free-text evidence for the closure (e.g. "owner
+                confirmed the transfer cleared on the 4th"), stored alongside
+                the resolution for later audit.
+
+            Returns
+            -------
+            dict
+                ``{"status": "resolved", "episode": <n>, "fingerprint": "...",
+                "resolution_reason": "..."}`` when an active episode was
+                closed; ``{"status": "not_found"}`` when the identity has no
+                active ``open``/``aging`` episode (never observed, or already
+                resolved); ``{"status": "error", "reason": "..."}`` on
+                validation failure, which never reaches the pool.
+
+            Notes
+            -----
+            The closing evidence is merged into the row's existing metadata
+            with creation-wins semantics, so a top-level key the producer
+            already set at creation time keeps its original value.
+            """
+            if resolution_reason not in RESOLUTION_REASONS:
+                return {
+                    "status": "error",
+                    "reason": (
+                        "resolution_reason must be one of "
+                        f"{', '.join(RESOLUTION_REASONS)}; got {resolution_reason!r}"
+                    ),
+                }
+
+            resolution_metadata: dict[str, Any] = {
+                "resolution_reason": resolution_reason,
+                "evidence_closed": {
+                    "source": "owner_confirmed",
+                    "detail": resolution_detail,
+                    "session_id": get_current_runtime_session_id(),
+                },
+            }
+
+            try:
+                transition = await resolve_condition(
+                    self._get_pool(),
+                    source=source,
+                    fingerprint=fingerprint,
+                    resolution_metadata=resolution_metadata,
+                )
+            except ValueError as exc:
+                return {"status": "error", "reason": str(exc)}
+
+            if transition is None:
+                return {"status": "not_found"}
+
+            return {
+                "status": "resolved",
+                "episode": transition.episode,
+                "fingerprint": transition.fingerprint,
+                "resolution_reason": resolution_reason,
             }
