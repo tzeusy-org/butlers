@@ -2059,6 +2059,43 @@ line 1 under Debian/Ubuntu `/bin/sh`. It only ever worked because the backup sid
 (`ash`). Any `#!/bin/sh` script here that needs pipeline failure detection should record the
 left-hand exit status in a status file instead.
 
+### A check can only answer the question it is positioned to ask
+
+`GET /api/system/backups` was credited with "are backups healthy" while it only
+ever measured the newest artifact's age. `deploy/backup/pg_dump.sh` refuses to
+publish a bad dump, so a failed run leaves the directory byte-identical to what
+it was before — freshness stays green for the full 36h window and the first
+alarm arrives late, as staleness of an unrelated file, with no reason attached
+(bu-xrqyu, the same shape as bu-e1410 one layer down).
+
+The fix pattern, when a producer's failure destroys nothing: have the run record
+its own outcome, and read that instead of inferring it from the artifact.
+
+- Write the receipt from the `EXIT` trap, not from the success path and not from
+  each enumerated failure branch. A trap fires on every exit, including the
+  `set -e` abort nobody listed, so no route out of the script can skip it.
+- Absence must be its own value. `deploy/backup/pg_dump.sh` writes
+  `BACKUP_DIR/last_run.json`; a missing or unparseable receipt surfaces as
+  `last_run.result == "unknown"`, never folded into `"success"` — an older
+  deployment and a first run both produce no evidence, and that is not evidence
+  of a passing run.
+- Keep the receipt on a path that survives what it reports: a file in the
+  directory the dashboard already reads, not a database row the Alpine backup
+  sidecar would have to connect out for. A signal that dies with the database
+  cannot report a database failure.
+- Anything reading such a receipt back is a boundary: the `reason` field is a
+  fixed vocabulary in both the script and
+  `src/butlers/api/routers/system.py` (`_BACKUP_RUN_REASONS`), and an
+  unrecognized value is reported as unrecognized rather than rendered verbatim
+  off a mounted volume. `tests/scripts/test_pg_dump_run_sentinel.py` pins the
+  two ends together by parsing the real script's output with the real reader.
+
+Host BusyBox is not Alpine BusyBox: Ubuntu's `busybox find` has no `-delete`, so
+running this script end-to-end under `busybox ash` locally fails in the prune
+step on a build difference, not on the script. Parse-check under `busybox ash -n`
+locally; execute in the real `postgres:17-alpine` image (that path is docker-
+gated in `tests/scripts/test_pg_dump_backup.py`).
+
 ### A dispatched worker's shell starts in the repo root, not in its worktree
 
 Agent tooling inherits the *session's* working directory, and this session's is the main repo root

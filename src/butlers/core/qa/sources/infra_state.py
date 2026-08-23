@@ -47,7 +47,7 @@ Four checks, one discovery source
    (``_reconcile_eligibility_state``) and can sit stale forever for a butler
    nobody routes to anymore — exactly the "dead and nobody noticed" failure
    mode this bead exists to close.
-3. **backup-stale** — reuses
+3. **backup-stale / backup-run-failed** — reuses
    ``butlers.api.routers.system.read_backup_facts_from_dir`` (the same
    recency/reachability facts ``GET /api/system/backups`` surfaces) against
    the ``BUTLERS_BACKUP_DIR`` env var. An unset env var is a legitimate
@@ -56,7 +56,14 @@ Four checks, one discovery source
    unreachable directory, or one with no dump ever recorded, or a most-recent
    dump the endpoint itself already flagged ``backup_stale`` (against
    :data:`butlers.api.routers.system.BACKUP_STALE_THRESHOLD_HOURS`), is a
-   genuine failure.
+   genuine failure. A *failed run* is checked first and separately
+   (bu-xrqyu): ``deploy/backup/pg_dump.sh`` refuses to publish a bad dump, so
+   a failure leaves the previous good artifact in place and the staleness
+   checks stay silent for another 36 hours — the run's own receipt
+   (``facts.last_run``) is the only thing that can report it on the night it
+   happens. An absent or unparseable receipt is ``"unknown"`` and is NOT a
+   finding: it is what an older deployment looks like, and inventing a
+   failure from it would be the mirror image of the bug this closes.
 4. **external-deadman-stale** — reads the last successful ping recorded by
    ``butlers.jobs.external_deadman`` (``EXTERNAL_DEADMAN_URL`` env var). Also
    a legitimate absence when unconfigured -- but see "Condition-ledger
@@ -176,6 +183,11 @@ _DEADMAN_STALE_MULTIPLIER = 3
 _SEVERITY_CONNECTOR_OFFLINE = 1
 _SEVERITY_BUTLER_HEARTBEAT_STALE = 1
 _SEVERITY_BACKUP_STALE = 2
+# A run that actually failed is a definite, dated event with a reason attached,
+# not a threshold crossing -- and it is the cause of the staleness that would
+# otherwise be noticed a day and a half later. Same medium band as the
+# staleness it precedes; nothing here is user-visible harm yet.
+_SEVERITY_BACKUP_RUN_FAILED = 2
 _SEVERITY_DEADMAN_STALE = 1
 
 #: How long a freshly-opened infra_state condition waits before its first
@@ -481,6 +493,43 @@ class InfraStateSource:
                     severity=_SEVERITY_BACKUP_STALE,
                     source_butler="switchboard",
                     first_seen=now,
+                    now=now,
+                )
+            ]
+
+        # A failed run publishes no artifact and deletes none, so the
+        # directory looks exactly as it did before it failed -- the staleness
+        # checks below cannot see this at all until the last SUCCESS ages out
+        # (bu-xrqyu). Checked first because it is the cause: when a run has
+        # been failing for two days, "the backup is stale" is the symptom, and
+        # the reason for the failure is what the operator needs.
+        last_run = facts.last_run
+        if last_run.result == "failed":
+            # read_backup_facts_from_dir normalizes finished_at to a UTC ISO
+            # string or None, so this parse cannot fail on a value it produced.
+            failed_at = (
+                _as_aware(datetime.fromisoformat(last_run.finished_at))
+                if last_run.finished_at is not None
+                else None
+            )
+            artifact_note = (
+                f"newest artifact is still {facts.last_backup_at}"
+                if facts.last_backup_at is not None
+                else "no backup artifact has ever been published"
+            )
+            return [
+                self._build_finding(
+                    exception_type="BackupRunFailed",
+                    call_site="backup:pg_dump",
+                    raw_summary=(
+                        f"Most recent backup run failed "
+                        f"(reason: {last_run.reason or 'unspecified'}, "
+                        f"finished: {last_run.finished_at or 'unrecorded'}); "
+                        f"{artifact_note}"
+                    ),
+                    severity=_SEVERITY_BACKUP_RUN_FAILED,
+                    source_butler="switchboard",
+                    first_seen=failed_at or now,
                     now=now,
                 )
             ]

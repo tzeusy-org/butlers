@@ -21,13 +21,17 @@ Three things are pinned here:
    bootstrapped database, actually publishes a non-empty, gzip-clean dump that
    contains application data and none of the fenced objects.
 3. :func:`test_failed_run_says_so_and_publishes_nothing` — a failing dump exits
-   non-zero, leaves the backup directory empty, and says ``FAILED`` on stderr
-   rather than ending on a stray exit code.
+   non-zero, publishes no artifact, and says ``FAILED`` on stderr rather than
+   ending on a stray exit code.  It does leave one thing behind: the run
+   receipt (bu-xrqyu), because "no artifact" is indistinguishable from "not due
+   yet" to anyone reading the directory afterwards.  What the receipt contains
+   is pinned in ``tests/scripts/test_pg_dump_run_sentinel.py``.
 """
 
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import re
 import shutil
@@ -89,10 +93,11 @@ def test_script_never_enables_row_security() -> None:
 
 @pytest.mark.unit
 def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
-    """A dump that fails must exit non-zero, say ``FAILED``, and leave no file.
+    """A dump that fails must exit non-zero, say ``FAILED``, and publish no dump.
 
-    This is the whole point of bu-e1410: the failing run's only trace is its
-    log line, so that line has to be unmistakable.  A stub ``pg_dump`` on PATH
+    This is the whole point of bu-e1410: the failing run publishes nothing, so
+    its log line has to be unmistakable -- and of bu-xrqyu: a log line nobody
+    reads is not a signal, so the run also records its outcome on disk.  A stub ``pg_dump`` on PATH
     stands in for any dump-time failure (permission denied, unreachable host,
     a killed process) — the script's behaviour afterwards is what is pinned.
     """
@@ -114,7 +119,10 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "FAILED" in result.stderr
-    assert list(backup_dir.iterdir()) == []
+    assert list(backup_dir.glob("butlers_*.sql.gz")) == []
+    # The one trace a failed run does leave, and must (bu-xrqyu): an artifact
+    # that was never published looks exactly like one that was not due yet.
+    assert json.loads((backup_dir / "last_run.json").read_text())["result"] == "failed"
 
 
 # ---------------------------------------------------------------------------

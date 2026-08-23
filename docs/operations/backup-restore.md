@@ -42,6 +42,41 @@ The `butlers_backups` volume remains the local recovery artifact store. Keep a
 separate, owner-controlled off-host copy for disaster recovery: a host failure
 can otherwise destroy both the database and the volume that holds its dumps.
 
+### How a failed run reports itself
+
+A failed run publishes nothing and deletes nothing, so the backup directory
+after a failure looks exactly as it did before: yesterday's good dump, still
+there, still fresh. Artifact recency alone therefore cannot tell "last night's
+run failed" from "last night's run has not happened yet", and would not raise
+anything until the last *success* crossed the 36-hour staleness threshold — a
+late alarm, for the wrong reason.
+
+Every run therefore rewrites one file, `last_run.json`, beside the dumps:
+
+```json
+{"result":"failed","reason":"pg_dump_failed","exit_code":1,"finished_at":"2026-08-23T02:00:11Z","artifact":null}
+```
+
+| `reason` | What happened |
+|---|---|
+| `ok` | The run published an artifact (`result: "success"`) |
+| `pg_dump_failed` | `pg_dump` exited non-zero; nothing was published |
+| `artifact_undersize` | The dump was below the 256-byte floor; not published |
+| `artifact_corrupt` | The dump did not decompress cleanly; not published |
+| `unexpected_error` | The run aborted somewhere else entirely (a full disk at the publish step, for example) |
+
+It is written from the script's `EXIT` trap rather than from the success path or
+from each failure branch, so no exit route — including one nobody enumerated —
+can leave without recording an outcome. It is a file rather than a database row
+because the producer is the backup sidecar: a signal that needed a live database
+connection could not report the failures that involve the database.
+
+`GET /api/system/backups` reports it as `last_run`. **No receipt, or one that
+does not parse, reads as `"unknown"` — never as a successful run.** That is what
+an older deployment and a first-ever run both look like, and neither is evidence
+that a backup ran. The QA infra-state patrol raises a failed run as its own
+finding (`BackupRunFailed`) on the night it happens.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login

@@ -4,7 +4,8 @@ Surfaces seven ownership-fact domains:
 
     GET /api/system/instance       -- software version and process uptime
     GET /api/system/database       -- PostgreSQL catalog size breakdown
-    GET /api/system/backups        -- verified backup health + restore-drill state (bu-9r3hd.5)
+    GET /api/system/backups        -- verified backup health, last-run outcome,
+                                       restore-drill state (bu-9r3hd.5, bu-xrqyu)
     GET /api/system/egress         -- external-actor egress catalog (owner-only)
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
@@ -55,6 +56,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.metadata
+import json
 import logging
 import os
 import time
@@ -264,6 +266,27 @@ class RestoreDrillFacts(BaseModel):
     detail: str | None
 
 
+class BackupRunFacts(BaseModel):
+    """Outcome of the most recent backup *run*, successful or not (bu-xrqyu).
+
+    A different question from ``last_backup_at`` / ``backup_stale``, which
+    describe the newest surviving *artifact*. ``deploy/backup/pg_dump.sh``
+    refuses to publish a bad dump, so a failed run leaves yesterday's good
+    file untouched and freshness reads as healthy for up to
+    ``BACKUP_STALE_THRESHOLD_HOURS`` more. This field is the run's own signal.
+
+    ``result="unknown"`` means no readable receipt was found -- an older
+    deployment, a directory that has never run the current script, or an
+    unreadable file. It is a real "we do not know", and is deliberately NOT
+    folded into ``"success"``: absence of evidence is not evidence of success.
+    """
+
+    result: str  # "success" | "failed" | "unknown"
+    finished_at: str | None
+    exit_code: int | None
+    reason: str | None
+
+
 class BackupFacts(BaseModel):
     """Backup recency, artifact health, and source reachability facts."""
 
@@ -273,6 +296,7 @@ class BackupFacts(BaseModel):
     backup_history: list[BackupEvent]
     last_backup_status: str  # "healthy" | "corrupt" | "empty" | "missing"
     backup_stale: bool
+    last_run: BackupRunFacts
     restore_drill: RestoreDrillFacts
 
 
@@ -842,6 +866,115 @@ def latest_backup_path(backup_dir: Path) -> Path | None:
     return max(stamped, key=lambda t: t[0])[1]
 
 
+#: Filename of the run receipt ``deploy/backup/pg_dump.sh`` rewrites at the end
+#: of EVERY run, success or failure. It sits next to the dumps in
+#: ``BUTLERS_BACKUP_DIR`` (a directory this process already reads) rather than
+#: in a table, because the producer is the Alpine backup sidecar: a signal that
+#: needed a live database connection would be unable to report the failures
+#: that involve the database.
+BACKUP_RUN_SENTINEL_FILENAME = "last_run.json"
+
+#: Reason vocabulary the backup script emits, mirrored from
+#: ``write_run_sentinel`` in ``deploy/backup/pg_dump.sh``. Anything outside this
+#: set is reported as unrecognized rather than rendered verbatim: the receipt is
+#: read off a mounted volume and its ``reason`` reaches the dashboard, so this
+#: boundary stays a fixed vocabulary, never free text.
+_BACKUP_RUN_REASONS = frozenset(
+    {"ok", "pg_dump_failed", "artifact_undersize", "artifact_corrupt", "unexpected_error"}
+)
+_BACKUP_RUN_REASON_UNRECOGNIZED = "unrecognized reason"
+
+#: No receipt at all: an older deployment, a directory whose script predates
+#: bu-xrqyu, or a backup that has never run here. Reported as "unknown", which
+#: is the honest answer -- never as "success".
+_BACKUP_RUN_SENTINEL_ABSENT_DETAIL = "no run outcome recorded"
+
+#: A receipt exists but is unreadable or malformed. Also "unknown": a receipt
+#: we cannot parse tells us nothing about the run, including that it passed.
+_BACKUP_RUN_SENTINEL_UNREADABLE_DETAIL = "run outcome unreadable"
+
+_UNKNOWN_BACKUP_RUN = BackupRunFacts(
+    result="unknown",
+    finished_at=None,
+    exit_code=None,
+    reason=_BACKUP_RUN_SENTINEL_ABSENT_DETAIL,
+)
+_UNREADABLE_BACKUP_RUN = BackupRunFacts(
+    result="unknown",
+    finished_at=None,
+    exit_code=None,
+    reason=_BACKUP_RUN_SENTINEL_UNREADABLE_DETAIL,
+)
+
+
+def _read_backup_run_facts(backup_dir: Path) -> BackupRunFacts:
+    """Return the outcome of the most recent backup *run*. Never raises.
+
+    Answers the question artifact freshness cannot: a failed run publishes
+    nothing and deletes nothing, so the newest ``.sql.gz`` in the directory is
+    the same file it was before the failure. Only this receipt distinguishes
+    "the run succeeded" from "the run failed and yesterday's dump is what you
+    are looking at".
+
+    Every unreadable, malformed, or unexpected receipt degrades to
+    ``result="unknown"`` -- the one thing this function must never do is let a
+    missing or broken signal read as a successful run.
+    """
+    path = backup_dir / BACKUP_RUN_SENTINEL_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _UNKNOWN_BACKUP_RUN
+    except OSError:
+        return _UNREADABLE_BACKUP_RUN
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return _UNREADABLE_BACKUP_RUN
+    if not isinstance(payload, dict):
+        return _UNREADABLE_BACKUP_RUN
+
+    result = payload.get("result")
+    if result not in ("success", "failed"):
+        return _UNREADABLE_BACKUP_RUN
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str):
+        reason = None
+    elif reason not in _BACKUP_RUN_REASONS:
+        reason = _BACKUP_RUN_REASON_UNRECOGNIZED
+
+    exit_code = payload.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        exit_code = None
+
+    return BackupRunFacts(
+        result=result,
+        finished_at=_parse_sentinel_timestamp(payload.get("finished_at")),
+        exit_code=exit_code,
+        reason=reason,
+    )
+
+
+def _parse_sentinel_timestamp(value: object) -> str | None:
+    """Normalize the receipt's ``finished_at`` to a UTC ISO string, or None.
+
+    The script writes ``...Z``; a timestamp without an offset is read as UTC
+    because the sidecar stamps it with ``date -u``. Anything unparseable
+    becomes None rather than a guessed time.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
+
+
 _PENDING_RESTORE_DRILL = RestoreDrillFacts(checked_at=None, result="pending", detail=None)
 # This fixed text is intentionally safe to render in BackupTile and to log.
 # A database-driver exception can contain a password, DSN, dump fragment, or
@@ -856,8 +989,12 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
     ``deploy/backup/pg_dump.sh``).  Files are sorted by mtime descending so
     the most-recent dump is always first. Each entry's ``status`` is a real,
     verified verdict (see ``_verify_backup_artifact``) -- not a fabricated
-    constant. ``restore_drill`` is always returned as "pending" here; the
-    caller (``get_backup_facts``) overwrites it with the DB-backed ledger
+    constant. ``last_run`` is read from the run receipt the backup script
+    leaves in the same directory (see ``_read_backup_run_facts``); it reports
+    the most recent RUN, which a directory listing cannot, because a failed run
+    publishes nothing and leaves the previous artifact looking exactly as fresh
+    as it did before. ``restore_drill`` is always returned as "pending" here;
+    the caller (``get_backup_facts``) overwrites it with the DB-backed ledger
     read, keeping this function DB-free and independently unit-testable.
 
     Returns a degraded (backup_source_reachable=False) payload when:
@@ -878,6 +1015,7 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             backup_history=[],
             last_backup_status="missing",
             backup_stale=False,
+            last_run=_UNKNOWN_BACKUP_RUN,
             restore_drill=_PENDING_RESTORE_DRILL,
         )
 
@@ -895,6 +1033,7 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             backup_history=[],
             last_backup_status="missing",
             backup_stale=False,
+            last_run=_UNKNOWN_BACKUP_RUN,
             restore_drill=_PENDING_RESTORE_DRILL,
         )
 
@@ -932,6 +1071,7 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             backup_history=[],
             last_backup_status="missing",
             backup_stale=False,
+            last_run=_read_backup_run_facts(backup_dir),
             restore_drill=_PENDING_RESTORE_DRILL,
         )
 
@@ -946,6 +1086,7 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
         backup_history=history,
         last_backup_status=latest.status,
         backup_stale=age_hours > BACKUP_STALE_THRESHOLD_HOURS,
+        last_run=_read_backup_run_facts(backup_dir),
         restore_drill=_PENDING_RESTORE_DRILL,
     )
 
@@ -962,8 +1103,13 @@ async def get_backup_facts(
     file's status is a real, verified verdict (bu-9r3hd.5) -- artifact
     integrity (gzip decompression, size floor) is cheap enough to check live
     on every request and is memoized per (path, mtime, size) so an unchanged
-    file is never re-verified. ``restore_drill`` is read from the ledger
-    through its private result authority and fixed reader -- actually
+    file is never re-verified. ``last_run`` reports the outcome of the most
+    recent backup *run* from the receipt that script writes (bu-xrqyu), so a
+    fresh artifact plus a failed run is distinguishable from a fresh artifact
+    plus a successful one -- freshness alone could never tell them apart, and
+    a run with no readable receipt is reported "unknown", never "success".
+    ``restore_drill`` is read from the ledger through its private result
+    authority and fixed reader -- actually
     attempting a restore is expensive and mutates state, so it never happens
     inline with this dashboard request. A public audit projection cannot
     influence this response.
@@ -987,6 +1133,7 @@ async def get_backup_facts(
             backup_history=[],
             last_backup_status="missing",
             backup_stale=False,
+            last_run=_UNKNOWN_BACKUP_RUN,
             restore_drill=_PENDING_RESTORE_DRILL,
         )
     else:

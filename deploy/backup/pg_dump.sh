@@ -19,6 +19,18 @@
 #
 # Output filename format: butlers_YYYY-MM-DDTHH-MM-SS.sql.gz
 #
+# Every run -- successful or not -- also rewrites BACKUP_DIR/last_run.json, a
+# one-line JSON receipt for the MOST RECENT RUN (bu-xrqyu):
+#
+#   {"result":"failed","reason":"pg_dump_failed","exit_code":1,
+#    "finished_at":"2026-08-23T02:00:11Z","artifact":null}
+#
+# It exists because a failed run publishes no artifact and deletes nothing, so
+# the backup directory alone cannot tell "last night's run failed" from "last
+# night's run was not due yet": both look like yesterday's good dump sitting
+# there. GET /api/system/backups reads this file to answer the first question,
+# which artifact freshness was never positioned to answer.
+#
 # ---------------------------------------------------------------------------
 # WHAT THIS BACKUP DOES *NOT* CONTAIN  (bu-e1410 — read before restoring)
 # ---------------------------------------------------------------------------
@@ -100,19 +112,76 @@ OUTFILE="${BACKUP_DIR}/butlers_${TIMESTAMP}.sql.gz"
 TMPFILE="${OUTFILE}.tmp"
 STATUSFILE="${OUTFILE}.status"
 
+# Outcome of THIS run, recorded where the dashboard can read it (bu-xrqyu).
+# A failed run publishes no artifact, so the directory keeps holding yesterday's
+# good dump and artifact freshness alone reads as healthy for another 36 hours.
+# This sentinel is the run's own signal, independent of any artifact's age.
+RUN_SENTINEL="${BACKUP_DIR}/last_run.json"
+
+# Set immediately before each deliberate `exit 1` below; the EXIT trap reads it
+# back. An abort nobody enumerated (any `set -e` failure) leaves it empty and is
+# recorded as "unexpected_error" -- never as a success.
+FAILURE_REASON=""
+
+# Fixed reason vocabulary, mirrored by _BACKUP_RUN_REASONS in
+# src/butlers/api/routers/system.py: ok, pg_dump_failed, artifact_undersize,
+# artifact_corrupt, unexpected_error. Keep the two lists in step.
+write_run_sentinel() {
+  sentinel_exit="$1"
+  sentinel_reason="$2"
+  sentinel_artifact="$3"
+  sentinel_tmp="${RUN_SENTINEL}.tmp"
+
+  if [ "${sentinel_exit}" -eq 0 ]; then
+    sentinel_result="success"
+    sentinel_artifact_json="\"${sentinel_artifact}\""
+  else
+    sentinel_result="failed"
+    sentinel_artifact_json="null"
+  fi
+
+  # Written to a temp file and mv'd into place so a dashboard poll never reads
+  # a half-written sentinel. Every field comes from the fixed vocabulary above,
+  # an exit status, or a timestamp -- never from command output, so nothing
+  # here can carry a DSN, password, or dump fragment into a file the dashboard
+  # renders. A sentinel that cannot be written must not change the run's exit
+  # status: this runs from the EXIT trap, and failing a good backup because its
+  # receipt was unwritable would be its own bug.
+  if printf '{"result":"%s","reason":"%s","exit_code":%s,"finished_at":"%s","artifact":%s}\n' \
+      "${sentinel_result}" \
+      "${sentinel_reason}" \
+      "${sentinel_exit}" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "${sentinel_artifact_json}" > "${sentinel_tmp}" 2>/dev/null \
+     && mv -f "${sentinel_tmp}" "${RUN_SENTINEL}" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "${sentinel_tmp}" 2>/dev/null || true
+  echo "[backup] WARNING: could not record run outcome at ${RUN_SENTINEL}" >&2
+  return 0
+}
+
 # Remove the temp file on exit so a failed dump never leaves a partial file
 # in the backup directory (the directory scanner ignores .tmp files, but this
 # keeps the directory clean even if something kills the process mid-run).
 #
-# A failed run publishes NO file, so the only trace it leaves is this log line.
-# Say so unmistakably rather than letting the run end on pg_dump's stderr and
-# an exit code nobody reads (bu-e1410).
+# A failed run publishes NO file, so its only traces are this log line and the
+# run sentinel. Say so unmistakably rather than letting the run end on
+# pg_dump's stderr and an exit code nobody reads (bu-e1410), and record the
+# outcome from the trap rather than from each failure branch (bu-xrqyu): the
+# trap fires on every exit path, including the ones nobody enumerated, so no
+# route out of this script can skip the signal it is supposed to leave.
 cleanup() {
   status=$?
   rm -f "${TMPFILE}" "${STATUSFILE}"
-  if [ "${status}" -ne 0 ] && [ ! -f "${OUTFILE}" ]; then
-    echo "[backup] FAILED: no backup artifact was produced (exit ${status});" \
-         "${BACKUP_DIR} still holds only previous runs, if any" >&2
+  if [ "${status}" -eq 0 ]; then
+    write_run_sentinel 0 ok "${OUTFILE##*/}"
+  else
+    write_run_sentinel "${status}" "${FAILURE_REASON:-unexpected_error}" ""
+    if [ ! -f "${OUTFILE}" ]; then
+      echo "[backup] FAILED: no backup artifact was produced (exit ${status});" \
+           "${BACKUP_DIR} still holds only previous runs, if any" >&2
+    fi
   fi
 }
 trap cleanup EXIT
@@ -149,6 +218,7 @@ done
 
 DUMP_STATUS="$(cat "${STATUSFILE}")"
 if [ -n "${DUMP_STATUS}" ]; then
+  FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: pg_dump exited ${DUMP_STATUS}; not publishing" >&2
   exit 1
 fi
@@ -160,11 +230,13 @@ fi
 # so the numeric comparison below cannot trip over leading whitespace.
 TMPSIZE="$(wc -c < "${TMPFILE}" | tr -d " ")"
 if [ "${TMPSIZE}" -lt "${BACKUP_MIN_SIZE_BYTES}" ]; then
+  FAILURE_REASON="artifact_undersize"
   echo "[backup] FAILED: dump is ${TMPSIZE} bytes, below the" \
        "${BACKUP_MIN_SIZE_BYTES}-byte floor; not publishing" >&2
   exit 1
 fi
 if ! gzip -dc "${TMPFILE}" > /dev/null 2>&1; then
+  FAILURE_REASON="artifact_corrupt"
   echo "[backup] FAILED: dump did not decompress cleanly; not publishing" >&2
   exit 1
 fi

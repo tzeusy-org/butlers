@@ -7,11 +7,15 @@ heartbeat happy + null-heartbeat + schema_unreachable + 503.
 OTel span system.egress.read: emitted + actor_count attribute + per-request.
 
 Backup tests cover: BUTLERS_BACKUP_DIR unset (degraded), dir missing (degraded),
-dir empty (reachable, no history), dir with files (reachable, history populated).
+dir empty (reachable, no history), dir with files (reachable, history populated),
+and the last-run outcome (bu-xrqyu) -- including a fresh artifact whose most
+recent run failed, which artifact freshness alone cannot distinguish from a
+healthy night.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -863,6 +867,168 @@ async def test_backups_stale_when_older_than_threshold(
         resp = await client.get("/api/system/backups")
     data = resp.json()["data"]
     assert data["backup_stale"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/backups -- last-run outcome (bu-xrqyu)
+#
+# The case that motivates all of this: deploy/backup/pg_dump.sh refuses to
+# publish a bad dump, so a failed run leaves yesterday's good artifact exactly
+# where it was. Freshness therefore reads as healthy for another 36 hours, and
+# the operator hears about the first failure only when the last SUCCESS goes
+# stale. These tests pin the run outcome as a signal of its own.
+# ---------------------------------------------------------------------------
+
+
+def _write_fresh_dump(tmp_path: Path) -> Path:
+    """Write a healthy, freshly-mtimed dump -- the artifact half of the case."""
+    import gzip as gzip_mod
+
+    dump = tmp_path / "butlers_2026-05-03T02-00-00.sql.gz"
+    with gzip_mod.open(dump, "wb") as f:
+        f.write(os.urandom(1024))
+    return dump
+
+
+async def _get_backups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    assert resp.status_code == 200
+    return resp.json()["data"]
+
+
+async def test_backups_fresh_artifact_with_failed_run_reports_the_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Fresh artifact + failed run: the failure is visible, not hidden by freshness.
+
+    This is the state the freshness check cannot see. Every artifact-derived
+    field is deliberately asserted to be *healthy* here -- if the failure were
+    only expressed through those fields, this test would be asserting nothing.
+    """
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"failed","reason":"pg_dump_failed","exit_code":1,'
+        '"finished_at":"2026-05-03T02:00:11Z","artifact":null}\n',
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    # The artifact is, and stays, fine: nothing about it says anything is wrong.
+    assert data["backup_stale"] is False
+    assert data["last_backup_status"] == "healthy"
+    assert data["last_backup_at"] is not None
+    # The run is not, and now says so.
+    assert data["last_run"]["result"] == "failed"
+    assert data["last_run"]["reason"] == "pg_dump_failed"
+    assert data["last_run"]["exit_code"] == 1
+    assert data["last_run"]["finished_at"] == "2026-05-03T02:00:11+00:00"
+
+
+async def test_backups_successful_run_is_distinguishable_from_a_failed_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Same fresh artifact, successful run -- the other half of the distinction."""
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"success","reason":"ok","exit_code":0,'
+        '"finished_at":"2026-05-03T02:00:11Z",'
+        '"artifact":"butlers_2026-05-03T02-00-00.sql.gz"}\n',
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["backup_stale"] is False
+    assert data["last_run"]["result"] == "success"
+    assert data["last_run"]["reason"] == "ok"
+    assert data["last_run"]["exit_code"] == 0
+
+
+@pytest.mark.parametrize(
+    ("sentinel", "expected_reason"),
+    [
+        (None, "no run outcome recorded"),
+        ("not json at all", "run outcome unreadable"),
+        ('{"result":"probably fine"}', "run outcome unreadable"),
+    ],
+)
+async def test_backups_missing_or_broken_run_receipt_is_unknown_never_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sentinel: str | None,
+    expected_reason: str,
+):
+    """No receipt, or one we cannot parse, is "unknown" -- absence is not success.
+
+    An older deployment and a first-ever run both land here, and neither is
+    evidence that last night's backup ran, let alone that it passed.
+    """
+    _write_fresh_dump(tmp_path)
+    if sentinel is not None:
+        (tmp_path / "last_run.json").write_text(sentinel, encoding="utf-8")
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["last_run"]["result"] == "unknown"
+    assert data["last_run"]["reason"] == expected_reason
+    assert data["last_run"]["exit_code"] is None
+    assert data["last_run"]["finished_at"] is None
+
+
+async def test_backups_run_receipt_reason_outside_the_vocabulary_is_not_rendered_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The receipt is read off a mounted volume; its reason is a fixed vocabulary.
+
+    An unrecognized value still reports the failure -- it just never reaches
+    the dashboard as free text.
+    """
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"failed","reason":"connection to host=db user=butlers password=hunter2 failed",'
+        '"exit_code":2,"finished_at":"2026-05-03T02:00:11Z","artifact":null}',
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["last_run"]["result"] == "failed"
+    assert data["last_run"]["reason"] == "unrecognized reason"
+    # Assert the ABSENCE, not just the replacement. Pinning `reason` to its
+    # whitelisted stand-in proves that one field was collapsed; it says nothing
+    # about whether the DSN rode out through some other field of the envelope.
+    # Serialize the whole response and look for the material itself, the way
+    # tests/integration/test_runtime_attention_delivery_worker.py:539 does.
+    serialized = json.dumps(data)
+    for leaked in ("hunter2", "host=db", "user=butlers", "password="):
+        assert leaked not in serialized
+
+
+async def test_backups_run_receipt_survives_a_directory_with_no_dump_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A first run that failed leaves a receipt and no artifact -- report both."""
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"failed","reason":"unexpected_error","exit_code":2,'
+        '"finished_at":"2026-05-03T02:00:11Z","artifact":null}',
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["last_backup_status"] == "missing"
+    assert data["last_run"]["result"] == "failed"
+    assert data["last_run"]["reason"] == "unexpected_error"
 
 
 # ---------------------------------------------------------------------------

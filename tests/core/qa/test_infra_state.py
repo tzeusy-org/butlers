@@ -6,6 +6,8 @@ Covers:
   a freshly-registered never-heartbeated connector gets a grace window
 - heartbeat-stale: a butler past its liveness_ttl_seconds trips a finding;
   within-ttl does not; quarantined always trips; freshly-registered is graced
+- backup-run-failed: a failed run is a finding even while the previous artifact
+  is still fresh, and a successful/absent receipt never invents one
 - backup-stale: unconfigured is a legitimate absence (no finding); configured
   but unreachable/empty/stale trips a finding; fresh does not
 - external-deadman-stale: unconfigured is a legitimate absence; stale/never
@@ -480,6 +482,54 @@ async def test_fresh_backup_yields_nothing(monkeypatch, tmp_path):
     dump.write_bytes(b"x")
     now = time.time()
     os.utime(dump, (now, now))
+
+    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    assert findings == []
+
+
+async def test_fresh_backup_with_a_failed_run_trips_a_finding(monkeypatch, tmp_path):
+    """The case freshness cannot see: last night's run failed, yesterday's dump remains.
+
+    The artifact is deliberately fresh here -- ``test_fresh_backup_yields_nothing``
+    proves that same directory produces no finding without the receipt, so this
+    finding can only be coming from the run outcome.
+    """
+    import os
+    import time
+
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    dump = tmp_path / "butlers_20260711.sql.gz"
+    dump.write_bytes(b"x")
+    now = time.time()
+    os.utime(dump, (now, now))
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"failed","reason":"pg_dump_failed","exit_code":1,'
+        '"finished_at":"2026-07-12T02:00:11Z","artifact":null}',
+        encoding="utf-8",
+    )
+
+    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    assert len(findings) == 1
+    assert findings[0].exception_type == "BackupRunFailed"
+    assert "pg_dump_failed" in findings[0].event_summary
+
+
+async def test_successful_run_receipt_yields_nothing(monkeypatch, tmp_path):
+    import os
+    import time
+
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    dump = tmp_path / "butlers_20260711.sql.gz"
+    dump.write_bytes(b"x")
+    now = time.time()
+    os.utime(dump, (now, now))
+    (tmp_path / "last_run.json").write_text(
+        '{"result":"success","reason":"ok","exit_code":0,'
+        '"finished_at":"2026-07-12T02:00:11Z","artifact":"butlers_20260711.sql.gz"}',
+        encoding="utf-8",
+    )
 
     findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
     assert findings == []
