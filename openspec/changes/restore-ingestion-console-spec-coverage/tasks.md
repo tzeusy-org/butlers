@@ -95,6 +95,17 @@ Acceptance:
   capability specs and the modified blocks land in the baseline, and that the
   matching `check_archived_requirements_landed.py` findings for
   `2026-05-19-redesign-ingestion-dispatch-console` clear.
+- **Archiving is blocked on `connector-gmail` until its baseline is repaired.**
+  `openspec archive` rebuilds and re-validates the whole target spec, and three
+  requirements already in `openspec/specs/connector-gmail/spec.md` —
+  `ingest.v1 Field Mapping`, `Aggregated Health Status`, and
+  `Environment Variables` — contain no SHALL/MUST, which is a hard `✗`. The
+  archiver aborts the entire change on that failure and writes nothing. This
+  predates this change (`git diff origin/main -- openspec/specs/` is empty).
+  Either land the RFC-2119 repair on those three requirements first, or archive
+  with the `connector-gmail` delta held back and applied in a follow-up. A
+  rehearsal with that one delta removed archives cleanly and applies 23
+  requirements across the other five capabilities.
 - On archive, remove the healed entries from
   `scripts/archived-requirements-baseline.json` by hand (never
   `--update-baseline`; the script has no such flag by design).

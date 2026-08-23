@@ -89,6 +89,18 @@ from the stale delta.
   `ingestion-ui-information-architecture` requirements. They stay frozen in
   `scripts/archived-requirements-baseline.json` under bu-tk618.
 
+## Known Blocker
+
+`openspec archive` re-validates the whole of each target spec after rebuilding
+it. `openspec/specs/connector-gmail/spec.md` already contains three
+requirements with no SHALL or MUST — `ingest.v1 Field Mapping`,
+`Aggregated Health Status`, and `Environment Variables` — which validate as
+hard failures, and the archiver aborts the entire change rather than writing a
+partial result. That defect predates this change and is independent of it. The
+`connector-gmail` delta here therefore cannot be archived until those three
+requirements are repaired; the other five capability deltas archive cleanly on
+their own.
+
 ## Verification
 
 Every requirement here was verified against shipped code before it was
