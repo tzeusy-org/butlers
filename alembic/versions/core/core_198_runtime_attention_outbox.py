@@ -757,11 +757,14 @@ _TRUSTED_BOOTSTRAP_ROLLBACK_SQL = """
           AND rollback_interface.prosecdef
           AND rollback_interface.proconfig = ARRAY['search_path=pg_catalog, pg_temp']::text[]
           AND NOT has_function_privilege(migration_role.oid, rollback_interface.oid, 'EXECUTE')
-          -- core_199's executable old-binary fence is intentionally retained
-          -- by its downgrade.  Never tunnel through core_198 and remove the
-          -- protected boundary underneath that retained cutover contract.
+          -- core_199's legacy debounce-marker planter is intentionally retained
+          -- by its downgrade.  It blocks nothing -- it plants audit_log rows a
+          -- pre-v2 binary debounces itself on -- but the protected boundary
+          -- underneath it is real.  Never tunnel through core_198 to remove it.
           AND to_regclass('public.runtime_attention_producer_control') IS NULL
-          AND to_regprocedure('public.runtime_attention_legacy_producer_fence()') IS NULL
+          AND to_regprocedure(
+              'public.runtime_attention_plant_legacy_debounce_marker()'
+          ) IS NULL
           AND NOT EXISTS (
               SELECT 1
               FROM aclexplode(

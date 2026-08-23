@@ -146,8 +146,8 @@ catalog or attempt deletion.
 
 A later revision may pin such a teardown shut. `core_199` installs
 `public.runtime_attention_producer_control` and
-`public.runtime_attention_legacy_producer_fence()`; its downgrade deliberately
-retains both, and nothing in this repository drops either one. Because the
+`public.runtime_attention_plant_legacy_debounce_marker()`; its downgrade
+deliberately retains both, and nothing in this repository drops either one. Because the
 `core_198` downgrade precondition requires both to be absent, a database that
 has reached `core_199` can never run the `core_198` teardown again, and
 `runtime_attention_admin.rollback_interface()` is no longer reachable through

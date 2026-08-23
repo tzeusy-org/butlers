@@ -3259,12 +3259,36 @@ BEGIN
             || 'public.runtime_attention_producer_control FROM %I',
             v_migration_role
         );
-        EXECUTE 'ALTER FUNCTION public.runtime_attention_legacy_producer_fence() '
+        -- bu-kww1r renamed the marker planter.  Its body lives in
+        -- upgrade_producers_v2, which does not re-run once a database is at v2,
+        -- so adopt the new name here: ALTER ... RENAME preserves the OID, which
+        -- is what the trigger binds to, so this is a pure rename and the marker
+        -- keeps planting across it.  Without this the ALTERs below would raise
+        -- "function does not exist" on every rerun of an existing v2 database.
+        -- The stored body keeps the old dollar-quote tag and audit literals;
+        -- only pg_get_functiondef can see that.
+        IF to_regprocedure('public.runtime_attention_plant_legacy_debounce_marker()') IS NULL
+           AND to_regprocedure('public.runtime_attention_legacy_producer_fence()') IS NOT NULL
+        THEN
+            EXECUTE 'ALTER FUNCTION public.runtime_attention_legacy_producer_fence() '
+                || 'RENAME TO runtime_attention_plant_legacy_debounce_marker';
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
+              AND tgname = 'runtime_attention_legacy_producer_fence_trigger'
+              AND NOT tgisinternal
+        ) THEN
+            EXECUTE 'ALTER TRIGGER runtime_attention_legacy_producer_fence_trigger '
+                || 'ON public.model_dispatch_attempts '
+                || 'RENAME TO runtime_attention_plant_legacy_debounce_marker_trigger';
+        END IF;
+        EXECUTE 'ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() '
             || 'OWNER TO runtime_attention_outbox_owner';
-        EXECUTE 'ALTER FUNCTION public.runtime_attention_legacy_producer_fence() '
+        EXECUTE 'ALTER FUNCTION public.runtime_attention_plant_legacy_debounce_marker() '
             || 'SET search_path = pg_catalog, public, pg_temp';
         EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION '
-            || 'public.runtime_attention_legacy_producer_fence() FROM PUBLIC';
+            || 'public.runtime_attention_plant_legacy_debounce_marker() FROM PUBLIC';
         EXECUTE 'GRANT INSERT ON TABLE public.audit_log TO runtime_attention_outbox_owner';
         EXECUTE 'GRANT USAGE ON SEQUENCE public.audit_log_id_seq '
             || 'TO runtime_attention_outbox_owner';
@@ -4070,12 +4094,54 @@ BEGIN
     END;
     $runtime_attention_fleet_halt_v2$;
 
-    CREATE OR REPLACE FUNCTION public.runtime_attention_legacy_producer_fence()
+    -- Plants the debounce markers that make a pre-v2 runtime suppress its own
+    -- runtime-attention sends.  Read the next paragraph before trusting the name
+    -- of anything in this block.
+    --
+    -- THIS BLOCKS NOTHING.  It is a BEFORE INSERT trigger that returns NEW
+    -- unconditionally, so every row it sees is inserted; it has no reject path
+    -- and no ingress gate.  Its entire effect is to write at most one
+    -- public.audit_log row.  It was previously called
+    -- runtime_attention_legacy_producer_fence and wrote a note of
+    -- 'blocked_old_binary'; two reviewers independently read that name plus
+    -- SECURITY DEFINER and concluded an enforcement boundary existed here, which
+    -- is why it was renamed (bu-kww1r).  Behaviour is unchanged.
+    --
+    -- The real mechanism is cooperative self-suppression.  The retired
+    -- model_breaker_attention and fleet_halt_attention helpers each debounced on
+    --     SELECT ... FROM public.audit_log WHERE target = $1 AND action = $2
+    --     ORDER BY ts DESC LIMIT 1
+    -- with NO actor filter, so a row planted here under a different actor still
+    -- satisfies their lookup and they skip before transport.  The old binary
+    -- suppresses itself; nothing in the database compels it.
+    --
+    -- That holds only while an old binary honours its own debounce, so it fails
+    -- in at least four ways that a real fence would not:
+    --   * a producer that never performs the lookup is entirely unaffected;
+    --   * both helpers failed OPEN on any lookup error -- they treated a failed
+    --     debounce read as "not yet notified" and sent anyway;
+    --   * the breaker debounce expired after a 15-minute cooldown, so this
+    --     suppresses re-notification for a window, not permanently;
+    --   * the ceiling debounce only matched within the same UTC month.
+    -- Both helpers were retired in #3742 and no longer exist in this repository,
+    -- so in the current tree nothing reads these markers at all.  They matter
+    -- only against a deployed binary older than that commit.
+    CREATE OR REPLACE FUNCTION public.runtime_attention_plant_legacy_debounce_marker()
     RETURNS trigger
     LANGUAGE plpgsql
+    -- SECURITY DEFINER is retained deliberately, and not for capability: the
+    -- canonical butler_*_rw roles already hold INSERT on public.audit_log via the
+    -- broad public-schema grant above, so the invoker could write this row itself.
+    -- It earns its keep as blast-radius isolation.  This runs BEFORE INSERT on
+    -- model_dispatch_attempts, so a failed marker write aborts the dispatch-attempt
+    -- INSERT with it.  Executing as the NOLOGIN, non-inherit
+    -- runtime_attention_outbox_owner decouples the marker from the invoker's
+    -- grants, so tightening that broad public-schema grant -- exactly what the ACL
+    -- finalizer exists to do -- cannot turn this into a fleet-wide failure to
+    -- record dispatch attempts.  core_199's catalog proof also asserts prosecdef.
     SECURITY DEFINER
     SET search_path = pg_catalog, public, pg_temp
-    AS $runtime_attention_legacy_fence_v2$
+    AS $runtime_attention_plant_legacy_debounce_marker_v2$
     DECLARE
         v_active_role TEXT := COALESCE(current_setting('role', true), '');
     BEGIN
@@ -4088,6 +4154,16 @@ BEGIN
             current_setting('butlers.runtime_attention_producer_abi', true), ''
         ) <> '2' THEN
             IF NEW.outcome = 'runtime_failure' THEN
+                -- (target, action) are the load-bearing pair -- they are what
+                -- the retired helper's debounce matched on.  The note is read by
+                -- nobody.  Both the actor and the note below are misnomers: this
+                -- planted nothing that "blocked" anything.  They are retained
+                -- because this body is only ever recreated by
+                -- upgrade_producers_v2, which does not re-run on a database
+                -- already at v2, so changing them would make fresh and existing
+                -- databases write different actors forever with no convergence
+                -- path.  Correcting them needs a migration (bu-kww1r follow-up),
+                -- not a rename.
                 INSERT INTO public.audit_log (actor, action, target, note)
                 VALUES (
                     'runtime_attention_cutover_fence',
@@ -4100,6 +4176,9 @@ BEGIN
                       COALESCE(NEW.failure_reason, ''),
                       length('Monthly spend ceiling reached')
                   ) = 'Monthly spend ceiling reached' THEN
+                -- Here the note IS load-bearing: the retired fleet-halt helper
+                -- compared it against the current window and skipped on a match.
+                -- Do not change this format.
                 INSERT INTO public.audit_log (actor, action, target, note)
                 VALUES (
                     'runtime_attention_cutover_fence',
@@ -4111,13 +4190,16 @@ BEGIN
         END IF;
         RETURN NEW;
     END;
-    $runtime_attention_legacy_fence_v2$;
+    $runtime_attention_plant_legacy_debounce_marker_v2$;
 
     DROP TRIGGER IF EXISTS runtime_attention_legacy_producer_fence_trigger
         ON public.model_dispatch_attempts;
-    CREATE TRIGGER runtime_attention_legacy_producer_fence_trigger
+    DROP TRIGGER IF EXISTS runtime_attention_plant_legacy_debounce_marker_trigger
+        ON public.model_dispatch_attempts;
+    CREATE TRIGGER runtime_attention_plant_legacy_debounce_marker_trigger
         BEFORE INSERT ON public.model_dispatch_attempts
-        FOR EACH ROW EXECUTE FUNCTION public.runtime_attention_legacy_producer_fence();
+        FOR EACH ROW
+        EXECUTE FUNCTION public.runtime_attention_plant_legacy_debounce_marker();
 
     UPDATE runtime_attention_admin.bootstrap_configuration
     SET interface_version = 2,

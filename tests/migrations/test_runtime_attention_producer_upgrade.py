@@ -79,7 +79,7 @@ def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
                         SELECT 1
                         FROM pg_trigger
                         WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
-                          AND tgname = 'runtime_attention_legacy_producer_fence_trigger'
+                          AND tgname = 'runtime_attention_plant_legacy_debounce_marker_trigger'
                           AND NOT tgisinternal
                     )
                     """
@@ -112,9 +112,19 @@ def test_upgrade_requires_bootstrap_installed_v2_and_revokes_upgrade_authority(
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_legacy_runtime_writers_are_fenced_before_direct_helpers_can_send(
+async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
     migrated_v2_pool: asyncpg.Pool,
 ) -> None:
+    """A pre-v2 writer's INSERT succeeds and leaves one marker row per branch.
+
+    Nothing is fenced here and the old name of this test said otherwise.  The
+    trigger returns NEW unconditionally, so both INSERTs below land; the only
+    effect asserted is the (target, action) pair the retired
+    model_breaker_attention and fleet_halt_attention helpers debounced on --
+    with no actor filter, which is what let a row planted by a different actor
+    suppress them.  This is cooperative self-suppression by a binary that still
+    honours its own debounce, not an ingress gate.
+    """
     pool = migrated_v2_pool
     async with pool.acquire() as admin_connection:
         await admin_connection.execute(
@@ -239,7 +249,7 @@ def test_bootstrap_rollback_disables_producers_without_restoring_direct_paths(
                     SELECT EXISTS (
                         SELECT 1 FROM pg_trigger
                         WHERE tgrelid = 'public.model_dispatch_attempts'::regclass
-                          AND tgname = 'runtime_attention_legacy_producer_fence_trigger'
+                          AND tgname = 'runtime_attention_plant_legacy_debounce_marker_trigger'
                           AND NOT tgisinternal
                     )
                     """
