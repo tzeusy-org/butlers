@@ -1635,3 +1635,26 @@ you are on before reasoning about `label`.
 Steps that have not finished carry `conclusion: ""`, not `conclusion: null`. Filtering on `!= null`
 therefore counts pending steps as done and reports a job as fully finished while it is still running.
 Filter on the bucket/status field, or list conclusions directly and read them.
+
+### A raised exception poisons the whole Postgres transaction -- "catch and continue" needs a SAVEPOINT
+
+Postgres aborts the entire transaction on any raised exception, so catching an error from a call made
+inside a transaction and continuing does **not** save the surrounding writes -- they are already lost,
+and the code merely looks correct. In asyncpg the savepoint is a nested `connection.transaction()`:
+opened while an outer transaction is active it sets `_nested = True` and issues `SAVEPOINT` / `ROLLBACK
+TO` rather than `BEGIN` / `ROLLBACK`, so the outer transaction survives the inner raise.
+
+This bit `record_dispatch_attempt` (bu-j65gq): the v2 attention producers are called inside the
+attempt-insert transaction so the two commit together, but they raise `42501` unless
+`current_setting('role')` is a canonical `butler_*_rw`, and outside hardened posture `db.py` fails open
+with no `SET ROLE` at all. The producer's refusal took the attempt row with it.
+
+Two things to copy when applying this pattern:
+
+- **Absorb one error class, not all of them.** The fix catches only
+  `asyncpg.InsufficientPrivilegeError`; every other producer failure still propagates, so a row whose
+  edge failed for a real reason still rolls back with it. A blanket `except Exception` around the
+  savepoint converts genuine failures into silent skips, which is a worse bug than the one being fixed.
+- **Prove the commit from a separate pool acquisition.** Reading the row back on the same connection
+  inside the same transaction shows intra-transaction visibility, not durability. The post-fix tests
+  re-acquire before asserting.
