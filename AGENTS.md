@@ -1966,6 +1966,31 @@ on a branch, confirm the tree is settled: `git status --porcelain | wc -l` must 
 still be `0` when the run ends. A failure observed on an unsettled tree is not evidence of a
 regression, and re-running is diagnosis, not denial.
 
+### An absence assertion is the test most likely to be vacuous — mutate before believing it
+
+Owner Option C work produces tests that assert material is **absent** from a payload. That is the
+right shape (never reproduce the material to compare against it), but it is also the shape that
+passes when the fixture never planted anything, when the query returned nothing, and when the fix is
+not wired up at all. A green run is exactly what a vacuous suite reports.
+
+Before trusting one, neutralise the fix — e.g. edit the CTE predicate so the branch can never fire —
+re-run the module, restore from a byte copy, and confirm `git status` is clean and the suite green
+again. On `agent/bu-uqipv` this turned "12 passed" into evidence: **8 failed, 4 passed** with the fix
+removed, and the failure output reproduced the original bug exactly.
+
+Expect some tests to pass under mutation *correctly* — they guard properties the mutation does not
+disturb. Check each one rather than assuming it is dead weight: the audit occurrences sentinel there
+survives because `bu-ove06`'s row-level withholding already blanks the rows and the drill-down never
+echoes the group title, so it pins a different property than the fix under test. Also give every
+absence test a positive companion (`meta.total == 1`, a planted sentinel it *does* find) so it cannot
+pass by returning nothing.
+
+Related trap when auditing what leaked: a composed display field can carry the text even when the
+obvious field does not. `audit_grouping.py:435` builds `Issue.type` as
+`audit_error_group:{_slug(error_message)}`, so the summary rides out in the *type label*; the
+similar-looking `group_key` (:394) is a `sha256[:16]` digest and never was a vector. Read the
+construction, not the assertion diff.
+
 ### `scripts/emit_worker_report.py` deadlocks any worker that must not push
 
 The script hard-requires a `Branch-Pushed: yes` header for every `completed-*` status. Under the
