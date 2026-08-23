@@ -130,7 +130,7 @@ def _metadata(value: Any) -> dict[str, Any]:
 def _parse_identifier(value: Any) -> _ParsedWhatsAppIdentifier | None:
     if not isinstance(value, str):
         return None
-    match = _WHATSAPP_IDENTIFIER_RE.fullmatch(value.strip())
+    match = _WHATSAPP_IDENTIFIER_RE.fullmatch(value)
     if match is None:
         return None
     return _ParsedWhatsAppIdentifier(
@@ -186,8 +186,7 @@ async def _phone_digits_for_identifier(
     )
     if not isinstance(mapped, str):
         return None
-    digits = mapped.strip()
-    return digits if digits.isdigit() else None
+    return mapped if mapped.isdigit() else None
 
 
 async def _phone_candidates(
@@ -227,7 +226,8 @@ async def _phone_candidates(
           AND (
                 stored.object = $2
                 OR (
-                    length(stored.digits) >= $3
+                    length($2) >= $3
+                    AND length(stored.digits) >= $3
                     AND abs(length(stored.digits) - length($2)) <= $4
                     AND (
                         stored.digits LIKE '%' || $2
@@ -306,7 +306,11 @@ async def _explicit_protected_columns(executor: Any) -> list[Any]:
                 )
                 OR (
                     ns.nspname = 'public'
-                    AND relation.relname IN ('entity_info', 'priority_contacts')
+                    AND relation.relname IN (
+                        'entity_info',
+                        'memory_catalog',
+                        'priority_contacts'
+                    )
                     AND attribute.attname = 'entity_id'
                 )
                 OR (

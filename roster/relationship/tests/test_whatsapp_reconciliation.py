@@ -7,6 +7,7 @@ reference semantics rather than substituting an in-memory repository.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -23,6 +24,7 @@ from butlers.tools.relationship.entity_merge import (
 from butlers.tools.relationship.whatsapp_reconciliation import (
     PlanDigestMismatch,
     ReconciliationCategory,
+    ReconciliationPostconditionError,
     apply_whatsapp_reconciliation,
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
@@ -62,6 +64,23 @@ async def reconciliation_pool(provisioned_postgres_pool):
             CREATE TABLE public.whatsmeow_lid_map (
                 lid TEXT PRIMARY KEY,
                 pn TEXT NOT NULL
+            )
+            """
+        )
+        # core_009 deliberately leaves memory_catalog.entity_id without a FK.
+        await pool.execute(
+            """
+            CREATE TABLE public.memory_catalog (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'owner',
+                entity_id UUID,
+                summary TEXT NOT NULL DEFAULT '',
+                memory_type TEXT NOT NULL DEFAULT 'fact',
+                object_entity_id UUID REFERENCES public.entities(id),
+                UNIQUE (source_schema, source_table, source_id)
             )
             """
         )
@@ -339,6 +358,67 @@ async def test_planner_enumerates_distinct_phone_and_lid_candidates(reconciliati
     assert set(plan.counts) == set(ReconciliationCategory)
 
 
+async def test_identifier_parser_does_not_trim_surrounding_whitespace(
+    reconciliation_pool,
+) -> None:
+    """Planner parsing stays byte-for-byte aligned with the canonical resolver."""
+    pool = reconciliation_pool
+    source = await _entity(
+        pool,
+        " 6591234567@s.whatsapp.net ",
+        metadata=_source_metadata(),
+    )
+    await _phone_target(pool, "+65 9123 4567")
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert not plan.pairs
+    assert _count(plan, ReconciliationCategory.INVALID_IDENTIFIER) == 1
+    assert source not in {pair.source_entity_id for pair in plan.pairs}
+
+
+async def test_short_jid_phone_matches_exact_only_not_by_suffix(reconciliation_pool) -> None:
+    """The resolver's eight-digit floor applies to the JID side of bounded matching."""
+    pool = reconciliation_pool
+    suffix_source = await _entity(
+        pool,
+        "1234567@s.whatsapp.net",
+        metadata=_source_metadata(),
+    )
+    await _phone_target(pool, "+65 1234567", name="Longer suffix-only target")
+
+    exact_source = await _entity(
+        pool,
+        "7654321@s.whatsapp.net",
+        metadata=_source_metadata(),
+    )
+    exact_target = await _phone_target(pool, "7654321", name="Short exact target")
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert [(pair.source_entity_id, pair.target_entity_id) for pair in plan.pairs] == [
+        (exact_source, exact_target)
+    ]
+    assert _count(plan, ReconciliationCategory.UNMATCHED) == 1
+    assert suffix_source not in {pair.source_entity_id for pair in plan.pairs}
+
+
+async def test_lid_mapping_does_not_trim_phone_whitespace(reconciliation_pool) -> None:
+    """Mapped LID phone validation preserves the connector/resolver byte shape."""
+    pool = reconciliation_pool
+    source = await _entity(pool, "123456@lid", metadata=_source_metadata())
+    await pool.execute(
+        "INSERT INTO public.whatsmeow_lid_map (lid, pn) VALUES ('123456', ' 6591234567 ')"
+    )
+    await _phone_target(pool, "+65 9123 4567")
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert not plan.pairs
+    assert _count(plan, ReconciliationCategory.UNMATCHED) == 1
+    assert source not in {pair.source_entity_id for pair in plan.pairs}
+
+
 @pytest.mark.parametrize("protected_role", ["owner", "system"])
 async def test_owner_or_system_target_is_never_planned(
     reconciliation_pool, protected_role: str
@@ -473,6 +553,25 @@ async def test_chronicler_no_fk_entity_references_are_protected(
     plan = await build_whatsapp_reconciliation_plan(pool)
 
     assert not plan.pairs, table_name
+    assert _count(plan, ReconciliationCategory.REFERENCED_SOURCE) == 1
+
+
+async def test_memory_catalog_no_fk_entity_reference_is_protected(reconciliation_pool) -> None:
+    pool = reconciliation_pool
+    source, _target = await _source_with_target(pool, "6591750001")
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog
+            (source_schema, source_table, source_id, entity_id)
+        VALUES ('general', 'facts', $1, $2)
+        """,
+        uuid4(),
+        source,
+    )
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert not plan.pairs
     assert _count(plan, ReconciliationCategory.REFERENCED_SOURCE) == 1
 
 
@@ -666,6 +765,15 @@ async def test_locked_guard_serializes_new_decisions_and_protected_references(
                     ),
                     (
                         """
+                        INSERT INTO public.memory_catalog
+                            (source_schema, source_table, source_id, entity_id)
+                        VALUES ('general', 'facts', $1, $2)
+                        """,
+                        uuid4(),
+                        source,
+                    ),
+                    (
+                        """
                         INSERT INTO reconciliation_test.arbitrary_entity_reference
                             (arbitrary_owner)
                         VALUES ($1)
@@ -680,10 +788,49 @@ async def test_locked_guard_serializes_new_decisions_and_protected_references(
 
     assert await pool.fetchval("SELECT count(*) FROM relationship.pending_actions") == 0
     assert await pool.fetchval("SELECT count(*) FROM chronicler.point_events") == 0
+    assert await pool.fetchval("SELECT count(*) FROM public.memory_catalog") == 0
     assert (
         await pool.fetchval("SELECT count(*) FROM reconciliation_test.arbitrary_entity_reference")
         == 0
     )
+
+
+async def test_writer_before_apply_yields_content_blind_drift_without_mutation(
+    reconciliation_pool,
+) -> None:
+    """A pre-existing RowExclusive writer makes NOWAIT fail closed, never deadlock."""
+    pool = reconciliation_pool
+    source, target = await _source_with_target(pool, "6594750001")
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    async with pool.acquire() as writer:
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await writer.execute(
+                """
+                INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, entity_id)
+                VALUES ('general', 'facts', $1, $2)
+                """,
+                uuid4(),
+                source,
+            )
+
+            async with asyncio.timeout(2):
+                with pytest.raises(LockedGuardRejected, match="^plan_drift$") as caught:
+                    await apply_whatsapp_reconciliation(pool, authorized_digest=plan.digest)
+
+            assert str(source) not in str(caught.value)
+            assert str(target) not in str(caught.value)
+            assert await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews") == 0
+            source_metadata = await pool.fetchval(
+                "SELECT metadata FROM public.entities WHERE id = $1",
+                source,
+            )
+            assert "merged_into" not in source_metadata
+        finally:
+            await transaction.rollback()
 
 
 async def test_apply_audits_tombstone_and_removes_pair_from_fresh_plan(
@@ -731,6 +878,43 @@ async def test_apply_audits_tombstone_and_removes_pair_from_fresh_plan(
     after = await build_whatsapp_reconciliation_plan(pool)
     assert not after.pairs
     assert _count(after, ReconciliationCategory.UNIQUE_EMPTY_SHELL) == 0
+
+
+async def test_postcondition_rejects_late_memory_catalog_entity_reference(
+    reconciliation_pool,
+    monkeypatch,
+) -> None:
+    """The post-merge check reuses protected memory_catalog.entity_id discovery."""
+    pool = reconciliation_pool
+    source, _target = await _source_with_target(pool, "6595500001")
+    plan = await build_whatsapp_reconciliation_plan(pool)
+    original_merge = merge_entity_pair
+
+    async def merge_then_add_catalog_reference(*args, **kwargs):
+        result = await original_merge(*args, **kwargs)
+        await pool.execute(
+            """
+            INSERT INTO public.memory_catalog
+                (source_schema, source_table, source_id, entity_id)
+            VALUES ('general', 'facts', $1, $2)
+            """,
+            uuid4(),
+            source,
+        )
+        return result
+
+    monkeypatch.setattr(reconciliation, "merge_entity_pair", merge_then_add_catalog_reference)
+
+    with pytest.raises(ReconciliationPostconditionError, match="^postcondition_failed$"):
+        await apply_whatsapp_reconciliation(pool, authorized_digest=plan.digest)
+
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.memory_catalog WHERE entity_id = $1",
+            source,
+        )
+        == 1
+    )
 
 
 async def test_apply_stops_on_first_pair_failure(reconciliation_pool, monkeypatch) -> None:
