@@ -1,32 +1,3 @@
-> [!CAUTION]
-> **DO NOT ARCHIVE THIS CHANGE UNTIL bu-ka9vx LANDS.**
->
-> `deployment-and-drift` / `QA Escalation After Sustained Drift` currently carries **10
-> scenarios: 6 stating the episode model this change introduces, and 4 still written in the
-> composition-fingerprint model it retires.** Two of those 4 contradict their replacements
-> outright:
->
-> - `First sighting does not escalate` mandates "a first-detected marker is persisted (keyed
->   by a stable fingerprint of that composition)", while `First sighting opens L0 evidence`
->   states it "does not use a composition-wide audit marker as current-state authority".
-> - `Drift past the 24h threshold escalates exactly once` persists an escalated marker "so
->   subsequent ticks do not re-escalate it", while `Continuing drift re-escalates without
->   additional healing attempts` requires exactly that re-escalation.
->
-> The 4 are not stale leftovers and must not simply be deleted here: they are baseline
-> scenarios, and a `## MODIFIED` block may not drop a scenario name the baseline still
-> carries. Removing them to tidy the requirement silently deletes them from the baseline on
-> archive.
->
-> Every available signal is green on this: `openspec archive` succeeds, `openspec validate
-> --strict` passes, and the archived-requirements guard sees the headers land. Nothing will
-> stop you. Archiving anyway writes the contradiction straight into `openspec/specs/`, where
-> it becomes the baseline every later change is validated against.
->
-> **bu-ka9vx** resolves it with the two-change retire/restore procedure -- one change removing
-> the requirement, a second re-adding it with the 6 episode-model scenarios only. Archive that
-> first, then this.
-
 ## Why
 
 Infrastructure failures currently rely on one-shot audit markers and on
@@ -42,7 +13,12 @@ same active infrastructure condition into repeated QA execution work.
 - Replace deployment drift's one-shot "escalates exactly once" behavior with
   lifecycle-driven L0/L1/L2/L3 escalation and seven-day recurring escalation
   while a condition remains active. **BREAKING**: a continuing condition is no
-  longer permanently silenced after its first escalation.
+  longer permanently silenced after its first escalation. The
+  `deployment-and-drift` / `QA Escalation After Sustained Drift` spec delta for
+  this lives in the `retire-drift-composition-escalation-model-step-1-retire` /
+  `-step-2-restore` pair, not here: the two models contradict each other on two
+  scenarios and a `## MODIFIED` block cannot retire a baseline scenario name.
+  Tasks 2.1 and 2.2 below remain this change's implementation work.
 - Require active `infra_state` conditions to be suppressed as a decision-only
   QA admission result before `create_or_join_attempt`, without creating an
   attempt, session, worktree, or LLM invocation.

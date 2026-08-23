@@ -489,38 +489,6 @@
       "excerpt": "\"The sentinel loop's job is the escalation side effect, not serving reads\" is not in the block"
     }
   ],
-  "define-infrastructure-reliability-lifecycle/deployment-and-drift/QA Escalation After Sustained Drift": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "2329b0ced857",
-      "excerpt": "The system SHALL escalate a drift composition to a QA-visible case once it has persisted, without resolution, for mor..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "First sighting does not escalate",
-      "digest": "95f4612ddf9f",
-      "excerpt": "\"First sighting does not escalate\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Drift within the 24h threshold does not escalate",
-      "digest": "703f3adf20f5",
-      "excerpt": "\"Drift within the 24h threshold does not escalate\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Drift past the 24h threshold escalates exactly once",
-      "digest": "c7631fee0b27",
-      "excerpt": "\"Drift past the 24h threshold escalates exactly once\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "An escalation attempt failure degrades, does not crash",
-      "digest": "9f2220c7a483",
-      "excerpt": "\"An escalation attempt failure degrades, does not crash\" is not in the block"
-    }
-  ],
   "define-infrastructure-reliability-lifecycle/deployment-and-drift/Three-Way Migration Drift Comparison": [
     {
       "kind": "scenario",
