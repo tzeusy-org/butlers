@@ -196,6 +196,63 @@ async def test_unknown_handle_returns_none(provisioned_postgres_pool) -> None:
         assert result is None
 
 
+async def test_whatsapp_user_client_resolves_like_whatsapp_jid(provisioned_postgres_pool) -> None:
+    """Spec: REQ-switchboard-identity-001."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        direct = await _mk_entity(pool, "Direct")
+        await _add_fact(pool, direct, "has-handle", "1234567890@s.whatsapp.net")
+        by_phone = await _mk_entity(pool, "Phone")
+        await _add_fact(pool, by_phone, "has-phone", "441234567890")
+
+        direct_result = await resolve_contact_by_channel(
+            pool, "whatsapp_user_client", "1234567890@s.whatsapp.net"
+        )
+        phone_result = await resolve_contact_by_channel(
+            pool, "whatsapp_user_client", "441234567890@s.whatsapp.net"
+        )
+        bulk_result = await resolve_contacts_by_channel_bulk(
+            pool,
+            [
+                ("whatsapp_user_client", "1234567890@s.whatsapp.net"),
+                ("whatsapp_user_client", "441234567890@s.whatsapp.net"),
+            ],
+        )
+
+        assert direct_result is not None and direct_result.entity_id == direct
+        assert phone_result is not None and phone_result.entity_id == by_phone
+        assert (
+            bulk_result[("whatsapp_user_client", "1234567890@s.whatsapp.net")].entity_id == direct
+        )
+        assert (
+            bulk_result[("whatsapp_user_client", "441234567890@s.whatsapp.net")].entity_id
+            == by_phone
+        )
+
+
+async def test_whatsapp_user_client_ambiguous_phone_digits_returns_none(
+    provisioned_postgres_pool,
+) -> None:
+    """Spec: REQ-switchboard-identity-001."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        first = await _mk_entity(pool, "First")
+        second = await _mk_entity(pool, "Second")
+        await _add_fact(pool, first, "has-phone", "+44 1234 567890")
+        await _add_fact(pool, second, "has-phone", "44 1234 567890")
+
+        value = "441234567890@s.whatsapp.net"
+        single_result = await resolve_contact_by_channel(pool, "whatsapp_user_client", value)
+        bulk_result = await resolve_contacts_by_channel_bulk(
+            pool, [("whatsapp_user_client", value)]
+        )
+
+        assert single_result is None
+        assert bulk_result[("whatsapp_user_client", value)] is None
+
+
 # ---------------------------------------------------------------------------
 # resolve_contacts_by_channel_bulk (bu-4utdw.3) — the batched N+1 killer used
 # by the timeline list endpoint. These exercise the SAME cross-schema join

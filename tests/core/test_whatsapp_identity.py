@@ -101,3 +101,17 @@ async def test_resolve_whatsapp_jid():
     assert await resolve_contact_by_channel(pool7, "telegram", "99999") is None
     assert pool7.fetchrow.call_count == 2  # "99999", then "telegram:99999"
     assert all(call[0][1] == "has-handle" for call in pool7.fetchrow.call_args_list)
+
+
+async def test_whatsapp_user_client_uses_jid_phone_fallback():
+    """Spec: REQ-switchboard-identity-001."""
+    pool = _make_pool_with_rows(None, {"entity_id": _ENTITY_ID, "name": "Bob", "roles": []})
+
+    result = await resolve_contact_by_channel(
+        pool, "whatsapp_user_client", "1234567890@s.whatsapp.net"
+    )
+
+    assert result is not None
+    assert result.entity_id == _ENTITY_ID
+    assert pool.fetchrow.call_args_list[0].args[1] == "has-handle"
+    assert pool.fetchrow.call_args_list[1].args[1] == "has-phone"

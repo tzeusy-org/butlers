@@ -165,6 +165,7 @@ def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
     channel_value:
         The raw identifier as entered/observed.
     """
+    channel_type = canonical_identity_channel_type(channel_type)
     if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         return _telegram_prefixed_value(channel_value)
     return channel_value
@@ -199,6 +200,15 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "other": "has-handle",
     "whatsapp_jid": "has-handle",
 }
+
+_IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
+    "whatsapp_user_client": "whatsapp_jid",
+}
+
+
+def canonical_identity_channel_type(channel_type: str) -> str:
+    """Return the shared identity channel type for a transport channel."""
+    return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -430,7 +440,8 @@ async def resolve_contact_by_channel(
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     row: asyncpg.Record | None = None
 
     if predicate is not None:
@@ -444,7 +455,7 @@ async def resolve_contact_by_channel(
             )
             return None
 
-    if row is None and channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if row is None and canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         # Telegram canonical-prefix fallback: handles are stored as telegram:<bare>
         # (rel_019).  Try the prefixed form so a numeric chat id from
         # telegram_send_message or an inbound telegram_bot sender resolves to its
@@ -459,7 +470,7 @@ async def resolve_contact_by_channel(
             )
             return None
 
-    if row is None and channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if row is None and canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         # Telegram username normalization fallback (bu-c4f7f).
         # telegram_send_message accepts @Username (user-facing form); the backfill
         # stores the bare username without @ (canonical form). Telegram usernames
@@ -491,7 +502,7 @@ async def resolve_contact_by_channel(
         # Extracts the E.164 phone prefix from "<number>@s.whatsapp.net" JIDs and
         # queries has-phone to link against entities from other providers
         # (e.g. Google Contacts) that share the same number.
-        if channel_type == "whatsapp_jid":
+        if canonical_channel == "whatsapp_jid":
             phone = _extract_whatsapp_jid_phone(channel_value)
             if phone is not None:
                 try:
@@ -539,21 +550,22 @@ def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str
     priority-ordered list so :func:`resolve_contacts_by_channel_bulk` can
     batch every candidate for a whole page into a single query.
     """
+    canonical_channel = canonical_identity_channel_type(channel_type)
     candidates: list[tuple[str, str]] = []
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     if predicate is not None:
         candidates.append((predicate, channel_value))
 
-    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         candidates.append(("has-handle", _telegram_prefixed_value(channel_value)))
 
-    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         # Skip index 0 — it's the exact value already covered by the primary
         # predicate candidate above.
         for variant in _telegram_username_candidates(channel_value)[1:]:
             candidates.append(("has-handle", variant))
 
-    if channel_type == "whatsapp_jid":
+    if canonical_channel == "whatsapp_jid":
         phone = _extract_whatsapp_jid_phone(channel_value)
         if phone is not None:
             # The regex already yields bare digits, so this doubles as the
@@ -714,14 +726,15 @@ async def resolve_owner_channel_via_definer(
     owner's registered handles for *channel_type*, else ``None`` (not an owner
     channel, unknown channel type, or the function is unavailable).
     """
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     if predicate is None:
         return None
 
     # Candidate object values: verbatim, plus telegram canonical-prefix and
     # username variants — the same normalisation resolve_contact_by_channel applies.
     candidates: list[str] = [channel_value]
-    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         for variant in _telegram_username_candidates(channel_value):
             if variant not in candidates:
                 candidates.append(variant)
@@ -1193,6 +1206,7 @@ def build_identity_preamble(
 __all__ = [
     "ResolvedContact",
     "build_identity_preamble",
+    "canonical_identity_channel_type",
     "create_temp_contact",
     "normalize_email_sender",
     "parse_email_sender",

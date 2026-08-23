@@ -35,6 +35,7 @@ from butlers.identity import (
     ResolvedContact,
     _telegram_username_candidates,
     build_identity_preamble,
+    canonical_identity_channel_type,
     channel_value_for_storage,
     create_temp_contact,
     normalize_email_sender,
@@ -247,6 +248,34 @@ async def test_resolve_contacts_by_channel_bulk_telegram_prefix_fallback_candida
     call = pool.fetch.await_args
     objects = call.args[2]
     assert "telegram:86807245" in objects
+
+
+async def test_bulk_whatsapp_user_client_uses_jid_candidates():
+    """Spec: REQ-switchboard-identity-001."""
+    rows = [
+        _mk_bulk_row(
+            {
+                "predicate": "has-phone",
+                "object": "1234567890",
+                "entity_id": _ENTITY_ID,
+                "name": "Bob",
+                "roles": [],
+            }
+        )
+    ]
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=rows)
+
+    result = await resolve_contacts_by_channel_bulk(
+        pool, [("whatsapp_user_client", "1234567890@s.whatsapp.net")]
+    )
+
+    resolved = result[("whatsapp_user_client", "1234567890@s.whatsapp.net")]
+    assert resolved is not None
+    assert resolved.entity_id == _ENTITY_ID
+    predicates, objects = pool.fetch.await_args.args[1:]
+    assert ("has-handle", "1234567890@s.whatsapp.net") in zip(predicates, objects, strict=True)
+    assert ("has-phone", "1234567890") in zip(predicates, objects, strict=True)
 
 
 async def test_resolve_contacts_by_channel_bulk_empty_input_returns_empty_dict():
@@ -705,6 +734,25 @@ class TestAssertSenderChannelFactPrefixesTelegram:
         assert obj == "a@b.com"
         assert not obj.startswith("telegram:")
 
+    async def test_whatsapp_user_client_uses_canonical_jid_predicate(self) -> None:
+        """Spec: REQ-switchboard-identity-001."""
+        from butlers.tools.relationship.relationship_assert_fact import (
+            assert_sender_channel_fact,
+        )
+
+        entity_id = uuid.uuid4()
+        pool = MagicMock()
+        value = "1234567890@s.whatsapp.net"
+
+        with patch(_ASSERT_FACT_PATCH, new_callable=AsyncMock) as mock_assert:
+            await assert_sender_channel_fact(pool, entity_id, "whatsapp_user_client", value)
+
+        mock_assert.assert_awaited_once()
+        _pool, subject, predicate, obj = mock_assert.await_args.args
+        assert subject == entity_id
+        assert predicate == "has-handle"
+        assert obj == value
+
 
 # ---------------------------------------------------------------------------
 # Telegram username normalization — bu-c4f7f
@@ -736,6 +784,12 @@ class TestChannelValueForStorage:
         # predicate alone can't distinguish a telegram handle from another handle).
         assert channel_value_for_storage("", "somehandle") == "somehandle"
         assert channel_value_for_storage("linkedin", "in/jane") == "in/jane"
+
+
+def test_canonical_identity_channel_type_maps_whatsapp_transport_alias() -> None:
+    """Spec: REQ-switchboard-identity-001."""
+    assert canonical_identity_channel_type("whatsapp_user_client") == "whatsapp_jid"
+    assert canonical_identity_channel_type("telegram") == "telegram"
 
 
 class TestTelegramUsernameCandidates:
