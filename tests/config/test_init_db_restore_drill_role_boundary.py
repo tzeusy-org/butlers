@@ -74,9 +74,7 @@ _ARGUMENT_TOKEN = r"""(?:-{1,2}\w|[<{$"']|[.~]{0,2}/|\w[\w.-]*\.\w)"""
 
 _RESTORE_SCRIPT_INVOCATION_PATTERNS = (
     # Path-executable reference: ./x, ../x, ~/x, /abs/x.
-    re.compile(
-        rf"(?<![\w.~/-])(?:\.{{1,2}}|~)?/(?:[\w.~-]+/)*{re.escape(_RESTORE_SCRIPT_NAME)}"
-    ),
+    re.compile(rf"(?<![\w.~/-])(?:\.{{1,2}}|~)?/(?:[\w.~-]+/)*{re.escape(_RESTORE_SCRIPT_NAME)}"),
     # Interpreter prefix, with or without flags and a leading directory.
     re.compile(
         rf"\b(?:ba|da|k|z)?sh\b[ \t]+(?:-\S+[ \t]+)*(?:[\w.~/-]*/)?"
@@ -116,9 +114,7 @@ def _restore_script_invocations(markdown: str) -> list[str]:
     """
     found: set[str] = set()
     for block in _fenced_code_blocks(markdown):
-        found.update(
-            line.strip() for line in block.splitlines() if _RESTORE_SCRIPT_NAME in line
-        )
+        found.update(line.strip() for line in block.splitlines() if _RESTORE_SCRIPT_NAME in line)
     for pattern in _RESTORE_SCRIPT_INVOCATION_PATTERNS:
         found.update(match.group(0) for match in pattern.finditer(markdown))
     return sorted(found)
