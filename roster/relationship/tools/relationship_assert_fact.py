@@ -1368,14 +1368,7 @@ async def assert_sender_channel_fact(
             conn=conn,
         )
     except Exception:  # noqa: BLE001 — never let a fact write break routing
-        logger.warning(
-            "assert_sender_channel_fact: failed to assert channel triple for entity %s "
-            "(channel_type=%r, value=%r) — sender dedup key not written",
-            entity_id,
-            channel_type,
-            channel_value,
-            exc_info=True,
-        )
+        logger.warning("identity.sender_channel_fact_assertion_failed")
         return None
 
 

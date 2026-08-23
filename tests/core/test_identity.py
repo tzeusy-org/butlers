@@ -24,6 +24,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
@@ -752,6 +753,34 @@ class TestAssertSenderChannelFactPrefixesTelegram:
         assert subject == entity_id
         assert predicate == "has-handle"
         assert obj == value
+
+    async def test_sender_fact_failure_log_is_content_blind(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Spec: REQ-switchboard-identity-001."""
+        from butlers.tools.relationship.relationship_assert_fact import (
+            assert_sender_channel_fact,
+        )
+
+        pool = MagicMock()
+        sentinel_jid = "15551234567@s.whatsapp.net"
+        sentinel_error = "sentinel SQL detail: SELECT secret_phone"
+        caplog.set_level(logging.WARNING)
+
+        with patch(
+            _ASSERT_FACT_PATCH,
+            new_callable=AsyncMock,
+            side_effect=RuntimeError(sentinel_error),
+        ):
+            result = await assert_sender_channel_fact(
+                pool, uuid.uuid4(), "whatsapp_user_client", sentinel_jid
+            )
+
+        assert result is None
+        assert "identity.sender_channel_fact_assertion_failed" in caplog.messages
+        assert sentinel_jid not in caplog.text
+        assert "15551234567" not in caplog.text
+        assert sentinel_error not in caplog.text
 
 
 # ---------------------------------------------------------------------------
