@@ -2553,6 +2553,22 @@
       "excerpt": "\"WhatsApp write exclusivity\" is not in the block"
     }
   ],
+  "2026-04-25-whatsapp-connector/butler-messenger/Rate Limiting": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "74dea5e67162",
+      "excerpt": "Rate Limiting"
+    }
+  ],
+  "2026-04-25-whatsapp-connector/butler-messenger/Retry with Exponential Backoff": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "9a4e094c1543",
+      "excerpt": "Retry with Exponential Backoff"
+    }
+  ],
   "2026-04-25-whatsapp-connector/butler-switchboard/Channel Key Alignment": [
     {
       "kind": "requirement",
@@ -5877,6 +5893,14 @@
       "scenario": null,
       "digest": "c0bfd3e20a33",
       "excerpt": "Attention Ledger Recording of Delivered/Coalesced Candidates"
+    }
+  ],
+  "2026-07-11-attention-ledger-broker/proactive-insight-engine/Seeded Owner-Level Quiet Hours": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "ac5c140af1e4",
+      "excerpt": "Seeded Owner-Level Quiet Hours"
     }
   ],
   "2026-07-11-spawner-undelivered-reply-failed-session/core-spawner/Spawner Session Lifecycle": [

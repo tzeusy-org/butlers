@@ -129,7 +129,9 @@ jobs:
     # and each `## MODIFIED` block's content reached it, failing per requirement
     # so a half-applied archive cannot look green. A digest-keyed ratchet
     # (scripts/archived-requirements-baseline.json) freezes today's debt for
-    # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose.
+    # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose,
+    # and a `## REMOVED` block excuses an absence only once its own change
+    # has archived, so a pending proposal cannot mute a gap off-ratchet.
     # Advisory like every other check here.
     runs-on: ubuntu-latest
     steps:

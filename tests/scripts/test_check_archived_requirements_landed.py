@@ -292,25 +292,77 @@ def test_requirement_renamed_by_another_change_counts_as_landed(tmp_path: Path) 
     assert result.returncode == 0, result.stdout
 
 
-def test_requirement_removed_by_another_change_counts_as_landed(tmp_path: Path) -> None:
+def _retirement(root: Path, change: str, *, archived: bool) -> None:
+    """Write a ``## REMOVED Requirements`` block retiring ``Widget API``."""
+    parent = root / "openspec" / "changes"
+    if archived:
+        parent = parent / "archive"
+    delta = parent / change / "specs" / "widgets" / "spec.md"
+    delta.parent.mkdir(parents=True, exist_ok=True)
+    delta.write_text(
+        "## REMOVED Requirements\n\n### Requirement: Widget API\n\nRetired.\n",
+        encoding="utf-8",
+    )
+
+
+def test_removed_block_in_an_archived_change_excuses_a_missing_requirement(
+    tmp_path: Path,
+) -> None:
+    """The legitimate half. A requirement retired by a change that archived is gone on purpose."""
     root = _tree(
         tmp_path,
         baseline={"widgets": []},
         archived={"2026-01-01-add-widgets": {"widgets": ["Widget API"]}},
     )
+    _retirement(root, "2026-02-01-retire-widgets", archived=True)
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_removed_block_in_an_unarchived_change_does_not_excuse_a_missing_requirement(
+    tmp_path: Path,
+) -> None:
+    """A pending proposal must not be able to mute a real gap.
+
+    Unlike a rename, a removal is an unconditional skip -- nothing is looked up
+    afterwards. Honouring one from a change that has not archived (and may never)
+    would silence the finding permanently, with no ratchet entry and no JSON diff
+    for a reviewer to see: the guard's own hatch, opened from outside the gate.
+    """
+    root = _tree(
+        tmp_path,
+        baseline={"widgets": []},
+        archived={"2026-01-01-add-widgets": {"widgets": ["Widget API"]}},
+    )
+    _retirement(root, "pending-retire-widgets", archived=False)
+    result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))
+
+    assert result.returncode == 1, f"a pending REMOVED block silenced a real gap:\n{result.stdout}"
+    assert "Widget API" in result.stdout
+
+
+def test_rename_in_an_unarchived_change_still_counts_as_landed(tmp_path: Path) -> None:
+    """The asymmetry is deliberate and must survive someone tidying it into symmetry.
+
+    Renames stay tree-wide because they cannot silence anything on their own:
+    ``resolve_name`` only redirects the baseline lookup, so an absent new name
+    still fires. Narrowing them to archived changes the way removals are narrowed
+    would cost findings for no safety.
+    """
+    root = _tree(
+        tmp_path,
+        baseline={"widgets": ["Widget ledger"]},
+        archived={"2026-01-01-add-widgets": {"widgets": ["Widget API"]}},
+    )
     delta = (
-        root
-        / "openspec"
-        / "changes"
-        / "archive"
-        / "2026-02-01-retire-widgets"
-        / "specs"
-        / "widgets"
-        / "spec.md"
+        root / "openspec" / "changes" / "pending-rename-widgets" / "specs" / "widgets" / "spec.md"
     )
     delta.parent.mkdir(parents=True, exist_ok=True)
     delta.write_text(
-        "## REMOVED Requirements\n\n### Requirement: Widget API\n\nRetired.\n",
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Widget API`\n"
+        "- TO: `### Requirement: Widget ledger`\n",
         encoding="utf-8",
     )
     result = _run("--root", str(root), "--baseline", str(_empty_frozen(root)))

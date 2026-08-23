@@ -50,12 +50,24 @@ a *half*-applied archive, which is the same defect shape as the signals above.
 Renames and removals
 --------------------
 A requirement legitimately disappears from the baseline when a later change
-renames or removes it. Both are honoured, ordering-agnostically: if *any* change
-in the tree renames ``A`` to ``B`` in that capability, ``B``'s presence
-satisfies ``A``; if any change removes ``A``, its absence is accepted. Archive
-directory names are not reliably ordered (not all carry a date prefix), and a
-guard whose false positives must be silenced by hand-editing JSON should
-under-report rather than over-report.
+renames or removes it. Both are honoured, but they draw evidence from different
+places, because they carry different risk.
+
+A **rename** is read from any change in the tree, archived or not, and is
+ordering-agnostic: if some change renames ``A`` to ``B`` in that capability,
+``B``'s presence in the baseline satisfies ``A``. Archive directory names are
+not reliably ordered (not all carry a date prefix), and a rename cannot silence
+anything on its own -- it only redirects the baseline lookup, so an absent ``B``
+still fires.
+
+A **removal** is read from archived changes only. Unlike a rename it is an
+unconditional skip: nothing is looked up afterwards, so a ``## REMOVED`` block
+suppresses the finding outright. Honouring one from an unarchived change would
+let a pending proposal -- possibly never archived, possibly abandoned -- mute a
+real gap permanently, without a ratchet entry and without a reviewer ever seeing
+a JSON diff. That is the same shape as the defect this guard exists to catch: a
+check credited with an answer it was never positioned to give. A removal earns
+its authority by having actually archived.
 
 Baseline ratchet
 ----------------
@@ -137,12 +149,14 @@ def resolve_name(name: str, renames: dict[str, str]) -> str:
 def build_rename_and_removal_index(
     changes_dir: Path,
 ) -> tuple[dict[str, dict[str, str]], dict[str, set[str]]]:
-    """``({spec: {old: new}}, {spec: {removed names}})`` over every change in the tree.
+    """``({spec: {old: new}}, {spec: {removed names}})`` for excusing an absence.
 
-    Both archived and unarchived changes are read: a rename that has not archived
-    yet still tells us the baseline is mid-flight, and treating it as evidence
-    only costs us a finding we would have had to silence by hand anyway.
+    Renames come from every change in the tree; removals only from archived
+    ones. See the module docstring: a rename merely redirects the lookup, so
+    trusting a pending one costs nothing, while a removal skips the check
+    outright and a pending change must not be able to do that.
     """
+    archive_dir = changes_dir / "archive"
     renames: dict[str, dict[str, str]] = {}
     removals: dict[str, set[str]] = {}
 
@@ -151,8 +165,9 @@ def build_rename_and_removal_index(
         text = delta_file.read_text("utf-8")
         for new, old in rename_map(text).items():
             renames.setdefault(spec, {})[old] = new
-        for removed in requirements_under(text, "REMOVED"):
-            removals.setdefault(spec, set()).add(removed)
+        if archive_dir in delta_file.parents:
+            for removed in requirements_under(text, "REMOVED"):
+                removals.setdefault(spec, set()).add(removed)
 
     return renames, removals
 
@@ -293,8 +308,10 @@ def main() -> int:
             f"\n{total} archived requirement(s) across {len(regressions)} entr(ies) never reached "
             "openspec/specs/. Each name above was declared delivered by an archived change and is "
             "not in the baseline today. Apply the change's deltas to the baseline through "
-            "`openspec archive` on a restored copy, or -- if the requirement was superseded -- "
-            "record the rename or removal in the change that superseded it."
+            "`openspec archive` on a restored copy. If the requirement was superseded instead, "
+            "record that in the superseding change -- a `## RENAMED` block counts wherever it "
+            "lives, but a `## REMOVED` block excuses the absence only once that change has "
+            "itself been archived."
         )
         return 1
 
