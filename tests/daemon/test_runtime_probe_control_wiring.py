@@ -21,7 +21,7 @@ from fastmcp import FastMCP as RuntimeFastMCP
 from starlette.testclient import TestClient
 
 from butlers.core.runtime_probe_control.coordinator import ProbeResult, ProbeStatus
-from butlers.core.runtime_probe_control.endpoint import CONTROL_PATH
+from butlers.core.runtime_probe_control.endpoint import CONTROL_PATH, READINESS_PATH
 from butlers.daemon import ButlerDaemon, _McpSseDisconnectGuard
 
 pytestmark = pytest.mark.unit
@@ -84,6 +84,7 @@ async def test_control_route_is_not_an_mcp_tool() -> None:
         runtime_probe_coordinator=_Coordinator(ProbeResult(ProbeStatus.UNAVAILABLE)),
     )
 
+    # Covers the readiness route too: it is attached in the same block.
     assert {tool.name for tool in await mcp.list_tools()} == before
 
 
@@ -101,6 +102,40 @@ def test_control_route_is_not_reachable_under_the_mcp_mount() -> None:
 
     with TestClient(app) as client:
         assert client.post(f"/mcp{CONTROL_PATH}").status_code == 404
+
+
+def test_readiness_route_is_attached_beside_the_control_route() -> None:
+    """The gate is mounted only where the plane it advertises actually exists.
+
+    A ``200/ready`` from a butler with no control route would tell the signed
+    client to go and sign for a ``404``, so the two are attached together.
+    """
+    app = ButlerDaemon._build_mcp_http_app(
+        RuntimeFastMCP("switchboard"),
+        butler_name="switchboard",
+        runtime_probe_coordinator=_Coordinator(ProbeResult(ProbeStatus.UNAVAILABLE)),
+    )
+
+    assert READINESS_PATH in _paths(app)
+    assert not READINESS_PATH.startswith("/mcp")
+    assert f"/mcp{READINESS_PATH}" not in _paths(app)
+
+    with TestClient(app) as client:
+        # No keyring is mounted in this phase, so the honest answer is "no".
+        response = client.get(READINESS_PATH, params={"kid": "probe-not-mounted"})
+        assert client.get(f"/mcp{READINESS_PATH}?kid=probe-not-mounted").status_code == 404
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+
+
+def test_readiness_route_is_absent_without_a_coordinator() -> None:
+    app = ButlerDaemon._build_mcp_http_app(RuntimeFastMCP("chronicler"), butler_name="chronicler")
+
+    assert READINESS_PATH not in _paths(app)
+
+    with TestClient(app) as client:
+        assert client.get(READINESS_PATH, params={"kid": "probe-not-mounted"}).status_code == 404
 
 
 def test_daemon_builds_no_coordinator_for_a_non_switchboard_butler() -> None:

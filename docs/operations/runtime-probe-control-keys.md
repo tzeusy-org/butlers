@@ -127,7 +127,8 @@ Pick a cutover instant `T`, then:
    in-flight one-minute capability could outlive the key that signed it; above
    5 minutes the old key stays live longer than the rotation contract allows.
 3. Restart every verifying process first, so the new keyring is universally
-   accepted before anything signs under the new key.
+   accepted before anything signs under the new key. The readiness gate below
+   is how you confirm that landed rather than assume it.
 4. Replace the signing key and restart the signing side.
 5. After `accept_until`, publish a keyring with `retiring: []` and restart the
    verifiers again.
@@ -183,6 +184,45 @@ capability and gets a `429`. That is intentional: if a rejected request could
 keep its nonce, one capability could be retried until a slot opened and would no
 longer be single-use.
 
+## The readiness gate
+
+The canonical full-stack launcher may bring Dashboard up before all-butlers, so
+the signed client does not assume Switchboard can verify what it is about to
+sign. It asks:
+
+```
+GET /_control/runtime-probe/v1/readiness?kid=<kid>
+```
+
+on the same private surface. This is the **only** route on this plane with a
+query string, and the only one that takes no capability at all. The exception
+holds because the rule protects capabilities: a `kid` is a key identifier, not
+key material, and it already travels in the clear in the protected header of
+every capability the plane carries.
+
+| Response | Meaning |
+| --- | --- |
+| `200` `{"status": "ready"}` | that key id may **issue** right now; sign away |
+| `503` `{"status": "unavailable"}` | anything else at all |
+
+There is deliberately nothing between those two. An unknown key id, a malformed
+one, an unmounted keyring, a request carrying a capability, a cookie, a body, or
+any other query parameter all produce the identical `503` — same status, same
+bytes, same headers — so the route cannot be used to enumerate which key ids a
+deployment loaded.
+
+"Ready" means **issuance**, not acceptance. During a rotation overlap the
+retiring key still verifies until `accept_until`, but it stops issuing at
+`sign_until`; readiness reports it as unavailable from that instant, because a
+client that signed under it would be signing into a rejection.
+
+The client asks once and latches the answer. A first "no" is an ordinary
+startup state and the next probe asks again; a "yes" holds for the life of the
+process, which is safe because both sides freeze their key snapshots at startup
+and rotation is restart-driven. Nothing about Dashboard's ordinary `/health`
+depends on this, so `oauth-gate` can still start all-butlers without a
+dependency cycle.
+
 ## Activation
 
 Do not mount either document yet. The production signing-key mount is gated on
@@ -194,7 +234,10 @@ REQ-core-credentials-002 requires. Until then:
   inside tests** — see `butlers/testing/runtime_probe_control.py`;
 * production Compose contains no signer or verifier mount, and a test pins that;
 * Dashboard `Test`, `verify-all`, and the scheduled sweep still use their
-  existing local verification path and are **not** cut over.
+  existing local verification path and are **not** cut over;
+* the readiness gate is mounted and answers, but with no keyring mounted it
+  answers `503` for every key id, which is the correct fail-closed state and
+  not a fault to chase.
 
 Rolling back after activation retains the child sandbox and makes
 model-verification callers unavailable; it does not restore a local adapter

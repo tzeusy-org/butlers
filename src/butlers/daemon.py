@@ -749,14 +749,22 @@ class ButlerDaemon:
         # Switchboard's private runtime-probe control plane.  Attached beside
         # /health rather than registered as an MCP tool, so it is invisible to
         # tool enumeration and unreachable from a model session.
+        #
+        # The readiness gate is attached with it, never separately: a 200/ready
+        # from a process with no control route would tell the signed client to
+        # go and sign a capability for a 404.
         if runtime_probe_coordinator is not None:
             from butlers.core.runtime_probe_control.endpoint import (
                 build_runtime_probe_control_route,
+                build_runtime_probe_readiness_route,
             )
 
-            control_route = build_runtime_probe_control_route(runtime_probe_coordinator)
-            if not cls._attach_route_via_public_api(streamable_app, control_route):
-                streamable_app.routes.append(control_route)
+            for control_route in (
+                build_runtime_probe_control_route(runtime_probe_coordinator),
+                build_runtime_probe_readiness_route(),
+            ):
+                if not cls._attach_route_via_public_api(streamable_app, control_route):
+                    streamable_app.routes.append(control_route)
 
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
