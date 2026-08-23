@@ -1659,6 +1659,20 @@ Two things to copy when applying this pattern:
   inside the same transaction shows intra-transaction visibility, not durability. The post-fix tests
   re-acquire before asserting.
 
+The repo-wide sweep for other instances (bu-74pxv) found none: `record_dispatch_attempt` is the only
+call site of this shape. Enumerate by the structural property, not by name -- grep the migration SQL
+for `SECURITY DEFINER`, keep the definitions that raise `42501` (directly or through a gate helper),
+then find every call site of each. Exactly four runtime functions raise `42501` on a role check:
+`public.append_runtime_attention_model_breaker`, `public.append_runtime_attention_fleet_halt`,
+`public.dashboard_turn_require_role` (reached from eleven `public.dashboard_turn_*` wrappers), and
+`public.runtime_attention_active_switchboard_role` (an RLS predicate, never called from Python).
+Every `dashboard_turn_*` call goes through `src/butlers/core/dashboard_turns.py`, and all but three
+are pool-scoped, so a refusal aborts only its own implicit transaction. The three that do sit inside
+`conn.transaction()` are in `_routing.py`'s durable dashboard acceptance, where the gated call *is*
+the transaction's purpose: `claim_target` is the gate itself, and the later `mark_route_enqueued` /
+`mark_terminal` gates are provably unreachable because `claim_target` already proved the same role.
+A savepoint there would enqueue route work without a durable turn claim. Being inside a transaction
+is necessary but not sufficient -- only a *best-effort* call attached to a primary write wants one.
 ### Two ways a poll loop reports "everything passed" when it actually saw nothing
 
 Both of these bit the same CI-watch loop in one session, and both fail in the same direction: no data
@@ -1706,3 +1720,4 @@ git branch -D agent/<id> 2>/dev/null   # usually already gone
 If you merged in the wrong order, clean up explicitly and verify, since `--delete-branch` reported no
 error for the remote: `git push origin --delete agent/<id>` then
 `git ls-remote --heads origin agent/<id> | wc -l` should print 0.
+||||||| parent of 77b8a2fd3 (docs(agents): record the role-gated SECURITY DEFINER savepoint census [bu-74pxv])
