@@ -1658,3 +1658,29 @@ Two things to copy when applying this pattern:
 - **Prove the commit from a separate pool acquisition.** Reading the row back on the same connection
   inside the same transaction shows intra-transaction visibility, not durability. The post-fix tests
   re-acquire before asserting.
+
+### Two ways a poll loop reports "everything passed" when it actually saw nothing
+
+Both of these bit the same CI-watch loop in one session, and both fail in the same direction: no data
+is read as good news.
+
+**`jq -e` on empty stdin exits 0.** `gh pr checks "$p" --json bucket | jq -e 'all(.bucket!="pending")'`
+looks like a settled-ness test, but if the `gh` call produces no output, jq runs the filter zero times
+and exits 0, so the loop concludes every check passed. Never let a predicate stand in for both "the
+data says yes" and "there is no data". Count first, in the shell, and treat zero as not-settled:
+
+```sh
+n=$(printf '%s' "$s" | jq 'if type=="array" then length else 0 end' 2>/dev/null)
+case "$n" in ''|*[!0-9]*) n=0 ;; esac
+[ "$n" -eq 0 ] && { settled=n; echo "PR#$p: <no data this tick>"; continue; }
+```
+
+**The shell is zsh, and zsh does not word-split unquoted `$VAR`.** `PRS="3762 3763 3764"; for p in
+$PRS` iterates ONCE with `p` set to the whole string, so `gh pr checks "3762 3763 3764"` fails and
+returns nothing, which the trap above then launders into "all settled". Use a literal list (`for p in
+3762 3763 3764`) or a real array (`prs=(3762 3763 3764); for p in "${prs[@]}"`). An earlier version of
+the same loop worked purely because it happened to use a literal list.
+
+The diagnosis only became possible after the empty-data branch printed a visible marker instead of
+being swallowed: the marker read `PR#3762 3763 3764 3765: <no data>`, which named the word-splitting
+bug directly. When a poll loop can see nothing, make it SAY it saw nothing.
