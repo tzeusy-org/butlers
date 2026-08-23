@@ -26,36 +26,75 @@ straight back out as a group title, in ``Issue.error_message``, in the composed
 It could not simply be blanked: a constant summary would collapse every
 credential failure in the fleet into one group with one occurrence count and one
 acknowledgement covering unrelated broken credentials. Instead, credential-target
-rows group on a synthetic title built from two columns that are already on the
-wire for that row — ``action`` and ``target``, both of which bu-ove06 publishes
-unchanged so the row stays identifiable and ``?key=``-filterable. The result
-reads ``Credential failed: u:google (diagnostic withheld)``: distinct per
-credential, stable across windows, and derived from nothing a provider wrote.
+rows group on a synthetic title built only from columns that cannot carry a
+provider's words: ``action`` and ``target``, both of which bu-ove06 publishes
+unchanged so the row stays identifiable and ``?key=``-filterable, plus
+``failure_category``, which is CHECK-constrained at rest to a closed vocabulary
+(see the next section). The result reads
+``Credential failed: u:google [rejected] (diagnostic withheld)``: distinct per
+credential and per cause, stable across windows, and derived from nothing a
+provider wrote.
 
-The identity is the credential, not the message. Two different causes on one
-credential (a 401 and a 429 on ``u:google``) fold into one group — the accepted
-cost of a content-blind identity, since the only per-cause signal on the row is
-the withheld text itself. The per-occurrence detail remains readable at
-``public.audit_log`` and ``public.secret_probe_log``: this is content blindness
-on the wire, not destruction of evidence.
+The identity is the credential AND its persisted cause (bu-vhie6)
+-----------------------------------------------------------------
+bu-uqipv shipped with the credential alone as the identity, so a 401 and a 429
+on ``u:google`` folded into one group. That was not a preference for coarse
+grouping: the cause simply was not a column. It survived only inside the
+``note`` free text as ``probe_status=<token>``, the token
+(``live_failed:403``) is not a vocabulary member anyway, and the category was
+derived at *response* time from that token plus a provider HTTP code that was
+never persisted. Recovering it here would have meant substring-parsing the very
+text this rule withholds.
+
+Migration ``core_202`` makes it a column. ``public.audit_log.failure_category``
+holds a :data:`~butlers.api.models.audit.PROBE_FAILURE_VOCABULARY` member,
+written at INSERT time and CHECK-constrained at rest, so the title below can
+name the cause while reading nothing a provider wrote:
+
+    ``Credential failed: u:google [rejected] (diagnostic withheld)``
+
+Two decisions the column forces, both deliberate:
+
+**Producers with no category write NULL, and that is complete rather than
+partial.** Across the fleet, credential-target audit rows come from five writer
+helpers (``_write_credential_audit`` / ``_write_system_audit`` /
+``_write_cli_audit`` in ``routers/secrets_v2``, ``_emit_oauth_audit`` in
+``routers/oauth``, and a direct ``audit.append`` in ``jobs/secrets_lifecycle``)
+at 26 call sites. Only **nine** of those sites can write a ``result = 'error'``
+row at all, and every one of the nine now names a category: the two probe
+endpoints derive it from their own ``probe_status`` plus HTTP code, and the
+seven OAuth callback sites select a literal, because a callback knows its own
+cause without any token. The remaining sites write success rows
+(``rotated``/``disconnected``/``attempted``/``set``/``overrode``/``revoked``/
+``verified``) or a ``delivered`` debounce marker, and fail by raising before
+they ever reach the audit write. This grouping CTE only ever sees
+``result = 'error'``, so ``failure_category`` is populated on every row it can
+reach. ``tests/api/test_audit_failure_category_producers.py`` enumerates all
+five helpers and every call site to keep that true.
+
+**Historic rows keep NULL and keep their current group.** They are not
+backfilled: the only place their cause was recorded is the withheld free text,
+and parsing it is the inversion this change exists to prevent. The ``COALESCE``
+below therefore renders an uncategorised row with the *byte-identical* title
+bu-uqipv gave it, so its ``group_key`` (a sha256 of the summary) is unchanged
+and an existing acknowledgement still covers it. After the migration a
+credential that keeps failing opens one new categorised group beside its legacy
+uncategorised one; the legacy group stops growing and ages out of the window.
+One transitional duplicate per credential is the price of never reading the old
+text.
+
+Per-occurrence detail remains readable at ``public.audit_log`` and
+``public.secret_probe_log``: this is content blindness on the wire, not
+destruction of evidence.
 
 Alternatives rejected
 ~~~~~~~~~~~~~~~~~~~~~
-- **Group on a ``PROBE_FAILURE_VOCABULARY`` token plus the target namespace.**
-  The token is not on the row. It lives inside the ``note`` free text as
-  ``probe_status=<token>``, only two of the ten endpoints that write credential
-  audit rows put it there (``probe_user_credential`` and
-  ``probe_system_credential``; the other eight — rotate, disconnect,
-  reauthorize, set, delete — never emit a token at all), and the token itself
-  (``live_failed:403``) is not a vocabulary member: the category is derived at
-  *response* time by ``_probe_failure_category`` from the token plus the
-  provider HTTP code, and that code is never persisted.
-  Recovering it here would mean substring-parsing the very free text this rule
-  withholds, which is what owner Option C forbids: the published value must be
+- **Parse the ``probe_status=<token>`` out of ``note`` at read time.** The
+  original bu-uqipv rejection, and still correct: the published value must be
   selected out of a closed vocabulary, never derived from an input string.
-  Persisting the category at write time is a real option, but it is a
-  five-producer change that leaves every historic row uncategorised, so it is a
-  follow-up rather than this fix.
+  Persisting the category at write time is what removed the question.
+- **Backfill ``failure_category`` for existing rows.** Same objection with the
+  parse moved into a migration. Rejected.
 - **Blank the summary to a constant.** Rejected: it breaks a working surface,
   per above.
 - **Hash the error text into an opaque identity.** Rejected: it withholds the
@@ -138,7 +177,8 @@ WITH audit_source AS (
         error,
         action AS operation,
         COALESCE(metadata, '{{}}'::jsonb) AS request_summary,
-        result
+        result,
+        failure_category
     FROM public.audit_log
 ),
 normalized_errors AS (
@@ -154,9 +194,12 @@ normalized_errors AS (
         operation,
         request_summary,
         result,
+        failure_category,
         CASE
             WHEN target ~ '__CREDENTIAL_TARGET_PATTERN__' THEN
-                'Credential ' || operation || ': ' || target || ' (diagnostic withheld)'
+                'Credential ' || operation || ': ' || target
+                || COALESCE(' [' || failure_category || ']', '')
+                || ' (diagnostic withheld)'
             ELSE COALESCE(
                 NULLIF(BTRIM(
                     REGEXP_REPLACE(

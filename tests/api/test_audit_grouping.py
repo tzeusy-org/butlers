@@ -651,14 +651,22 @@ class TestCredentialTargetGroupIdentity:
         assert "'/tmp/.../'" in sql
         assert "'Unknown error'" in sql
 
-    def test_credential_branch_reads_only_already_published_columns(self):
-        """The synthetic title may only be built from columns already on the wire.
+    def test_credential_branch_reads_no_free_text_column(self):
+        """The synthetic title may only be built from columns that cannot carry
+        a provider's words.
 
+        Two kinds of column qualify, and it matters which is which.
         ``AuditLogEntry`` publishes ``action`` and ``target`` verbatim for a
-        credential row and withholds ``note``/``error``/``metadata``
-        (bu-ove06). A title composed from anything in the second set would
-        re-publish, through the group's identity, exactly what that model
-        stopped publishing per row.
+        credential row, so re-using them adds no new disclosure.
+        ``failure_category`` is the second kind: it is *not* on the wire, and
+        its safety comes instead from being CHECK-constrained at rest to
+        ``PROBE_FAILURE_VOCABULARY`` (core_202), so the only strings it can
+        ever contribute are eight this repository chose. What both kinds share
+        -- and what this test asserts -- is that none of them is free text.
+
+        ``note``/``error``/``metadata`` are withheld per-row by bu-ove06; a
+        title composed from any of them would re-publish, through the group's
+        identity, exactly what that model stopped publishing.
         """
         branch = self._credential_branch(build_audit_group_query())
         withheld = ("error", "note", "request_summary")
@@ -668,6 +676,53 @@ class TestCredentialTargetGroupIdentity:
             )
         assert "operation" in branch and "target" in branch, (
             f"the credential group title names neither the action nor the credential: {branch!r}"
+        )
+
+    def test_credential_title_carries_the_persisted_failure_category(self):
+        """Group identity is credential AND cause (bu-vhie6).
+
+        Without this the title varies only with the credential, so a 401 and a
+        429 on one credential land in the same group under one occurrence count
+        and one acknowledgement -- which is what this change ends.
+        """
+        branch = self._credential_branch(build_audit_group_query())
+        assert "failure_category" in branch, (
+            "the credential group title ignores the persisted cause; every cause "
+            f"on one credential still collapses into one group: {branch!r}"
+        )
+
+    def test_uncategorised_rows_keep_the_byte_identical_legacy_title(self):
+        """Historic rows must not be re-grouped by the column being added.
+
+        Rows written before core_202 have ``failure_category IS NULL`` and are
+        deliberately not backfilled. Postgres makes ``' [' || NULL || ']'``
+        NULL, so the ``COALESCE(..., '')`` renders those rows with the exact
+        pre-change string -- same ``error_summary``, therefore same
+        ``group_key``, therefore existing acknowledgements still cover them.
+        Drop the COALESCE and every historic credential group would silently
+        become NULL and vanish from the feed.
+        """
+        branch = self._credential_branch(build_audit_group_query())
+        assert "COALESCE(' [' || failure_category || ']', '')" in branch, (
+            "the category is concatenated without a NULL guard; historic rows "
+            f"would lose their group entirely: {branch!r}"
+        )
+
+    def test_failure_category_is_not_added_to_the_wire_projection(self):
+        """The column is grouping input, not a new published field.
+
+        ``models/audit.py`` is the single enforcement point for what a
+        credential row discloses (bu-ove06). Persisting the cause is allowed to
+        change how rows *group*; it is not licence to widen what each row
+        *says*.
+        """
+        sql = build_audit_group_occurrences_query()
+        # The shared CTE reads the column (that is how the title is built); the
+        # outer SELECT is the part that reaches the response model.
+        outer = sql[sql.rindex("normalized_errors") :]
+        assert "failure_category" not in outer, (
+            "the occurrences drill-down now projects failure_category; the wire "
+            f"projection widened: {outer!r}"
         )
 
     def test_two_credentials_project_to_two_distinct_groups(self):

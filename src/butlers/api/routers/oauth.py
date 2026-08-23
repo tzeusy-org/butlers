@@ -2676,6 +2676,7 @@ async def _emit_oauth_audit(
     action: str,
     provider: str,
     note: str | None = None,
+    failure_category: str | None = None,
 ) -> None:
     """Append to ``public.audit_log`` for OAuth lifecycle events.
 
@@ -2701,6 +2702,18 @@ async def _emit_oauth_audit(
         OAuth provider identifier (e.g. ``"google"``).
     note:
         Optional human-readable note stored alongside the audit row.
+    failure_category:
+        Cause of the failure as a ``PROBE_FAILURE_VOCABULARY`` member, for
+        ``action="failed"`` rows only (bu-vhie6).  This router is the largest
+        producer of credential-target *failure* rows in the codebase (eight of
+        the ten call sites in the fleet), and unlike the probe endpoints it
+        has no ``probe_status`` token to derive from: each site knows its own
+        cause and names it directly, which is the same closed-vocabulary
+        selection owner Option C requires -- never a provider string, an HTTP
+        code, or the note text.  Without it, every OAuth callback failure on
+        one provider folds into a single audit-error group regardless of
+        whether the provider refused the grant, the token exchange broke, or
+        the local credential store was down.
     """
     if shared_pool is None:
         return
@@ -2715,6 +2728,7 @@ async def _emit_oauth_audit(
             note=note,
             result=result,
             error=audit_error,
+            failure_category=failure_category,
         )
     except _audit.AuditTableNotAvailableError:
         raise
@@ -3029,6 +3043,8 @@ async def oauth_provider_callback(
             shared_pool,
             action="failed",
             provider=provider,
+            # The provider refused the authorization (e.g. access_denied).
+            failure_category="rejected",
             note=f"Provider error: {_sanitize_provider_error(error)}",
         )
 
@@ -3121,6 +3137,8 @@ async def oauth_provider_callback(
             shared_pool,
             action="failed",
             provider=provider,
+            # The provider answered the token endpoint, but not with success.
+            failure_category="provider_error",
             note="Token exchange failed",
         )
         return JSONResponse(
@@ -3147,6 +3165,12 @@ async def oauth_provider_callback(
             shared_pool,
             action="failed",
             provider=provider,
+            # The provider answered 200; the payload it returned is what fails
+            # its format check.  Not `provider_error` -- the provider reported
+            # success, and calling this its error would misattribute the cause
+            # to the wrong side of the exchange.  Matches how the probe routes
+            # classify `live_failed:bad_format` (secrets_v2._PROBE_STATUS_CATEGORIES).
+            failure_category="malformed",
             note="Invalid token payload",
         )
         return JSONResponse(
@@ -3190,6 +3214,9 @@ async def oauth_provider_callback(
             shared_pool,
             action="failed",
             provider=provider,
+            # Local infrastructure, not a verdict on the credential: no live
+            # signal was obtained about it at all.
+            failure_category="other",
             note="Credential store unavailable",
         )
         raise HTTPException(
@@ -3312,6 +3339,7 @@ async def _google_callback_from_state(
             shared_pool,
             action="failed",
             provider="google",
+            failure_category="provider_error",
             note="Token exchange failed",
         )
         return JSONResponse(
@@ -3346,6 +3374,7 @@ async def _google_callback_from_state(
                 shared_pool,
                 action="failed",
                 provider="google",
+                failure_category="provider_error",
                 note="Userinfo call failed",
             )
             return JSONResponse(
@@ -3382,6 +3411,8 @@ async def _google_callback_from_state(
                     shared_pool,
                     action="failed",
                     provider="google",
+                    # Nothing durable was stored for this credential.
+                    failure_category="not_set",
                     note="No refresh token for new account",
                 )
                 return JSONResponse(
@@ -3436,6 +3467,7 @@ async def _google_callback_from_state(
             shared_pool,
             action="failed",
             provider="google",
+            failure_category="other",
             note="Credential store unavailable",
         )
         raise HTTPException(

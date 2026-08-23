@@ -53,6 +53,52 @@ CREDENTIAL_TARGET_PATTERN = r"^(?:u|s|c|user|system|cli):"
 _CREDENTIAL_TARGET_RE = re.compile(CREDENTIAL_TARGET_PATTERN)
 
 
+#: The closed vocabulary a credential failure may be described by.
+#:
+#: Owner Option C: a credential failure is published as a *selection* out of
+#: this tuple, never as anything derived from an input string.  A new provider
+#: message, a new ``probe_status`` token, or a new HTTP status code therefore
+#: cannot widen what escapes -- the worst an unclassifiable failure can do is
+#: land on ``other``.
+#:
+#: It lives here rather than in ``routers/secrets_v2`` (its historical home,
+#: which still re-exports it) because two surfaces now need it and they must
+#: not drift: the secrets routes publish it as ``TestResult.message``
+#: (bu-nz4sn), and ``public.audit_log.failure_category`` stores it at rest
+#: (bu-vhie6, migration ``core_202``, whose CHECK constraint mirrors this exact
+#: set).  A models module is importable by both routers without a
+#: router-imports-router edge.
+PROBE_FAILURE_VOCABULARY: tuple[str, ...] = (
+    "not_set",  # no value is stored for this credential
+    "expired",  # the stored value is past a known expiry
+    "rejected",  # the provider refused the credential (HTTP 401/403)
+    "rate_limited",  # the provider throttled the probe (HTTP 429)
+    "provider_error",  # the provider answered, but not with success
+    "malformed",  # a value is present but fails this system's format check
+    "unverified",  # no live signal this time; an earlier live probe had failed
+    "other",
+)
+
+
+def clamp_failure_category(value: str | None) -> str | None:
+    """Clamp an already-categorised failure to :data:`PROBE_FAILURE_VOCABULARY`.
+
+    ``None`` passes through (no failure, or a producer that has no category to
+    give).  Anything else that is not a vocabulary member collapses to
+    ``"other"`` rather than riding along, so a raw ``probe_status`` token, an
+    HTTP status code, or a provider string can never reach a wire field or the
+    ``failure_category`` column even by mistake.
+
+    Collapsing rather than raising is deliberate: every caller writes audit
+    rows fire-and-forget, so raising would drop the whole row to punish a
+    mislabelled category, and ``"other"`` is already the honest bucket for a
+    failure this system cannot name.
+    """
+    if value is None:
+        return None
+    return value if value in PROBE_FAILURE_VOCABULARY else "other"
+
+
 def is_credential_target(target: str | None) -> bool:
     """Return True when *target* names a credential rather than another resource.
 

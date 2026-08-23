@@ -214,6 +214,10 @@ from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.models.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
@@ -4824,11 +4828,20 @@ async def _write_credential_audit(
     provider: str,
     note: str | None = None,
     error: str | None = None,
+    failure_category: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a user-credential mutation.
 
     Silently swallows errors so audit logging never blocks the primary
     operation (fire-and-forget pattern consistent with audit_emit.py).
+
+    failure_category:
+        Cause of the failure, as a ``PROBE_FAILURE_VOCABULARY`` member, or
+        ``None``.  Persisted to ``public.audit_log.failure_category`` so a
+        credential audit-error group can be identified by its cause without a
+        reader ever parsing the withheld ``note``/``error`` free text
+        (bu-vhie6).  Never the raw ``probe_status`` token, the provider's HTTP
+        code, or a provider string.
     """
     target = normalize_credential_key("user", provider)
     result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
@@ -4841,6 +4854,7 @@ async def _write_credential_audit(
             note=note,
             result=result,
             error=audit_error,
+            failure_category=failure_category,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -5101,18 +5115,13 @@ async def disconnect_user_credential(
 # The real diagnostic is still written to ``public.secret_probe_log``, the
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
+#
+# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# same closed vocabulary is what ``public.audit_log.failure_category`` stores
+# at rest, and ``routers/audit`` cannot import this router.  It is re-exported
+# here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every
+# existing reader.
 # ---------------------------------------------------------------------------
-
-PROBE_FAILURE_VOCABULARY: tuple[str, ...] = (
-    "not_set",  # no value is stored for this credential
-    "expired",  # the stored value is past a known expiry
-    "rejected",  # the provider refused the credential (HTTP 401/403)
-    "rate_limited",  # the provider throttled the probe (HTTP 429)
-    "provider_error",  # the provider answered, but not with success
-    "malformed",  # a value is present but fails this system's format check
-    "unverified",  # no live signal this time; an earlier live probe had failed
-    "other",
-)
 
 # ``probe_status`` tokens that name their own cause rather than an HTTP code.
 # Everything else is classified from the status code — see
@@ -5144,18 +5153,16 @@ def _probe_failure_category(probe_status: str, code: int | None) -> str:
     return "other"
 
 
-def _probe_category(value: str | None) -> str | None:
-    """Clamp an already-categorised probe result to the vocabulary.
-
-    The list-shaped counterpart of ``_capability_name``: used where a probe
-    outcome arrives from another module (the probe-all sweep re-publishes
-    results produced by this router *and* by ``cli_auth.test_api_key``, whose
-    ``detail`` is provider free text). Anything outside the vocabulary
-    collapses to ``other`` rather than riding along.
-    """
-    if value is None:
-        return None
-    return value if value in PROBE_FAILURE_VOCABULARY else "other"
+#: Clamp an already-categorised probe result to the vocabulary.
+#:
+#: The list-shaped counterpart of ``_capability_name``: used where a probe
+#: outcome arrives from another module (the probe-all sweep re-publishes
+#: results produced by this router *and* by ``cli_auth.test_api_key``, whose
+#: ``detail`` is provider free text). Anything outside the vocabulary collapses
+#: to ``other`` rather than riding along.  The implementation moved to
+#: ``models.audit`` with the vocabulary itself (bu-vhie6) so the wire clamp and
+#: the ``failure_category`` write clamp are one function.
+_probe_category = clamp_failure_category
 
 
 # ---------------------------------------------------------------------------
@@ -5466,6 +5473,12 @@ async def probe_user_credential(
         provider=provider,
         note=note,
         error=None if probe_ok else probe_fail_msg,
+        # ``wire_failure`` is already the derived PROBE_FAILURE_VOCABULARY
+        # category (None when the probe passed). Persisting it here is what
+        # lets the audit-error group be identified by cause: the token that
+        # produced it lives only inside ``note``, which every reader withholds
+        # (bu-vhie6).
+        failure_category=wire_failure,
     )
 
     # Content-blind response (bu-nz4sn): the free-text ``probe_message`` above
@@ -5728,11 +5741,20 @@ async def _write_system_audit(
     key: str,
     note: str | None = None,
     error: str | None = None,
+    failure_category: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a system-credential mutation.
 
     Uses normalize_credential_key("system", key) as the canonical target.
     Silently swallows errors (fire-and-forget, consistent with user audit helper).
+
+    failure_category:
+        Cause of the failure, as a ``PROBE_FAILURE_VOCABULARY`` member, or
+        ``None``.  Persisted to ``public.audit_log.failure_category`` so a
+        credential audit-error group can be identified by its cause without a
+        reader ever parsing the withheld ``note``/``error`` free text
+        (bu-vhie6).  Never the raw ``probe_status`` token, the provider's HTTP
+        code, or a provider string.
     """
     target = normalize_credential_key("system", key)
     result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
@@ -5745,6 +5767,7 @@ async def _write_system_audit(
             note=note,
             result=result,
             error=audit_error,
+            failure_category=failure_category,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -6293,6 +6316,9 @@ async def probe_system_credential(
         key=key,
         note=note,
         error=None if probe_ok else _fail_msg,
+        # See probe_user_credential: the persisted category, not the token
+        # (bu-vhie6).
+        failure_category=wire_failure,
     )
 
     result = TestResult(
@@ -6520,11 +6546,20 @@ async def _write_cli_audit(
     credential_id: str,
     note: str | None = None,
     error: str | None = None,
+    failure_category: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a CLI-credential mutation.
 
     Silently swallows errors so audit logging never blocks the primary
     operation (fire-and-forget pattern consistent with audit_emit.py).
+
+    failure_category:
+        Cause of the failure, as a ``PROBE_FAILURE_VOCABULARY`` member, or
+        ``None``.  Persisted to ``public.audit_log.failure_category`` so a
+        credential audit-error group can be identified by its cause without a
+        reader ever parsing the withheld ``note``/``error`` free text
+        (bu-vhie6).  Never the raw ``probe_status`` token, the provider's HTTP
+        code, or a provider string.
     """
     target = normalize_credential_key("cli", credential_id)
     result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
@@ -6537,6 +6572,7 @@ async def _write_cli_audit(
             note=note,
             result=result,
             error=audit_error,
+            failure_category=failure_category,
         )
     except Exception:  # noqa: BLE001
         logger.warning(

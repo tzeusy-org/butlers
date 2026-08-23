@@ -169,7 +169,20 @@ async def pending_actions_pool(provisioned_postgres_pool):
                 request_id UUID,
                 metadata JSONB,
                 result TEXT,
-                error TEXT
+                error TEXT,
+                -- Mirrors core_202, including its vocabulary CHECK. The column
+                -- alone would make this fixture laxer than production: the
+                -- rotate-token refusal below writes a failure_category, and
+                -- without the constraint this round-trip would accept a value
+                -- the real table rejects.
+                failure_category TEXT,
+                CONSTRAINT audit_log_failure_category_vocabulary CHECK (
+                    failure_category IS NULL
+                    OR failure_category IN (
+                        'not_set', 'expired', 'rejected', 'rate_limited',
+                        'provider_error', 'malformed', 'unverified', 'other'
+                    )
+                )
             )
         """)
         yield pool

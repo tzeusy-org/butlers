@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.audit import AuditEntry, AuditLogEntry
+from butlers.api.models.audit import AuditEntry, AuditLogEntry, clamp_failure_category
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
 from butlers.core.credential_keys import normalize_key_param
 from butlers.metrics_registry import get_or_create_counter
@@ -230,6 +230,7 @@ async def append(
     metadata: dict[str, Any] | None = None,
     result: str | None = None,
     error: str | None = None,
+    failure_category: str | None = None,
 ) -> int:
     """Append one row to ``public.audit_log`` and return the new row id.
 
@@ -273,9 +274,20 @@ async def append(
     error:
         Optional error message persisted to the ``error`` column (core_122);
         only meaningful when *result* denotes a failure.
+    failure_category:
+        Optional cause of the failure, persisted to the ``failure_category``
+        column (core_202).  Clamped to
+        :data:`~butlers.api.models.audit.PROBE_FAILURE_VOCABULARY` on the way
+        in, so a raw ``probe_status`` token, a provider HTTP code, or any free
+        text collapses to ``"other"`` rather than being stored.  This is the
+        only per-row signal a credential-target audit *group* may be identified
+        by, because every free-text column on such a row is withheld on read
+        (bu-ove06/bu-uqipv) -- deriving the cause at read time would mean
+        parsing exactly that withheld text.  Leave ``None`` for a success row
+        and for any producer that cannot name its cause out of the vocabulary.
 
-    The three core_122 parameters are keyword-only and default to ``None`` so
-    every existing caller is unaffected.
+    The three core_122 parameters and *failure_category* are keyword-only and
+    default to ``None`` so every existing caller is unaffected.
 
     Returns
     -------
@@ -302,11 +314,27 @@ async def append(
     # stays None -> SQL NULL.
     safe_metadata = json.loads(json.dumps(metadata, default=str)) if metadata is not None else None
 
+    # Clamped here rather than trusted from the caller: this is the single
+    # funnel every audit writer goes through, and core_202's CHECK constraint
+    # would otherwise reject the whole row (audit writes are fire-and-forget,
+    # so a rejected row is a silently lost row).
+    safe_failure_category = clamp_failure_category(failure_category)
+    if failure_category is not None and safe_failure_category != failure_category:
+        # The rejected value is deliberately NOT logged: the only way a
+        # non-member reaches here is a producer handing over free text, and a
+        # log line is one more place that text would land.
+        logger.warning(
+            "audit.append: failure_category for action=%s was not a vocabulary "
+            "member; stored as 'other'",
+            action,
+        )
+
     try:
         row_id: int = await pool.fetchval(
             "INSERT INTO public.audit_log "
-            "(actor, action, target, note, ip, request_id, metadata, result, error) "
-            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9) "
+            "(actor, action, target, note, ip, request_id, metadata, result, error, "
+            "failure_category) "
+            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10) "
             "RETURNING id",
             actor,
             action,
@@ -317,6 +345,7 @@ async def append(
             safe_metadata,
             result,
             error,
+            safe_failure_category,
         )
     except UndefinedTableError as exc:
         raise AuditTableNotAvailableError(
