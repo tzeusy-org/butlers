@@ -8543,18 +8543,6 @@ export interface SecretsAuditOutcome {
 }
 
 /**
- * Latest probe result for one capability family of a user credential
- * (bu-4v5es). Maps to CapabilityStatus in the backend secrets_v2 router.
- *
- * `capability` is 'calendar' | 'gmail' | 'drive' | 'health' for Google;
- * 'connectivity' for every other provider's single live-verify call.
- */
-export interface SecretsCapabilityStatus {
-  capability: string;
-  test: SecretsProbeResult | null;
-}
-
-/**
  * One credential's outcome from a probe-all sweep (POST /api/secrets/probe-all).
  *
  * `key` is the canonical credential key ("u:google" / "s:KEY" / "c:cli-auth/codex")
@@ -8850,22 +8838,33 @@ export interface SecretsInventoryParams {
 // ---------------------------------------------------------------------------
 
 /**
- * Full evidence payload for a single user-scoped credential.
+ * Content-blind evidence payload for a single user-scoped credential.
  *
- * Returned by GET /api/secrets/user/<provider>?identity=<uuid>
- * Maps to UserSecretDetail in secrets_v2.py.
- * Raw credential values are NEVER returned.
+ * Returned by GET /api/secrets/user/<provider>?identity=<uuid> and by
+ * POST /api/secrets/user/<provider>/rotate.
+ * Maps to UserSecretDetail in secrets_v2.py, field for field: the backend
+ * builds it in `_content_blind_detail`, which is the only bridge from the
+ * router's internal `_UserCredentialRecord` to this wire shape.
+ *
+ * Raw credential values are NEVER returned, and neither is anything that can
+ * echo one: the persisted `entity_info.type` and `label`, raw OAuth scope
+ * identifiers, probe messages, audit notes, and the failure tail are all off
+ * this wire (owner decision, 2026-08-13). Capability evidence arrives as
+ * members of the backend's fixed CAPABILITY_VOCABULARY instead. Do not re-add
+ * any of them here to make a component compile — the field will be
+ * `undefined` at runtime.
+ *
+ * Nothing is optional: the backend serialises every field on every response
+ * (no `response_model_exclude_none`/`exclude_unset`), so an absent value
+ * arrives as `null` or an empty array, never as a missing key.
  */
 export interface SecretsUserDetail {
   /** entity_info primary key (UUID string). */
   id: string;
   /** entity UUID. */
   entity_id: string;
-  /** e.g. "google_oauth_refresh". */
-  type: string;
-  /** Normalised provider slug (e.g. "google"). */
+  /** The provider path segment the caller asked for (e.g. "google"). */
   provider: string;
-  label: string | null;
 
   /** Derived state: "ok" | "warn" | "failing" | "expired" | "never_set". */
   state: string;
@@ -8874,21 +8873,29 @@ export interface SecretsUserDetail {
 
   /** ISO-8601 created_at. */
   issued: string | null;
-  /** ISO-8601 expires_at. Null when not persisted. */
+  /** ISO-8601 expires_at. Google test-mode only; null for every other provider. */
   expires: string | null;
   last_verified: string | null;
-  last_used: string | null;
 
-  scopes_required: string[];
-  scopes_granted: string[];
-  feeds: string[];
+  /**
+   * Capability categories this credential's provider needs, derived
+   * server-side from public.provider_feature_catalogue.required_scopes.
+   * Empty means "no capability is recorded", never "unknown".
+   */
+  capabilities_required: string[];
+  /**
+   * Capability categories actually granted. A real source only exists for
+   * Google today (public.google_accounts.granted_scopes); every other provider
+   * stays empty.
+   */
+  capabilities_granted: string[];
 
-  failure_tail: string | null;
-  breaks: SecretsBreakDict[];
-  test: SecretsProbeResult | null;
-  audit: SecretsAuditRow[];
+  /** Most recent probe outcome, without its free-text message. */
+  test: SecretsCredentialTestOutcome | null;
+  /** Last 10 audit rows, newest first, each without its free-text note. */
+  audit: SecretsCredentialAuditOutcome[];
   /** Per-capability probe state (bu-4v5es). See SecretsUserRaw.capabilities. */
-  capabilities?: SecretsCapabilityStatus[];
+  capabilities: SecretsCredentialCapabilityOutcome[];
 }
 
 /**
@@ -8969,36 +8976,6 @@ export interface SecretsAuditEvent {
   ts: string;
   actor: string;
   action: string;
-}
-
-/**
- * An UNPROJECTED audit row, carrying the operator-authored `note`.
- *
- * No /api/secrets endpoint emits this shape any more: the system write route
- * was the last one, and it now publishes SecretsSystemCredentialDetail
- * (bu-m9s61). Only SecretsUserDetail below still references it, and that type
- * has drifted from the content-blind UserSecretDetail the backend returns.
- * Kept separate from SecretsAuditEvent deliberately, so a shared type cannot
- * let the projected endpoints' guarantee stand in for an absence an
- * unprojected payload does not provide. Do not render `note`.
- */
-export interface SecretsAuditRow {
-  ts: string;
-  actor: string;
-  action: string;
-  note: string | null;
-}
-
-/**
- * A break-entry dict as returned in per-credential detail payloads.
- * Looser than BreakEntry (from the catalogue endpoint) because break entries
- * returned inline do not always carry required_scopes.
- */
-export interface SecretsBreakDict {
-  butler: string;
-  feature: string;
-  severity: "high" | "medium" | "low";
-  required_scopes?: string[];
 }
 
 /**

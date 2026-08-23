@@ -68,7 +68,7 @@ import {
 
 describe("getUserCredential", () => {
   it("calls GET /api/secrets/user/<provider>", async () => {
-    mockApiResponse({ id: "uuid", entity_id: "eid", type: "google_oauth_refresh", provider: "google", state: "ok", fingerprint: "abc12345" });
+    mockApiResponse({ id: "uuid", entity_id: "eid", provider: "google", state: "ok", fingerprint: "abc12345" });
     await getUserCredential("google");
     const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/api/secrets/user/google");
