@@ -14,15 +14,15 @@ expired, revoked, or mismatched credentials before executing the tool or routing
 to Messenger.  It SHALL not treat an envelope's provider or endpoint field as
 account provenance.
 
-#### Scenario: Token scope enforcement
+#### Scenario: [TARGET-STATE] Token scope enforcement
 
 - **WHEN** a connector authenticates with `SWITCHBOARD_API_TOKEN` or its
   approved equivalent transport credential
-- **THEN** the token scope matches the connector's source identity
+- **THEN** the token scope must match the connector's source identity
 - **AND** Switchboard derives the immutable connector/account principal from
   that validated scope rather than trusting tool arguments
 
-#### Scenario: Token security requirements
+#### Scenario: [TARGET-STATE] Token security requirements
 
 - **WHEN** connector tokens are managed
 - **THEN** tokens are stored in secret managers, rotated every 90 days

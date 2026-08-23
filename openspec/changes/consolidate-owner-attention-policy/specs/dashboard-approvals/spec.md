@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Approvals Policy (Quiet Hours)
+### Requirement: Owner Attention Policy
 
 The dashboard SHALL expose the stable `GET/PUT /api/approvals/policy` endpoint
 to manage the global Owner Attention Policy. The policy controls routine

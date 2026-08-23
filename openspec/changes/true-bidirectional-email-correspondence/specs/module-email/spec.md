@@ -33,7 +33,7 @@ but a successful SMTP call is transport acceptance only.  The module SHALL
 construct message content in memory only and return a typed, content-free
 delivery outcome to the Messenger correspondence owner.
 
-#### Scenario: Send email through SMTP
+#### Scenario: Send email
 
 - **WHEN** `email_send_message` is called with `to`, `subject`, `body`
 - **THEN** a MIME text email is constructed and sent via SMTP
@@ -42,6 +42,16 @@ delivery outcome to the Messenger correspondence owner.
   not as provider-Sent or bidirectional confirmation
 - **AND** the result does not echo `to`, `subject`, `body`, headers, or a raw
   provider/error payload
+
+#### Scenario: Reply to thread
+
+- **WHEN** `email_reply_to_thread` is called with `to`, `thread_id`, `body`, and optional `subject`
+- **THEN** the email is sent with a subject defaulting to `Re: {thread_id}` if not provided
+- **AND** the thread identifier is passed only to the private correspondence
+  admission/provider path when the provider contract supports it
+- **AND** the response remains a typed, content-free outcome
+
+## ADDED Requirements
 
 ### Requirement: Disabled provider-native exact-reference email sending
 
@@ -78,11 +88,3 @@ NOT create a confirmation lease.
   lease-eligible before any confirmation poll
 - **AND** the connector cannot initiate a generic outbound email or persist
   transient content on the route
-
-#### Scenario: Reply to thread
-
-- **WHEN** `email_reply_to_thread` is called with `to`, `thread_id`, `body`, and optional `subject`
-- **THEN** the email is sent with a subject defaulting to `Re: {thread_id}` if not provided
-- **AND** the thread identifier is passed only to the private correspondence
-  admission/provider path when the provider contract supports it
-- **AND** the response remains a typed, content-free outcome
