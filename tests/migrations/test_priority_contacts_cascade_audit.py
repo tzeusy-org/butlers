@@ -1,35 +1,66 @@
-"""Integration test for priority_contacts cascade-delete audit trigger.
+"""Contract: ``public.priority_contacts`` carries NO cascade-audit trigger (bu-fi36x).
 
-Verifies that deleting a contact from public.contacts (which cascades to
-public.priority_contacts) fires the AFTER DELETE trigger, inserting an
-audit_log entry with:
-  action = 'ingestion.priority_contact.cascade_remove'
-  actor  = 'system:contact_cascade'
-  target = '<contact_id>'
-  note   = 'contact removed from public.contacts'
+History
+-------
+``core_101`` created an unconditional ``AFTER DELETE`` row trigger on
+``public.priority_contacts`` whose only purpose was to make *cascaded* removals
+observable: when a row in ``public.contacts`` was deleted, the
+``ON DELETE CASCADE`` FK removed the priority-contact row silently, so the
+trigger wrote one ``ingestion.priority_contact.cascade_remove`` audit row with
+``note = 'contact removed from public.contacts'``.
 
-The schema is exercised in its post-core_129 form: priority_contacts is
-butler-agnostic (the 'butler' column was dropped; PK collapsed to contact_id),
-so the trigger target is just '<contact_id>' (no ':<butler>' suffix).
+Two later migrations dismantled that premise:
 
-§3.12 / §3.1 — Phase 3a trigger (core_101), butler-drop (core_129, bu-gx13h).
+- ``core_131`` dropped ``priority_contacts_contact_id_fkey`` (the only cascading
+  inbound FK). The replacement FK, ``priority_contacts_entity_id_fkey`` →
+  ``public.entities(id)``, is ``ON DELETE SET NULL`` — it nulls a column, it never
+  deletes a row.
+- ``core_134`` dropped ``public.contacts`` outright.
 
-This test requires a real PostgreSQL DB with triggers enabled.
-Runs only under the 'integration' mark (needs postgres_container fixture).
+So no cascade path into ``priority_contacts`` remains. Every firing of the
+trigger was in fact a *direct* DELETE — overwhelmingly the router's own
+``DELETE /api/ingestion/priority-contacts/{contact_id}``, which already writes
+its own ``ingestion.priority_contact.remove`` audit row. One removal therefore
+produced two audit rows, the second asserting a provenance
+(``contact removed from public.contacts``) that could no longer occur.
+
+``core_203`` drops the trigger and its function. A conditional trigger was
+rejected: there is no surviving cascade path for a condition to select for, and
+a trigger cannot distinguish the router's DELETE from any other direct DELETE.
+
+Historical rows: the pre-existing ``ingestion.priority_contact.cascade_remove``
+rows are left untouched. Audit history is immutable — rewriting or deleting
+landed audit rows to make them retroactively accurate would be a worse defect
+than the inaccurate note. ``core_203``'s docstring records the same decision.
+
+These tests replay the real migration chain (``core_101`` → ``core_129`` →
+``core_131`` → ``core_134`` → ``core_203``) against a live PostgreSQL instance,
+then exercise the real router against the resulting schema.
 """
 
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from uuid import UUID, uuid4
 
 import asyncpg
+import httpx
 import pytest
+from fastapi import FastAPI
+
+from butlers.api.routers.priority_contacts import _get_db_manager
+from butlers.api.routers.priority_contacts import router as priority_contacts_router
 
 pytestmark = pytest.mark.integration
 
 _VERSIONS_DIR = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "core"
+
+_CASCADE_ACTION = "ingestion.priority_contact.cascade_remove"
+_REMOVE_ACTION = "ingestion.priority_contact.remove"
+_TRIGGER_FN = "priority_contacts_cascade_audit"
 
 
 def _load_migration(name: str):
@@ -39,17 +70,6 @@ def _load_migration(name: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _revision_chain() -> None:
-    """Verify migration revision metadata."""
-    mod = _load_migration("core_101_priority_contacts")
-    assert mod.revision == "core_101"
-    assert mod.down_revision == "core_100"
-
-    drop = _load_migration("core_129_priority_contacts_drop_butler")
-    assert drop.revision == "core_129"
-    assert drop.down_revision == "core_128"
 
 
 async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
@@ -86,26 +106,43 @@ async def _apply_core_129_schema(pool: asyncpg.Pool, drop_mod) -> None:
 
 
 async def _provision_tables(pool: asyncpg.Pool) -> None:
-    """Create prerequisite public tables for priority_contacts migration."""
-    # public.contacts — minimal schema required by FK
+    """Replay the priority_contacts migration chain onto a fresh database."""
+    # public.contacts — the legacy registry core_101's FK points at. Created here
+    # only so the real core_101 DDL runs; core_134 drops it again below.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS public.contacts (
-            id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT
+            id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name      TEXT,
+            entity_id UUID
         )
     """)
 
-    # public.audit_log — required by the cascade trigger INSERT
-    audit_mod = _load_migration("core_092_audit_log")
-    await _run_upgrade_sqls(pool, audit_mod)
+    # public.entities — core_131 re-points priority_contacts at this table.
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.entities (
+            id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            canonical_name TEXT
+        )
+    """)
 
-    # public.priority_contacts + trigger (core_101 shape, with butler column)
-    pc_mod = _load_migration("core_101_priority_contacts")
-    await _run_upgrade_sqls(pool, pc_mod)
+    # public.audit_log — the table both the router and the (retired) trigger write to.
+    for name in (
+        "core_092_audit_log",
+        "core_122_audit_log_metadata_result_error",
+        "core_202_audit_log_failure_category",
+    ):
+        await _run_upgrade_sqls(pool, _load_migration(name))
+
+    # public.priority_contacts + cascade trigger (core_101 shape, with butler column).
+    await _run_upgrade_sqls(pool, _load_migration("core_101_priority_contacts"))
 
     # Collapse to the butler-agnostic shape (core_129).
-    drop_mod = _load_migration("core_129_priority_contacts_drop_butler")
-    await _apply_core_129_schema(pool, drop_mod)
+    await _apply_core_129_schema(pool, _load_migration("core_129_priority_contacts_drop_butler"))
+
+    # Re-point onto public.entities and drop the cascading contacts FK (core_131),
+    # then drop public.contacts itself (core_134).
+    await _run_upgrade_sqls(pool, _load_migration("core_131_priority_contacts_add_entity_id"))
+    await _run_upgrade_sqls(pool, _load_migration("core_134_drop_public_contacts"))
 
 
 @pytest.fixture
@@ -115,94 +152,185 @@ async def cascade_pool(provisioned_postgres_pool):
         yield pool
 
 
-def test_migration_revision_chain():
-    """Migration revision chain is correct."""
-    _revision_chain()
+class _StubDatabaseManager:
+    """Minimal DatabaseManager stand-in handing the router the live test pool."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    def credential_shared_pool(self) -> asyncpg.Pool:
+        return self._pool
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_cascade_delete_emits_audit_entry(cascade_pool: asyncpg.Pool) -> None:
-    """Deleting a contact cascades to priority_contacts and fires the audit trigger.
+@pytest.fixture
+async def priority_contacts_client(cascade_pool: asyncpg.Pool) -> AsyncIterator[httpx.AsyncClient]:
+    """The real priority-contacts router bound to the live migrated database."""
+    app = FastAPI()
+    app.include_router(priority_contacts_router)
+    app.dependency_overrides[_get_db_manager] = lambda: _StubDatabaseManager(cascade_pool)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
-    The trigger inserts into public.audit_log with the expected values.
-    """
-    pool = cascade_pool
 
-    # Insert a contact
-    contact_id = await pool.fetchval(
-        "INSERT INTO public.contacts (name) VALUES ($1) RETURNING id",
-        "Alice",
+async def _seed_priority_contact(pool: asyncpg.Pool, name: str = "Alice") -> UUID:
+    """Insert one entity + its priority-contact row; return the contact_id."""
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id", name
     )
-
-    # Add a priority contact (butler-agnostic — contact_id only)
     await pool.execute(
-        "INSERT INTO public.priority_contacts (contact_id) VALUES ($1)",
-        contact_id,
+        "INSERT INTO public.priority_contacts (contact_id, entity_id) VALUES ($1, $2)",
+        entity_id,
+        entity_id,
     )
+    return entity_id
 
-    # Verify the priority contact exists
-    pc = await pool.fetchrow(
-        "SELECT * FROM public.priority_contacts WHERE contact_id = $1",
-        contact_id,
-    )
-    assert pc is not None
 
-    # Delete the contact — should cascade-delete the priority_contacts row
-    # and fire the audit trigger
-    await pool.execute("DELETE FROM public.contacts WHERE id = $1", contact_id)
+def test_migration_revision_chain():
+    """Migration revision metadata links core_101 → core_129."""
+    mod = _load_migration("core_101_priority_contacts")
+    assert mod.revision == "core_101"
+    assert mod.down_revision == "core_100"
 
-    # The priority_contacts row should be gone
-    pc_after = await pool.fetchrow(
-        "SELECT * FROM public.priority_contacts WHERE contact_id = $1",
-        contact_id,
-    )
-    assert pc_after is None, "Cascade delete should have removed the priority_contacts row"
-
-    # The audit_log should have a cascade_remove entry
-    audit_row = await pool.fetchrow(
-        "SELECT actor, action, target, note FROM public.audit_log "
-        "WHERE action = 'ingestion.priority_contact.cascade_remove' "
-        "ORDER BY id DESC LIMIT 1"
-    )
-    assert audit_row is not None, "Cascade trigger should have inserted an audit_log entry"
-    assert audit_row["actor"] == "system:contact_cascade"
-    assert audit_row["action"] == "ingestion.priority_contact.cascade_remove"
-    # Target is the bare contact_id — no ':<butler>' suffix after core_129.
-    assert audit_row["target"] == str(contact_id)
-    assert audit_row["note"] == "contact removed from public.contacts"
+    drop = _load_migration("core_129_priority_contacts_drop_butler")
+    assert drop.revision == "core_129"
+    assert drop.down_revision == "core_128"
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_cascade_delete_multiple_contacts(cascade_pool: asyncpg.Pool) -> None:
-    """Deleting multiple priority contacts emits one audit entry per cascaded row."""
-    pool = cascade_pool
-
-    contact_ids = []
-    for name in ("Bob", "Carol"):
-        cid = await pool.fetchval(
-            "INSERT INTO public.contacts (name) VALUES ($1) RETURNING id",
-            name,
-        )
-        await pool.execute(
-            "INSERT INTO public.priority_contacts (contact_id) VALUES ($1)",
-            cid,
-        )
-        contact_ids.append(cid)
-
-    # Delete both contacts — both priority_contacts rows cascade, both trigger audits
-    for cid in contact_ids:
-        await pool.execute("DELETE FROM public.contacts WHERE id = $1", cid)
-
-    targets = {str(cid) for cid in contact_ids}
-    audit_rows = await pool.fetch(
-        "SELECT target FROM public.audit_log "
-        "WHERE action = 'ingestion.priority_contact.cascade_remove' "
-        "AND target = ANY($1)",
-        list(targets),
+async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> None:
+    """core_203 leaves no user trigger on public.priority_contacts."""
+    triggers = await cascade_pool.fetch(
+        """
+        SELECT tgname FROM pg_trigger
+        WHERE tgrelid = 'public.priority_contacts'::regclass
+          AND NOT tgisinternal
+        """
+    )
+    assert [t["tgname"] for t in triggers] == [], (
+        "public.priority_contacts must carry no user trigger: the cascade path the "
+        "cascade-audit trigger represented was removed by core_131/core_134"
     )
 
-    # One audit entry per priority_contacts row
-    assert len(audit_rows) == len(contact_ids), (
-        f"Expected {len(contact_ids)} audit entries for cascade delete, got {len(audit_rows)}"
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_no_cascade_audit_function_remains(cascade_pool: asyncpg.Pool) -> None:
+    """core_203 also drops the orphaned trigger function, not just the trigger."""
+    count = await cascade_pool.fetchval(
+        """
+        SELECT count(*) FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = $1
+        """,
+        _TRIGGER_FN,
     )
-    assert {r["target"] for r in audit_rows} == targets
+    assert count == 0, (
+        f"public.{_TRIGGER_FN}() must be dropped alongside its trigger; leaving the "
+        "function behind lets a future CREATE TRIGGER silently resurrect the defect"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_no_inbound_fk_can_cascade_delete_priority_contacts(
+    cascade_pool: asyncpg.Pool,
+) -> None:
+    """The premise of core_203: no FK deletes a priority_contacts row for us.
+
+    ``confdeltype`` is ``'c'`` for ON DELETE CASCADE. The surviving FK
+    (``entity_id`` → ``public.entities``) is ``'n'`` (SET NULL), which nulls a
+    column rather than removing the row. If a cascading FK is ever re-added,
+    this fails and forces a deliberate re-decision about the removed trigger.
+    """
+    cascading = await cascade_pool.fetch(
+        """
+        SELECT conname FROM pg_constraint
+        WHERE contype = 'f'
+          AND conrelid = 'public.priority_contacts'::regclass
+          AND confdeltype = 'c'
+        """
+    )
+    assert [c["conname"] for c in cascading] == [], (
+        "A cascading inbound FK on public.priority_contacts would delete rows with no "
+        "audit trail — core_203 removed the trigger precisely because none exists"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_direct_delete_writes_no_audit_row(cascade_pool: asyncpg.Pool) -> None:
+    """A raw DELETE no longer self-audits — the caller owns the audit row."""
+    contact_id = await _seed_priority_contact(cascade_pool, "Bob")
+
+    await cascade_pool.execute(
+        "DELETE FROM public.priority_contacts WHERE contact_id = $1", contact_id
+    )
+
+    remaining = await cascade_pool.fetchval(
+        "SELECT count(*) FROM public.priority_contacts WHERE contact_id = $1", contact_id
+    )
+    assert remaining == 0
+
+    audited = await cascade_pool.fetchval("SELECT count(*) FROM public.audit_log")
+    assert audited == 0, "a direct DELETE must not emit any audit row of its own"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_api_removal_writes_exactly_one_audit_row(
+    cascade_pool: asyncpg.Pool,
+    priority_contacts_client: httpx.AsyncClient,
+) -> None:
+    """One DELETE through the API writes exactly one audit row, with a true note."""
+    contact_id = await _seed_priority_contact(cascade_pool, "Carol")
+
+    response = await priority_contacts_client.delete(
+        f"/api/ingestion/priority-contacts/{contact_id}"
+    )
+    assert response.status_code == 204, response.text
+
+    rows = await cascade_pool.fetch("SELECT actor, action, target, note FROM public.audit_log")
+    assert len(rows) == 1, (
+        "one API removal must produce exactly one audit row; a second row means the "
+        f"cascade-audit trigger is back: {[dict(r) for r in rows]}"
+    )
+    assert rows[0]["action"] == _REMOVE_ACTION
+    assert rows[0]["actor"] == "dashboard"
+    assert rows[0]["target"] == str(contact_id)
+
+    cascade_rows = await cascade_pool.fetchval(
+        "SELECT count(*) FROM public.audit_log WHERE action = $1", _CASCADE_ACTION
+    )
+    assert cascade_rows == 0, f"{_CASCADE_ACTION} can no longer be produced by any live path"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_no_audit_note_references_dropped_contacts_table(
+    cascade_pool: asyncpg.Pool,
+    priority_contacts_client: httpx.AsyncClient,
+) -> None:
+    """No audit note may assert provenance from public.contacts — it was dropped."""
+    for name in ("Dave", "Erin"):
+        contact_id = await _seed_priority_contact(cascade_pool, name)
+        response = await priority_contacts_client.delete(
+            f"/api/ingestion/priority-contacts/{contact_id}"
+        )
+        assert response.status_code == 204, response.text
+
+    offending = await cascade_pool.fetch(
+        "SELECT action, note FROM public.audit_log WHERE note LIKE '%public.contacts%'"
+    )
+    assert [dict(r) for r in offending] == [], (
+        "public.contacts was dropped by core_134; no newly-written audit note may "
+        "claim a removal originated there"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_api_removal_of_unknown_contact_writes_no_audit_row(
+    cascade_pool: asyncpg.Pool,
+    priority_contacts_client: httpx.AsyncClient,
+) -> None:
+    """A 404 removal audits nothing — no row deleted, no trigger, no router row."""
+    response = await priority_contacts_client.delete(f"/api/ingestion/priority-contacts/{uuid4()}")
+    assert response.status_code == 404, response.text
+
+    audited = await cascade_pool.fetchval("SELECT count(*) FROM public.audit_log")
+    assert audited == 0
