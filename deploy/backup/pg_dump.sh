@@ -58,8 +58,13 @@
 #
 # What that costs, stated plainly:
 #   - restore_drill_executor.*                 restore-drill result ledger:
-#         recovery *evidence* (has a drill ever passed) is not backed up and is
-#         lost in a disaster. It is not needed to recover the application.
+#         the LEDGER is not backed up; the drill HISTORY is. record_result()
+#         writes its public.audit_log projection in the same transaction as the
+#         ledger insert, so every outcome also lands in this dump as a
+#         restore_drill/restore_drill_result audit row. What is lost in a
+#         disaster is the ledger's authority (audit_log is writable by ordinary
+#         runtime roles), not the answer to "has a drill ever passed". Measured
+#         both ways in tests/scripts/test_restore_drill_evidence_backup.py.
 #   - public.dnd_generation_mutations          DND generation mutation audit.
 #   - public.user_context                      context-bus signals. Every row
 #         carries a hard expires_at (core_042: "no indefinite signals"), so
@@ -98,6 +103,9 @@ BACKUP_RETAIN_DAYS="${BACKUP_RETAIN_DAYS:-14}"
 # Trusted-bootstrap exclusion set. Whitespace-separated; parsed by
 # tests/scripts/test_pg_dump_backup.py, so keep the assignments on one line each.
 BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_generation_admin runtime_attention_admin"
+# public.audit_log is deliberately NOT here: it carries the restore-drill
+# evidence projection, and excluding it is the one edit that would silently
+# empty that path. Four tests across two files fail if it is added.
 BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
