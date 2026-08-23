@@ -59,6 +59,20 @@ investigation outcomes.
 - **AND** the event does NOT contribute to QA circuit-breaker execution
   history
 
+#### Scenario: Infra-condition suppression links back to the suppressing condition (bu-ep4ks.3)
+- **WHEN** an `infra_state` finding is rejected because an active standing
+  condition (`public.infra_conditions`, same `source`/`fingerprint`
+  identity) already covers it
+- **THEN** the rejection is recorded as a `healing_dispatch_events` row with
+  `decision="infra_condition_open"`, carrying the same `fingerprint` as the
+  suppressing condition
+- **AND** `GET /api/healing/dispatch-events` accepts a `fingerprint` filter
+  (combinable with `decision`) so a dashboard surface can look up every
+  dispatch a given standing condition suppressed
+- **AND** this suppression is no longer invisible: the Standing Conditions
+  panel (see `system-overview-page` spec) surfaces a per-condition count of
+  suppressed QA dispatches derived from this join
+
 ## Source References
 - Non-Negotiable Rule 4 (deterministic daemon infrastructure)
 - RFC 0001 (admission decisions precede launched execution)

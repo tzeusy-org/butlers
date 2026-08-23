@@ -55,6 +55,18 @@ revision(s) actually present in that schema's `alembic_version` table.
   state, not a check failure — every applicable chain is reported as never
   applied for that schema
 
+#### Scenario: A check failure is a degraded result, never a false all-clear or a crash
+
+- **WHEN** the comparison itself cannot complete (the shared database pool is
+  unavailable, or reading a schema's `alembic_version` table raises an
+  unexpected error)
+- **THEN** the result is marked degraded/unavailable rather than reporting
+  "no drift" or raising to the caller
+- **AND** a schema whose `alembic_version` table does not exist at all (a
+  schema that predates any migration run) is treated as a legitimate empty
+  state, not a check failure — every applicable chain is reported as never
+  applied for that schema
+
 ### Requirement: Hourly Sentinel Cadence
 
 The system SHALL re-run the three-way comparison on an hourly cadence as a
@@ -78,6 +90,16 @@ background process, independent of any single dashboard page view.
   any resulting due lifecycle transitions
 - **AND** it does not treat audit-marker absence or a degraded report as
   resolution authority
+
+#### Scenario: The sentinel loop's job is the escalation side effect, not serving reads
+
+- **WHEN** `GET /api/system/drift` (see below) is called
+- **THEN** it computes the comparison live on that request rather than
+  reading a value cached by the hourly loop — the endpoint is always at
+  least as fresh as the loop
+- **AND** the hourly loop's distinct responsibility is persisting the
+  first-detected/escalated debounce state and triggering escalation once the
+  24h threshold is crossed (see below)
 
 ### Requirement: GET /api/system/drift
 
@@ -168,6 +190,43 @@ infrastructure-reliability lifecycle schedule.
 - **WHEN** writing a due escalation consequence fails (database error, etc.)
 - **THEN** the failure is logged and reported in the tick's summary
 - **AND** the sentinel loop continues to its next tick rather than crashing
+
+#### Scenario: First sighting does not escalate
+
+- **WHEN** a drift composition (the specific set of drifted schema/chain
+  pairs) is detected for the first time
+- **THEN** a first-detected marker is persisted (keyed by a stable
+  fingerprint of that composition) and no escalation occurs yet
+
+#### Scenario: Drift within the 24h threshold does not escalate
+
+- **WHEN** the same drift composition has been continuously detected for
+  less than 24 hours since its first-detected marker
+- **THEN** no escalation occurs on that tick
+
+#### Scenario: Drift past the 24h threshold escalates exactly once
+
+- **WHEN** the same drift composition has persisted for more than 24 hours
+  and has not already been escalated
+- **THEN** a QA-visible case is opened via the existing self-healing
+  case-tracking primitives (`public.healing_attempts`), created and
+  immediately transitioned to the terminal `unfixable` status with an
+  `error_detail` carrying a human-action marker -- the same convention the
+  QA dossier already uses to classify "needs a human, not a code fix" cases
+  (distinct from an `investigating` case that could trigger an unwanted
+  healing-agent PR attempt)
+- **AND** an escalated marker is persisted for that composition so
+  subsequent ticks do not re-escalate it
+- **AND** a partial resolution that changes the drift composition (a new
+  fingerprint) resets the first-detected clock for the new composition —
+  this is an accepted simplification, not a continuously-tracked single
+  episode
+
+#### Scenario: An escalation attempt failure degrades, does not crash
+
+- **WHEN** writing the escalation case fails (database error, etc.)
+- **THEN** the failure is logged and reported in the tick's summary; the
+  sentinel loop continues to its next tick rather than crashing
 
 ## Source References
 - Non-Negotiable Rule 4 (deterministic daemon infrastructure)
