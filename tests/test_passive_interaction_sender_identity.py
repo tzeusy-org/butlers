@@ -205,6 +205,103 @@ class TestWhatsAppBatchEnvelopeParticipants:
         env = conn._build_batch_envelope("6598150802-1386556114@g.us", events, "batch:1")
         assert "6598150802@s.whatsapp.net" in env["sender"]["participants"]
 
+    def test_mapped_lid_is_normalized_in_history_and_text(self) -> None:
+        """Spec: REQ-connector-base-spec-001."""
+        conn = self._connector()
+        conn._lid_to_phone["122204922638508"] = "6591111111"
+        envelope = conn._build_batch_envelope(
+            "group@g.us",
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "122204922638508:7@lid",
+                    "content": {"text": "hello"},
+                }
+            ],
+            "batch-1",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert history[0]["sender_identity"] == "6591111111@s.whatsapp.net"
+        assert history[0]["sender"] == "Unknown WhatsApp sender 1"
+        assert "122204922638508" not in envelope["payload"]["normalized_text"]
+
+    def test_unmapped_lid_keeps_opaque_identity_out_of_llm_labels(self) -> None:
+        """Spec: REQ-connector-base-spec-001."""
+        conn = self._connector()
+        envelope = conn._build_batch_envelope(
+            "group@g.us",
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "122204922638508:7@lid",
+                    "content": {"text": "hello"},
+                }
+            ],
+            "batch-1",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert history[0]["sender_identity"] == "122204922638508@lid"
+        assert history[0]["sender"] == "Unknown WhatsApp sender 1"
+        assert "122204922638508" not in envelope["payload"]["normalized_text"]
+        assert envelope["sender"]["participants"] == {
+            "122204922638508@lid": "Unknown WhatsApp sender 1"
+        }
+
+    def test_device_ordinal_is_absent_from_history_identity_and_text(self) -> None:
+        """Spec: REQ-connector-base-spec-001."""
+        conn = self._connector()
+        envelope = conn._build_batch_envelope(
+            "group@g.us",
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "6591111111:7@s.whatsapp.net",
+                    "content": {"text": "hello"},
+                }
+            ],
+            "batch-1",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert history[0]["sender_identity"] == "6591111111@s.whatsapp.net"
+        assert ":7" not in envelope["payload"]["normalized_text"]
+
+    def test_unknown_group_speakers_have_stable_distinct_neutral_labels(self) -> None:
+        """Spec: REQ-connector-base-spec-001."""
+        conn = self._connector()
+        envelope = conn._build_batch_envelope(
+            "group@g.us",
+            [
+                {
+                    "message_id": "m1",
+                    "sender_jid": "first:7@lid",
+                    "content": {"text": "one"},
+                },
+                {
+                    "message_id": "m2",
+                    "sender_jid": "second:4@lid",
+                    "content": {"text": "two"},
+                },
+                {
+                    "message_id": "m3",
+                    "sender_jid": "first:9@lid",
+                    "content": {"text": "three"},
+                },
+            ],
+            "batch-1",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert [entry["sender"] for entry in history] == [
+            "Unknown WhatsApp sender 1",
+            "Unknown WhatsApp sender 2",
+            "Unknown WhatsApp sender 1",
+        ]
+        assert "first" not in envelope["payload"]["normalized_text"]
+        assert "second" not in envelope["payload"]["normalized_text"]
+
 
 class TestDeviceSuffixedJids:
     """WhatsApp appends a device ordinal for non-primary devices.
@@ -293,11 +390,11 @@ class TestOwnerDirectionFromConnector:
         )
         assert owner == "6591153887@s.whatsapp.net"
 
-    def test_unmappable_lid_is_dropped_not_emitted_raw(self) -> None:
-        """A raw @lid would resolve to nobody; emitting it is worse than None."""
+    def test_unmappable_lid_is_retained_as_a_device_free_opaque_identity(self) -> None:
+        """Spec: REQ-connector-base-spec-001."""
         conn = self._connector()
         conn._lid_to_phone = {}
         participants, _ = conn._extract_participants(
             [{"message_id": "m1", "sender_jid": "999999999999999@lid", "raw": {}}]
         )
-        assert participants == {}
+        assert participants == {"999999999999999@lid": "Unknown WhatsApp sender 1"}

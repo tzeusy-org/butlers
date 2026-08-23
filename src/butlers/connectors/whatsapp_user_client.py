@@ -144,6 +144,7 @@ _CONNECTOR_TYPE = "whatsapp_user_client"
 # LLM cannot render a verdict, while a genuine LLM IGNORE still drops (fail-open
 # only affects the error path). Reversible: restore the shared 0.5 default.
 _WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN = 0.3
+_WHATSAPP_UNKNOWN_SENDER_LABEL = "Unknown WhatsApp sender"
 
 # ---------------------------------------------------------------------------
 # Backfill acknowledgement framing
@@ -1660,8 +1661,9 @@ class WhatsAppUserClientConnector:
         (``"6598150802@s.whatsapp.net"``) or as an opaque linked identifier
         (``"164772343488740@lid"``).  Only the phone form carries anything a
         contact can be matched on, so ``@lid`` values are translated through
-        ``whatsmeow_lid_map``.  Returns ``None`` when a ``@lid`` has no known
-        mapping — an untranslatable identity would only resolve to nobody.
+        ``whatsmeow_lid_map``.  An unmapped LID remains device-free and opaque:
+        it cannot resolve to a contact yet, but it must retain a stable identity
+        so a batch can assign it a neutral speaker label consistently.
         """
         split = self._split_jid(sender_jid)
         if split is None:
@@ -1669,8 +1671,30 @@ class WhatsAppUserClientConnector:
         user, server = split
         if server == "lid":
             phone = self._lid_to_phone.get(user)
-            return f"{phone}@s.whatsapp.net" if phone else None
+            return f"{phone}@s.whatsapp.net" if phone else f"{user}@lid"
         return f"{user}@{server}"
+
+    def _project_batch_senders(
+        self,
+        buffered_events: list[dict[str, Any]],
+    ) -> dict[str, tuple[str, str]]:
+        """Return normalized identities and neutral labels for a batch's messages."""
+        identities: list[str] = []
+        event_identities: list[tuple[str, str]] = []
+        for event in buffered_events:
+            raw_jid = str(event.get("sender_jid") or event.get("from_jid") or "")
+            identity = self._participant_identity(raw_jid) or "unknown"
+            event_identities.append((str(event.get("message_id") or event.get("id")), identity))
+            if identity not in identities:
+                identities.append(identity)
+        labels = {
+            identity: f"{_WHATSAPP_UNKNOWN_SENDER_LABEL} {index}"
+            for index, identity in enumerate(identities, start=1)
+        }
+        return {
+            message_id: (identity, labels.get(identity, _WHATSAPP_UNKNOWN_SENDER_LABEL))
+            for message_id, identity in event_identities
+        }
 
     async def _refresh_lid_map(self, sender_jids: set[str]) -> None:
         """Load ``lid → phone`` rows for the LIDs about to be flushed.
@@ -1756,11 +1780,12 @@ class WhatsAppUserClientConnector:
     ) -> tuple[dict[str, str], str | None]:
         """Return ``(participants, owner_sender_id)`` for a batch.
 
-        ``participants`` maps each resolvable sender identity to a display
-        name.  The owner is identified by the bridge's ``raw.is_from_me`` flag
+        ``participants`` maps each normalized sender identity to a neutral
+        label. The owner is identified by the bridge's ``raw.is_from_me`` flag
         rather than a phone comparison, matching how
         ``_record_owner_outbound_if_applicable`` already reads ownership.
         """
+        sender_projection = self._project_batch_senders(buffered_events)
         participants: dict[str, str] = {}
         owner_sender_id: str | None = None
         for event in buffered_events:
@@ -1773,12 +1798,10 @@ class WhatsAppUserClientConnector:
                 # untranslatable co-sender cannot cost the batch its
                 # owner-direction signal.
                 owner_sender_id = identity
-            if identity is None:
-                continue
-            if identity not in participants:
-                participants[identity] = str(
-                    event.get("sender_name") or event.get("push_name") or identity
-                )
+            message_id = str(event.get("message_id") or event.get("id"))
+            projected_identity, label = sender_projection[message_id]
+            if projected_identity not in participants:
+                participants[projected_identity] = label
         return participants, owner_sender_id
 
     # -------------------------------------------------------------------------
@@ -1869,8 +1892,8 @@ class WhatsAppUserClientConnector:
         oldest_ts = timestamps[0] if timestamps else None
         newest_ts = timestamps[-1] if timestamps else None
 
-        # Build header
-        header_lines: list[str] = [f"=== Chat JID: {chat_jid} ==="]
+        # Build header. Chat and sender transport identifiers remain in raw.events.
+        header_lines: list[str] = ["=== WhatsApp conversation ==="]
         if oldest_ts and newest_ts and oldest_ts != newest_ts:
             header_lines.append(f"Window: {oldest_ts} → {newest_ts}")
         elif oldest_ts:
@@ -1878,11 +1901,13 @@ class WhatsAppUserClientConnector:
         header_lines.append("---")
 
         # Build message lines
+        sender_projection = self._project_batch_senders(buffered_events)
         text_parts: list[str] = []
         for event in buffered_events:
-            sender_jid = event.get("sender_jid") or event.get("from_jid") or "unknown"
+            message_id = str(event.get("message_id") or event.get("id"))
+            _, sender_label = sender_projection[message_id]
             msg_text = normalize_message_text(event)
-            text_parts.append(f"[{sender_jid}]: {msg_text}")
+            text_parts.append(f"[{sender_label}]: {msg_text}")
 
         footer_lines = ["---", f"Messages: {len(buffered_events)} new"]
 
@@ -1894,7 +1919,7 @@ class WhatsAppUserClientConnector:
         conversation_history: list[dict[str, Any]] = []
         for event in buffered_events:
             msg_id = event.get("message_id") or event.get("id")
-            sender_id = event.get("sender_jid") or event.get("from_jid")
+            sender_identity, sender_label = sender_projection[str(msg_id)]
             text = normalize_message_text(event)
             ts = event.get("timestamp") or event.get("observed_at")
             if ts is not None:
@@ -1908,7 +1933,8 @@ class WhatsAppUserClientConnector:
             conversation_history.append(
                 {
                     "message_id": msg_id,
-                    "sender_id": sender_id,
+                    "sender_identity": sender_identity,
+                    "sender": sender_label,
                     "text": text,
                     "timestamp": timestamp,
                     "is_new": True,
@@ -1919,7 +1945,6 @@ class WhatsAppUserClientConnector:
         # Build raw payload from all events
         raw_payload = {
             "events": buffered_events,
-            "chat_jid": chat_jid,
             "batch_size": len(buffered_events),
             "conversation_history": conversation_history,
         }
