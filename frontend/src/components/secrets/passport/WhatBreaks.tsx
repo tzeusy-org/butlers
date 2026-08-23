@@ -37,6 +37,7 @@ import { Mono } from "@/components/ui/Mono"
 import { cn } from "@/lib/utils"
 
 import { ProviderMark } from "./atoms.tsx"
+import { PROBE_FAILED_COPY } from "./probe-copy.ts"
 import { SeverityPip } from "./SeverityPip"
 import type { Severity } from "./SeverityPip"
 import type { CapabilityStatus } from "./types"
@@ -85,6 +86,15 @@ function deriveBreaksCatalogueState(query: {
 // ---------------------------------------------------------------------------
 // Capability probe pip — live ok/fail glyph, replacing the static severity
 // pip when a matching capability probe result is available (bu-4v5es).
+//
+// The failing label deliberately carries no detail (bu-vpdkk). It used to read
+// `status.test?.message ?? "failed"`, which threaded the probe log's free-text
+// message — the provider's own words — into an aria-label. bu-iph56 made the
+// inventory content-blind and pinned that message to null in
+// adaptTestOutcome(), so the branch has been dead since; the read is removed
+// rather than re-pointed, because there is no per-capability failure category
+// on the wire and none may be added back. A capability that fails says so and
+// stops there; the credential-wide category lives in ProbeResult.
 // ---------------------------------------------------------------------------
 
 function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
@@ -105,7 +115,7 @@ function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
     )
   }
 
-  const label = `${status.capability}: ${ok ? "ok" : status.test?.message ?? "failed"}`
+  const label = `${status.capability}: ${ok ? "ok" : PROBE_FAILED_COPY}`
   return (
     <span
       role="img"

@@ -11,6 +11,8 @@
 //   - meta.catalogue_available === false renders the same "unavailable" state
 //   - Entries are rendered sorted by severity DESC (high → medium → low)
 //   - WhatBreaks fetches from /api/secrets/breaks-catalogue (mocked)
+//   - A failing capability's probe pip is named "<capability>: probe failed"
+//     (bu-vpdkk) — no probe message is on the wire for a capability row
 //   - High-severity entries appear before medium, medium before low
 //
 // Uses @testing-library/react with a real QueryClient (staleTime=0, retries=0)
@@ -284,6 +286,30 @@ describe("WhatBreaksRow: capability probe glyph", () => {
     )
     const pip = screen.getByLabelText("calendar: ok")
     expect(pip.getAttribute("title")).toBe("calendar: ok")
+  })
+
+  it("names a failing capability without borrowing probe free text (bu-vpdkk)", () => {
+    render(
+      <WhatBreaksRow
+        entry={{
+          butler: "calendar",
+          feature: "event sync",
+          severity: "medium",
+          required_scopes: [],
+          capability: "calendar",
+        }}
+        capabilities={[{
+          capability: "calendar",
+          // The content-blind inventory (bu-iph56) pins `message` to null for
+          // every capability row, so the label must stand on its own.
+          test: { ok: false, code: 401, at: "2026-05-03T00:00:00Z", message: null },
+        }]}
+      />,
+    )
+
+    const pip = screen.getByLabelText("calendar: probe failed")
+    expect(pip.getAttribute("title")).toBe("calendar: probe failed")
+    expect(pip.textContent).toBe("\u2717")
   })
 
   it("retains the unprobed capability label for visual hover", () => {

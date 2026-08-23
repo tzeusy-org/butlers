@@ -200,8 +200,10 @@ describe("PageUser: test button (probe)", () => {
   })
 
   it("surfaces probe result code in ProbeResult block when mutation succeeds", async () => {
+    // `message` is a PROBE_FAILURE_VOCABULARY member since bu-nz4sn, never the
+    // provider's words -- the fixture mirrors the real wire.
     mockProbe.mockResolvedValue({
-      data: { ok: false, code: 401, message: "refresh-token expired", at: "just now" },
+      data: { ok: false, code: 401, message: "rejected", at: "just now" },
       meta: {},
     })
     renderGoogle()
@@ -214,6 +216,23 @@ describe("PageUser: test button (probe)", () => {
     await waitFor(() => {
       expect(screen.getByText("401")).toBeTruthy()
     })
+  })
+
+  it("renders the probe failure category as prose, not the bare token (bu-vpdkk)", async () => {
+    mockProbe.mockResolvedValue({
+      data: { ok: false, code: 429, message: "rate_limited", at: "just now" },
+      meta: {},
+    })
+    renderGoogle()
+
+    await act(async () => {
+      fireEvent.click(getBtn("probe again"))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("the provider rate-limited the probe")).toBeTruthy()
+    })
+    expect(screen.queryByText("rate_limited")).toBeNull()
   })
 
   it("test button is absent for never_set credential", () => {

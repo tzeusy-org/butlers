@@ -12,6 +12,7 @@ import { Eyebrow as DispatchEyebrow } from "@/components/ui/Eyebrow";
 import { Voice as DispatchVoice } from "@/components/ui/Voice";
 import type { CredentialState } from "./types.ts";
 import { STATE_CATALOG, STAMP_GLYPHS } from "./constants.ts";
+import { probeEvidenceCopy } from "./probe-copy.ts";
 
 // ── Token helpers ──────────────────────────────────────────────────────────
 
@@ -734,13 +735,17 @@ export function ScopeBalance({
 // ── ProbeResult ─────────────────────────────────────────────────────────────
 
 /**
- * ProbeResult: latency / code / timestamp / serif-italic message.
+ * ProbeResult: latency / code / timestamp / serif-italic evidence.
  *
  * The sole test/probe control for a credential page (bu-eptoz) — the button
  * rendered here ("run probe" / "probe again") replaces what used to be a
  * second, redundant "test" pill in the page's commit footer. `pending`
  * mirrors that button's in-flight label ("testing…") now that this is the
  * only control carrying that feedback.
+ *
+ * `test.message` is a PROBE_FAILURE_VOCABULARY token since bu-nz4sn, not
+ * prose, so it is rendered through `probeEvidenceCopy` (bu-vpdkk) rather than
+ * printed raw — otherwise this slot reads as a lone word like "rejected".
  */
 export function ProbeResult({
   test,
@@ -753,6 +758,10 @@ export function ProbeResult({
     /** Omitted/null when the server doesn't report latency — never fabricate "0ms". */
     latencyMs?: number | null;
     at: string;
+    /**
+     * Failure category from the backend's closed PROBE_FAILURE_VOCABULARY
+     * (bu-nz4sn), never provider free text. Rendered via `probeEvidenceCopy`.
+     */
     message?: string | null;
   } | null;
   onProbe?: () => void;
@@ -810,7 +819,7 @@ export function ProbeResult({
             color: test.ok ? "var(--mfg)" : "var(--red)",
           }}
         >
-          {test.message}
+          {probeEvidenceCopy(test.message)}
         </span>
       )}
       {onProbe && (
