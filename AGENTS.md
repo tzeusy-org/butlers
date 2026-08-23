@@ -1865,3 +1865,35 @@ Two related traps in that area:
 - The `target` column is **never normalised on write**, so any predicate over it must accept the
   long-scope spellings (`user:`/`system:`/`cli:`) that `normalize_key_param` tolerates, not just
   `u:`/`s:`/`c:`.
+
+### `secrets_v2.py` names its internal vs public detail types the opposite way per lane
+
+`src/butlers/api/routers/secrets_v2.py` has three credential lanes, and the `...SecretDetail` /
+`...CredentialDetail` naming does **not** mean the same thing in each:
+
+| Lane | Internal (never on the wire) | Public payload | Projector |
+| --- | --- | --- | --- |
+| user | `_UserCredentialRecord` | `UserSecretDetail` | `_content_blind_detail` |
+| system | `SystemSecretDetail` | `SystemCredentialDetail` | `_content_blind_system_detail` |
+| cli | `CliRuntimeDetail` | `CliCredentialDetail` | `_content_blind_cli_detail` |
+
+So `SystemSecretDetail` is internal but `UserSecretDetail` is public. A census that treats
+`...SecretDetail` as "the internal type" flags `response_model=ApiResponse[UserSecretDetail]` on
+`get_user_credential` and `rotate_user_credential` as unfixed leaks. They are not — both already
+return `_content_blind_detail(...)`, and "fixing" the annotation breaks correct code.
+
+Read the projector's **return type** (`def _content_blind_*(record: X) -> Y`) to learn which side of
+the wire a name is on. The `-> Y` is the public one, every time; the name is not evidence.
+
+### Screen a test file for the DB slot by what it *calls*, not what it imports
+
+The serialized full-backend slot is for files that open a real connection. Confirm with
+
+```sh
+grep -nE 'docker|create_migrated_test_db|mark\.integration|asyncpg\.(connect|create_pool)' <file>
+```
+
+Across `tests/api/test_secrets*.py` this scores 19 files at 0 and exactly one — the
+`_schema_drift_db.py` suffix — at 8. A bare `import asyncpg` for an exception class scores 0 and
+correctly stays out of the slot. Feed pytest the surviving files as an **explicit path list**; an
+`--ignore` list built from belief is not a DB-free scope.
