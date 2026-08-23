@@ -44,6 +44,7 @@ _REPO_ROOT = _HERE.parents[3]  # repo root (roster/relationship/tests -> repo)
 _ROUTER = _ROSTER_ROOT / "api" / "router.py"
 _ENTITIES_TOOL = _REPO_ROOT / "src" / "butlers" / "modules" / "memory" / "tools" / "entities.py"
 _CONTACTS_TOOL = _ROSTER_ROOT / "tools" / "contacts.py"
+_ENTITY_MERGE_SERVICE = _ROSTER_ROOT / "tools" / "entity_merge.py"
 # Shared, model-free merge-review evidence + audit-row helpers (bu-csvop). The
 # deterministic structural-diff logic and the audit-row INSERT moved here out of
 # the router so both the API and session-side MCP merge paths share one definition;
@@ -86,6 +87,8 @@ _ROUTER_MODEL_FREE_SYMBOLS = (
 # Tool-layer merge implementations the router delegates to. Each lives in its own
 # module; scope the scan to exactly the named symbol in that file.
 _TOOL_MERGE_SYMBOLS: tuple[tuple[Path, str], ...] = (
+    # Shared audited transaction used by the HTTP and reconciliation paths.
+    (_ENTITY_MERGE_SERVICE, "merge_entity_pair"),
     (_ENTITIES_TOOL, "entity_merge"),
     (_CONTACTS_TOOL, "contact_merge"),
     # Shared merge-review evidence + audit-row helpers — the deterministic
