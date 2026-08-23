@@ -139,6 +139,10 @@ _RESTORE_SCRIPT_INVOCATIONS = (
     "~/butlers/scripts/pg_restore.sh",
     "bash scripts/pg_restore.sh dump.sql.gz",
     "sh -x pg_restore.sh /backups/latest.sql.gz",
+    # Runnable with no argument and no leading ``./``: only the interpreter
+    # prefix distinguishes these from prose.
+    "bash scripts/pg_restore.sh",
+    "sh -x scripts/pg_restore.sh",
     "pg_restore.sh <backup-file.sql.gz> --target-db <name>",
     "pg_restore.sh --env-file .env.production",
     "pg_restore.sh $BACKUP_FILE",
