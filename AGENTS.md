@@ -1774,3 +1774,46 @@ grep -lE 'asyncpg|docker|create_migrated_test_db' tests/api/*.py   # exclude eve
 
 Corollary for the whole repo: the DB-slot rule is **structural, not path-based**. If a test touches a
 real database it needs the slot, whatever the file is called and whatever directory it sits in.
+
+### DDL durability is a different hazard from role refusal, and a SAVEPOINT does not fix it
+
+Two failure modes look alike inside `async with conn.transaction():` and need opposite fixes.
+
+*Role refusal* (a `SECURITY DEFINER` producer raising 42501) poisons the whole transaction, so
+catch-and-continue needs a **savepoint** -- in asyncpg, a nested `connection.transaction()`.
+
+*DDL durability* is not solved by a savepoint at all. A partition or table created inside a
+transaction is **dropped by the rollback**, savepoint or not. If the surrounding transaction can
+fail for any reason, the object never becomes durable and every later insert for that key fails in
+a tight loop. The call has to leave the transaction entirely:
+
+```python
+await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", received_at)  # on the POOL
+async with conn.transaction():
+    ...                                                                  # dedupe, advisory lock
+```
+
+Correct references already in the tree: `roster/switchboard/tools/ingestion/ingest.py` (carries a
+long comment diagnosing exactly this) and `src/butlers/connectors/filtered_event_buffer.py`.
+
+Testing it requires care, because the obvious test cannot fail. Reading the object back **on the
+same connection** passes against the buggy code -- intra-transaction visibility is not durability.
+Force the enclosing transaction to roll back, then verify on a **separate pool acquisition**:
+
+```python
+async with pool.acquire() as verify_conn:
+    assert await verify_conn.fetchval(_PARTITION_ATTACHED_SQL, partition_name) is True
+```
+
+### `openspec validate` needs an explicit target
+
+The bare form fails with `Nothing to validate` rather than validating everything, which reads like
+a tooling error and invites the wrong workaround. Pass the change name:
+
+```sh
+uv run openspec validate <change-name> --strict
+```
+
+Remember what it does *not* prove: `openspec validate` and `scripts/check_spec_overwrites.py` read
+no Python, so neither is evidence about an implementation, and `check_spec_overwrites.py` never
+inspects `openspec/specs/**`.
