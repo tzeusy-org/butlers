@@ -1957,3 +1957,28 @@ When two agents have in fact overlapped, do not resolve it by trusting either si
 stopped agent is neither authoritative nor worthless: re-verify its factual claims against the code
 yourself, and diff its abandoned openspec delta against the surviving one before deleting it —
 "redundant" is the assumption most likely to be wrong.
+
+### httpx logs every request URL at INFO, so a query parameter is a log leak
+
+`httpx/_client.py:117` binds `logger = logging.getLogger("httpx")`, and `_send_single_request`
+(:1025) emits `'HTTP Request: %s %s "%s %d %s"'` with `request.url` — the **full** URL, query string
+included — at `INFO`. Your own code never has to log anything for the value to reach a handler.
+
+This matters for any route that carries an identifier in the query string under a promise that it
+stays out of logs. `GET /_control/runtime-probe/v1/readiness?kid=<kid>` is the live example: an
+absence-sentinel test caught the `kid` in `caplog` on first run, from the library, not from us.
+
+The reference fix is in `src/butlers/core/runtime_probe_control/client.py` — a `logging.Filter` on
+the `httpx` logger whose predicate names the private path:
+
+```python
+def filter(self, record: logging.LogRecord) -> bool:
+    return READINESS_PATH not in record.getMessage()
+```
+
+`record.getMessage()` renders the %-args, so it sees the interpolated URL. A filter on the logger
+runs **before propagation**, so no handler anywhere sees the record — unlike a handler-level filter.
+Naming a specific private path keeps the blast radius to one route; do not filter the `httpx` logger
+broadly or drop its level, which would blind anyone debugging an unrelated request.
+
+Prefer fixing this over relaxing the sentinel test: the test was right.
