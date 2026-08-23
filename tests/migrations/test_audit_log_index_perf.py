@@ -207,3 +207,45 @@ async def test_index_scan_used_for_by_target_query(seeded_pool: asyncpg.Pool) ->
         f"threshold: {LATENCY_THRESHOLD_MS} ms\n"
         f"Plan excerpt:\n{plan_text[:800]}"
     )
+
+
+async def test_index_scan_used_for_multi_target_top_n_query(seeded_pool: asyncpg.Pool) -> None:
+    """The inventory's per-target top-N audit query remains index-backed."""
+    targets = ["u:perf-target", "u:other-target-1", "u:other-target-2"]
+    explain_sql = """
+        EXPLAIN (ANALYZE, FORMAT TEXT)
+        WITH requested_targets AS (
+            SELECT DISTINCT requested.target
+            FROM unnest($1::text[]) AS requested(target)
+        )
+        SELECT audit.target, audit.ts, audit.actor, audit.action, audit.note
+        FROM requested_targets
+        CROSS JOIN LATERAL (
+            SELECT audit_row.target, audit_row.ts, audit_row.actor,
+                   audit_row.action, audit_row.note
+            FROM public.audit_log AS audit_row
+            WHERE audit_row.target = requested_targets.target
+            ORDER BY audit_row.ts DESC
+            LIMIT $2
+        ) AS audit
+        ORDER BY audit.target, audit.ts DESC
+    """
+
+    wall_start = time.perf_counter()
+    rows = await seeded_pool.fetch(explain_sql, targets, 3)
+    wall_elapsed_ms = (time.perf_counter() - wall_start) * 1000
+    plan_lines = _extract_plan_rows(rows)
+    plan_text = "\n".join(plan_lines)
+
+    assert "Seq Scan" not in plan_text, plan_text
+    assert "ix_audit_log_target_ts" in plan_text, plan_text
+
+    actual_time_ms: float | None = None
+    for line in plan_lines:
+        stripped = line.strip()
+        if stripped.startswith("Execution Time:"):
+            actual_time_ms = float(stripped.split(":")[1].strip().split()[0])
+            break
+
+    measured_ms = actual_time_ms if actual_time_ms is not None else wall_elapsed_ms
+    assert measured_ms < LATENCY_THRESHOLD_MS, plan_text

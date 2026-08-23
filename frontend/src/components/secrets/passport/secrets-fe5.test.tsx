@@ -675,4 +675,23 @@ describe("Tri-state: unverified ('warn') rows are quiet, not alarm-colored [bu-9
     // must not trip the "N credentials need attention" alarm headline.
     expect(html).toContain("Every credential, accounted for.");
   });
+
+  it("DirectionPassport: partial zero inventory is incomplete, not an all-clear", () => {
+    const partialZeroInventory: InventoryResponse = {
+      ...MOCK_INVENTORY,
+      user: [],
+      system: [],
+      cli: [],
+      failingCount: 0,
+      unverifiedCount: 0,
+      failingCountByFamily: { cli: 0, system: 0, user: 0 },
+      unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
+      sourcesDegraded: ["finance"],
+    };
+
+    const html = renderInRouter(<DirectionPassport inventory={partialZeroInventory} />);
+
+    expect(html).toContain("Credential inventory incomplete.");
+    expect(html).not.toContain("Every credential, accounted for.");
+  });
 });
