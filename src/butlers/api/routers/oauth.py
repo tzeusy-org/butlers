@@ -1114,6 +1114,84 @@ async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
     return app_creds.client_id, app_creds.client_secret
 
 
+_ACCOUNT_REF_DESCRIPTION = (
+    "Opaque reference to an already-connected account (the credential's entity "
+    "UUID). Resolved to the stored account hint server-side, so callers that "
+    "must not handle the account email — the content-blind Secrets reauthorize "
+    "route — can still pre-select the right account. Ignored when account_hint "
+    "is given."
+)
+
+
+async def _resolve_account_ref_hint(
+    provider: str, account_ref: uuid.UUID, db_manager: Any
+) -> str | None:
+    """Turn an opaque account reference into the stored account hint.
+
+    ``POST /api/secrets/user/<provider>/reauthorize`` is content-blind (owner
+    decision Option C): it may not put the credential's stored label — the
+    account email — into the ``redirect_url`` it hands the browser. It sends
+    the credential's entity UUID as ``account_ref`` instead, and the lookup
+    happens here, where the label never leaves the process.
+
+    Returns None when the reference resolves to nothing; the caller then
+    behaves exactly as if no hint had been supplied.  That fallback is
+    deliberate — a hint lookup must never 500 the OAuth dance — but it is not
+    free: the no-hint branch runs ``_check_account_limit``, so a re-auth of an
+    existing account can come back 409 ``account_limit_reached``.  A reference
+    that simply does not resolve is an expected outcome and stays at debug; a
+    lookup that *fails* is logged at warning, because that case is the
+    regression this parameter exists to prevent, wearing the costume of an
+    ordinary limit rejection.
+    """
+    shared_pool = _get_shared_pool(db_manager)
+    if shared_pool is None:
+        return None
+    # Lazy import: secrets_v2 imports this module from inside its handlers to
+    # avoid a cycle; this is the same edge in reverse, kept lazy for the same
+    # reason.
+    from butlers.api.routers.secrets_v2 import _provider_like_patterns  # noqa: PLC0415
+
+    try:
+        row = await shared_pool.fetchrow(
+            """
+            SELECT label FROM public.entity_info
+            WHERE entity_id = $1
+              AND type LIKE ANY($2::text[])
+              AND secured = true
+              AND label IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            account_ref,
+            _provider_like_patterns(provider),
+        )
+    except Exception:  # noqa: BLE001
+        # Warning, not debug: this is the one path where the safety net
+        # reintroduces the bug account_ref exists to prevent.  Returning None
+        # puts the caller on the no-hint branch, which runs
+        # _check_account_limit, which can reject a legitimate re-authorization
+        # of an already-connected account with 409 account_limit_reached.  From
+        # outside that is indistinguishable from an ordinary limit rejection,
+        # so the lookup failure has to be audible on its own.
+        logger.warning(
+            "account_ref lookup failed for provider=%s; falling back to a hint-free "
+            "OAuth flow, which may 409 with account_limit_reached even though this "
+            "is a re-authorization of an existing account",
+            provider,
+            exc_info=True,
+        )
+        return None
+    if row is None:
+        # Not a surprise: a reference that resolves to nothing is a real,
+        # expected outcome (stale ref, credential since disconnected), and the
+        # hint-free flow is the correct response to it.  Stays quiet.
+        logger.debug("account_ref resolved to no credential for provider=%s", provider)
+        return None
+    hint = row["label"]
+    return str(hint) if hint else None
+
+
 # ---------------------------------------------------------------------------
 # Start endpoint
 # ---------------------------------------------------------------------------
@@ -1137,6 +1215,10 @@ async def oauth_google_start(
         default=None,
         description="Optional Google account email to pre-select via login_hint. "
         "When provided, the hint is carried through the CSRF state token to the callback.",
+    ),
+    account_ref: uuid.UUID | None = Query(
+        default=None,
+        description=_ACCOUNT_REF_DESCRIPTION,
     ),
     force_consent: bool = Query(
         default=False,
@@ -1194,6 +1276,12 @@ async def oauth_google_start(
     ``<connector_type>/<endpoint_identity>`` format; invalid values are
     silently ignored (safe fallback to page_of_origin routing).
     """
+    # An opaque account_ref stands in for account_hint when the caller must not
+    # hold the account email (bu-nz4sn). Resolve it before anything reads the
+    # hint, so the rest of this handler is unchanged.
+    if not account_hint and account_ref is not None:
+        account_hint = await _resolve_account_ref_hint("google", account_ref, db_manager)
+
     # --- Resolve scope composition ---
     # scope_set is parsed BEFORE the account limit check so unknown-set errors
     # do not get masked by a 409 account-limit response.
@@ -2661,6 +2749,10 @@ async def oauth_provider_start(
         default=None,
         description="Optional account email to pre-select (passed as login_hint where supported).",
     ),
+    account_ref: uuid.UUID | None = Query(
+        default=None,
+        description=_ACCOUNT_REF_DESCRIPTION,
+    ),
     force_consent: bool = Query(
         default=False,
         description="When true, adds prompt=consent / show_dialog=true to the URL.",
@@ -2695,6 +2787,11 @@ async def oauth_provider_start(
     When ``connector_detail_path`` is supplied and valid, the callback will
     deep-link to the specific connector detail page instead of the roster.
     """
+    # See oauth_google_start: an opaque account_ref stands in for account_hint
+    # when the caller must not hold the account email (bu-nz4sn).
+    if not account_hint and account_ref is not None:
+        account_hint = await _resolve_account_ref_hint(provider, account_ref, db_manager)
+
     provider_cfg = _get_provider_config(provider)
     if provider_cfg is None:
         # Distinguish a catalog-declared oauth provider that simply has not been

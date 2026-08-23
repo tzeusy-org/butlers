@@ -625,8 +625,18 @@ def test_reauthorize_returns_200_with_redirect_url():
     """reauthorize returns 200 with ApiResponse<{redirect_url}>; the redirect points to
     the API-relative /oauth/<provider>/start (NO "/api" prefix — the client
     prepends its own deployment-specific API base), carries page_of_origin=secrets,
-    and includes an account_hint when the credential has a label."""
-    row = _make_entity_info_row(info_type="google_oauth_refresh", label="user@example.com")
+    and includes an opaque account_ref when the credential has a stored account.
+
+    The reference used to be the account email itself (``account_hint=<label>``);
+    bu-nz4sn replaced it with the credential's entity UUID, which
+    /oauth/google/start resolves to the stored hint server-side.  Content-blindness
+    of that swap is asserted in test_secrets_v2_probe_reauthorize_content_blind.py;
+    what this test pins is that a reference is still emitted at all.
+    """
+    entity_id = str(uuid4())
+    row = _make_entity_info_row(
+        info_type="google_oauth_refresh", entity_id=entity_id, label="user@example.com"
+    )
     mock_db = _make_db(user_row=row, oauth_app_configured=True)
     client = _build_app(mock_db)
 
@@ -635,10 +645,9 @@ def test_reauthorize_returns_200_with_redirect_url():
     redirect_url = resp.json()["data"]["redirect_url"]
     assert redirect_url.startswith("/oauth/google/start"), redirect_url
     assert "page_of_origin=secrets" in redirect_url, redirect_url
-    assert (
-        "account_hint=user%40example.com" in redirect_url
-        or "account_hint=user@example.com" in redirect_url
-    ), f"Expected account_hint in redirect_url: {redirect_url!r}"
+    assert f"account_ref={entity_id}" in redirect_url, (
+        f"Expected account_ref in redirect_url: {redirect_url!r}"
+    )
 
 
 def test_reauthorize_redirect_url_carries_no_api_prefix():

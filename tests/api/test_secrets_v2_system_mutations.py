@@ -491,7 +491,12 @@ def test_probe_returns_200_with_test_result():
 
 
 def test_probe_never_set_credential_returns_false():
-    """Probe returns ok=False when the credential has no value (never_set)."""
+    """Probe returns ok=False and the ``not_set`` category when there is no value.
+
+    The message used to be the sentence "value not set"; bu-nz4sn made every
+    probe message a PROBE_FAILURE_VOCABULARY member so no free text — and in
+    particular no persisted failure tail — can ride out on this field.
+    """
     existing_row = _make_butler_secrets_row(
         secret_key="FAIL_KEY",
         last_test_ok=None,
@@ -504,11 +509,11 @@ def test_probe_never_set_credential_returns_false():
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["ok"] is False
-    assert body["message"] == "value not set"
+    assert body["message"] == "not_set"
 
 
 def test_probe_expired_credential_returns_false():
-    """Probe returns ok=False when the credential value has expired."""
+    """Probe returns ok=False and the ``expired`` category for a lapsed value."""
     existing_row = _make_butler_secrets_row(
         secret_key="EXP_KEY",
         last_test_ok=True,
@@ -522,7 +527,7 @@ def test_probe_expired_credential_returns_false():
     assert resp.status_code == 200
     body = resp.json()["data"]
     assert body["ok"] is False
-    assert body["message"] == "value expired"
+    assert body["message"] == "expired"
 
 
 def test_probe_never_probed_credential_returns_ok():

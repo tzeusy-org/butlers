@@ -465,7 +465,13 @@ def test_unlisted_provider_never_probed_passes_local_check():
 
 def test_unlisted_provider_previously_failing_stays_failed():
     """A credential that failed a previous live probe keeps failing the local
-    check — without a live verify there is no evidence it recovered."""
+    check — without a live verify there is no evidence it recovered.
+
+    The response used to echo the stored failure tail verbatim.  bu-nz4sn
+    replaced it with ``unverified``: this call produced no live signal, so the
+    only thing the caller learns is that the last live answer was a failure —
+    not what the provider said about the credential.
+    """
     row = _make_entity_info_row(
         info_type="telegram_oauth_refresh",
         last_test_ok=False,
@@ -480,7 +486,8 @@ def test_unlisted_provider_previously_failing_stays_failed():
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["ok"] is False
-    assert data["message"] == "userinfo HTTP 401"
+    assert data["message"] == "unverified"
+    assert "userinfo" not in resp.text, "the stored failure tail must not reach the caller"
 
 
 def test_network_error_on_token_exchange_falls_back_to_local_check(monkeypatch):

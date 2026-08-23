@@ -302,8 +302,20 @@ def test_health_capability_403_rolls_up_credential_to_failing(monkeypatch):
     data = resp.json()["data"]
     assert data["ok"] is False
     assert data["code"] == 403
-    assert "health" in data["message"]
-    assert "restricted-scope" in data["message"]
+    # bu-nz4sn: the wire carries a PROBE_FAILURE_VOCABULARY category, not the
+    # "health: 403 restricted-scope (...)" roll-up sentence.  Which capability
+    # failed still reaches the client — through the content-blind capability
+    # list on the detail route, not through this free-text field.
+    assert data["message"] == "rejected", data
+    assert "restricted-scope" not in resp.text
+
+    # ...and the roll-up sentence is still persisted, so an operator can tell
+    # which capability failed and why.
+    messages_by_key = {
+        args[1]: args[4] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    assert "restricted-scope" in (messages_by_key["google_oauth_refresh"] or "")
+    assert "restricted-scope" in (messages_by_key["google_oauth_refresh:health"] or "")
 
     # Calendar/gmail/drive persisted as ok=True; health persisted as ok=False;
     # the aggregate row reflects the rolled-up failure.
@@ -317,7 +329,13 @@ def test_health_capability_403_rolls_up_credential_to_failing(monkeypatch):
     assert rows_by_key["google_oauth_refresh"] is False
 
 
-def test_multiple_capabilities_failing_names_all_in_message(monkeypatch):
+def test_multiple_capabilities_failing_names_all_in_persisted_message(monkeypatch):
+    """Two capabilities fail for different reasons; both are named server-side.
+
+    Before bu-nz4sn this roll-up sentence was also the response body.  It is now
+    persisted only: the response carries the category of the first failure in
+    capability order (gmail, HTTP 500 → ``provider_error``).
+    """
     row = _make_entity_info_row()
     shared_pool = _make_shared_pool(user_row=row, raw_token_value=_REFRESH_TOKEN)
     mock_db = _make_db(shared_pool)
@@ -331,10 +349,25 @@ def test_multiple_capabilities_failing_names_all_in_message(monkeypatch):
 
     data = resp.json()["data"]
     assert data["ok"] is False
-    assert "gmail" in data["message"]
-    assert "health" in data["message"]
-    assert "calendar" not in data["message"]
-    assert "drive" not in data["message"]
+    assert data["message"] == "provider_error", data
+
+    messages_by_key = {
+        args[1]: args[4] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    aggregate = messages_by_key["google_oauth_refresh"] or ""
+    assert "gmail" in aggregate
+    assert "health" in aggregate
+    assert "calendar" not in aggregate
+    assert "drive" not in aggregate
+
+    # The per-capability split survives too: only the two failures carry text.
+    rows_by_key = {
+        args[1]: args[2] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    assert rows_by_key["google_oauth_refresh:gmail"] is False
+    assert rows_by_key["google_oauth_refresh:health"] is False
+    assert rows_by_key["google_oauth_refresh:calendar"] is True
+    assert rows_by_key["google_oauth_refresh:drive"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +391,15 @@ def test_token_exchange_failure_fails_every_capability_generic_message(monkeypat
     data = resp.json()["data"]
     assert data["ok"] is False
     assert data["code"] == 400
-    assert "test-mode" not in data["message"]
+    assert data["message"] == "provider_error", data
+
+    # The test-mode wording is what is under test here, and since bu-nz4sn no
+    # message text reaches the wire at all — so assert against the persisted
+    # sentence, where the distinction still has to hold.
+    messages_by_key = {
+        args[1]: args[4] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    assert "test-mode" not in (messages_by_key["google_oauth_refresh"] or "")
 
     rows_by_key = {
         args[1]: args[2] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
@@ -371,6 +412,13 @@ def test_token_exchange_failure_fails_every_capability_generic_message(monkeypat
 
 
 def test_token_exchange_failure_on_test_mode_account_names_expiry(monkeypatch):
+    """A flagged test-mode account past its window gets the sharper diagnostic.
+
+    That diagnostic is operator-facing since bu-nz4sn: it is persisted, while
+    the caller gets the ``provider_error`` category.  "7-day test-mode limit"
+    describes the credential's provenance, which is exactly what content-blind
+    responses withhold.
+    """
     row = _make_entity_info_row()
     shared_pool = _make_shared_pool(
         user_row=row, raw_token_value=_REFRESH_TOKEN, test_mode_expired=True
@@ -385,8 +433,15 @@ def test_token_exchange_failure_on_test_mode_account_names_expiry(monkeypatch):
 
     data = resp.json()["data"]
     assert data["ok"] is False
-    assert "test-mode" in data["message"]
-    assert "7-day" in data["message"]
+    assert data["message"] == "provider_error", data
+    assert "test-mode" not in resp.text
+
+    messages_by_key = {
+        args[1]: args[4] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    aggregate = messages_by_key["google_oauth_refresh"] or ""
+    assert "test-mode" in aggregate
+    assert "7-day" in aggregate
 
 
 def test_health_downscope_exchange_without_health_scope_reports_not_granted(monkeypatch):
@@ -413,8 +468,15 @@ def test_health_downscope_exchange_without_health_scope_reports_not_granted(monk
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["ok"] is False
-    assert "health" in data["message"]
-    assert "not granted" in data["message"]
+    assert data["message"] == "rejected", data
+    assert "not granted" not in resp.text
+
+    messages_by_key = {
+        args[1]: args[4] for sql, args in shared_pool.execute_calls if "secret_probe_log" in sql
+    }
+    health_message = messages_by_key["google_oauth_refresh:health"] or ""
+    assert "health" in health_message
+    assert "not granted" in health_message
 
     # The Health API endpoint itself was never called.
     get_calls = [c for c in calls if c["method"] == "GET"]

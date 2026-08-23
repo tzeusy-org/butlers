@@ -588,12 +588,13 @@ class _UserCredentialRecord(BaseModel):
 
     ``_content_blind_detail`` is the only bridge from here to
     ``UserSecretDetail``, so adding a field below does not publish it on
-    ``GET /api/secrets/user/{provider}``. It is *not* the only path from this
-    record to a client: ``reauthorize`` echoes ``label`` as the ``account_hint``
-    query parameter of its redirect URL, and ``probe`` returns ``failure_tail``
-    (or provider response text) as ``TestResult.message``. Both predate the
-    content-blind contract; check them too before assuming a field here stays
-    server-side.
+    ``GET /api/secrets/user/{provider}``. It is not the only path from this
+    record to a client, though: ``reauthorize`` and ``probe`` read it too, and
+    each does its own projection — ``reauthorize`` publishes ``entity_id`` as
+    an opaque ``account_ref`` in place of ``label``, and ``probe`` publishes a
+    ``PROBE_FAILURE_VOCABULARY`` category in place of ``failure_tail``
+    (bu-nz4sn). A new field here reaches no client until one of those three
+    projections is taught to pass it.
     """
 
     id: str
@@ -4860,6 +4861,78 @@ async def disconnect_user_credential(
 
 
 # ---------------------------------------------------------------------------
+# Content-blind probe evidence (bu-nz4sn)
+# ---------------------------------------------------------------------------
+# A probe's free-text ``message`` is either the provider's own words or the
+# credential's persisted failure tail (``entity_info.last_test_message`` /
+# ``butler_secrets.last_test_message``). Owner decision Option C (2026-08-13)
+# keeps both off the wire, so the probe routes publish a category from the
+# closed vocabulary below instead.
+#
+# Same allowlist discipline as CAPABILITY_VOCABULARY: the published value is
+# selected out of this tuple, never derived from an input string, so a new
+# provider message or a new ``probe_status`` token cannot widen what escapes.
+# The real diagnostic is still written to ``public.secret_probe_log``, the
+# ``last_test_message`` cache column, and the audit row — withheld from the
+# caller, not destroyed.
+# ---------------------------------------------------------------------------
+
+PROBE_FAILURE_VOCABULARY: tuple[str, ...] = (
+    "not_set",  # no value is stored for this credential
+    "expired",  # the stored value is past a known expiry
+    "rejected",  # the provider refused the credential (HTTP 401/403)
+    "rate_limited",  # the provider throttled the probe (HTTP 429)
+    "provider_error",  # the provider answered, but not with success
+    "malformed",  # a value is present but fails this system's format check
+    "unverified",  # no live signal this time; an earlier live probe had failed
+    "other",
+)
+
+# ``probe_status`` tokens that name their own cause rather than an HTTP code.
+# Everything else is classified from the status code — see
+# _probe_failure_category.
+_PROBE_STATUS_CATEGORIES: dict[str, str] = {
+    "live_failed:missing": "not_set",
+    "live_failed:bad_format": "malformed",
+}
+
+
+def _probe_failure_category(probe_status: str, code: int | None) -> str:
+    """Classify one failed probe into ``PROBE_FAILURE_VOCABULARY``.
+
+    Reads only the router's own ``probe_status`` token and the provider's HTTP
+    status code — never the free-text message — and returns a member of the
+    vocabulary. An unrecognised combination becomes ``provider_error`` (a live
+    call was refused) or ``other`` (no live call happened at all), so a status
+    token this function has not seen still cannot publish itself.
+    """
+    named = _PROBE_STATUS_CATEGORIES.get(probe_status)
+    if named is not None:
+        return named
+    if code in (401, 403):
+        return "rejected"
+    if code == 429:
+        return "rate_limited"
+    if code is not None or probe_status.startswith("live_failed"):
+        return "provider_error"
+    return "other"
+
+
+def _probe_category(value: str | None) -> str | None:
+    """Clamp an already-categorised probe result to the vocabulary.
+
+    The list-shaped counterpart of ``_capability_name``: used where a probe
+    outcome arrives from another module (the probe-all sweep re-publishes
+    results produced by this router *and* by ``cli_auth.test_api_key``, whose
+    ``detail`` is provider free text). Anything outside the vocabulary
+    collapses to ``other`` rather than riding along.
+    """
+    if value is None:
+        return None
+    return value if value in PROBE_FAILURE_VOCABULARY else "other"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/secrets/user/<provider>/probe
 # ---------------------------------------------------------------------------
 
@@ -4893,7 +4966,14 @@ async def probe_user_credential(
     an asymmetry a single generic call can never see. Every other provider
     keeps its existing single live-verify call, wrapped as one capability
     named 'connectivity'. Any capability failing rolls the credential up to
-    failing, naming the failing capability/capabilities in the message.
+    failing, naming the failing capability/capabilities in the *persisted*
+    message.
+
+    Content-blind response (bu-nz4sn): the returned ``TestResult.message`` is
+    a ``PROBE_FAILURE_VOCABULARY`` category, never the credential's persisted
+    failure tail nor the provider's own response text. The free-text
+    diagnostic is still written to ``secret_probe_log``, ``last_test_message``
+    and the audit row, where it stays server-side.
 
     In the same SQL transaction it:
     1. Inserts one AGGREGATE row into ``public.secret_probe_log`` per
@@ -5012,13 +5092,19 @@ async def probe_user_credential(
         )
 
     # Resolve final probe_ok from live result or fall back to local state.
+    # ``probe_message`` stays free text from here on: it is what gets persisted
+    # to probe_log / last_test_message / the audit row. ``wire_failure`` is the
+    # content-blind category the response publishes in its place (bu-nz4sn).
+    wire_failure: str | None
     if probe_status == "live_ok":
         probe_ok = True
         probe_code = None
         probe_message = None
+        wire_failure = None
     elif probe_status.startswith("live_failed"):
         probe_ok = False
         # probe_code and probe_message are already set by _verify_oauth_credential
+        wire_failure = _probe_failure_category(probe_status, probe_code)
     else:
         # skipped_local_check — no live verify was possible (unsupported
         # provider, missing app credentials, or network error). Treat this as
@@ -5029,9 +5115,14 @@ async def probe_user_credential(
         if detail.state == "never_set":
             probe_ok = False
             probe_message = "value not set"
+            wire_failure = "not_set"
         else:
             probe_ok = detail.state != "failing"
             probe_message = detail.failure_tail if not probe_ok else None
+            # No live signal this call; the row is 'failing' only because an
+            # earlier live probe said so. The stored failure tail explains why
+            # and stays server-side — 'unverified' is what the caller gets.
+            wire_failure = None if probe_ok else "unverified"
         probe_code = None
 
     # The passport groups all rows of one provider under a single credential
@@ -5151,10 +5242,13 @@ async def probe_user_credential(
         error=None if probe_ok else probe_fail_msg,
     )
 
+    # Content-blind response (bu-nz4sn): the free-text ``probe_message`` above
+    # was persisted and audited, but what ships is the fixed-vocabulary
+    # category — never the credential's failure tail or the provider's words.
     result = TestResult(
         ok=probe_ok,
         code=probe_code,
-        message=probe_message,
+        message=wire_failure,
         at=_format_probe_time(datetime.now(tz=UTC)),
         latency_ms=probe_latency_ms,
     )
@@ -5184,8 +5278,8 @@ async def reauthorize_user_credential(
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
     Builds and returns an API-relative ``redirect_url`` pointing to
-    ``/oauth/<provider>/start?page_of_origin=secrets`` (plus any account hint
-    derived from the credential's stored label/email).  The caller resolves it
+    ``/oauth/<provider>/start?page_of_origin=secrets`` (plus an opaque
+    ``account_ref`` when a stored account exists).  The caller resolves it
     against its own API base URL — the API mount prefix is deployment-specific
     (``/butlers-api/api`` vs ``/butlers-dev-api/api``) and unknowable here — and
     redirects the browser there, which begins the OAuth dance.  The OAuth
@@ -5211,9 +5305,12 @@ async def reauthorize_user_credential(
     Appends an ``attempted`` audit row (because the reauth dance has been
     initiated but not yet completed).
 
-    Multi-account note: when the stored entity_info label contains an email
-    address, it is passed as ``account_hint=<email>`` so the OAuth dance
-    pre-selects the correct Google account.
+    Multi-account note: when a stored account exists, its entity UUID is passed
+    as ``account_ref=<uuid>`` so the OAuth dance can pre-select the correct
+    Google account.  The stored label itself is never published — the response
+    is content-blind per owner decision Option C, and
+    ``oauth._resolve_account_ref_hint`` turns the reference back into a
+    ``login_hint`` inside the start endpoint (bu-nz4sn).
 
     Spec anchor
     -----------
@@ -5234,7 +5331,7 @@ async def reauthorize_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Look up the credential to derive account hint (label may hold email).
+    # Look up the credential to decide whether an account reference applies.
     detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
 
     if detail is None:
@@ -5286,8 +5383,17 @@ async def reauthorize_user_credential(
     # routes the user back to the /secrets page on completion.
     params: dict[str, str] = {"page_of_origin": "secrets"}
     if detail is not None and detail.label:
-        # The label field stores the account email for OAuth credentials.
-        params["account_hint"] = detail.label
+        # The label field stores the account email for OAuth credentials, and
+        # the start endpoint genuinely needs it — without a hint it cannot tell
+        # a re-authorization of an existing Google account from a brand-new
+        # connection, and 409s once the account limit is reached. So hand back
+        # a reference instead of the value (bu-nz4sn): the entity UUID the
+        # caller already supplied on this very request. /oauth/<provider>/start
+        # resolves it to the stored hint server-side, where the label never
+        # leaves the process. `if detail.label` is retained so a credential
+        # with nothing to resolve still produces a hint-free URL, exactly as
+        # the first-time-connect path does.
+        params["account_ref"] = detail.entity_id
 
     # API-relative (no "/api" prefix): the client prepends its own API base URL,
     # which varies per deployment mount (/butlers-api/api, /butlers-dev-api/api).
@@ -5725,6 +5831,11 @@ async def probe_system_credential(
 
     Rate-limited to 1 call per 5 s per key (in-process guard).
 
+    Content-blind response (bu-nz4sn): the returned ``TestResult.message`` is
+    a ``PROBE_FAILURE_VOCABULARY`` category. The free-text diagnostic — which
+    for the OwnTracks format check names the offending token's length — is
+    persisted and audited but never published.
+
     Audit: ``verified`` (ok), ``failed`` (not-ok).
 
     Returns 404 when no credential exists for the given key.
@@ -5841,10 +5952,19 @@ async def probe_system_credential(
             probe_ok_live = probe_status_system == "live_ok"
 
     # Derive probe outcome: live result (if available) takes precedence over local state.
+    # As in probe_user_credential, ``probe_message`` stays free text for the
+    # persistence and audit writes below; ``wire_failure`` is the content-blind
+    # category the response publishes instead (bu-nz4sn). The OwnTracks format
+    # check in particular reports the offending token's length, which must not
+    # reach a caller.
+    wire_failure: str | None
     if probe_ok_live is not None:
         probe_ok = probe_ok_live
         probe_code = probe_code_live
         probe_message = probe_message_live
+        wire_failure = (
+            None if probe_ok else _probe_failure_category(probe_status_system, probe_code)
+        )
     else:
         # Fallback: local presence check. There is no remote to call for a
         # system credential (the OwnTracks format check above is the only
@@ -5855,12 +5975,15 @@ async def probe_system_credential(
         if detail.state == "never_set":
             probe_ok = False
             probe_message = "value not set"
+            wire_failure = "not_set"
         elif detail.state == "expired":
             probe_ok = False
             probe_message = "value expired"
+            wire_failure = "expired"
         else:
             probe_ok = True
             probe_message = None
+            wire_failure = None
         probe_code = None
 
     # Execute probe_log insert + butler_secrets cache update in one transaction.
@@ -5936,7 +6059,7 @@ async def probe_system_credential(
     result = TestResult(
         ok=probe_ok,
         code=probe_code,
-        message=probe_message,
+        message=wire_failure,
         at=_format_probe_time(datetime.now(tz=UTC)),
     )
     return ApiResponse[TestResult](data=result, meta=ApiMeta())
@@ -6740,8 +6863,12 @@ class ProbeAllResult(BaseModel):
 
     key: str  # canonical credential key, e.g. "u:google" / "s:KEY" / "c:cli-auth/codex"
     family: str  # "system" | "user" | "cli"
+    # Display name for the row: the system secret's key, the user provider
+    # slug, or the CLI provider path. NOT the credential's stored
+    # ``entity_info.label`` — see ProbeTarget in jobs/secrets_staleness.
     label: str
     ok: bool | None  # None means skipped (rate-limited, circuit-broken, error)
+    # Always a PROBE_FAILURE_VOCABULARY member or None (bu-nz4sn).
     message: str | None = None
     skipped: bool = False
     skip_reason: str | None = None
@@ -6800,13 +6927,18 @@ async def probe_all_credentials(
             status_code=429, detail="A probe-all sweep is already in progress"
         ) from exc
 
+    # Content-blind projection (bu-nz4sn). The user and system families already
+    # hand back a vocabulary category, because the sweep dispatches through the
+    # very probe functions above. The CLI family does not: it reports
+    # ``cli_auth.test_api_key``'s ``detail``, which is provider free text — so
+    # every message is clamped here rather than only the ones known to need it.
     results = [
         ProbeAllResult(
             key=o.key,
             family=o.family,
             label=o.label,
             ok=o.ok,
-            message=o.message,
+            message=_probe_category(o.message),
             skipped=o.skipped,
             skip_reason=o.skip_reason,
         )
