@@ -2027,3 +2027,34 @@ Naming a specific private path keeps the blast radius to one route; do not filte
 broadly or drop its level, which would blind anyone debugging an unrelated request.
 
 Prefer fixing this over relaxing the sentinel test: the test was right.
+
+### `pg_dump` as the shared migration login dumps nothing, not less
+
+`pg_dump` takes `LOCK TABLE ... IN ACCESS SHARE MODE` over *every* relation in scope before it
+emits a single byte. One `permission denied` in that lock sweep aborts the whole run, so a role
+that cannot read one fenced table produces **zero output** — not a smaller dump. The dashboard
+then reports "no backup," which reads like a cron failure and sends you looking in the wrong
+place. Three separate fence mechanisms in `scripts/init-db.sql` can do this, and each is
+enumerable as the dump role before you guess:
+
+```sql
+has_schema_privilege(current_user, nspname, 'USAGE')          -- revoked USAGE
+has_table_privilege(current_user, oid, 'SELECT')              -- revoked SELECT
+relrowsecurity AND (relforcerowsecurity OR relowner <> current_user)  -- forced RLS
+```
+
+Derive the exclusion list from those three predicates, not from whichever table happened to
+appear in the last error message — `pg_dump` only ever names the first one it hits, so fixing by
+symptom takes as many runs as there are fenced objects.
+
+Do **not** reach for `--enable-row-security` to get past the RLS fence. It does not bypass RLS; it
+dumps *the rows the role can see*, producing a backup that looks complete and is not. Excluding a
+fenced object is the correct answer rather than a workaround because the fence encodes ownership:
+the object's owner role is the natural home of its own export path, and widening the general
+backup login to reach it dissolves the fence permanently for the sake of one nightly job.
+
+Related trap in the same file: the shebang is `#!/bin/sh`, and `set -o pipefail` is **not POSIX**.
+`dash -c 'set -o pipefail'` → `dash: 1: set: Illegal option -o pipefail`, i.e. the script dies on
+line 1 under Debian/Ubuntu `/bin/sh`. It only ever worked because the backup sidecar is Alpine
+(`ash`). Any `#!/bin/sh` script here that needs pipeline failure detection should record the
+left-hand exit status in a status file instead.
