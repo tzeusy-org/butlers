@@ -30,6 +30,7 @@ from butlers.connectors.spotify import (
     SpotifyConnector,
     SpotifyConnectorConfig,
     SpotifyCredentialError,
+    SpotifyCredentialsUnconfiguredError,
     _classify_source_api_error,
     build_context_start_envelope,
     build_listening_digest_envelope,
@@ -1395,3 +1396,183 @@ async def test_spotify_resource_401_after_successful_refresh_stays_degraded() ->
     state, detail = connector._get_health_state()
     assert state == "degraded"
     assert detail is not None and "401" in detail
+
+
+# ---------------------------------------------------------------------------
+# Unconfigured-account parked state [bu-5m67e]
+# ---------------------------------------------------------------------------
+
+
+def _fake_heartbeat() -> Any:
+    """A ConnectorHeartbeat stand-in with awaitable async members."""
+    hb = MagicMock()
+    hb.start = MagicMock()
+    hb.stop = AsyncMock()
+    hb._send_heartbeat = AsyncMock()
+    return hb
+
+
+def _unconfigured_credential_patches() -> tuple[Any, Any]:
+    """Patches that make credential resolution see a never-connected account."""
+    store = MagicMock()
+    store.resolve = AsyncMock(return_value=None)
+    return (
+        patch("butlers.connectors.spotify.CredentialStore", return_value=store),
+        patch(
+            "butlers.connectors.spotify.resolve_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_credentials_distinguishes_never_connected_from_broken() -> None:
+    """A never-connected account raises the unconfigured subclass, not the base error."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._db_pool = MagicMock()
+
+    credential_store_patch, owner_info_patch = _unconfigured_credential_patches()
+    with credential_store_patch, owner_info_patch:
+        with pytest.raises(SpotifyCredentialsUnconfiguredError):
+            await connector._resolve_credentials()
+
+    assert issubclass(SpotifyCredentialsUnconfiguredError, SpotifyCredentialError)
+
+
+def test_unconfigured_connector_reports_awaiting_credentials() -> None:
+    """The parked state is observable as degraded, not healthy and not an error."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._credentials_unconfigured = True
+
+    assert connector._get_health_state() == ("degraded", "awaiting_credentials")
+
+
+@pytest.mark.asyncio
+async def test_start_parks_instead_of_crashing_when_account_never_connected() -> None:
+    """start() must not raise for an unconfigured optional connector (no crashloop)."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._db_pool = MagicMock()
+    connector._resolve_identity = AsyncMock()  # type: ignore[method-assign]
+    connector._poll_loop = AsyncMock()  # type: ignore[method-assign]
+    connector._start_health_server = MagicMock()  # type: ignore[method-assign]
+
+    heartbeat_configs: list[Any] = []
+
+    def _make_heartbeat(**kwargs: Any) -> Any:
+        heartbeat_configs.append(kwargs["config"])
+        return _fake_heartbeat()
+
+    credential_store_patch, owner_info_patch = _unconfigured_credential_patches()
+    with (
+        credential_store_patch,
+        owner_info_patch,
+        patch("butlers.connectors.spotify.ConnectorHeartbeat", side_effect=_make_heartbeat),
+        patch(
+            "butlers.connectors.spotify.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await connector.start()
+
+    assert connector._credentials_unconfigured is True
+    connector._resolve_identity.assert_not_awaited()
+    connector._poll_loop.assert_awaited_once()
+    assert connector._get_health_state() == ("degraded", "awaiting_credentials")
+    assert connector._endpoint_identity == ""
+    assert heartbeat_configs
+    assert heartbeat_configs[0].endpoint_identity == "spotify:unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_start_still_fails_loudly_when_credentials_are_broken() -> None:
+    """Credential failures that are not 'never connected' keep exiting non-zero."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._db_pool = None  # infrastructure failure, not an unconfigured account
+
+    with pytest.raises(SpotifyCredentialError) as excinfo:
+        await connector.start()
+
+    assert not isinstance(excinfo.value, SpotifyCredentialsUnconfiguredError)
+
+
+@pytest.mark.asyncio
+async def test_parked_poll_loop_activates_once_credentials_appear() -> None:
+    """The parked loop re-checks and transitions to normal polling without a restart."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._running = True
+    connector._credentials_unconfigured = True
+    connector._heartbeat = _fake_heartbeat()
+
+    async def _reload() -> bool:
+        connector._client_id = "synthetic-client-id"
+        connector._refresh_token = "synthetic-refresh-token"
+        return True
+
+    async def _resolve_identity() -> None:
+        connector._endpoint_identity = "spotify:synthetic-user"
+
+    async def _poll_once() -> None:
+        connector._shutdown_event.set()
+
+    connector._reload_credentials = AsyncMock(side_effect=_reload)  # type: ignore[method-assign]
+    connector._resolve_identity = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_resolve_identity
+    )
+    connector._execute_poll_cycle = AsyncMock(side_effect=_poll_once)  # type: ignore[method-assign]
+
+    with (
+        patch("butlers.connectors.spotify._CREDENTIAL_RECHECK_S", 0.01),
+        patch(
+            "butlers.connectors.spotify.ConnectorHeartbeat",
+            side_effect=lambda **_kwargs: _fake_heartbeat(),
+        ),
+    ):
+        await connector._poll_loop()
+
+    assert connector._credentials_unconfigured is False
+    assert connector._endpoint_identity == "spotify:synthetic-user"
+    connector._execute_poll_cycle.assert_awaited()
+    assert connector._get_health_state() != ("degraded", "awaiting_credentials")
+
+
+@pytest.mark.asyncio
+async def test_activation_failure_reports_error_not_awaiting_credentials() -> None:
+    """A configured-but-broken account is loud (state 'error'), never re-parked."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._running = True
+    connector._credentials_unconfigured = True
+    connector._heartbeat = _fake_heartbeat()
+
+    connector._reload_credentials = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    connector._resolve_identity = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SpotifyCredentialError("Spotify credentials require re-authorization")
+    )
+
+    async def _stop_after_first_recheck() -> bool:
+        if connector._auth_error:
+            connector._shutdown_event.set()
+            return True
+        return False
+
+    connector._wait_for_credential_recheck = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_stop_after_first_recheck
+    )
+
+    await connector._poll_loop()
+
+    assert connector._credentials_unconfigured is False
+    assert connector._auth_error is True
+    assert connector._get_health_state()[0] == "error"

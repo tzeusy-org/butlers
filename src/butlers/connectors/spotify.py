@@ -127,6 +127,11 @@ _RATE_LIMIT_MAX_S = 600.0
 # Credential re-check interval when in auth-error state
 _CREDENTIAL_RECHECK_S = 60
 
+# Endpoint identity reported while the owner has not connected a Spotify account.
+# Mirrors the fleet convention for account-less connectors
+# ("google_health:degraded", "steam:no_accounts").
+_UNCONFIGURED_ENDPOINT_IDENTITY = f"{_CONNECTOR_TYPE}:unconfigured"
+
 # Idle polling backoff step multiplier
 _IDLE_BACKOFF_MULTIPLIER = 2.0
 
@@ -586,6 +591,17 @@ class SpokenSessionTracker:
 
 class SpotifyCredentialError(Exception):
     """Raised when Spotify credentials need operator action before polling can resume."""
+
+
+class SpotifyCredentialsUnconfiguredError(SpotifyCredentialError):
+    """Raised when the owner has never connected a Spotify account.
+
+    Distinct from :class:`SpotifyCredentialError` because "not set up yet" is an
+    expected steady state for an optional connector, not a failure: it parks the
+    connector in a degraded state instead of crashing the process. Every other
+    credential fault — including any that occurs after a successful
+    configuration — keeps using the base class and stays fatal.
+    """
 
 
 class SpotifyRateLimitError(Exception):
@@ -1157,6 +1173,9 @@ class SpotifyConnector:
         self._auth_error: bool = False
         self._auth_error_message: str | None = None
 
+        # Parked state: owner has never connected a Spotify account
+        self._credentials_unconfigured: bool = False
+
         # Checkpoint
         self._last_checkpoint_cursor: str | None = None
         self._last_checkpoint_save: float | None = None
@@ -1226,16 +1245,29 @@ class SpotifyConnector:
             except (NotImplementedError, OSError):
                 logger.debug("SpotifyConnector: signal handlers not supported on this platform")
 
-            # Phase 1: Resolve credentials
-            await self._resolve_credentials()
+            # Phase 1: Resolve credentials. A never-connected account is an
+            # expected steady state for an optional connector, so park in a
+            # degraded state instead of exiting non-zero and crashlooping.
+            # Every other credential fault stays fatal.
+            try:
+                await self._resolve_credentials()
+            except SpotifyCredentialsUnconfiguredError as exc:
+                self._credentials_unconfigured = True
+                # Single bounded line, no traceback: this repeats every recheck.
+                logger.warning(
+                    "SpotifyConnector: %s Parking in degraded state and re-checking every %ds.",
+                    exc,
+                    _CREDENTIAL_RECHECK_S,
+                )
 
-            # Phase 2: Resolve endpoint identity via GET /me
-            await self._resolve_identity()
+            # Phase 2: Resolve endpoint identity via GET /me (needs credentials)
+            if not self._credentials_unconfigured:
+                await self._resolve_identity()
 
             # Phase 3: Post-identity initialization
             self._endpoint_identity_ready()
 
-            # Phase 4: Load checkpoint
+            # Phase 4: Load checkpoint (no-op until an identity exists)
             await self._load_checkpoint()
 
             # Phase 5: Wait for Switchboard readiness
@@ -1323,7 +1355,7 @@ class SpotifyConnector:
         expires_at_value = await resolve_owner_entity_info(self._db_pool, SPOTIFY_OAUTH_EXPIRES_AT)
 
         if not client_id or not refresh_token:
-            raise SpotifyCredentialError(
+            raise SpotifyCredentialsUnconfiguredError(
                 "Spotify credentials not configured. "
                 "Please connect your Spotify account via the dashboard settings."
             )
@@ -1537,29 +1569,37 @@ class SpotifyConnector:
                 delay = min(delay * 2, 60.0)
 
     def _endpoint_identity_ready(self) -> None:
-        """Initialize components that depend on endpoint_identity."""
+        """Initialize components that depend on endpoint_identity.
+
+        While the connector is parked awaiting credentials there is no real
+        identity yet, so a sentinel label keeps the heartbeat (and therefore the
+        fleet's attention surface) reporting the degraded state. ``_endpoint_identity``
+        itself stays empty so no envelope or checkpoint is ever attributed to it.
+        """
+        identity_label = self._endpoint_identity or _UNCONFIGURED_ENDPOINT_IDENTITY
+
         # Update metrics connector with resolved identity
         self._metrics = ConnectorMetrics(
             connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=identity_label,
         )
 
         # Init ingestion policy
         self._ingestion_policy = IngestionPolicyEvaluator(
-            scope=f"connector:{_CONNECTOR_TYPE}:{self._endpoint_identity}",
+            scope=f"connector:{_CONNECTOR_TYPE}:{identity_label}",
             db_pool=self._db_pool,
         )
 
         # Init filtered event buffer
         self._filtered_event_buffer = FilteredEventBuffer(
             connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=identity_label,
         )
 
         # Init heartbeat
         hb_config = HeartbeatConfig.from_env(
             connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=identity_label,
         )
         self._heartbeat = ConnectorHeartbeat(
             config=hb_config,
@@ -1808,6 +1848,17 @@ class SpotifyConnector:
         )
 
         while self._running and not self._shutdown_event.is_set():
+            # Parked awaiting first-time configuration: sleep, re-check, and
+            # activate in place when the owner connects an account. Nothing is
+            # logged per cycle — the single warning emitted at park time is the
+            # whole story until the state changes.
+            if self._credentials_unconfigured:
+                if await self._wait_for_credential_recheck():
+                    break  # Shutdown requested
+                if await self._reload_credentials():
+                    await self._try_activate()
+                continue
+
             # Drain replay queue once per cycle
             await self._drain_replay()
 
@@ -1818,18 +1869,17 @@ class SpotifyConnector:
                     " before re-checking credentials",
                     _CREDENTIAL_RECHECK_S,
                 )
-                try:
-                    await asyncio.wait_for(
-                        self._shutdown_event.wait(), timeout=_CREDENTIAL_RECHECK_S
-                    )
+                if await self._wait_for_credential_recheck():
                     break  # Shutdown requested
-                except TimeoutError:
-                    pass
 
                 if await self._reload_credentials():
                     logger.info("SpotifyConnector: credentials reloaded — resuming polling")
                     self._auth_error = False
                     self._auth_error_message = None
+                    if not self._endpoint_identity:
+                        # Reached here from a failed activation: the account is
+                        # configured but was never bound to an identity.
+                        await self._try_activate()
                 continue
 
             # === Poll cycle ===
@@ -1886,6 +1936,58 @@ class SpotifyConnector:
                 break  # Shutdown requested during wait
             except TimeoutError:
                 pass  # Normal: timeout means it's time for next poll
+
+    async def _wait_for_credential_recheck(self) -> bool:
+        """Sleep until the next credential re-check. Returns True if shutdown was requested."""
+        try:
+            await asyncio.wait_for(self._shutdown_event.wait(), timeout=_CREDENTIAL_RECHECK_S)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _try_activate(self) -> None:
+        """Bind a newly configured account, keeping post-configuration faults loud.
+
+        A credential fault here means the account is configured but broken, which
+        is reported as an auth error (health state ``error``) — never as the
+        parked ``awaiting_credentials`` state, and never silently swallowed.
+        """
+        try:
+            await self._activate_after_configuration()
+        except SpotifyCredentialError:
+            self._auth_error = True
+            logger.error(
+                "SpotifyConnector: activation failed after configuration; re-checking in %ds: %s",
+                _CREDENTIAL_RECHECK_S,
+                self._source_api_error_message or "Spotify credentials require attention",
+            )
+
+    async def _activate_after_configuration(self) -> None:
+        """Leave the parked state once the owner connects a Spotify account.
+
+        Credential faults raised from here are real post-configuration failures;
+        :meth:`_try_activate` turns them into a loud auth-error state.
+        """
+        logger.info("SpotifyConnector: credentials configured — resolving identity")
+        self._credentials_unconfigured = False
+        await self._resolve_identity()
+
+        # Replace the sentinel-identity heartbeat with one bound to the real
+        # identity so the registry stops reporting the parked endpoint.
+        previous_heartbeat = self._heartbeat
+        self._endpoint_identity_ready()
+        if previous_heartbeat is not None:
+            await previous_heartbeat.stop()
+
+        assert self._heartbeat is not None
+        self._heartbeat.start()
+        try:
+            await self._heartbeat._send_heartbeat()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("SpotifyConnector: activation heartbeat failed (non-fatal): %s", exc)
+
+        await self._load_checkpoint()
+        logger.info("SpotifyConnector: activated — endpoint_identity=%s", self._endpoint_identity)
 
     async def _execute_poll_cycle(self) -> None:
         """Execute a single poll cycle: currently-playing + recently-played gap-fill."""
@@ -2418,6 +2520,9 @@ class SpotifyConnector:
 
     def _get_health_state(self) -> tuple[str, str | None]:
         """Return (state, error_message) for heartbeat."""
+        if self._credentials_unconfigured:
+            # Not an error: the owner has simply not connected an account yet.
+            return "degraded", "awaiting_credentials"
         if self._auth_error:
             return (
                 "error",

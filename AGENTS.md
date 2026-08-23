@@ -2136,3 +2136,24 @@ errors — resolves to "not reapable", so the script's way of being wrong is to 
 running, never to kill a live one. Pin anything you want kept:
 `docker run --name my-repro --label dev.butlers.keep=<bead> ...`. Full rationale:
 `docs/testing/orphaned-testcontainers.md` (bu-3zu5l).
+### An unconfigured optional connector must park, not crashloop
+
+Credentials the owner supplies at *runtime* through the dashboard (DB-stored OAuth) are absent on
+every fresh deploy, so raising out of `start()` turns "not set up yet" into an infinite Docker
+restart loop that burns a container slot and makes a genuinely broken connector indistinguishable
+from an unconfigured one. The fleet convention is a **sentinel endpoint identity plus a degraded
+heartbeat**, not an exit: `google_health:degraded` (`_ensure_degraded_heartbeat_running`),
+`steam:no_accounts`, `spotify:unconfigured`, and the Gmail/Calendar/Drive managers' `no qualifying
+accounts found at startup. Running in idle/degraded mode`. Keep `_endpoint_identity` itself empty
+while parked so no envelope or checkpoint is attributed to the sentinel; only the metrics/policy/
+heartbeat *labels* use it.
+
+Two boundaries that are easy to get wrong in both directions (bu-5m67e):
+
+- Do **not** widen the carve-out to all credential errors. Only "never connected" is non-fatal —
+  give it its own exception subclass (`SpotifyCredentialsUnconfiguredError`) so every
+  post-configuration fault keeps the base class and stays loud (`error` state, ERROR log).
+  Swallowing the class, or exiting 0 quietly, is the same defect pointed the other way.
+- Env-var-driven connectors (telegram, discord, whatsapp, activitywatch) validate in
+  `Config.from_env()` and are a *deployment* misconfiguration, not an unconfigured account —
+  that crash is correct and out of scope for this pattern.
