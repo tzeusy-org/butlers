@@ -144,6 +144,21 @@ outbox must refuse rollback with forward-remediation guidance. Avoid foreign
 keys/cascades to mutable source records when the evidence must survive source
 catalog or attempt deletion.
 
+A later revision may pin such a teardown shut. `core_199` installs
+`public.runtime_attention_producer_control` and
+`public.runtime_attention_legacy_producer_fence()`; its downgrade deliberately
+retains both, and nothing in this repository drops either one. Because the
+`core_198` downgrade precondition requires both to be absent, a database that
+has reached `core_199` can never run the `core_198` teardown again, and
+`runtime_attention_admin.rollback_interface()` is no longer reachable through
+Alembic. Its two forward-remediation refusals, the pre-lock fast path and the
+authoritative recheck under `ACCESS EXCLUSIVE`, are one guard in two positions
+and still fire for a privileged bootstrap owner who invokes the function
+directly, which is why they are retained rather than deleted. When a boundary
+becomes one-way like this, record it in the operator documentation for the
+subsystem; a rollback that a database can no longer perform is unavailable, not
+merely untested.
+
 ## Verification
 
 To confirm the migration chain structure described here matches the running system:

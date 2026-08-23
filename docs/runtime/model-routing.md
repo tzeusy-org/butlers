@@ -177,6 +177,27 @@ fence writes only the fixed debounce marker that makes its retired breaker or
 fleet-halt helper stop before transport. Producer rollback disables new episodes
 while retaining attempts, the outbox, evidence, and this fence.
 
+Applying `core_199` closes the `core_198` teardown permanently. The `core_199`
+downgrade clears `producers_enabled` but deliberately leaves
+`public.runtime_attention_producer_control` and
+`public.runtime_attention_legacy_producer_fence()` installed, and no migration,
+bootstrap, or script drops either one. The `core_198` downgrade precondition
+requires both to be absent, so on any database that has ever reached `core_199`
+it refuses:
+
+```
+core_198 downgrade requires trusted bootstrap rollback interface
+```
+
+Downgrading below `core_198` is not a supported operation on such a database,
+and no rollback restores the pre-outbox schema.
+
+To stop paging, downgrade `core_199` alone. Episode production stops; the
+outbox, the delivery lease, the attempt rows, and the cutover fence stay in
+place, and every repair from there is forward remediation. Retaining the fence
+is the point of the design, because removing it would let an old
+direct-delivery binary reach transport again.
+
 ### Metrics
 
 Three counters track failover at the process level:
