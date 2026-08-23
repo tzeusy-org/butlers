@@ -296,6 +296,34 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     return await delivery_cycle(pool, notify_fn=notify_fn, urgent_only=True)
 
 
+async def _run_switchboard_commitment_escalation_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the commitment escalation tick for the Switchboard butler.
+
+    Delegates to ``butlers.jobs.commitment_escalation.run_commitment_escalation``
+    (bu-n1evl, RFC 0026 §7). Hosted on the Switchboard rather than on a
+    domain butler for two reasons: commitments are cross-butler (the job
+    sweeps every ``{origin_butler}:{category}`` source in
+    ``public.owner_conditions`` at once), and ``propose_insight_candidate``
+    writes ``insight_candidates``, which lives in the Switchboard's schema.
+
+    The insight proposer is injected rather than imported inside the job so
+    the composition boundary REQ-commitment-lifecycle-005 requires ("no
+    insight engine modifications") is visible at the wiring site. Import is
+    deferred here for the same reason the delivery-cycle handlers defer
+    theirs: no import-time dependency from the core jobs package onto the
+    switchboard broker.
+    """
+    del job_args
+    from butlers.jobs.commitment_escalation import run_commitment_escalation
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    result = await run_commitment_escalation(pool, insight_proposer=propose_insight_candidate)
+    return result.as_dict()
+
+
 async def _run_switchboard_spend_rule_savings_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1957,6 +1985,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
+            "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
             "decision_review_digest": _run_switchboard_decision_review_digest_job,

@@ -99,6 +99,21 @@ cron = "30 * * * *"
 dispatch_mode = "job"
 job_name = "insight_urgent_subcycle"
 
+# Commitment escalation tick (bu-n1evl, RFC 0026 §6-§9) — advances the L0-L3
+# escalation clock for commitment-class owner_conditions, shortens the grace of
+# deadline-bearing commitments, surfaces L1+ commitments at confidence >= 0.8
+# through the insight engine, and asks the archival question for commitments
+# stale at L3 for 90 days. Daily at 05:40 UTC: after spend-rule-savings (04:15)
+# and before the insight delivery window opens (06:15), so a commitment that
+# escalates overnight is queued in time for the same morning's digest rather
+# than waiting a day. Offset off :00/:30 to avoid the eligibility_sweep (*/5)
+# and insight-urgent-subcycle (:30) ticks.
+[[butler.schedule]]
+name = "commitment-escalation"
+cron = "40 5 * * *"
+dispatch_mode = "job"
+job_name = "commitment_escalation"
+
 # Spend rule 7-day savings computation (§5.4) — runs daily at 04:15 UTC (off-peak)
 [[butler.schedule]]
 name = "spend-rule-savings"
