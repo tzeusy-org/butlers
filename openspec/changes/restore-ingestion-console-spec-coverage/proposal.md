@@ -66,6 +66,17 @@ from the stale delta.
   var, its reader, and the flat-file path are already gone from `src/`
   (`grep -r GMAIL_KNOWN_CONTACTS_PATH src/` → 0 matches); a requirement to
   deprecate something absent is noise.
+- The archived `90-day replay history retention` requirement. No 90-day window
+  exists anywhere in the shipped path: `public.audit_log`, which backs
+  `GET /api/ingestion/events/{event_id}/replays`, is keep-forever with no
+  pruner, and the only ingestion retention job is a month-granular partition
+  drop over `connectors.filtered_events` with a 12-month default that ships
+  disabled and dry-run. Writing the archived text would ratify a window the
+  code does not implement; renaming it to a truthful requirement would be a
+  content change wearing a rename's clothes, which is exactly the
+  check-laundering this change exists to avoid. It stays frozen in the
+  ratchet, and a follow-up bead should decide the real retention contract.
+
 - The archived `AttentionStrip dependency declaration` requirement. It requires
   the strip to draw from a shared attention primitive; the shipped
   `frontend/src/components/ingestion/connectors/AttentionStrip.tsx` is
