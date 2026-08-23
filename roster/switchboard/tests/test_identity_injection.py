@@ -181,18 +181,39 @@ async def test_repeated_unknown_sender_losing_claim_does_not_notify_again():
 async def test_claim_failure_is_observable_and_does_not_send_unclaimed_notification(
     caplog: pytest.LogCaptureFixture,
 ):
-    """State outages fail open for routing but cannot turn into owner-send storms."""
+    """Claim failures are identifier-blind and cannot turn into owner-send storms."""
+    sentinel = "15551234567@s.whatsapp.net"
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(side_effect=RuntimeError("state unavailable"))
+    pool.fetchrow = AsyncMock(side_effect=RuntimeError(f"state unavailable for {sentinel}"))
     notify_owner_fn = AsyncMock()
 
-    with caplog.at_level(logging.WARNING):
-        result = await _resolve_unknown(pool, notify_owner_fn=notify_owner_fn)
+    with (
+        patch.object(identity_inject, "resolve_contact_by_channel", AsyncMock(return_value=None)),
+        patch.object(
+            identity_inject, "create_temp_contact", AsyncMock(return_value=_temp_entity())
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await resolve_and_inject_identity(
+            pool,
+            "whatsapp_jid",
+            sentinel,
+            notify_owner_fn=notify_owner_fn,
+        )
 
     assert result.is_unknown is True
     assert result.new_unknown_sender is False
     notify_owner_fn.assert_not_awaited()
-    assert "could not persist owner-notification claim" in caplog.text
+    assert "identity.unknown_sender_notification_claim_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    failure_record = next(
+        record
+        for record in caplog.records
+        if record.message == "identity.unknown_sender_notification_claim_failed"
+    )
+    assert failure_record.channel_type == "whatsapp_jid"
+    assert failure_record.failure_class == "RuntimeError"
 
 
 async def test_delivery_failure_is_sealed_after_the_claim_and_does_not_block_result(

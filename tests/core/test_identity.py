@@ -556,6 +556,102 @@ async def test_create_temp_contact_db_error_returns_none():
     assert await create_temp_contact(pool, "telegram", "999") is None
 
 
+@pytest.mark.parametrize(
+    ("reservation_fetches", "event_name", "failure_class"),
+    [
+        (
+            [{"value": {"entity_id": "not-a-uuid"}}],
+            "identity.temp_entity_reservation_invalid",
+            "invalid_entity_id",
+        ),
+        (
+            [{"value": {"entity_id": str(_ENTITY_ID)}}, None],
+            "identity.temp_entity_reservation_missing_entity",
+            "missing_entity",
+        ),
+    ],
+)
+async def test_temp_entity_reservation_warnings_are_identifier_blind(
+    reservation_fetches: list[dict[str, Any] | None],
+    event_name: str,
+    failure_class: str,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Corrupt reservation repair logs only stable failure classification."""
+    sentinel = "15551234567@s.whatsapp.net"
+    pool = MagicMock()
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=reservation_fetches)
+    conn.fetchval = AsyncMock(return_value=uuid.uuid4())
+    conn.execute = AsyncMock()
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=None),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await create_temp_contact(
+            pool,
+            "whatsapp_jid",
+            sentinel,
+            reservation_state_key=f"identity:unknown_entity:whatsapp_jid:{sentinel}",
+        )
+
+    assert result is not None
+    assert event_name in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    warning_record = next(record for record in caplog.records if record.message == event_name)
+    assert warning_record.channel_type == "whatsapp_jid"
+    assert warning_record.failure_class == failure_class
+
+
+async def test_temp_entity_creation_failure_warning_is_identifier_blind(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Creation failures omit sender values, reservation keys, and exception text."""
+    sentinel = "15551234567@s.whatsapp.net"
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(
+        side_effect=RuntimeError(f"connection refused for {sentinel}")
+    )
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=None),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await create_temp_contact(
+            pool,
+            "whatsapp_jid",
+            sentinel,
+            reservation_state_key=f"identity:unknown_entity:whatsapp_jid:{sentinel}",
+        )
+
+    assert result is None
+    assert "identity.temp_entity_creation_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    warning_record = next(
+        record
+        for record in caplog.records
+        if record.message == "identity.temp_entity_creation_failed"
+    )
+    assert warning_record.channel_type == "whatsapp_jid"
+    assert warning_record.failure_class == "RuntimeError"
+
+
 async def test_create_temp_contact_returns_existing_on_conflict():
     """create_temp_contact returns the existing contact if one resolves (race).
 

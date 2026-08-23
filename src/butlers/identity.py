@@ -914,8 +914,11 @@ async def create_temp_contact(
                             reserved_entity_id = UUID(str(raw_reserved_entity_id))
                         except (TypeError, ValueError, AttributeError):
                             logger.warning(
-                                "create_temp_contact: invalid temporary-entity reservation for %s",
-                                reservation_state_key,
+                                "identity.temp_entity_reservation_invalid",
+                                extra={
+                                    "channel_type": channel_type,
+                                    "failure_class": "invalid_entity_id",
+                                },
                             )
                             reserved_entity_id = None
 
@@ -948,10 +951,11 @@ async def create_temp_contact(
                                 )
 
                             logger.warning(
-                                "create_temp_contact: temporary-entity reservation %s references "
-                                "missing entity %s; replacing it",
-                                reservation_state_key,
-                                reserved_entity_id,
+                                "identity.temp_entity_reservation_missing_entity",
+                                extra={
+                                    "channel_type": channel_type,
+                                    "failure_class": "missing_entity",
+                                },
                             )
 
                         # A manually deleted/corrupt reservation must not
@@ -1026,12 +1030,13 @@ async def create_temp_contact(
             is_unidentified=True,
         )
 
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "create_temp_contact: failed to create temporary contact for %s/%s",
-            channel_type,
-            channel_value,
-            exc_info=True,
+            "identity.temp_entity_creation_failed",
+            extra={
+                "channel_type": channel_type,
+                "failure_class": type(exc).__name__,
+            },
         )
         return None
 

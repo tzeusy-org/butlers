@@ -384,12 +384,12 @@ async def _claim_unknown_sender_notification(
             state_key,
         )
         return row is not None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "Unknown-sender identity resolution could not persist owner-notification claim "
-            "for %s/%s; continuing without owner delivery",
-            channel_type,
-            channel_value,
-            exc_info=True,
+            "identity.unknown_sender_notification_claim_failed",
+            extra={
+                "channel_type": channel_type,
+                "failure_class": type(exc).__name__,
+            },
         )
         return False
