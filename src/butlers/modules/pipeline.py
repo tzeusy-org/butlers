@@ -1673,6 +1673,43 @@ class MessagePipeline:
             "metadata": raw_metadata_payload,
         }
 
+        # Ensure the partition exists for received_at — committed immediately,
+        # OUTSIDE the dedupe transaction below so that DDL (CREATE TABLE IF NOT
+        # EXISTS) cannot be rolled back by a subsequent failure inside it.
+        #
+        # Background: switchboard_message_inbox_ensure_partition() uses DDL
+        # (CREATE TABLE IF NOT EXISTS ... PARTITION OF message_inbox).
+        # PostgreSQL allows DDL inside a transaction, but a transaction rollback
+        # also drops any tables created within it.  If ensure_partition runs
+        # inside the advisory-lock transaction and that transaction rolls back
+        # (e.g. public.ingestion_events missing, network error, unique
+        # violation), the newly created partition is dropped and subsequent
+        # inserts keep failing in a tight loop until the problem is resolved.
+        #
+        # Running ensure_partition on an auto-commit connection (pool.execute,
+        # not conn.execute inside a transaction) makes the partition creation
+        # durable regardless of what happens later in the dedupe transaction.
+        # Mirrors roster/switchboard/tools/ingestion/ingest.py.
+        try:
+            await self._pool.execute(
+                "SELECT switchboard_message_inbox_ensure_partition($1)",
+                received_at,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to ensure message_inbox partition for received_at=%s: %s",
+                received_at,
+                exc,
+                exc_info=True,
+                extra=self._log_fields(
+                    source=source,
+                    chat_id=chat_id,
+                    target_butler=None,
+                    latency_ms=None,
+                ),
+            )
+            raise RuntimeError(f"Failed to ensure message_inbox partition: {exc}") from exc
+
         # Use advisory-lock-based dedup (same pattern as ingest_v1) to avoid
         # the broken ON CONFLICT which includes received_at.  On a partitioned
         # table the unique index is (dedupe_key, received_at), so two inserts
@@ -1703,12 +1740,6 @@ class MessagePipeline:
                     request_id = existing["request_id"]
                     decision = "deduped"
                 else:
-                    # Ensure partition exists for this received_at
-                    await conn.execute(
-                        "SELECT switchboard_message_inbox_ensure_partition($1)",
-                        received_at,
-                    )
-
                     row = await conn.fetchrow(
                         """
                         INSERT INTO message_inbox (
