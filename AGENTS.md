@@ -1933,3 +1933,27 @@ python3 scripts/session_link_guard.py --pr-title-file /tmp/t.txt --pr-body-file 
 
 Never point that scanner at a checked-out file tree — its self-match safety depends on only ever
 seeing PR/commit/comment metadata.
+
+### A quiet worktree is not evidence a dispatched worker died
+
+Before re-dispatching onto an existing agent worktree, note what the obvious checks actually prove:
+
+- `ListAgents` enumerates **peer sessions**, not your own in-process subagents. An empty listing is
+  not evidence your worker is gone.
+- `git log origin/main..HEAD` empty + `git status --short` empty means the worker has not *committed*
+  yet. A worker that is mid-edit and has not yet saved, or that is between edits, looks identical to
+  a worker that never started.
+
+The authoritative check is the task list itself (`/tasks`, or the background-task IDs in a goal
+check-in), and `TaskStop <worker-name>` before touching the tree.
+
+Getting this wrong is expensive in a specific way: `git reset --hard origin/main` on a live worker's
+worktree silently discards its tracked work-in-progress but leaves untracked files, so the worker
+keeps running, re-creates edits under the new agent, and you end up with two agents committing to one
+branch plus two competing `openspec/changes/<name>/` directories for the same bead. This happened on
+`agent/bu-uqipv`; the second worker caught it only because files changed under it mid-lint.
+
+When two agents have in fact overlapped, do not resolve it by trusting either side. Material from the
+stopped agent is neither authoritative nor worthless: re-verify its factual claims against the code
+yourself, and diff its abandoned openspec delta against the surviving one before deleting it —
+"redundant" is the assumption most likely to be wrong.
