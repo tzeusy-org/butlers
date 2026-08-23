@@ -1721,3 +1721,56 @@ If you merged in the wrong order, clean up explicitly and verify, since `--delet
 error for the remote: `git push origin --delete agent/<id>` then
 `git ls-remote --heads origin agent/<id> | wc -l` should print 0.
 ||||||| parent of 77b8a2fd3 (docs(agents): record the role-gated SECURITY DEFINER savepoint census [bu-74pxv])
+### `find` here is bfs, not findutils: GNU relative timestamps fail AND exit 0
+
+`find` on this machine resolves to **bfs**, which rejects GNU findutils' relative timestamp syntax:
+
+```
+find . -newermt '-30 minutes'
+bfs: error: Invalid timestamp.  Supported timestamp formats are ISO 8601-like
+```
+
+Two things make this dangerous rather than merely annoying. The error goes to **stderr**, so the
+common `2>/dev/null` idiom hides it completely. And bfs exits **0** on it, so `|| echo failed` and
+`rc=$?` both report success. The result is a command that prints nothing and looks like a confident
+negative answer: "no files changed in the last 30 minutes".
+
+That misfired as a liveness probe for a dispatched worker. The empty output was read as "this worker
+has not written a file in 45 minutes, it may be stalled", when the worker was in fact writing files
+every few minutes and had pytest running. The probe never ran at all.
+
+Use an ISO 8601 timestamp, which bfs accepts and findutils also accepts:
+
+```sh
+CUTOFF=$(date -Iseconds -d '30 minutes ago')   # 2026-08-23T14:29:36+08:00
+find src tests -type f -newermt "$CUTOFF" -printf '%TY-%Tm-%Td %TH:%TM %p\n' | sort -r
+```
+
+For worker liveness specifically, prefer evidence that cannot silently return empty: `ls -lt` on the
+directory (bfs is not involved), or `ps -eo pid,etime,args | grep <worktree path>`, which shows the
+command and how long it has been running. Local time here is UTC+8, so `ls` timestamps and `date -u`
+disagree by 8 hours; compare like with like.
+
+### `tests/api/` is not DB-free, and an `--ignore` list built from belief will not make it so
+
+`tests/api/` mixes mocked unit tests with real-Postgres integration tests. The integration ones are
+marked `pytest.mark.integration` and gated only on `shutil.which("docker")` -- and docker IS on PATH
+on this machine, so they **run** rather than skip. At least six live there today, all suffixed
+`_db.py`: `test_issues_condition_ledger_db.py`, `test_relationship_entities_concentration_db.py`,
+`test_relationship_entities_search_db.py`, `test_contacts_search_db.py`,
+`test_qa_cases_session_doors_db.py`, `test_relationship_queue_dismissed_suppression_db.py`.
+
+So `pytest tests/api/ --ignore=<a few files>` is not a DB-free scope unless every remaining file has
+been checked. An agent that does not hold the serialized DB slot can collide with the holder without
+either side seeing an error -- the damage shows up as an unrelated-looking failure in the OTHER
+agent's run.
+
+The only safe narrow scope is an explicit file list, each verified to have no `asyncpg`, `docker`, or
+`create_migrated_test_db` reference:
+
+```sh
+grep -lE 'asyncpg|docker|create_migrated_test_db' tests/api/*.py   # exclude every hit
+```
+
+Corollary for the whole repo: the DB-slot rule is **structural, not path-based**. If a test touches a
+real database it needs the slot, whatever the file is called and whatever directory it sits in.
