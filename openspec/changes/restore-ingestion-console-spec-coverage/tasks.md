@@ -80,11 +80,23 @@ Acceptance:
 
 ### 7. dashboard-ingestion-dispatch-console (MODIFIED)
 
-Verified against the ingestion frontend routes and filter state handling.
+Verified against `frontend/src/router-config.tsx`, `frontend/src/router.tsx`
+(`IngestionTabRedirect`, `ConnectorDetailRedirect`),
+`frontend/src/components/ingestion/TimelineTab.tsx`,
+`frontend/src/components/ingestion/timeline/useEventDrawerState.ts`,
+`frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`, and
+`frontend/src/hooks/use-ingestion.ts`.
 
 Acceptance:
 - The added clauses do not drop any clause of the baseline
-  `Ingestion Dispatch Route Architecture` requirement.
+  `Ingestion Dispatch Route Architecture` requirement
+  (`scripts/check_spec_overwrites.py`).
+- The URL-backed filter set is exactly `range`, `q`, `channels`,
+  `scopedMinute`, `scopedBucketMinutes`, `event` (plus the read-only `trace`
+  deep link); status chips and the active saved view are deliberately recorded
+  as *not* URL-backed rather than specified as if they were.
+- Roster polling is one summaries request per interval with no per-connector
+  detail query.
 
 ### 8. Gates
 

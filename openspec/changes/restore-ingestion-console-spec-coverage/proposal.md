@@ -52,7 +52,11 @@ from the stale delta.
   successful load) that the archived `ingestion-priority-contacts` delta
   described. That content belongs where the evaluator already lives.
 - `dashboard-ingestion-dispatch-console`: `Ingestion Dispatch Route
-  Architecture` gains the filter-control URL contract for the sub-routes.
+  Architecture` gains the normalization mechanics (strip-`tab`-keep-the-rest,
+  replace-not-push, the `/ingestion/history` and legacy `/connectors`
+  bookmark redirects). Two requirements are added beside it: the
+  filter-control URL contract for the sub-routes, and the roster's
+  summary-only polling contract.
 - `ingestion-policy`: gains the `channel_defaults` data model and REST API —
   the one piece of the archived `ingestion-ui-information-architecture` delta
   with no canonical home.
