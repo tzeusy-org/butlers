@@ -59,7 +59,7 @@ async def pool(migrated_dsn: str):
     assert pg_pool is not None
     try:
         await pg_pool.execute("TRUNCATE message_inbox")
-        await pg_pool.execute("TRUNCATE relationship.entity_facts")
+        await pg_pool.execute("TRUNCATE relationship.entity_facts CASCADE")
         await pg_pool.execute("TRUNCATE public.entities CASCADE")
         yield pg_pool
     finally:

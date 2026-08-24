@@ -325,6 +325,7 @@ async def _fetch_identity_facts(
     rows = await pool.fetch(
         f"""
         SELECT
+            f.id,
             f.predicate,
             f.object,
             f.object_kind,
@@ -345,6 +346,10 @@ async def _fetch_identity_facts(
     return [
         {
             "store": "identity",
+            # Handle for relationship_fact_evidence: a caller that wants to know
+            # WHY a fact is believed needs the row id, and the read path is the
+            # only place it is ever handed one.
+            "fact_id": str(r["id"]),
             "predicate": r["predicate"],
             "object": r["object"],
             "object_kind": r["object_kind"],

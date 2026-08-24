@@ -13,6 +13,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
@@ -233,6 +235,9 @@ async def _setup_schema(pool) -> None:
     await pool.execute(_CREATE_PREDICATE_REGISTRY_SQL)
     await pool.execute(_CREATE_MEMORY_LINKS_SQL)
     await pool.execute(_CREATE_STATE_SQL)
+    # rel_034: the central writer persists evidence and a coverage receipt in
+    # the same transaction as the fact, so this schema is not optional.
+    await apply_evidence_schema(pool)
 
 
 async def _make_entity(pool, *, roles: list[str] | None = None) -> uuid.UUID:

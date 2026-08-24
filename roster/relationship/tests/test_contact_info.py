@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -274,6 +276,9 @@ async def pool(provisioned_postgres_pool):
             )
         """)
 
+        # rel_034: the central writer persists evidence and a coverage receipt in
+        # the same transaction as the fact, so this schema is not optional.
+        await apply_evidence_schema(p)
         yield p
 
 

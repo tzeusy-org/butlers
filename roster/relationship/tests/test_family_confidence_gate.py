@@ -28,6 +28,7 @@ from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
     relationship_assert_fact,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -131,6 +132,9 @@ async def pool(provisioned_postgres_pool):
                 reversibility TEXT
             )
         """)
+        # rel_034: the central writer persists evidence and a coverage receipt in
+        # the same transaction as the fact, so this schema is not optional.
+        await apply_evidence_schema(p)
         yield p
 
 

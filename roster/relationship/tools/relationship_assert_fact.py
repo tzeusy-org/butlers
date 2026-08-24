@@ -57,31 +57,33 @@ from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
 )
+from butlers.tools.relationship.fact_coverage import record_coverage
+from butlers.tools.relationship.fact_evidence import (
+    EvidencePacket,
+    carry_evidence_forward,
+    coerce_session_id,
+    normalize_evidence,
+    persist_evidence,
+)
+from butlers.tools.relationship.fact_evidence import (
+    EvidenceReference as _EvidenceReference,
+)
+from butlers.tools.relationship.fact_evidence import (
+    validate_evidence as _validate_typed_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
 # Pending actions expire after 72 hours (mirrors contact_info.py).
 _PENDING_ACTION_EXPIRY_HOURS = 72
-_EvidenceReference = dict[str, str]
-_EVIDENCE_TYPES = {"fact", "entity", "url", "text"}
 # Every pending_actions row this writer parks belongs to the relationship
 # butler -- it never runs cross-butler (bu-g27ib).
 _ORIGIN_BUTLER = "relationship"
 
-
-def _validate_typed_evidence(evidence: list[_EvidenceReference]) -> None:
-    """Reject malformed evidence before a pending-action writer can persist it."""
-    for index, item in enumerate(evidence):
-        if not isinstance(item, dict) or set(item) != {"type", "ref", "note"}:
-            raise ValueError(
-                f"evidence[{index}] must be a typed reference with type, ref, and note."
-            )
-        if item["type"] not in _EVIDENCE_TYPES:
-            raise ValueError(f"evidence[{index}].type is not a supported evidence type.")
-        if not isinstance(item["ref"], str) or not item["ref"]:
-            raise ValueError(f"evidence[{index}].ref must be a non-empty string.")
-        if not isinstance(item["note"], str):
-            raise ValueError(f"evidence[{index}].note must be a string.")
+# ``pending_actions.status`` values from which an approved write may execute.
+# ``approved`` is the normal dispatch state; ``executed`` admits an operator
+# retry of an action whose first dispatch failed after the status flip.
+_EXECUTABLE_ACTION_STATUSES = frozenset({"approved", "executed"})
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +391,8 @@ async def _create_pending_action(
     tool_args: dict[str, Any],
     summary: str,
     *,
+    src: str,
+    observed_at: datetime,
     dedup_match: dict[str, Any] | None = None,
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
@@ -414,6 +418,14 @@ async def _create_pending_action(
     to acquire its own connection from a real pool (bu-g27ib). The dedup read
     has no transactional dependency on the caller's in-flight entity_facts
     write, so reading it from *pool* instead of the caller's ``conn`` is safe.
+
+    *src* and *observed_at* are recorded in ``relationship.fact_approval_context``
+    rather than in *tool_args*. Approval dispatch replays ``tool_args`` by
+    splatting it into the MCP tool, so every key there must also be a tool
+    parameter -- and ``src`` selects the owner carve-out's trusted-source
+    exemption, which is exactly the value an LLM session must never be able to
+    supply (bu-vj46x). Keeping it server-side makes the replay read the source
+    from a row only this function ever wrote.
     """
     if dedup_match is not None:
         existing = await pool.fetchval(
@@ -435,10 +447,20 @@ async def _create_pending_action(
     now = datetime.now(UTC)
     expires_at = now + timedelta(hours=_PENDING_ACTION_EXPIRY_HOURS)
 
+    # Stamp the action's own id into the stored arguments. Approval dispatch
+    # replays ``tool_args`` through the MCP tool, and ``approval_action_id`` is
+    # what tells that replay it is executing an already-approved write rather
+    # than proposing a new one -- without it the replay re-parks forever. The
+    # dedup probe matches on the identity quadruple only, so the extra key
+    # cannot break dedup.
+    tool_args = {**tool_args, "approval_action_id": str(action_id)}
+
     # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) --
     # asyncpg's registered jsonb codec already serializes once; pre-
     # serializing double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
     safe_tool_args = json.loads(json.dumps(tool_args, default=str))
+
+    await _record_approval_context(pool, action_id=action_id, src=src, observed_at=observed_at)
 
     await park_pending_action(
         pool,
@@ -455,6 +477,141 @@ async def _create_pending_action(
         approval_push_runtime=get_current_approval_push_runtime(),
     )
     return action_id
+
+
+async def _record_approval_context(
+    pool: asyncpg.Pool,
+    *,
+    action_id: uuid.UUID,
+    src: str,
+    observed_at: datetime,
+) -> None:
+    """Record the server-written provenance of one parked fact write.
+
+    Written before :func:`park_pending_action` so the context is already durable
+    by the time the owner can possibly approve the action. Idempotent: a retry
+    of the same action id keeps the first recorded provenance.
+    """
+    await pool.execute(
+        """
+        INSERT INTO relationship.fact_approval_context (action_id, src, observed_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (action_id) DO NOTHING
+        """,
+        action_id,
+        src,
+        observed_at,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ApprovedAction:
+    """A ``pending_actions`` row the owner approved for exactly this triple.
+
+    Everything here is server-written: ``src`` and ``observed_at`` were recorded
+    in ``relationship.fact_approval_context`` when the writer parked the action,
+    ``evidence`` in the dossier column, and ``session_id`` by
+    :func:`park_pending_action`. The approved write therefore replays the
+    owner's decision instead of trusting whatever the dispatch caller passed.
+    """
+
+    action_id: uuid.UUID
+    src: str
+    observed_at: datetime | None
+    evidence: list[_EvidenceReference]
+    session_id: uuid.UUID | None
+
+
+async def _resolve_approved_action(
+    conn: asyncpg.Connection,
+    action_id: uuid.UUID,
+    *,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    object_kind: str,
+) -> _ApprovedAction:
+    """Load and verify the approved action authorising this write.
+
+    The ``approval_action_id`` argument travels through an LLM-reachable tool
+    surface, so it is treated as a claim to be checked, never as authority in
+    itself. The claim only survives if a real ``pending_actions`` row exists for
+    THIS writer, is in an executable status, and its stored identity quadruple
+    matches the triple being written. That makes escalation structurally
+    unreachable: the only ``approval_action_id`` a caller can get accepted is one
+    the owner already approved for precisely this triple, and the ``src`` /
+    evidence used come from that row rather than from the caller (bu-vj46x).
+
+    Raises ``ValueError`` on any mismatch -- failing loudly beats writing a fact
+    under provenance we cannot substantiate.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT pa.tool_name, pa.tool_args, pa.status, pa.evidence, pa.session_id,
+               ctx.src AS ctx_src, ctx.observed_at AS ctx_observed_at
+        FROM pending_actions pa
+        LEFT JOIN relationship.fact_approval_context ctx ON ctx.action_id = pa.id
+        WHERE pa.id = $1
+        """,
+        action_id,
+    )
+    if row is None:
+        raise ValueError(f"approval_action_id {action_id} does not identify a pending action.")
+    if row["tool_name"] != "relationship_assert_fact":
+        raise ValueError(
+            f"approval_action_id {action_id} belongs to a different tool; "
+            "it cannot authorise a fact write."
+        )
+    if row["status"] not in _EXECUTABLE_ACTION_STATUSES:
+        raise ValueError(
+            f"approval_action_id {action_id} is in status {row['status']!r}; "
+            "only an approved action may execute a fact write."
+        )
+
+    stored_args = _as_json_object(row["tool_args"])
+    claimed = (str(subject), predicate, object, object_kind)
+    approved = (
+        stored_args.get("subject"),
+        stored_args.get("predicate"),
+        stored_args.get("object"),
+        stored_args.get("object_kind"),
+    )
+    if claimed != approved:
+        raise ValueError(
+            f"approval_action_id {action_id} was approved for a different triple; "
+            "the write does not match what the owner approved."
+        )
+
+    stored_src = row["ctx_src"]
+    if not isinstance(stored_src, str) or not stored_src:
+        raise ValueError(
+            f"approval_action_id {action_id} has no recorded source; "
+            "the write cannot be attributed."
+        )
+
+    return _ApprovedAction(
+        action_id=action_id,
+        src=stored_src,
+        observed_at=row["ctx_observed_at"],
+        evidence=normalize_evidence(_as_json_value(row["evidence"])),
+        session_id=coerce_session_id(row["session_id"]),
+    )
+
+
+def _as_json_value(value: Any) -> Any:
+    """Decode a JSONB column that asyncpg may hand back as text."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
+
+
+def _as_json_object(value: Any) -> dict[str, Any]:
+    """Decode a JSONB column expected to hold an object; empty dict otherwise."""
+    decoded = _as_json_value(value)
+    return dict(decoded) if isinstance(decoded, dict) else {}
 
 
 # Bounded retry budget for the concurrent-writer race. Each attempt re-reads
@@ -478,6 +635,7 @@ async def _insert_active_fact(
     weight: int | None,
     verified: bool,
     primary: bool | None,
+    packet: EvidencePacket,
 ) -> uuid.UUID | None:
     """Insert a new ACTIVE row, returning its id, or ``None`` on conflict.
 
@@ -487,18 +645,26 @@ async def _insert_active_fact(
     untouched (spec: conf is immutable, superseded rows keep their observed_at).
     A ``None`` return signals the caller to re-read and route the collision
     through normal supersession.
+
+    *packet* supplies the assertion provenance stamped onto the row
+    (``assert_origin``/``assert_session_id``/``assert_action_id``): how this row
+    came to be active, which runtime session authored it, and which approved
+    action authorised it. It is written with the row, not after it, so a fact can
+    never exist with its provenance missing.
     """
     return await conn.fetchval(
         """
         INSERT INTO relationship.entity_facts (
             id, subject, predicate, object, object_kind,
             src, conf, last_seen, observed_at, weight, verified, "primary",
-            validity, created_at, updated_at
+            validity, created_at, updated_at,
+            assert_origin, assert_session_id, assert_action_id
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
             $5, $6, $7, $8, $9, $10, $11,
-            'active', now(), now()
+            'active', now(), now(),
+            $12, $13, $14
         )
         ON CONFLICT (subject, predicate, object) WHERE validity = 'active'
         DO NOTHING
@@ -515,6 +681,9 @@ async def _insert_active_fact(
         weight,
         verified,
         primary,
+        packet.origin,
+        packet.session_id,
+        packet.action_id,
     )
 
 
@@ -532,11 +701,18 @@ async def _upsert_fact(
     weight: int | None,
     verified: bool,
     primary: bool | None,
+    packet: EvidencePacket,
 ) -> AssertResult:
     """Perform the idempotency / supersession logic on *conn*.
 
     Callers are responsible for wrapping this in a transaction when they need
     the supersession read-then-write pair to be atomic.
+
+    *packet* is persisted on the SAME connection as the fact write, so evidence
+    and fact commit together or not at all. On supersession the prior row's
+    evidence is copied onto the replacement (``carried_from``) — the superseded
+    row itself is never touched, so "why is this true" survives re-assertion
+    without any ledger row being rewritten.
 
     ``observed_at`` is stamped onto the new active row.  On supersession the
     superseded row KEEPS its own ``observed_at`` (this function never rewrites
@@ -579,7 +755,12 @@ async def _upsert_fact(
             )
 
             if not prov_changed:
-                # Idempotent: same identity + same provenance → no write.
+                # Idempotent on the FACT: same identity + same provenance, so no
+                # new row. The evidence packet is still appended — a second
+                # source citing a reason for an already-known fact is new
+                # knowledge even when the triple is not. The ledger's unique
+                # (fact_id, kind, ref) index absorbs a literal repeat.
+                await persist_evidence(conn, fact_id=old_id, packet=packet)
                 return AssertResult(outcome=AssertOutcome.unchanged, fact_id=old_id)
 
             # 3. Supersession: retract the specific old row we just read, then
@@ -614,6 +795,7 @@ async def _upsert_fact(
                 weight=weight,
                 verified=verified,
                 primary=primary,
+                packet=packet,
             )
             if new_id is None:
                 # A competing writer slipped a new active row into the slot
@@ -621,6 +803,8 @@ async def _upsert_fact(
                 # superseded the row we observed; loop to supersede theirs too
                 # rather than overwriting it in place.
                 continue
+            await carry_evidence_forward(conn, from_fact_id=old_id, to_fact_id=new_id)
+            await persist_evidence(conn, fact_id=new_id, packet=packet)
             return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
 
         # 4. No existing active row → insert. DO NOTHING (never DO UPDATE) so a
@@ -639,11 +823,13 @@ async def _upsert_fact(
             weight=weight,
             verified=verified,
             primary=primary,
+            packet=packet,
         )
         if new_id is None:
             # Lost the insert race: an active row now exists. Re-read so we either
             # report `unchanged` (identical provenance) or supersede it.
             continue
+        await persist_evidence(conn, fact_id=new_id, packet=packet)
         return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
 
     raise RuntimeError(
@@ -670,6 +856,7 @@ async def _assert_on_conn(
     wrap_transaction: bool,
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
+    approval_action_id: uuid.UUID | None = None,
 ) -> AssertResult:
     """Execute the full assert logic on *conn*.
 
@@ -689,9 +876,37 @@ async def _assert_on_conn(
         Forwarded to the pending_actions row on owner carve-out so the
         Dispatch dossier UI can render a rationale and typed evidence instead
         of a blank cell.
+    approval_action_id:
+        Set when this call is the EXECUTION of an owner-approved action rather
+        than a fresh proposal. Verified against ``pending_actions`` before it
+        does anything (:func:`_resolve_approved_action`); once verified it both
+        skips the gates the owner already cleared and supplies ``src``,
+        ``observed_at``, evidence and session from the parked row.
     """
     # Predicate validation (fast indexed lookup, runs on every call).
     await _validate_predicate(conn, predicate)
+
+    approved: _ApprovedAction | None = None
+    if approval_action_id is not None:
+        approved = await _resolve_approved_action(
+            conn,
+            approval_action_id,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            object_kind=object_kind,
+        )
+        # The owner approved THIS triple: re-parking it would ask the same
+        # question a second time and the fact would never land. Both gates below
+        # are proposal-time gates, so an approved execution skips them and goes
+        # straight to the write with the parked provenance.
+        src = approved.src
+        if approved.observed_at is not None:
+            # The fact was observed when it was proposed, not when the owner got
+            # round to approving it. Staleness bands read observed_at, so taking
+            # the approval time here would make every approved fact look fresher
+            # than the observation behind it.
+            observed_at = approved.observed_at
 
     # Owner carve-out (RFC 0017 §2.3).
     # Exception: when *src* is a trusted source — either an owner-self source
@@ -701,19 +916,21 @@ async def _assert_on_conn(
     # bypasses pending_actions and goes directly to entity_facts.
     # Third-party / message-extracted writes about the owner (any other src) still
     # park for approval.
-    if await _is_owner_entity(conn, subject) and src not in _OWNER_AUTO_APPLY_SOURCES:
+    if (
+        approved is None
+        and await _is_owner_entity(conn, subject)
+        and src not in _OWNER_AUTO_APPLY_SOURCES
+    ):
         tool_args: dict[str, Any] = {
             "subject": str(subject),
             "predicate": predicate,
             "object": object,
             "object_kind": object_kind,
-            "src": src,
             "conf": conf,
             "verified": verified,
         }
         if last_seen is not None:
             tool_args["last_seen"] = last_seen.isoformat()
-        tool_args["observed_at"] = observed_at.isoformat()
         if weight is not None:
             tool_args["weight"] = weight
         if primary is not None:
@@ -755,6 +972,8 @@ async def _assert_on_conn(
             "relationship_assert_fact",
             tool_args,
             summary,
+            src=src,
+            observed_at=observed_at,
             dedup_match=dedup_match,
             why=effective_why,
             evidence=effective_evidence,
@@ -780,19 +999,17 @@ async def _assert_on_conn(
     # silently writing incorrect parent-of/child-of/family-of edges.
     # High-confidence (conf ≥ 0.8) kinship assertions from explicit statements
     # proceed through the normal upsert path below.
-    if predicate in _FAMILY_GATE_PREDICATES and conf < _FAMILY_GATE_CONF:
+    if approved is None and predicate in _FAMILY_GATE_PREDICATES and conf < _FAMILY_GATE_CONF:
         tool_args_gate: dict[str, Any] = {
             "subject": str(subject),
             "predicate": predicate,
             "object": object,
             "object_kind": object_kind,
-            "src": src,
             "conf": conf,
             "verified": verified,
         }
         if last_seen is not None:
             tool_args_gate["last_seen"] = last_seen.isoformat()
-        tool_args_gate["observed_at"] = observed_at.isoformat()
         if weight is not None:
             tool_args_gate["weight"] = weight
         if primary is not None:
@@ -833,6 +1050,8 @@ async def _assert_on_conn(
             "relationship_assert_fact",
             tool_args_gate,
             gate_summary,
+            src=src,
+            observed_at=observed_at,
             dedup_match=dedup_match_gate,
             why=gate_why,
             evidence=gate_evidence,
@@ -851,6 +1070,22 @@ async def _assert_on_conn(
             action_id=action_id,
         )
 
+    if approved is not None:
+        packet = EvidencePacket(
+            items=tuple(approved.evidence),
+            src=approved.src,
+            origin="approved",
+            session_id=approved.session_id,
+            action_id=approved.action_id,
+        )
+    else:
+        packet = EvidencePacket(
+            items=tuple(evidence or ()),
+            src=src,
+            origin="direct",
+            session_id=coerce_session_id(get_current_runtime_session_id()),
+        )
+
     kwargs: dict[str, Any] = dict(
         subject=subject,
         predicate=predicate,
@@ -863,12 +1098,36 @@ async def _assert_on_conn(
         weight=weight,
         verified=verified,
         primary=primary,
+        packet=packet,
     )
     if wrap_transaction:
         async with conn.transaction():
-            return await _upsert_fact(conn, **kwargs)
-    else:
-        return await _upsert_fact(conn, **kwargs)
+            return await _write_fact_with_receipts(conn, kwargs)
+    return await _write_fact_with_receipts(conn, kwargs)
+
+
+async def _write_fact_with_receipts(
+    conn: asyncpg.Connection,
+    kwargs: dict[str, Any],
+) -> AssertResult:
+    """Write the fact and its coverage receipt as one unit.
+
+    A successful assert is itself an observation: this source looked at this
+    subject and predicate and found a value. Recording that alongside the fact
+    is what lets a later read distinguish "nobody ever looked" from "we looked
+    and there is nothing", and it must not be able to drift from the fact — so
+    it runs on the same connection inside the same transaction.
+    """
+    result = await _upsert_fact(conn, **kwargs)
+    await record_coverage(
+        conn,
+        subject=kwargs["subject"],
+        predicate=kwargs["predicate"],
+        src=kwargs["src"],
+        outcome="present",
+        observed_at=kwargs["observed_at"],
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1152,7 @@ async def relationship_assert_fact(
     conn: asyncpg.Connection | None = None,
     why: str | None = None,
     evidence: list[_EvidenceReference] | None = None,
+    approval_action_id: uuid.UUID | None = None,
 ) -> AssertResult:
     """Assert a fact triple in ``relationship.entity_facts``.
 
@@ -940,9 +1200,20 @@ async def relationship_assert_fact(
         Human-readable rationale shown to the owner in the approvals UI when
         the owner carve-out fires.  Falls back to a generated sentence.
     evidence:
-        Ordered typed evidence references (`type`, `ref`, `note`) shown to the
-        owner in the approvals UI under the rationale. Falls back to a minimal
-        identity summary.
+        Ordered typed evidence references (`type`, `ref`, `note`) recorded in
+        ``relationship.fact_evidence`` alongside the written fact, and shown to
+        the owner in the approvals UI under the rationale when the write parks.
+        References only — the ledger never stores copied source content, and
+        over-long refs/notes are rejected. Falls back to a minimal identity
+        summary on the park paths.
+    approval_action_id:
+        Identifies the approved ``pending_actions`` row this call is executing.
+        Only set by approval dispatch. It is verified against the stored row
+        (same tool, executable status, same triple) before it grants anything;
+        when it verifies, the owner and family gates are skipped and ``src``,
+        ``observed_at``, evidence and the originating session are taken from
+        the parked row rather than from the caller — so an approved fact keeps
+        the time it was observed, not the time it was approved.
 
     Returns
     -------
@@ -954,7 +1225,9 @@ async def relationship_assert_fact(
     ------
     ValueError
         When *predicate* is not registered, or *conf* is outside [0, 1], or
-        *object_kind* is not ``'literal'`` or ``'entity'``.
+        *object_kind* is not ``'literal'`` or ``'entity'``, or *evidence* is
+        malformed, or *approval_action_id* does not identify an approved action
+        for exactly this triple.
     """
     # --- Input validation (cheap; runs before any DB access) ---
     if object_kind not in ("literal", "entity"):
@@ -985,6 +1258,7 @@ async def relationship_assert_fact(
         primary=primary,
         why=why,
         evidence=evidence,
+        approval_action_id=approval_action_id,
     )
 
     if conn is not None:
