@@ -61,6 +61,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._notifications import register_notification_tools
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.schema_standins import CONNECTOR_REGISTRY
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -144,16 +145,10 @@ async def pending_actions_pool(provisioned_postgres_pool):
                     ))
             )
         """)
-        # Minimal connector_registry stand-in: only the columns the
-        # disconnect/rotate-token endpoints actually query.
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS connector_registry (
-                connector_type TEXT NOT NULL,
-                endpoint_identity TEXT NOT NULL,
-                deleted_at TIMESTAMPTZ,
-                PRIMARY KEY (connector_type, endpoint_identity)
-            )
-        """)
+        # connector_registry stand-in for the disconnect/rotate-token endpoints.
+        # Shared declaration, not a local column list: a local one only covers
+        # today's queries and breaks silently when the chain widens (bu-r8opr).
+        await pool.execute(CONNECTOR_REGISTRY.ddl())
         # Token rotation is rejected before a pending action can be created.
         # Its refusal is an audit event, so provision the canonical table the
         # route writes in the normal (non-migration-error) path.

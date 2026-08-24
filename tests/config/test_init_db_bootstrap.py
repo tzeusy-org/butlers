@@ -131,6 +131,10 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
+            # schema-standin-exempt: a two-column GRANT target, not a query
+            # stand-in. This fixture runs before any migration, on purpose:
+            # it tests init-db.sql's privilege boundary, and the registry's
+            # real column list is irrelevant to that.
             conn.execute(
                 text(
                     "CREATE TABLE switchboard.connector_registry ("

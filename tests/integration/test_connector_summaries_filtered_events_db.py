@@ -35,6 +35,7 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.schema_standins import CONNECTOR_REGISTRY
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -67,32 +68,11 @@ async def pool(postgres_container, migrated_db_url: str):
     )
     await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
     await p.execute("TRUNCATE TABLE connectors.filtered_events CASCADE")
-    # Minimal connector_registry stand-in — only the columns the summaries
-    # endpoint actually queries (connector_registry itself lives in the
-    # switchboard migration chain; standing it up by hand here keeps this
-    # test scoped to the core-chain tables that are actually under test,
-    # matching the precedent in test_pending_actions_writers_jsonb_roundtrip.py).
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS connector_registry (
-            connector_type TEXT NOT NULL,
-            endpoint_identity TEXT NOT NULL,
-            state TEXT NOT NULL DEFAULT 'healthy',
-            error_message TEXT,
-            version TEXT,
-            uptime_s INTEGER,
-            last_heartbeat_at TIMESTAMPTZ,
-            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            counter_messages_ingested BIGINT NOT NULL DEFAULT 0,
-            counter_messages_failed BIGINT NOT NULL DEFAULT 0,
-            deleted_at TIMESTAMPTZ,
-            archived_at TIMESTAMPTZ,
-            checkpoint_cursor TEXT,
-            checkpoint_updated_at TIMESTAMPTZ,
-            operational_role TEXT NOT NULL DEFAULT 'unknown',
-            parent_endpoint_identity TEXT,
-            PRIMARY KEY (connector_type, endpoint_identity)
-        )
-    """)
+    # connector_registry lives in the switchboard chain; this test is about
+    # core-chain tables, so it stands the registry up from the one shared
+    # declaration rather than running that whole chain. Hand-copying the column
+    # list here is what made this file break silently on sw_031 (bu-r8opr).
+    await p.execute(CONNECTOR_REGISTRY.ddl())
     await p.execute("TRUNCATE TABLE connector_registry")
     yield p
     await p.close()
@@ -140,8 +120,8 @@ async def _seed_registry(
     await pool.execute(
         """
         INSERT INTO connector_registry
-            (connector_type, endpoint_identity, first_seen_at, operational_role)
-        VALUES ($1, $2, now(), 'runtime_instance')
+            (connector_type, endpoint_identity, first_seen_at, operational_role, state)
+        VALUES ($1, $2, now(), 'runtime_instance', 'healthy')
         ON CONFLICT (connector_type, endpoint_identity) DO NOTHING
         """,
         connector_type,
