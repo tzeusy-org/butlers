@@ -185,11 +185,21 @@ export function ConnectorsRoster() {
   // Checkpoint cursors whose owning runtime instance could not be resolved
   // (bu-6jv4m.11). They are not connectors and never enter the roster, the
   // attention strip, or the KPI band — but they are not swallowed either.
+  // Audited for bu-ep4ks.5: this coercion cannot fabricate calm. The list renders
+  // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
+  // note instead of an empty section. The `?? []` covers only an older cached
+  // response that predates the field.
+  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
   const unparentedCheckpoints = connectorsResp?.data?.unparented_checkpoints ?? []
 
   // Registry records nothing has claimed as a process. They stay in the roster
   // below with an `unclassified` verdict; this count is the roster-level signal
   // that the registry holds records whose role was never established.
+  // Audited for bu-ep4ks.5: this coercion cannot fabricate calm. The note renders
+  // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
+  // note instead of a reassuring zero. The `?? 0` covers only an older cached
+  // response that predates the field.
+  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
   const unclassifiedCount = connectorsResp?.data?.unclassified_count ?? 0
 
   // Available dormant profiles (catalog entries not yet registered)

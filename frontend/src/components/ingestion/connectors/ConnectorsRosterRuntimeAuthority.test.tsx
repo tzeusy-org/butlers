@@ -168,7 +168,7 @@ function mockHooks(
     }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
   )
   vi.mocked(useAvailableConnectors).mockReturnValue(
-    makeResult({ data: [] }) as ReturnType<typeof useAvailableConnectors>,
+    makeResult({ data: [] }) as unknown as ReturnType<typeof useAvailableConnectors>,
   )
 }
 
@@ -438,7 +438,7 @@ describe('older responses and source failure', () => {
       refetch: vi.fn(),
     } as unknown as ReturnType<typeof useConnectorSummariesWithAggregates>)
     vi.mocked(useAvailableConnectors).mockReturnValue(
-      makeResult({ data: [] }) as ReturnType<typeof useAvailableConnectors>,
+      makeResult({ data: [] }) as unknown as ReturnType<typeof useAvailableConnectors>,
     )
     renderRoster(container, root)
 

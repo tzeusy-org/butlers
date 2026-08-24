@@ -2155,6 +2155,11 @@ build if the committed copy differs, so it is always current.
 
 - needs attention
 
+## `frontend/src/components/ingestion/connectors/ConnectorCheckpoints.tsx`
+
+- saved ·
+- saved · never
+
 ## `frontend/src/components/ingestion/connectors/ConnectorDetailView.tsx`
 
 - ← ingestion / connectors
@@ -2199,6 +2204,10 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/ingestion/connectors/ScopeList.tsx`
 
 - Reauthorising will request the updated scopes and resume ingestion.
+
+## `frontend/src/components/ingestion/connectors/UnparentedCheckpointsList.tsx`
+
+- checkpoints · owner unresolved
 
 ## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
 
@@ -3401,4 +3410,4 @@ build if the committed copy differs, so it is always current.
 - Preset windows
 
 ---
-*Total strings: 2568*
+*Total strings: 2571*
