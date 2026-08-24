@@ -6,7 +6,8 @@ Provides three pure data/DB tools:
   edges supplied by the caller), enforces structural constraints (max depth 5,
   max 30 nodes, DAG acyclicity), runs a deterministic topological sort with
   tie-breaking (depth → effort → diagnostic mastery), writes sequence integers
-  to the DB, and transitions the mind map to 'active'.
+  to the DB, annotates node metadata with pedagogy hints (``concept_type`` and
+  ``source_refs``), and transitions the mind map to 'active'.
 
 - ``curriculum_replan``: Re-computes sequence numbers in response to updated
   mastery state without modifying the existing DAG structure.  Marks
@@ -23,13 +24,17 @@ data/persistence layer.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from typing import Any
 
 import asyncpg
 
+from butlers.core.state import state_list
 from butlers.tools.education._helpers import _row_to_dict
+from butlers.tools.education.concept_types import CONCEPT_TYPES, classify_concept_type
+from butlers.tools.education.source_material import SOURCE_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,12 @@ MAX_NODES_PER_MAP = 30
 
 # Mastery statuses that rank "earlier" in the diagnostic tie-break
 _DIAGNOSED_STATUSES = {"diagnosed", "learning"}
+
+# Where a source reference came from.  The planner works from model knowledge of
+# a registered source, so its refs are "model-recalled" unless the caller says
+# otherwise; "referenced" is reserved for refs read out of the source itself.
+_VALID_PROVENANCE = frozenset({"referenced", "model-recalled"})
+_DEFAULT_PROVENANCE = "model-recalled"
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +266,232 @@ async def _write_sequences(
 
 
 # ---------------------------------------------------------------------------
+# Pedagogy annotation: concept types and source references
+# ---------------------------------------------------------------------------
+
+
+def _normalise_source_refs(
+    source_refs: dict[str, Any],
+) -> dict[str, list[dict[str, str]]]:
+    """Validate the planner-supplied ``{node_label: [source_ref, ...]}`` mapping.
+
+    Structural problems are the caller's bug, so they raise with an actionable
+    message.  Whether a referenced source is actually *registered* is a
+    knowledge-coverage question and is handled downstream by dropping the ref.
+
+    Raises
+    ------
+    ValueError
+        If the mapping, any entry list, or any individual ref is malformed.
+    """
+    if not isinstance(source_refs, dict):
+        raise ValueError(
+            "source_refs must be a mapping of {node_label: [{source_id, location}, ...]}, "
+            f"got {type(source_refs).__name__}."
+        )
+
+    normalised: dict[str, list[dict[str, str]]] = {}
+    for label, refs in source_refs.items():
+        if not isinstance(refs, (list, tuple)):
+            raise ValueError(
+                f"source_refs[{label!r}] must be a list of source_ref dicts, "
+                f"got {type(refs).__name__}."
+            )
+
+        cleaned: list[dict[str, str]] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                raise ValueError(
+                    f"source_refs[{label!r}] entries must be dicts with 'source_id' and "
+                    f"'location' keys, got {type(ref).__name__}."
+                )
+
+            source_id = ref.get("source_id")
+            if not isinstance(source_id, str) or not source_id.strip():
+                raise ValueError(
+                    f"source_refs[{label!r}] has an entry without a non-empty 'source_id'. "
+                    "Use source_material_list() to find registered source IDs."
+                )
+
+            location = ref.get("location")
+            if not isinstance(location, str) or not location.strip():
+                raise ValueError(
+                    f"source_refs[{label!r}] entry for source {source_id} has no non-empty "
+                    "'location'. Omit the ref instead of inventing a location."
+                )
+
+            provenance = ref.get("provenance", _DEFAULT_PROVENANCE)
+            if provenance not in _VALID_PROVENANCE:
+                allowed = ", ".join(sorted(_VALID_PROVENANCE))
+                raise ValueError(
+                    f"source_refs[{label!r}] has provenance={provenance!r}; must be one of: "
+                    f"{allowed}."
+                )
+
+            cleaned.append(
+                {
+                    "source_id": source_id.strip(),
+                    "location": location.strip(),
+                    "provenance": provenance,
+                }
+            )
+        normalised[label] = cleaned
+
+    return normalised
+
+
+async def _registered_source_ids(pool: asyncpg.Pool) -> set[str]:
+    """Return the IDs of every source currently in the state-store registry."""
+    keys = await state_list(pool, prefix=SOURCE_KEY_PREFIX, keys_only=True)
+    return {
+        key[len(SOURCE_KEY_PREFIX) :]
+        for key in keys
+        if isinstance(key, str) and key.startswith(SOURCE_KEY_PREFIX)
+    }
+
+
+async def _resolve_source_refs(
+    pool: asyncpg.Pool,
+    nodes: list[dict[str, Any]],
+    source_refs: dict[str, Any],
+) -> tuple[dict[str, list[dict[str, str]]], int]:
+    """Map label-keyed source refs onto node IDs, dropping the unmappable ones.
+
+    Refs are dropped (not raised on) when they name a label no node carries or a
+    source that is not registered — the planner works best-effort from model
+    knowledge, and a partial mapping is more useful than a failed curriculum.
+
+    Returns
+    -------
+    tuple
+        ``(refs_by_node_id, skipped_count)``.
+    """
+    normalised = _normalise_source_refs(source_refs)
+    registered = await _registered_source_ids(pool)
+
+    nodes_by_label: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        nodes_by_label[node.get("label") or ""].append(node)
+
+    resolved: dict[str, list[dict[str, str]]] = {}
+    skipped = 0
+
+    for label, refs in normalised.items():
+        targets = nodes_by_label.get(label)
+        if not targets:
+            skipped += len(refs)
+            logger.warning(
+                "curriculum source ref skipped: no node labelled %r (%d ref(s))",
+                label,
+                len(refs),
+            )
+            continue
+
+        mappable = [ref for ref in refs if ref["source_id"] in registered]
+        unregistered = len(refs) - len(mappable)
+        if unregistered:
+            skipped += unregistered
+            logger.warning(
+                "curriculum source ref skipped for node %r: %d ref(s) name an unregistered source",
+                label,
+                unregistered,
+            )
+
+        for node in targets:
+            resolved.setdefault(node["id"], []).extend(mappable)
+
+    return resolved, skipped
+
+
+def _build_metadata_patches(
+    nodes: list[dict[str, Any]],
+    refs_by_node_id: dict[str, list[dict[str, str]]],
+) -> tuple[dict[str, dict[str, Any]], int, int]:
+    """Build the per-node metadata patch for concept types and source refs.
+
+    A node gets a ``concept_type`` only when it does not already carry a valid
+    one and the heuristic classifies it confidently; unclassifiable nodes are
+    left alone so the teaching phase falls back to its Socratic default.
+    Source refs are merged into any existing list, deduplicated on
+    ``(source_id, location)``.
+
+    Returns
+    -------
+    tuple
+        ``(patches_by_node_id, concept_types_assigned, source_refs_assigned)``.
+    """
+    patches: dict[str, dict[str, Any]] = {}
+    concept_types_assigned = 0
+    source_refs_assigned = 0
+
+    for node in nodes:
+        metadata = node.get("metadata") or {}
+        patch: dict[str, Any] = {}
+
+        if metadata.get("concept_type") not in CONCEPT_TYPES:
+            inferred = classify_concept_type(node.get("label") or "", node.get("description"))
+            if inferred is not None:
+                patch["concept_type"] = inferred
+                concept_types_assigned += 1
+
+        incoming = refs_by_node_id.get(node["id"]) or []
+        if incoming:
+            existing = metadata.get("source_refs")
+            merged = list(existing) if isinstance(existing, list) else []
+            seen = {
+                (ref.get("source_id"), ref.get("location"))
+                for ref in merged
+                if isinstance(ref, dict)
+            }
+            added = 0
+            for ref in incoming:
+                key = (ref["source_id"], ref["location"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(ref)
+                added += 1
+            if added:
+                patch["source_refs"] = merged
+                source_refs_assigned += added
+
+        if patch:
+            patches[node["id"]] = patch
+
+    return patches, concept_types_assigned, source_refs_assigned
+
+
+async def _write_metadata_patches(
+    pool: asyncpg.Pool,
+    patches: dict[str, dict[str, Any]],
+) -> None:
+    """Shallow-merge metadata patches into mind_map_nodes (single batched UPDATE).
+
+    Patches are passed as ``text[]`` and cast to ``jsonb`` in SQL so the encoding
+    does not depend on an array-of-jsonb codec being registered on the pool.
+    """
+    if not patches:
+        return
+
+    node_ids = list(patches)
+    payloads = [json.dumps(patches[node_id]) for node_id in node_ids]
+    await pool.execute(
+        """
+        UPDATE education.mind_map_nodes AS n
+        SET metadata = n.metadata || s.patch,
+            updated_at = now()
+        FROM (
+            SELECT unnest($1::uuid[]) AS id,
+                   unnest($2::text[])::jsonb AS patch
+        ) AS s
+        WHERE n.id = s.id
+        """,
+        node_ids,
+        payloads,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -265,6 +502,7 @@ async def curriculum_generate(
     *,
     goal: str | None = None,
     diagnostic_results: dict[str, Any] | None = None,
+    source_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate a concept graph, run topological sort, assign learning sequence.
 
@@ -282,8 +520,10 @@ async def curriculum_generate(
     3. Applying diagnostic mastery seeding (if ``diagnostic_results`` supplied).
     4. Running the deterministic topological sort with tie-breaking.
     5. Writing ``sequence`` integers back to the DB.
-    6. Recording the goal in ``mind_maps.metadata`` (if supplied).
-    7. Transitioning the mind map status to ``'active'``.
+    6. Annotating node metadata with ``concept_type`` (inferred from label and
+       description) and ``source_refs`` (if ``source_refs`` supplied).
+    7. Recording the goal in ``mind_maps.metadata`` (if supplied).
+    8. Transitioning the mind map status to ``'active'``.
 
     Parameters
     ----------
@@ -299,17 +539,25 @@ async def curriculum_generate(
         diagnostic session.  Nodes with ``quality >= 3`` receive
         ``mastery_status='diagnosed'`` with a proportional ``mastery_score``.
         Quality 5 maps to mastery_score 0.9 (never 1.0).
+    source_refs:
+        Optional mapping of ``{node_label: [{source_id, location, provenance?}]}``
+        recalled from registered source material (see ``source_material_list``).
+        ``provenance`` defaults to ``'model-recalled'``.  Refs naming an
+        unregistered source or an unknown node label are dropped and counted in
+        ``source_refs_skipped`` — never fabricate a location to keep a ref.
 
     Returns
     -------
     dict
         Summary dict with keys: ``mind_map_id``, ``node_count``, ``edge_count``,
-        ``status``.
+        ``status``, ``concept_types_assigned``, ``source_refs_assigned``,
+        ``source_refs_skipped``.
 
     Raises
     ------
     ValueError
-        If the mind map is not found, or structural constraints are violated.
+        If the mind map is not found, structural constraints are violated, or
+        ``source_refs`` is malformed.
     """
     # Verify mind map exists and is in a plannable state
     map_row = await pool.fetchrow(
@@ -351,11 +599,23 @@ async def curriculum_generate(
     if diagnostic_results:
         nodes = await _apply_diagnostic_seeding(pool, nodes, diagnostic_results)
 
+    # Resolve source refs against the registry before annotating metadata
+    refs_by_node_id: dict[str, list[dict[str, str]]] = {}
+    source_refs_skipped = 0
+    if source_refs:
+        refs_by_node_id, source_refs_skipped = await _resolve_source_refs(pool, nodes, source_refs)
+
     # Topological sort with tie-breaking
     ordered_ids = _topological_sort_with_tiebreak(nodes, edges)
 
     # Write sequences to DB
     await _write_sequences(pool, ordered_ids)
+
+    # Annotate node metadata with concept types and mapped source refs
+    patches, concept_types_assigned, source_refs_assigned = _build_metadata_patches(
+        nodes, refs_by_node_id
+    )
+    await _write_metadata_patches(pool, patches)
 
     # Transition to 'active'; merge goal into metadata if supplied
     if goal is not None:
@@ -381,11 +641,15 @@ async def curriculum_generate(
         )
 
     logger.info(
-        "curriculum_generate: mind_map_id=%s nodes=%d edges=%d goal=%r",
+        "curriculum_generate: mind_map_id=%s nodes=%d edges=%d goal=%r "
+        "concept_types=%d source_refs=%d skipped=%d",
         mind_map_id,
         node_count,
         edge_count,
         goal,
+        concept_types_assigned,
+        source_refs_assigned,
+        source_refs_skipped,
     )
 
     return {
@@ -393,6 +657,9 @@ async def curriculum_generate(
         "node_count": node_count,
         "edge_count": edge_count,
         "status": "active",
+        "concept_types_assigned": concept_types_assigned,
+        "source_refs_assigned": source_refs_assigned,
+        "source_refs_skipped": source_refs_skipped,
     }
 
 

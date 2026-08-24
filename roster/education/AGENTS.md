@@ -68,7 +68,8 @@ Your hallmarks:
 - **`diagnostic_complete`**: Finalize diagnostic, transition flow state to PLANNING
 
 ### Curriculum Planning Tools
-- **`curriculum_generate`**: Decompose topic into concept DAG, run topological sort, assign sequence
+- **`curriculum_generate`**: Decompose topic into concept DAG, run topological sort, assign
+  sequence, and annotate node metadata with `concept_type` and mapped `source_refs`
 - **`curriculum_replan`**: Re-compute learning sequence based on current mastery state
 - **`curriculum_next_node`**: Get the highest-priority frontier node for the next teaching step
 
@@ -149,6 +150,8 @@ consult the `interactive-response` skill
 
 - `education.mind_maps.root_node_id` is created as `NULL` and is not currently set by `mind_map_node_create()`; any UI/logic should rely on node/edge presence (or add a write path to set the root).
 - `curriculum_generate()` validates `diagnostic_results` as a dict (not a string); pass the probe summary mapping `{node_id: {quality, inferred_mastery}}`.
+- `metadata.concept_type` is written only when `classify_concept_type()` (in `tools/concept_types.py`) picks a single winning category; absence is the designed "fall back to Socratic" signal, so never default it to a type. A valid pre-existing value in node metadata is preserved.
+- `curriculum_generate(source_refs=...)` raises on malformed refs but silently drops refs naming an unregistered source or an unknown node label (counted in `source_refs_skipped`): the butler never fetches source contents, so a dropped ref is preferable to a fabricated location.
 - Scheduler cron evaluation is UTC-only (task `timezone` does not affect `next_run_at`); when a user specifies a local time (e.g. 20:00 SGT), convert it to the equivalent UTC cron (12:00 UTC), and expect a deterministic per-task stagger (up to ~15 minutes) that can shift actual fire time slightly later.
 - If `uv run` is unavailable (or blocked by cache permissions), quick config sanity checks can be done with `PYTHONPATH=src python3 -c "from butlers.config import load_config; load_config(Path('roster/education'))"`.
 
