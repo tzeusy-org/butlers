@@ -7,6 +7,7 @@ REQ-dashboard-spend-dashboard-001.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,7 +15,10 @@ from typing import Any
 import asyncpg
 import pytest
 
-from butlers.core.dispatch_outcomes import record_dispatch_attempt
+from butlers.core.dispatch_outcomes import (
+    _FLEET_HALT_LOCK_SQL,
+    record_dispatch_attempt,
+)
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -546,6 +550,102 @@ async def test_current_month_fleet_halt_before_activation_is_not_repaged(
                 "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
             )
             == 0
+        )
+
+
+# Two participants in the fleet-halt transaction must name the same UTC month:
+# the advisory lock the recorder takes at the top, and the ``v_month`` the
+# producer locks on and writes.  They are evaluated at different instants of one
+# transaction, so the only way they can be provably equal is for both to read
+# transaction_timestamp, which does not move while the transaction runs.
+#
+# No test can push a real server clock past a real month rollover, so the
+# boundary is simulated the one way that keeps the production SQL itself under
+# test: each expression is evaluated with its timestamp function replaced by the
+# instant that function would return on this timeline.  ``now()`` and
+# ``transaction_timestamp()`` return the BEGIN instant wherever they appear;
+# ``clock_timestamp()`` returns the instant of the statement that reads it.  The
+# substitution is the whole of the simulation -- the expressions, the truncation,
+# and the hashing are real Postgres running the real strings.
+_SIMULATED_BEGIN = "2026-01-31 23:59:59.999999+00"
+_SIMULATED_PRODUCER_CALL = "2026-02-01 00:00:00.000001+00"
+
+_TRANSACTION_CLOCKS = ("now()", "transaction_timestamp()")
+_STATEMENT_CLOCK = "clock_timestamp()"
+
+_V_MONTH_DECLARATION = re.compile(r"v_month\s+DATE\s*:=\s*(.+?);", re.IGNORECASE)
+
+
+def _at_simulated_boundary(expression: str, *, read_at: str) -> str:
+    """Rewrite one production expression onto the simulated boundary timeline.
+
+    ``read_at`` is when this expression is evaluated inside the transaction; it
+    is what ``clock_timestamp()`` would return there.  A transaction clock reads
+    the BEGIN instant no matter when it is evaluated, which is the property under
+    test, so it is substituted with ``_SIMULATED_BEGIN`` regardless of ``read_at``.
+    """
+    found = [clock for clock in (*_TRANSACTION_CLOCKS, _STATEMENT_CLOCK) if clock in expression]
+    assert len(found) == 1, (
+        f"expected exactly one timestamp function in {expression!r}, found {found}; "
+        "this simulation cannot say which instant a mixed expression observes"
+    )
+    clock = found[0]
+    instant = read_at if clock == _STATEMENT_CLOCK else _SIMULATED_BEGIN
+    return expression.replace(clock, f"TIMESTAMPTZ '{instant}'")
+
+
+async def test_fleet_halt_month_agrees_across_a_simulated_utc_month_boundary(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-runtime-attention-outbox-001: one transaction names one month.
+
+    bu-jxelx: the recorder's advisory lock read ``now()`` while the producer read
+    ``clock_timestamp()``, so a transaction that began before a UTC month
+    rollover locked one month and wrote another.  The partial unique index on
+    ``fleet_halt_month`` still prevented a duplicate episode, so the lock did not
+    fail loudly -- it just stopped serializing the key being written, at exactly
+    the rollover when the fleet-halt path is most likely to fire.
+
+    Scoped to the lock key and the producer's month on purpose.  The denial
+    row's own ``ts`` stays on the statement clock -- REQ-model-catalog-001 orders
+    outcomes by serialization instant, which ``now()`` cannot express -- so it is
+    not part of the agreement this test proves.
+    """
+    async with migrated_core_postgres_pool() as admin_pool:
+        definition = await admin_pool.fetchval(
+            "SELECT pg_get_functiondef("
+            "'public.append_runtime_attention_fleet_halt()'::regprocedure)"
+        )
+        declaration = _V_MONTH_DECLARATION.search(definition)
+        assert declaration, "the installed fleet-halt producer no longer declares v_month"
+
+        # v_month is a faithful proxy for the producer only while it is both what
+        # the producer locks on and what it writes.  Prove that from the installed
+        # body rather than assuming it.
+        assert (
+            "hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)" in definition
+        ), "the producer no longer keys its own advisory lock on v_month"
+        assert re.search(r"'fleet_halt',\s*v_month\s*,", definition), (
+            "the producer no longer writes v_month into fleet_halt_month"
+        )
+
+        lock_key = await admin_pool.fetchval(
+            _at_simulated_boundary(
+                # The lock statement without its outer call is the key expression.
+                _FLEET_HALT_LOCK_SQL.replace("pg_advisory_xact_lock", ""),
+                read_at=_SIMULATED_BEGIN,
+            )
+        )
+        producer_month, producer_key = await admin_pool.fetchrow(
+            "SELECT month, hashtextextended('runtime_attention_fleet_halt:' || month::text, 0)"
+            " FROM (SELECT "
+            + _at_simulated_boundary(declaration.group(1), read_at=_SIMULATED_PRODUCER_CALL)
+            + " AS month) AS producer"
+        )
+        assert producer_key == lock_key, (
+            f"the recorder serialized advisory-lock key {lock_key} while the producer "
+            f"wrote month {producer_month} under key {producer_key}: across a UTC month "
+            "boundary the lock guards a key nobody is writing"
         )
 
 

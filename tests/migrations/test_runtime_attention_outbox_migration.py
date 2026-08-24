@@ -12,6 +12,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -2254,5 +2255,156 @@ def test_init_db_rerun_converges_the_debounce_marker_audit_vocabulary(
                 ).scalar_one()
                 == 1
             ), "the rerun rewrote history instead of only rewriting the planter body"
+    finally:
+        admin.dispose()
+
+
+_FLEET_HALT_DEFINITION_SQL = (
+    "SELECT pg_get_functiondef('public.append_runtime_attention_fleet_halt()'::regprocedure)"
+)
+_FLEET_HALT_OID_SQL = "SELECT 'public.append_runtime_attention_fleet_halt()'::regprocedure::oid"
+
+# The declaration only, never the whole body: the body also *names*
+# clock_timestamp, in the comment explaining why it does not read it.
+_FLEET_HALT_V_MONTH = re.compile(r"v_month\s+DATE\s*:=\s*(.+?);")
+
+
+def _fleet_halt_month_source(definition: str) -> str:
+    declaration = _FLEET_HALT_V_MONTH.search(definition)
+    assert declaration, "the fleet-halt producer no longer declares v_month"
+    return declaration.group(1)
+
+
+# The exact v2 body a database upgraded before bu-jxelx carries: v_month read
+# from clock_timestamp, everything else identical.  Restoring it with CREATE OR
+# REPLACE keeps the OID, so the regressed database is the real pre-fix shape
+# rather than a look-alike installed alongside it.
+_CLOCK_TIMESTAMP_FLEET_HALT_BODY = """
+CREATE OR REPLACE FUNCTION public.append_runtime_attention_fleet_halt()
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $clock_timestamp_fleet_halt$
+DECLARE
+    v_month DATE := date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC')::date;
+    v_denied_count INTEGER;
+    v_first_denied_at TIMESTAMPTZ;
+    v_episode_id UUID;
+    v_enabled BOOLEAN;
+    v_activated_at TIMESTAMPTZ;
+BEGIN
+    IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+        'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+        'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+        'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+        'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+    ]) THEN
+        RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+            USING ERRCODE = '42501';
+    END IF;
+    SELECT producers_enabled, producer_activated_at
+    INTO v_enabled, v_activated_at
+    FROM public.runtime_attention_producer_control
+    WHERE singleton;
+    IF NOT COALESCE(v_enabled, false) THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*)::integer, min(ts)
+    INTO v_denied_count, v_first_denied_at
+    FROM public.model_dispatch_attempts
+    WHERE outcome = 'quota_skip'
+      AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
+            = 'Monthly spend ceiling reached'
+      AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+    IF v_denied_count < 1 THEN
+        RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
+            USING ERRCODE = '23514';
+    END IF;
+    IF v_activated_at IS NULL OR v_first_denied_at < v_activated_at THEN
+        RETURN NULL;
+    END IF;
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)
+    );
+    INSERT INTO public.runtime_attention_outbox (
+        source, fleet_halt_month, source_snapshot, payload
+    )
+    VALUES (
+        'fleet_halt',
+        v_month,
+        jsonb_build_object(
+            'month', v_month::text,
+            'denied_count', v_denied_count,
+            'first_denied_at', v_first_denied_at
+        ),
+        jsonb_build_object(
+            'classification', 'monthly_spend_ceiling',
+            'door', '/spend?openDrawer=fleet-halt'
+        )
+    )
+    ON CONFLICT (fleet_halt_month)
+        WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL
+        DO NOTHING
+    RETURNING id INTO v_episode_id;
+    IF v_episode_id IS NULL THEN
+        SELECT id INTO v_episode_id
+        FROM public.runtime_attention_outbox
+        WHERE source = 'fleet_halt' AND fleet_halt_month = v_month;
+    END IF;
+    RETURN v_episode_id;
+END;
+$clock_timestamp_fleet_halt$;
+"""
+
+
+def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) -> None:
+    """bu-jxelx: an existing v2 database must adopt the transaction-stable month.
+
+    ``v_month`` lives inside the producer's stored body, which
+    ``upgrade_producers_v2`` emits once and never re-runs, so editing
+    ``init-db.sql`` alone would reach fresh bootstraps only.  Both callers now
+    share one definition in
+    ``runtime_attention_admin.install_fleet_halt_producer_v2``, and
+    ``finalize_interface`` adopts it on every init-db rerun.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    _upgrade_to_core_head(db_url)
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            fresh_definition = conn.execute(text(_FLEET_HALT_DEFINITION_SQL)).scalar_one()
+            assert "clock_timestamp()" not in _fleet_halt_month_source(fresh_definition), (
+                "a fresh bootstrap still derives the fleet-halt month from the statement "
+                "clock; the advisory lock the recorder takes at BEGIN cannot match it"
+            )
+            producer_oid = conn.execute(text(_FLEET_HALT_OID_SQL)).scalar_one()
+
+            conn.exec_driver_sql(_CLOCK_TIMESTAMP_FLEET_HALT_BODY)
+            assert conn.execute(text(_FLEET_HALT_OID_SQL)).scalar_one() == producer_oid, (
+                "restoring the pre-fix body replaced the producer instead of rewriting it, "
+                "so the object under test is no longer the one the interface exposes"
+            )
+            assert "clock_timestamp()" in _fleet_halt_month_source(
+                conn.execute(text(_FLEET_HALT_DEFINITION_SQL)).scalar_one()
+            ), "the pre-fix month source was not actually restored"
+    finally:
+        admin.dispose()
+
+    _rerun_actual_init_db(bootstrap_url, db_url)
+
+    admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            assert conn.execute(text(_FLEET_HALT_OID_SQL)).scalar_one() == producer_oid, (
+                "the rerun replaced the producer instead of rewriting it in place"
+            )
+            assert (
+                conn.execute(text(_FLEET_HALT_DEFINITION_SQL)).scalar_one() == fresh_definition
+            ), "a migrated database and a fresh bootstrap disagree on the producer body"
     finally:
         admin.dispose()

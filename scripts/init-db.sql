@@ -2863,7 +2863,8 @@ BEGIN
               'rollback_interface',
               'upgrade_producers_v2',
               'deactivate_producers_v2',
-              'install_legacy_debounce_marker'
+              'install_legacy_debounce_marker',
+              'install_fleet_halt_producer_v2'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner
@@ -3022,6 +3023,115 @@ BEGIN
     $runtime_attention_plant_legacy_debounce_marker_v2$;
 END;
 $runtime_attention_install_legacy_debounce_marker$;
+
+-- Single source of truth for the v2 fleet-halt producer's body.
+--
+-- Same convergence contract as install_legacy_debounce_marker above: the
+-- body cannot live only in upgrade_producers_v2, which core_199 invokes once
+-- and which never re-runs on a database already at version 2.  finalize_interface
+-- adopts this definition on every init-db rerun, so a fresh bootstrap and an
+-- already-upgraded database cannot drift.
+--
+-- CREATE OR REPLACE preserves the function's OID, owner, and ACL, so the
+-- finalizer's ownership work is not undone.
+CREATE OR REPLACE FUNCTION runtime_attention_admin.install_fleet_halt_producer_v2()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $runtime_attention_install_fleet_halt_producer_v2$
+BEGIN
+    CREATE OR REPLACE FUNCTION public.append_runtime_attention_fleet_halt()
+    RETURNS UUID
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public, pg_temp
+    AS $runtime_attention_fleet_halt_v2$
+    DECLARE
+        -- transaction_timestamp(), not clock_timestamp(), and identical to v1's
+        -- declaration below.  The Python caller takes pg_advisory_xact_lock on
+        -- this same month before it inserts the denial row
+        -- (butlers.core.dispatch_outcomes._FLEET_HALT_LOCK_SQL), and a lock key
+        -- computed at BEGIN can only equal the month written later in that
+        -- transaction if both read a value that does not move while the
+        -- transaction runs.  v2 drifted to clock_timestamp(); across a UTC month
+        -- rollover the two then disagreed and the lock serialized a month nobody
+        -- was writing, at exactly the moment the fleet-halt path is most likely
+        -- to fire (bu-jxelx).  The unique index on fleet_halt_month kept that
+        -- from double-paging, so it degraded silently.
+        v_month DATE := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
+        v_denied_count INTEGER;
+        v_first_denied_at TIMESTAMPTZ;
+        v_episode_id UUID;
+        v_enabled BOOLEAN;
+        v_activated_at TIMESTAMPTZ;
+    BEGIN
+        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
+            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
+            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+        ]) THEN
+            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
+                USING ERRCODE = '42501';
+        END IF;
+        SELECT producers_enabled, producer_activated_at
+        INTO v_enabled, v_activated_at
+        FROM public.runtime_attention_producer_control
+        WHERE singleton;
+        IF NOT COALESCE(v_enabled, false) THEN
+            RETURN NULL;
+        END IF;
+
+        SELECT count(*)::integer, min(ts)
+        INTO v_denied_count, v_first_denied_at
+        FROM public.model_dispatch_attempts
+        WHERE outcome = 'quota_skip'
+          AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
+                = 'Monthly spend ceiling reached'
+          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+        IF v_denied_count < 1 THEN
+            RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
+                USING ERRCODE = '23514';
+        END IF;
+        -- A month already breached before activation remains dashboard-only;
+        -- later denials in that same window must not manufacture a rollout page.
+        IF v_activated_at IS NULL OR v_first_denied_at < v_activated_at THEN
+            RETURN NULL;
+        END IF;
+        PERFORM pg_advisory_xact_lock(
+            hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)
+        );
+        INSERT INTO public.runtime_attention_outbox (
+            source, fleet_halt_month, source_snapshot, payload
+        )
+        VALUES (
+            'fleet_halt',
+            v_month,
+            jsonb_build_object(
+                'month', v_month::text,
+                'denied_count', v_denied_count,
+                'first_denied_at', v_first_denied_at
+            ),
+            jsonb_build_object(
+                'classification', 'monthly_spend_ceiling',
+                'door', '/spend?openDrawer=fleet-halt'
+            )
+        )
+        ON CONFLICT (fleet_halt_month)
+            WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL
+            DO NOTHING
+        RETURNING id INTO v_episode_id;
+        IF v_episode_id IS NULL THEN
+            SELECT id INTO v_episode_id
+            FROM public.runtime_attention_outbox
+            WHERE source = 'fleet_halt' AND fleet_halt_month = v_month;
+        END IF;
+        RETURN v_episode_id;
+    END;
+    $runtime_attention_fleet_halt_v2$;
+END;
+$runtime_attention_install_fleet_halt_producer_v2$;
 
 CREATE OR REPLACE FUNCTION runtime_attention_admin.finalize_interface()
 RETURNS void
@@ -3412,6 +3522,12 @@ BEGIN
         -- stayed bound to the old OID -- convergence that silently did nothing.
         -- CREATE OR REPLACE keeps the OID, owner, and ACL just re-asserted.
         PERFORM runtime_attention_admin.install_legacy_debounce_marker();
+        -- Same adoption for the v2 fleet-halt producer: its body also lives only
+        -- in the one-shot upgrader, so an existing v2 database converges on the
+        -- transaction-stable month key through this rerun (bu-jxelx).  The common
+        -- section above already re-asserted this function's owner and search_path,
+        -- and CREATE OR REPLACE keeps both.
+        PERFORM runtime_attention_admin.install_fleet_halt_producer_v2();
         EXECUTE 'GRANT INSERT ON TABLE public.audit_log TO runtime_attention_outbox_owner';
         EXECUTE 'GRANT USAGE ON SEQUENCE public.audit_log_id_seq '
             || 'TO runtime_attention_outbox_owner';
@@ -4138,84 +4254,10 @@ BEGIN
     END;
     $runtime_attention_model_breaker_v2$;
 
-    CREATE OR REPLACE FUNCTION public.append_runtime_attention_fleet_halt()
-    RETURNS UUID
-    LANGUAGE plpgsql
-    SECURITY DEFINER
-    SET search_path = pg_catalog, public, pg_temp
-    AS $runtime_attention_fleet_halt_v2$
-    DECLARE
-        v_month DATE := date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC')::date;
-        v_denied_count INTEGER;
-        v_first_denied_at TIMESTAMPTZ;
-        v_episode_id UUID;
-        v_enabled BOOLEAN;
-        v_activated_at TIMESTAMPTZ;
-    BEGIN
-        IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
-        ]) THEN
-            RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
-                USING ERRCODE = '42501';
-        END IF;
-        SELECT producers_enabled, producer_activated_at
-        INTO v_enabled, v_activated_at
-        FROM public.runtime_attention_producer_control
-        WHERE singleton;
-        IF NOT COALESCE(v_enabled, false) THEN
-            RETURN NULL;
-        END IF;
-
-        SELECT count(*)::integer, min(ts)
-        INTO v_denied_count, v_first_denied_at
-        FROM public.model_dispatch_attempts
-        WHERE outcome = 'quota_skip'
-          AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
-                = 'Monthly spend ceiling reached'
-          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
-        IF v_denied_count < 1 THEN
-            RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
-                USING ERRCODE = '23514';
-        END IF;
-        -- A month already breached before activation remains dashboard-only;
-        -- later denials in that same window must not manufacture a rollout page.
-        IF v_activated_at IS NULL OR v_first_denied_at < v_activated_at THEN
-            RETURN NULL;
-        END IF;
-        PERFORM pg_advisory_xact_lock(
-            hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)
-        );
-        INSERT INTO public.runtime_attention_outbox (
-            source, fleet_halt_month, source_snapshot, payload
-        )
-        VALUES (
-            'fleet_halt',
-            v_month,
-            jsonb_build_object(
-                'month', v_month::text,
-                'denied_count', v_denied_count,
-                'first_denied_at', v_first_denied_at
-            ),
-            jsonb_build_object(
-                'classification', 'monthly_spend_ceiling',
-                'door', '/spend?openDrawer=fleet-halt'
-            )
-        )
-        ON CONFLICT (fleet_halt_month)
-            WHERE source = 'fleet_halt' AND fleet_halt_month IS NOT NULL
-            DO NOTHING
-        RETURNING id INTO v_episode_id;
-        IF v_episode_id IS NULL THEN
-            SELECT id INTO v_episode_id
-            FROM public.runtime_attention_outbox
-            WHERE source = 'fleet_halt' AND fleet_halt_month = v_month;
-        END IF;
-        RETURN v_episode_id;
-    END;
-    $runtime_attention_fleet_halt_v2$;
+    -- The v2 fleet-halt producer's body is defined once, in
+    -- runtime_attention_admin.install_fleet_halt_producer_v2, so that this
+    -- one-shot upgrader and the re-runnable finalizer cannot drift apart.
+    PERFORM runtime_attention_admin.install_fleet_halt_producer_v2();
 
     -- The planter's body is defined once, in
     -- runtime_attention_admin.install_legacy_debounce_marker, so that this
@@ -4337,6 +4379,7 @@ REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.rollback_interface() F
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_legacy_debounce_marker() FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_fleet_halt_producer_v2() FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -4353,6 +4396,7 @@ BEGIN
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.upgrade_producers_v2() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.deactivate_producers_v2() FROM %I', v_migration_role);
     EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_legacy_debounce_marker() FROM %I', v_migration_role);
+    EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION runtime_attention_admin.install_fleet_halt_producer_v2() FROM %I', v_migration_role);
 
     IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
        OR to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL
