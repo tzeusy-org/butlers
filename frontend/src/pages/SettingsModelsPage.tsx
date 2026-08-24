@@ -1639,10 +1639,10 @@ export default function SettingsModelsPage() {
   const handleVerifyAll = () => {
     verifyAll.mutate(undefined, {
       onSuccess: (resp) => {
-        const { ok, failed, skipped, total } = resp.data;
+        const { ok, failed, unavailable, total } = resp.data;
         toast.success(
           `Verified ${ok}/${total} models${failed > 0 ? ` · ${failed} failed` : ""}${
-            skipped > 0 ? ` · ${skipped} skipped` : ""
+            unavailable > 0 ? ` · ${unavailable} could not be probed` : ""
           }`,
         );
       },

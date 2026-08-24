@@ -27,9 +27,6 @@ _DIRECT_CHILD_CALLS = {
     "os.system",
 }
 _SANDBOX_SPAWN_SOURCE = _REPO_ROOT / "src" / "butlers" / "cli_auth" / "sandbox_platform.py"
-_DEFERRED_MODEL_VERIFICATION_SOURCE = (
-    _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "model_settings.py"
-)
 
 
 def _import_bindings(tree: ast.AST) -> dict[str, str]:
@@ -137,15 +134,24 @@ def test_direct_spawn_inventory_resolves_import_bound_bypass_apis(tmp_path: Path
     }
 
 
-def test_model_verification_remains_the_explicit_deferred_runtime_exception() -> None:
-    """REQ-core-credentials-002: `.11` owns adapter verification, not this sandbox slice."""
+def test_no_dashboard_source_invokes_a_runtime_adapter() -> None:
+    """REQ-core-credentials-002 AC4: the deferred exception is gone, not merely smaller.
+
+    The sandbox slice left exactly one adapter invocation behind ---
+    ``model_settings.py``'s local verification probe --- and pinned it here so
+    the cutover would have to be visible.  bu-0uqgo.11 removed it: Test,
+    verify-all, and the hourly sweep now sign a capability and let Switchboard
+    hold the runtime.  The empty set is the assertion; a Dashboard source that
+    starts invoking an adapter again fails here rather than quietly running a
+    model beside a mounted signer.
+    """
     adapter_invocations = {
         source.relative_to(_REPO_ROOT)
         for source in _dashboard_cli_auth_sources()
         if _invoke_calls(source)
     }
 
-    assert adapter_invocations == {_DEFERRED_MODEL_VERIFICATION_SOURCE.relative_to(_REPO_ROOT)}
+    assert adapter_invocations == set()
     secrets_v2 = (_REPO_ROOT / "src" / "butlers" / "api" / "routers" / "secrets_v2.py").read_text(
         encoding="utf-8"
     )

@@ -4,11 +4,13 @@
 > control capabilities (REQ-core-credentials-002, REQ-database-security-008),
 > and the control plane those keys authorise
 > (REQ-dashboard-model-settings-001).
-> **Status:** the keys, the endpoint, and the client all exist; **nothing is
-> mounted or activated yet.** Without a verifier mount Switchboard answers every
-> control request `503/unavailable`, and without a signing mount the client signs
-> nothing. Mounting the documents into production Compose is a separate,
-> deliberate step, gated on the condition in [Activation](#activation).
+> **Status:** **activated.** The canonical Compose stack mounts the signing key
+> into Dashboard only and the verifier keyring into Dashboard and all-butlers,
+> and Dashboard `Test`, `verify-all`, and the scheduled sweep are cut over to
+> signed capabilities with no local probe path left behind. A deployment that
+> has not provisioned real documents still boots: it receives tracked
+> placeholders that every parser rejects, so the plane stays closed rather than
+> half-open. See [Activation](#activation).
 
 A runtime-probe control capability is a short-lived signed statement that lets
 Dashboard or the scheduler ask Switchboard to probe one model-catalog entry. It
@@ -225,23 +227,92 @@ dependency cycle.
 
 ## Activation
 
-Do not mount either document yet. The production signing-key mount is gated on
-every Dashboard runtime-CLI child path being removed or forced through the
-per-invocation identity and kernel-containment launcher that
-REQ-core-credentials-002 requires. Until then:
+Both documents are mounted by the canonical Compose stack, and the two sides are
+mounted differently on purpose.
 
-* the code path is exercised only against **isolated fixture keys generated
-  inside tests** — see `butlers/testing/runtime_probe_control.py`;
-* production Compose contains no signer or verifier mount, and a test pins that;
-* Dashboard `Test`, `verify-all`, and the scheduled sweep still use their
-  existing local verification path and are **not** cut over;
-* the readiness gate is mounted and answers, but with no keyring mounted it
-  answers `503` for every key id, which is the correct fail-closed state and
-  not a fault to chase.
+| Service | Signing key | Verifier keyring |
+| --- | --- | --- |
+| `dashboard-api` (and `-hotreload`) | Docker **secret**, mode `0400` | Docker **config** |
+| `butlers-up` (and `-hotreload`) | never | Docker **config** |
+| everything else | never | never |
 
-Rolling back after activation retains the child sandbox and makes
-model-verification callers unavailable; it does not restore a local adapter
-probe.
+The signing key is a Docker secret because it is one; the keyring is a Docker
+config because it holds no secret and every verifying process needs it. The
+split is also what makes "all-butlers never receives a private key" a structural
+property rather than a review habit — those services declare no `secrets:` key
+at all, and a test asserts that.
+
+Host paths come from the environment, so a real deployment never edits the
+Compose file:
+
+```bash
+RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE=/path/to/signing-key.json
+RUNTIME_PROBE_CONTROL_VERIFIERS_FILE=/path/to/verifiers.json
+```
+
+Unset, both fall back to a tracked placeholder under
+`deploy/runtime-probe-control/` that contains no key-shaped field and is
+rejected by the real parser. An unprovisioned machine therefore brings the whole
+stack up in one command, with the control plane closed: the signer reports
+itself unavailable and signs nothing, and Switchboard answers every control
+request `503/unavailable`. That is the intended resting state, not a fault to
+chase. The alternative — a hard `${VAR:?}` failure — would make the canonical
+launcher a two-stage procedure for everyone, which this requirement forbids.
+
+### Startup order
+
+The stack starts `migrations` → `dashboard-api` (healthy) → `oauth-gate`
+(completed) → `butlers-up`, so the signing side is up before the verifying side
+exists. That order is deliberate and the readiness gate is what makes it safe:
+the signer asks `GET …/readiness?kid=<kid>` and does not sign until Switchboard
+answers `200`. Dashboard's own healthcheck is plain `localhost:41200/health` and
+never touches the control plane, so the gate cannot introduce a dependency
+cycle. Nothing in the dependency graph makes the signing side wait on the
+verifying side.
+
+### Child-sandbox dependency
+
+Activation was gated on removing every Dashboard-local runtime-CLI child path,
+because a process holding both a private signer and a direct runtime child is
+exactly the pairing the per-invocation sandbox exists to prevent. That gate is
+now enforced in the image rather than in review: every signing path reaches its
+key through `activated_signer_snapshot()`
+(`butlers/core/runtime_probe_control/activation.py`), which first proves this
+image carries no dashboard-local adapter probe. Reintroduce one — by a revert, a
+bad merge, or a well-meaning fallback — and the snapshot becomes unavailable and
+the client signs nothing, even with a perfectly good mount present.
+
+### Rollback
+
+Two rollbacks are safe, and neither reopens a local probe path:
+
+* **Unmount the documents** (clear both `*_FILE` variables and restart).
+  Signing stops, Switchboard answers `503`, and model verification reports
+  entries as *unavailable*. Nothing is written to the catalog.
+* **Revert the cutover commit.** The dashboard-local adapter comes back with
+  it, so the guard above blocks signing in that image — the plane closes as the
+  code reverts, in that order.
+
+What is *not* safe is reverting the sandbox work while leaving the signer
+mounted; the guard exists precisely to make that combination inert.
+
+### Reading the evidence
+
+Runtime-probe evidence is narrow, and it is easy to confuse with two nearby
+things it deliberately does not touch:
+
+| Signal | Written by | Not written by |
+| --- | --- | --- |
+| `model_catalog` verification columns | a completed probe (`200`) only | dispatch, routing, breakers |
+| dispatch attempts, routed provenance, sessions | ordinary routed traffic | any probe, ever |
+| breaker state, `enabled`, `priority` | routing and the owner | any probe — the `SECURITY DEFINER` function cannot reach them |
+
+So a green verification result says "this entry answered a fixed probe prompt a
+moment ago". It does not close an open breaker, does not re-enable a disabled
+entry, and is not a claim that routed traffic is healthy. Conversely, a `401`,
+`409`, `429`, `503`, or `504` is a statement about the *control plane*, not
+about the model: the Dashboard renders those as "could not be probed", never as
+a failed model, and writes no verification evidence for them.
 
 ## Troubleshooting
 

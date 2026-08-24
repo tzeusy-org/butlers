@@ -1,18 +1,18 @@
-"""What this propagation phase is *not* allowed to have changed.
+"""Who may reach the runtime-probe control plane, now that it is live.
 
-Acceptance for this leaf includes a negative that no functional test can state:
-Test, verify-all, and the scheduled verification sweep must still run exactly
-the path they ran before, because cutting them over is a separate leaf that
-also has to remove every dashboard-local adapter probe.  Landing the control
-plane and quietly rewiring one caller would leave the system in a state neither
-leaf describes.
+Covers REQ-core-credentials-002 and REQ-dashboard-model-settings-001.  Before
+the cutover this file pinned the *empty* caller set; bu-0uqgo.11 turns it into
+an allowlist of exactly the surfaces that were cut over, which is the same
+question asked from the other side.  A signer is mounted into the Dashboard
+image now, so "which modules can reach the signing client" stopped being
+bookkeeping and became the blast radius.
 
 So this file enumerates importers by parsing every module in the tree with
 ``ast`` and reading its import statements, rather than grepping for a name a
 module might have spelled differently (``from ... import x``, an aliased
 module, a nested import inside a function).  The enumeration is exhaustive over
 files, so a new importer added anywhere fails this test and forces the question
-back to the leaf that owns it.
+back to review.
 """
 
 from __future__ import annotations
@@ -27,19 +27,22 @@ pytestmark = pytest.mark.unit
 _PACKAGE = "butlers.core.runtime_probe_control"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: Everywhere the control plane may legitimately be reached from in this phase.
-#: None of these is a model-verification caller:
+#: Everywhere the control plane may legitimately be reached from:
 #:
 #: * the package itself;
-#: * the daemon, which attaches Switchboard's route and nothing else;
+#: * the daemon, which attaches Switchboard's routes and nothing else;
 #: * the Secrets API, which imports only the reserved signing-key *name* so it
 #:   can refuse to store or return it (REQ-core-credentials-002);
+#: * the model-settings router, the one cut-over caller --- Test and verify-all
+#:   live there, and the hourly sweep reaches the plane by calling
+#:   ``run_verify_all_models`` rather than by holding a client of its own;
 #: * the test fixture builder, which is importable but never imported by a
 #:   production path --- proven separately below.
 _PERMITTED_IMPORTERS = {
     Path("src/butlers/core/runtime_probe_control"),
     Path("src/butlers/daemon.py"),
     Path("src/butlers/api/routers/secrets_v2.py"),
+    Path("src/butlers/api/routers/model_settings.py"),
     Path("src/butlers/testing/runtime_probe_control.py"),
 }
 
@@ -78,8 +81,8 @@ def test_the_enumeration_actually_finds_the_known_importers() -> None:
     assert len(importers) > 1
 
 
-def test_no_caller_outside_the_control_plane_has_been_cut_over() -> None:
-    """Criterion 10: Test, verify-all, and the sweep are untouched here."""
+def test_no_caller_outside_the_allowlist_reaches_the_control_plane() -> None:
+    """AC4: exactly one Dashboard router holds the signed client, and it is named."""
     unexpected = {
         path
         for path in _control_plane_importers()
@@ -89,8 +92,8 @@ def test_no_caller_outside_the_control_plane_has_been_cut_over() -> None:
     }
 
     assert unexpected == set(), (
-        "a caller was cut over to the runtime-probe control plane in the propagation "
-        f"phase: {sorted(str(path) for path in unexpected)}"
+        "an unreviewed module reached the runtime-probe control plane: "
+        f"{sorted(str(path) for path in unexpected)}"
     )
 
 
@@ -119,15 +122,20 @@ def test_the_secrets_api_only_borrows_the_reserved_name() -> None:
     }
 
 
-def test_model_settings_still_builds_its_own_verification_adapter() -> None:
-    """The dashboard's local probe path is still exactly where it was.
+def test_model_settings_no_longer_holds_a_local_verification_adapter() -> None:
+    """AC4: the dashboard-local probe path is gone from the module that had it.
 
-    Removing it is the *next* leaf's job, and doing it here would strand the
-    dashboard: the production signing-key mount does not exist yet, so a
-    cut-over caller would have no working path at all.
+    Attribute-level rather than source-level on purpose: an import the module
+    re-exports is reachable by a caller whatever the import statement looks
+    like, and this is the exact set the activation guard refuses to sign
+    beside.  ``run_verify_all_models`` is asserted present so a future deletion
+    of the whole surface cannot make the absences pass for the wrong reason.
     """
     from butlers.api.routers import model_settings
+    from butlers.core.runtime_probe_control.activation import LOCAL_PROBE_SYMBOLS
 
-    assert hasattr(model_settings, "_create_verification_adapter")
+    present = [symbol for symbol in LOCAL_PROBE_SYMBOLS if hasattr(model_settings, symbol)]
+
+    assert present == []
     assert hasattr(model_settings, "run_verify_all_models")
     assert model_settings._VERIFY_ALL_CONCURRENCY == 8

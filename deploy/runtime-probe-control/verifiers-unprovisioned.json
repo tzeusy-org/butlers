@@ -1,0 +1,4 @@
+{
+  "unprovisioned": "Intentionally not a verifier keyring.",
+  "how_to_provision": "Set RUNTIME_PROBE_CONTROL_VERIFIERS_FILE to the provisioned document on the host; see docs/operations/runtime-probe-control-keys.md. The loader rejects this file, so Switchboard answers every runtime-probe control request 503/unavailable while it is still mounted. It holds no key material: the keyring is public, and this placeholder is not even that."
+}

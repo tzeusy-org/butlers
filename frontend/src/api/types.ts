@@ -5003,6 +5003,9 @@ export interface VerifyAllResult {
   ok: number;
   failed: number;
   skipped: number;
+  /** Models the runtime-probe control plane could not probe at all. Their
+   *  existing verification evidence is left untouched. */
+  unavailable: number;
 }
 
 /** Request body for creating a catalog entry. */
@@ -5051,7 +5054,6 @@ export interface ButlerModelOverrideUpsert {
 /** Response from the model test endpoint. */
 export interface ModelTestResult {
   success: boolean;
-  reply: string | null;
   error: string | null;
   duration_ms: number;
 }

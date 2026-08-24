@@ -111,6 +111,7 @@ no local data volume to manage.
 | Health port | `41100` (prod) / `42100` (dev) -- Switchboard `/health` |
 | Config mount | `./roster` -> `/app/roster:ro` |
 | Runtime volumes | `runtime_claude`, `runtime_codex`, `runtime_opencode`, `runtime_gemini` (per-CLI state) |
+| Key mounts | verifier keyring only (`/run/secrets/runtime_probe_control_verifiers`); **never** the signing key |
 
 Depends on `migrations`, `oauth-gate`, and `log-init` completing successfully.
 Runs `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user
@@ -125,9 +126,15 @@ volume-mounts `src/` for live edits.
 | Command | `dashboard --host 0.0.0.0 --port 41200` |
 | Port | `41200` (prod) / `42200` (dev) |
 | Config mount | `./roster` -> `/app/roster:ro` |
+| Key mounts | runtime-probe signing key (secret, mode `0400`) **and** the verifier keyring |
 
 Serves the dashboard API and `/health`. The `--hotreload` variant is
 `dashboard-api-hotreload`.
+
+Dashboard is the only service that receives the runtime-probe *signing* key, because it is the only
+service that signs. Both key mounts default to tracked, unprovisioned placeholders, so the stack
+boots in one command on a machine that has provisioned neither --- with the control plane closed.
+See [Runtime-Probe Control Keys](runtime-probe-control-keys.md).
 
 ### `frontend-dev`
 
