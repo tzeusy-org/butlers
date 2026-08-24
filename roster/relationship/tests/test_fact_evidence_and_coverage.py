@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import PENDING_ACTIONS
 from butlers.tools.relationship.fact_coverage import (
     compose_state,
     predicate_coverage,
@@ -247,26 +248,7 @@ async def pool(provisioned_postgres_pool):
                 ON relationship.entity_facts (subject, predicate, object)
                 WHERE validity = 'active'
         """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS pending_actions (
-                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name   TEXT        NOT NULL,
-                tool_args   JSONB       NOT NULL,
-                agent_summary TEXT,
-                session_id  UUID,
-                status      VARCHAR     NOT NULL DEFAULT 'pending',
-                requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at  TIMESTAMPTZ,
-                decided_by  TEXT,
-                decided_at  TIMESTAMPTZ,
-                execution_result JSONB,
-                approval_rule_id UUID,
-                why         TEXT,
-                evidence    JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                blast_radius TEXT,
-                reversibility TEXT
-            )
-        """)
+        await p.execute(PENDING_ACTIONS.ddl())
         await apply_evidence_schema(p)
         yield p
 

@@ -61,6 +61,7 @@ from butlers.modules.approvals.autonomy_suggestions import (
 from butlers.modules.approvals.autonomy_tracker import record_approval
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
+from butlers.testing.schema_standins import APPROVAL_EVENTS, APPROVAL_RULES, PENDING_ACTIONS
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -74,93 +75,15 @@ pytestmark = [
 async def approvals_full_pool(provisioned_postgres_pool):
     """Provision a fresh database with the full approvals + autonomy schema.
 
-    WARNING: kept in sync with tests/modules/conftest.py's ``approvals_pool``
-    fixture and src/butlers/modules/approvals/migrations/001_approvals_tables.py
-    (same underlying migrations) — update all three if the schema drifts.
+    The three approvals tables come from :mod:`butlers.testing.schema_standins`,
+    so the parity guard keeps them honest against the approvals chain.  The
+    autonomy tables below are still local: nothing else provisions them, so
+    there is no second copy to drift from (bu-3sve7).
     """
     async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS pending_actions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                agent_summary TEXT,
-                session_id UUID,
-                requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                decided_by TEXT,
-                decided_at TIMESTAMPTZ,
-                execution_result JSONB,
-                why TEXT,
-                evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-                approval_rule_id UUID,
-                CONSTRAINT pending_actions_status_check
-                    CHECK (status IN (
-                        'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned'
-                    ))
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS approval_rules (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                arg_constraints JSONB NOT NULL DEFAULT '{}'::jsonb,
-                description TEXT NOT NULL,
-                created_from UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                max_uses INTEGER,
-                use_count INTEGER NOT NULL DEFAULT 0,
-                active BOOLEAN NOT NULL DEFAULT true
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS approval_events (
-                event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_id UUID REFERENCES pending_actions(id),
-                rule_id UUID REFERENCES approval_rules(id),
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                reason TEXT,
-                event_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT approval_events_type_check
-                    CHECK (event_type IN (
-                        'action_queued',
-                        'action_auto_approved',
-                        'action_approved',
-                        'action_rejected',
-                        'action_expired',
-                        'action_abandoned',
-                        'action_execution_succeeded',
-                        'action_execution_failed',
-                        'rule_created',
-                        'rule_revoked',
-                        'promotion_suggested',
-                        'promotion_confirmed',
-                        'promotion_dismissed',
-                        'promotion_superseded',
-                        'demotion_suggested',
-                        'demotion_confirmed',
-                        'demotion_dismissed'
-                    )),
-                CONSTRAINT approval_events_link_check
-                    CHECK (
-                        action_id IS NOT NULL
-                        OR rule_id IS NOT NULL
-                        OR event_type IN (
-                            'promotion_suggested',
-                            'promotion_confirmed',
-                            'promotion_dismissed',
-                            'promotion_superseded',
-                            'demotion_suggested',
-                            'demotion_confirmed',
-                            'demotion_dismissed'
-                        )
-                    )
-            )
-        """)
+        await pool.execute(PENDING_ACTIONS.ddl())
+        await pool.execute(APPROVAL_RULES.ddl())
+        await pool.execute(APPROVAL_EVENTS.ddl())
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS autonomy_approval_history (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
