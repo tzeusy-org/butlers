@@ -2122,6 +2122,7 @@ build if the committed copy differs, so it is always current.
 - Name this filter combination to restore it later.
 - Cancel
 - Scoped to trace
+- Dismiss
 - Scoped to
 - Failed to load ingestion events.
 - Retry
@@ -3141,9 +3142,14 @@ build if the committed copy differs, so it is always current.
 - Backups
 - Backup recency and reachability
 - Could not load backup facts.
+- Run failed
 - Stale
 - Healthy
 - Unverified
+- Last run
+- No run outcome recorded
+- Succeeded
+- Failed
 - Restore drill
 - No drill yet
 - Passed
@@ -3410,4 +3416,4 @@ build if the committed copy differs, so it is always current.
 - Preset windows
 
 ---
-*Total strings: 2571*
+*Total strings: 2577*
