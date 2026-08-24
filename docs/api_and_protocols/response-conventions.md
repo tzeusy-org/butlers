@@ -53,7 +53,9 @@ shape of the flag varies by endpoint, matched to whatever response envelope it a
   `BoardRow.stripe_source_error` / `BoardAggregates.sessions_source_error`
   (`GET /api/butlers/board`), `NotificationListResponse.source_available` /
   `NotificationStats.source_available` (`GET /api/notifications`, `/stats`), `HeaderCounts` fields
-  turning `null` instead of `0` per-field (`GET /api/settings/console`).
+  turning `null` instead of `0` per-field (`GET /api/settings/console`),
+  `ProviderConfig.config_available` (`GET /api/settings/providers`, false when a row's stored
+  JSONB config is not a JSON object — the entry is still listed, with an empty `config`).
 - **`meta.<flag>` on the extensible `ApiMeta`/`PaginationMeta` bag** (both have
   `model_config = {"extra": "allow"}`) — e.g. `meta.pools_failed` (`GET /api/memory/stats`),
   `meta.sources_degraded` (`GET /api/approvals`, `/history`), `meta.catalogue_available`
