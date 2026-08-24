@@ -328,6 +328,8 @@ build if the committed copy differs, so it is always current.
 - Couldn&rsquo;t load activity. Retry.
 - Retry
 - Gifts
+- Drafts
+- not sent
 - Loans
 - Message threads
 - Facts
@@ -2697,6 +2699,30 @@ build if the committed copy differs, so it is always current.
 - Entity list
 - Curation queue
 
+## `frontend/src/components/relationship/EntityVerbRail.tsx`
+
+- Saving...
+- Save interaction
+- Save gift idea
+- Save draft
+- Saved as a draft only. Nothing is sent.
+- Save note
+- Record something
+- Log an interaction
+- Interaction type
+- What happened
+- What happened?
+- Capture a gift idea
+- Gift idea
+- Occasion
+- Draft a reach-out
+- Draft message
+- What do you want to say?
+- Channel
+- Add a note
+- Note
+- Something worth remembering
+
 ## `frontend/src/components/relationship/LatestInteractionsBlock.tsx`
 
 - Latest interactions
@@ -2738,6 +2764,7 @@ build if the committed copy differs, so it is always current.
 - Dates
 - Facts
 - Nothing recorded yet.
+- Record
 - Worth attention
 - No one is owed a call.
 - Capacity
@@ -3416,4 +3443,4 @@ build if the committed copy differs, so it is always current.
 - Preset windows
 
 ---
-*Total strings: 2577*
+*Total strings: 2601*
