@@ -84,8 +84,12 @@ function ReactionTrace({ eventId, traceId }: { eventId: string; traceId: string 
       </div>
     )
   }
-  const steps = reactions.data?.data ?? []
-  if (steps.length === 0) {
+  // Deliberately not `?? []`: the trace is an append-only ledger, and an absent
+  // payload must not be flattened into a confirmed-empty one. isError is handled
+  // above; what remains is a genuinely empty ledger, which says "no reaction
+  // recorded" on its own terms (bu-ep4ks.5).
+  const steps = reactions.data?.data
+  if (!steps || steps.length === 0) {
     return (
       <div id={traceId}>
         <MonoLabel color="dim">no reaction recorded</MonoLabel>
