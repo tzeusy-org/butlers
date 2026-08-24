@@ -91,13 +91,12 @@ from butlers.core import owner_conditions
 from butlers.core.condition_ledger import (
     ConditionTransition,
     Observation,
-    # The engine's row decoder, imported deliberately: this module is a third
-    # facade over ``condition_ledger`` alongside ``owner_conditions`` and
-    # ``infra_conditions``, so its query results must have exactly the row
-    # shape (JSONB metadata decoded whether or not the pool registered a
-    # codec) those facades' readers already return. Re-deriving it here would
-    # be a second decoder free to drift from the one the ledger writes with.
-    _row_to_dict,
+    # The engine's row decoder. This module is a third facade over
+    # ``condition_ledger`` alongside ``owner_conditions`` and
+    # ``infra_conditions``, and its metadata-filtered queries do not go
+    # through ``list_conditions``, so it decodes rows with the engine's own
+    # decoder rather than a local copy free to drift from the writes.
+    row_to_dict,
 )
 
 __all__ = [
@@ -116,6 +115,7 @@ __all__ = [
     "list_entity_commitments",
     "normalize_action_description",
     "resolve_commitment",
+    "row_to_dict",
 ]
 
 COMMITMENT_METADATA_CLASS = "commitment"
@@ -445,7 +445,7 @@ async def list_active_commitments(
         *args,
         limit,
     )
-    return [_row_to_dict(row) for row in rows]
+    return [row_to_dict(row) for row in rows]
 
 
 async def list_entity_commitments(
@@ -485,4 +485,4 @@ async def list_entity_commitments(
         *args,
         limit,
     )
-    return [_row_to_dict(row) for row in rows]
+    return [row_to_dict(row) for row in rows]

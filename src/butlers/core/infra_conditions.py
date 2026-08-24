@@ -89,6 +89,7 @@ from butlers.core.condition_ledger import compute_fingerprint as compute_fingerp
 from butlers.core.condition_ledger import get_active_condition as _get_active_condition
 from butlers.core.condition_ledger import list_conditions as _list_conditions
 from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snapshot
+from butlers.core.condition_ledger import row_to_dict as row_to_dict
 
 __all__ = [
     "ESCALATION_LEVELS",
@@ -101,6 +102,7 @@ __all__ = [
     "get_active_condition",
     "list_conditions",
     "reconcile_snapshot",
+    "row_to_dict",
 ]
 
 _TABLE = "public.infra_conditions"
