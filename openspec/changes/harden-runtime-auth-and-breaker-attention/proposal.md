@@ -66,6 +66,9 @@ not change that answer.
   execution argument from that canonical identity only at the CLI boundary.
 - `core-notify`: confirmed delivery is insulated from post-send bookkeeping,
   and attention records remain observations rather than idempotency authority.
+  The notify-boundary attention-ledger requirement also drops
+  `butlers.core.fleet_halt_attention` from its illustrative list of
+  process-boundary-forced consumers, since this change deletes that module.
 - `database-security`: the public outbox and dispatch-transition access receive
   narrowly scoped runtime-role grants; Switchboard retains delivery ownership.
 - `dashboard-model-settings`: model verification, routed breaker state, alert
