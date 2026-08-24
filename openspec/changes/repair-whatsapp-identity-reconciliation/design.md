@@ -63,18 +63,21 @@ Alternatives rejected:
 ### Decision 3: Make excerpt identity additive and authoritative
 
 Conceptual excerpts add `sender_identity` and `sender_entity_id` while retaining the existing fields.
-Signal extraction chooses relevant messages but cannot synthesize or replace identity anchors; the
-pipeline joins model-selected message IDs back to authoritative input records before fan-out.
+Signal extraction chooses relevant messages but cannot synthesize or replace identity anchors or
+select a direct target tool; the pipeline joins model-selected message IDs back to authoritative
+input records and builds the target's standard `route.v1` / `route.execute` session envelope before
+fan-out. The conceptual message travels in `input.context`, where the target runtime receives it.
+The existing code-authoritative calendar proposal translation remains the explicit exception.
 
 This join prevents the runtime from fabricating UUIDs and ensures a message duplicated across concepts
 keeps the same speaker entity.
 
 ### Decision 4: Reject transport-shaped fact-storage creation
 
-The memory MCP wrapper will recognize only individual WhatsApp JID/LID shapes under fact-storage
-provenance and return a structured error. It will not substitute the top-level routing entity because
-that is unsafe for groups. Normal named-entity creation and the direct unknown-sender reservation path
-remain unchanged.
+The memory MCP wrapper will recognize individual WhatsApp JID/LID person-name shapes regardless of
+caller-authored metadata and return a structured error. It will not substitute the top-level routing
+entity because that is unsafe for groups. Normal named-entity creation, non-person entity creation,
+and the separate deterministic unknown-sender reservation path remain unchanged.
 
 ### Decision 5: Reconcile only provably empty shells
 

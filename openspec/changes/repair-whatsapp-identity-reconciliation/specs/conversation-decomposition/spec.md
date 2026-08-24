@@ -29,6 +29,15 @@ Scope: v1-mandatory
 - **THEN** every copy MUST preserve the same `sender_identity` and `sender_entity_id`
 - **AND** no fan-out target may substitute the top-level routing sender's entity
 
+#### Scenario: Conceptual fan-out uses the standard runtime boundary
+
+- **WHEN** signal extraction selects a target and supplies a direct target tool name
+- **THEN** ordinary conceptual fan-out MUST ignore that direct tool selection and use the target's
+  standard `route.execute` session boundary
+- **AND** the authoritative conceptual message MUST travel in `route.v1 input.context`
+- **AND** explicitly code-authoritative special handling such as calendar proposals MUST remain in
+  force
+
 #### Scenario: Resolution failure omits the anchor safely
 
 - **WHEN** per-speaker resolution fails and routing continues fail-open

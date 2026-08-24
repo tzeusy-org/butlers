@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass
 from email.utils import parseaddr
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 
@@ -979,7 +979,7 @@ async def create_temp_contact(
     """
     lookup_channel_type = identity_channel_type or canonical_identity_channel_type(channel_type)
     name = display_name or (
-        f"Unknown ({channel_type} sender)"
+        f"Unknown WhatsApp sender {uuid4()}"
         if lookup_channel_type == "whatsapp_jid"
         else f"Unknown ({channel_type} {channel_value})"
     )

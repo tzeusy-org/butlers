@@ -774,27 +774,29 @@ class TestRegisterTools:
             metadata={"source": "fact_storage"},
         )
 
-    async def test_memory_entity_create_allows_non_fact_storage_transport_person(self):
-        """REQ-entity-identity-001: direct unknown-sender creation remains available."""
+    @pytest.mark.parametrize(
+        "metadata",
+        [None, {}, {"source": "unknown_sender"}, {"source": "caller_chosen"}],
+    )
+    async def test_memory_entity_create_rejects_transport_person_regardless_of_metadata(
+        self,
+        metadata,
+    ):
+        """REQ-entity-identity-001: caller provenance cannot bypass the runtime guard."""
         transport_identifier = "15551234567@s.whatsapp.net"
         entities = MagicMock()
         entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
-        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+        registered_tools, _fake_db = await self._register_with_mock_entities(entities)
 
         result = await registered_tools["memory_entity_create"](
             canonical_name=transport_identifier,
             entity_type="person",
-            metadata={"source": "unknown_sender"},
+            metadata=metadata,
         )
 
-        assert result == {"entity_id": "created-entity"}
-        entities.entity_create.assert_awaited_once_with(
-            fake_db.pool,
-            transport_identifier,
-            "person",
-            aliases=None,
-            metadata={"source": "unknown_sender"},
-        )
+        assert result["error"] == "transport_identifier_not_entity_name"
+        assert transport_identifier not in json.dumps(result)
+        entities.entity_create.assert_not_awaited()
 
     async def test_memory_entity_create_allows_fact_storage_transport_non_person(self):
         """REQ-entity-identity-001: the transport-name guard applies only to people."""

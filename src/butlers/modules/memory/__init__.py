@@ -1487,17 +1487,15 @@ class MemoryModule(Module):
 
             Inserts a new entity record. If a live entity with the same
             (canonical_name, entity_type) already exists, returns that entity's
-            ID; other validation errors still raise.
+            ID; other validation errors still raise. Numeric WhatsApp JID/LID
+            shapes are never valid runtime-created person names, regardless of
+            caller-authored metadata. Deterministic unknown-sender reservation
+            uses the separate internal ``create_temp_contact`` path.
 
             Returns:
                 Dict with key entity_id (UUID string).
             """
-            if (
-                entity_type == "person"
-                and metadata is not None
-                and metadata.get("source") == "fact_storage"
-                and is_whatsapp_transport_identifier(canonical_name)
-            ):
+            if entity_type == "person" and is_whatsapp_transport_identifier(canonical_name):
                 return {
                     "error": "transport_identifier_not_entity_name",
                     "message": (

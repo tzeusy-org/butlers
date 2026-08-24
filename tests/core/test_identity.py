@@ -758,6 +758,42 @@ async def test_create_temp_contact():
     assert result.roles == []
 
 
+async def test_whatsapp_temp_contacts_receive_distinct_identifier_blind_names():
+    """REQ-switchboard-identity-002: distinct misses cannot share one entity name."""
+    first_identifier = "15551234567@s.whatsapp.net"
+    second_identifier = "222222222222222@lid"
+    first_entity_id = uuid.uuid4()
+    second_entity_id = uuid.uuid4()
+    first_pool, _first_conn = _make_new_temp_contact_pool(uuid.uuid4(), first_entity_id)
+    second_pool, _second_conn = _make_new_temp_contact_pool(uuid.uuid4(), second_entity_id)
+
+    first = await create_temp_contact(
+        first_pool,
+        "whatsapp_user_client",
+        first_identifier,
+        identity_channel_type="whatsapp_jid",
+        pre_resolved_miss=True,
+    )
+    second = await create_temp_contact(
+        second_pool,
+        "whatsapp_user_client",
+        second_identifier,
+        identity_channel_type="whatsapp_jid",
+        pre_resolved_miss=True,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.name != second.name
+    assert first.name.startswith("Unknown WhatsApp sender ")
+    assert second.name.startswith("Unknown WhatsApp sender ")
+    for name in (first.name, second.name):
+        assert first_identifier not in name
+        assert second_identifier not in name
+        assert "15551234567" not in name
+        assert "222222222222222" not in name
+
+
 async def test_create_temp_contact_db_error_returns_none():
     """A DB error during creation returns None (graceful degradation)."""
     pool = MagicMock()

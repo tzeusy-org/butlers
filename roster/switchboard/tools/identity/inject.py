@@ -348,16 +348,31 @@ async def resolve_sender_identities(
             )
             continue
 
-        results[channel_value] = await _inject_unknown_identity(
-            pool,
-            identity_channel,
-            channel_value,
-            source_channel_type=channel_type,
-            display_name=None,
-            notify_owner_fn=notify_owner_fn,
-            state_pool=state_pool,
-            strict_reservation=True,
-        )
+        try:
+            results[channel_value] = await _inject_unknown_identity(
+                pool,
+                identity_channel,
+                channel_value,
+                source_channel_type=channel_type,
+                display_name=None,
+                notify_owner_fn=notify_owner_fn,
+                state_pool=state_pool,
+                strict_reservation=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            failure_class = getattr(exc, "failure_class", type(exc).__name__)
+            logger.warning(
+                "identity.batch_unknown_reservation_failed",
+                extra={
+                    "channel_type": channel_type,
+                    "failure_class": failure_class,
+                },
+            )
+            results[channel_value] = IdentityResolutionResult(
+                preamble=build_identity_preamble(None, channel_type),
+                is_unknown=True,
+                channel_value=channel_value,
+            )
 
     return results
 

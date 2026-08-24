@@ -738,13 +738,19 @@ class WhatsAppUserClientConnector:
                 bridge_phone = f"+{bridge_phone}"
             self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
             logger.info(
-                "Resolved endpoint_identity from bridge: %s",
-                self._config.endpoint_identity,
+                "WhatsApp endpoint identity resolved",
+                extra={
+                    "endpoint_resolved": True,
+                    "resolution_source": "bridge",
+                },
             )
         elif status.get("state") == "connected":
             logger.warning(
-                "Bridge connected but did not report phone number — using endpoint_identity=%s",
-                self._config.endpoint_identity,
+                "WhatsApp bridge connected without endpoint identity",
+                extra={
+                    "bridge_connected": True,
+                    "endpoint_resolved": False,
+                },
             )
 
     async def start(self) -> None:
@@ -801,9 +807,9 @@ class WhatsAppUserClientConnector:
         logger.info(
             "Starting WhatsApp user-client connector",
             extra={
-                "endpoint_identity": self._config.endpoint_identity,
-                "last_event_id": self._last_event_id,
-                "backfill_window_h": self._config.backfill_window_h,
+                "endpoint_resolved": self._config.endpoint_identity != "whatsapp:pending",
+                "checkpoint_present": self._last_event_id is not None,
+                "backfill_enabled": self._config.backfill_window_h is not None,
             },
         )
 
@@ -2439,21 +2445,28 @@ async def _resolve_whatsapp_phone_from_db() -> str | None:
                 phone = await resolve_owner_entity_info(pool, "whatsapp_phone")
                 if phone:
                     logger.info(
-                        "WhatsApp user-client: resolved whatsapp_phone from owner entity_info "
-                        "(db=%s)",
-                        db_name,
+                        "WhatsApp owner credential resolved",
+                        extra={
+                            "credential_present": True,
+                            "resolution_source": "owner_entity_info",
+                        },
                     )
                     return phone
             finally:
                 await pool.close()
         except Exception as exc:
             logger.warning(
-                "DB connection failed during WhatsApp credential resolution (db=%s): %s",
-                db_name,
-                exc,
+                "WhatsApp credential resolution candidate unavailable",
+                extra={"failure_class": type(exc).__name__},
             )
 
-    logger.warning("WhatsApp user-client: could not resolve whatsapp_phone from owner entity_info")
+    logger.warning(
+        "WhatsApp owner credential unavailable",
+        extra={
+            "credential_present": False,
+            "candidate_count": len(candidate_db_names),
+        },
+    )
     return None
 
 
@@ -2483,15 +2496,18 @@ async def run_whatsapp_user_client_connector() -> None:
         endpoint_identity = f"whatsapp:{phone}"
         config = replace(config, endpoint_identity=endpoint_identity)
         logger.info(
-            "WhatsApp user-client connector: endpoint_identity=%s (from DB)",
-            endpoint_identity,
+            "WhatsApp endpoint identity resolved",
+            extra={
+                "endpoint_resolved": True,
+                "resolution_source": "owner_entity_info",
+            },
         )
     else:
         # Use a placeholder — will be resolved from bridge after pairing.
         config = replace(config, endpoint_identity="whatsapp:pending")
         logger.info(
-            "WhatsApp user-client connector: whatsapp_phone not in DB, "
-            "will resolve from bridge after pairing"
+            "WhatsApp endpoint identity pending bridge pairing",
+            extra={"endpoint_resolved": False},
         )
 
     # Step 3: Create DB pools for cursor and filtered events

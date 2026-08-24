@@ -66,6 +66,14 @@ Scope: v1-mandatory
 - **THEN** that participant MUST receive or reuse a transitory entity anchor before fan-out
 - **AND** facts about another participant MUST NOT be attributed to that transitory entity
 
+#### Scenario: Multiple unknown participants remain distinct
+
+- **WHEN** a buffered WhatsApp conversation contains multiple distinct unresolved sender identities
+- **THEN** each sender MUST receive a distinct entity anchor and identifier-independent neutral
+  canonical name
+- **AND** a reservation failure for one sender MUST NOT erase valid anchors for other senders unless
+  the strict bulk identity lookup itself failed
+
 #### Scenario: Per-speaker identity failure is content-blind
 
 - **WHEN** identity resolution fails for one speaker while routing remains fail-open

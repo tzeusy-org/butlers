@@ -16,10 +16,10 @@ Scope: v1-mandatory
 - **THEN** the fact MUST be anchored to that entity UUID
 - **AND** no new entity may be created from `sender`, `sender_identity`, a JID, or a LID
 
-#### Scenario: JID-shaped fact-storage creation is rejected
+#### Scenario: JID-shaped runtime person creation is rejected
 
-- **WHEN** a runtime calls memory entity creation with a WhatsApp JID or LID as a canonical person name
-  and fact-storage provenance
+- **WHEN** a runtime calls memory entity creation with a WhatsApp JID or LID as a canonical person
+  name, regardless of caller-authored metadata
 - **THEN** the call MUST return an actionable structured error without inserting an entity
 - **AND** the error MUST direct the caller to a structured speaker entity anchor without echoing the
   identifier

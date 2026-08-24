@@ -210,6 +210,166 @@ def _captured_observability(caplog: pytest.LogCaptureFixture) -> str:
     return caplog.text + repr([record.__dict__ for record in caplog.records])
 
 
+async def test_bridge_endpoint_resolution_log_is_identifier_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    phone = "12025559876"
+    pending = WhatsAppUserClientConnector(
+        WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="whatsapp:pending",
+        ),
+        cursor_pool=MagicMock(),
+    )
+    pending._bridge_manager = SimpleNamespace(  # type: ignore[assignment]
+        get_status=AsyncMock(return_value={"state": "connected", "phone": phone})
+    )
+
+    with caplog.at_level(logging.INFO):
+        await pending._maybe_resolve_pending_endpoint_identity()
+
+    assert pending._config.endpoint_identity == f"whatsapp:+{phone}"
+    observability = _captured_observability(caplog)
+    assert phone not in observability
+    assert f"whatsapp:+{phone}" not in observability
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp endpoint identity resolved"
+    )
+    assert record.endpoint_resolved is True
+    assert record.resolution_source == "bridge"
+
+
+async def test_cli_db_endpoint_resolution_log_is_identifier_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from butlers.connectors import whatsapp_user_client as module
+
+    phone = "+12025559876"
+    config = WhatsAppUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+    )
+    cursor_pool = AsyncMock()
+    runtime = AsyncMock()
+
+    with (
+        patch.object(module, "configure_logging"),
+        patch.object(module.WhatsAppUserClientConnectorConfig, "from_env", return_value=config),
+        patch.object(module, "_resolve_whatsapp_phone_from_db", new=AsyncMock(return_value=phone)),
+        patch(
+            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+            new=AsyncMock(return_value=cursor_pool),
+        ),
+        patch.object(
+            module,
+            "create_system_global_credential_store_from_env",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.cli_auth.persistence.restore_connector_cli_auth",
+            new=AsyncMock(),
+        ),
+        patch.object(module, "_run_health_server", new=AsyncMock()),
+        patch.object(module, "WhatsAppUserClientConnector", return_value=runtime),
+        caplog.at_level(logging.INFO),
+    ):
+        await module.run_whatsapp_user_client_connector()
+
+    observability = _captured_observability(caplog)
+    assert phone not in observability
+    assert phone.removeprefix("+") not in observability
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp endpoint identity resolved"
+    )
+    assert record.endpoint_resolved is True
+    assert record.resolution_source == "owner_entity_info"
+
+
+async def test_startup_log_uses_safe_lifecycle_booleans(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    endpoint = connector._config.endpoint_identity
+    checkpoint = "batch:12036315551234567@g.us:PRIVATE-MESSAGE"
+    bridge = AsyncMock()
+
+    async def load_checkpoint() -> None:
+        connector._last_event_id = checkpoint
+
+    connector._load_checkpoint = AsyncMock(side_effect=load_checkpoint)  # type: ignore[method-assign]
+    connector._ingestion_policy.ensure_loaded = AsyncMock()  # type: ignore[method-assign]
+    connector._global_ingestion_policy.ensure_loaded = AsyncMock()  # type: ignore[method-assign]
+    connector._start_heartbeat = MagicMock()  # type: ignore[method-assign]
+    connector._flush_scanner_loop = AsyncMock()  # type: ignore[method-assign]
+    connector._link_watchdog_loop = AsyncMock()  # type: ignore[method-assign]
+    connector._sse_event_loop = AsyncMock()  # type: ignore[method-assign]
+    connector._flush_all_buffers = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+            return_value=bridge,
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        await connector.start()
+
+    observability = _captured_observability(caplog)
+    assert endpoint not in observability
+    assert endpoint.removeprefix("whatsapp:+") not in observability
+    assert checkpoint not in observability
+    assert "12036315551234567" not in observability
+    record = next(
+        item for item in caplog.records if item.message == "Starting WhatsApp user-client connector"
+    )
+    assert record.endpoint_resolved is True
+    assert record.checkpoint_present is True
+    assert record.backfill_enabled is False
+
+
+async def test_credential_resolution_failure_log_uses_failure_class_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from butlers.connectors import whatsapp_user_client as module
+
+    sentinel_db = "private-db-15551234567"
+    sentinel_error = (
+        "postgresql://owner:secret@private-db/whatsapp SELECT whatsapp_phone FROM entity_info"
+    )
+
+    with (
+        patch.dict("os.environ", {"CONNECTOR_BUTLER_DB_NAME": sentinel_db}),
+        patch.object(
+            module,
+            "db_params_from_env",
+            return_value={
+                "host": "private-db",
+                "port": 5432,
+                "user": "owner",
+                "password": "secret",
+                "ssl": None,
+            },
+        ),
+        patch.object(module, "shared_db_name_from_env", return_value=sentinel_db),
+        patch("asyncpg.create_pool", new=AsyncMock(side_effect=RuntimeError(sentinel_error))),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await module._resolve_whatsapp_phone_from_db()
+
+    assert result is None
+    observability = _captured_observability(caplog)
+    assert sentinel_db not in observability
+    assert sentinel_error not in observability
+    assert "15551234567" not in observability
+    assert "SELECT whatsapp_phone" not in observability
+    record = next(
+        item
+        for item in caplog.records
+        if item.message == "WhatsApp credential resolution candidate unavailable"
+    )
+    assert record.failure_class == "RuntimeError"
+    assert record.exc_info is None
+
+
 async def test_submit_to_ingest_success_log_is_content_blind(
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,

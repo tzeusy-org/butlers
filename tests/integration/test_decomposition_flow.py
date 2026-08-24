@@ -259,6 +259,51 @@ def _build_mixed_whatsapp_envelope() -> tuple[dict[str, Any], str, str]:
     return envelope, known_identity, unknown_identity
 
 
+def _build_two_unknown_whatsapp_envelope(
+    *,
+    batch_suffix: str,
+) -> tuple[dict[str, Any], tuple[str, str]]:
+    """Build one real connector batch containing two distinct unmapped LIDs."""
+    connector = WhatsAppUserClientConnector(
+        config=WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://switchboard.test/mcp",
+            provider="whatsapp",
+            channel="whatsapp_user_client",
+            endpoint_identity="wa:test",
+            bridge_socket="/tmp/test-wa-bridge.sock",
+            flush_interval_s=3600,
+            buffer_max_messages=50,
+        )
+    )
+    identities = ("333333333333333@lid", "444444444444444@lid")
+    events = [
+        {
+            "event_type": "message",
+            "message_id": f"msg-first-{batch_suffix}",
+            "chat_jid": "120363000000001@g.us",
+            "sender_jid": "333333333333333:2@lid",
+            "timestamp": "2026-08-24T00:00:00Z",
+            "type": "text",
+            "content": {"text": f"First unknown speaker {batch_suffix}"},
+        },
+        {
+            "event_type": "message",
+            "message_id": f"msg-second-{batch_suffix}",
+            "chat_jid": "120363000000001@g.us",
+            "sender_jid": "444444444444444:3@lid",
+            "timestamp": "2026-08-24T00:01:00Z",
+            "type": "text",
+            "content": {"text": f"Second unknown speaker {batch_suffix}"},
+        },
+    ]
+    envelope = connector._build_batch_envelope(
+        "120363000000001@g.us",
+        events,
+        f"batch-two-unknown-{batch_suffix}-{uuid.uuid4()}",
+    )
+    return envelope, identities
+
+
 def _build_real_telegram_envelope() -> dict[str, Any]:
     connector = TelegramUserClientConnector(
         TelegramUserClientConnectorConfig(
@@ -718,6 +763,124 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
 
 
 @pytest.mark.integration
+async def test_two_unknown_whatsapp_speakers_get_distinct_reused_neutral_entities(
+    identity_pools,
+):
+    """REQ-switchboard-identity-002: two batch misses retain independent anchors."""
+    from butlers.modules.pipeline import MessagePipeline
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    identity_pool, _memory_pool = identity_pools
+    routed_concepts: list[dict[str, Any]] = []
+
+    async def route_capture(
+        _pool: Any,
+        *,
+        target_butler: str,
+        tool_name: str,
+        args: dict[str, Any],
+        source_butler: str,
+        internal_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        assert target_butler == "relationship"
+        assert tool_name == "route.execute"
+        assert source_butler == "switchboard"
+        assert internal_context is not None
+        assert args["input"]["context"] == internal_context
+        routed_concepts.append(internal_context["conceptual_message"])
+        return {"status": "ok"}
+
+    async def run_batch(batch_suffix: str) -> list[dict[str, Any]]:
+        envelope, identities = _build_two_unknown_whatsapp_envelope(batch_suffix=batch_suffix)
+        messages = envelope["payload"]["raw"]["conversation_history"]
+        assert [message["sender_identity"] for message in messages] == list(identities)
+        assert all(
+            identity not in message["sender"] for identity in identities for message in messages
+        )
+        ingest_response = await ingest_v1(
+            identity_pool,
+            envelope,
+            enable_thread_affinity=False,
+        )
+        assert ingest_response.status == "accepted"
+        assert ingest_response.duplicate is False
+        signals = [
+            {
+                "signal_type": "relationship",
+                "target_butler": "relationship",
+                "tool_name": "memory_store_fact",
+                "tool_args": {"model_selected_direct_tool": True},
+                "confidence": "HIGH",
+                "excerpts": [{"message_id": message["message_id"]} for message in messages],
+            }
+        ]
+
+        async def classify(**_kwargs: Any) -> FakeSpawnerResult:
+            return FakeSpawnerResult(output=json.dumps(signals), model="test-model")
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new=AsyncMock(return_value=_MOCK_BUTLERS),
+            ),
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                side_effect=route_capture,
+            ),
+        ):
+            pipeline = MessagePipeline(
+                switchboard_pool=identity_pool,
+                dispatch_fn=classify,
+                enable_identity_resolution=True,
+            )
+            result = await pipeline.process(
+                message_text=envelope["payload"]["normalized_text"],
+                tool_args={
+                    "source_channel": "whatsapp_user_client",
+                    "source_id": identities[0],
+                    "request_context": {
+                        "payload_type": "conversation_history",
+                        "source_thread_identity": envelope["event"]["external_thread_id"],
+                    },
+                },
+                message_inbox_id=ingest_response.request_id,
+            )
+        assert result.acked_targets == ["relationship"]
+        assert routed_concepts[-1]["excerpts"], {
+            "signals": signals,
+            "messages": messages,
+            "concept": routed_concepts[-1],
+        }
+        return routed_concepts[-1]["excerpts"]
+
+    first_excerpts = await run_batch("first")
+    first_entity_ids = [uuid.UUID(excerpt["sender_entity_id"]) for excerpt in first_excerpts]
+    assert len(set(first_entity_ids)) == 2
+
+    first_rows = await identity_pool.fetch(
+        "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1::uuid[]) ORDER BY id",
+        first_entity_ids,
+    )
+    assert len(first_rows) == 2
+    first_names = {row["id"]: row["canonical_name"] for row in first_rows}
+    assert len(set(first_names.values())) == 2
+    for name in first_names.values():
+        assert name.startswith("Unknown WhatsApp sender ")
+        assert "333333333333333" not in name
+        assert "444444444444444" not in name
+        assert "@lid" not in name
+
+    second_excerpts = await run_batch("second")
+    second_entity_ids = [uuid.UUID(excerpt["sender_entity_id"]) for excerpt in second_excerpts]
+    assert second_entity_ids == first_entity_ids
+    second_rows = await identity_pool.fetch(
+        "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1::uuid[]) ORDER BY id",
+        second_entity_ids,
+    )
+    assert {row["id"]: row["canonical_name"] for row in second_rows} == first_names
+
+
+@pytest.mark.integration
 async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_anchor(
     identity_pools,
 ):
@@ -729,7 +892,6 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
         set_current_runtime_session_id,
         set_runtime_session_routing_context,
     )
-    from butlers.core.utils import generate_uuid7_string
     from butlers.core_tools._base import ToolContext
     from butlers.core_tools._routing import register_routing_tools
     from butlers.modules.memory import MemoryModule, MemoryModuleConfig
@@ -851,49 +1013,28 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
             capabilities=["trigger"],
         )
 
-    def _route_envelope(target: str, prompt: str) -> dict[str, Any]:
-        request_id = generate_uuid7_string()
-        return {
-            "schema_version": "route.v1",
-            "request_context": {
-                "request_id": request_id,
-                "received_at": datetime.now(UTC).isoformat(),
-                "source_channel": "whatsapp_user_client",
-                "source_endpoint_identity": "switchboard",
-                "source_sender_identity": "multiple",
-                "source_thread_identity": envelope["event"]["external_thread_id"],
-            },
-            "input": {"prompt": prompt},
-            "target": {"butler": target, "tool": "route.execute"},
-            "source_metadata": {
-                "channel": "whatsapp_user_client",
-                "identity": "switchboard",
-                "tool_name": "ingest",
-            },
-        }
-
     signals = [
         {
             "signal_type": "finance",
             "target_butler": "finance",
-            "tool_name": "route.execute",
-            "tool_args": _route_envelope("finance", "Store the anchored finance fact."),
+            "tool_name": "memory_store_fact",
+            "tool_args": {"subject": "model-forged", "predicate": "model-forged"},
             "confidence": "HIGH",
             "excerpts": [{"message_id": "msg-known"}],
         },
         {
             "signal_type": "health",
             "target_butler": "health",
-            "tool_name": "route.execute",
-            "tool_args": _route_envelope("health", "Store the anchored health fact."),
+            "tool_name": "health_record_symptom",
+            "tool_args": {"symptom": "model-forged"},
             "confidence": "HIGH",
             "excerpts": [{"message_id": "msg-unknown"}],
         },
         {
             "signal_type": "general",
             "target_butler": "general",
-            "tool_name": "route.execute",
-            "tool_args": _route_envelope("general", "Reject a fact without a speaker anchor."),
+            "tool_name": "memory_store_fact",
+            "tool_args": {"entity_id": str(uuid.uuid4())},
             "confidence": "HIGH",
             "excerpts": [{"message_id": "not-authoritative"}],
         },

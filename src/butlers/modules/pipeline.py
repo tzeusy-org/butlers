@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 _PIPELINE_METER_NAME = "butlers"
 
 
+class _ContentBlindDispatchFailure(RuntimeError):
+    """Stable replacement for a content-bearing runtime dispatch exception."""
+
+    failure_category = "classification_dispatch_failed"
+
+    def __init__(self, failure_class: str) -> None:
+        super().__init__("Content-blind classification dispatch failed")
+        self.failure_class = failure_class
+
+
 def _decomposition_empty_counter() -> metrics.Counter:
     """Counter: conversation decompositions that yielded no routable signals.
 
@@ -776,6 +786,9 @@ _CALENDAR_PROPOSAL_TARGET_BUTLER = "general"
 _CALENDAR_PROPOSAL_CONFIDENCE_SCORES = {"HIGH": 0.9, "MEDIUM": 0.5, "LOW": 0.2}
 _CALENDAR_PROPOSAL_CONFIDENCE_FLOOR = 0.7
 _CALENDAR_PROPOSAL_SNIPPET_MAX_CHARS = 500
+_CONCEPTUAL_ROUTE_PROMPT = (
+    "Process the conceptual message in input.context using your normal domain tools."
+)
 
 
 def _normalize_decomp_excerpts(
@@ -845,7 +858,12 @@ def _normalize_decomp_signal(
     if not target:
         return None
     signal_type = str(sig.get("signal_type") or sig.get("type") or "").strip()
-    tool_name = str(sig.get("tool_name") or "route.execute").strip()
+    # Model output selects a domain and authoritative message IDs only. Every
+    # ordinary concept enters the target through its standard route.execute
+    # session boundary so Switchboard-owned identity context cannot be bypassed
+    # by selecting a direct MCP tool. Calendar proposals are translated later
+    # by the code-authoritative event branch.
+    tool_name = "route.execute"
     # The model sometimes stringifies nested objects; parse a JSON-string
     # ``tool_args`` so valid arguments are not silently dropped.
     tool_args = sig.get("tool_args")
@@ -949,8 +967,11 @@ def _build_decomposition_prompt(
         "these fields:\n"
         '- signal_type: domain type (e.g. "finance", "health", "relationship")\n'
         "- target_butler: destination butler name (must be one listed below)\n"
-        "- tool_name: MCP tool to call on the target butler\n"
-        "- tool_args: JSON object of tool arguments\n"
+        "- tool_name: route.execute for every ordinary conceptual message; the model "
+        "must not select a direct target tool. The pipeline alone may translate an "
+        "events signal into the code-authoritative calendar proposal tool.\n"
+        "- tool_args: JSON object containing structured signal details for the target "
+        "runtime context, not direct MCP invocation arguments\n"
         '- excerpts: array of {"message_id": "..."} selectors, cherry-picked from the '
         "conversation. Include ONLY the messages relevant to this concept; a message "
         "relevant to multiple concepts is duplicated into each conceptual message. "
@@ -1289,6 +1310,67 @@ class MessagePipeline:
             enriched_messages.append(enriched)
 
         return enriched_messages
+
+    @staticmethod
+    def _build_decomp_route_envelope(
+        *,
+        target_butler: str,
+        request_id: str,
+        received_at: datetime,
+        source: str,
+        source_metadata: Mapping[str, Any],
+        request_context: Mapping[str, Any] | None,
+        conceptual_message: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the standard route.v1 boundary for one conceptual message.
+
+        The top-level sender entity is intentionally omitted: a decomposed
+        concept can contain several speakers, and facts must use the matching
+        authoritative excerpt anchor rather than borrow the routing sender.
+        """
+        route_request_context: dict[str, Any] = {
+            "request_id": request_id,
+            "received_at": received_at.isoformat(),
+            "source_channel": source,
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": str(
+                source_metadata.get("source_id") or source_metadata.get("identity") or "unknown"
+            ),
+            "trace_context": {},
+        }
+        if request_context is not None:
+            source_thread_identity = request_context.get("source_thread_identity")
+            if source_thread_identity not in (None, ""):
+                route_request_context["source_thread_identity"] = str(source_thread_identity)
+            route_request_context["addressed"] = bool(request_context.get("addressed", False))
+
+        route_source_metadata = {
+            "channel": source,
+            "identity": str(source_metadata.get("identity") or "unknown"),
+            "tool_name": str(source_metadata.get("tool_name") or "decomposition"),
+        }
+        if source_metadata.get("source_id") not in (None, ""):
+            route_source_metadata["source_id"] = str(source_metadata["source_id"])
+
+        return {
+            "schema_version": "route.v1",
+            "request_context": route_request_context,
+            "input": {
+                "prompt": _CONCEPTUAL_ROUTE_PROMPT,
+                "context": {"conceptual_message": conceptual_message},
+            },
+            "target": {
+                "butler": target_butler,
+                "tool": "route.execute",
+            },
+            "source_metadata": route_source_metadata,
+            "__switchboard_route_context": {
+                "request_id": request_id,
+                "fanout_mode": "decomposition",
+                "segment_id": f"decomp-{target_butler}",
+                "attempt": 1,
+            },
+        }
 
     async def _load_dashboard_context(
         self,
@@ -2835,7 +2917,10 @@ class MessagePipeline:
                     if self._classification_timeout_s is not None:
                         dispatch_kwargs["timeout_override"] = self._classification_timeout_s
 
-                    with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
+                    _content_blind_dispatch_failure: _ContentBlindDispatchFailure | None = None
+                    with tracer.start_as_current_span(
+                        "butlers.switchboard.routing.llm_decision"
+                    ) as decision_span:
                         spawn_result = None
                         # Structured tool-use fast lane (bu-qvnce.12 slice 3):
                         # attempt it first when a local FastMCP server is
@@ -2899,7 +2984,26 @@ class MessagePipeline:
                                 spawn_result = None
 
                         if spawn_result is None:
-                            spawn_result = await self._dispatch_fn(**dispatch_kwargs)
+                            try:
+                                spawn_result = await self._dispatch_fn(**dispatch_kwargs)
+                            except Exception as exc:
+                                if not content_blind_observability:
+                                    raise
+                                _content_blind_dispatch_failure = _ContentBlindDispatchFailure(
+                                    type(exc).__name__
+                                )
+                                decision_span.set_attribute(
+                                    "error.class",
+                                    _content_blind_dispatch_failure.failure_class,
+                                )
+                                decision_span.set_attribute(
+                                    "error.category",
+                                    _content_blind_dispatch_failure.failure_category,
+                                )
+                                decision_span.set_status(trace.StatusCode.ERROR)
+
+                    if _content_blind_dispatch_failure is not None:
+                        raise _content_blind_dispatch_failure from None
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.routing_decision_latency_ms.record(spawn_latency_ms, request_attrs)
@@ -3117,23 +3221,24 @@ class MessagePipeline:
                                     )
                                     continue
 
-                            _route_args: dict[str, Any] = {
-                                **_sig["tool_args"],
-                                "__switchboard_route_context": {
-                                    "request_id": request_id,
-                                    "fanout_mode": "decomposition",
-                                    "segment_id": f"decomp-{_target}",
-                                    "attempt": 1,
-                                },
-                            }
                             _route_internal_context = {
                                 "conceptual_message": {
                                     "signal_type": _sig["signal_type"],
+                                    "tool_args": _sig["tool_args"],
                                     "excerpts": _sig["excerpts"],
                                     "confidence": _sig["confidence"],
                                 }
                             }
                             if _sig["signal_type"] == _CALENDAR_PROPOSAL_SIGNAL_TYPE:
+                                _route_args: dict[str, Any] = {
+                                    **_sig["tool_args"],
+                                    "__switchboard_route_context": {
+                                        "request_id": request_id,
+                                        "fanout_mode": "decomposition",
+                                        "segment_id": f"decomp-{_target}",
+                                        "attempt": 1,
+                                    },
+                                }
                                 _route_args.update(
                                     {
                                         "butler_name": _CALENDAR_PROPOSAL_TARGET_BUTLER,
@@ -3148,6 +3253,18 @@ class MessagePipeline:
                                             else []
                                         ),
                                     }
+                                )
+                            else:
+                                _route_args = self._build_decomp_route_envelope(
+                                    target_butler=_target,
+                                    request_id=request_id,
+                                    received_at=received_at,
+                                    source=source,
+                                    source_metadata=source_metadata,
+                                    request_context=request_context,
+                                    conceptual_message=_route_internal_context[
+                                        "conceptual_message"
+                                    ],
                                 )
 
                             _decomp_routed.append(_target)
@@ -3601,8 +3718,26 @@ class MessagePipeline:
                     )
 
                 except Exception as exc:
-                    error_msg = f"{type(exc).__name__}: {exc}"
-                    error_class = normalize_error_class(exc)
+                    if content_blind_observability:
+                        failure_class = str(getattr(exc, "failure_class", type(exc).__name__))
+                        failure_category = str(
+                            getattr(exc, "failure_category", "classification_failed")
+                        )
+                        error_class = normalize_error_class(failure_class)
+                        error_msg = f"classification_failed:{failure_category}:{failure_class}"
+                        decomposition_error: dict[str, Any] = {
+                            "error": {
+                                "category": failure_category,
+                                "class": failure_class,
+                            }
+                        }
+                    else:
+                        error_msg = f"{type(exc).__name__}: {exc}"
+                        error_class = normalize_error_class(exc)
+                        decomposition_error = {
+                            "request_id": request_id,
+                            "error": error_msg,
+                        }
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.fallback_to_general.add(
                         1,
@@ -3641,10 +3776,7 @@ class MessagePipeline:
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
                             await self._update_message_inbox_lifecycle(
                                 message_inbox_id=message_inbox_id,
-                                decomposition_output={
-                                    "request_id": request_id,
-                                    "error": error_msg,
-                                },
+                                decomposition_output=decomposition_error,
                                 dispatch_outcomes=None,
                                 response_summary="Classification failed",
                                 lifecycle_state="errored",
