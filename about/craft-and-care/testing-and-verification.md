@@ -59,6 +59,10 @@ make test-qg
 
 Use `make test-qg-serial` when debugging order-dependent failures.
 
+Both targets run pytest through `scripts/pytest_gate.py` and end on a `PASS` / `FAILED` / `UNKNOWN`
+verdict line. That line is the evidence: quote it. `UNKNOWN` means the run rendered no verdict at all
+(killed, truncated, nothing collected), and an absent failure line is not a pass.
+
 ## Evidence Expectations
 
 When reporting completion, include the checks that actually ran. For example:
