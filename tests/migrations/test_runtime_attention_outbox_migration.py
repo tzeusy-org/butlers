@@ -17,7 +17,9 @@ import select
 import shutil
 import subprocess
 import sys
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -25,7 +27,7 @@ from urllib.parse import unquote, urlparse
 import asyncpg
 import pytest
 import pytest_asyncio
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
@@ -58,6 +60,25 @@ _CORE_198_MIGRATION = (
     / "core"
     / "core_198_runtime_attention_outbox.py"
 )
+
+
+# Durable evidence a rollback must refuse to delete, written straight to the
+# outbox under bootstrap authority rather than through a producer.
+_INSERT_FLEET_HALT_EVIDENCE_SQL = f"""
+    INSERT INTO {_OUTBOX} (
+        source, fleet_halt_month, lifecycle_state, source_snapshot, payload
+    )
+    VALUES (
+        'fleet_halt',
+        date '2026-08-01',
+        'pending',
+        jsonb_build_object('month', '2026-08', 'denied_count', 1, 'first_denied_at', NULL),
+        jsonb_build_object(
+            'classification', 'monthly_spend_ceiling',
+            'door', '/spend?outcome=quota_skip'
+        )
+    )
+"""
 
 
 def _quote_ident(identifier: str) -> str:
@@ -1870,10 +1891,27 @@ def test_empty_outbox_can_disable_and_reenable_producers_through_bootstrap(
         engine.dispose()
 
 
-def test_nonempty_outbox_rejects_downgrade_and_requires_forward_remediation(
+def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
     postgres_container,
 ) -> None:
-    """REQ-runtime-attention-outbox-001: rollback never deletes durable evidence."""
+    """REQ-runtime-attention-outbox-001: rollback never deletes durable evidence.
+
+    From core@head this stops at the *outer* refusal, not the
+    forward-remediation one.  Alembic walks core_199 down before core_198, and
+    core_199's downgrade deliberately retains
+    ``public.runtime_attention_producer_control`` and the legacy debounce-marker
+    planter; ``_TRUSTED_BOOTSTRAP_ROLLBACK_SQL`` requires both to be absent, so
+    core_198's downgrade stops at ``core_198 downgrade requires trusted
+    bootstrap rollback interface`` without ever calling
+    ``runtime_attention_admin.rollback_interface()``.  The refusal inside that
+    function is reached only by a chain that never installed core_199's
+    retained objects -- see
+    ``test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediation``.
+
+    What this test proves, and the empty-outbox sibling above cannot: a
+    populated outbox is not a downgrade the chain will let through, and the
+    evidence row is intact afterwards.
+    """
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
@@ -1881,25 +1919,7 @@ def test_nonempty_outbox_rejects_downgrade_and_requires_forward_remediation(
     engine = create_engine(bootstrap_url)
     try:
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    f"""
-                        INSERT INTO {_OUTBOX} (source, fleet_halt_month, lifecycle_state, source_snapshot, payload)
-                    VALUES (
-                        'fleet_halt',
-                        date '2026-08-01',
-                        'pending',
-                        jsonb_build_object(
-                            'month', '2026-08', 'denied_count', 1, 'first_denied_at', NULL
-                        ),
-                        jsonb_build_object(
-                            'classification', 'monthly_spend_ceiling',
-                            'door', '/spend?outcome=quota_skip'
-                        )
-                    )
-                    """
-                )
-            )
+            conn.execute(text(_INSERT_FLEET_HALT_EVIDENCE_SQL))
     finally:
         engine.dispose()
 
@@ -1912,6 +1932,124 @@ def test_nonempty_outbox_rejects_downgrade_and_requires_forward_remediation(
     try:
         with engine.connect() as conn:
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+    finally:
+        engine.dispose()
+
+
+def _run_bootstrap_rollback(engine: Engine) -> None:
+    """Call the trusted bootstrap teardown on its own connection."""
+    with engine.connect() as conn:
+        # Fail loudly rather than hanging if the teardown lock never arrives.
+        conn.execute(text("SET lock_timeout = '45s'"))
+        conn.execute(text("SELECT runtime_attention_admin.rollback_interface()"))
+
+
+def test_core_198_downgrade_refuses_durable_evidence_and_names_forward_remediation(
+    postgres_container,
+) -> None:
+    """The evidence refusal itself, on the one chain state that can reach it.
+
+    ``public.runtime_attention_producer_control`` and the legacy debounce-marker
+    planter arrive with core_199 and are retained by its downgrade, so a
+    database that stopped at core_198 is the only one whose core_197 downgrade
+    gets past ``_TRUSTED_BOOTSTRAP_ROLLBACK_SQL`` and into
+    ``runtime_attention_admin.rollback_interface()``.  Stage it there, then put
+    durable evidence in the outbox: the operator is told to remediate forward,
+    and nothing is torn down on the way out.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(_INSERT_FLEET_HALT_EVIDENCE_SQL))
+    finally:
+        engine.dispose()
+
+    config = _build_alembic_config(bootstrap_url, chains=["core"])
+    with pytest.raises(DBAPIError, match="use forward remediation"):
+        command.downgrade(config, "core_197")
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.connect() as conn:
+            # The refusal is a refusal, not a partial teardown.
+            assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text("SELECT to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL")
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
+
+
+def _await_blocked_outbox_teardown_lock(engine: Engine, timeout: float = 30.0) -> None:
+    """Block until the rollback is provably queued for the teardown lock."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with engine.connect() as conn:
+            if conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_locks
+                        WHERE NOT granted
+                          AND locktype = 'relation'
+                          AND mode = 'AccessExclusiveLock'
+                          AND relation = to_regclass('public.runtime_attention_outbox')
+                    )
+                    """
+                )
+            ).scalar_one():
+                return
+        time.sleep(0.05)
+    raise AssertionError("bootstrap rollback never queued for the outbox teardown lock")
+
+
+def test_bootstrap_rollback_refuses_evidence_committed_while_it_waits_for_the_lock(
+    postgres_container,
+) -> None:
+    """The teardown-lock recheck catches evidence that lands after the first look.
+
+    ``rollback_interface`` looks for durable evidence, takes ACCESS EXCLUSIVE on
+    both relations, then looks again.  Only the second look can see a writer
+    that committed while the rollback was queued behind it, so this drives that
+    exact interleaving: an append is left uncommitted -- invisible to the first
+    look, but already holding ROW EXCLUSIVE -- and commits only once the
+    rollback is provably waiting for the lock.  The function is called directly
+    rather than through ``command.downgrade`` because the interleaving has to be
+    timed against that one lock wait, not against a whole migration step.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+
+    engine = create_engine(bootstrap_url)
+    try:
+        writer = engine.connect()
+        writer.execute(text(_INSERT_FLEET_HALT_EVIDENCE_SQL))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            rollback = pool.submit(_run_bootstrap_rollback, engine)
+            try:
+                _await_blocked_outbox_teardown_lock(engine)
+                writer.commit()
+                with pytest.raises(DBAPIError, match="use forward remediation"):
+                    rollback.result(timeout=60)
+            finally:
+                # Release the row lock before the pool waits on the rollback,
+                # so a failure here cannot park both on each other.
+                writer.close()
+
+        with engine.connect() as conn:
+            assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text("SELECT to_regclass('public.runtime_attention_delivery_lease') IS NOT NULL")
+            ).scalar_one()
     finally:
         engine.dispose()
 
