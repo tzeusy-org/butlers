@@ -677,6 +677,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Filter by butler...
 - Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
+- Notification re-sent on {}
+- Retry failed again
+- Could not retry notification
+- Notification escalated to {}
+- Escalation failed
+- Could not escalate notification
 
 ## `frontend/src/pages/QaInvestigationDetailPage.tsx`
 
@@ -2657,6 +2663,11 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - needs attention
 
+## `frontend/src/components/ingestion/connectors/ConnectorCheckpoints.tsx`
+
+- saved ·
+- saved · never
+
 ## `frontend/src/components/ingestion/connectors/ConnectorDetailView.tsx`
 
 - ← ingestion / connectors
@@ -2704,6 +2715,10 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/ingestion/connectors/ScopeList.tsx`
 
 - Reauthorising will request the updated scopes and resume ingestion.
+
+## `frontend/src/components/ingestion/connectors/UnparentedCheckpointsList.tsx`
+
+- checkpoints · owner unresolved
 
 ## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
 
@@ -4088,4 +4103,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3199*
+*Total strings: 3208*
