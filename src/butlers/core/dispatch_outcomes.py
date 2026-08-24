@@ -87,8 +87,8 @@ async def _produce_edge(
 # REQ-model-catalog-001 orders outcomes by the instant they were serialized,
 # not by BEGIN time, so a transaction that waited on the breaker lock has to
 # stamp its row after the transaction it waited for.  ``now()`` would order the
-# waiter first.  This is the one place the recorder reads the statement clock;
-# the fleet-halt month below is transaction-stable for the opposite reason.
+# waiter first.  ``ts`` is now the only clock this module reads at all -- the
+# fleet-halt month is the producer's alone (see below).
 _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
@@ -103,29 +103,37 @@ _BREAKER_LOCK_SQL = """
     SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 """
 
-# ``now()`` here is load-bearing and must stay in step with the ``v_month``
-# declaration in ``public.append_runtime_attention_fleet_halt`` (defined once in
-# ``runtime_attention_admin.install_fleet_halt_producer_v2``, scripts/init-db.sql).
-# This lock is taken at the top of the transaction; the producer computes its
-# month later in that same transaction.  Only a transaction-stable timestamp
-# makes the two provably equal -- with clock_timestamp on either side, a month
-# rollover between the two evaluations leaves the lock serializing a key nobody
-# is writing, which is exactly when the fleet-halt path is most likely to fire
-# (bu-jxelx).  The denial row's ``ts`` stays on the statement clock, so a
-# transaction that crosses the rollover stamps its row in the month after
-# ``v_month``; the producer's evidence query then does not count that row.  That
-# asymmetry is v1's long-standing shape, not something this lock introduces, and
-# it only bites when the crossing transaction carries the month's *first*
-# ceiling denial -- see bu-jxelx's follow-up note.
-_FLEET_HALT_LOCK_SQL = """
-    SELECT pg_advisory_xact_lock(
-        hashtextextended(
-            'runtime_attention_fleet_halt:'
-            || date_trunc('month', now() AT TIME ZONE 'UTC')::date::text,
-            0
-        )
-    )
-"""
+# There is deliberately no fleet-halt counterpart to ``_BREAKER_LOCK_SQL``, and
+# adding one back would be a regression (bu-86t7r).  The breaker edge needs a
+# recorder-held lock because its decision spans two statements this module issues
+# itself -- ``get_breaker_state`` then the producer -- so nothing else makes that
+# read-then-write pair atomic.  The fleet-halt edge needs no such help: the
+# once-per-breach-window guarantee lives entirely inside
+# ``public.append_runtime_attention_fleet_halt`` (installed by
+# ``runtime_attention_admin.install_fleet_halt_producer_v2``, scripts/init-db.sql),
+# which takes its own month-scoped ``pg_advisory_xact_lock`` around an
+# ``INSERT ... ON CONFLICT (fleet_halt_month) DO NOTHING`` against the partial
+# unique index ``ux_runtime_attention_outbox_fleet_halt_month`` plus the re-SELECT
+# that hands the loser the winner's episode.
+#
+# A month lock taken here would only widen that critical section to also cover the
+# denial row's INSERT and the producer's month-wide ``count(*)`` evidence query,
+# serializing every ceiling denial fleet-wide -- on the one path that fires for
+# *every* spawn while the fleet is halted, and whose evidence query gets slower
+# with each denial the month accumulates.  All it buys is an exactly-serialized
+# ``denied_count``/``first_denied_at`` in ``source_snapshot``, which is provenance
+# only: no reader branches on either, and the producer's own gates need just
+# ``count(*) >= 1`` (its own row, always visible to its own snapshot) and
+# ``min(ts) >= producer_activated_at`` -- and activation is a one-shot migration
+# that holds SHARE ROW EXCLUSIVE on ``model_dispatch_attempts`` while it commits
+# (``CREATE TRIGGER ... BEFORE INSERT``), so no denial can straddle that boundary
+# uncommitted regardless of what this module locks.
+#
+# Not locking here also removes a class of bug rather than trading one for
+# another: a second, independently evaluated month expression in this file is what
+# let the lock key and the producer's ``v_month`` name different months across a
+# UTC rollover (bu-jxelx).  The month is now named once, by the producer, and that
+# single value is both what it locks on and what it writes.
 
 
 async def record_dispatch_attempt(
@@ -151,8 +159,10 @@ async def record_dispatch_attempt(
     calls the validated server-side model-breaker producer before commit.
 
     ``produce_fleet_halt`` is reserved for the spawner's monthly-ceiling deny
-    path.  It serializes by UTC calendar month and invokes the validated
-    fleet-halt producer in the same transaction as the denial row.
+    path.  It invokes the validated fleet-halt producer in the same transaction
+    as the denial row and takes no recorder-held lock: the once-per-month
+    guarantee is the producer's own, so the deny path — which fires for every
+    spawn while the fleet is halted — is not serialized fleet-wide.
 
     Non-qualifying outcomes retain the existing lightweight best-effort insert
     path.  The returned bigint is stable for transactional writes; ``None``
@@ -218,8 +228,10 @@ async def record_dispatch_attempt(
                 if outcome in _QUALIFYING_BREAKER_OUTCOMES:
                     await connection.execute(_BREAKER_LOCK_SQL, str(catalog_entry_id))
                     breaker_was_open = (await get_breaker_state(connection, catalog_entry_id)).open
-                elif produce_fleet_halt:
-                    await connection.execute(_FLEET_HALT_LOCK_SQL)
+                # ``produce_fleet_halt`` deliberately has no matching branch: the
+                # producer owns the fleet-halt critical section, so this path does
+                # not serialize denials fleet-wide.  See the note beside
+                # ``_BREAKER_LOCK_SQL`` before adding one back.
 
                 # core_199's cutover trigger treats the absence of this
                 # transaction-local ABI as an old direct-delivery binary and
