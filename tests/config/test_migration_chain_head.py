@@ -174,20 +174,71 @@ def _collect_revision_locations(chain_dirs: dict[str, Path]) -> dict[str, list[s
     return revision_locations
 
 
-def test_every_recognized_chain_has_globally_unique_revision_ids():
+def _all_chain_dirs() -> dict[str, Path]:
     chain_dirs = {}
     for chain in get_all_chains():
         chain_dir = _resolve_chain_dir(chain)
         assert chain_dir is not None
         chain_dirs[chain] = chain_dir
+    return chain_dirs
 
+
+def test_every_recognized_chain_has_globally_unique_revision_ids():
     duplicates = {
         revision_id: locations
-        for revision_id, locations in _collect_revision_locations(chain_dirs).items()
+        for revision_id, locations in _collect_revision_locations(_all_chain_dirs()).items()
         if len(locations) > 1
     }
 
     assert duplicates == {}, f"Duplicate migration revisions: {duplicates}"
+
+
+def _collect_down_revisions(chain_dirs: dict[str, Path]) -> dict[str, list[str]]:
+    """Map ``chain/filename`` to the revision ids its ``down_revision`` names."""
+    parents: dict[str, list[str]] = {}
+    for chain, chain_dir in chain_dirs.items():
+        for migration_path in chain_dir.glob("*.py"):
+            if migration_path.name == "__init__.py":
+                continue
+            tree = ast.parse(migration_path.read_text(encoding="utf-8"))
+            for node in tree.body:
+                if isinstance(node, ast.Assign):
+                    names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    names = [node.target.id] if node.value is not None else []
+                else:
+                    continue
+                if "down_revision" not in names:
+                    continue
+                assert node.value is not None
+                value = ast.literal_eval(node.value)
+                named = [value] if isinstance(value, str) else list(value or ())
+                parents[f"{chain}/{migration_path.name}"] = [
+                    item for item in named if isinstance(item, str)
+                ]
+                break
+    return parents
+
+
+def test_every_down_revision_resolves_to_a_revision_that_exists():
+    """A ``down_revision`` naming a revision that is not in the tree orphans a chain.
+
+    ``get_chain_head`` computes heads as "revisions nothing points down to", so
+    a parent that does not exist leaves the head count at one and this file's
+    other tests all stay green while ``alembic upgrade head`` cannot resolve
+    the chain at all. Deleting or renaming a migration whose child stayed
+    behind is the shape that produces it.
+    """
+    chain_dirs = _all_chain_dirs()
+    known = set(_collect_revision_locations(chain_dirs))
+
+    dangling = {
+        location: missing
+        for location, parents in _collect_down_revisions(chain_dirs).items()
+        if (missing := [parent for parent in parents if parent not in known])
+    }
+
+    assert dangling == {}, f"down_revision pointing at unknown revisions: {dangling}"
 
 
 def _write_revision(directory: Path, *, revision: str, down_revision: str | None) -> None:
