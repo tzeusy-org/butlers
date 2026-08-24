@@ -691,7 +691,9 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
 
   function handleConfirm() {
     kill(
-      { grace_seconds: 30, actor: "owner" },
+      // No actor: the server derives it from the authenticated principal and
+      // ignores a caller-supplied one (bu-6zlqt).
+      { grace_seconds: 30 },
       { onSettled: () => setShowConfirm(false) },
     );
   }
