@@ -282,6 +282,33 @@ git push                # Push to remote (bead mutations already in Dolt)
 - Two paths carry outsized blast radius and are easy to delete by an over-broad path glob: `src/butlers/api/app.py` (imported by ~132 test files via `create_app`) and `src/butlers/core_tools/_delegation.py` (imported by `core_tools/_dispatcher.py`, so losing it fails *every* butler daemon at import). Any bulk `git rm`/cleanup touching `src/` or `pr/` should be reviewed with `git show --stat` before pushing — see bu-q0po2.
 - `GET /api/secrets/user/{provider}` is a **content-blind** contract (owner decision 2026-08-13): it publishes capability categories from `CAPABILITY_VOCABULARY` (`calendar`/`gmail`/`drive`/`health`/`connectivity`/`other`), never raw OAuth scopes, the persisted `entity_info.type` or `label`, or any audit `note` / probe `message` / failure tail. `_fetch_single_user_secret` returns an internal `_UserCredentialRecord` (mutation routes need `type`/`label`/`failure_tail` for OAuth revocation, guided-rotate gating, and the reauthorize account hint); `_content_blind_detail` is the only bridge from that record to *this endpoint's* DTO and builds it field by field on purpose, so adding a field to the record does NOT publish it here, and must not, without re-running the security review. It is **not** the only path from that record to a client: `POST .../reauthorize` returns the persisted `label` as `account_hint` inside `redirect_url`, and `POST .../probe` returns `failure_tail` (or provider response text) as `TestResult.message`. Both predate the content-blind work and are sanctioned by the current spec; audit them before assuming a value cannot escape. The content-blind treatment has since been extended: `GET /api/secrets/inventory` now returns `InventoryData` built from `_content_blind_summary` / `_content_blind_cli`, whose `UserSecretSummary`, `SystemSecretSummary`, and `CliRuntimeSummary` rows carry capability categories rather than raw scopes and drop `type`, `label`, `last_test_message`, and the probe message; the inventory's `CredentialAuditOutcome` carries only `ts`/`actor`/`action`, never a note. The system and CLI detail endpoints have had it too. Every one of those projections is written field by field on purpose -- adding a field to an internal record does not publish it, and must not, without re-running the security review.
 
+### Actor attribution is server-derived, never caller-asserted
+`authenticated_principal()` in `src/butlers/api/audit_emit.py` is the single named place recording
+that Butlers is a single-user deployment whose principal is `"owner"`. Any route that **persists** an
+actor (an `updated_by` / `submitted_by` / `added_by` column) or **audits** one (`audit_append`,
+`emit_dashboard_audit`) must take it from there. An actor that reaches the handler from request data
+is not attribution — the caller can write anything — so an `actor: str = "dashboard"` field on a
+request model is a forgery hole *and* a misattribution bug at the same time (bu-4y9ck, bu-6zlqt).
+- Removing the wire field outright is a **breaking change** when the model sets `extra="forbid"`:
+  older clients start getting 422. Use `IgnoresCallerAssertedActor` (same module) as the base
+  instead — a `model_validator(mode="before")` strips the listed wire names before validation, so
+  the model exposes no attribute a handler could trust, typo rejection still works, and legacy
+  clients are ignored rather than rejected. Override `caller_asserted_actor_fields` when the legacy
+  name is not `actor`.
+- `tests/api/test_actor_attribution_sweep.py` holds the recorded classification of every API route
+  and the mechanical guards that keep new ones honest: no request body may declare an actor field,
+  and no route may read one from a query param or header outside two allow-lists. Add to the
+  allow-lists only with a recorded justification; the guards assert their route set is non-empty
+  first, because a lazy-mount bug would otherwise make them pass vacuously.
+- Two look-alikes that are **not** this defect: `X-Butlers-Decision-Actor` on the approvals routes is
+  server-*verified* (`_decision_actor_id()` 401s an unauthenticated claim and 403s a mismatched one),
+  and `system.py`'s `actor_id` names the external egress *recipient* resolved from a server-side
+  registry, not the requester.
+- Enumerating routes by hand does not work here. FastAPI mounts included routers lazily, so
+  `create_app().routes` holds `_IncludedRouter` objects, not `APIRoute`s — recurse into
+  `route.original_router.routes` (2 routes vs 589). The body model is
+  `route.body_field.field_info.annotation`; `.type_` no longer exists on pydantic v2 `ModelField`.
+
 ### Steam presence events are metadata-only AND routing-skipped
 - Steam `status_change` / `online_status` envelopes keep `payload.raw = null` and `control.ingestion_tier = "metadata"` (persistence shape only — a metadata-only ref row still lands in `message_inbox`/`public.ingestion_events`).
 - `ingestion_tier` alone does NOT bypass LLM classification or routing — that decision comes from the pre-resolved `triage_decision` sourced from a `scope='global'` `ingestion_rules` row, evaluated by `IngestionPolicyEvaluator` in `roster/switchboard/tools/ingestion/ingest.py::ingest_v1()` before `pipeline.process()` ever runs. Migration `025_switchboard_steam_status_skip.py` seeds a `rule_type='substring'` rule matching the `"steam:status:"` prefix of `external_event_id` (action=`metadata_only`) so status_change specifically skips LLM classification/routing/notify — a bare `source_channel='gaming'` rule would have over-scoped and silenced play/achievement/purchase/friend events too. `_make_ingestion_envelope()` in `ingest.py` surfaces `event.external_event_id` as `raw_key` for the `gaming` channel to make this substring match possible (the wire contract's `event` section is `extra="forbid"`, so there is no separate event-type field to match on directly).
