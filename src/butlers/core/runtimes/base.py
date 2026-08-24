@@ -10,8 +10,9 @@ from __future__ import annotations
 import abc
 import logging
 import math
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 # Default runtime adapter type used to seed every Spawner's adapter pool.
 # There is no roster-level or per-butler differentiation: every live butler
@@ -37,6 +38,21 @@ class RuntimeAdapter(abc.ABC):
     #: ``resume_session_id`` -- adapters that don't support it do not accept
     #: the parameter at all, rather than silently ignoring it.
     supports_resume: bool = False
+
+    #: Capability declarations that hold for every model reachable through this
+    #: adapter -- the baseline layer a ``public.model_catalog`` row's own
+    #: ``capabilities`` envelope is merged over
+    #: (``butlers.core.model_capabilities.effective_capabilities``). Keys are
+    #: ``ModelFeature`` values, kept as plain strings here so this module stays
+    #: importable from ``model_capabilities`` without a cycle; a key outside the
+    #: vocabulary is dropped with a warning rather than trusted.
+    #:
+    #: An adapter declares only what its integration decides. ``session_resume``
+    #: is read from ``supports_resume`` above and needs no entry.  A feature left
+    #: undeclared reads as UNKNOWN, which a dispatch that requires it treats as
+    #: unproven -- so declare a capability the adapter genuinely cannot provide
+    #: as ``False`` rather than omitting it.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {}
 
     @property
     def session_timeout_overhead_s(self) -> float:

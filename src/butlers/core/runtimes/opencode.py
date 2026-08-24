@@ -32,8 +32,9 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -877,6 +878,9 @@ class OpenCodeAdapter(RuntimeAdapter):
             opencode_binary=self._opencode_binary,
             provider_config=self._provider_config,
         )
+
+    #: The CLI receives the butler's MCP server config and executes its tools.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
 
     @property
     def binary_name(self) -> str:

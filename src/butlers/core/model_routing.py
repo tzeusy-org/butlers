@@ -63,10 +63,24 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
+
+from butlers.core.dispatch_intent import (
+    DISPATCH_POLICY_VERSION,
+    DispatchIntent,
+    FitCode,
+    FitFinding,
+    FitVerdict,
+    evaluate_fit,
+)
+from butlers.core.model_capabilities import (
+    CapabilityDescriptor,
+    CapabilityDescriptorError,
+    effective_capabilities,
+)
 
 if TYPE_CHECKING:
     from butlers.api.pricing import PricingConfig
@@ -248,9 +262,16 @@ class TierQuotaExhausted(Exception):
         *,
         effective_tier: str,
         representative: tuple[str, str, list[str], uuid.UUID, int, str],
+        resolution: DispatchResolution | None = None,
     ) -> None:
         self.effective_tier = effective_tier
         self.representative = representative
+        # bu-6jv4m.7: the intent-aware path (``resolve_dispatch``) has already built a
+        # full resolution receipt by the time it discovers the quota block. Carrying it
+        # on the exception keeps the receipt available on the failure path too -- a
+        # quota-exhausted dispatch is exactly when "which candidates were considered,
+        # and why was each one out?" is most worth having. ``None`` on the legacy path.
+        self.resolution = resolution
         super().__init__(
             f"Tier {effective_tier!r} has a quota-blocked top-priority candidate; "
             "caller must run the sequential quota/failover gate starting from "
@@ -933,14 +954,21 @@ async def get_routing_scores(
 # calls even with a single, uncontested candidate) -- so callers always issue the
 # counter increment separately, unconditional of cache hit/miss. See
 # ``resolve_model``/``resolve_model_with_effective_tier`` for the call sequence.
-_RESOLVE_SQL = f"""
-WITH
-{_BREAKER_OPEN_CTE},
-{_QUOTA_OK_CTE},
-tier_order AS (
-    SELECT t.tier, t.ord
-    FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
-),
+# Shared ``all_candidates`` CTE: every enabled, verified, breaker-closed catalog entry
+# in any of the requested tiers, decorated with effective override values, its tier's
+# fallthrough position, its quota headroom, and its capability envelope (core_204).
+#
+# Inlined by BOTH ``_RESOLVE_SQL`` (which then narrows to one winning tier and its
+# top-priority set in SQL) and ``_RESOLVE_CANDIDATES_SQL`` (which returns the whole set
+# so ``resolve_dispatch`` can apply hard fit BEFORE narrowing). Sharing the text is the
+# point: the two paths must agree exactly on what "eligible at all" means, and a
+# divergence there would make an intent-aware dispatch silently consider a different
+# universe than a plain one.
+#
+# ``capabilities`` / ``max_context_tokens`` / ``max_output_tokens`` are inert for
+# ``_RESOLVE_SQL`` -- its downstream CTEs select explicit columns and never reference
+# them -- so carrying them here costs that path nothing.
+_ALL_CANDIDATES_CTE = """
 all_candidates AS (
     SELECT
         mc.runtime_type,
@@ -949,6 +977,9 @@ all_candidates AS (
         mc.id,
         mc.session_timeout_s,
         mc.created_at,
+        mc.capabilities,
+        mc.max_context_tokens,
+        mc.max_output_tokens,
         COALESCE(bmo.complexity_tier, mc.complexity_tier) AS effective_tier,
         COALESCE(bmo.priority, mc.priority) AS effective_priority,
         t.ord AS tier_ord,
@@ -963,7 +994,18 @@ all_candidates AS (
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
+)
+"""
+
+_RESOLVE_SQL = f"""
+WITH
+{_BREAKER_OPEN_CTE},
+{_QUOTA_OK_CTE},
+tier_order AS (
+    SELECT t.tier, t.ord
+    FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
 ),
+{_ALL_CANDIDATES_CTE},
 winning AS (
     SELECT effective_tier, tier_ord, MAX(effective_priority) AS max_priority
     FROM all_candidates
@@ -1011,6 +1053,59 @@ SELECT
 FROM candidates c
 LEFT JOIN evidence e ON e.catalog_entry_id = c.id
 """
+
+# Intent-aware candidate query (bu-6jv4m.7). Same eligibility universe as
+# ``_RESOLVE_SQL`` (it inlines the identical ``_ALL_CANDIDATES_CTE``), but it does NOT
+# narrow to a winning tier or a top-priority set: it returns every eligible candidate
+# across the requested tier list so ``resolve_dispatch`` can apply hard capability/
+# context/deadline/budget fit BEFORE any ranking narrows the field.
+#
+# The order matters: narrowing first, as ``_RESOLVE_SQL`` does, means a tier whose only
+# top-priority entry cannot do the job produces no dispatchable candidate at all, even
+# though a lower-priority entry in the same tier could have. Fit is a precondition, not
+# a preference, so it has to run before priority and before the evidence tie-break.
+#
+# Accepts the same $1 (butler_name) / $2 (ordered tiers) as ``_RESOLVE_SQL``.
+#
+# ``evidence`` additionally carries ``last_attempt_at``: the resolution receipt records
+# how OLD the evidence behind a score is, so a score computed from a week-old sample is
+# not read as a fresh observation.
+_RESOLVE_CANDIDATES_SQL = f"""
+WITH
+{_BREAKER_OPEN_CTE},
+{_QUOTA_OK_CTE},
+tier_order AS (
+    SELECT t.tier, t.ord
+    FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
+),
+{_ALL_CANDIDATES_CTE},
+evidence AS (
+    SELECT
+        catalog_entry_id,
+        COUNT(*) FILTER (WHERE outcome = 'success') AS success_count,
+        COUNT(*) FILTER (WHERE outcome = 'runtime_failure') AS failure_count,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p50_duration_ms,
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)
+            FILTER (WHERE outcome = 'success' AND duration_ms IS NOT NULL) AS p95_duration_ms,
+        MAX(ts) AS last_attempt_at
+    FROM public.model_dispatch_attempts
+    WHERE catalog_entry_id IN (SELECT id FROM all_candidates)
+      AND outcome IN ('success', 'runtime_failure')
+      AND ts > now() - interval '{_EVIDENCE_WINDOW_DAYS} days'
+    GROUP BY catalog_entry_id
+)
+SELECT
+    ac.runtime_type, ac.model_id, ac.extra_args, ac.id, ac.session_timeout_s,
+    ac.capabilities, ac.max_context_tokens, ac.max_output_tokens,
+    ac.effective_tier, ac.effective_priority, ac.tier_ord, ac.quota_ok,
+    e.success_count, e.failure_count, e.p50_duration_ms, e.p95_duration_ms,
+    e.last_attempt_at
+FROM all_candidates ac
+LEFT JOIN evidence e ON e.catalog_entry_id = ac.id
+ORDER BY ac.tier_ord ASC, ac.effective_priority DESC, ac.created_at ASC, ac.id ASC
+"""
+
 
 # Standalone round-robin counter increment (bu-k9te9, slice 5 — split out of the former
 # ``next_counter`` CTE above so the bounded routing-decision cache can skip re-running
@@ -1303,6 +1398,27 @@ def _get_cached_pricing() -> PricingConfig | None:
     return _cached_pricing
 
 
+def _score_row(row: asyncpg.Record, pricing: PricingConfig | None) -> RoutingScore:
+    """Score one candidate row from its evidence columns.
+
+    Shared by ``_select_resolved_row`` (the ``_RESOLVE_SQL`` path) and
+    ``resolve_dispatch`` (the intent-aware path) so the two can never drift into
+    scoring the same evidence differently -- the receipt would otherwise be able to
+    claim a winner reason the legacy path would not have reached.
+    """
+    evidence = RoutingEvidence(
+        success_count=int(row["success_count"] or 0),
+        failure_count=int(row["failure_count"] or 0),
+        p50_duration_ms=(
+            float(row["p50_duration_ms"]) if row["p50_duration_ms"] is not None else None
+        ),
+        p95_duration_ms=(
+            float(row["p95_duration_ms"]) if row["p95_duration_ms"] is not None else None
+        ),
+    )
+    return compute_routing_score(evidence, _reference_cost_usd(pricing, row["model_id"]))
+
+
 def _select_resolved_row(
     rows: list[asyncpg.Record], rr_counter: int | None = None
 ) -> asyncpg.Record:
@@ -1326,20 +1442,7 @@ def _select_resolved_row(
         return rows[0]
 
     pricing = _get_cached_pricing()
-    scored = []
-    for row in rows:
-        evidence = RoutingEvidence(
-            success_count=int(row["success_count"] or 0),
-            failure_count=int(row["failure_count"] or 0),
-            p50_duration_ms=(
-                float(row["p50_duration_ms"]) if row["p50_duration_ms"] is not None else None
-            ),
-            p95_duration_ms=(
-                float(row["p95_duration_ms"]) if row["p95_duration_ms"] is not None else None
-            ),
-        )
-        cost = _reference_cost_usd(pricing, row["model_id"])
-        scored.append((row, compute_routing_score(evidence, cost)))
+    scored = [(row, _score_row(row, pricing)) for row in rows]
 
     eligible = [(row, s) for row, s in scored if s.score is not None]
     if len(eligible) >= 2:
@@ -1561,6 +1664,7 @@ async def resolve_model_with_effective_tier(
     *,
     allow_tier_fallthrough: bool = True,
     quota_aware: bool = False,
+    intent: DispatchIntent | None = None,
 ) -> tuple[str, str, list[str], uuid.UUID, int, str] | None:
     """Resolve the best model for a butler and return the effective tier alongside.
 
@@ -1618,6 +1722,19 @@ async def resolve_model_with_effective_tier(
           static-fallback condition, so it must never be signaled the same
           way.
 
+    intent:
+        When supplied (bu-6jv4m.7), delegate to :func:`resolve_dispatch`, which
+        disqualifies candidates that cannot satisfy the intent's required
+        capabilities, context floor, deadline, or per-call budget *before*
+        priority narrowing and the tie-break. ``complexity_tier`` stays
+        authoritative for the tier -- the intent's own tier is overridden with
+        it -- so callers cannot accidentally route to two different tiers by
+        passing an intent built from a stale complexity. Ranking is unchanged,
+        and an intent that requires nothing selects exactly what ``None``
+        selects. The resolution receipt is dropped here (this signature returns
+        the same 6-tuple as before); callers that want it call
+        ``resolve_dispatch`` directly.
+
     Returns
     -------
     tuple[str, str, list[str], uuid.UUID, int, str] | None
@@ -1636,6 +1753,16 @@ async def resolve_model_with_effective_tier(
         tier_value = complexity_tier.value
     else:
         tier_value = _check_deprecated_tier(str(complexity_tier))
+
+    if intent is not None:
+        resolution = await resolve_dispatch(
+            pool,
+            butler_name,
+            dataclasses.replace(intent, complexity_tier=tier_value),
+            allow_tier_fallthrough=allow_tier_fallthrough,
+            quota_aware=quota_aware,
+        )
+        return resolution.selection
 
     if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
         start_idx = TIER_FALLTHROUGH_ORDER.index(tier_value)
@@ -1689,6 +1816,384 @@ async def resolve_model_with_effective_tier(
         row["session_timeout_s"],
         effective_tier,
     )
+
+
+# ---------------------------------------------------------------------------
+# Intent-aware resolution (bu-6jv4m.7)
+# ---------------------------------------------------------------------------
+
+
+class CandidateOutcome(enum.StrEnum):
+    """What happened to one candidate during an intent-aware resolution."""
+
+    SELECTED = "selected"
+    ELIGIBLE = "eligible"
+    """Fit the intent and reached the ranking step, but another candidate won."""
+
+    EXCLUDED_HARD_FIT = "excluded_hard_fit"
+    """Disqualified by capability / context / deadline / budget fit, before ranking."""
+
+    EXCLUDED_QUOTA = "excluded_quota"
+    NOT_TOP_PRIORITY = "not_top_priority"
+    """Fit the intent, but a higher effective priority existed in the same tier."""
+
+    TIER_NOT_REACHED = "tier_not_reached"
+    """In a lower fallthrough tier than the one that produced a survivor."""
+
+
+WINNER_REASON_SOLE_CANDIDATE = "sole_candidate"
+WINNER_REASON_EVIDENCE_SCORE = "evidence_score"
+WINNER_REASON_ROUND_ROBIN = "round_robin"
+
+
+@dataclasses.dataclass(frozen=True)
+class CandidateRecord:
+    """One catalog entry's fate in a resolution, as recorded on the receipt.
+
+    Deliberately prompt-free: identifiers, tiers, outcomes, and fit findings only.
+    Nothing here carries session content, so the receipt can be stored and shown
+    without dragging prompt text into a new place.
+    """
+
+    catalog_entry_id: uuid.UUID
+    runtime_type: str
+    model_id: str
+    effective_tier: str
+    effective_priority: int
+    outcome: CandidateOutcome
+    exclusions: tuple[FitFinding, ...] = ()
+    advisories: tuple[FitFinding, ...] = ()
+    evidence_samples: int = 0
+    evidence_age_s: float | None = None
+    score: float | None = None
+
+    def describe(self) -> dict[str, Any]:
+        """JSON-safe projection for the resolution receipt."""
+        return {
+            "catalog_entry_id": str(self.catalog_entry_id),
+            "runtime_type": self.runtime_type,
+            "model_id": self.model_id,
+            "effective_tier": self.effective_tier,
+            "effective_priority": self.effective_priority,
+            "outcome": self.outcome.value,
+            "exclusions": [f.describe() for f in self.exclusions],
+            "advisories": [f.describe() for f in self.advisories],
+            "evidence_samples": self.evidence_samples,
+            "evidence_age_s": self.evidence_age_s,
+            "score": self.score,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
+class DispatchResolution:
+    """The full, replayable account of one intent-aware model resolution.
+
+    ``selection`` is the same 6-tuple ``resolve_model_with_effective_tier`` returns, so
+    a caller can use this object and ignore the receipt entirely. ``requested_intent``
+    and ``effective_intent`` differ only in ``complexity_tier``, and only when tier
+    fallthrough occurred -- recording both is what makes "why did a cheap-tier butler
+    end up on a local model?" answerable after the fact instead of re-derived.
+    """
+
+    policy_version: str
+    requested_intent: DispatchIntent
+    effective_intent: DispatchIntent
+    candidates: tuple[CandidateRecord, ...]
+    selection: tuple[str, str, list[str], uuid.UUID, int, str] | None = None
+    winner_reason: str | None = None
+
+    @property
+    def effective_tier(self) -> str | None:
+        """Tier that produced the winner, or ``None`` when nothing was selected."""
+        return self.selection[5] if self.selection is not None else None
+
+    def describe(self) -> dict[str, Any]:
+        """JSON-safe, prompt-free receipt."""
+        return {
+            "policy_version": self.policy_version,
+            "requested_intent": self.requested_intent.describe(),
+            "effective_intent": self.effective_intent.describe(),
+            "winner": (
+                None
+                if self.selection is None
+                else {
+                    "catalog_entry_id": str(self.selection[3]),
+                    "runtime_type": self.selection[0],
+                    "model_id": self.selection[1],
+                    "effective_tier": self.selection[5],
+                    "reason": self.winner_reason,
+                }
+            ),
+            "candidates": [c.describe() for c in self.candidates],
+        }
+
+
+def _evidence_age_s(row: asyncpg.Record, *, now: datetime) -> float | None:
+    """Seconds since this candidate's most recent counted dispatch attempt."""
+    last = row["last_attempt_at"]
+    if last is None:
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return max(0.0, (now - last).total_seconds())
+
+
+def _row_capabilities(row: asyncpg.Record) -> CapabilityDescriptor | CapabilityDescriptorError:
+    """Layer this row's stored envelope over its adapter baseline, or report the error."""
+    try:
+        return effective_capabilities(
+            row["runtime_type"],
+            row["capabilities"],
+            max_context_tokens=row["max_context_tokens"],
+            max_output_tokens=row["max_output_tokens"],
+        )
+    except CapabilityDescriptorError as exc:
+        return exc
+
+
+async def resolve_dispatch(
+    pool: asyncpg.Pool,
+    butler_name: str,
+    intent: DispatchIntent,
+    *,
+    allow_tier_fallthrough: bool = True,
+    quota_aware: bool = False,
+) -> DispatchResolution:
+    """Resolve a model for a ``DispatchIntent``, filtering hard fit before ranking.
+
+    The one behavioural difference from ``resolve_model_with_effective_tier``: a
+    candidate that cannot satisfy the intent's *required* features, context floor,
+    deadline, or per-call budget is removed from consideration BEFORE priority
+    narrowing and before the evidence/round-robin tie-break. Order matters. Today's
+    resolver narrows to the winning tier's top-priority set first, so if the single
+    top-priority entry cannot do the job, the dispatch fails (or silently runs on a
+    model that will raise at invoke time) even when a perfectly capable lower-priority
+    entry sits in the same tier. ``public.model_catalog``'s seeded ``api-haiku-cheap``
+    is exactly that shape: priority 30, top of the ``cheap`` tier, and
+    ``ApiAdapter.invoke`` raises for any non-empty ``mcp_servers`` -- which every
+    trigger source except ``healing``/``qa`` supplies.
+
+    An intent that requires nothing (``required_features`` empty, no context floor, no
+    deadline, no budget) excludes nobody, so it resolves to exactly what the legacy
+    path resolves to. That is the intended migration property, and it is asserted
+    directly in the tests rather than assumed.
+
+    Ranking itself is unchanged: same effective-priority narrowing, same
+    ``compute_routing_score`` evidence tie-break above ``_EVIDENCE_MIN_SAMPLES``, same
+    round-robin counter below it. ``preferred_features`` are recorded on the receipt
+    and never influence the winner in this policy version -- preferring, say,
+    resume-capable models for interactive triggers is a cost/quality trade-off that
+    belongs to the owner, not to this function.
+
+    Never served from the routing-decision cache: a resolution is per-intent, and the
+    cache is keyed only by ``(butler_name, tiers)``.
+
+    Raises
+    ------
+    TierQuotaExhausted
+        Only when ``quota_aware=True`` and the fit-surviving top-priority set in the
+        winning tier contains a quota-blocked entry -- same conservative contract as
+        ``resolve_model_with_effective_tier``, with the receipt attached to the
+        exception's ``resolution`` attribute.
+    """
+    tier_value = _check_deprecated_tier(str(intent.complexity_tier))
+    if allow_tier_fallthrough and tier_value in TIER_FALLTHROUGH_ORDER:
+        start_idx = TIER_FALLTHROUGH_ORDER.index(tier_value)
+        tiers_to_try = list(TIER_FALLTHROUGH_ORDER[start_idx:])
+    else:
+        tiers_to_try = [tier_value]
+
+    requested_intent = dataclasses.replace(intent, complexity_tier=tier_value)
+    rows = await pool.fetch(_RESOLVE_CANDIDATES_SQL, butler_name, tiers_to_try)
+    if not rows:
+        return DispatchResolution(
+            policy_version=DISPATCH_POLICY_VERSION,
+            requested_intent=requested_intent,
+            effective_intent=requested_intent,
+            candidates=(),
+        )
+
+    pricing = _get_cached_pricing()
+    now = datetime.now(tz=UTC)
+
+    # Fit first, across every tier, before anything narrows.
+    verdicts: dict[uuid.UUID, FitVerdict] = {}
+    scores: dict[uuid.UUID, RoutingScore] = {}
+    for row in rows:
+        capabilities = _row_capabilities(row)
+        if isinstance(capabilities, CapabilityDescriptorError):
+            logger.warning(
+                "resolve_dispatch: catalog entry %s has an unusable capability envelope "
+                "and cannot be dispatched to: %s",
+                row["id"],
+                capabilities,
+            )
+            verdicts[row["id"]] = FitVerdict(
+                eligible=False,
+                exclusions=(FitFinding(FitCode.CAPABILITY_DESCRIPTOR_INVALID, str(capabilities)),),
+            )
+        else:
+            score = _score_row(row, pricing)
+            scores[row["id"]] = score
+            verdicts[row["id"]] = evaluate_fit(
+                requested_intent,
+                capabilities,
+                observed_p95_ms=(
+                    float(row["p95_duration_ms"]) if row["p95_duration_ms"] is not None else None
+                ),
+                reference_cost_usd=_reference_cost_usd(pricing, row["model_id"]),
+            )
+
+    # First tier (in fallthrough order) with at least one candidate that fits.
+    winning_tier: str | None = None
+    for row in rows:
+        if verdicts[row["id"]].eligible:
+            winning_tier = row["effective_tier"]
+            break
+
+    def _record(row: asyncpg.Record, outcome: CandidateOutcome) -> CandidateRecord:
+        verdict = verdicts[row["id"]]
+        score = scores.get(row["id"])
+        return CandidateRecord(
+            catalog_entry_id=row["id"],
+            runtime_type=row["runtime_type"],
+            model_id=row["model_id"],
+            effective_tier=row["effective_tier"],
+            effective_priority=int(row["effective_priority"]),
+            outcome=outcome,
+            exclusions=verdict.exclusions,
+            advisories=verdict.advisories,
+            evidence_samples=int(row["success_count"] or 0) + int(row["failure_count"] or 0),
+            evidence_age_s=_evidence_age_s(row, now=now),
+            score=None if score is None else score.score,
+        )
+
+    if winning_tier is None:
+        # Every candidate in every tier failed hard fit. This is NOT the same as "no
+        # catalog entries exist": the caller's static fallback is still the right
+        # recovery, but the receipt says why, which "returned None" never could.
+        candidates = tuple(_record(row, CandidateOutcome.EXCLUDED_HARD_FIT) for row in rows)
+        logger.warning(
+            "resolve_dispatch: butler %r has %d eligible catalog entries but none fit "
+            "intent (trigger_class=%s, tier=%s)",
+            butler_name,
+            len(rows),
+            requested_intent.trigger_class,
+            tier_value,
+        )
+        return DispatchResolution(
+            policy_version=DISPATCH_POLICY_VERSION,
+            requested_intent=requested_intent,
+            effective_intent=requested_intent,
+            candidates=candidates,
+        )
+
+    effective_intent = (
+        requested_intent
+        if winning_tier == tier_value
+        else dataclasses.replace(requested_intent, complexity_tier=winning_tier)
+    )
+    if winning_tier != tier_value:
+        logger.debug(
+            "resolve_dispatch: no fitting entry in tier %r for butler %r; fell through to %r",
+            tier_value,
+            butler_name,
+            winning_tier,
+        )
+
+    winning_tier_ord = next(r["tier_ord"] for r in rows if r["effective_tier"] == winning_tier)
+    in_tier = [r for r in rows if r["effective_tier"] == winning_tier]
+    survivors = [r for r in in_tier if verdicts[r["id"]].eligible]
+    best_priority = max(int(r["effective_priority"]) for r in survivors)
+    top = [r for r in survivors if int(r["effective_priority"]) == best_priority]
+
+    # Counter always advances once a winning tier exists, before quota is consulted --
+    # matching the legacy path's gating so round-robin fairness does not drift between
+    # the two resolvers.
+    rr_counter = await pool.fetchval(_ROUTING_COUNTER_INCREMENT_SQL, butler_name, winning_tier)
+
+    def _build(
+        winner: asyncpg.Record | None, reason: str | None, *, quota_blocked: bool
+    ) -> DispatchResolution:
+        top_ids = {r["id"] for r in top}
+        records = []
+        for row in rows:
+            rid = row["id"]
+            if row["tier_ord"] > winning_tier_ord:
+                # Below the winning tier in fallthrough order: never evaluated against
+                # a winner, so "did not fit" would be a claim the resolver never made.
+                outcome = CandidateOutcome.TIER_NOT_REACHED
+            elif not verdicts[rid].eligible:
+                # Includes every candidate in a HIGHER tier: that tier lost only
+                # because none of its entries fit, and the receipt must say so.
+                outcome = CandidateOutcome.EXCLUDED_HARD_FIT
+            elif rid not in top_ids:
+                outcome = CandidateOutcome.NOT_TOP_PRIORITY
+            elif quota_blocked and not row["quota_ok"]:
+                outcome = CandidateOutcome.EXCLUDED_QUOTA
+            elif winner is not None and rid == winner["id"]:
+                outcome = CandidateOutcome.SELECTED
+            else:
+                outcome = CandidateOutcome.ELIGIBLE
+            records.append(_record(row, outcome))
+        return DispatchResolution(
+            policy_version=DISPATCH_POLICY_VERSION,
+            requested_intent=requested_intent,
+            effective_intent=effective_intent,
+            candidates=tuple(records),
+            selection=(
+                None
+                if winner is None
+                else (
+                    winner["runtime_type"],
+                    winner["model_id"],
+                    _parse_extra_args(winner["extra_args"]),
+                    winner["id"],
+                    winner["session_timeout_s"],
+                    winning_tier,
+                )
+            ),
+            winner_reason=reason,
+        )
+
+    winner, reason = _rank_candidates(top, scores, rr_counter)
+
+    if quota_aware and not all(r["quota_ok"] for r in top):
+        resolution = _build(winner, reason, quota_blocked=True)
+        assert resolution.selection is not None
+        raise TierQuotaExhausted(
+            effective_tier=winning_tier,
+            representative=resolution.selection,
+            resolution=resolution,
+        )
+
+    return _build(winner, reason, quota_blocked=False)
+
+
+def _rank_candidates(
+    top: list[asyncpg.Record],
+    scores: Mapping[uuid.UUID, RoutingScore],
+    rr_counter: int | None,
+) -> tuple[asyncpg.Record, str]:
+    """Pick the winner among a fit-surviving, equal-priority set, and say why.
+
+    Same policy as ``_select_resolved_row``: evidence-based scoring once at least two
+    candidates carry enough recent samples to be scored, otherwise the round-robin
+    counter over the deterministic ``priority DESC, created_at ASC, id ASC`` order the
+    query already produced. The only addition is the reason string, which the receipt
+    needs so "why this model?" does not have to be re-derived from the tie-break rules.
+    """
+    if len(top) == 1:
+        return top[0], WINNER_REASON_SOLE_CANDIDATE
+
+    scored = [(row, scores[row["id"]]) for row in top if scores.get(row["id"]) is not None]
+    eligible = [(row, s) for row, s in scored if s.score is not None]
+    if len(eligible) >= 2:
+        best_row, _ = max(eligible, key=lambda pair: pair[1].score)
+        return best_row, WINNER_REASON_EVIDENCE_SCORE
+
+    assert rr_counter is not None, "_rank_candidates: rr_counter required for round-robin"
+    return top[rr_counter % len(top)], WINNER_REASON_ROUND_ROBIN
 
 
 async def next_same_tier_candidate(

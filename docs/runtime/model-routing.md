@@ -26,13 +26,18 @@ The `Complexity` enum defines six tiers that drive model selection:
 The `public.model_catalog` table is the global registry of available models. Each entry has:
 
 - **`id`** --- UUID primary key (referenced by quota and usage tables)
-- **`runtime_type`** --- the adapter to use (`"claude"`, `"codex"`, `"gemini"`, `"opencode"`)
+- **`runtime_type`** --- the adapter to use (`"claude"`, `"codex"`, `"gemini"`, `"opencode"`,
+  `"api"`)
 - **`model_id`** --- the model identifier string
 - **`complexity_tier`** --- which complexity tier this entry serves
 - **`priority`** --- numeric priority (higher wins when multiple entries match)
 - **`enabled`** --- whether this entry is active
 - **`extra_args`** --- JSONB list of CLI token strings passed to the adapter
 - **`created_at`** --- tie-breaker for entries with equal priority (older entries win)
+- **`capabilities`** --- JSONB object (default `{}`) of per-entry capability overrides layered over
+  the runtime adapter's declared baseline; see *Capability fit* below
+- **`max_context_tokens`** / **`max_output_tokens`** --- nullable context envelope; `NULL` means
+  undeclared, and undeclared is treated as unproven
 
 ### Field ownership: catalog vs. runtime config
 
@@ -65,6 +70,45 @@ The `public.butler_model_overrides` table allows per-butler customization withou
 
 When `resolve_model()` returns `None`, the spawner falls back to the model configured in `[butler.runtime].model` in `butler.toml`.
 
+## Capability fit (bu-6jv4m.7)
+
+Everything above decides whether an entry is *allowed*. It does not decide whether the entry can do
+the job. `resolve_dispatch(pool, butler_name, intent)` adds that step, and the spawner reaches it by
+passing `intent=` to `resolve_model_with_effective_tier`.
+
+**The intent.** `derive_dispatch_intent(trigger_source, complexity_tier, ...)`
+(`src/butlers/core/dispatch_intent.py`) builds a deterministic, prompt-free `DispatchIntent`: the
+capabilities the dispatch requires, an optional context floor / deadline / per-call budget, and a
+consequence level (`observe` < `reversible` < `external`). The requirement that matters most in
+practice is `tool_use`: the spawner wires MCP servers for every trigger source except `healing` and
+`qa`, so every other source requires a runtime that can accept tools.
+
+**The capability answer.** `src/butlers/core/model_capabilities.py` resolves three-valued support
+(supported / unsupported / **unknown**) by layering a catalog row's `capabilities` envelope over the
+`declared_capabilities` its `RuntimeAdapter` subclass declares (`session_resume` comes from
+`supports_resume`). An empty envelope --- the default for every existing row --- changes nothing,
+which is why the migration excludes nobody. An unregistered `runtime_type` answers *unknown* for
+everything, and unknown fails closed above `observe` consequence.
+
+**The ordering.** Fit is applied to every candidate in every candidate tier **before** the winning
+tier is chosen, before priority narrowing, and before the tie-break. The concrete reason: the seeded
+`api-haiku-cheap` entry has priority 30 --- top of the `cheap` tier --- while `ApiAdapter.invoke`
+raises for any non-empty `mcp_servers`. Narrowing first means that one unusable entry takes the whole
+tier down; filtering first lets a lower-priority, capable entry in the same tier win.
+
+Ranking itself is unchanged. `preferred_features` are recorded on the receipt and never re-rank ---
+preferring, say, resume-capable models for interactive triggers is an owner cost decision, not an
+inference-contract one. An intent that requires nothing selects exactly what the pre-intent resolver
+selects.
+
+**The receipt.** `resolve_dispatch` returns a `DispatchResolution`: requested vs effective intent
+(differing only in tier, when fallthrough occurred), every candidate with its outcome
+(`selected` / `eligible` / `excluded_hard_fit` / `excluded_quota` / `not_top_priority` /
+`tier_not_reached`) and fit findings, evidence age, and the winner reason (`sole_candidate` /
+`evidence_score` / `round_robin`). It is prompt-free by construction and `describe()` is JSON-safe.
+It is carried on `TierQuotaExhausted.resolution` when quota blocks the tier. Persisting it and
+exposing it as a session dossier door is deliberately not done yet.
+
 ## Token Quotas
 
 The quota system prevents runaway costs by limiting token consumption per model on rolling time windows.
@@ -87,7 +131,9 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 The `effective_tier` is pinned at initial resolution and used to scope all same-tier failover candidates for the logical session.
 
-1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity)` to query the catalog.
+1. Call `resolve_model_with_effective_tier(pool, butler_name, complexity, intent=...)` to query the
+   catalog, where `intent` is the dispatch intent derived from the trigger source (see *Capability
+   fit* above); candidates that cannot satisfy it are excluded before ranking.
 2. If found, set `resolution_source = "catalog"`. If not, fall back to TOML model with `resolution_source = "static_fallback"`.
 3. Call `check_token_quota()` for catalog-resolved models (see quota section above).
 4. If quota returns `allowed=False`, record a `quota_skip` row in `public.model_dispatch_attempts` and seek the next same-tier candidate via `next_same_tier_candidate()`.

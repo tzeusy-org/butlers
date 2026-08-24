@@ -38,8 +38,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import anthropic
 
@@ -124,6 +125,16 @@ class ApiAdapter(RuntimeAdapter):
         self._client: Any | None = None
         self._client_api_key: str | None = None
         self._last_process_info: dict[str, Any] | None = None
+
+    #: ``invoke()`` raises on any non-empty ``mcp_servers`` (this adapter never
+    #: bridges MCP into the Anthropic tool-use protocol), so tool use is a hard
+    #: NO -- declaring it false is what keeps a butler session, which always
+    #: wires its own MCP server, from resolving onto these catalog rows.
+    #: ``invoke_structured()`` does supply a schema-constrained payload.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {
+        "tool_use": False,
+        "structured_output": True,
+    }
 
     @property
     def binary_name(self) -> str:
