@@ -6675,6 +6675,8 @@ export interface ChroniclerOverride {
  * Request body for `POST /api/chronicler/episodes/{id}/corrections` — the
  * episode-correction write path (JARVIS audit move 6, bu-86c4c.15). At least
  * one correction field or a `note` is required (enforced server-side).
+ * Carries no `submitted_by`: the server derives attribution from the
+ * authenticated principal and ignores any value a client sends.
  */
 export interface SubmitCorrectionRequest {
   corrected_start_at?: string | null;
@@ -6684,7 +6686,6 @@ export interface SubmitCorrectionRequest {
   corrected_privacy?: string | null;
   corrected_tombstone_at?: string | null;
   note?: string | null;
-  submitted_by?: string;
 }
 
 /** Query parameters for GET /api/chronicler/events. */
@@ -8039,10 +8040,13 @@ export interface PromptVersion {
   updated_by: string | null;
 }
 
-/** Request body for PUT /api/butlers/{name}/prompt. */
+/**
+ * Request body for PUT /api/butlers/{name}/prompt. Carries no `actor`: the
+ * server derives attribution from the authenticated principal and ignores any
+ * actor a client sends.
+ */
 export interface PromptUpdateRequest {
   prompt: string;
-  actor?: string;
 }
 
 /** A tool grant entry for a butler. */
@@ -8062,10 +8066,12 @@ export interface MemoryAccess {
   drops_7d: number;
 }
 
-/** Request body for POST /api/butlers/{name}/kill. */
+/**
+ * Request body for POST /api/butlers/{name}/kill. Carries no `actor` — see
+ * `PromptUpdateRequest`.
+ */
 export interface KillRequest {
   grace_seconds?: number;
-  actor?: string;
 }
 
 /** Response for POST /api/butlers/{name}/kill. */

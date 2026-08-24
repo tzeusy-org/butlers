@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from butlers.api.audit_emit import IgnoresCallerAssertedActor
+
 # ── Aggregate models ───────────────────────────────────────────────────────
 
 
@@ -178,11 +180,22 @@ class ChroniclerOverride(BaseModel):
     corrected_privacy: str | None = None
     corrected_tombstone_at: datetime | None = None
     note: str | None = None
+    #: Server-derived acting principal, never a caller-supplied value.
     submitted_by: str
     created_at: datetime
 
 
-class SubmitCorrectionRequest(BaseModel):
+class SubmitCorrectionRequest(IgnoresCallerAssertedActor):
+    """Body for POST /api/chronicler/episodes/{episode_id}/corrections.
+
+    Deliberately carries no ``submitted_by``: the override row's attribution
+    and the audit entry come from
+    :func:`~butlers.api.audit_emit.authenticated_principal`, so a
+    ``submitted_by`` sent by a caller is ignored rather than persisted.
+    """
+
+    caller_asserted_actor_fields = ("submitted_by",)
+
     corrected_start_at: datetime | None = None
     corrected_end_at: datetime | None = None
     corrected_title: str | None = None
@@ -192,7 +205,6 @@ class SubmitCorrectionRequest(BaseModel):
     )
     corrected_tombstone_at: datetime | None = None
     note: str | None = None
-    submitted_by: str = "user"
 
 
 class ResolveGapInterviewRequest(BaseModel):

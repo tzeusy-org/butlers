@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
     ApiResponse,
@@ -516,7 +516,14 @@ async def submit_episode_correction(
     body: SubmitCorrectionRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ChroniclerOverride:
+    """Record an owner correction for one episode.
+
+    ``submitted_by`` is derived from the authenticated principal, so the stored
+    attribution and the audit entry record who actually submitted the
+    correction; a ``submitted_by`` in the request body is ignored.
+    """
     pool = _pool(db)
+    submitted_by = authenticated_principal()
 
     exists = await pool.fetchval(
         "SELECT 1 FROM episodes WHERE id = $1",
@@ -567,7 +574,7 @@ async def submit_episode_correction(
         body.corrected_privacy,
         body.corrected_tombstone_at,
         body.note,
-        body.submitted_by,
+        submitted_by,
     )
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
@@ -578,7 +585,7 @@ async def submit_episode_correction(
         method="POST",
         path=f"/api/chronicler/episodes/{episode_id}/corrections",
         path_params={"episode_id": str(episode_id)},
-        body={"corrected_privacy": body.corrected_privacy, "submitted_by": body.submitted_by},
+        body={"corrected_privacy": body.corrected_privacy, "submitted_by": submitted_by},
         response_status=201,
         request=request,
     )
