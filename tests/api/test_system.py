@@ -498,6 +498,115 @@ async def test_drift_check_unavailable_returns_flag_not_503(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/stored-functions (bu-bi5an)
+# ---------------------------------------------------------------------------
+
+
+def _stored_function_entry(status: str, **overrides):
+    from butlers.core.stored_function_drift import StoredFunctionEntry
+
+    fields = {
+        "function": "public.runtime_attention_plant_legacy_debounce_marker",
+        "status": status,
+        "committed_lines": (2247,),
+        "committed_digests": ("aaaaaaaaaaaa",),
+        "deployed_digests": ("bbbbbbbbbbbb",),
+        "matched_line": None,
+    }
+    fields.update(overrides)
+    return StoredFunctionEntry(**fields)
+
+
+async def test_stored_functions_happy_path_reports_no_drift(monkeypatch):
+    from butlers.core.stored_function_drift import MATCHED, StoredFunctionDriftReport
+
+    matched = _stored_function_entry(MATCHED, deployed_digests=("aaaaaaaaaaaa",), matched_line=2247)
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_stored_function_drift",
+        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=(matched,))),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/stored-functions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["stored_function_check_available"] is True
+    assert data["is_drifted"] is False
+    assert data["drifted"] == []
+    assert data["not_deployed"] == []
+    assert data["matched_count"] == 1
+
+
+async def test_stored_functions_reports_drift_with_digests_and_never_a_body(monkeypatch):
+    from butlers.core.stored_function_drift import (
+        DRIFTED,
+        NOT_DEPLOYED,
+        StoredFunctionDriftReport,
+    )
+
+    entries = (
+        _stored_function_entry(DRIFTED),
+        _stored_function_entry(
+            NOT_DEPLOYED, function="restore_drill.record_result", deployed_digests=()
+        ),
+    )
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_stored_function_drift",
+        AsyncMock(return_value=StoredFunctionDriftReport(checked_at=_NOW, entries=entries)),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/stored-functions")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["is_drifted"] is True
+    assert data["drifted"] == [
+        {
+            "function": "public.runtime_attention_plant_legacy_debounce_marker",
+            "committed_lines": [2247],
+            "committed_digests": ["aaaaaaaaaaaa"],
+            "deployed_digests": ["bbbbbbbbbbbb"],
+        }
+    ]
+    # An undeployed function is a legitimate state, named but never escalated.
+    assert data["not_deployed"] == ["restore_drill.record_result"]
+    assert data["matched_count"] == 0
+
+
+async def test_stored_functions_check_unavailable_returns_flag_not_503(monkeypatch):
+    from butlers.core.stored_function_drift import StoredFunctionDriftReport
+
+    monkeypatch.setattr(
+        "butlers.core.stored_function_drift.compute_stored_function_drift",
+        AsyncMock(
+            return_value=StoredFunctionDriftReport(
+                checked_at=_NOW, entries=(), check_error="cannot read init-db.sql: OSError"
+            )
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/stored-functions")
+    # Fleet-wide degraded-envelope convention: never a fabricated all-clear, never a 503.
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["stored_function_check_available"] is False
+    assert data["is_drifted"] is False
+    assert data["drifted"] == []
+    assert data["not_deployed"] == []
+    assert data["matched_count"] == 0
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/conditions (bu-ep4ks.3)
 # ---------------------------------------------------------------------------
 

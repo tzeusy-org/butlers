@@ -132,6 +132,10 @@ from butlers.api.routers.timeline_saved_views import router as timeline_saved_vi
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
+from butlers.core.stored_function_drift import (
+    compute_stored_function_drift,
+    log_stored_function_drift,
+)
 from butlers.credential_store import CredentialStore
 from butlers.db import (
     check_infra_default_creds,
@@ -425,6 +429,29 @@ async def lifespan(app: FastAPI):
             logger.warning(
                 "Failed to start migration-drift sentinel loop; GET /api/system/drift "
                 "is unaffected (it computes the comparison live per request)",
+                exc_info=True,
+            )
+
+        # Stored-function body drift (bu-bi5an): one-shot comparison of every
+        # function body committed in scripts/init-db.sql against the body this
+        # database actually has. Nothing in deploy/ re-runs that script, so a
+        # body change reaches an installed database only when an operator runs
+        # it by hand -- and before this probe, nothing anywhere said so.
+        #
+        # Reported, never fatal: a mismatch is one WARNING line, because
+        # refusing to boot the dashboard over a cosmetic body difference would
+        # be strictly worse than the drift it complains about. One-shot rather
+        # than a loop: the committed side only changes on deploy, and the
+        # deployed side only changes when an operator acts, so a periodic
+        # re-check would repeat the same answer. GET /api/system/stored-functions
+        # serves the live view.
+        try:
+            report = await compute_stored_function_drift(get_db_manager().pool("switchboard"))
+            log_stored_function_drift(report)
+        except Exception:
+            logger.warning(
+                "Stored-function body drift check failed; deployed function bodies were "
+                "NOT compared against scripts/init-db.sql",
                 exc_info=True,
             )
 
