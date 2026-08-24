@@ -47,6 +47,8 @@ function makeReceipt(overrides: Partial<CurriculumRequestReceipt> = {}): Curricu
     session_id: null,
     mind_map_id: null,
     calibration_ready_at: null,
+    calibration_notice_outcome: null,
+    calibration_notice_accepted_at: null,
     failure_reason: null,
     requested_at: "2026-08-22T10:00:00+00:00",
     triggered_at: null,
@@ -174,6 +176,125 @@ describe("CurriculumRequestReceiptPanel: completed", () => {
 
   it("has no axe violations", async () => {
     stubQuery({ receipts_available: true, receipt: completed });
+    const { container } = renderPanel();
+    expect(await axe(container, { rules: { "color-contrast": { enabled: false } } })).toHaveNoViolations();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The calibration notice: the panel may claim contact only from evidence
+// ---------------------------------------------------------------------------
+
+describe("CurriculumRequestReceiptPanel: calibration notice", () => {
+  const calibrating = makeReceipt({
+    status: "completed",
+    session_id: "sess-abc",
+    mind_map_id: "map-1",
+    // The flow IS diagnosing throughout this block. Every case below must
+    // still refuse to say the owner was messaged.
+    calibration_ready_at: "2026-08-22T10:02:00+00:00",
+    triggered_at: "2026-08-22T10:00:05+00:00",
+    settled_at: "2026-08-22T10:02:00+00:00",
+  });
+
+  it("does not claim contact when the notification path recorded a failure", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: "failed" },
+    });
+    renderPanel();
+
+    expect(screen.getByText(/could not send you a starting message/i)).toBeTruthy();
+    expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+    // Calibration and contact are stated separately, and both stay true.
+    expect(screen.getByText(/calibration started/i)).toBeTruthy();
+  });
+
+  it("does not claim contact when no notify was recorded for the session", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: "no_record" },
+    });
+    renderPanel();
+
+    expect(screen.getByText(/no record that the butler messaged you/i)).toBeTruthy();
+    expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+  });
+
+  it("does not claim contact when the notification path could not be read", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: "unproven" },
+    });
+    renderPanel();
+
+    expect(screen.getByText(/could not be confirmed/i)).toBeTruthy();
+    expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+  });
+
+  it("does not claim contact when the receipt says nothing about a notice", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: null },
+    });
+    renderPanel();
+
+    expect(screen.getByText(/could not be confirmed/i)).toBeTruthy();
+    expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+  });
+
+  it("degrades an unrecognised outcome to unconfirmed, never to an implied yes", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: "some_new_outcome" },
+    });
+    renderPanel();
+
+    expect(screen.getByText(/could not be confirmed/i)).toBeTruthy();
+    expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+  });
+
+  it("names a held or queued notice as not yet sent", () => {
+    const cases = [
+      { outcome: "suppressed", copy: /held back the starting message/i },
+      { outcome: "deferred", copy: /queued for a quieter moment/i },
+      { outcome: "coalesced", copy: /folded into another notification/i },
+    ];
+    expect(cases.length).toBeGreaterThan(0);
+    for (const { outcome, copy } of cases) {
+      stubQuery({
+        receipts_available: true,
+        receipt: { ...calibrating, calibration_notice_outcome: outcome },
+      });
+      const { unmount } = renderPanel();
+      expect(screen.getByText(copy)).toBeTruthy();
+      expect(screen.queryByText(/accepted the butler's starting message/i)).toBeNull();
+      unmount();
+    }
+  });
+
+  it("says the channel accepted the message only when the ledger did", () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: {
+        ...calibrating,
+        calibration_notice_outcome: "delivered",
+        calibration_notice_accepted_at: "2026-08-22T10:01:00+00:00",
+      },
+    });
+    renderPanel();
+
+    // "Your messaging channel accepted it" is the claim the evidence supports.
+    // "The butler messaged you and you saw it" is not, and is not made.
+    expect(screen.getByText(/accepted the butler's starting message/i)).toBeTruthy();
+    expect(screen.queryByText(/could not be confirmed/i)).toBeNull();
+  });
+
+  it("has no axe violations on the notice line", async () => {
+    stubQuery({
+      receipts_available: true,
+      receipt: { ...calibrating, calibration_notice_outcome: "failed" },
+    });
     const { container } = renderPanel();
     expect(await axe(container, { rules: { "color-contrast": { enabled: false } } })).toHaveNoViolations();
   });

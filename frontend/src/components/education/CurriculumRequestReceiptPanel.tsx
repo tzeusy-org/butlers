@@ -45,6 +45,34 @@ const FAILURE_COPY: Record<string, string> = {
 };
 
 /**
+ * Owner-facing copy for what the notification path attests about the starting
+ * message (bu-358jk).
+ *
+ * Only `delivered` says a message went out, and it says the delivery channel
+ * accepted it — not that the owner saw it. Every other outcome, the absent
+ * record included, tells the owner to watch this panel instead of waiting to
+ * hear from the butler. The receipt used to be able to say only that
+ * calibration had started, which a reader could easily mistake for "and it told
+ * me", so the two facts are now stated separately.
+ */
+const NOTICE_COPY: Record<string, string> = {
+  delivered:
+    "Your messaging channel accepted the butler's starting message.",
+  failed:
+    "The butler could not send you a starting message, so watch this panel rather than your messages.",
+  suppressed:
+    "The butler held back the starting message, so watch this panel rather than your messages.",
+  deferred:
+    "The starting message is queued for a quieter moment and has not gone out yet.",
+  coalesced:
+    "The starting message was folded into another notification rather than sent on its own.",
+  no_record:
+    "There is no record that the butler messaged you, so watch this panel rather than your messages.",
+  unproven:
+    "Whether the butler messaged you could not be confirmed, so watch this panel rather than your messages.",
+};
+
+/**
  * How long a settled receipt stays on the page in fallback mode. With no
  * tracked `request_id` the panel reads the LATEST request, so without this a
  * curriculum created weeks ago would keep its card forever. A tracked request
@@ -61,6 +89,36 @@ function isLongSettled(receipt: CurriculumRequestReceipt): boolean {
 function failureCopy(reason: string | null | undefined): string {
   if (reason && reason in FAILURE_COPY) return FAILURE_COPY[reason];
   return "The request failed before a curriculum was created.";
+}
+
+/**
+ * The notice line for a completed receipt.
+ *
+ * An unrecognised outcome falls through to the same copy as `unproven`: a new
+ * backend outcome must degrade to "not confirmed", never to an implied yes.
+ */
+function noticeCopy(outcome: string | null | undefined): string {
+  if (outcome && outcome in NOTICE_COPY) return NOTICE_COPY[outcome];
+  return NOTICE_COPY.unproven;
+}
+
+function NoticeLine({ receipt }: { receipt: CurriculumRequestReceipt }) {
+  const outcome = receipt.calibration_notice_outcome;
+  const copy = noticeCopy(outcome);
+  const acceptedAt =
+    outcome === "delivered" ? receipt.calibration_notice_accepted_at : null;
+
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="curriculum-receipt-notice">
+      {copy}
+      {acceptedAt && (
+        <>
+          {" "}
+          <Time value={acceptedAt} mode="relative" />.
+        </>
+      )}
+    </p>
+  );
 }
 
 function SessionDoor({ sessionId }: { sessionId: string }) {
@@ -148,6 +206,9 @@ export default function CurriculumRequestReceiptPanel({
             ? "Calibration started, so the butler is assessing your level."
             : "Calibration has not started yet."}
         </p>
+        {/* Deliberately a separate line from calibration: the flow reaching
+            diagnosing says nothing about whether a message reached you. */}
+        <NoticeLine receipt={receipt} />
         <div className="flex flex-wrap gap-2">
           {receipt.mind_map_id && onOpenCurriculum && (
             <Button
