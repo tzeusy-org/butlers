@@ -7,6 +7,7 @@ REQ-dashboard-spend-dashboard-001.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -15,10 +16,8 @@ from typing import Any
 import asyncpg
 import pytest
 
-from butlers.core.dispatch_outcomes import (
-    _FLEET_HALT_LOCK_SQL,
-    record_dispatch_attempt,
-)
+from butlers.core import dispatch_outcomes
+from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -553,99 +552,219 @@ async def test_current_month_fleet_halt_before_activation_is_not_repaged(
         )
 
 
-# Two participants in the fleet-halt transaction must name the same UTC month:
-# the advisory lock the recorder takes at the top, and the ``v_month`` the
-# producer locks on and writes.  They are evaluated at different instants of one
-# transaction, so the only way they can be provably equal is for both to read
-# transaction_timestamp, which does not move while the transaction runs.
-#
-# No test can push a real server clock past a real month rollover, so the
-# boundary is simulated the one way that keeps the production SQL itself under
-# test: each expression is evaluated with its timestamp function replaced by the
-# instant that function would return on this timeline.  ``now()`` and
-# ``transaction_timestamp()`` return the BEGIN instant wherever they appear;
-# ``clock_timestamp()`` returns the instant of the statement that reads it.  The
-# substitution is the whole of the simulation -- the expressions, the truncation,
-# and the hashing are real Postgres running the real strings.
-_SIMULATED_BEGIN = "2026-01-31 23:59:59.999999+00"
-_SIMULATED_PRODUCER_CALL = "2026-02-01 00:00:00.000001+00"
-
-_TRANSACTION_CLOCKS = ("now()", "transaction_timestamp()")
-_STATEMENT_CLOCK = "clock_timestamp()"
-
 _V_MONTH_DECLARATION = re.compile(r"v_month\s+DATE\s*:=\s*(.+?);", re.IGNORECASE)
 
-
-def _at_simulated_boundary(expression: str, *, read_at: str) -> str:
-    """Rewrite one production expression onto the simulated boundary timeline.
-
-    ``read_at`` is when this expression is evaluated inside the transaction; it
-    is what ``clock_timestamp()`` would return there.  A transaction clock reads
-    the BEGIN instant no matter when it is evaluated, which is the property under
-    test, so it is substituted with ``_SIMULATED_BEGIN`` regardless of ``read_at``.
-    """
-    found = [clock for clock in (*_TRANSACTION_CLOCKS, _STATEMENT_CLOCK) if clock in expression]
-    assert len(found) == 1, (
-        f"expected exactly one timestamp function in {expression!r}, found {found}; "
-        "this simulation cannot say which instant a mixed expression observes"
-    )
-    clock = found[0]
-    instant = read_at if clock == _STATEMENT_CLOCK else _SIMULATED_BEGIN
-    return expression.replace(clock, f"TIMESTAMPTZ '{instant}'")
+_FLEET_HALT_LOCK_PREFIX = "runtime_attention_fleet_halt:"
+_MONTH_LOCK_KEY_SQL = (
+    "SELECT hashtextextended("
+    "'" + _FLEET_HALT_LOCK_PREFIX + "'"
+    " || date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC')::date::text, 0)"
+)
 
 
-async def test_fleet_halt_month_agrees_across_a_simulated_utc_month_boundary(
+async def test_the_fleet_halt_month_is_named_once_and_only_by_the_producer(
     migrated_core_postgres_pool,
 ) -> None:
-    """REQ-runtime-attention-outbox-001: one transaction names one month.
+    """REQ-runtime-attention-outbox-001: one transaction, one month expression.
 
-    bu-jxelx: the recorder's advisory lock read ``now()`` while the producer read
-    ``clock_timestamp()``, so a transaction that began before a UTC month
-    rollover locked one month and wrote another.  The partial unique index on
-    ``fleet_halt_month`` still prevented a duplicate episode, so the lock did not
-    fail loudly -- it just stopped serializing the key being written, at exactly
-    the rollover when the fleet-halt path is most likely to fire.
+    bu-jxelx (#3822) was possible only because two participants each computed the
+    fleet-halt month from their own timestamp expression: the recorder's advisory
+    lock read ``now()`` while the producer's ``v_month`` had drifted to
+    ``clock_timestamp()``, so across a UTC rollover the lock serialized a month
+    nobody was writing.  #3822 repaired that by aligning the two clocks.  bu-86t7r
+    removes the second participant instead: the recorder takes no month lock, so
+    ``v_month`` is the only month expression in the transaction and there is
+    nothing left for it to disagree with.
 
-    Scoped to the lock key and the producer's month on purpose.  The denial
-    row's own ``ts`` stays on the statement clock -- REQ-model-catalog-001 orders
-    outcomes by serialization instant, which ``now()`` cannot express -- so it is
-    not part of the agreement this test proves.
+    That makes the surviving invariant structural rather than clock-dependent, and
+    this pins it at both ends -- the installed body names the month once and uses
+    that one value everywhere, and the recorder names it nowhere.
     """
     async with migrated_core_postgres_pool() as admin_pool:
         definition = await admin_pool.fetchval(
             "SELECT pg_get_functiondef("
             "'public.append_runtime_attention_fleet_halt()'::regprocedure)"
         )
-        declaration = _V_MONTH_DECLARATION.search(definition)
-        assert declaration, "the installed fleet-halt producer no longer declares v_month"
+        declarations = _V_MONTH_DECLARATION.findall(definition)
+        assert len(declarations) == 1, (
+            "the installed fleet-halt producer declares v_month "
+            f"{len(declarations)} times ({declarations}); bu-jxelx is a bug about two "
+            "month expressions disagreeing, so a second declaration reopens it"
+        )
 
-        # v_month is a faithful proxy for the producer only while it is both what
-        # the producer locks on and what it writes.  Prove that from the installed
-        # body rather than assuming it.
+        # v_month is only a faithful single name for the month while every use
+        # reads that variable.  Prove each from the installed body.
         assert (
-            "hashtextextended('runtime_attention_fleet_halt:' || v_month::text, 0)" in definition
+            "hashtextextended('" + _FLEET_HALT_LOCK_PREFIX + "' || v_month::text, 0)" in definition
         ), "the producer no longer keys its own advisory lock on v_month"
         assert re.search(r"'fleet_halt',\s*v_month\s*,", definition), (
             "the producer no longer writes v_month into fleet_halt_month"
         )
+        assert "date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month" in definition, (
+            "the producer no longer filters its ceiling-denial evidence by v_month"
+        )
 
-        lock_key = await admin_pool.fetchval(
-            _at_simulated_boundary(
-                # The lock statement without its outer call is the key expression.
-                _FLEET_HALT_LOCK_SQL.replace("pg_advisory_xact_lock", ""),
-                read_at=_SIMULATED_BEGIN,
+        recorder_source = inspect.getsource(dispatch_outcomes)
+        offending = [
+            line
+            for line in recorder_source.splitlines()
+            if _FLEET_HALT_LOCK_PREFIX in line and not line.lstrip().startswith("#")
+        ]
+        assert not offending, (
+            "butlers.core.dispatch_outcomes computes a fleet-halt month lock key again "
+            f"({offending}); the recorder-held lock was removed in bu-86t7r precisely so "
+            "the producer's v_month is the only month this transaction names"
+        )
+
+
+async def test_concurrent_fleet_halt_producers_share_one_episode(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-runtime-attention-outbox-001: the producer owns the month critical section.
+
+    bu-86t7r removes the recorder-held month lock on the grounds that this
+    guarantee is entirely the producer's.  That claim is only safe if the producer
+    actually holds it under overlap, so drive the overlap deterministically: the
+    first caller stays uncommitted while the second calls in, which is exactly the
+    window a recorder-held lock would have closed from outside.
+
+    Both callers must observe the *same* episode -- one row, and no caller left
+    holding ``NULL`` -- because ``record_dispatch_attempt`` reports a ``NULL``
+    return as ``fleet_halt_suppressed``, i.e. as "this month was already paged"
+    when in fact nothing was ever handed back.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=5) as admin_pool:
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-fleet-halt-overlap")
+        await admin_pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts
+                (catalog_entry_id, butler, outcome, failure_reason, ts)
+            VALUES ($1, 'general', 'quota_skip', $2, clock_timestamp())
+            """,
+            entry_id,
+            f"{CEILING_DENIAL_REASON_PREFIX}: current",
+        )
+
+        async with admin_pool.acquire() as first, admin_pool.acquire() as second:
+            await first.execute('SET ROLE "butler_general_rw"')
+            await second.execute('SET ROLE "butler_general_rw"')
+            first_transaction = first.transaction()
+            await first_transaction.start()
+            winner = await first.fetchval("SELECT public.append_runtime_attention_fleet_halt()")
+            assert isinstance(winner, uuid.UUID), (
+                f"the first caller produced no fleet-halt episode ({winner!r}); the "
+                "overlap this test is about never happened"
             )
+
+            second_transaction = second.transaction()
+            await second_transaction.start()
+            loser = asyncio.create_task(
+                second.fetchval("SELECT public.append_runtime_attention_fleet_halt()")
+            )
+            # The second caller must not be able to finish while the first is still
+            # uncommitted; if it can, it is deciding against a month it cannot see.
+            done, _ = await asyncio.wait({loser}, timeout=1.0)
+            assert not done, (
+                "the second caller resolved the month while the first was still "
+                "uncommitted, so nothing serialized the two"
+            )
+
+            await first_transaction.commit()
+            observed = await asyncio.wait_for(loser, timeout=10)
+            await second_transaction.commit()
+
+        assert observed == winner, (
+            f"the second caller was handed {observed!r} instead of the winner's episode "
+            f"{winner!r}; the recorder reports that as fleet_halt_suppressed, so a real "
+            "fleet halt would be recorded as an already-paged month"
         )
-        producer_month, producer_key = await admin_pool.fetchrow(
-            "SELECT month, hashtextextended('runtime_attention_fleet_halt:' || month::text, 0)"
-            " FROM (SELECT "
-            + _at_simulated_boundary(declaration.group(1), read_at=_SIMULATED_PRODUCER_CALL)
-            + " AS month) AS producer"
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
+            )
+            == 1
         )
-        assert producer_key == lock_key, (
-            f"the recorder serialized advisory-lock key {lock_key} while the producer "
-            f"wrote month {producer_month} under key {producer_key}: across a UTC month "
-            "boundary the lock guards a key nobody is writing"
+
+
+async def test_ceiling_denial_holds_no_month_lock_of_its_own(
+    migrated_core_postgres_pool,
+) -> None:
+    """REQ-runtime-attention-outbox-001: the deny path is not serialized fleet-wide.
+
+    ``produce_fleet_halt=True`` fires on *every* spawn the monthly ceiling denies,
+    so a recorder-held month lock would put the whole fleet's denial path behind
+    one lock for the rest of a halted month.  bu-86t7r removed it; this keeps it
+    removed.
+
+    A recorder-held lock is only observable when the producer returns before
+    reaching its own lock -- otherwise both shapes block at the same key a moment
+    apart.  The instrument is therefore the producer's activation gate: a month
+    whose first ceiling denial predates ``producer_activated_at`` stays
+    dashboard-only, so the producer returns ``NULL`` above its lock.  That is the
+    steady state for the rollout month itself, and it is the same path
+    ``test_current_month_fleet_halt_before_activation_is_not_repaged`` covers.
+    The denial row must still commit while an unrelated session holds the month key.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=5) as admin_pool:
+        runtime_pool = _RolePool(admin_pool)
+        observer_pool = _RolePool(admin_pool, "butler_switchboard_rw")
+        entry_id = await _seed_catalog(admin_pool, "atomic-fleet-halt-unlocked")
+        await admin_pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts
+                (catalog_entry_id, butler, outcome, failure_reason, ts)
+            VALUES ($1, 'general', 'quota_skip', $2, $3)
+            """,
+            entry_id,
+            f"{CEILING_DENIAL_REASON_PREFIX}: before activation",
+            await admin_pool.fetchval(
+                "SELECT date_trunc('month', clock_timestamp()) + interval '1 microsecond'"
+            ),
+        )
+
+        async with admin_pool.acquire() as holder:
+            holder_transaction = holder.transaction()
+            await holder_transaction.start()
+            month_key = await holder.fetchval(_MONTH_LOCK_KEY_SQL)
+            await holder.execute("SELECT pg_advisory_xact_lock($1)", month_key)
+
+            try:
+                attempt_id = await asyncio.wait_for(
+                    record_dispatch_attempt(
+                        runtime_pool,  # type: ignore[arg-type]
+                        catalog_entry_id=entry_id,
+                        butler="general",
+                        outcome="quota_skip",
+                        attempt_index=0,
+                        failure_reason=f"{CEILING_DENIAL_REASON_PREFIX}: current",
+                        produce_fleet_halt=True,
+                    ),
+                    timeout=10,
+                )
+            except TimeoutError:
+                raise AssertionError(
+                    "the ceiling denial blocked on advisory key "
+                    f"{month_key} held by an unrelated session, so the recorder is "
+                    "taking a fleet-halt month lock of its own again (bu-86t7r)"
+                ) from None
+            await holder_transaction.rollback()
+
+        assert isinstance(attempt_id, int)
+        # Read back on a fresh acquisition so this proves the denial transaction
+        # committed, not merely that it ran to the end of its own statements.
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE id=$1",
+                attempt_id,
+            )
+            == 1
+        )
+        assert (
+            await observer_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE source='fleet_halt'"
+            )
+            == 0
         )
 
 

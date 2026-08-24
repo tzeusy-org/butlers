@@ -107,33 +107,37 @@ _BREAKER_LOCK_SQL = """
 # adding one back would be a regression (bu-86t7r).  The breaker edge needs a
 # recorder-held lock because its decision spans two statements this module issues
 # itself -- ``get_breaker_state`` then the producer -- so nothing else makes that
-# read-then-write pair atomic.  The fleet-halt edge needs no such help: the
-# once-per-breach-window guarantee lives entirely inside
-# ``public.append_runtime_attention_fleet_halt`` (installed by
-# ``runtime_attention_admin.install_fleet_halt_producer_v2``, scripts/init-db.sql),
-# which takes its own month-scoped ``pg_advisory_xact_lock`` around an
+# read-then-write pair atomic.  The fleet-halt decision is a single statement, and
+# the whole once-per-month guarantee lives inside
+# ``public.append_runtime_attention_fleet_halt`` (defined once in
+# ``runtime_attention_admin.install_fleet_halt_producer_v2``, scripts/init-db.sql):
+# it serializes on its own month-scoped ``pg_advisory_xact_lock``, dedupes through
 # ``INSERT ... ON CONFLICT (fleet_halt_month) DO NOTHING`` against the partial
-# unique index ``ux_runtime_attention_outbox_fleet_halt_month`` plus the re-SELECT
-# that hands the loser the winner's episode.
+# unique index ``ux_runtime_attention_outbox_fleet_halt_month`` -- which waits out
+# an uncommitted conflicting insert rather than skipping past it -- and re-SELECTs
+# so a loser is handed the winner's episode.  A recorder-held lock on that same key
+# is the same lock taken earlier: advisory locks are re-entrant within one
+# transaction, so it adds no exclusion the producer does not already hold.
 #
-# A month lock taken here would only widen that critical section to also cover the
-# denial row's INSERT and the producer's month-wide ``count(*)`` evidence query,
-# serializing every ceiling denial fleet-wide -- on the one path that fires for
-# *every* spawn while the fleet is halted, and whose evidence query gets slower
-# with each denial the month accumulates.  All it buys is an exactly-serialized
-# ``denied_count``/``first_denied_at`` in ``source_snapshot``, which is provenance
-# only: no reader branches on either, and the producer's own gates need just
-# ``count(*) >= 1`` (its own row, always visible to its own snapshot) and
-# ``min(ts) >= producer_activated_at`` -- and activation is a one-shot migration
-# that holds SHARE ROW EXCLUSIVE on ``model_dispatch_attempts`` while it commits
-# (``CREATE TRIGGER ... BEFORE INSERT``), so no denial can straddle that boundary
-# uncommitted regardless of what this module locks.
+# What it does add is scope.  It widens the critical section to also cover the
+# denial row's INSERT and the producer's month-wide ``count(*)`` evidence query --
+# on the one path that fires for *every* spawn while the fleet is halted, and whose
+# evidence query gets slower with each denial the month accumulates.  All that buys
+# is an exactly-serialized ``denied_count``/``first_denied_at`` in
+# ``source_snapshot``, which is provenance: no reader branches on either, and the
+# producer's own gates need only ``count(*) >= 1`` (its own row, always visible to
+# its own snapshot) and ``min(ts) >= producer_activated_at``.  Activation cannot be
+# straddled by an uncommitted denial whatever this module locks: it is a one-shot
+# migration whose ``CREATE TRIGGER ... BEFORE INSERT ON model_dispatch_attempts``
+# takes SHARE ROW EXCLUSIVE in the same transaction that writes
+# ``producer_activated_at``, and that conflicts with every inserter's ROW EXCLUSIVE.
 #
-# Not locking here also removes a class of bug rather than trading one for
-# another: a second, independently evaluated month expression in this file is what
-# let the lock key and the producer's ``v_month`` name different months across a
-# UTC rollover (bu-jxelx).  The month is now named once, by the producer, and that
-# single value is both what it locks on and what it writes.
+# Not locking here also removes a bug class rather than trading one for another: a
+# second, independently evaluated month expression in this file is what let the
+# lock key and the producer's ``v_month`` name different months across a UTC
+# rollover (bu-jxelx, #3822).  The month is now named once, by the producer, and
+# that one value is what it locks on, what it filters evidence by, and what it
+# writes.
 
 
 async def record_dispatch_attempt(
