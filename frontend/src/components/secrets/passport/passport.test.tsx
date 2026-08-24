@@ -635,6 +635,22 @@ describe("PageCli: renders against mocked data", () => {
     const html = renderInRouter(<PageCli credential={claude} />);
     expect(html).toContain('data-page="cli"');
   });
+
+  // bu-v8mlr: the CLI passport used to render a capability band from
+  // CliCredential.scopesGranted / scopesRequired. Nothing in the system ever
+  // recorded a scope for a CLI runtime token — butler_secrets has no scope
+  // column, cli_auth has no scope concept, and CliRuntimeSummary (the wire row
+  // these are adapted from) carries no capability field — so the band only
+  // ever filled in against fixtures. Guard the fixtures too: a mock must not
+  // show evidence the endpoint cannot supply.
+  it("renders no capability band for any CLI runtime token", () => {
+    for (const credential of MOCK_CLI_CREDENTIALS) {
+      const html = renderInRouter(<PageCli credential={credential} />);
+      expect(html).toContain('data-page="cli"');
+      expect(html).not.toContain("data-scope-state");
+      expect(html).not.toContain(">capabilities<");
+    }
+  });
 });
 
 // ── DirectionPassport ────────────────────────────────────────────────────────
@@ -678,8 +694,6 @@ describe("DirectionPassport: renders against mocked inventory", () => {
           lastUsed: null,
           issued: null,
           expires: null,
-          scopesGranted: [],
-          scopesRequired: [],
           test: null,
         },
       ],

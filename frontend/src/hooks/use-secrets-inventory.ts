@@ -262,9 +262,6 @@ function adaptCliCredential(raw: SecretsCliRaw): CliCredential {
     // Real (bu-6v1hx): butler_secrets.created_at / expires_at.
     issued:         raw.issued ?? null,
     expires:        raw.expires ?? null,
-    // No real source: CLI runtime tokens have no scope concept in this codebase.
-    scopesGranted:  [],
-    scopesRequired: [],
     test:           adaptTestOutcome(raw.test),
   };
 }
@@ -300,8 +297,6 @@ function systemCliAuthToCliCredential(credential: SystemCredential): CliCredenti
     lastUsed:       null,
     issued:         null,
     expires:        null,
-    scopesGranted:  [],
-    scopesRequired: [],
     test:           credential.test,
   };
 }
@@ -324,8 +319,6 @@ function groupCliCredentials(credentials: CliCredential[]): CliCredential[] {
       lastUsed: existing.lastUsed ?? credential.lastUsed,
       issued: existing.issued ?? credential.issued,
       expires: existing.expires ?? credential.expires,
-      scopesGranted: Array.from(new Set([...existing.scopesGranted, ...credential.scopesGranted])),
-      scopesRequired: Array.from(new Set([...existing.scopesRequired, ...credential.scopesRequired])),
       test: existing.test ?? credential.test,
     });
   }

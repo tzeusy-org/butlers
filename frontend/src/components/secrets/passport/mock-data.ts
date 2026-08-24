@@ -181,25 +181,27 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
   },
 ];
 
+// Mirrors the content-blind wire shape of GET /api/secrets/inventory's cli
+// array (CliRuntimeSummary). That row carries no scope or capability field,
+// and nothing in the system records one for a CLI runtime token, so none
+// appears here either (bu-v8mlr) — a mock that shows evidence the endpoint
+// cannot supply invites UI that renders blank against real data.
 export const MOCK_CLI_CREDENTIALS: CliCredential[] = [
   {
     id: "claude-cli", label: "Claude Code", state: "ok",
     fingerprint: "sha256:11a47cd2",
     issued: "2026-02-10", expires: null, lastUsed: "14:15 today",
-    scopesGranted: ["repo.write", "session.run"], scopesRequired: ["repo.write", "session.run"],
     test: { ok: true, code: 200, latencyMs: 95, at: "14:15 today" },
   },
   {
     id: "codex-cli", label: "Codex CLI", state: "expiring",
     fingerprint: "sha256:9f0a3b71",
     issued: "2025-11-29", expires: "2026-05-29", lastUsed: "4d ago",
-    scopesGranted: ["repo.write"], scopesRequired: ["repo.write"],
     test: { ok: true, code: 200, latencyMs: 110, at: "4d ago" },
   },
   {
     id: "gemini-cli", label: "Gemini CLI", state: "never_set",
     fingerprint: null, issued: null, expires: null, lastUsed: null,
-    scopesGranted: [], scopesRequired: ["repo.write"],
     test: null,
   },
 ];

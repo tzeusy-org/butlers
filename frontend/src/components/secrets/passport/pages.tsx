@@ -2584,12 +2584,6 @@ export function PageCli({
   // genuinely self-issued tokens and keep the generate path.
   const isCliAuthMirror = credential.id.startsWith("cli-auth/");
 
-  const allScopes = Array.from(
-    new Set([...credential.scopesGranted, ...credential.scopesRequired]),
-  );
-  const grantedSet = new Set(credential.scopesGranted);
-  const requiredSet = new Set(credential.scopesRequired);
-
   // ── Rotate ────────────────────────────────────────────────────────────────
   // rotate() regenerates the token and returns the raw value ONCE.
   // The copy-once panel shows the value until dismissed — after that it's gone.
@@ -2799,24 +2793,12 @@ export function PageCli({
       <div className="grid gap-9" style={{ gridTemplateColumns: "1.1fr 1fr" }}>
         {/* Left */}
         <div className="flex flex-col gap-4.5">
-          {requiredSet.size > 0 && (
-            <div>
-              <BlockHead
-                eyebrow="capabilities"
-                right={`${credential.scopesGranted.length}/${requiredSet.size} required`}
-              />
-              <div className="mt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                {allScopes.map((scope) => {
-                  const state = grantedSet.has(scope)
-                    ? requiredSet.has(scope)
-                      ? "granted"
-                      : "extra"
-                    : "missing";
-                  return <VisaRow key={scope} scope={scope} state={state} />;
-                })}
-              </div>
-            </div>
-          )}
+          {/* No capability band: a CLI runtime token has no scope or capability
+              evidence anywhere in this system. butler_secrets stores no scope
+              column, cli_auth has no scope concept, provider_feature_catalogue
+              has no CLI provider rows, and the inventory row the page is fed
+              (CliRuntimeSummary) carries no capability field at all. Any band
+              here could only ever render empty against real data. */}
           {/* How-to-use snippet — hard-coded literal, no LLM */}
           <div>
             <Mono size={9} upper tracking="0.14em" color="var(--dim)">how to use</Mono>
