@@ -186,6 +186,23 @@ function supersedingIdentityVersion(condition: ConditionEntry): number | null {
 }
 
 /**
+ * Whether a commitment's deadline has already passed while the commitment is
+ * still standing. A deadline in the past on an already-resolved commitment is
+ * history, not a warning, so only a still-standing commitment can be overdue.
+ *
+ * A standalone module-level function (same shape as DecisionsPage's
+ * resolveExportAsOfIsWarn and ButlerActivityTab's window helper) so the
+ * react-hooks/purity rule does not flag a direct Date.now() call inside a
+ * component body. Reading the clock here rather than threading a `now` prop
+ * down from the tile also keeps the freshness of the comparison local to the
+ * one place that needs it.
+ */
+function deadlineIsOverdue(deadlineAt: number | null, isResolved: boolean): boolean {
+  if (isResolved || deadlineAt === null) return false
+  return deadlineAt < Date.now()
+}
+
+/**
  * The commitment-only detail line: who, which way, what kind, by when.
  *
  * Rendered *in addition to* the shared row chrome, never instead of it --
@@ -196,19 +213,14 @@ function CommitmentDetail({
   commitment,
   counterpartyName,
   isResolved,
-  now,
 }: {
   commitment: CommitmentFields
   /** Resolved display name, or null when the id is unknown/unresolved. */
   counterpartyName: string | null
   isResolved: boolean
-  now: number
 }) {
   const direction = commitment.direction ? DIRECTION_GLYPHS[commitment.direction] : null
-  // A deadline in the past on an already-resolved commitment is history, not
-  // a warning -- only a still-standing commitment can be overdue.
-  const isOverdue =
-    !isResolved && commitment.deadlineAt !== null && commitment.deadlineAt < now
+  const isOverdue = deadlineIsOverdue(commitment.deadlineAt, isResolved)
   const showConfidence =
     commitment.confidence !== null && commitment.confidence >= SURFACING_CONFIDENCE_THRESHOLD
 
@@ -278,7 +290,6 @@ function ConditionRow({
   commitment,
   counterpartyName,
   suppressedCount,
-  now,
 }: {
   condition: ConditionEntry
   /** Commitment reading, or null for every non-commitment condition. */
@@ -286,7 +297,6 @@ function ConditionRow({
   counterpartyName: string | null
   /** null means the suppression-count source is degraded -- render nothing rather than a fabricated 0. */
   suppressedCount: number | null
-  now: number
 }) {
   const isResolved = condition.state === "resolved"
   const supersededByVersion = supersedingIdentityVersion(condition)
@@ -320,7 +330,6 @@ function ConditionRow({
           commitment={commitment}
           counterpartyName={counterpartyName}
           isResolved={isResolved}
-          now={now}
         />
       ) : null}
       <div className="text-muted-foreground text-xs">
@@ -517,7 +526,6 @@ export function StandingConditionsTile() {
     )
   }
 
-  const now = Date.now()
   const decorated: DecoratedCondition[] = merged.map((condition) => ({
     condition,
     commitment: commitmentFields(condition),
@@ -580,7 +588,6 @@ export function StandingConditionsTile() {
                       ? (counterpartyNames.get(commitment.counterpartyEntityId) ?? null)
                       : null
                   }
-                  now={now}
                   suppressedCount={
                     condition.ledger !== "infra"
                       ? null
