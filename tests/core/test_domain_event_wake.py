@@ -140,6 +140,9 @@ class TestWakeSchedulingIgnoresPayloadContent:
                 subscriber_butler="lifestyle",
             )
 
+        assert schedule_create.await_count == 2, (
+            "both events must schedule a wake regardless of their validity windows"
+        )
         expired_call, fresh_call = schedule_create.await_args_list
         # cron is the 3rd positional arg of schedule_create(pool, name, cron, prompt).
         assert expired_call.args[2] == "31 12 24 8 *"
