@@ -154,39 +154,7 @@ class TestComputeWarmth:
 class TestDunbarRankingWarmth:
     """warmth field is present in DunbarRanking entries."""
 
-    def _build_app(self, ranked: list[dict]) -> FastAPI:
-        contact_id = uuid4()
-        entity_id = uuid4()
-
-        mock_pool = AsyncMock()
-
-        fetch_call_count = [0]
-
-        async def _fetch(*args, **kwargs):
-            fetch_call_count[0] += 1
-            if fetch_call_count[0] == 1:
-                # entity name rows
-                return [
-                    _row(id=entity_id, canonical_name="Alice Test", aliases=[], avatar_url=None)
-                ]
-            else:
-                # interaction_30d rows — 2 interactions in last 30d
-                # (avatar_url query removed from public.contacts — bu-j77a5)
-                return [_row(contact_id=contact_id, interaction_count_30d=2)]
-
-        mock_pool.fetch = _fetch
-        mock_pool.fetchrow = AsyncMock(return_value=None)  # no owner
-
-        mock_db = _mock_db(mock_pool)
-        app = _wire_app(mock_db)
-
-        from butlers.tools.relationship import dunbar as _dunbar_mod
-
-        _dunbar_mod.compute_tier_ranking = AsyncMock(return_value=ranked)
-
-        return app
-
-    async def test_warmth_present_in_ranking_entry(self):
+    async def test_warmth_present_in_ranking_entry(self, monkeypatch: pytest.MonkeyPatch):
         """DunbarEntry has warmth field when tier has a cadence."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -223,7 +191,10 @@ class TestDunbarRankingWarmth:
 
         from butlers.tools.relationship import dunbar as _dunbar_mod
 
-        _dunbar_mod.compute_tier_ranking = AsyncMock(return_value=ranked)
+        # monkeypatch, not a bare assignment: the router resolves the engine
+        # attribute at call time, so a leaked mock mis-scores later tests
+        # (bu-poaxr).
+        monkeypatch.setattr(_dunbar_mod, "compute_tier_ranking", AsyncMock(return_value=ranked))
 
         resp = await _get(app, "/api/relationship/dunbar/ranking")
         assert resp.status_code == 200
@@ -234,7 +205,7 @@ class TestDunbarRankingWarmth:
         assert entry["warmth"] is not None
         assert 0.0 <= entry["warmth"] <= 1.0
 
-    async def test_tier_1500_warmth_is_null(self):
+    async def test_tier_1500_warmth_is_null(self, monkeypatch: pytest.MonkeyPatch):
         """Tier 1500 contacts have warmth=null (no cadence target)."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -269,7 +240,10 @@ class TestDunbarRankingWarmth:
 
         from butlers.tools.relationship import dunbar as _dunbar_mod
 
-        _dunbar_mod.compute_tier_ranking = AsyncMock(return_value=ranked)
+        # monkeypatch, not a bare assignment: the router resolves the engine
+        # attribute at call time, so a leaked mock mis-scores later tests
+        # (bu-poaxr).
+        monkeypatch.setattr(_dunbar_mod, "compute_tier_ranking", AsyncMock(return_value=ranked))
 
         resp = await _get(app, "/api/relationship/dunbar/ranking")
         assert resp.status_code == 200

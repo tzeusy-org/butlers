@@ -33,6 +33,7 @@ def _row(**kwargs) -> MagicMock:
 
 
 def _build_app(
+    monkeypatch: pytest.MonkeyPatch,
     ranked: list[dict],
     entity_rows: list[MagicMock],
     owner_row: MagicMock | None,
@@ -72,10 +73,13 @@ def _build_app(
             app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
             break
 
-    # Patch the engine to skip real dunbar scoring logic.
+    # Patch the engine to skip real dunbar scoring logic.  monkeypatch (not a
+    # bare attribute assignment) so the real function is restored at teardown —
+    # the router and contact_get resolve it through the module global at call
+    # time, so a leaked mock silently mis-scores later tests (bu-poaxr).
     from butlers.tools.relationship import dunbar as _dunbar_mod  # noqa: PLC0415
 
-    _dunbar_mod.compute_tier_ranking = AsyncMock(return_value=ranked)
+    monkeypatch.setattr(_dunbar_mod, "compute_tier_ranking", AsyncMock(return_value=ranked))
 
     return app
 
@@ -95,7 +99,7 @@ async def _get_ranking(app: FastAPI) -> httpx.Response:
 class TestDunbarRankingAliases:
     """GET /dunbar/ranking — aliases field is exposed per entry."""
 
-    async def test_aliases_present_in_response_entry(self):
+    async def test_aliases_present_in_response_entry(self, monkeypatch: pytest.MonkeyPatch):
         """aliases from public.entities are included in each DunbarEntry."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -118,7 +122,7 @@ class TestDunbarRankingAliases:
         )
         owner_row = None
 
-        app = _build_app(ranked, [entity_row], owner_row)
+        app = _build_app(monkeypatch, ranked, [entity_row], owner_row)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -128,7 +132,9 @@ class TestDunbarRankingAliases:
         assert entry["canonical_name"] == "Alice Nguyen"
         assert entry["aliases"] == ["Ally", "A. Nguyen"]
 
-    async def test_aliases_empty_list_when_entity_has_no_aliases(self):
+    async def test_aliases_empty_list_when_entity_has_no_aliases(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """When public.entities.aliases is empty, entry.aliases is []."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -145,7 +151,7 @@ class TestDunbarRankingAliases:
 
         entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[], avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -153,7 +159,9 @@ class TestDunbarRankingAliases:
         entry = body["entries"][0]
         assert entry["aliases"] == []
 
-    async def test_aliases_empty_list_when_entity_aliases_is_null(self):
+    async def test_aliases_empty_list_when_entity_aliases_is_null(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """When public.entities.aliases is NULL, entry.aliases is []."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -170,7 +178,7 @@ class TestDunbarRankingAliases:
 
         entity_row = _row(id=entity_id, canonical_name="Carol Lee", aliases=None, avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -178,14 +186,16 @@ class TestDunbarRankingAliases:
         entry = body["entries"][0]
         assert entry["aliases"] == []
 
-    async def test_owner_entity_id_returned_when_owner_exists(self):
+    async def test_owner_entity_id_returned_when_owner_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """owner_entity_id is populated from public.entities owner row."""
         owner_entity_id = uuid4()
         ranked: list[dict] = []
 
         owner_row = _row(id=owner_entity_id)
 
-        app = _build_app(ranked, [], owner_row)
+        app = _build_app(monkeypatch, ranked, [], owner_row)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -197,7 +207,9 @@ class TestDunbarRankingAliases:
 class TestDunbarRankingLastInteractionAt:
     """GET /dunbar/ranking — last_interaction_at field is exposed per entry."""
 
-    async def test_last_interaction_at_populated_when_present(self):
+    async def test_last_interaction_at_populated_when_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """last_interaction_at from the scoring engine is included in each DunbarEntry."""
         from datetime import UTC, datetime
 
@@ -218,7 +230,7 @@ class TestDunbarRankingLastInteractionAt:
 
         entity_row = _row(id=entity_id, canonical_name="Alice Nguyen", aliases=[], avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -226,7 +238,9 @@ class TestDunbarRankingLastInteractionAt:
         assert entry["last_interaction_at"] is not None
         assert "2026-04-20" in entry["last_interaction_at"]
 
-    async def test_last_interaction_at_null_when_no_interactions(self):
+    async def test_last_interaction_at_null_when_no_interactions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """last_interaction_at is null in DunbarEntry when the contact has no interactions."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -244,7 +258,7 @@ class TestDunbarRankingLastInteractionAt:
 
         entity_row = _row(id=entity_id, canonical_name="Bob Smith", aliases=[], avatar_url=None)
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -255,7 +269,9 @@ class TestDunbarRankingLastInteractionAt:
 class TestDunbarRankingAvatarUrl:
     """GET /dunbar/ranking — avatar_url populated from public.entities.metadata."""
 
-    async def test_avatar_url_populated_when_entity_has_avatar(self):
+    async def test_avatar_url_populated_when_entity_has_avatar(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """avatar_url is taken from metadata->'profile'->>'avatar_url' on the entity."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -278,14 +294,14 @@ class TestDunbarRankingAvatarUrl:
             avatar_url="https://example.com/avatars/alice.jpg",
         )
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
         entry = resp.json()["entries"][0]
         assert entry["avatar_url"] == "https://example.com/avatars/alice.jpg"
 
-    async def test_avatar_url_null_when_entity_has_no_avatar(self):
+    async def test_avatar_url_null_when_entity_has_no_avatar(self, monkeypatch: pytest.MonkeyPatch):
         """avatar_url is null in DunbarEntry when the entity has no avatar in metadata."""
         contact_id = uuid4()
         entity_id = uuid4()
@@ -308,14 +324,14 @@ class TestDunbarRankingAvatarUrl:
             avatar_url=None,
         )
 
-        app = _build_app(ranked, [entity_row], None)
+        app = _build_app(monkeypatch, ranked, [entity_row], None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
         entry = resp.json()["entries"][0]
         assert entry["avatar_url"] is None
 
-    async def test_avatar_url_independent_per_entity(self):
+    async def test_avatar_url_independent_per_entity(self, monkeypatch: pytest.MonkeyPatch):
         """Each entry gets its own entity's avatar_url (not shared across entries)."""
         contact_a = uuid4()
         entity_a = uuid4()
@@ -356,7 +372,7 @@ class TestDunbarRankingAvatarUrl:
             ),
         ]
 
-        app = _build_app(ranked, rows, None)
+        app = _build_app(monkeypatch, ranked, rows, None)
         resp = await _get_ranking(app)
 
         assert resp.status_code == 200
@@ -375,7 +391,9 @@ class TestDunbarRankingGhostEntries:
     "Unknown" ghost on the Plex rings.
     """
 
-    async def test_entry_without_living_person_entity_is_dropped(self):
+    async def test_entry_without_living_person_entity_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         living_entity = uuid4()
         ghost_entity = uuid4()
         ranked = [
@@ -400,7 +418,7 @@ class TestDunbarRankingGhostEntries:
         entity_rows = [
             _row(id=living_entity, canonical_name="Alive Person", aliases=[], avatar_url=None)
         ]
-        app = _build_app(ranked, entity_rows, owner_row=None)
+        app = _build_app(monkeypatch, ranked, entity_rows, owner_row=None)
 
         resp = await _get_ranking(app)
         assert resp.status_code == 200
