@@ -225,6 +225,37 @@ Not once per scan cycle for as long as the condition holds -- the producer uses 
   period window, or an escalation from `"recovering"` to `"depleted"`)
 - **THEN** a fresh domain event is published with the new payload
 
+### Requirement: Descriptive-Only Advisory Validity
+
+A validity window carried inside a domain event's payload (e.g. a `valid_until` timestamp on a derived advisory) SHALL be descriptive only. The fan-out, delivery-ledger, and subscriber-local wake paths SHALL NOT read it, and SHALL NOT skip, defer, expire, or otherwise vary a delivery because of it.
+
+Such a field is a producer convention inside an open JSONB payload, not a bus column. Enforcing it would make a scheduling decision from publisher-supplied payload content -- exactly what the fenced, DATA-ONLY treatment of `payload` forbids -- and would silently strand deliveries for any butler that published an unrelated field of the same name. Delivery latency is in any case bounded by the retry ladder (stale-pending redrive, bounded failed-retry backoff) plus the ~1-minute wake, far inside the horizons these advisories declare.
+
+Because the semantics are descriptive, the contract SHALL be stated where the consumer reads it: the subscriber-local wake prompt SHALL tell the waking session that the payload is a snapshot as of publication and that any validity window inside it must be re-checked against the current time before the session acts on it. That caveat is trusted bus text and SHALL sit outside the untrusted-payload fence.
+
+#### Scenario: An advisory past its own validity window is still delivered
+
+- **WHEN** a subscriber receives a fanned-out event whose payload carries a
+  `valid_until` already in the past relative to the delivery clock
+- **THEN** the wake task is reconciled and scheduled exactly as for any
+  other event; no delivery is dropped, and the payload is embedded verbatim
+  including the lapsed `valid_until`
+
+#### Scenario: Payload content never steers the wake schedule
+
+- **WHEN** two otherwise identical events are delivered, one carrying a
+  lapsed validity window and one carrying a far-future window
+- **THEN** both schedule the same wake, derived from the delivery clock
+  alone
+
+#### Scenario: The waking session is told to re-check freshness itself
+
+- **WHEN** the wake task prompt is built for any fanned-out event
+- **THEN** it states that the payload is a point-in-time snapshot and
+  instructs the session to compare any validity window against the current
+  time before acting, with that instruction placed outside the
+  `<domain_event>` fence
+
 ## Source References
 
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication through the Switchboard)

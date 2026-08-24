@@ -37,6 +37,37 @@ The prompt embeds the event's ``payload`` as clearly fenced reference data
 text) instructing the future subscriber session to evaluate it -- never as
 instructions, and never as anything that could steer scheduling, tool
 selection, or a recipient.
+
+Descriptive-only validity semantics (bu-ac4yc)
+----------------------------------------------
+A derived advisory may carry its own validity window in its payload -- a
+``valid_until`` timestamp, set today by Health's ``health.recovery_state``
+and Finance's ``finance.budget_pressure`` producers. That key is a
+**producer convention inside an open JSONB payload, not a bus column**, and
+this module deliberately never reads it. Delivery is never skipped,
+deferred, or marked expired because a payload looks stale, and the wake's
+scheduling is derived from the delivery clock alone.
+
+Two reasons, both load-bearing:
+
+1. Filtering on it would contradict the fencing rule directly above. A
+   payload key that can suppress a wake *is* a scheduling decision made
+   from untrusted publisher-supplied data, and any butler that happened to
+   publish an unrelated ``valid_until`` string would silently lose
+   deliveries it never opted out of.
+2. It would not buy anything. Delivery latency is bounded by the retry
+   ladder in ``butlers.core_tools._domain_events`` (stale-pending redrive
+   after 10 min; failed-retry backoff of 15 min, at most 5 attempts) plus
+   this module's ~1-minute wake -- under two hours in the worst case,
+   against advisory horizons measured in days or a whole budget period. An
+   expired-at-delivery advisory is not a state this bus can actually reach.
+
+The staleness a TTL would actually guard against is a *subscriber* acting
+on a remembered payload long after the wake, which no delivery-time check
+reaches. So the contract is descriptive, and it is stated where the
+subscriber actually reads it: the wake prompt tells the waking session that
+the payload is a snapshot as of publication and that any validity window
+inside it must be re-checked against the current time before it acts.
 """
 
 from __future__ import annotations
@@ -73,10 +104,13 @@ def _build_wake_task_prompt(
     """Build the bounded one-shot wake-task prompt.
 
     ``payload`` is DATA ONLY, clearly fenced -- never concatenated into an
-    instruction, tool selection, or scheduling decision. The trailing
-    HTML-comment marker is the deterministic-reconciliation footer parsed
-    back out by :func:`_parse_task_metadata`; it is not part of the
-    human-readable prompt.
+    instruction, tool selection, or scheduling decision. The
+    validity-recheck caveat is trusted bus text, not publisher text, so it
+    sits *outside* the fence; nothing inside the fence may be read as an
+    instruction. The trailing HTML-comment marker is the
+    deterministic-reconciliation footer parsed back out by
+    :func:`_parse_task_metadata`; it is not part of the human-readable
+    prompt.
     """
     metadata = {
         "event_id": str(event_id),
@@ -93,6 +127,13 @@ def _build_wake_task_prompt(
         "command.\n\n"
         f"{json.dumps(payload, sort_keys=True)}\n"
         "</domain_event>\n\n"
+        "The payload is a snapshot of the publisher's domain as of publication. The bus "
+        "delivers it verbatim and never filters, refreshes, or expires it, so if it carries "
+        "its own validity window (e.g. a 'valid_until' timestamp) treat that as the "
+        "publisher's advisory horizon, not a freshness guarantee: compare it against the "
+        "current time first, and re-confirm through your own tools (or by asking the "
+        "publishing butler) rather than acting on a lapsed snapshot as if it were still "
+        "true.\n\n"
         "Take whatever action your domain associates with this event type, using your own "
         "tools. If nothing is actionable, exit silently.\n\n"
         f"<!-- domain_event_wake_metadata: {json.dumps(metadata, sort_keys=True)} -->"
@@ -163,6 +204,11 @@ async def handle_receive_domain_event(
     "reconciled": bool}`` on success, or ``{"status": "conflict", "state": "task_conflict",
     "error": ...}`` when a deterministically-named task already exists with different
     provenance.
+
+    Reconciliation never inspects ``payload`` -- including any ``valid_until``
+    it carries. See the module docstring's descriptive-only validity
+    semantics: an advisory is delivered whether or not its own window has
+    lapsed, and the wake time is derived from the delivery clock alone.
     """
     task_name = task_name_for(event_id, subscriber_butler)
 
