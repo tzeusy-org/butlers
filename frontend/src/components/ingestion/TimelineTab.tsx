@@ -30,6 +30,12 @@
  * §2.8 Saved Views: built-in presets + custom views persisted via backend API.
  *   Built-in active selection persisted to localStorage key `ingestion-saved-views`.
  *   Custom views stored in public.timeline_saved_views.
+ *
+ * URL-backed filter state (the address bar is this tab's only share
+ * affordance, so it carries the complete visible filter state; bu-vgoh3):
+ *   ?range= ?q= ?channels= ?statuses= ?view= ?scopedMinute= ?scopedBucketMinutes=
+ *   plus the read-only ?event= (drawer) and ?trace= (drill-down scope).
+ *   See the "Link state" block below for the statuses/view contract.
  * §2.9 Connector Attention Strip: highlights connectors with degraded health.
  */
 
@@ -241,6 +247,49 @@ const ALL_STATUSES: IngestionEventStatus[] = [
 // "skipped" (stored but not dispatched — e.g. home_assistant sensor streams)
 // and "filtered" are noise statuses, hidden by default.
 const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered" && s !== "skipped");
+
+// ---------------------------------------------------------------------------
+// Link state (bu-vgoh3)
+//
+// This tab has no separate "share" button: the share affordance IS the
+// address bar. So the URL has to carry the whole visible filter state, or a
+// shared link silently reproduces a different view than the sender was
+// looking at. range / q / channels / scopedMinute / event already travelled;
+// the status-chip selection (component state) and the active saved view
+// (localStorage) did not. Both now do.
+//
+// Contract:
+//   - `statuses` is the authoritative status selection. Absent means "the
+//     app default set", so an untouched toolbar still produces a clean link.
+//     An explicit empty value ("statuses=") means "nothing enabled" and is a
+//     different thing from absent.
+//   - `view` carries the active view's ID only, never its contents. A view's
+//     *effect* (statuses / range / q / channels) is already fully described
+//     by the other params, so embedding filter_spec would just add a second,
+//     staleable copy of the same truth and bloat every link. A URL-sourced
+//     view ID is therefore attribution ("which pill was lit"), and is
+//     deliberately NOT re-applied on arrival: re-applying it would stomp
+//     precisely the divergence-from-view that the sender chose to share.
+//   - A `view` the receiver cannot resolve is surfaced, never swallowed.
+// ---------------------------------------------------------------------------
+
+const STATUSES_PARAM = "statuses";
+const VIEW_PARAM = "view";
+
+/** Serialized in ALL_STATUSES order so a link is stable across toggle order. */
+function serializeStatuses(statuses: Set<IngestionEventStatus>): string {
+  return ALL_STATUSES.filter((s) => statuses.has(s)).join(",");
+}
+
+/** The one value of `statuses` that is omitted from the URL entirely. */
+const DEFAULT_STATUSES_PARAM_VALUE = DEFAULT_STATUSES.join(",");
+
+/** Null when the param is absent, i.e. "use the active view's own default". */
+function parseStatusesParam(raw: string | null): Set<IngestionEventStatus> | null {
+  if (raw === null) return null;
+  const wanted = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+  return new Set(ALL_STATUSES.filter((s) => wanted.has(s)));
+}
 
 // ---------------------------------------------------------------------------
 // Toolbar — range picker, search input, saved views, channel chips, status filter
@@ -1461,7 +1510,8 @@ interface TimelineTabProps {
   isActive: boolean;
   /** Override the default enabled statuses (for testing). */
   defaultStatuses?: IngestionEventStatus[];
-  /** Override the initial active view ID (for testing). */
+  /** Override the initial active view ID (for testing). Outranked by a
+   *  `?view=` param, which is a real owner intent rather than a test seam. */
   defaultViewId?: ViewId;
   /**
    * Called whenever the latest event's received_at changes.
@@ -1534,9 +1584,23 @@ export function TimelineTab({
     onRangeReport?.(range);
   }, [range, onRangeReport]);
 
-  // Saved views
+  // Shared-link state, captured once at mount (bu-vgoh3). Read once on
+  // purpose: these params seed initial state, after which the live component
+  // state is authoritative and mirrors itself back out to the URL.
+  const [mountLink] = useState(() => ({
+    view: searchParams.get(VIEW_PARAM),
+    statuses: parseStatusesParam(searchParams.get(STATUSES_PARAM)),
+  }));
+
+  // Saved views. Precedence: a link's `view` beats this browser's remembered
+  // view. localStorage is the *persistence* mechanism (which view I had open
+  // last session); the URL is the *sharing* mechanism, and if the receiver's
+  // own last-used view won, sharing would still be broken. The remembered
+  // view is only read here, never written from a link (persistView is called
+  // exclusively from explicit user actions), so following someone's link
+  // does not clobber what the receiver's next unlinked visit opens.
   const [activeViewId, setActiveViewId] = useState<ViewId>(
-    () => defaultViewId ?? readPersistedView(),
+    () => mountLink.view || defaultViewId || readPersistedView(),
   );
   // Guards for the "apply this view's filters on (re)selection" effects
   // below: track the view id each effect has already applied for, so a
@@ -1545,13 +1609,30 @@ export function TimelineTab({
   // the owner has since diverged from the active view — that divergence is
   // exactly what the amber "modified" dot needs to persist until the owner
   // re-applies or updates the view.
-  const appliedBuiltInViewRef = useRef<ViewId | null>(null);
-  const appliedCustomViewIdRef = useRef<ViewId | null>(null);
+  // When the link carried filter state of its own, both refs start already
+  // marked for the mount-time view, so neither effect re-applies a stored
+  // baseline over it: per the link-state contract above, the link's params
+  // (not a view's stored filter_spec, and not the receiver's remembered
+  // view) describe what the sender saw. Without this, a `?statuses=` link
+  // with no `?view=` gets silently reset to the active view's defaults on
+  // the very first commit, which is the bug this bead is about.
+  //
+  // The built-in ref is exempted while trace-scoped: that effect must still
+  // run once the owner clears the trace, to revert the deliberately widened
+  // ALL_STATUSES back to the view's own set.
+  const linkCarriesFilterState = mountLink.view !== null || mountLink.statuses !== null;
+  const appliedBuiltInViewRef = useRef<ViewId | null>(
+    !urlTrace && linkCarriesFilterState ? activeViewId : null,
+  );
+  const appliedCustomViewIdRef = useRef<ViewId | null>(
+    linkCarriesFilterState ? activeViewId : null,
+  );
 
   // Custom saved views from backend
   const {
     data: customViewsResp,
     isPending: customViewsLoading,
+    isError: customViewsUnavailable,
   } = useTimelineSavedViews({ enabled: isActive });
   const customViews = useMemo(
     () => customViewsResp?.data ?? [],
@@ -1583,8 +1664,10 @@ export function TimelineTab({
   // default "all" view hides "skipped"/"filtered" rows, which would silently
   // swallow the very hop the trace link promised to land on. Only applies to
   // the initial mount value; the owner can still narrow via the status chips.
+  // A link's `statuses` param outranks both, because it is the sender's
+  // literal chip selection rather than a default anything can re-derive.
   const [enabledStatuses, setEnabledStatuses] = useState<Set<IngestionEventStatus>>(
-    () => (urlTrace ? new Set(ALL_STATUSES) : viewStatuses),
+    () => mountLink.statuses ?? (urlTrace ? new Set(ALL_STATUSES) : viewStatuses),
   );
 
   // Re-apply the built-in baseline only the first time a given built-in view
@@ -1618,6 +1701,39 @@ export function TimelineTab({
       return next;
     });
   }, []);
+
+  // Mirror the two filter dimensions that used to live only in component
+  // state / localStorage back into the URL (bu-vgoh3), so copying the address
+  // bar carries the whole visible filter state. Mirroring here rather than at
+  // each of the five sites that move these values keeps the invariant in one
+  // place: whatever the toolbar is showing, the URL says.
+  //
+  // `replace` because mirroring is a consequence of a change the owner already
+  // made, not a navigation they asked for; pushing would double up the back
+  // button on every chip toggle.
+  useEffect(() => {
+    const statusesValue = serializeStatuses(enabledStatuses);
+    // Omitted at its default so an untouched toolbar yields a clean URL.
+    const nextStatuses = statusesValue === DEFAULT_STATUSES_PARAM_VALUE ? null : statusesValue;
+    const nextView = activeViewId === "all" ? null : activeViewId;
+    if (
+      searchParams.get(STATUSES_PARAM) === nextStatuses &&
+      searchParams.get(VIEW_PARAM) === nextView
+    ) {
+      return;
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (nextStatuses === null) next.delete(STATUSES_PARAM);
+        else next.set(STATUSES_PARAM, nextStatuses);
+        if (nextView === null) next.delete(VIEW_PARAM);
+        else next.set(VIEW_PARAM, nextView);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [enabledStatuses, activeViewId, searchParams, setSearchParams]);
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -1963,6 +2079,36 @@ export function TimelineTab({
     },
     [activeViewId, deleteSavedView],
   );
+
+  // A link can name a custom saved view the receiver has never created:
+  // saved views are per-owner rows, and the link carries the view's ID, not
+  // its contents. Falling back to "no view" would render a clean default and
+  // hide the fact that something in the link went unresolved, which is the
+  // exact silent-drop this param exists to kill. So say it, and do not
+  // fabricate a stand-in view. The link's filters still apply in full: only
+  // the view's name is lost.
+  const unresolvedLinkView = useMemo((): { id: string; loadFailed: boolean } | null => {
+    const linked = mountLink.view;
+    if (!linked || isBuiltInViewId(linked)) return null;
+    // The owner has since moved off the linked view, so it is no longer a
+    // claim the page is making.
+    if (activeViewId !== linked) return null;
+    if (customViewsLoading) return null;
+    // A failed list is a different sentence from a genuinely absent view,
+    // and collapsing the two would be its own quiet lie.
+    if (customViewsUnavailable) return { id: linked, loadFailed: true };
+    if (customViews.some((v) => v.id === linked)) return null;
+    return { id: linked, loadFailed: false };
+  }, [mountLink.view, activeViewId, customViews, customViewsLoading, customViewsUnavailable]);
+
+  // Acknowledge the unresolved view without disturbing the filters the link
+  // did carry: drop the attribution only. Marking the ref keeps the built-in
+  // re-apply effect from treating this as a fresh selection of "all" and
+  // stomping the status chips on the way out.
+  const handleDismissUnresolvedLinkView = useCallback(() => {
+    appliedBuiltInViewRef.current = "all";
+    setActiveViewId("all");
+  }, []);
 
   // Connector summaries — already fetched for the attention strip; reused
   // (same query key, no extra request) to build the "+ channel" adder's
@@ -2358,6 +2504,40 @@ export function TimelineTab({
           >
             <X className="size-3 mr-1" />
             Clear
+          </Button>
+        </div>
+      )}
+
+      {/* Unresolvable shared-link saved view (bu-vgoh3). Honest state: the
+          link named a view this browser cannot resolve. The link's filters
+          below ARE applied; only the view's name could not travel. Rendering
+          a clean default here instead would be the silent drop this param
+          was added to prevent. */}
+      {unresolvedLinkView && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 border border-[var(--amber)]/40 rounded bg-[var(--amber)]/5 font-mono text-[11px] text-muted-foreground"
+          data-testid="link-view-unresolved-banner"
+          role="status"
+        >
+          <AlertTriangle className="size-3 text-[var(--amber-text)] shrink-0" aria-hidden />
+          <span className="truncate">
+            {unresolvedLinkView.loadFailed
+              ? "Saved views could not be loaded, so this link's view "
+              : "This link's saved view is not saved in this browser: "}
+            <span className="text-foreground">{unresolvedLinkView.id}</span>
+            {unresolvedLinkView.loadFailed
+              ? " is unresolved. Its filters below are applied; its name is not."
+              : ". Its filters below are applied; its name is not."}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDismissUnresolvedLinkView}
+            className="h-5 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground shrink-0"
+            data-testid="link-view-unresolved-dismiss"
+          >
+            <X className="size-3 mr-1" />
+            Dismiss
           </Button>
         </div>
       )}
