@@ -69,10 +69,15 @@ validation (rationale and evidence standards: `craft-and-care`). Low-context qua
 ```bash
 uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
-mkdir -p .tmp/test-logs
 PYTEST_LOG=".tmp/test-logs/pytest-$(basename "$PWD")-$(date +%Y%m%d-%H%M%S)-$$.log"
-uv run pytest tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short >"$PYTEST_LOG" 2>&1 || tail -n 120 "$PYTEST_LOG"
+python3 scripts/pytest_gate.py run --log "$PYTEST_LOG" -- tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short
+python3 scripts/pytest_gate.py verdict "$PYTEST_LOG" || tail -n 120 "$PYTEST_LOG"
 ```
+
+`pytest_gate.py` runs pytest in its own session (so a harness timeout signalling the calling
+process group cannot kill it) and requires a **positive terminator** before calling a run green:
+`verdict` exits `0` PASS / `1` FAILED / `2` UNKNOWN. A log with no summary line is UNKNOWN, never
+a pass — see `AGENTS.md` (§ Notes to self) for why that distinction is load-bearing.
 
 ## Key Conventions
 
