@@ -146,6 +146,91 @@ _RESTORE_SCRIPT_INVOCATIONS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# The doc set the invocation ban is evaluated over
+#
+# The ban started life doc-local: it ran against ``docs/operations/backup-restore.md``
+# and nothing else, so the escape hatch PR #3708 removed could be reintroduced by
+# putting the command line one file over.  The set below closes that, and it is a
+# glob rather than an allowlist on purpose -- an allowlist has to be remembered,
+# and the doc nobody remembers to add is exactly the hole this is here to close.
+#
+# In scope:
+#   * every ``*.md`` under ``docs/operations/``.  That tree states its own scope
+#     in its index -- "running Butlers in production and maintaining it" -- which
+#     is the surface an operator reads for instructions to follow.  A runbook
+#     added tomorrow is covered without anyone editing this test.
+#   * ``scripts/README.md``.  It sits outside that tree but is the index of the
+#     scripts directory, so it is the other place a runnable command line for a
+#     script naturally lands.
+#
+# Out of scope, deliberately:
+#   * the rest of ``docs/`` -- architecture, concepts, and the dated
+#     ``docs/superpowers/plans/`` and ``docs/redesigns/`` records.  Those describe
+#     and remember rather than instruct, and a live ban over a dated record forces
+#     edits to history.
+#   * ``docs/getting_started/`` -- first-run setup against a disposable local
+#     database, not the production restore boundary this ban protects.
+#
+# That boundary has a real cost: an invocation pasted into an architecture page is
+# not caught.  It is recorded here rather than papered over, and
+# ``test_the_invocation_ban_stops_at_the_operator_facing_boundary`` pins the edge.
+# ---------------------------------------------------------------------------
+
+
+def _operator_facing_docs(repo_root: Path) -> list[Path]:
+    """Return every doc the restore-script invocation ban is evaluated over.
+
+    ``scripts/README.md`` is returned whether or not it exists, so a rename that
+    drops it out of scope surfaces as a read error rather than as a doc set that
+    silently shrank.
+    """
+    docs = sorted((repo_root / "docs" / "operations").rglob("*.md"))
+    docs.append(repo_root / "scripts" / "README.md")
+    return docs
+
+
+def _restore_script_invocations_by_doc(repo_root: Path) -> dict[str, list[str]]:
+    """Return the runnable restore-script references each in-scope doc shows.
+
+    Keyed by repo-relative path; docs that show none are omitted, so an empty
+    mapping is the passing state.
+    """
+    return {
+        str(path.relative_to(repo_root)): invocations
+        for path in _operator_facing_docs(repo_root)
+        if (invocations := _restore_script_invocations(path.read_text(encoding="utf-8")))
+    }
+
+
+def _write_operator_facing_doc_tree(root: Path) -> None:
+    """Materialize the minimum in-scope doc set with invocation-free content."""
+    operations = root / "docs" / "operations"
+    operations.mkdir(parents=True)
+    (operations / "backup-restore.md").write_text(
+        "The restore path is `scripts/pg_restore.sh`, and it is never driven by hand.\n",
+        encoding="utf-8",
+    )
+    (operations / "index.md").write_text("# Operations\n", encoding="utf-8")
+    (operations / "troubleshooting.md").write_text("# Troubleshooting\n", encoding="utf-8")
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "README.md").write_text("# Scripts\n", encoding="utf-8")
+
+
+_PLANTED_INVOCATION_DOC = (
+    "# Runbook\n\n```bash\n./scripts/pg_restore.sh dump.sql.gz --target-db butlers_restore\n```\n"
+)
+
+# A doc other than backup-restore.md, including one that does not exist yet, is
+# where the doc-local ban was blind.
+_DOCS_OUTSIDE_BACKUP_RESTORE = (
+    "docs/operations/index.md",
+    "docs/operations/troubleshooting.md",
+    "docs/operations/runbook-added-after-this-test.md",
+    "scripts/README.md",
+)
+
+
 def test_init_db_reserves_an_isolated_executor_without_widening_shared_roles() -> None:
     """REQ-database-security-006 keeps every normal login NOCREATEDB."""
     source = _INIT_DB.read_text(encoding="utf-8")
@@ -423,7 +508,6 @@ def test_operations_document_the_managed_boundary_without_a_live_workaround() ->
     assert "rolls back its ledger insert" in source
     assert "ALTER ROLE" not in source
     assert "CREATE DATABASE butlers_restore" not in source
-    assert _restore_script_invocations(source) == []
 
 
 @pytest.mark.parametrize("mention", _DESCRIPTIVE_RESTORE_SCRIPT_MENTIONS)
@@ -448,6 +532,59 @@ def test_operations_doc_names_the_restore_script_it_describes() -> None:
 
     assert _RESTORE_SCRIPT_NAME in source
     assert _restore_script_invocations(source) == []
+
+
+def test_no_operator_facing_doc_shows_a_runnable_restore_script_invocation() -> None:
+    """REQ-database-security-006: the hand-run escape hatch has nowhere to land.
+
+    Evaluating this over one file left the rest of the operator-facing tree free
+    to reintroduce the command line the ban exists to keep out.
+    """
+    assert _restore_script_invocations_by_doc(_REPO_ROOT) == {}
+
+
+def test_the_scanned_doc_set_is_the_whole_operator_facing_tree() -> None:
+    """A glob narrowed back to an allowlist would reopen the hole silently."""
+    covered = {str(path.relative_to(_REPO_ROOT)) for path in _operator_facing_docs(_REPO_ROOT)}
+
+    assert covered >= {
+        f"docs/operations/{path.name}" for path in (_REPO_ROOT / "docs" / "operations").glob("*.md")
+    }
+    assert "docs/operations/backup-restore.md" in covered
+    assert "docs/operations/index.md" in covered
+    assert "scripts/README.md" in covered
+
+
+def test_the_synthetic_doc_tree_is_clean_before_anything_is_planted(tmp_path: Path) -> None:
+    """Without this, a planted-invocation failure could be the fixture's own noise."""
+    _write_operator_facing_doc_tree(tmp_path)
+
+    assert _restore_script_invocations_by_doc(tmp_path) == {}
+
+
+@pytest.mark.parametrize("relative_path", _DOCS_OUTSIDE_BACKUP_RESTORE)
+def test_an_invocation_planted_outside_backup_restore_is_rejected(
+    tmp_path: Path, relative_path: str
+) -> None:
+    """The load-bearing half: the ban is a tree boundary, not a one-file boundary."""
+    _write_operator_facing_doc_tree(tmp_path)
+    planted = tmp_path / relative_path
+    planted.write_text(_PLANTED_INVOCATION_DOC, encoding="utf-8")
+
+    found = _restore_script_invocations_by_doc(tmp_path)
+
+    assert set(found) == {relative_path}, f"invocation not caught in {relative_path}"
+    assert found[relative_path]
+
+
+def test_the_invocation_ban_stops_at_the_operator_facing_boundary(tmp_path: Path) -> None:
+    """Record the edge honestly: prose outside the operator tree is not scanned."""
+    _write_operator_facing_doc_tree(tmp_path)
+    outside = tmp_path / "docs" / "architecture" / "restore-drill.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text(_PLANTED_INVOCATION_DOC, encoding="utf-8")
+
+    assert _restore_script_invocations_by_doc(tmp_path) == {}
 
 
 def test_bootstrap_docs_require_a_cluster_superuser_distinct_from_the_migration_user() -> None:
