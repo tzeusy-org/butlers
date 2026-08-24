@@ -70,8 +70,8 @@ validation (rationale and evidence standards: `craft-and-care`). Low-context qua
 uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
 PYTEST_LOG=".tmp/test-logs/pytest-$(basename "$PWD")-$(date +%Y%m%d-%H%M%S)-$$.log"
-python3 scripts/pytest_gate.py run --log "$PYTEST_LOG" -- tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short
-python3 scripts/pytest_gate.py verdict "$PYTEST_LOG" || tail -n 120 "$PYTEST_LOG"
+uv run python scripts/pytest_gate.py run --log "$PYTEST_LOG" -- tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short
+uv run python scripts/pytest_gate.py verdict "$PYTEST_LOG" || tail -n 120 "$PYTEST_LOG"
 ```
 
 `pytest_gate.py` runs pytest in its own session (so a harness timeout signalling the calling
