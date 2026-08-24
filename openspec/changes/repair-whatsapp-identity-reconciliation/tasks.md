@@ -48,7 +48,7 @@
 
 - [x] 6.1 Validate the OpenSpec change, overwrite guard, requirement test citations, Ruff, formatting,
   and the affected connector/pipeline/memory/relationship suites.
-- [ ] 6.2 Run broader merge-readiness gates and independently review behavior, engineering quality,
+- [x] 6.2 Run broader merge-readiness gates and independently review behavior, engineering quality,
   privacy, and operator safety; resolve every blocking finding.
 - [ ] 6.3 Push the reviewed branch, open a content-blind pull request, and verify required CI checks on
   the exact head.
