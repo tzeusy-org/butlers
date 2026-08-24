@@ -481,6 +481,107 @@ class EntityTimelineItem(BaseModel):
     primary: bool = False
 
 
+class EntityReachOutDraft(BaseModel):
+    """A drafted reach-out message for an entity (predicate='reach_out_draft').
+
+    A draft is exactly that: text the owner has composed but NOT sent.  Nothing
+    in the create path contacts a channel or queues delivery, so ``status`` is
+    always ``'draft'`` today (see ``tools/reach_out.py``).
+
+    ``message`` maps to ``fact.content``; ``channel`` is sparse metadata
+    recording the channel the owner had in mind, not a delivery attempt.
+
+    Provenance fields are always present per the Provenance contract.
+    The legacy ``facts`` table does not carry these columns; they are explicit
+    nulls / defaults.  ``src`` is ``'memory_module_legacy'``.
+    """
+
+    id: UUID
+    message: str | None = None
+    channel: str | None = None
+    status: str = "draft"
+    created_at: datetime | None = None
+    # Provenance contract fields (spec §"Provenance contract").
+    src: str = "memory_module_legacy"
+    conf: float | None = None
+    last_seen: datetime | None = None
+    weight: float | None = None
+    verified: bool = False
+    primary: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Entity-level tab WRITE models (bu-6t8ix.4)
+#
+# The tab GETs above were read-only, which left the log-interaction,
+# gift-idea, and draft-reach-out operator verbs with nowhere to write.  These
+# request bodies feed the POST siblings, which persist through the butler's own
+# fact-store tools so a dashboard-authored record is indistinguishable from a
+# butler-authored one.
+# ---------------------------------------------------------------------------
+
+
+def _require_non_blank(v: str) -> str:
+    """Reject whitespace-only text, and return the stripped value.
+
+    Pydantic's ``min_length`` counts whitespace, so a body of ``"   "`` would
+    otherwise reach the tool and be rejected there as a 500-shaped ValueError
+    rather than a 422.
+    """
+    stripped = (v or "").strip()
+    if not stripped:
+        raise ValueError("must not be blank")
+    return stripped
+
+
+class CreateEntityNoteRequest(BaseModel):
+    """Request body for POST /entities/{id}/notes."""
+
+    content: str
+    emotion: str | None = None
+
+    _strip_content = field_validator("content")(_require_non_blank)
+
+
+class CreateEntityInteractionRequest(BaseModel):
+    """Request body for POST /entities/{id}/interactions — the log-interaction verb.
+
+    ``occurred_at`` is optional; the tool defaults it to now.  Supplying it
+    explicitly also opts the write into the tool's idempotency guard (same
+    entity + type + day + direction is treated as a duplicate).
+    """
+
+    type: str
+    summary: str | None = None
+    occurred_at: datetime | None = None
+    direction: str | None = None
+    duration_minutes: int | None = Field(default=None, ge=0)
+
+    _strip_type = field_validator("type")(_require_non_blank)
+
+
+class CreateEntityGiftRequest(BaseModel):
+    """Request body for POST /entities/{id}/gifts — the gift-idea verb."""
+
+    description: str
+    occasion: str | None = None
+
+    _strip_description = field_validator("description")(_require_non_blank)
+
+
+class CreateEntityReachOutDraftRequest(BaseModel):
+    """Request body for POST /entities/{id}/reach-out-drafts — the draft-reach-out verb.
+
+    ``channel`` records the channel the owner has in mind.  It is intent only:
+    the endpoint never sends, and there is no send path behind it.
+    """
+
+    message: str
+    channel: str | None = None
+
+    _strip_message = field_validator("message")(_require_non_blank)
+
+
 class LinkedContactSummary(BaseModel):
     """A contact linked to an entity, for the entity detail page linked-contacts section.
 

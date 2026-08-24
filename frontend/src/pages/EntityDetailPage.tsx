@@ -39,6 +39,7 @@ import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
 import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceLastVisitBanner";
+import { EntityVerbRail } from "@/components/relationship/EntityVerbRail";
 import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
@@ -93,6 +94,7 @@ import {
   useEntityFacts,
   useEntityGifts,
   useEntityLoans,
+  useEntityReachOutDrafts,
   useEntityMessageThreads,
   useEntityNeighbours,
   useEntityTimeline,
@@ -820,6 +822,56 @@ function GiftsPanel({ entityId }: { entityId: string }) {
  * bu-86c4c.1: this page used to render `{loan.currency} {loan.amount_cents}`
  * directly — a $150 loan displayed as "USD 15000".
  */
+/**
+ * Reach-out drafts: text the owner wrote and did not send.
+ *
+ * Kept visually distinct from the interaction timeline for exactly that
+ * reason. A draft is not a touch, and letting it read as one would inflate
+ * every recency signal on this page.
+ */
+function ReachOutDraftsPanel({ entityId }: { entityId: string }) {
+  const { data: drafts, isLoading, isError, refetch } = useEntityReachOutDrafts(entityId);
+  if (isLoading) return null;
+  // A dropped read must not look like "nothing drafted" (bu-hckjv).
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        testId="entity-reach-out-drafts-error"
+        label="Drafts"
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+  if (!drafts || drafts.length === 0) return null;
+
+  return (
+    <section className="space-y-2" data-testid="entity-reach-out-drafts">
+      <div className="flex items-baseline gap-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide">
+          Drafts
+        </h3>
+        <span className="text-muted-foreground text-xs">{drafts.length}</span>
+        <span className="text-muted-foreground text-xs">not sent</span>
+      </div>
+      <ul className="space-y-1.5">
+        {drafts.map((draft) => (
+          <li key={draft.id} className="flex items-baseline gap-3 text-sm">
+            <span className="flex-1 truncate">{draft.message ?? "Empty draft"}</span>
+            {draft.channel && (
+              <span className="text-muted-foreground text-xs">{draft.channel}</span>
+            )}
+            {draft.created_at && (
+              <span className="text-muted-foreground text-xs tabular-nums">
+                <Time value={draft.created_at} mode="absolute" precision="day" />
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function formatLoanAmount(amountCents: string | null, currency: string | null): string | null {
   if (amountCents == null) return null;
   const cents = Number(amountCents);
@@ -3127,11 +3179,18 @@ export default function EntityDetailPage() {
               {/* Activity timeline — primary content */}
               <ActivityTimeline entityId={entityId} />
 
+              {/* Operator verbs — log-interaction, gift-idea, draft-reach-out,
+                  note. Every chip writes a real fact (bu-6t8ix.4). */}
+              <EntityVerbRail entityId={entityId} />
+
               {/* Gifts and loans — structured panels, hidden when empty */}
               <div className="grid gap-6 sm:grid-cols-2">
                 <GiftsPanel entityId={entityId} />
                 <LoansPanel entityId={entityId} />
               </div>
+
+              {/* Reach-out drafts — written, deliberately not sent */}
+              <ReachOutDraftsPanel entityId={entityId} />
 
               {/* Message threads — only when matches exist */}
               <MessageThreadsSection entityId={entityId} />

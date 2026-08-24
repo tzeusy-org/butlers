@@ -123,6 +123,82 @@ async def gift_add(
     return result
 
 
+async def gift_add_for_entity(
+    pool: asyncpg.Pool,
+    entity_id: uuid.UUID,
+    description: str,
+    *,
+    occasion: str | None = None,
+) -> dict[str, Any]:
+    """Add a gift idea keyed directly on an entity (no contact record required).
+
+    ``gift_add`` above is contact-keyed and writes
+    ``subject='contact:{id}:gift:{slug}'``.  The dashboard's entity surfaces
+    only ever hold an entity UUID, so this variant writes
+    ``subject='entity:{id}:gift:{slug}'`` while landing the same
+    ``predicate='gift'`` fact the entity gifts endpoint already reads (it
+    filters on ``entity_id``, not ``subject``).  ``gift_update_status`` reads
+    the UUID out of subject position 1, which holds for both forms.
+
+    Returns ``{"skipped": "duplicate", "existing_id": ...}`` when an active
+    gift with the same description already exists for this entity — re-adding
+    the same idea is a double-submit, not a second gift.
+    """
+    gift_description = (description or "").strip()
+    if not gift_description:
+        raise ValueError("Gift description is required")
+
+    from butlers.modules.memory.storage import store_fact
+
+    now = datetime.now(UTC)
+
+    existing = await pool.fetchrow(
+        """
+        SELECT id FROM facts
+        WHERE entity_id = $1
+          AND predicate = 'gift'
+          AND scope = 'relationship'
+          AND validity = 'active'
+          AND content = $2
+        LIMIT 1
+        """,
+        entity_id,
+        gift_description,
+    )
+    if existing is not None:
+        return {"skipped": "duplicate", "existing_id": str(existing["id"])}
+
+    fact_metadata: dict[str, Any] = {"status": "idea"}
+    if occasion is not None:
+        fact_metadata["occasion"] = occasion
+
+    # Temporal fact (valid_at=now) so multiple gifts for the same entity coexist
+    # independently without entity-keyed supersession collapsing them into one.
+    fact_id = (
+        await store_fact(
+            pool,
+            subject=f"entity:{entity_id}:gift:{_slug(gift_description)}",
+            predicate="gift",
+            content=gift_description,
+            embedding_engine=_get_embedding_engine(),
+            permanence="stable",
+            scope="relationship",
+            entity_id=entity_id,
+            valid_at=now,
+            metadata=fact_metadata,
+        )
+    )["id"]
+
+    return {
+        "id": fact_id,
+        "entity_id": entity_id,
+        "description": gift_description,
+        "occasion": occasion,
+        "status": "idea",
+        "created_at": now,
+    }
+
+
 async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str) -> dict[str, Any]:
     """Update gift status, validating pipeline order."""
     if status not in _GIFT_STATUS_ORDER:
@@ -151,7 +227,9 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
             f"Pipeline: {' -> '.join(_GIFT_STATUS_ORDER)}"
         )
 
-    # Extract contact_id from subject (format: contact:{contact_id}:gift:{slug})
+    # Extract the target UUID from subject position 1 — the format is
+    # contact:{contact_id}:gift:{slug} or entity:{entity_id}:gift:{slug}.
+    # resolve_contact_entity_id() accepts either (entity UUIDs pass through).
     parts = row["subject"].split(":")
     contact_id_str = parts[1] if len(parts) >= 2 else None
     contact_id = uuid.UUID(contact_id_str) if contact_id_str else None
@@ -211,14 +289,22 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
 async def gift_list(
     pool: asyncpg.Pool, contact_id: uuid.UUID, status: str | None = None
 ) -> list[dict[str, Any]]:
-    """List gifts for a contact, optionally filtered by status."""
+    """List gifts for a contact, optionally filtered by status.
+
+    Matches both subject forms: the contact-keyed gifts ``gift_add`` writes and
+    the entity-keyed gifts ``gift_add_for_entity`` writes.  Callers that
+    already hold an entity UUID pass it as *contact_id* (the same pass-through
+    the rest of this package accepts).
+    """
     conditions = [
-        "subject LIKE $1",
+        "subject LIKE ANY($1::text[])",
         "predicate = 'gift'",
         "scope = 'relationship'",
         "validity = 'active'",
     ]
-    params: list[Any] = [f"contact:{contact_id}:gift:%"]
+    params: list[Any] = [
+        [f"contact:{contact_id}:gift:%", f"entity:{contact_id}:gift:%"],
+    ]
     idx = 2
 
     if status is not None:
