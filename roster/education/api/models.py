@@ -182,6 +182,16 @@ class CurriculumRequestReceipt(BaseModel):
     session_id: str | None = None
     mind_map_id: str | None = None
     calibration_ready_at: str | None = None
+    # What the notification path attests about the calibration notice, and when
+    # a delivery channel accepted it. ``calibration_notice_outcome`` carries the
+    # attention ledger's own word ("delivered", "failed", "deferred",
+    # "suppressed", "coalesced") or one of two sentinels for the state of our
+    # evidence rather than the dispatch: "no_record" (ledger read, nothing
+    # there) and "unproven" (ledger not readable, or no session to read for).
+    # ``calibration_notice_accepted_at`` is set only for "delivered", and means
+    # a channel accepted the message, not that the owner read it.
+    calibration_notice_outcome: str | None = None
+    calibration_notice_accepted_at: str | None = None
     failure_reason: str | None = None
     requested_at: str
     triggered_at: str | None = None

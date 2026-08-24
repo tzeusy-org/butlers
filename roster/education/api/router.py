@@ -23,6 +23,7 @@ from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.core.attention_ledger import find_notify_dispatch_for_session
 from butlers.core.state import state_get
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
@@ -672,7 +673,8 @@ _FAILURE_TIMED_OUT = "timed_out"
 
 _RECEIPT_COLUMNS = """
     id, topic, goal, status, session_id, mind_map_id,
-    calibration_ready_at, failure_reason,
+    calibration_ready_at, calibration_notice_outcome, calibration_notice_accepted_at,
+    failure_reason,
     requested_at, triggered_at, settled_at, updated_at
 """
 
@@ -681,6 +683,25 @@ _RECEIPT_COLUMNS = """
 _CALIBRATION_READY_FLOW_STATES = frozenset(
     {"diagnosing", "planning", "teaching", "quizzing", "reviewing", "completed"}
 )
+
+# The butler this receipt's notify() calls originate from, and therefore the
+# ``origin_butler`` the attention ledger files them under.
+_NOTIFY_ORIGIN_BUTLER = "education"
+
+# Two outcomes the attention ledger itself can never supply, because they
+# describe our attempt to consult it rather than a dispatch it recorded. They
+# live in the same column as the ledger's own words so the receipt has exactly
+# one field to read, and they are deliberately not delivery-shaped:
+#   ``no_record``  we read the ledger for this session and found no notify row.
+#   ``unproven``   we could not read it, or had no session ID to read it with.
+# A NULL outcome means the question was never asked at all.
+_NOTICE_NO_RECORD = "no_record"
+_NOTICE_UNPROVEN = "unproven"
+
+# The one ledger outcome that attests the message was accepted by a delivery
+# channel. Every other outcome, sentinel included, leaves the receipt silent
+# about owner contact.
+_NOTICE_ACCEPTED_OUTCOME = "delivered"
 
 
 def _iso(value: Any) -> str | None:
@@ -702,6 +723,8 @@ def _receipt_to_response(row: Any) -> CurriculumRequestReceipt:
         session_id=row["session_id"],
         mind_map_id=str(row["mind_map_id"]) if row["mind_map_id"] else None,
         calibration_ready_at=_iso(row["calibration_ready_at"]),
+        calibration_notice_outcome=row["calibration_notice_outcome"],
+        calibration_notice_accepted_at=_iso(row["calibration_notice_accepted_at"]),
         failure_reason=row["failure_reason"],
         requested_at=_iso(row["requested_at"]) or "",
         triggered_at=_iso(row["triggered_at"]),
@@ -790,6 +813,8 @@ async def _settle_receipt(
     session_id: str | None = None,
     mind_map_id: str | None = None,
     calibration_ready: bool = False,
+    notice_outcome: str | None = None,
+    notice_accepted_at: datetime | None = None,
     failure_reason: str | None = None,
 ) -> bool:
     """Settle a receipt onto a terminal state. Returns True if this call settled it.
@@ -799,6 +824,13 @@ async def _settle_receipt(
     abandonment sweep is a no-op rather than a second (possibly contradictory)
     outcome. Evidence columns are ``COALESCE``-merged so a settle never blanks
     evidence an earlier write already recorded.
+
+    ``notice_outcome`` and ``notice_accepted_at`` are written as one unit: the
+    caller decides both from the same piece of ledger evidence, and the table's
+    CHECK requires the timestamp to be present exactly when the outcome is
+    ``delivered``. Splitting them across two writes could pair a stale timestamp
+    with a fresh outcome, which is the overclaim this column pair exists to
+    prevent, so passing ``notice_outcome=None`` leaves both untouched.
     """
     row = await pool.fetchrow(
         """
@@ -810,11 +842,16 @@ async def _settle_receipt(
                    WHEN $5 THEN COALESCE(calibration_ready_at, now())
                    ELSE calibration_ready_at
                END,
-               failure_reason = CASE WHEN $2 = 'failed' THEN $6 ELSE NULL END,
+               calibration_notice_outcome = COALESCE($6, calibration_notice_outcome),
+               calibration_notice_accepted_at = CASE
+                   WHEN $6 IS NULL THEN calibration_notice_accepted_at
+                   ELSE $7
+               END,
+               failure_reason = CASE WHEN $2 = 'failed' THEN $8 ELSE NULL END,
                settled_at = now(),
                updated_at = now()
          WHERE id = $1::uuid
-           AND status = ANY($7::text[])
+           AND status = ANY($9::text[])
         RETURNING id
         """,
         request_id,
@@ -822,6 +859,8 @@ async def _settle_receipt(
         session_id,
         mind_map_id,
         calibration_ready,
+        notice_outcome,
+        notice_accepted_at,
         failure_reason,
         list(_RECEIPT_OPEN_STATUSES),
     )
@@ -951,6 +990,55 @@ async def _correlate_curriculum(pool, triggered_at: datetime) -> tuple[str | Non
     return mind_map_id, calibration_ready
 
 
+async def _notice_evidence(
+    pool,
+    session_id: str | None,
+    since: datetime,
+) -> tuple[str, datetime | None]:
+    """Ask the notification path what became of this session's calibration notice.
+
+    Returns ``(outcome, accepted_at)`` for :func:`_settle_receipt`. The outcome
+    is the attention ledger's own word for the dispatch, and ``accepted_at`` is
+    non-None only for ``delivered`` — the one outcome the ledger writes after a
+    delivery channel accepted the message. Everything else, including our own
+    two sentinels, returns ``None`` and leaves the receipt claiming nothing
+    about owner contact.
+
+    Deliberately never consults the teaching flow. Flow state proves calibration
+    began; only the ledger can speak to whether the owner was told, and the two
+    diverge in exactly the case that matters (bu-358jk).
+    """
+    if not session_id:
+        # No correlation key, so the ledger cannot be asked about this session
+        # specifically. Guessing by butler and time window could credit an
+        # unrelated education notify, which is how "unproven" becomes a false
+        # "delivered".
+        return _NOTICE_UNPROVEN, None
+
+    try:
+        evidence = await find_notify_dispatch_for_session(
+            pool,
+            origin_butler=_NOTIFY_ORIGIN_BUTLER,
+            session_id=session_id,
+            since=since,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to read notify dispatch evidence for curriculum session %s", session_id
+        )
+        return _NOTICE_UNPROVEN, None
+
+    if evidence is None:
+        # ``record_attention_event`` is best-effort and never raises, so an
+        # absent row is not proof the notice failed. It is proof we have no
+        # proof, which is a different claim and gets a different word.
+        return _NOTICE_NO_RECORD, None
+
+    if evidence.outcome == _NOTICE_ACCEPTED_OUTCOME:
+        return evidence.outcome, evidence.occurred_at
+    return evidence.outcome, None
+
+
 async def _run_curriculum_request(
     mcp_manager: MCPClientManager,
     pool,
@@ -966,6 +1054,10 @@ async def _run_curriculum_request(
     completion, so its result carries the session ID and the session's own
     success/failure, and the curriculum correlation below turns "the session
     said it worked" into "a curriculum exists".
+
+    The receipt's notice evidence is read from the attention ledger, never from
+    the teaching flow: a live calibration and a notice that never reached the
+    owner are independent facts, and the receipt must be able to say so.
     """
     triggered_at = datetime.now(UTC)
     try:
@@ -1011,6 +1103,8 @@ async def _run_curriculum_request(
         await _settle_failed(pool, request_id, _FAILURE_NO_CURRICULUM, session_id, None)
         return
 
+    notice_outcome, notice_accepted_at = await _notice_evidence(pool, session_id, triggered_at)
+
     try:
         await _settle_receipt(
             pool,
@@ -1019,6 +1113,8 @@ async def _run_curriculum_request(
             session_id=session_id,
             mind_map_id=mind_map_id,
             calibration_ready=calibration_ready,
+            notice_outcome=notice_outcome,
+            notice_accepted_at=notice_accepted_at,
         )
     except Exception:
         logger.exception("Failed to settle curriculum request %s as completed", request_id)
