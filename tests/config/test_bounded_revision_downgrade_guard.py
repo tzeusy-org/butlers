@@ -292,7 +292,8 @@ def _upgrade_targets(call: ast.Call, bindings: dict[str, ast.expr]) -> dict[str,
     """Chains this call migrates, mapped to the revision it stops at."""
     name = _called_name(call)
     if _is_alembic_command(call, "upgrade"):
-        spec = _string_literal(call.args[1], bindings) if len(call.args) > 1 else None
+        target = _argument(call, "revision", 1)
+        spec = _string_literal(target, bindings) if target is not None else None
         resolved = _resolve_revision_spec(spec) if spec else None
         return dict([resolved]) if resolved else {}
     if name == "run_migrations":
@@ -472,9 +473,10 @@ def bounded_revision_findings(path: Path, source: str) -> list[str]:
     findings: dict[int, str] = {}
     for scope in scopes.values():
         for call in scope.calls:
-            if not _is_alembic_command(call, "downgrade") or len(call.args) < 2:
+            if not _is_alembic_command(call, "downgrade"):
                 continue
-            spec = _string_literal(call.args[1], scope.bindings)
+            target_node = _argument(call, "revision", 1)
+            spec = _string_literal(target_node, scope.bindings) if target_node is not None else None
             if spec is None:
                 continue
             resolved = _resolve_revision_spec(spec)
@@ -532,8 +534,9 @@ def migration_call_sites(path: Path, source: str) -> dict[str, list[str]]:
         for call in scope.calls:
             for chain, revision in _upgrade_targets(call, scope.bindings).items():
                 sites["upgrades"].append(f"{path}:{call.lineno} {chain}@{revision}")
-            if _is_alembic_command(call, "downgrade") and len(call.args) > 1:
-                spec = _string_literal(call.args[1], scope.bindings)
+            if _is_alembic_command(call, "downgrade"):
+                target = _argument(call, "revision", 1)
+                spec = _string_literal(target, scope.bindings) if target is not None else None
                 if spec is not None:
                     sites["downgrades"].append(f"{path}:{call.lineno} {spec}")
     return sites
