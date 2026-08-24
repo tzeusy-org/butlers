@@ -84,6 +84,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -200,7 +201,31 @@ def parse_function_definitions(sql: str) -> tuple[FunctionDefinition, ...]:
     Also usable on a single ``pg_get_functiondef()`` statement, which has the
     same shape.
     """
-    return ()
+    creates = list(_CREATE_FUNCTION_RE.finditer(sql))
+    definitions: list[FunctionDefinition] = []
+    for index, create in enumerate(creates):
+        name = create.group("name").lower()
+        # A body opener belongs to this CREATE only if it precedes the next one:
+        # an installer's own ``AS $tag$`` comes before the CREATEs it emits, and
+        # each emitted CREATE's opener comes before the one after it.  Bounding
+        # the search this way turns a definition this parser cannot read into a
+        # loud failure instead of a body silently sliced from the wrong span.
+        limit = creates[index + 1].start() if index + 1 < len(creates) else len(sql)
+        opener = _BODY_TAG_RE.search(sql, create.end(), limit)
+        if opener is None:
+            raise StoredFunctionParseError(f"no dollar-quoted body found for {name}")
+        tag = opener.group("tag")
+        end = sql.find(tag, opener.end())
+        if end < 0:
+            raise StoredFunctionParseError(f"unterminated {tag} body for {name}")
+        definitions.append(
+            FunctionDefinition(
+                function=name,
+                line=sql.count("\n", 0, create.start()) + 1,
+                body=sql[opener.end() : end],
+            )
+        )
+    return tuple(definitions)
 
 
 def normalize_function_body(body: str) -> str:
@@ -216,7 +241,10 @@ def normalize_function_body(body: str) -> str:
        less) deeply nested installer is not drift;
     4. leading and trailing blank lines are dropped.
     """
-    return body
+    unified = body.replace("\r\n", "\n").replace("\r", "\n")
+    trimmed = "\n".join(line.rstrip(" \t") for line in unified.split("\n"))
+    dedented = textwrap.dedent(trimmed)
+    return dedented.strip("\n")
 
 
 def body_digest(body: str) -> str:
@@ -237,7 +265,49 @@ def compare_stored_functions(
     name's committed variants, so an overload the committed source does not
     describe is reported rather than averaged away.
     """
-    return ()
+    committed: dict[str, list[FunctionDefinition]] = {}
+    for definition in definitions:
+        committed.setdefault(definition.function, []).append(definition)
+
+    entries: list[StoredFunctionEntry] = []
+    for function in sorted(committed):
+        variants = committed[function]
+        line_by_digest: dict[str, int] = {}
+        for variant in variants:
+            line_by_digest.setdefault(body_digest(variant.body), variant.line)
+        committed_digests = tuple(body_digest(variant.body) for variant in variants)
+        committed_lines = tuple(variant.line for variant in variants)
+
+        bodies = tuple(deployed.get(function) or ())
+        if not bodies:
+            entries.append(
+                StoredFunctionEntry(
+                    function=function,
+                    status=NOT_DEPLOYED,
+                    committed_lines=committed_lines,
+                    committed_digests=committed_digests,
+                    deployed_digests=(),
+                    matched_line=None,
+                )
+            )
+            continue
+
+        deployed_digests = tuple(body_digest(body) for body in bodies)
+        matched_lines = [
+            line_by_digest[digest] for digest in deployed_digests if digest in line_by_digest
+        ]
+        all_matched = len(matched_lines) == len(deployed_digests)
+        entries.append(
+            StoredFunctionEntry(
+                function=function,
+                status=MATCHED if all_matched else DRIFTED,
+                committed_lines=committed_lines,
+                committed_digests=committed_digests,
+                deployed_digests=deployed_digests,
+                matched_line=min(matched_lines) if all_matched else None,
+            )
+        )
+    return tuple(entries)
 
 
 async def compute_stored_function_drift(
@@ -249,12 +319,71 @@ async def compute_stored_function_drift(
     captured into ``check_error`` instead of crashing the caller or producing a
     false all-clear.
     """
-    return StoredFunctionDriftReport(checked_at=datetime.now(UTC), entries=())
+    checked_at = datetime.now(UTC)
+    source = init_db_path or INIT_DB_SQL_PATH
+
+    def _degraded(reason: str) -> StoredFunctionDriftReport:
+        return StoredFunctionDriftReport(checked_at=checked_at, entries=(), check_error=reason)
+
+    try:
+        sql = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _degraded(f"cannot read {source.name}: {type(exc).__name__}")
+
+    try:
+        definitions = parse_function_definitions(sql)
+    except StoredFunctionParseError as exc:
+        return _degraded(f"cannot parse {source.name}: {exc}")
+    if not definitions:
+        return _degraded(f"{source.name} defines no stored functions, which cannot be right")
+
+    names = sorted({definition.function for definition in definitions})
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_DEPLOYED_BODIES_SQL, names)
+    except Exception as exc:  # noqa: BLE001 - a degraded check must never crash its caller
+        return _degraded(f"cannot read pg_proc: {type(exc).__name__}")
+
+    deployed: dict[str, list[str]] = {}
+    for row in rows:
+        deployed.setdefault(row["function_name"], []).append(row["body"])
+
+    return StoredFunctionDriftReport(
+        checked_at=checked_at, entries=compare_stored_functions(definitions, deployed)
+    )
 
 
 def log_stored_function_drift(report: StoredFunctionDriftReport) -> None:
     """Emit one log line summarising *report*.  Names only -- never bodies."""
-    return None
+    if not report.is_available:
+        logger.warning(
+            "Stored-function drift check unavailable: %s. "
+            "Deployed function bodies were NOT compared against scripts/init-db.sql.",
+            report.check_error,
+        )
+        return
+
+    if report.is_drifted:
+        logger.warning(
+            "Stored-function body drift: %d of %d functions defined by scripts/init-db.sql "
+            "differ from the bodies deployed in this database (%s). "
+            "Re-run scripts/init-db.sql against this database to converge. "
+            "Bodies are never logged; the digests identify the mismatch.",
+            len(report.drifted),
+            len(report.entries),
+            ", ".join(
+                f"{entry.function} committed={'/'.join(entry.committed_digests)} "
+                f"deployed={'/'.join(entry.deployed_digests)}"
+                for entry in report.drifted
+            ),
+        )
+        return
+
+    logger.info(
+        "Stored-function bodies match scripts/init-db.sql (%d matched, %d not deployed).",
+        len(report.matched),
+        len(report.not_deployed),
+    )
 
 
 __all__ = [

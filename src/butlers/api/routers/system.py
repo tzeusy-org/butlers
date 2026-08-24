@@ -10,6 +10,8 @@ Surfaces seven ownership-fact domains:
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
+    GET /api/system/stored-functions -- deployed stored-function bodies vs
+                                       scripts/init-db.sql (bu-bi5an)
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -30,6 +32,10 @@ Deployment card (bu-hmdqz.1) -- the baked image has no .git checkout, so this
 cannot be computed from local state. Never raises; a failed/unreachable
 comparison surfaces as commits_behind_available=False, never a fabricated
 "0 behind".
+/api/system/stored-functions is likewise read-only and computed live: it parses
+scripts/init-db.sql and compares each committed function body against the body
+deployed in pg_proc. Bodies can carry operator-supplied literals, so the
+envelope carries function names and short digests only -- never a body.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -126,6 +132,11 @@ system_drift_reads_total = Counter(
     "Number of GET /api/system/drift requests.",
 )
 
+system_stored_functions_reads_total = Counter(
+    "system_stored_functions_reads_total",
+    "Number of GET /api/system/stored-functions requests.",
+)
+
 system_conditions_reads_total = Counter(
     "system_conditions_reads_total",
     "Number of GET /api/system/conditions requests.",
@@ -210,6 +221,45 @@ class DriftFacts(BaseModel):
     first_detected_at: str | None
     escalated: bool
     drift_check_available: bool
+
+
+class StoredFunctionEntry(BaseModel):
+    """One stored function whose deployed body left the committed definition.
+
+    Digests only: a stored body can hold operator-supplied literals, so the
+    envelope proves *that* two bodies disagree without carrying either one.
+    """
+
+    function: str
+    committed_lines: list[int]
+    committed_digests: list[str]
+    deployed_digests: list[str]
+
+
+class StoredFunctionFacts(BaseModel):
+    """Deployed stored-function bodies vs ``scripts/init-db.sql`` (bu-bi5an).
+
+    ``scripts/init-db.sql`` is the committed authority for every managed stored
+    function body, and nothing in ``deploy/`` re-runs it -- so an installed
+    database can keep executing an older body indefinitely. This is the report
+    that makes that state visible; converging it is still the operator action
+    of re-running that script.
+
+    ``not_deployed`` is a legitimate state, not drift: a function only exists
+    once the migration chain has invoked its bootstrap installer, so it is
+    named separately rather than escalated as a mismatch.
+
+    ``stored_function_check_available=False`` means the comparison itself
+    failed. Per the fleet-wide degraded-envelope convention that is never
+    rendered as a truthful all-clear.
+    """
+
+    checked_at: str
+    is_drifted: bool
+    drifted: list[StoredFunctionEntry]
+    not_deployed: list[str]
+    matched_count: int
+    stored_function_check_available: bool
 
 
 class SchemaSize(BaseModel):
@@ -664,6 +714,71 @@ async def get_drift_facts(
             first_detected_at=first_detected_at,
             escalated=escalated,
             drift_check_available=True,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/stored-functions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stored-functions", response_model=ApiResponse[StoredFunctionFacts])
+async def get_stored_function_facts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[StoredFunctionFacts]:
+    """Return the stored-function body comparison (bu-bi5an).
+
+    Computed live per request: ``scripts/init-db.sql`` is parsed for every
+    committed function body and compared against ``pg_proc.prosrc``. Reporting
+    is the whole contract -- nothing here rewrites a body.
+
+    Always returns HTTP 200, per the fleet-wide degraded-envelope convention:
+    a failed comparison sets stored_function_check_available=False with every
+    other field zeroed, rather than a fabricated all-clear or a 503.
+    """
+    system_stored_functions_reads_total.inc()
+
+    from butlers.core.stored_function_drift import compute_stored_function_drift
+
+    try:
+        report = await compute_stored_function_drift(db.pool("switchboard"))
+    except Exception:
+        logger.warning("stored-function facts: comparison failed", exc_info=True)
+        report = None
+
+    if report is None or not report.is_available:
+        return ApiResponse(
+            data=StoredFunctionFacts(
+                checked_at=(
+                    report.checked_at.isoformat()
+                    if report is not None
+                    else datetime.now(UTC).isoformat()
+                ),
+                is_drifted=False,
+                drifted=[],
+                not_deployed=[],
+                matched_count=0,
+                stored_function_check_available=False,
+            )
+        )
+
+    return ApiResponse(
+        data=StoredFunctionFacts(
+            checked_at=report.checked_at.isoformat(),
+            is_drifted=report.is_drifted,
+            drifted=[
+                StoredFunctionEntry(
+                    function=entry.function,
+                    committed_lines=list(entry.committed_lines),
+                    committed_digests=list(entry.committed_digests),
+                    deployed_digests=list(entry.deployed_digests),
+                )
+                for entry in report.drifted
+            ],
+            not_deployed=[entry.function for entry in report.not_deployed],
+            matched_count=len(report.matched),
+            stored_function_check_available=True,
         )
     )
 
