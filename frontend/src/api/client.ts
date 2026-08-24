@@ -359,7 +359,6 @@ import type {
   SubscriptionEntry,
   DeliveryEntry,
   ReactionEntry,
-  ContractEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -6106,26 +6105,6 @@ export function listDomainEventReactions(
 ): Promise<ApiResponse<ReactionEntry[]>> {
   return apiFetch<ApiResponse<ReactionEntry[]>>(
     `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
-  );
-}
-
-/** Params for listDomainEventContracts(). */
-export interface DomainEventContractsParams {
-  publisher?: string;
-}
-
-/**
- * List materialized publisher-owned event contracts from
- * GET /api/domain-events/contracts (bu-6jv4m.8).
- */
-export function listDomainEventContracts(
-  params: DomainEventContractsParams = {},
-): Promise<ApiResponse<ContractEntry[]>> {
-  const query = new URLSearchParams();
-  if (params.publisher) query.set("publisher", params.publisher);
-  const qs = query.toString();
-  return apiFetch<ApiResponse<ContractEntry[]>>(
-    `/domain-events/contracts${qs ? `?${qs}` : ""}`,
   );
 }
 
