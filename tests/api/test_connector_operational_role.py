@@ -104,8 +104,9 @@ def _checkpoint_row(
 ) -> MagicMock:
     """A registry row that is a persisted cursor, not a process.
 
-    Mirrors what ``cursor_store.save_cursor`` writes: no instance, no heartbeat,
-    no uptime, ``state`` left at the column default.
+    Mirrors what ``cursor_store.save_cursor`` writes for a cursor that declares
+    a parent: no instance, no heartbeat, no uptime, ``state`` left at the column
+    default.
     """
     return _make_row(
         {

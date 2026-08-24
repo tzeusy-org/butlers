@@ -1774,13 +1774,17 @@ class GmailConnectorRuntime:
     async def _save_cursor(self, cursor: GmailCursor) -> None:
         """Save cursor state to DB."""
         try:
-            from butlers.connectors.cursor_store import save_cursor
+            from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
+            # One historyId cursor per mailbox, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x).
             await save_cursor(
                 self._cursor_pool,
                 self._config.connector_provider,
                 self._config.connector_endpoint_identity,
                 cursor.model_dump_json(),
+                parent_endpoint_identity=NO_PARENT,
             )
 
             # Track last history_id for heartbeat checkpoint

@@ -13,7 +13,13 @@ Typical usage inside a connector::
 
     cursor = await load_cursor(pool, "gmail", "gmail:user:alice@gmail.com")
     ...
-    await save_cursor(pool, "gmail", "gmail:user:alice@gmail.com", new_value)
+    await save_cursor(
+        pool,
+        "gmail",
+        "gmail:user:alice@gmail.com",
+        new_value,
+        parent_endpoint_identity=NO_PARENT,
+    )
 """
 
 from __future__ import annotations
@@ -22,23 +28,44 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from butlers.connectors.registry_roles import CHECKPOINT, UNKNOWN
+
 if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
 
+#: The ownership decision "this cursor key IS the connector's own
+#: runtime-instance identity, so the row has no parent because it is not a child
+#: of anything". Spelled as a named constant so a call site records a decision
+#: rather than a bare ``None`` a later reader cannot tell from an oversight.
+NO_PARENT: None = None
+
 # ---------------------------------------------------------------------------
 # SQL
 # ---------------------------------------------------------------------------
 
-# A row created by this module is storage state, not a running process, so it
-# is stamped ``operational_role = 'checkpoint'`` on INSERT. The conflict branch
-# deliberately does NOT touch ``operational_role``: most connectors use their
-# canonical heartbeat identity as the cursor key, and for those the row is a
-# ``runtime_instance`` that also happens to carry a cursor. Re-stamping it here
-# would demote a live connector out of the fleet roster on its next checkpoint
-# save. Ownership is one-way — the heartbeat producer promotes a row to
-# ``runtime_instance``, and nothing here demotes it back.
+# The role stamped on INSERT ($5) comes from the caller's ownership decision,
+# because only the caller knows whether the cursor key is the connector's own
+# runtime identity or a sub-stream of it:
+#
+# - a declared parent means the key carries extra dimensions, so the row really
+#   is storage state and is stamped ``checkpoint``;
+# - ``NO_PARENT`` means the key IS the runtime identity, so the row is that
+#   instance's own and is stamped ``unknown`` — unclaimed until a heartbeat
+#   proves a process owns it. Stamping ``checkpoint`` there was the bu-ogs8x
+#   defect: it declared a runtime row to be a parentless cursor, which is how
+#   the dashboard's ``unparented_checkpoints`` bucket refilled after sw_031.
+#   ``save_cursor`` still never writes ``runtime_instance``: persisting a cursor
+#   is not evidence that anything is running, and the heartbeat producer is the
+#   only writer allowed to claim that role.
+#
+# The conflict branch deliberately does NOT touch ``operational_role``: most
+# connectors use their canonical heartbeat identity as the cursor key, and for
+# those the row is a ``runtime_instance`` that also happens to carry a cursor.
+# Re-stamping it here would demote a live connector out of the fleet roster on
+# its next checkpoint save. Ownership is one-way — the heartbeat producer
+# promotes a row to ``runtime_instance``, and nothing here demotes it back.
 #
 # ``parent_endpoint_identity`` only ever fills in a value: an explicit parent
 # supplied by the caller wins, otherwise any parent already recorded is kept.
@@ -46,7 +73,7 @@ _UPSERT_SQL = """\
 INSERT INTO switchboard.connector_registry
     (connector_type, endpoint_identity, checkpoint_cursor, checkpoint_updated_at,
      operational_role, parent_endpoint_identity)
-VALUES ($1, $2, $3, $4, 'checkpoint', $5)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (connector_type, endpoint_identity)
 DO UPDATE SET
     checkpoint_cursor        = EXCLUDED.checkpoint_cursor,
@@ -76,15 +103,21 @@ async def save_cursor(
     endpoint_identity: str,
     cursor_value: str,
     *,
-    parent_endpoint_identity: str | None = None,
+    parent_endpoint_identity: str | None,
 ) -> None:
     """Upsert checkpoint cursor into ``switchboard.connector_registry``.
 
-    If no row exists for (connector_type, endpoint_identity), one is inserted
-    with ``operational_role = 'checkpoint'`` — storage state, with no runtime
-    liveness or fleet-health authority. An existing row keeps whatever role its
-    producer already stamped, so a connector that checkpoints under its own
-    heartbeat identity stays a ``runtime_instance``.
+    ``parent_endpoint_identity`` is **required**, with no default. It was
+    optional until bu-ogs8x, and five of the six connectors that save cursors
+    simply never passed it, so every row they created was born
+    ``operational_role = 'checkpoint'`` with a NULL parent and went straight
+    into the dashboard's ``unparented_checkpoints`` bucket. Because the argument
+    is now required, a connector cannot inherit that state by omission: it has
+    to say which kind of cursor it is writing.
+
+    An existing row keeps whatever role its producer already stamped, so a
+    connector that checkpoints under its own heartbeat identity stays a
+    ``runtime_instance``.
 
     Args:
         pool: asyncpg pool that can reach the ``switchboard`` schema.
@@ -94,11 +127,16 @@ async def save_cursor(
         cursor_value: Opaque cursor to persist.
         parent_endpoint_identity: The ``endpoint_identity`` of the runtime
             instance this cursor belongs to, when the cursor key is not itself
-            that identity. Pass it whenever the key carries extra dimensions so
-            the checkpoint stays inspectable under its parent instead of
-            floating unattached. ``None`` leaves any recorded parent unchanged.
+            that identity — pass it whenever the key carries extra dimensions,
+            so the checkpoint stays inspectable under its parent instead of
+            floating unattached. Pass :data:`NO_PARENT` when the cursor key IS
+            the connector's runtime identity; a new row is then stamped
+            ``unknown`` (unclaimed, awaiting its first heartbeat) rather than
+            mislabelled as a parentless checkpoint. Either way, a parent already
+            recorded on an existing row is never cleared.
     """
     now = datetime.now(UTC)
+    operational_role = CHECKPOINT if parent_endpoint_identity is not None else UNKNOWN
     async with pool.acquire() as conn:
         await conn.execute(
             _UPSERT_SQL,
@@ -106,6 +144,7 @@ async def save_cursor(
             endpoint_identity,
             cursor_value,
             now,
+            operational_role,
             parent_endpoint_identity,
         )
     logger.debug(

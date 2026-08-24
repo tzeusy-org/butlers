@@ -36,11 +36,16 @@ shape was still wearing runtime-health authority everywhere else.
     (`runtime_instance | checkpoint | unknown`, `NOT NULL DEFAULT 'unknown'`,
     CHECK-constrained) and a `parent_endpoint_identity` column recording the
     runtime instance a checkpoint belongs to.
-  - Each producer writes its own role: the heartbeat tool claims a row as
+  - Each producer writes its own role: any heartbeat write claims a row as
     `runtime_instance` (a heartbeat is proof an executable process owns the
-    identity), `save_cursor` stamps `checkpoint` on INSERT only. Role ownership
-    is one-way — a heartbeat promotes, nothing demotes — so a connector that
-    checkpoints under its own heartbeat identity is never dropped from the fleet.
+    identity), whether it arrives through the `connector.heartbeat` tool or, as
+    in Google Drive's per-account loop, as a direct SQL refresh of
+    `last_heartbeat_at`. `save_cursor` writes the other two roles on INSERT
+    only, chosen by a required ownership declaration: `checkpoint` when the
+    caller names a parent, `unknown` when the cursor key IS the connector's own
+    runtime identity. Role ownership is one-way — a heartbeat promotes, nothing
+    demotes — so a connector that checkpoints under its own heartbeat identity
+    is never dropped from the fleet.
   - The role is never inferred from the opaque `endpoint_identity` string.
   - Migration `sw_031` backfills from persisted evidence only, attaches each
     existing cursor to the longest runtime-instance identity it extends by a

@@ -1533,13 +1533,17 @@ class TelegramBotConnector:
     async def _save_checkpoint(self) -> None:
         """Persist polling cursor to DB."""
         try:
-            from butlers.connectors.cursor_store import save_cursor
+            from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
+            # One bot, one update-offset cursor, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x).
             await save_cursor(
                 self._cursor_pool,
                 "telegram_bot",
                 self._config.endpoint_identity,
                 json.dumps({"last_update_id": self._last_update_id}),
+                parent_endpoint_identity=NO_PARENT,
             )
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save(status="success")

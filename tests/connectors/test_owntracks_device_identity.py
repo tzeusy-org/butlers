@@ -58,11 +58,13 @@ class _FakeConn:
         endpoint_identity: str,
         cursor_value: str,
         _now: object,
-        _parent_endpoint_identity: str | None = None,
+        _operational_role: str,
+        _parent_endpoint_identity: str | None,
     ) -> str:
-        # ``save_cursor`` passes the parent runtime instance as $5 (sw_031); the
-        # fake keys on ``(connector_type, endpoint_identity)`` like the real
-        # upsert, so the parent is accepted and ignored here.
+        # ``save_cursor`` passes the row's operational role as $5 and the parent
+        # runtime instance as $6 (sw_031, bu-ogs8x); the fake keys on
+        # ``(connector_type, endpoint_identity)`` like the real upsert, so both
+        # are accepted and ignored here.
         self._store[(connector_type, endpoint_identity)] = cursor_value
         return "INSERT 0 1"
 

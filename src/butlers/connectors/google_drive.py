@@ -55,7 +55,7 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -1117,7 +1117,17 @@ class GDriveAccountLoop:
                     "last_updated_at": cursor.last_updated_at.isoformat(),
                 }
             )
-            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, self._config.cursor_key, raw)
+            # ``cursor_key`` is the account's own ``google_drive:user:<email>``
+            # runtime identity — the one the manager's per-account heartbeat
+            # loop claims and keeps current — so this row IS that instance's,
+            # not a checkpoint hanging off it (bu-ogs8x).
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                self._config.cursor_key,
+                raw,
+                parent_endpoint_identity=NO_PARENT,
+            )
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")
             logger.debug("Drive: cursor saved for email=%s", self.email)
@@ -2180,6 +2190,16 @@ class GDriveConnectorManager:
         The manager-level heartbeat reports a single manager:process identity,
         but the dashboard shows per-account entries (google_drive:user:<email>).
         This loop keeps those entries' state and last_heartbeat_at current.
+
+        Writing ``last_heartbeat_at`` is exactly what makes this loop a
+        heartbeat producer, so it claims ``operational_role`` the same way the
+        ``connector.heartbeat`` tool does. Drive is the one connector whose
+        per-account rows are heartbeated by direct SQL rather than through that
+        tool, so without this stamp nothing ever promoted them: a new account's
+        row was created by ``save_cursor``, stayed ``checkpoint`` for life, and
+        vanished from the roster into ``unparented_checkpoints`` (bu-ogs8x).
+        sw_031's backfill classified the accounts that already existed by the
+        same evidence this UPDATE writes, so the two agree.
         """
         while self._running:
             await asyncio.sleep(self._heartbeat_interval_s)
@@ -2198,7 +2218,8 @@ class GDriveConnectorManager:
                             SET state = $1,
                                 error_message = $2,
                                 last_heartbeat_at = NOW(),
-                                uptime_s = $3
+                                uptime_s = $3,
+                                operational_role = 'runtime_instance'
                             WHERE connector_type = $4
                               AND endpoint_identity = $5
                             """,

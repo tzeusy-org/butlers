@@ -23,6 +23,25 @@ by whichever producer created the row, and ``parent_endpoint_identity`` records
 the runtime instance a checkpoint belongs to. Read paths select on the column;
 they never re-derive the role.
 
+Who may write which role
+------------------------
+
+Only a heartbeat writes ``runtime_instance``: it is the one piece of evidence
+that a process actually owns an identity. The ``connector.heartbeat`` tool does
+this on every check-in; Google Drive's manager, which heartbeats its per-account
+rows by direct SQL rather than through the tool, stamps the role in that same
+UPDATE for the same reason.
+
+``cursor_store.save_cursor`` writes the other two, chosen by the caller's
+required ownership declaration — ``checkpoint`` when the caller names a parent,
+``unknown`` when the cursor key IS the connector's own runtime identity and the
+row is therefore simply waiting to be claimed. It writes ``checkpoint`` only
+*with* a parent, which is what keeps a NULL ``parent_endpoint_identity`` from
+meaning two different things: on a freshly written row it can no longer mean
+"nobody set one" (bu-ogs8x). A NULL parent on a ``checkpoint`` row now only
+arises from ``sw_031``'s one-shot backfill failing to resolve an owner, which is
+a genuine orphan and belongs in the unparented list.
+
 Role semantics
 --------------
 
