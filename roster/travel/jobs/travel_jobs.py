@@ -418,6 +418,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             expires_at=expires_at,
             cooldown_days=cooldown_days,
             metadata=metadata,
+            # Judge freshness against the instant this scan was built from, not
+            # the broker's clock: a pre-trip `expires_at` is the last instant of
+            # the departure *date*, so a scan that starts at 23:58 would have its
+            # own same-day candidates rejected once the wall clock rolls over.
+            now=now_utc,
         )
         status = result.get("status", "error")
         if status == "accepted":
