@@ -2,9 +2,9 @@
 
 ### 1. Extend condition_ledger with resolve_condition()
 
-Add `resolve_condition()` to `butlers.core.condition_ledger` per RFC 0026 §1.
-Re-export via `butlers.core.owner_conditions`. Unit tests for: resolve active,
-reject double-resolve, concurrency with reconcile_snapshot.
+- [x] 1.1 Add `resolve_condition()` to `butlers.core.condition_ledger` per RFC 0026 §1.
+      Re-export via `butlers.core.owner_conditions`. Unit tests for: resolve active,
+      reject double-resolve, concurrency with reconcile_snapshot.
 
 Acceptance:
 - REQ-owner-condition-ledger-004 scenarios pass
@@ -12,8 +12,8 @@ Acceptance:
 
 ### 2. Add resolve_owner_condition MCP tool
 
-Extend `roster/switchboard/modules/owner_conditions_broker.py` with
-`resolve_owner_condition` tool. Input validation for resolution_reason enum.
+- [x] 2.1 Extend `roster/switchboard/modules/owner_conditions_broker.py` with
+      `resolve_owner_condition` tool. Input validation for resolution_reason enum.
 
 Acceptance:
 - REQ-owner-condition-ledger-005 scenarios pass
@@ -22,10 +22,10 @@ Acceptance:
 
 ### 3. Commitment helper module
 
-Create `src/butlers/core/commitments.py` with `create_commitment()`,
-`resolve_commitment()`, `list_active_commitments()`,
-`list_entity_commitments()`. Metadata validation, fingerprint computation,
-confidence threshold enforcement.
+- [x] 3.1 Create `src/butlers/core/commitments.py` with `create_commitment()`,
+      `resolve_commitment()`, `list_active_commitments()`,
+      `list_entity_commitments()`. Metadata validation, fingerprint computation,
+      confidence threshold enforcement.
 
 Acceptance:
 - REQ-commitment-lifecycle-001 through 004 scenarios pass
@@ -34,9 +34,9 @@ Acceptance:
 
 ### 4. Commitment escalation job
 
-Create `src/butlers/jobs/commitment_escalation.py`. Queries commitment-class
-owner_conditions at L1+ with confidence >= 0.8, proposes insight candidates.
-Deadline-aware grace period shortening. 90-day garbage collection.
+- [ ] 4.1 Create `src/butlers/jobs/commitment_escalation.py`. Queries commitment-class
+      owner_conditions at L1+ with confidence >= 0.8, proposes insight candidates.
+      Deadline-aware grace period shortening. 90-day garbage collection.
 
 Acceptance:
 - REQ-commitment-lifecycle-005 and 006 scenarios pass
@@ -45,9 +45,9 @@ Acceptance:
 
 ### 5. Relationship Butler commitment extraction
 
-Extend signal extraction and Relationship session skills to detect explicit
-first-person commitment patterns, create commitment-class owner_conditions,
-and resolve from conversational evidence.
+- [ ] 5.1 Extend signal extraction and Relationship session skills to detect explicit
+      first-person commitment patterns, create commitment-class owner_conditions,
+      and resolve from conversational evidence.
 
 Acceptance:
 - REQ-commitment-lifecycle-007 and 008 scenarios pass
@@ -56,8 +56,8 @@ Acceptance:
 
 ### 6. Dashboard commitment panel
 
-Extend StandingConditionsTile to filter and render commitment-class conditions
-with counterparty name, deadline, escalation level, and direction indicator.
+- [ ] 6.1 Extend StandingConditionsTile to filter and render commitment-class conditions
+      with counterparty name, deadline, escalation level, and direction indicator.
 
 Acceptance:
 - Commitment-class conditions render with structured metadata
@@ -65,11 +65,11 @@ Acceptance:
 
 ### 7. Reserve the resolution metadata keys
 
-Reject observations claiming `resolution_reason` or `evidence_closed` in
-`butlers.core.owner_conditions.reconcile_snapshot`, before any pool access, so
-the creation-wins merge of task 1 cannot swallow the closing evidence of task
-2. Enforced on the owner-conditions facade rather than in `condition_ledger`
-so `infra_conditions`, which has no explicit resolver, is unaffected.
+- [x] 7.1 Reject observations claiming `resolution_reason` or `evidence_closed` in
+      `butlers.core.owner_conditions.reconcile_snapshot`, before any pool access, so
+      the creation-wins merge of task 1 cannot swallow the closing evidence of task
+      2. Enforced on the owner-conditions facade rather than in `condition_ledger`
+      so `infra_conditions`, which has no explicit resolver, is unaffected.
 
 Acceptance:
 - REQ-owner-condition-ledger-006 scenarios pass

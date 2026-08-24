@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -96,7 +96,16 @@ check-em-dashes:
 check-spec-overwrites:
 	python3 scripts/check_spec_overwrites.py
 
-check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites test
+# Regression guard for bu-h7igs: `openspec archive`'s incomplete-task gate counts
+# markdown checkboxes only, so a `### N.` heading-style tasks.md reports
+# `Task status: No tasks`, cannot be incomplete, and archives unprompted -- and
+# that silence reads as evidence the tasks were done. Fails on any unarchived
+# change whose tasks.md the gate cannot see. Mirrors the CI
+# `countable-tasks-guard` job.
+check-countable-tasks:
+	python3 scripts/check_countable_tasks.py
+
+check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage
