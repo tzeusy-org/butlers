@@ -23,6 +23,7 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -58,16 +59,21 @@ class PromptVersion(BaseModel):
     prompt: str
     version: int
     updated_at: str
+    #: Server-derived acting principal, never a caller-supplied value.
     updated_by: str | None = None
 
 
-class PromptUpdateRequest(BaseModel):
-    """Request body for PUT /api/butlers/{name}/prompt."""
+class PromptUpdateRequest(IgnoresCallerAssertedActor):
+    """Request body for PUT /api/butlers/{name}/prompt.
+
+    Deliberately carries no ``actor``: the row's ``updated_by`` and the audit
+    actor come from :func:`~butlers.api.audit_emit.authenticated_principal`, so
+    an ``actor`` sent by a caller is ignored rather than persisted.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     prompt: str
-    actor: str = "owner"
 
 
 class ButlerTool(BaseModel):
@@ -79,14 +85,16 @@ class ButlerTool(BaseModel):
     scope: str | None = None
 
 
-class ToolUpdateRequest(BaseModel):
-    """Request body for PUT /api/butlers/{name}/tools/{tool}."""
+class ToolUpdateRequest(IgnoresCallerAssertedActor):
+    """Request body for PUT /api/butlers/{name}/tools/{tool}.
+
+    Deliberately carries no ``actor`` — see :class:`PromptUpdateRequest`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     allowed: bool
     scope: str | None = None
-    actor: str = "owner"
 
 
 class MemoryAccess(BaseModel):
@@ -99,13 +107,15 @@ class MemoryAccess(BaseModel):
     drops_7d: int = 0
 
 
-class KillRequest(BaseModel):
-    """Request body for POST /api/butlers/{name}/kill."""
+class KillRequest(IgnoresCallerAssertedActor):
+    """Request body for POST /api/butlers/{name}/kill.
+
+    Deliberately carries no ``actor`` — see :class:`PromptUpdateRequest`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     grace_seconds: int = 30
-    actor: str = "owner"
 
     @field_validator("grace_seconds")
     @classmethod
@@ -212,9 +222,13 @@ async def update_butler_prompt(
     the live system prompt (falling back to the on-disk ``CLAUDE.md`` seed when
     no history row exists). The next session the butler spawns therefore
     receives this prompt.
+
+    ``updated_by`` and the audit actor are derived from the authenticated
+    principal; an ``actor`` in the request body is ignored.
     """
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
+    updated_by = authenticated_principal()
 
     # Insert new version + audit entry inside one transaction so a missing
     # audit table rolls back the prompt insert too, instead of persisting an
@@ -237,13 +251,13 @@ async def update_butler_prompt(
             """,
             name,
             body.prompt,
-            body.actor,
+            updated_by,
         )
         new_version: int = row["version"]
 
         await audit_append(
             conn,
-            body.actor,
+            updated_by,
             "butler.prompt_set",
             target=name,
             note=f"v{new_version}",
@@ -364,9 +378,13 @@ async def update_butler_tool(
 
     Creates the row if it does not exist (INSERT … ON CONFLICT).  Appends an
     audit entry for ``butler.tool_set``.
+
+    ``updated_by`` and the audit actor are derived from the authenticated
+    principal; an ``actor`` in the request body is ignored.
     """
     _assert_butler_exists(name, configs)
     pool = await _get_shared_pool(db)
+    updated_by = authenticated_principal()
 
     # Upsert + audit entry inside one transaction so a missing audit table
     # rolls back the tool-grant change too, instead of persisting un-audited.
@@ -389,12 +407,12 @@ async def update_butler_tool(
             tool,
             body.allowed,
             body.scope,
-            body.actor,
+            updated_by,
         )
 
         await audit_append(
             conn,
-            body.actor,
+            updated_by,
             "butler.tool_set",
             target=f"{name}.{tool}",
             note=f"allowed={body.allowed}",
@@ -489,7 +507,9 @@ async def kill_butler(
     Sends the ``shutdown`` tool call to the butler's MCP server with the
     configured ``grace_seconds``.  The butler is expected to honour the
     grace window before terminating.  Returns 503 if the butler is
-    unreachable.  Appends an audit entry for ``butler.kill``.
+    unreachable.  Appends an audit entry for ``butler.kill``, whose actor is
+    derived from the authenticated principal; an ``actor`` in the request body
+    is ignored.
     """
     _assert_butler_exists(name, configs)
 
@@ -502,7 +522,7 @@ async def kill_butler(
     # (dashboard-audit-log spec).
     await audit_append(
         pool,
-        body.actor,
+        authenticated_principal(),
         "butler.kill",
         target=name,
         note=f"grace={body.grace_seconds}s",

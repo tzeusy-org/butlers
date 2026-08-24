@@ -27,7 +27,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from pydantic import BaseModel, model_validator
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -79,6 +81,37 @@ def authenticated_principal() -> str:
     can write anything — so such a field must be ignored, never trusted.
     """
     return _OWNER_PRINCIPAL
+
+
+class IgnoresCallerAssertedActor(BaseModel):
+    """Base for request models that must never accept caller-supplied attribution.
+
+    An actor a caller puts in a request body is not attribution — the caller
+    can write anything — so a route that persists or audits an actor derives it
+    from :func:`authenticated_principal` instead.  This base makes that refusal
+    structural: the wire names listed in :attr:`caller_asserted_actor_fields`
+    are stripped from the payload *before* validation, which means
+
+    - the model exposes no attribute a handler could accidentally trust, and
+    - a client still sending the field keeps working — the value is ignored
+      rather than rejected, even under ``extra="forbid"``.
+
+    Subclasses override :attr:`caller_asserted_actor_fields` when their legacy
+    wire name is not ``actor``.
+    """
+
+    #: Wire field names dropped from every incoming payload.
+    caller_asserted_actor_fields: ClassVar[tuple[str, ...]] = ("actor",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_caller_asserted_actor(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        ignored = cls.caller_asserted_actor_fields
+        if not any(name in data for name in ignored):
+            return data
+        return {key: value for key, value in data.items() if key not in ignored}
 
 
 def redact_body(body: dict[str, Any]) -> dict[str, Any]:
