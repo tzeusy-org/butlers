@@ -1010,11 +1010,10 @@ async def _notice_evidence(
     """
     if pool is None or not session_id:
         # No pool, or no correlation key, so the ledger cannot be asked about
-        # this session
-        # specifically. Guessing by butler and time window could credit an
-        # unrelated education notify, which is how "unproven" becomes a false
-        # "delivered". Note this is `unproven`, not `no_record`: we did not
-        # look, so we cannot report an absence.
+        # this session specifically. Guessing by butler and time window could
+        # credit an unrelated education notify, which is how "unproven" becomes
+        # a false "delivered". Note this is ``unproven`` and not ``no_record``:
+        # we did not look, so we are in no position to report an absence.
         return _NOTICE_UNPROVEN, None
 
     try:
