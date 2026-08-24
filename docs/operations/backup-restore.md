@@ -191,18 +191,22 @@ ownership assignments from the artifact entirely, making every restore place
 objects under the restoring login *by design* rather than by accident, and
 removing the only record of what the owner was supposed to be.
 
-So the restore path lets the restore complete and then **audits** it. It compares
-the owners the dump declares for functions in `public` against the owners the
-target actually ended up with, and exits non-zero — naming each function and the
-owner the backup declared for it — if any `SECURITY DEFINER` function fell to the
-restoring login. It repairs nothing: the next move may well be to create the
-roles and reassign ownership deliberately, and a disaster-recovery path must not
-quietly rewrite the database it just produced.
+So the restore path — `scripts/pg_restore.sh` — lets the restore complete and
+then **audits** it. It compares the owners the dump declares for functions in
+`public` against the owners the target actually ended up with, and exits
+non-zero — naming each function and the owner the backup declared for it — if
+any `SECURITY DEFINER` function fell to the restoring login. It repairs nothing:
+the next move may well be to create the roles and reassign ownership
+deliberately, and a disaster-recovery path must not quietly rewrite the database
+it just produced.
 
 (This section states a precondition; it is not an invitation to drive a restore
 by hand. The managed `restore-drill-executor` below remains the only supported
-scratch-database lifecycle, and this doc deliberately names no host-side restore
-command — see `tests/config/test_init_db_restore_drill_role_boundary.py`.)
+scratch-database lifecycle. This doc names the restore script so operators can
+tell which path the precondition constrains, but it deliberately shows no
+runnable invocation of it — `tests/config/test_init_db_restore_drill_role_boundary.py`
+rejects any command line an operator could copy out of this file, and records
+exactly which invocation shapes it does and does not catch.)
 
 If the audit fails, the restored database is **not** safe to promote or expose
 to application roles. Recover by restoring onto a target a cluster superuser has
