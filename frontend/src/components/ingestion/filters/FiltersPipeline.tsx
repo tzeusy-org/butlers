@@ -349,7 +349,7 @@ export function FiltersPipeline() {
   function handleSaveChannelDefault(channel: string, policy: ChannelDefaultPolicy) {
     setChannelMutationError(null)
     updateChannelDefault.mutate(
-      { channel, body: { default_policy_json: policy, updated_by: 'dashboard' } },
+      { channel, body: { default_policy_json: policy } },
       {
         onSuccess: () => setEditingChannel(null),
         onError: (err) => {

@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.audit import append as _audit_append
 
@@ -111,14 +112,19 @@ class ChannelDefaultEntry(BaseModel):
     channel: str
     default_policy_json: dict[str, Any]
     updated_at: datetime
+    #: Server-derived acting principal, never a caller-supplied value.
     updated_by: str
 
 
 class ChannelDefaultPatchRequest(BaseModel):
-    """Request body for PATCH /api/ingestion/channel-defaults/{channel}."""
+    """Request body for PATCH /api/ingestion/channel-defaults/{channel}.
+
+    Deliberately carries no ``updated_by``: the row's attribution comes from
+    :func:`~butlers.api.audit_emit.authenticated_principal`, so an
+    ``updated_by`` sent by a caller is ignored rather than persisted.
+    """
 
     default_policy_json: dict[str, Any]
-    updated_by: str = "dashboard"
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +187,10 @@ async def upsert_channel_default(
     Validates the body against the per-channel schema — rejects with HTTP 400
     on validation failure.  Creates the row if missing; updates it otherwise.
 
+    ``updated_by`` is derived from the authenticated principal, so the stored
+    attribution and the audit actor record who actually made the change; an
+    ``updated_by`` in the request body is ignored.
+
     Emits an audit entry with action='ingestion.channel_default.update' on success.
 
     Returns HTTP 400 if validation fails or the channel is unknown.
@@ -196,6 +206,7 @@ async def upsert_channel_default(
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
 
     now = datetime.now(tz=UTC)
+    updated_by = authenticated_principal()
 
     row = await pool.fetchrow(
         """
@@ -210,7 +221,7 @@ async def upsert_channel_default(
         channel,
         body.default_policy_json,
         now,
-        body.updated_by,
+        updated_by,
     )
 
     # Emit audit entry
@@ -218,7 +229,7 @@ async def upsert_channel_default(
     try:
         await _audit_append(
             pool,
-            actor=body.updated_by,
+            actor=updated_by,
             action="ingestion.channel_default.update",
             target=channel,
             note=f"Updated channel defaults for channel '{channel}'",

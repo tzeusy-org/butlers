@@ -64,6 +64,23 @@ _REDACTED_FIELDS: frozenset[str] = frozenset(
 _REDACT_SENTINEL = "[REDACTED]"
 
 
+def authenticated_principal() -> str:
+    """Return the principal behind an authenticated dashboard API request.
+
+    Butlers is a single-user deployment guarded by network isolation plus the
+    optional ``DASHBOARD_API_KEY`` (``about/heart-and-soul/security.md``,
+    RFC-0008), so the API layer has no per-request identity finer than "the
+    owner".  This helper is the single place that fact is written down; adding
+    real multi-principal auth means replacing its body with a session/JWT
+    lookup rather than hunting for hardcoded actor strings.
+
+    Route handlers that persist or audit an actor MUST derive it from here.  An
+    actor a caller supplies in a request body is not attribution — the caller
+    can write anything — so such a field must be ignored, never trusted.
+    """
+    return _OWNER_PRINCIPAL
+
+
 def redact_body(body: dict[str, Any]) -> dict[str, Any]:
     """Return a deep copy of *body* with sensitive field values replaced.
 
@@ -117,7 +134,7 @@ def build_user_context(
         A small JSON-safe dict with at least ``principal`` and ``source``.
     """
     context: dict[str, Any] = {
-        "principal": _OWNER_PRINCIPAL,
+        "principal": authenticated_principal(),
         "source": _DASHBOARD_SOURCE,
     }
 

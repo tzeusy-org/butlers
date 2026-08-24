@@ -1755,7 +1755,7 @@ describe('bu-4utdw.9: channel defaults inline editor', () => {
 
     expect(mockUpdateChannelDefaultMutate).toHaveBeenCalledTimes(1)
     const [arg] = mockUpdateChannelDefaultMutate.mock.calls[0] as [
-      { channel: string; body: { default_policy_json: Record<string, unknown>; updated_by: string } },
+      { channel: string; body: { default_policy_json: Record<string, unknown> } },
     ]
     expect(arg.channel).toBe('email')
     expect(arg.body.default_policy_json.priority_action).toBe('metadata_only')

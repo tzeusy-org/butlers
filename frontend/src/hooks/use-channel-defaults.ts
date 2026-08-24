@@ -70,7 +70,6 @@ export function useUpdateChannelDefault() {
             ? {
                 ...current,
                 default_policy_json: body.default_policy_json,
-                updated_by: body.updated_by ?? current.updated_by,
               }
             : current,
       ),
