@@ -50,6 +50,7 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -88,6 +89,13 @@ from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 logger = logging.getLogger(__name__)
+
+
+def _opaque_transport_ref(value: Any) -> str:
+    """Return a stable non-reversible reference for privacy-sensitive transport IDs."""
+    normalized = str(value or "unknown").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()[:12]
+
 
 # ---------------------------------------------------------------------------
 # Addressed-mention detection for passive connectors
@@ -908,9 +916,9 @@ class WhatsAppUserClientConnector:
                 raise
             except Exception as exc:
                 logger.warning(
-                    "Bridge SSE stream error (attempt %d): %s — reconnecting with backoff",
+                    "Bridge SSE stream error (attempt %d, failure_class=%s); reconnecting",
                     backoff_attempt + 1,
-                    exc,
+                    type(exc).__name__,
                 )
 
             if not self._running:
@@ -948,10 +956,7 @@ class WhatsAppUserClientConnector:
 
         # Session invalidated: the WhatsApp session was logged out.
         if bridge_type == "session_invalidated":
-            logger.warning(
-                "WhatsApp session invalidated (logged out): %s",
-                str(event.get("content", ""))[:200],
-            )
+            logger.warning("WhatsApp session invalidated (logged out)")
             return
 
         # Legacy filter: some callers may set event_type to distinguish
@@ -965,7 +970,7 @@ class WhatsAppUserClientConnector:
         chat_jid = event.get("chat_jid") or event.get("chat_id")
 
         if not chat_jid:
-            logger.warning("Bridge event missing chat_jid, skipping: %r", str(event)[:200])
+            logger.warning("Bridge event missing chat_jid, skipping")
             return
 
         if msg_id:
@@ -1020,13 +1025,14 @@ class WhatsAppUserClientConnector:
             buf.messages.append(event)
             msg_count = len(buf.messages)
 
-        logger.debug("Buffered message for chat %s (buffer size: %d)", chat_jid, msg_count)
+        chat_ref = _opaque_transport_ref(chat_jid)
+        logger.debug("Buffered message for chat_ref=%s (buffer size: %d)", chat_ref, msg_count)
 
         # Force-flush if buffer cap reached
         if msg_count >= self._config.buffer_max_messages:
             logger.info(
-                "Chat %s buffer reached cap (%d messages), force-flushing",
-                chat_jid,
+                "Chat buffer reached cap (chat_ref=%s, messages=%d), force-flushing",
+                chat_ref,
                 msg_count,
             )
             await self._flush_chat_buffer(chat_jid)
@@ -1059,7 +1065,10 @@ class WhatsAppUserClientConnector:
                 return None
             return int(raw)
         except Exception as exc:
-            logger.debug("WA: Failed to read flush_interval_s from DB (non-fatal): %s", exc)
+            logger.debug(
+                "WA: failed to read flush interval from DB (failure_class=%s, non-fatal)",
+                type(exc).__name__,
+            )
             return None
 
     async def _flush_scanner_loop(self) -> None:
@@ -1414,8 +1423,8 @@ class WhatsAppUserClientConnector:
             elapsed = now - buf.last_flush_ts
             if elapsed >= flush_interval_s:
                 logger.info(
-                    "Flush interval elapsed for chat %s (elapsed=%.1fs), flushing",
-                    jid,
+                    "Flush interval elapsed (chat_ref=%s, elapsed=%.1fs), flushing",
+                    _opaque_transport_ref(jid),
                     elapsed,
                 )
                 await self._flush_chat_buffer(jid)
@@ -1433,11 +1442,11 @@ class WhatsAppUserClientConnector:
         )
         for jid, result in zip(chat_jids, results):
             if isinstance(result, Exception):
-                logger.exception(
-                    "Error flushing chat buffer %s during %s: %s",
-                    jid,
+                logger.warning(
+                    "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",
+                    _opaque_transport_ref(jid),
                     reason,
-                    result,
+                    type(result).__name__,
                 )
 
     async def _flush_chat_buffer(self, chat_jid: str) -> None:
@@ -1463,7 +1472,8 @@ class WhatsAppUserClientConnector:
             buf.messages = []
             buf.last_flush_ts = time.monotonic()
 
-        logger.info("Flushing %d messages for chat %s", len(buffered_events), chat_jid)
+        chat_ref = _opaque_transport_ref(chat_jid)
+        logger.info("Flushing messages (chat_ref=%s, count=%d)", chat_ref, len(buffered_events))
 
         # Build batch event ID
         event_ids = [e.get("message_id") or e.get("id") or "" for e in buffered_events]
@@ -1489,8 +1499,8 @@ class WhatsAppUserClientConnector:
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
             if not _ip_decision.allowed:
                 logger.debug(
-                    "Ingestion policy blocked batch for chat %s: action=%s reason=%s",
-                    chat_jid,
+                    "Ingestion policy blocked batch (chat_ref=%s, action=%s, reason=%s)",
+                    chat_ref,
                     _ip_decision.action,
                     _ip_decision.reason,
                 )
@@ -1510,8 +1520,8 @@ class WhatsAppUserClientConnector:
             _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
             if _gp_decision.action == "skip":
                 logger.debug(
-                    "Global ingestion policy skipped batch for chat %s: reason=%s",
-                    chat_jid,
+                    "Global ingestion policy skipped batch (chat_ref=%s, reason=%s)",
+                    chat_ref,
                     _gp_decision.reason,
                 )
                 self._record_batch_filtered_event(
@@ -1555,7 +1565,7 @@ class WhatsAppUserClientConnector:
                 if d_result.verdict == "IGNORE":
                     ignore_kind = classify_ignore_kind(d_result)
                     logger.debug(
-                        "Discretion IGNORE (%s) for batch in chat %s", ignore_kind, chat_jid
+                        "Discretion IGNORE (%s) for batch (chat_ref=%s)", ignore_kind, chat_ref
                     )
                     # Per-channel drop-rate visibility (bu-cicgb): low-cardinality
                     # channel × kind counter so over-filtering (and the genuine
@@ -1586,17 +1596,18 @@ class WhatsAppUserClientConnector:
                 await self._save_checkpoint()
 
         except Exception as exc:
-            logger.exception(
-                "Failed to flush chat buffer for chat %s",
-                chat_jid,
-                extra={"endpoint_identity": self._config.endpoint_identity},
+            failure_class = type(exc).__name__
+            logger.warning(
+                "Failed to flush chat buffer (chat_ref=%s, failure_class=%s)",
+                chat_ref,
+                failure_class,
             )
             self._record_batch_filtered_event(
                 chat_jid=chat_jid,
                 batch_event_id=batch_event_id,
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
-                error_detail=str(exc),
+                error_detail=failure_class,
             )
             await self._flush_and_drain()
 
@@ -1715,16 +1726,16 @@ class WhatsAppUserClientConnector:
                 "SELECT lid, pn FROM public.whatsmeow_lid_map WHERE lid = ANY($1::text[])",
                 missing,
             )
-        except Exception:
+        except Exception as exc:
             # The table is owned by the Go bridge, not a Butlers migration, so
             # schema drift there would otherwise silently zero out participant
             # recovery for every LID sender — the exact failure this connector
             # change exists to fix.  Warn rather than debug so it is visible.
             logger.warning(
                 "Could not read whatsmeow_lid_map; %d LID sender(s) will not "
-                "resolve to contacts this flush",
+                "resolve to contacts this flush (failure_class=%s)",
                 len(missing),
-                exc_info=True,
+                type(exc).__name__,
             )
             return
         for row in rows:
@@ -1841,8 +1852,8 @@ class WhatsAppUserClientConnector:
             interaction_eligible = False
             self._metrics.record_interaction_gated(chat_type, participant_count)
             logger.debug(
-                "Interaction gated for batch in chat %s (participant_count=%d, chat_type=%s)",
-                chat_jid,
+                "Interaction gated for batch (chat_ref=%s, participant_count=%d, chat_type=%s)",
+                _opaque_transport_ref(chat_jid),
                 participant_count,
                 chat_type,
             )
@@ -2032,8 +2043,8 @@ class WhatsAppUserClientConnector:
             interaction_eligible = False
             self._metrics.record_interaction_gated(chat_type, participant_count)
             logger.debug(
-                "Interaction gated for chat %s (participant_count=%d, chat_type=%s)",
-                chat_jid,
+                "Interaction gated (chat_ref=%s, participant_count=%d, chat_type=%s)",
+                _opaque_transport_ref(chat_jid),
                 participant_count,
                 chat_type,
             )
@@ -2075,33 +2086,30 @@ class WhatsAppUserClientConnector:
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
+        failure_class: str | None = None
         try:
             result = await self._mcp_client.call_tool("ingest", envelope)
-
             if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
-
-            logger.info(
-                "Submitted to Switchboard ingest",
-                extra={
-                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
-                    "duplicate": (
-                        result.get("duplicate", False) if isinstance(result, dict) else False
-                    ),
-                    "endpoint_identity": self._config.endpoint_identity,
-                    "external_event_id": envelope["event"]["external_event_id"],
-                },
-            )
+                failure_class = "ingest_error_response"
         except Exception as exc:
+            failure_class = type(exc).__name__
+
+        event_ref = _opaque_transport_ref(envelope.get("event", {}).get("external_event_id"))
+        if failure_class is not None:
             logger.error(
                 "Failed to submit to Switchboard ingest",
-                extra={
-                    "error": str(exc),
-                    "endpoint_identity": self._config.endpoint_identity,
-                },
+                extra={"failure_class": failure_class, "event_ref": event_ref},
             )
-            raise
+            raise RuntimeError("WhatsApp ingest submission failed") from None
+
+        logger.info(
+            "Submitted to Switchboard ingest",
+            extra={
+                "outcome": "accepted",
+                "duplicate": result.get("duplicate", False) if isinstance(result, dict) else False,
+                "event_ref": event_ref,
+            },
+        )
 
     # -------------------------------------------------------------------------
     # Internal: Flush and drain

@@ -125,6 +125,42 @@ async def test_envelope_passes_parse_ingest_envelope(
         pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
 
 
+def test_batch_history_uses_shared_structured_sender_contract(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Spec: REQ-connector-base-spec-001, REQ-conversation-decomposition-001."""
+    message = SimpleNamespace(
+        id=42,
+        chat_id=200,
+        sender_id=777,
+        sender=SimpleNamespace(first_name="Alice", username=None),
+        message="Dinner at seven",
+        text="Dinner at seven",
+        date=datetime(2026, 8, 24, 10, 0, tzinfo=UTC),
+        reply_to_msg_id=None,
+    )
+
+    envelope = connector._build_batch_envelope(
+        "200",
+        [message],
+        [message],
+        participant_count=2,
+        chat_type="private",
+    )
+
+    assert envelope["payload"]["raw"]["conversation_history"] == [
+        {
+            "message_id": "42",
+            "sender_identity": "777",
+            "sender": "Alice",
+            "text": "Dinner at seven",
+            "timestamp": "2026-08-24T10:00:00+00:00",
+            "is_new": True,
+            "reply_to": None,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Dunbar group-aware interaction gating tests (RFC 0013)
 # ---------------------------------------------------------------------------

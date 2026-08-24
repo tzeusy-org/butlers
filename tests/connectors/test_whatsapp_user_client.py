@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -102,6 +103,68 @@ def test_filtered_event_buffer_uses_runtime_connector_type(
     assert connector._filtered_event_buffer._rows[0][1] == "whatsapp_user_client"
 
 
+async def test_missing_chat_event_log_is_content_blind(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+    with caplog.at_level(logging.WARNING):
+        await connector._handle_bridge_event(
+            {
+                "message_id": "m-secret",
+                "sender_jid": "222222222222222@lid",
+                "content": {"text": sentinel},
+            }
+        )
+
+    assert "missing chat_jid" in caplog.text
+    assert sentinel not in caplog.text
+    assert "222222222222222@lid" not in caplog.text
+
+
+async def test_buffer_logs_use_opaque_chat_reference(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    chat_jid = "12036315551234567@g.us"
+    with caplog.at_level(logging.DEBUG):
+        await connector._buffer_event({"message_id": "m1"}, chat_jid)
+
+    assert "Buffered message" in caplog.text
+    assert chat_jid not in caplog.text
+
+
+async def test_flush_failure_records_only_failure_class(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+    chat_jid = "12036315551234567@g.us"
+    event = {
+        "message_id": "m1",
+        "chat_jid": chat_jid,
+        "sender_jid": "222222222222222@lid",
+        "timestamp": 1711447200,
+        "type": "text",
+        "text": "private message sentinel",
+    }
+    connector._chat_buffers[chat_jid] = _wa_chat_buffer(chat_jid, [event])
+    connector._refresh_lid_map = AsyncMock()  # type: ignore[method-assign]
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError(sentinel))  # type: ignore[method-assign]
+    connector._record_batch_filtered_event = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.DEBUG):
+        await connector._flush_chat_buffer(chat_jid)
+
+    assert sentinel not in caplog.text
+    assert chat_jid not in caplog.text
+    assert "222222222222222@lid" not in caplog.text
+    assert connector._record_batch_filtered_event.call_args.kwargs["error_detail"] == "RuntimeError"
+
+
 async def test_flush_and_drain_uses_runtime_connector_type(
     connector: WhatsAppUserClientConnector,
     monkeypatch: pytest.MonkeyPatch,
@@ -122,6 +185,87 @@ async def test_flush_and_drain_uses_runtime_connector_type(
     # Drain must be keyed by the runtime connector type (the behavioral contract).
     drain_mock.assert_awaited_once()
     assert drain_mock.await_args.args[1] == "whatsapp_user_client"
+
+
+def _submission_envelope() -> dict[str, Any]:
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "whatsapp_user_client",
+            "provider": "whatsapp",
+            "endpoint_identity": _ENDPOINT,
+        },
+        "event": {
+            "external_event_id": "batch:12036315551234567@g.us:private-message",
+            "external_thread_id": "12036315551234567@g.us",
+            "observed_at": "2026-08-24T00:00:00Z",
+        },
+        "sender": {"identity": "222222222222222@lid"},
+        "payload": {"raw": {}, "normalized_text": "PRIVATE MESSAGE SQL SELECT"},
+        "control": {},
+    }
+
+
+def _captured_observability(caplog: pytest.LogCaptureFixture) -> str:
+    return caplog.text + repr([record.__dict__ for record in caplog.records])
+
+
+async def test_submit_to_ingest_success_log_is_content_blind(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request_id = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
+    envelope = _submission_envelope()
+    call_tool = AsyncMock(return_value={"status": "accepted", "request_id": request_id})
+    connector._mcp_client.call_tool = call_tool  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.INFO):
+        await connector._submit_to_ingest(envelope)
+
+    call_tool.assert_awaited_once_with("ingest", envelope)
+    observed = _captured_observability(caplog)
+    for sentinel in (
+        request_id,
+        _ENDPOINT,
+        envelope["event"]["external_event_id"],
+        "222222222222222@lid",
+        "PRIVATE MESSAGE SQL SELECT",
+    ):
+        assert sentinel not in observed
+
+
+async def test_submit_to_ingest_error_result_raises_content_blind_failure(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+    connector._mcp_client.call_tool = AsyncMock(  # type: ignore[method-assign]
+        return_value={"status": "error", "error": sentinel}
+    )
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as raised:
+        await connector._submit_to_ingest(_submission_envelope())
+
+    assert str(raised.value) == "WhatsApp ingest submission failed"
+    assert raised.value.__context__ is None
+    assert sentinel not in _captured_observability(caplog)
+
+
+async def test_submit_to_ingest_exception_raises_content_blind_failure(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "postgresql://secret-dsn 222222222222222@lid PRIVATE MESSAGE"
+    connector._mcp_client.call_tool = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError(sentinel)
+    )
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as raised:
+        await connector._submit_to_ingest(_submission_envelope())
+
+    assert str(raised.value) == "WhatsApp ingest submission failed"
+    assert raised.value.__context__ is None
+    assert sentinel not in _captured_observability(caplog)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +361,7 @@ def test_group_single_event_below_threshold_eligible(
 
 def test_group_single_event_above_threshold_not_eligible(
     connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Group events with participant_count > 20 must NOT be interaction_eligible."""
     event: dict[str, Any] = {
@@ -228,10 +373,12 @@ def test_group_single_event_above_threshold_not_eligible(
         "text": "Hello big group!",
         "participant_count": 50,
     }
-    env = connector._normalize_single_event_to_ingest_v1(event)
+    with caplog.at_level(logging.DEBUG):
+        env = connector._normalize_single_event_to_ingest_v1(event)
     assert env["sender"]["participant_count"] == 50
     assert env["sender"]["chat_type"] == "group"
     assert env["control"]["interaction_eligible"] is False
+    assert event["chat_jid"] not in caplog.text
 
 
 def test_group_batch_below_threshold_eligible(connector: WhatsAppUserClientConnector) -> None:
@@ -255,6 +402,7 @@ def test_group_batch_below_threshold_eligible(connector: WhatsAppUserClientConne
 
 def test_group_batch_above_threshold_not_eligible(
     connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Batch envelope for large groups must have interaction_eligible=False."""
     events: list[dict[str, Any]] = [
@@ -268,9 +416,11 @@ def test_group_batch_above_threshold_not_eligible(
         }
         for i in range(3)
     ]
-    env = connector._build_batch_envelope("biggroup@g.us", events, "batch-002")
+    with caplog.at_level(logging.DEBUG):
+        env = connector._build_batch_envelope("biggroup@g.us", events, "batch-002")
     assert env["sender"]["participant_count"] == 25
     assert env["control"]["interaction_eligible"] is False
+    assert "biggroup@g.us" not in caplog.text
 
 
 def test_batch_envelope_large_group_passes_parse(

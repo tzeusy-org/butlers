@@ -7,8 +7,9 @@ Covers the full pipeline:
   → standard routing prompt with conversation context
   → CC calls route_to_butler to dispatch to target butlers
 
-These tests use a real PostgreSQL testcontainer (via switchboard migrations) and
-mock only the LLM dispatch and route() calls to keep the test deterministic.
+These tests use a real PostgreSQL testcontainer (via switchboard migrations).
+The runtime LLM and network transport remain deterministic test doubles; the
+route-boundary regression drives production route() and route.execute handlers.
 """
 
 from __future__ import annotations
@@ -19,12 +20,17 @@ import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
+from butlers.connectors.telegram_user_client import (
+    TelegramUserClientConnector,
+    TelegramUserClientConnectorConfig,
+)
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
@@ -253,6 +259,47 @@ def _build_mixed_whatsapp_envelope() -> tuple[dict[str, Any], str, str]:
     return envelope, known_identity, unknown_identity
 
 
+def _build_real_telegram_envelope() -> dict[str, Any]:
+    connector = TelegramUserClientConnector(
+        TelegramUserClientConnectorConfig(
+            switchboard_mcp_url="http://switchboard.test/mcp",
+            provider="telegram",
+            channel="telegram_user_client",
+            endpoint_identity="telegram:user:999",
+        ),
+        cursor_pool=MagicMock(),
+    )
+    messages = [
+        SimpleNamespace(
+            id=101,
+            chat_id=200,
+            sender_id=777,
+            sender=SimpleNamespace(first_name="Known Telegram speaker", username=None),
+            message="I paid for dinner",
+            text="I paid for dinner",
+            date=datetime(2026, 8, 24, 10, 0, tzinfo=UTC),
+            reply_to_msg_id=None,
+        ),
+        SimpleNamespace(
+            id=102,
+            chat_id=200,
+            sender_id=888,
+            sender=SimpleNamespace(first_name="New Telegram speaker", username=None),
+            message="My ankle hurts",
+            text="My ankle hurts",
+            date=datetime(2026, 8, 24, 10, 1, tzinfo=UTC),
+            reply_to_msg_id=101,
+        ),
+    ]
+    return connector._build_batch_envelope(
+        "200",
+        messages,
+        messages,
+        participant_count=3,
+        chat_type="group",
+    )
+
+
 @dataclass
 class FakeSpawnerResult:
     """Mimics SpawnerResult from butlers.core.spawner."""
@@ -358,13 +405,15 @@ async def test_decomposition_flow_full_pipeline(pool):
 
     route_call_log: list[dict] = []
 
-    async def mock_route(pool_arg, *, target_butler, tool_name, args, source_butler):
+    async def mock_route(
+        pool_arg, *, target_butler, tool_name, args, source_butler, internal_context=None
+    ):
         route_call_log.append(
             {
                 "target_butler": target_butler,
                 "tool_name": tool_name,
                 "fanout_mode": args.get("__switchboard_route_context", {}).get("fanout_mode"),
-                "conceptual_message": args.get("__conceptual_message"),
+                "conceptual_message": (internal_context or {}).get("conceptual_message"),
             }
         )
         return {"status": "ok"}
@@ -563,8 +612,10 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
 
     routed_messages: list[tuple[str, dict[str, Any]]] = []
 
-    async def mock_route(pool_arg, *, target_butler, tool_name, args, source_butler):
-        conceptual_message = args["__conceptual_message"]
+    async def mock_route(
+        pool_arg, *, target_butler, tool_name, args, source_butler, internal_context=None
+    ):
+        conceptual_message = internal_context["conceptual_message"]
         routed_messages.append((target_butler, conceptual_message))
         excerpt = conceptual_message["excerpts"][0]
         predicate = {
@@ -637,6 +688,7 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
     )
     assert persisted_unknown is not None
     assert persisted_unknown["metadata"]["unidentified"] is True
+    assert persisted_unknown["metadata"]["source_channel"] == "whatsapp_user_client"
     stored_facts = await identity_pool.fetch(
         """
         SELECT entity_id, subject, predicate, content
@@ -663,6 +715,328 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
         """
     )
     assert transport_named_count == 0
+
+
+@pytest.mark.integration
+async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_anchor(
+    identity_pools,
+):
+    """Spec: REQ-conversation-decomposition-001 and REQ-entity-identity-001."""
+    from butlers.core.routing_context import _routing_ctx_var
+    from butlers.core.tool_call_capture import (
+        clear_runtime_session_routing_context,
+        reset_current_runtime_session_id,
+        set_current_runtime_session_id,
+        set_runtime_session_routing_context,
+    )
+    from butlers.core.utils import generate_uuid7_string
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._routing import register_routing_tools
+    from butlers.modules.memory import MemoryModule, MemoryModuleConfig
+    from butlers.modules.pipeline import MessagePipeline
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+    from butlers.tools.switchboard.registry.registry import register_butler
+
+    identity_pool, memory_pool = identity_pools
+    envelope, known_identity, _unknown_identity = _build_mixed_whatsapp_envelope()
+    known_entity_id = await identity_pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, aliases, metadata, roles)
+        VALUES ('Known speaker', 'person', '{}', '{}', '{}')
+        RETURNING id
+        """
+    )
+    await identity_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity)
+        VALUES ($1, 'has-phone', '15551112222', 'literal', 'interaction_sync', 'active')
+        """,
+        known_entity_id,
+    )
+    ingest_response = await ingest_v1(identity_pool, envelope, enable_thread_affinity=False)
+    assert ingest_response.status == "accepted"
+
+    memory_module = MemoryModule()
+    memory_module._embedding_engine = SimpleNamespace(
+        _model_name=MemoryModuleConfig().embedding_model,
+        model_name="route-boundary-test",
+        embed=lambda _text: [0.0] * 384,
+    )
+    memory_tools: dict[str, Any] = {}
+    memory_mcp = MagicMock()
+
+    def _capture_memory_tool(*_args: Any, **tool_kwargs: Any):
+        def decorator(fn):
+            memory_tools[tool_kwargs.get("name") or fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    memory_mcp.tool.side_effect = _capture_memory_tool
+    memory_db = SimpleNamespace(pool=memory_pool, schema="memory")
+    await memory_module.register_tools(
+        memory_mcp,
+        MemoryModuleConfig(groups=["core"]),
+        memory_db,
+        "memory",
+    )
+    fact_tool = memory_tools["memory_store_fact"]
+
+    fact_results: dict[str, dict[str, Any]] = {}
+    anchored_entity_ids: dict[str, str | None] = {}
+
+    async def target_trigger(**_kwargs: Any) -> Any:
+        routing_context = _routing_ctx_var.get()
+        assert isinstance(routing_context, dict)
+        session_id = str(uuid.uuid4())
+        set_runtime_session_routing_context(session_id, routing_context)
+        token = set_current_runtime_session_id(session_id)
+        try:
+            conceptual_message = routing_context["conceptual_message"]
+            signal_type = conceptual_message["signal_type"]
+            excerpts = conceptual_message["excerpts"]
+            excerpt = excerpts[0] if excerpts else {}
+            anchored_entity_ids[signal_type] = excerpt.get("sender_entity_id")
+            fact_results[signal_type] = await fact_tool(
+                subject=excerpt.get("sender") or "transport-identified speaker",
+                predicate=f"route_boundary_{signal_type}",
+                content=excerpt.get("text") or "missing anchor must be rejected",
+                entity_id=excerpt.get("sender_entity_id"),
+            )
+        finally:
+            reset_current_runtime_session_id(token)
+            clear_runtime_session_routing_context(session_id)
+        return SimpleNamespace(success=True, error=None, session_id=session_id)
+
+    target_daemon = SimpleNamespace(
+        config=SimpleNamespace(name="finance", trusted_route_callers={"switchboard"}),
+        db=SimpleNamespace(pool=identity_pool),
+        _route_inbox_tasks=set(),
+        _active_modules=[],
+    )
+    route_metrics = MagicMock()
+    route_execute_tools: dict[str, Any] = {}
+    route_mcp = MagicMock()
+
+    def _capture_route_tool(*_args: Any, **tool_kwargs: Any):
+        def decorator(fn):
+            route_execute_tools[tool_kwargs.get("name") or fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    route_mcp.tool.side_effect = _capture_route_tool
+    register_routing_tools(
+        ToolContext(
+            daemon=target_daemon,
+            pool=identity_pool,
+            spawner=SimpleNamespace(trigger=target_trigger),
+            butler_name="finance",
+            butler_type=None,
+            is_switchboard=False,
+            is_messenger=False,
+            route_metrics=route_metrics,
+        ),
+        route_mcp,
+        lambda *_args, **_kwargs: route_mcp.tool,
+    )
+    route_execute = route_execute_tools["route.execute"]
+
+    for target in ("finance", "health", "general"):
+        await register_butler(
+            identity_pool,
+            target,
+            f"http://{target}.test/mcp",
+            capabilities=["trigger"],
+        )
+
+    def _route_envelope(target: str, prompt: str) -> dict[str, Any]:
+        request_id = generate_uuid7_string()
+        return {
+            "schema_version": "route.v1",
+            "request_context": {
+                "request_id": request_id,
+                "received_at": datetime.now(UTC).isoformat(),
+                "source_channel": "whatsapp_user_client",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "multiple",
+                "source_thread_identity": envelope["event"]["external_thread_id"],
+            },
+            "input": {"prompt": prompt},
+            "target": {"butler": target, "tool": "route.execute"},
+            "source_metadata": {
+                "channel": "whatsapp_user_client",
+                "identity": "switchboard",
+                "tool_name": "ingest",
+            },
+        }
+
+    signals = [
+        {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "route.execute",
+            "tool_args": _route_envelope("finance", "Store the anchored finance fact."),
+            "confidence": "HIGH",
+            "excerpts": [{"message_id": "msg-known"}],
+        },
+        {
+            "signal_type": "health",
+            "target_butler": "health",
+            "tool_name": "route.execute",
+            "tool_args": _route_envelope("health", "Store the anchored health fact."),
+            "confidence": "HIGH",
+            "excerpts": [{"message_id": "msg-unknown"}],
+        },
+        {
+            "signal_type": "general",
+            "target_butler": "general",
+            "tool_name": "route.execute",
+            "tool_args": _route_envelope("general", "Reject a fact without a speaker anchor."),
+            "confidence": "HIGH",
+            "excerpts": [{"message_id": "not-authoritative"}],
+        },
+    ]
+
+    async def classify(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output=json.dumps(signals), model="test-model")
+
+    forwarded_target_args: list[dict[str, Any]] = []
+
+    async def invoke_target(_endpoint: str, tool_name: str, args: dict[str, Any]) -> Any:
+        assert tool_name == "route.execute"
+        forwarded_target_args.append(dict(args))
+        return await route_execute(**args)
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.route._call_butler_tool",
+            side_effect=invoke_target,
+        ),
+    ):
+        pipeline = MessagePipeline(
+            switchboard_pool=identity_pool,
+            dispatch_fn=classify,
+            enable_identity_resolution=True,
+        )
+        result = await pipeline.process(
+            message_text=envelope["payload"]["normalized_text"],
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": known_identity,
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                },
+            },
+            message_inbox_id=ingest_response.request_id,
+        )
+        if target_daemon._route_inbox_tasks:
+            await asyncio.gather(*target_daemon._route_inbox_tasks)
+
+    assert set(result.acked_targets) == {"finance", "health", "general"}
+    assert all("__conceptual_message" not in args for args in forwarded_target_args)
+    assert all("internal_context" not in args for args in forwarded_target_args)
+    assert all("conceptual_message" in args["input"]["context"] for args in forwarded_target_args)
+    assert fact_results["general"]["error"] == "entity_id is required"
+    facts = await memory_pool.fetch(
+        "SELECT entity_id, predicate FROM memory.facts ORDER BY predicate"
+    )
+    assert [row["entity_id"] for row in facts] == [
+        uuid.UUID(anchored_entity_ids["finance"]),
+        uuid.UUID(anchored_entity_ids["health"]),
+    ]
+    assert facts[0]["entity_id"] == known_entity_id
+    unknown_metadata = await identity_pool.fetchval(
+        "SELECT metadata FROM public.entities WHERE id = $1",
+        uuid.UUID(anchored_entity_ids["health"]),
+    )
+    assert unknown_metadata["source_channel"] == "whatsapp_user_client"
+
+
+@pytest.mark.integration
+async def test_real_telegram_producer_decomposes_with_authoritative_speaker_anchors(identity_pools):
+    """Spec: REQ-switchboard-identity-002 and REQ-conversation-decomposition-001."""
+    from butlers.modules.pipeline import MessagePipeline
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    identity_pool, _memory_pool = identity_pools
+    envelope = _build_real_telegram_envelope()
+    history = envelope["payload"]["raw"]["conversation_history"]
+    assert [message["message_id"] for message in history] == ["101", "102"]
+    assert [message["sender_identity"] for message in history] == ["777", "888"]
+
+    known_entity_id = await identity_pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, aliases, metadata, roles)
+        VALUES ('Known Telegram speaker', 'person', '{}', '{}', '{}')
+        RETURNING id
+        """
+    )
+    await identity_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity)
+        VALUES ($1, 'has-handle', 'telegram:777', 'literal', 'interaction_sync', 'active')
+        """,
+        known_entity_id,
+    )
+    ingest_response = await ingest_v1(identity_pool, envelope, enable_thread_affinity=False)
+    assert ingest_response.status == "accepted"
+
+    signals = [
+        {
+            "signal_type": "finance",
+            "target_butler": "finance",
+            "tool_name": "route.execute",
+            "tool_args": {"schema_version": "route.v1"},
+            "confidence": "HIGH",
+            "excerpts": [{"message_id": "101"}, {"message_id": "102"}],
+        }
+    ]
+
+    async def classify(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output=json.dumps(signals), model="test-model")
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(return_value={"status": "ok"}),
+        ) as routed,
+    ):
+        pipeline = MessagePipeline(
+            switchboard_pool=identity_pool,
+            dispatch_fn=classify,
+            enable_identity_resolution=True,
+        )
+        result = await pipeline.process(
+            message_text=envelope["payload"]["normalized_text"],
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "source_id": "777",
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                },
+            },
+            message_inbox_id=ingest_response.request_id,
+        )
+
+    assert result.acked_targets == ["finance"]
+    conceptual_message = routed.await_args.kwargs["internal_context"]["conceptual_message"]
+    assert [excerpt["message_id"] for excerpt in conceptual_message["excerpts"]] == ["101", "102"]
+    assert conceptual_message["excerpts"][0]["sender_entity_id"] == str(known_entity_id)
+    assert conceptual_message["excerpts"][1]["sender_entity_id"]
+    assert "__conceptual_message" not in routed.await_args.kwargs["args"]
 
 
 @pytest.mark.integration

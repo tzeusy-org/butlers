@@ -31,6 +31,12 @@ from butlers.core.route_inbox import (
     route_inbox_recovery_sweep,
     route_inbox_wait_while_claimed,
 )
+from butlers.core.route_observability import (
+    has_conceptual_route_context,
+    opaque_route_ref,
+    safe_runtime_failure_class,
+)
+from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 from butlers.core.telemetry import tag_butler_span
 from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
@@ -243,6 +249,12 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         if not isinstance(ref, _MessageRef):
             return
         channel = ref.source.get("channel", "unknown")
+        content_blind_observability = (
+            channel == "whatsapp_user_client" or ref.payload_type == "conversation_history"
+        )
+        observability_request_id = (
+            opaque_route_ref(ref.request_id) if content_blind_observability else ref.request_id
+        )
         external_thread_id = ref.event.get("external_thread_id")
         _, _buf_tool_args = build_buffer_pipeline_inputs(ref)
 
@@ -258,7 +270,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                 except Exception:
                     logger.warning(
                         "DurableBuffer: failed to set in-progress reaction for request_id=%s",
-                        ref.request_id,
+                        observability_request_id,
                     )
 
         routing_failed = False
@@ -272,16 +284,22 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             )
             if result.classification_error or result.routing_error or result.failed_targets:
                 routing_failed = True
-                _parts = [p for p in [result.classification_error, result.routing_error] if p]
+                _parts: list[str] = []
+                if result.classification_error:
+                    _parts.append("classification_error")
+                if result.routing_error:
+                    _parts.append("routing_error")
                 if result.failed_targets:
-                    _parts.append(f"failed_targets: {result.failed_targets}")
+                    _parts.append(f"failed_targets:{len(result.failed_targets)}")
                 _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
         except Exception as _buf_exc:
             routing_failed = True
-            _routing_error_detail = f"{type(_buf_exc).__name__}: {_buf_exc}"
-            logger.exception(
-                "DurableBuffer: pipeline processing failed for request_id=%s",
-                ref.request_id,
+            failure_class = type(_buf_exc).__name__
+            _routing_error_detail = f"pipeline_exception:{failure_class}"
+            logger.warning(
+                "DurableBuffer: pipeline processing failed for request_id=%s failure_class=%s",
+                observability_request_id,
+                failure_class,
             )
 
         # Mark the ingestion event as failed/replay_failed, or complete a
@@ -312,7 +330,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                 except Exception:
                     logger.warning(
                         "DurableBuffer: failed to set terminal reaction for request_id=%s",
-                        ref.request_id,
+                        observability_request_id,
                     )
 
     # Create the durable buffer
@@ -368,18 +386,23 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         run).  The request_id attribute allows cross-trace correlation via logs.
         """
 
+        raw_content_blind_recovery = has_conceptual_route_context(route_envelope)
+        preparse_observability_row_id = (
+            opaque_route_ref(row_id) if raw_content_blind_recovery else row_id
+        )
         try:
             parsed = parse_route_envelope(route_envelope)
         except Exception as exc:
+            failure_class = type(exc).__name__
             logger.warning(
-                "route_inbox recovery: invalid envelope for id=%s, skipping: %s",
-                row_id,
-                exc,
+                "route_inbox recovery: invalid envelope for id=%s, skipping failure_class=%s",
+                preparse_observability_row_id,
+                failure_class,
             )
             await route_inbox_mark_errored(
                 pool,
                 row_id,
-                f"Invalid envelope on recovery: {exc}",
+                f"Invalid envelope on recovery ({failure_class})",
                 processing_claim_id=processing_claim_id,
             )
             return
@@ -403,6 +426,20 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
             addressed=parsed.request_context.addressed,
         )
         recovery_prompt = _wrap_routed_message(parsed.input.prompt)
+        recovered_routing_context: dict[str, Any] = {}
+        if parsed.request_context.source_sender_entity_id:
+            recovered_routing_context["source_entity_id"] = (
+                parsed.request_context.source_sender_entity_id
+            )
+        if isinstance(parsed.input.context, dict):
+            conceptual_message = parsed.input.context.get("conceptual_message")
+            if isinstance(conceptual_message, dict):
+                recovered_routing_context["conceptual_message"] = dict(conceptual_message)
+        content_blind_recovery = "conceptual_message" in recovered_routing_context
+        observability_request_id = (
+            opaque_route_ref(route_request_id) if content_blind_recovery else route_request_id
+        )
+        observability_row_id = opaque_route_ref(row_id) if content_blind_recovery else row_id
 
         _tracer = trace.get_tracer("butlers")
         # Fresh root span for recovery — no accept-phase span to link to.
@@ -411,13 +448,14 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
             context=OtelContext(),
         ) as _recovery_span:
             tag_butler_span(_recovery_span, daemon.config.name)
-            _recovery_span.set_attribute("request_id", route_request_id)
+            _recovery_span.set_attribute("request_id", observability_request_id)
             try:
                 async with route_inbox_processing_lease_heartbeat(
                     pool,
                     row_id,
                     processing_claim_id,
                 ) as lease_lost:
+                    _routing_ctx_var.set(recovered_routing_context or None)
                     if dashboard_turn_id is not None and recovery_from_processing:
                         try:
                             recovery_control = await reconcile_route_recovery(
@@ -508,9 +546,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                     if not bool(getattr(result, "success", False)) and (
                         result_error != SESSION_CANCELLED_ERROR
                     ):
+                        result_failure_class = safe_runtime_failure_class(result_error)
                         error_msg = (
-                            "Spawner returned unsuccessful result: "
-                            f"{result_error or 'unknown error'}"
+                            f"route runtime returned unsuccessful result ({result_failure_class})"
                         )
                         _recovery_span.set_status(trace.StatusCode.ERROR, error_msg)
                         await route_inbox_mark_errored(
@@ -534,12 +572,17 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                 # heartbeat ownership is lost.  A later sweep reconciles it.
                 logger.warning(
                     "route_inbox recovery: relinquished processing lease id=%s",
-                    row_id,
+                    observability_row_id,
                 )
                 return
             except Exception as exc:
-                error_msg = f"{type(exc).__name__}: {exc}"
-                logger.exception("route_inbox recovery: trigger failed for id=%s", row_id)
+                failure_class = type(exc).__name__
+                error_msg = f"route recovery trigger failed ({failure_class})"
+                logger.warning(
+                    "route_inbox recovery: trigger failed for id=%s failure_class=%s",
+                    observability_row_id,
+                    failure_class,
+                )
                 _recovery_span.set_status(trace.StatusCode.ERROR, error_msg)
                 await route_inbox_mark_errored(
                     pool,

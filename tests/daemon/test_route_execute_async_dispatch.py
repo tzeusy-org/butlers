@@ -401,7 +401,7 @@ async def test_dashboard_processing_recovery_never_replays_a_predecessor(
 
     pool = AsyncMock()
     message_id = uuid.uuid4()
-    row_id = uuid.uuid4()
+    row_id = uuid.UUID("11111111-1111-4111-8111-111111111111")
     trigger = _make_trigger_mock()
     daemon = SimpleNamespace(
         config=SimpleNamespace(name="health"),
@@ -543,6 +543,216 @@ async def test_dashboard_accepted_recovery_replays_before_runtime_handoff() -> N
         trigger.return_value.session_id,
         processing_claim_id=processing_claim_id,
     )
+
+
+async def test_recovery_restores_structured_conceptual_message_context() -> None:
+    """Spec: REQ-conversation-decomposition-001, REQ-entity-identity-001."""
+    from types import SimpleNamespace
+
+    from butlers.core.routing_context import _routing_ctx_var
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    pool = AsyncMock()
+    row_id = uuid.uuid4()
+    processing_claim_id = uuid.uuid4()
+    conceptual_message = {
+        "signal_type": "health",
+        "excerpts": [
+            {
+                "message_id": "m1",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+            }
+        ],
+        "confidence": "HIGH",
+    }
+    captured_context: list[Any] = []
+    trigger_result = SimpleNamespace(success=True, error=None, session_id="session-1")
+
+    async def _trigger(**_kwargs: Any) -> Any:
+        captured_context.append(_routing_ctx_var.get())
+        return trigger_result
+
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        spawner=SimpleNamespace(trigger=AsyncMock(side_effect=_trigger)),
+    )
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_channel="whatsapp_user_client"),
+        "input": {
+            "prompt": "Store facts from this excerpt.",
+            "context": {"conceptual_message": conceptual_message},
+        },
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    _routing_ctx_var.set(None)
+    recovery_span = MagicMock()
+    span_context = MagicMock()
+    span_context.__enter__.return_value = recovery_span
+    span_context.__exit__.return_value = False
+    tracer = MagicMock()
+    tracer.start_as_current_span.return_value = span_context
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_processed",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.switchboard_wiring.trace.get_tracer", return_value=tracer),
+    ):
+        await recover_route_inbox(daemon, pool)
+
+    assert captured_context == [{"conceptual_message": conceptual_message}]
+    observability = repr(recovery_span.set_attribute.call_args_list)
+    assert envelope["request_context"]["request_id"] not in observability
+    assert str(row_id) not in observability
+
+
+async def test_malformed_conceptual_recovery_log_omits_row_and_request_uuids() -> None:
+    """Malformed persisted conceptual routes stay content-blind before validation."""
+    from types import SimpleNamespace
+
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    pool = AsyncMock()
+    row_id = uuid.UUID("44444444-4444-4444-8444-444444444444")
+    request_id = "018f6f4e-5b3b-7b2d-9c2f-444444444444"
+    processing_claim_id = uuid.uuid4()
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        spawner=SimpleNamespace(trigger=AsyncMock()),
+    )
+    malformed_envelope = {
+        "schema_version": "route.v1",
+        "request_context": {"request_id": request_id},
+        "input": {
+            "prompt": "Store a fact.",
+            "context": {"conceptual_message": {"excerpts": []}},
+        },
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=malformed_envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_errored",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mark_errored,
+        patch("butlers.switchboard_wiring.logger.warning") as recovery_warning,
+    ):
+        await recover_route_inbox(daemon, pool)
+
+    observability = repr(recovery_warning.call_args_list)
+    assert str(row_id) not in observability
+    assert request_id not in observability
+    assert "Invalid envelope on recovery" in mark_errored.await_args.args[2]
+
+
+@pytest.mark.parametrize(
+    ("result_error", "expected_class"),
+    [
+        (
+            "RuntimeError: 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT",
+            "RuntimeError",
+        ),
+        ("unstructured 222222222222222@lid PRIVATE MESSAGE", "runtime_unsuccessful"),
+    ],
+)
+async def test_recovery_unsuccessful_result_uses_bounded_failure_class(
+    result_error: str,
+    expected_class: str,
+) -> None:
+    """Recovered conceptual routes never persist runtime error remainders."""
+    from types import SimpleNamespace
+
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    pool = AsyncMock()
+    row_id = uuid.UUID("55555555-5555-4555-8555-555555555555")
+    processing_claim_id = uuid.uuid4()
+    trigger_result = SimpleNamespace(success=False, error=result_error, session_id=uuid.uuid4())
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        spawner=SimpleNamespace(trigger=AsyncMock(return_value=trigger_result)),
+    )
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(source_channel="whatsapp_user_client"),
+        "input": {
+            "prompt": "Store facts from this excerpt.",
+            "context": {"conceptual_message": {"excerpts": []}},
+        },
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    recovery_span = MagicMock()
+    span_context = MagicMock()
+    span_context.__enter__.return_value = recovery_span
+    span_context.__exit__.return_value = False
+    tracer = MagicMock()
+    tracer.start_as_current_span.return_value = span_context
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_errored",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mark_errored,
+        patch("butlers.switchboard_wiring.trace.get_tracer", return_value=tracer),
+        patch("butlers.switchboard_wiring.logger.warning") as recovery_warning,
+    ):
+        await recover_route_inbox(daemon, pool)
+
+    persisted_error = mark_errored.await_args.args[2]
+    assert persisted_error == f"route runtime returned unsuccessful result ({expected_class})"
+    observability = (
+        persisted_error
+        + repr(recovery_span.set_attribute.call_args_list)
+        + repr(recovery_span.set_status.call_args_list)
+        + repr(recovery_warning.call_args_list)
+    )
+    assert "15551234567@s.whatsapp.net" not in observability
+    assert "222222222222222@lid" not in observability
+    assert "PRIVATE MESSAGE" not in observability
+    assert envelope["request_context"]["request_id"] not in observability
+    assert str(row_id) not in observability
 
 
 async def test_recovery_reconciliation_keeps_claim_fenced_before_spawn() -> None:

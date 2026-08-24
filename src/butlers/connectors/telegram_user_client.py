@@ -1170,7 +1170,6 @@ class TelegramUserClientConnector:
         conversation_history: list[dict[str, Any]] = []
         for msg in sorted(context_messages, key=lambda m: getattr(m, "id", 0)):
             msg_id = getattr(msg, "id", None)
-            sender_id = getattr(msg, "sender_id", None)
             text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
             msg_date = getattr(msg, "date", None)
             if msg_date is None:
@@ -1184,9 +1183,9 @@ class TelegramUserClientConnector:
             sid_str = self._extract_sender_identity(msg)
             conversation_history.append(
                 {
-                    "message_id": msg_id,
-                    "sender_id": sender_id,
-                    "display_name": all_sender_ids.get(sid_str, sid_str),
+                    "message_id": str(msg_id),
+                    "sender_identity": sid_str,
+                    "sender": all_sender_ids.get(sid_str, sid_str),
                     "text": text,
                     "timestamp": timestamp,
                     "is_new": msg_id in buffered_ids,
