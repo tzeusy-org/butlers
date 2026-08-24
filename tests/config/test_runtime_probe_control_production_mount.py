@@ -287,3 +287,25 @@ def test_only_the_activation_gate_reads_the_signer_snapshot() -> None:
     )
 
     assert callers == []
+
+
+def test_no_process_outside_the_package_reads_the_verifier_keyring() -> None:
+    """AC2: the keyring stays behind the package, even though it is public.
+
+    The predecessor file asserted this as part of "nothing launches a probe
+    capability client at all", which the cutover deliberately falsifies ---
+    things sign now.  What survives the inversion is the confinement half: the
+    keyring is mounted into every verifying process, so a helper that reads it
+    directly would spread key handling across the codebase and put the
+    freshness rules (retiring-key overlap, frozen snapshots) somewhere no test
+    watches.  Verification goes through the package or it does not happen.
+    """
+    raw_reader = re.compile(r"\bverifier_snapshot\b")
+    callers = sorted(
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in _SRC.rglob("*.py")
+        if raw_reader.search(path.read_text(encoding="utf-8"))
+        and "runtime_probe_control" not in path.parts
+    )
+
+    assert callers == []
