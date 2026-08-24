@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -52,6 +55,33 @@ class TestModuleABC:
     def test_migration_revisions_memory_chain(self):
         mod = MemoryModule()
         assert mod.migration_revisions() == "memory"
+
+    def test_import_keeps_memory_tool_graph_deferred(self):
+        """Importing MemoryModule must not load embeddings or memory tools eagerly."""
+        repo_root = Path(__file__).resolve().parents[2]
+        probe = "\n".join(
+            (
+                "import json",
+                "import sys",
+                f"sys.path.insert(0, {str(repo_root / 'src')!r})",
+                "import butlers.modules.memory  # noqa: F401",
+                "loaded = sorted(name for name in sys.modules "
+                "if name.startswith('butlers.modules.memory.tools'))",
+                "print(json.dumps(loaded))",
+                "raise SystemExit(bool(loaded))",
+            )
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", probe],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout) == []
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
+from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
+import asyncpg
 import pytest
 
 from butlers.tools.relationship.whatsapp_reconciliation import (
@@ -232,7 +238,7 @@ def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
 def test_pep_723_command_can_import_the_repository_package() -> None:
     """The documented uv invocation must not isolate the script from Butlers."""
     result = subprocess.run(
-        ["uv", "run", str(_SCRIPT_PATH), "--help"],
+        ["uv", "run", "--isolated", "--no-project", str(_SCRIPT_PATH), "--help"],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
@@ -241,3 +247,159 @@ def test_pep_723_command_can_import_the_repository_package() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "ModuleNotFoundError" not in result.stderr
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
+    postgres_container,
+) -> None:
+    """The isolated operator environment must reach and complete the real merge path."""
+    admin_url = postgres_container.get_connection_url().replace(
+        "postgresql+psycopg2://", "postgresql://", 1
+    )
+    parsed = urlsplit(admin_url)
+    database_name = f"reconciliation_apply_{uuid4().hex[:12]}"
+    database_url = urlunsplit(parsed._replace(path=f"/{database_name}"))
+
+    admin = await asyncpg.connect(admin_url)
+    try:
+        await admin.execute(f'CREATE DATABASE "{database_name}"')
+    finally:
+        await admin.close()
+
+    conn = await asyncpg.connect(database_url)
+    try:
+        await conn.execute(
+            """
+            CREATE SCHEMA relationship;
+            CREATE TABLE public.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                canonical_name TEXT NOT NULL,
+                entity_type TEXT NOT NULL DEFAULT 'person',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE public.whatsmeow_lid_map (
+                lid TEXT PRIMARY KEY,
+                pn TEXT NOT NULL
+            );
+            CREATE TABLE relationship.entity_predicate_registry (
+                predicate TEXT PRIMARY KEY,
+                cardinality TEXT NOT NULL DEFAULT 'multi'
+            );
+            CREATE TABLE relationship.entity_facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject UUID NOT NULL REFERENCES public.entities(id),
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                object_kind TEXT NOT NULL,
+                src TEXT NOT NULL,
+                conf FLOAT NOT NULL DEFAULT 1.0,
+                last_seen TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ,
+                verified BOOL NOT NULL DEFAULT false,
+                "primary" BOOL,
+                validity TEXT NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE relationship.facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                entity_id UUID,
+                object_entity_id UUID,
+                predicate TEXT NOT NULL,
+                confidence FLOAT NOT NULL DEFAULT 1.0,
+                valid_at TIMESTAMPTZ,
+                supersedes_id UUID,
+                scope TEXT NOT NULL DEFAULT 'relationship',
+                validity TEXT NOT NULL DEFAULT 'active'
+            );
+            CREATE TABLE relationship.contact_entity_map (
+                contact_id UUID PRIMARY KEY,
+                entity_id UUID NOT NULL
+            );
+            CREATE TABLE relationship.merge_reviews (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                entity_a UUID NOT NULL REFERENCES public.entities(id),
+                entity_b UUID NOT NULL REFERENCES public.entities(id),
+                shared_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                divergent_facts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                outcome TEXT NOT NULL,
+                reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE TABLE relationship.pending_actions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tool_name TEXT NOT NULL,
+                tool_args JSONB NOT NULL,
+                status TEXT NOT NULL
+            );
+            """
+        )
+        source_id = await conn.fetchval(
+            """
+            INSERT INTO public.entities (canonical_name, metadata)
+            VALUES (
+                '6591234567@s.whatsapp.net',
+                '{"unidentified":true,"source_channel":"whatsapp_user_client",'
+                '"source_value":"structured-provider-value"}'::jsonb
+            )
+            RETURNING id
+            """
+        )
+        target_id = await conn.fetchval(
+            "INSERT INTO public.entities (canonical_name) VALUES ('Confirmed target') RETURNING id"
+        )
+        await conn.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src)
+            VALUES ($1, 'has-phone', '+6591234567', 'literal', 'test')
+            """,
+            target_id,
+        )
+    finally:
+        await conn.close()
+
+    env = {**os.environ, "BUTLERS_DATABASE_URL": database_url}
+
+    def _run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "uv",
+                "run",
+                "--isolated",
+                "--no-project",
+                "--with",
+                "asyncpg",
+                "python",
+                str(_SCRIPT_PATH),
+                *args,
+            ],
+            cwd=_REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    dry_run = await asyncio.to_thread(_run)
+    assert dry_run.returncode == 0, dry_run.stderr
+    digest = json.loads(dry_run.stdout)["plan_digest"]
+
+    apply = await asyncio.to_thread(_run, "--apply", "--plan-digest", digest)
+
+    assert apply.returncode == 0, apply.stderr
+    assert json.loads(apply.stdout)["applied"] == 1
+    verify = await asyncpg.connect(database_url)
+    try:
+        assert await verify.fetchval(
+            "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1",
+            source_id,
+        ) == str(target_id)
+    finally:
+        await verify.close()

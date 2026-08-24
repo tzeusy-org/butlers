@@ -17,6 +17,7 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.entity_fact_repoint import repoint_facts_on_conn
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
 
@@ -265,9 +266,7 @@ async def merge_entity_pair(
                 target_text,
             )
 
-            from butlers.modules.memory.tools.entities import _repoint_facts_on_conn
-
-            await _repoint_facts_on_conn(conn, source_entity_id, target_entity_id)
+            await repoint_facts_on_conn(conn, source_entity_id, target_entity_id)
 
             await conn.execute(
                 """

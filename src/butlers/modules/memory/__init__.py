@@ -17,7 +17,7 @@ from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
-from butlers.modules.memory.tools.entities import is_whatsapp_transport_identifier
+from butlers.transport_identifiers import is_whatsapp_transport_identifier
 
 
 def _coerce_json_list(v: Any) -> Any:
