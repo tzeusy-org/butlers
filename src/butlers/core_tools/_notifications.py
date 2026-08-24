@@ -400,6 +400,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               }
             }
             """
+            # --- Session correlation for the attention ledger (bu-358jk) ---
+            # Bound once here, at the top of the call, so every ledger row this
+            # call can write names the runtime session that made it. A caller
+            # that spawned a session to send a notice can then ask the ledger
+            # what became of it, instead of inferring delivery from whatever
+            # state moved at around the same time. None outside a spawned
+            # session (a daemon-internal notify has no session to name).
+            _ledger_session_id = get_current_runtime_session_id()
+
             # --- Normalize request_context (tolerate a stringified JSON object) ---
             # A model may pass request_context as a JSON string; coerce it to a
             # dict here so reply/react targeting still works instead of failing
@@ -616,6 +625,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             priority=priority,
                             reason="approval_parking_unavailable",
                             metadata={"entity_id": str(entity_id), "retryable": False},
+                            session_id=_ledger_session_id,
                         )
                         return {
                             "status": "error",
@@ -921,6 +931,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 priority=priority,
                                 reason="delivery_preferences_quiet_hours",
                                 notification_ref=_notif_id,
+                                session_id=_ledger_session_id,
                             )
                             return {
                                 "status": "deferred",
@@ -1042,6 +1053,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 intent=intent,
                                 priority=priority,
                                 reason=(f"deferred_persistence_error:{type(_defer_exc).__name__}"),
+                                session_id=_ledger_session_id,
                             )
                         except Exception:
                             logger.warning(
@@ -1081,6 +1093,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             priority=priority,
                             reason=_defer_reason,
                             notification_ref=_notif_id,
+                            session_id=_ledger_session_id,
                         )
                     except Exception:
                         # The queue is already durable; ledger observability must
@@ -1190,6 +1203,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     reason=reason,
                     notification_ref=notification_ref,
                     metadata={"retryable": retryable} if retryable is not None else None,
+                    session_id=_ledger_session_id,
                 )
 
             # Switchboard self-delivery: call deliver() directly instead of
@@ -1236,6 +1250,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         notification_ref=result.get("notification_id")
                         if isinstance(result, dict)
                         else None,
+                        session_id=_ledger_session_id,
                     )
                     return {"status": "ok", "result": result}
                 except Exception as exc:
@@ -1287,6 +1302,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     notification_ref=(
                         data.get("notification_id") if isinstance(data, dict) else None
                     ),
+                    session_id=_ledger_session_id,
                 )
                 return {"status": "ok", "result": data}
             except TimeoutError:
