@@ -4342,6 +4342,15 @@ BEGIN
        OR to_regclass('public.runtime_attention_delivery_lease') IS NULL THEN
         RAISE EXCEPTION 'core_198 rollback requires the complete trusted outbox interface';
     END IF;
+    -- Since core_199, `alembic downgrade` reaches this refusal only on a chain
+    -- stopped at core_198: core_199's downgrade deliberately retains
+    -- public.runtime_attention_producer_control and the legacy debounce-marker
+    -- planter, which core_198's _TRUSTED_BOOTSTRAP_ROLLBACK_SQL preflight
+    -- requires to be absent, so from head that preflight raises first and this
+    -- function is never called.  A bootstrap superuser invoking
+    -- rollback_interface() directly still lands here, and the migration login
+    -- cannot (finalize_interface revokes its EXECUTE), so both refusals are all
+    -- that stands between a hand-run rollback and a nonempty outbox.
     IF EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
        OR EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease) THEN
         RAISE EXCEPTION
