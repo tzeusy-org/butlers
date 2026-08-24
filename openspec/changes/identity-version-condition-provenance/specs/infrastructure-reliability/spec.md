@@ -15,7 +15,11 @@ declared identity-payload version as condition evidence. When its first
 successor under a strictly higher version explicitly names a predecessor
 fingerprint, a complete snapshot SHALL retain reciprocal predecessor/successor
 references and a `superseded_by_identity_version_bump` terminal reason; it
-SHALL NOT rewrite the predecessor fingerprint.
+SHALL NOT rewrite the predecessor fingerprint. The terminal reason SHALL be
+recorded in top-level `metadata.resolution_reason` — the same key an explicit
+resolution writes — so a reader never needs the resolving path's provenance to
+know where to look; only the predecessor/successor lineage SHALL nest under
+`metadata.identity_payload`.
 
 #### Scenario: Stable evidence produces one identity
 - **WHEN** a producer observes the same condition with updated timestamps,
@@ -34,8 +38,9 @@ SHALL NOT rewrite the predecessor fingerprint.
 #### Scenario: Complete snapshot records an explicit version successor
 - **WHEN** an active v1 episode is absent from a complete snapshot containing
   a v2 observation that explicitly names the v1 fingerprint as predecessor
-- **THEN** the v1 episode resolves with
-  `superseded_by_identity_version_bump` and its v2 successor reference
+- **THEN** the v1 episode resolves with `superseded_by_identity_version_bump`
+  in top-level `metadata.resolution_reason` and its v2 successor reference
+  under `metadata.identity_payload.successor`
 - **AND** the first v2 episode retains the reciprocal v1 predecessor reference
 - **AND** repeated v2 observations preserve that correlation without creating
   another episode

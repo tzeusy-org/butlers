@@ -71,14 +71,17 @@ function conditionDotState(state: string): DispatchState {
   return "ok"
 }
 
+// bu-o4i4j: `resolution_reason` has one home -- top-level `metadata` -- for
+// every resolution path, so this reads it there rather than having to know
+// which path closed the episode. The `successor` cross-reference is identity
+// lineage and stays under `identity_payload` beside the `version` it names.
 function supersedingIdentityVersion(condition: ConditionEntry): number | null {
   if (condition.ledger !== "infra" || !condition.metadata) return null
+  if (condition.metadata.resolution_reason !== "superseded_by_identity_version_bump") return null
   const payload = condition.metadata.identity_payload
   if (!payload || typeof payload !== "object") return null
-  const { resolution_reason: reason, successor } = payload as Record<string, unknown>
-  if (reason !== "superseded_by_identity_version_bump" || !successor || typeof successor !== "object") {
-    return null
-  }
+  const { successor } = payload as Record<string, unknown>
+  if (!successor || typeof successor !== "object") return null
   const version = (successor as Record<string, unknown>).version
   return typeof version === "number" ? version : null
 }

@@ -466,9 +466,12 @@ class TestIdentityVersionBumpProvenance:
             old_fp,
         )
         assert old_episode is not None
-        assert json.loads(old_episode["metadata"])["identity_payload"] == {
+        old_metadata = json.loads(old_episode["metadata"])
+        # bu-o4i4j: the terminal reason lands top-level, the same place an
+        # explicit resolution writes it; only the successor lineage nests.
+        assert old_metadata["resolution_reason"] == "superseded_by_identity_version_bump"
+        assert old_metadata["identity_payload"] == {
             "version": 1,
-            "resolution_reason": "superseded_by_identity_version_bump",
             "successor": {
                 "condition_id": str(new_active["id"]),
                 "fingerprint": new_fp,

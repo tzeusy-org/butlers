@@ -452,3 +452,87 @@ class TestOwnerConditionsIsolatedFromInfraConditions:
         assert (
             await infra_get_active(pool, source=shared_source, fingerprint=shared_fp)
         ) is not None
+
+
+class TestResolutionReasonSingleLocation:
+    """bu-o4i4j: one location for ``resolution_reason``, whichever path resolved the row.
+
+    The explicit-resolution path (``resolve_condition``) and the
+    identity-version supersede path inside ``reconcile_snapshot`` both close an
+    episode, and both record why. Before bu-o4i4j they recorded it in
+    different places -- top-level ``metadata`` for the resolver, nested under
+    ``metadata.identity_payload`` for the supersede path -- so a reader had to
+    know which path had run before it knew where to look, and a query written
+    against one location silently returned nothing for rows closed by the
+    other. Both now land at top-level ``metadata.resolution_reason``; the
+    reciprocal identity lineage (``successor``/``predecessor``) stays inside
+    ``identity_payload`` next to the ``version`` it correlates.
+    """
+
+    async def test_both_resolution_paths_write_resolution_reason_top_level(
+        self, codec_pool: asyncpg.Pool
+    ) -> None:
+        owner_source = "relationship:commitment-reason-location"
+        owner_fp = compute_fingerprint(owner_source, 1, {"commitment": "reason-location"})
+        await reconcile_snapshot(
+            codec_pool,
+            source=owner_source,
+            observations=[
+                Observation(
+                    fingerprint=owner_fp,
+                    metadata={"class": "commitment", "identity_payload": {"version": 1}},
+                )
+            ],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        resolved = await resolve_condition(
+            codec_pool,
+            source=owner_source,
+            fingerprint=owner_fp,
+            resolution_metadata={"resolution_reason": "satisfied"},
+        )
+        assert resolved is not None
+
+        owner_metadata = await codec_pool.fetchval(
+            "SELECT metadata FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
+            owner_source,
+            owner_fp,
+        )
+        assert owner_metadata["resolution_reason"] == "satisfied"
+        assert "resolution_reason" not in owner_metadata["identity_payload"]
+
+        infra_source = "resolution_reason_location"
+        old_fp = compute_fingerprint(infra_source, 1, {"chain": "core"})
+        new_fp = compute_fingerprint(infra_source, 2, {"chain": "core"})
+        await infra_reconcile_snapshot(
+            codec_pool,
+            source=infra_source,
+            observations=[InfraObservation(fingerprint=old_fp, identity_version=1)],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        await infra_reconcile_snapshot(
+            codec_pool,
+            source=infra_source,
+            observations=[
+                InfraObservation(
+                    fingerprint=new_fp,
+                    identity_version=2,
+                    predecessor_fingerprint=old_fp,
+                )
+            ],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        superseded = await codec_pool.fetchrow(
+            "SELECT id, metadata FROM public.infra_conditions "
+            "WHERE source = $1 AND fingerprint = $2",
+            infra_source,
+            old_fp,
+        )
+        assert superseded is not None
+        assert superseded["metadata"]["resolution_reason"] == "superseded_by_identity_version_bump"
+        assert "resolution_reason" not in superseded["metadata"]["identity_payload"]
+        assert superseded["metadata"]["identity_payload"]["successor"]["fingerprint"] == new_fp
