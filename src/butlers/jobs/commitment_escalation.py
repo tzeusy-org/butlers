@@ -70,6 +70,7 @@ cooldowns, and quiet hours as every other candidate.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
@@ -84,16 +85,12 @@ from butlers.core.commitments import (
     resolve_commitment,
 )
 from butlers.core.condition_ledger import (
-    # Two private names from the ledger engine, imported for the same reason
-    # ``butlers.core.commitments`` imports ``_row_to_dict``: re-deriving
-    # either here would create a second copy of a ledger decision, free to
-    # drift from the one the ledger actually writes with.
-    # ``_ESCALATION_ADVANCE`` is the escalation schedule itself (RFC 0026 §6
-    # restates it as prose); a local copy would let this job's cadence and
-    # the ledger's disagree silently.
+    # The escalation schedule itself (RFC 0026 §6 restates it as prose). Imported
+    # rather than restated: a local copy would let this job's cadence and the
+    # ledger's disagree silently, and the disagreement would show up as
+    # commitments escalating on a different clock than every other condition.
     _ESCALATION_ADVANCE,
     ConditionTransition,
-    _row_to_dict,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,7 +186,21 @@ class InsightProposer(Protocol):
         message: str,
         expires_at: datetime,
         cooldown_days: int | None = None,
-        metadata: dict[str, Any] | None = None,
+        channel: str | None = None,
+        # A pre-serialized JSON object, not a dict, despite the broker
+        # annotating this parameter ``dict``. The broker binds the value
+        # straight into ``$9::jsonb``, which asyncpg infers as ``text``, so a
+        # raw dict raises ``DataError`` on any pool without a dict->jsonb
+        # codec registered — and this job runs against whichever pool the
+        # scheduler built. A JSON string is accepted by both kinds of pool,
+        # which is the same reason ``attention_ledger.record_attention_event``
+        # pre-serializes. Narrowed here rather than fixed in the broker
+        # because REQ-commitment-lifecycle-005 forbids insight-engine changes;
+        # if the broker ever starts serializing for itself, the round-trip
+        # assertion in tests/integration/test_commitment_escalation.py fails
+        # rather than silently storing a double-encoded string.
+        metadata: str | None = None,
+        now: datetime | None = None,
     ) -> Awaitable[dict[str, str]]: ...
 
 
@@ -243,7 +254,38 @@ async def _load_active_commitments(pool: asyncpg.Pool, *, limit: int) -> list[di
         list(_ACTIVE_STATES),
         limit,
     )
-    return [_row_to_dict(row) for row in rows]
+    return [_decode_row(row) for row in rows]
+
+
+def _decode_row(row: asyncpg.Record) -> dict[str, Any]:
+    """Return one ledger row as a dict with ``metadata`` decoded to an object.
+
+    Whether asyncpg hands JSONB back as ``dict`` or as raw ``str`` depends on
+    whether the caller's pool registered a codec, and this job runs against
+    whichever pool the scheduler built. Decoding here rather than trusting the
+    pool matters more than it looks: every gate below — the confidence band,
+    the deadline, the candidate metadata — reads ``metadata``, so an undecoded
+    string would make every commitment look confidence-less and be silently
+    skipped rather than failing loudly.
+
+    Deliberately not ``condition_ledger``'s own row decoder: that name is
+    private, and this module needs one field decoded rather than the facades'
+    full row contract.
+    """
+    decoded = dict(row)
+    raw = decoded.get("metadata")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "commitment_escalation: undecodable metadata on %s/%s — treating as empty",
+                decoded.get("source"),
+                decoded.get("fingerprint"),
+            )
+            raw = None
+    decoded["metadata"] = raw if isinstance(raw, dict) else {}
+    return decoded
 
 
 def _metadata_of(row: dict[str, Any]) -> dict[str, Any]:
@@ -512,7 +554,12 @@ async def _propose(
             message=message,
             expires_at=now + _CANDIDATE_TTL,
             cooldown_days=cooldown_days,
-            metadata=_candidate_metadata(row, proposal=proposal),
+            metadata=json.dumps(_candidate_metadata(row, proposal=proposal)),
+            # This tick reads its clock once, from Postgres, and derives every
+            # timestamp from it; the broker otherwise checks freshness against
+            # its own wall clock, so any skew between the two would reject a
+            # candidate this job had just built. See the broker's `now` docs.
+            now=now,
         )
     except Exception:
         logger.exception(
@@ -586,24 +633,33 @@ async def run_commitment_escalation(
         confidence = _confidence_of(row)
         if confidence is None or confidence < SURFACING_CONFIDENCE_THRESHOLD:
             skipped_low_confidence += 1
-            continue
+        else:
+            status = await _propose(
+                pool,
+                insight_proposer,
+                row=row,
+                priority=_PRIORITY_BY_LEVEL[level],
+                dedup_key=_dedup_key(row["fingerprint"], level),
+                message=_surfacing_message(row, now=now),
+                cooldown_days=_DWELL_DAYS_BY_LEVEL[level],
+                proposal="surfacing",
+                now=now,
+            )
+            if status == "accepted":
+                surfaced += 1
+            elif status == "error":
+                proposal_errors += 1
 
-        status = await _propose(
-            pool,
-            insight_proposer,
-            row=row,
-            priority=_PRIORITY_BY_LEVEL[level],
-            dedup_key=_dedup_key(row["fingerprint"], level),
-            message=_surfacing_message(row, now=now),
-            cooldown_days=_DWELL_DAYS_BY_LEVEL[level],
-            proposal="surfacing",
-            now=now,
-        )
-        if status == "accepted":
-            surfaced += 1
-        elif status == "error":
-            proposal_errors += 1
-
+        # Collection is not surfacing, so it is deliberately outside the
+        # confidence gate. REQ-commitment-lifecycle-006 states the 90-day rule
+        # unconditionally, and the reading that matters is the outcome: gating
+        # it on confidence would make the least-trustworthy rows — the hedged
+        # guesses the extraction pipeline is explicitly allowed to file
+        # (RFC 0026 §8) — the only ones that can never be collected, in a pass
+        # whose entire purpose is to bound the ledger's growth. The two
+        # proposals also ask different questions: surfacing nudges the owner
+        # about an obligation, while this asks whether a record should still
+        # exist.
         if level != "L3" or row["last_confirmed_at"] > stale_before:
             continue
 
