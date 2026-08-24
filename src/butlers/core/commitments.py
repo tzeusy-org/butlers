@@ -67,11 +67,14 @@ caller's through, and why it must keep doing so.
 
 Escalation grace
 ----------------
-``initial_grace_seconds`` defaults to ``DEFAULT_INITIAL_GRACE_SECONDS`` (24h,
-RFC 0026 §6). Deadline-aware shortening — pulling L1 in front of a deadline
-that falls inside the grace window — belongs to the escalation job
-(REQ-commitment-lifecycle-005); the seam for it is this parameter, which a
-caller computing its own grace may override.
+``initial_grace_seconds`` defaults to ``DEFAULT_INITIAL_GRACE_SECONDS``
+(24h, RFC 0026 §6 "Escalation Integration": "Grace period defaults to 24h
+or until ``next_action_window``, whichever is sooner"). Deadline-aware
+shortening — pulling L1 in front of a deadline that falls inside the grace
+window — belongs to the escalation job (REQ-commitment-lifecycle-005); the
+seam for it is this parameter, which a caller computing its own grace may
+override. tests/contracts/test_commitment_grace_rfc_contract.py derives the
+constant from the RFC so this citation cannot drift.
 """
 
 from __future__ import annotations
