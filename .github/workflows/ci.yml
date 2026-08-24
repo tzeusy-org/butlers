@@ -228,6 +228,41 @@ jobs:
             exit 1
           fi
 
+  duplicate-name-guard:
+    # Fast, dependency-free gate (bu-ayrbg): two branches each added a
+    # module-level `_fenced_code_blocks` to one test file with incompatible
+    # return types. The definitions were far apart, git auto-merged them, and
+    # the later one silently shadowed the earlier one for every caller --
+    # including a security guard that then iterated the characters of a string
+    # and returned [] for every input, so a runnable pg_restore.sh in a fenced
+    # block would have passed REQ-database-security-006 unnoticed.
+    #
+    # The non-obvious part is that `ruff check` is green on that tree. F811
+    # (redefinition of unused name) does not fire when the FIRST definition is
+    # USED between the two definitions -- the name is not "unused" at the point
+    # of redefinition. That intervening-use condition is F811's blind spot, and
+    # it is exactly what a merge produces, since each branch defines the name
+    # and uses it. Per-PR CI cannot see it either: both PRs are green alone and
+    # CI never builds the union of open PRs.
+    #
+    # This asserts each module-level name is bound once per file, independent of
+    # use. It scans the lint gate's own scope (src/, tests/, roster/,
+    # conftest.py) and fails if it finds zero Python files, so it cannot go
+    # quiet the way the shadowed guard did. Ratchet:
+    # scripts/duplicate-toplevel-names-baseline.json, shipped empty, with no
+    # re-freeze flag on purpose. Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check for duplicate module-level names
+        run: python3 scripts/check_duplicate_toplevel_names.py
+
   check:
     runs-on: ubuntu-latest
 

@@ -63,12 +63,13 @@ logger = logging.getLogger(__name__)
 
 _PREDICATE_TRANSACTION_DEBIT = "transaction_debit"
 _PREDICATE_TRANSACTION_CREDIT = "transaction_credit"
-_TRANSACTION_PREDICATES = (_PREDICATE_TRANSACTION_DEBIT, _PREDICATE_TRANSACTION_CREDIT)
+# A list, not a tuple: this is interpolated with `!r` into `ARRAY{...}::text[]`
+# (see list_distinct_merchants), where a tuple's repr renders `ARRAY(...)` and is a
+# Postgres syntax error.
+_TRANSACTION_PREDICATES = [_PREDICATE_TRANSACTION_DEBIT, _PREDICATE_TRANSACTION_CREDIT]
 _PREDICATE_ACCOUNT = "account"
 _PREDICATE_SUBSCRIPTION = "subscription"
 _PREDICATE_BILL = "bill"
-
-_TRANSACTION_PREDICATES = [_PREDICATE_TRANSACTION_DEBIT, _PREDICATE_TRANSACTION_CREDIT]
 
 # ---------------------------------------------------------------------------
 # Owner entity resolution (canonical: public.entities WHERE 'owner' = ANY(roles))

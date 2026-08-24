@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -105,7 +105,17 @@ check-spec-overwrites:
 check-countable-tasks:
 	python3 scripts/check_countable_tasks.py
 
-check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks test
+# Regression guard for bu-ayrbg: two branches each added a module-level helper
+# with the same name to one file, git auto-merged them cleanly, and the later
+# definition silently shadowed the earlier one for every caller. `ruff` stays
+# green -- F811 skips a redefinition whose earlier definition is used in
+# between, which is exactly the shape a merge produces. Scans the lint gate's
+# own scope and fails on a zero-file scan so it cannot go quiet. Mirrors the CI
+# `duplicate-name-guard` job.
+check-duplicate-names:
+	python3 scripts/check_duplicate_toplevel_names.py
+
+check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage
