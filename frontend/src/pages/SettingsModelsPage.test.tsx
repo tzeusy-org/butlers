@@ -202,10 +202,10 @@ describe("SettingsModelsPage — page structure", () => {
 });
 
 describe("SettingsModelsPage — verify-all result", () => {
-  it("reports authority-unavailable Codex entries as skipped rather than failed", () => {
+  it("reports unprobed models as unavailable rather than failed, because an outage is not a verdict", () => {
     const mutate = vi.fn((_unused, options) => {
       options.onSuccess({
-        data: { accepted: true, total: 2, ok: 1, failed: 0, skipped: 1 },
+        data: { accepted: true, total: 2, ok: 1, failed: 0, skipped: 0, unavailable: 1 },
         meta: {},
       });
     });
@@ -215,7 +215,7 @@ describe("SettingsModelsPage — verify-all result", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: /verify all/i })[0]);
 
-    expect(toast.success).toHaveBeenCalledWith("Verified 1/2 models · 1 skipped");
+    expect(toast.success).toHaveBeenCalledWith("Verified 1/2 models · 1 could not be probed");
   });
 });
 
