@@ -364,6 +364,8 @@ async def budget_remove(
 
 async def budget_status(
     pool: asyncpg.Pool,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Compute per-category budget status by joining budgets with aggregated spending.
 
@@ -377,6 +379,10 @@ async def budget_status(
     ----------
     pool:
         asyncpg connection pool (schema must be set to ``finance``).
+    now:
+        Optional reference instant that selects "the current period". Defaults
+        to :func:`datetime.now`; tests inject a fixed value so a period
+        boundary can be examined from either side without waiting for one.
 
     Returns
     -------
@@ -403,7 +409,7 @@ async def budget_status(
     if not budgets:
         return {"items": [], "count": 0}
 
-    now = datetime.now(UTC)
+    now = now or datetime.now(UTC)
 
     # Check whether transactions.deleted_at exists (per finance-transaction-schema spec).
     # Guard the filter dynamically so budget_status works on schemas both with and without it.

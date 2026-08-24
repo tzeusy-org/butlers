@@ -170,7 +170,13 @@ def _utcnow() -> datetime:
 
 
 def _today() -> date:
-    return date.today()
+    """The UTC calendar date -- the frame this module's fixtures are stamped in.
+
+    See the same helper in ``test_jobs.py``: a LOCAL date here would put the
+    fixtures in a different frame from both the rows they insert and the
+    owner-timezone windows the code under test derives (bu-4zd9h).
+    """
+    return datetime.now(UTC).date()
 
 
 # ===========================================================================

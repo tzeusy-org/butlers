@@ -592,6 +592,13 @@ _MONTHLY_TREND_MAX_NOTABLE = 5
 # ---------------------------------------------------------------------------
 
 
+def _scan_anchor_date(now: datetime | None) -> date:
+    """Return the calendar date every window in one insight scan is anchored to."""
+    if now is not None:
+        return now.date()
+    return date.today()
+
+
 def _end_of_month(ref: date) -> datetime:
     """Return midnight UTC at the end of the calendar month containing *ref*."""
     if ref.month == 12:
@@ -771,7 +778,7 @@ async def _reconcile_owner_conditions(
 # ---------------------------------------------------------------------------
 
 
-async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None) -> dict[str, Any]:
     """Evaluate financial domain data and submit proactive insight candidates.
 
     Scans four categories in order:
@@ -796,6 +803,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     Args:
         db_pool: Database connection pool (used for both finance and insight tables).
+        now: Optional reference instant anchoring every window this scan
+            derives. Defaults to the current time; tests inject a fixed value
+            so a period boundary can be examined from either side.
 
     Returns:
         Dictionary with keys:
@@ -807,7 +817,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """
     logger.info("Running finance insight scan job")
 
-    today = date.today()
+    today = _scan_anchor_date(now)
     year_month = today.strftime("%Y-%m")
 
     counts: dict[str, int] = {
@@ -1097,7 +1107,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # applies each budget's configured warn/alert thresholds (bu-rvz2o) and the
     # transactions.deleted_at guard, so no threshold logic is duplicated here.
     async with _finance_scoped_connection(db_pool) as conn:
-        budget_result = await budget_status(conn)
+        budget_result = await budget_status(conn, now=now)
 
     for item in budget_result.get("items", []):
         status = item["status"]
