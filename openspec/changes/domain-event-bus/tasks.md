@@ -52,3 +52,11 @@
   fail-closed malformed-signal handling and legacy-prefix compatibility only
   for unstructured envelopes, and cover bounded ledger reconciliation plus
   terminal route/target-tool failures.
+
+## 10. Advisory validity semantics (bu-ac4yc)
+
+- [x] 10.1 Decide and pin `valid_until` semantics for derived advisories: descriptive-only, never a
+  delivery predicate. `butlers.core.domain_event_wake` documents why the bus must not filter on
+  payload content, the wake prompt carries the freshness-recheck caveat outside the untrusted-data
+  fence, and `tests/core/test_domain_event_wake.py` fails if either drifts.
+
