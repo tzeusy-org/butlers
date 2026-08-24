@@ -15,6 +15,10 @@ from butlers.tools.relationship.channel import (
     channel_list,
     channel_search,
 )
+from butlers.tools.relationship.commitments import (
+    capture_commitment,
+    capture_completion,
+)
 from butlers.tools.relationship.contacts import (
     _parse_contact,
     contact_archive,
@@ -171,6 +175,8 @@ __all__ = [
     "PREFERS_CHANNEL_PREDICATE",
     "assert_prefers_channel",
     "retract_prefers_channel",
+    "capture_commitment",
+    "capture_completion",
     "fact_list",
     "fact_set",
     "feed_get",
