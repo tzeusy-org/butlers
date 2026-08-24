@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 import asyncpg
@@ -40,6 +41,7 @@ pytestmark = [
 ]
 
 _NOW = datetime(2026, 7, 6, 8, 0, 0, tzinfo=UTC)
+_ADAPTER_MODULE = "butlers.chronicler.adapters.home_assistant_sensor_activity"
 
 
 @pytest.fixture(scope="module")
@@ -296,3 +298,160 @@ async def test_checkpoint_watermark_persists_across_runs(pool) -> None:
     )
     assert checkpoint is not None
     assert checkpoint["watermark"] == _NOW
+
+
+# ---------------------------------------------------------------------------
+# Retroactive evidence -> activity promotion re-check (bu-mul8i)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_occupation_block(
+    pool: asyncpg.Pool,
+    *,
+    start_at: datetime,
+    end_at: datetime,
+) -> None:
+    """Insert a corroborating ``occupation_block`` episode covering a window."""
+    async with pool.acquire() as conn:
+        await upsert_episode(
+            conn,
+            Episode(
+                source_name="chronicler.occupation_inferred",
+                source_ref=f"chronicler.routines:{uuid4()}:recheck",
+                episode_type="occupation_block",
+                start_at=start_at,
+                end_at=end_at,
+                precision=Precision.HOUR,
+                title="Occupation (test)",
+                payload={},
+                privacy=Privacy.NORMAL,
+                layer=Layer.ACTIVITY,
+            ),
+        )
+
+
+async def _room_activity_row(pool: asyncpg.Pool) -> asyncpg.Record:
+    rows = await pool.fetch(
+        "SELECT * FROM episodes WHERE source_name = $1 AND episode_type = $2",
+        SOURCE_NAME,
+        EPISODE_TYPE_ROOM_ACTIVITY,
+    )
+    assert len(rows) == 1
+    return rows[0]
+
+
+async def test_late_corroborator_promotes_evidence_span_on_next_run(pool) -> None:
+    """A corroborator landing AFTER clustering still promotes the span."""
+    entity = "binary_sensor.lounge_motion"
+    await _insert_filtered_event(
+        pool,
+        received_at=_NOW,
+        entity_id=entity,
+        domain="binary_sensor",
+        device_class="motion",
+        new_state="on",
+    )
+
+    adapter = HomeAssistantSensorActivityAdapter()
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=1)):
+        first = await adapter.run(pool=pool, chronicler_pool=pool)
+    assert first.success
+    assert (await _room_activity_row(pool))["layer"] == "evidence"
+
+    # The hourly occupation_inferred tick lands only now — after clustering.
+    await _seed_occupation_block(
+        pool, start_at=_NOW - timedelta(hours=1), end_at=_NOW + timedelta(hours=1)
+    )
+
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=2)):
+        second = await adapter.run(pool=pool, chronicler_pool=pool)
+
+    assert second.success
+    assert second.rows_projected == 0  # no new source rows; promotion only
+    row = await _room_activity_row(pool)
+    assert row["layer"] == "activity"
+    assert row["confidence"] == "low"
+    assert len(row["evidence_refs"]) == 1
+    assert second.episodes_promoted == 1
+
+
+async def test_promotion_recheck_is_idempotent(pool) -> None:
+    """Running the pass again after a promotion is a no-op (no churn)."""
+    entity = "binary_sensor.den_motion"
+    await _insert_filtered_event(
+        pool,
+        received_at=_NOW,
+        entity_id=entity,
+        domain="binary_sensor",
+        device_class="motion",
+        new_state="on",
+    )
+    adapter = HomeAssistantSensorActivityAdapter()
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=1)):
+        await adapter.run(pool=pool, chronicler_pool=pool)
+    await _seed_occupation_block(
+        pool, start_at=_NOW - timedelta(hours=1), end_at=_NOW + timedelta(hours=1)
+    )
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=2)):
+        promoted_run = await adapter.run(pool=pool, chronicler_pool=pool)
+    assert promoted_run.episodes_promoted == 1
+    after_promotion = await _room_activity_row(pool)
+
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=3)):
+        rerun = await adapter.run(pool=pool, chronicler_pool=pool)
+
+    assert rerun.episodes_promoted == 0
+    unchanged = await _room_activity_row(pool)
+    assert unchanged["layer"] == "activity"
+    assert unchanged["evidence_refs"] == after_promotion["evidence_refs"]
+    assert unchanged["updated_at"] == after_promotion["updated_at"]
+
+
+async def test_span_outside_lookback_window_is_not_promoted(pool) -> None:
+    """The re-check is bounded — an older evidence span is left alone."""
+    entity = "binary_sensor.attic_motion"
+    old = _NOW - timedelta(days=3)
+    await _insert_filtered_event(
+        pool,
+        received_at=old,
+        entity_id=entity,
+        domain="binary_sensor",
+        device_class="motion",
+        new_state="on",
+    )
+    adapter = HomeAssistantSensorActivityAdapter()
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=old + timedelta(minutes=1)):
+        await adapter.run(pool=pool, chronicler_pool=pool)
+    assert (await _room_activity_row(pool))["layer"] == "evidence"
+
+    await _seed_occupation_block(
+        pool, start_at=old - timedelta(hours=1), end_at=old + timedelta(hours=1)
+    )
+
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW):
+        late = await adapter.run(pool=pool, chronicler_pool=pool)
+
+    assert late.episodes_promoted == 0
+    assert (await _room_activity_row(pool))["layer"] == "evidence"
+
+
+async def test_span_without_corroborator_stays_evidence(pool) -> None:
+    """No corroborator ever arrives — the span must remain evidence-layer."""
+    entity = "binary_sensor.pantry_motion"
+    await _insert_filtered_event(
+        pool,
+        received_at=_NOW,
+        entity_id=entity,
+        domain="binary_sensor",
+        device_class="motion",
+        new_state="on",
+    )
+    adapter = HomeAssistantSensorActivityAdapter()
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=1)):
+        await adapter.run(pool=pool, chronicler_pool=pool)
+
+    with patch(f"{_ADAPTER_MODULE}._now", return_value=_NOW + timedelta(minutes=2)):
+        rerun = await adapter.run(pool=pool, chronicler_pool=pool)
+
+    assert rerun.episodes_promoted == 0
+    assert (await _room_activity_row(pool))["layer"] == "evidence"

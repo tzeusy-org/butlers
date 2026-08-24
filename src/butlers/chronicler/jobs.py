@@ -383,11 +383,22 @@ async def run_project_home_assistant_sensor_activity(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Project non-person HA binary_sensor activity into Chronicler (bu-49fqa)."""
+    """Project non-person HA binary_sensor activity into Chronicler (bu-49fqa).
+
+    Each run also re-checks recent evidence-layer ``room_activity_episode``
+    spans and promotes any that a late-arriving corroborator now qualifies
+    (bu-mul8i). ``promotion_lookback_hours`` bounds that trailing re-check
+    window; it defaults to the adapter's ``PROMOTION_LOOKBACK_HOURS`` and is
+    overridable per-schedule like every other adapter tuning knob here.
+    """
     options = _parse_job_args(
         "chronicler_project_home_assistant_sensor_activity",
         job_args,
-        supported_fields=("batch_limit", "room_activity_gap_minutes"),
+        supported_fields=(
+            "batch_limit",
+            "room_activity_gap_minutes",
+            "promotion_lookback_hours",
+        ),
     )
     adapter = HomeAssistantSensorActivityAdapter(**options)
     return await _run_adapter(db_pool=db_pool, adapter=adapter)

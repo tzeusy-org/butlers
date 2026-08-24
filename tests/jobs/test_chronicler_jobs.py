@@ -337,3 +337,34 @@ async def test_project_owntracks_place_cluster_parses_valid_env() -> None:
     adapter_cls.assert_called_once_with(
         reference_points=(PlaceReference(label="home", lat=1.3, lon=103.8),)
     )
+
+
+async def test_project_home_assistant_sensor_activity_accepts_promotion_lookback_hours() -> None:
+    """The retroactive-promotion window is a configurable job arg (bu-mul8i)."""
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="home_assistant.sensor_activity", episodes_promoted=2
+    )
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", new=AsyncMock()),
+        patch(
+            "butlers.chronicler.jobs.HomeAssistantSensorActivityAdapter", return_value=adapter
+        ) as adapter_cls,
+    ):
+        from butlers.chronicler.jobs import run_project_home_assistant_sensor_activity
+
+        result = await run_project_home_assistant_sensor_activity(
+            pool, {"promotion_lookback_hours": 6}
+        )
+
+    adapter_cls.assert_called_once_with(promotion_lookback_hours=6)
+    assert result["episodes_promoted"] == 2
+
+
+async def test_project_home_assistant_sensor_activity_rejects_unsupported_job_args() -> None:
+    from butlers.chronicler.jobs import run_project_home_assistant_sensor_activity
+
+    with pytest.raises(RuntimeError, match="unsupported keys"):
+        await run_project_home_assistant_sensor_activity(object(), {"promotion_lookback_days": 1})
