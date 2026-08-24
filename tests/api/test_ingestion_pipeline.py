@@ -490,13 +490,24 @@ async def test_pipeline_stats_spark24h_trims_25_buckets_to_24(app):
 # ---------------------------------------------------------------------------
 
 
-def _cross_summary_row(last_heartbeat_at, messages_ingested=0, messages_failed=0):
-    """Build a mock asyncpg record for the cross-summary per-connector fetch."""
+def _cross_summary_row(
+    last_heartbeat_at,
+    messages_ingested=0,
+    messages_failed=0,
+    operational_role="runtime_instance",
+):
+    """Build a mock asyncpg record for the cross-summary per-connector fetch.
+
+    ``operational_role`` defaults to ``runtime_instance`` because these tests are
+    about liveness bucketing, and only runtime instances have liveness to bucket
+    (sw_031, bu-6jv4m.11).
+    """
     row = MagicMock()
     data = {
         "last_heartbeat_at": last_heartbeat_at,
         "messages_ingested": messages_ingested,
         "messages_failed": messages_failed,
+        "operational_role": operational_role,
     }
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
     return row
