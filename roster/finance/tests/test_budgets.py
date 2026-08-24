@@ -68,6 +68,9 @@ def _mom_pool(monthly_spends: list[Decimal]) -> AsyncMock:
     responses = [_make_row({"total": amt}) for amt in monthly_spends]
     pool.fetchrow = AsyncMock(side_effect=responses)
     pool.fetch = AsyncMock(return_value=[])
+    # ``state`` lookup behind ``resolve_budget_zone``: no stored general
+    # settings, so the owner timezone resolves to the UTC default.
+    pool.fetchval = AsyncMock(return_value=None)
     return pool
 
 
@@ -83,7 +86,7 @@ class TestSpendingTrendsMoM:
 
         # months=3: provide 3 monthly totals (with non-zero values for ≥2 months)
         pool = _mom_pool([Decimal("100"), Decimal("150"), Decimal("200")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=3)
 
         assert result["comparison"] == "mom"
@@ -95,7 +98,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("100"), Decimal("120")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=2)
 
         first = result["periods"][0]
@@ -108,7 +111,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("100"), Decimal("120")])  # +20%
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=2)
 
         second = result["periods"][1]
@@ -121,7 +124,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("200"), Decimal("100")])  # -50%
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=2)
 
         second = result["periods"][1]
@@ -133,7 +136,7 @@ class TestSpendingTrendsMoM:
 
         # 100 -> 103 = +3%, within flat threshold
         pool = _mom_pool([Decimal("100"), Decimal("103")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=2)
 
         second = result["periods"][1]
@@ -144,7 +147,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("100"), Decimal("200"), Decimal("300")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=3)
 
         periods = [p["period"] for p in result["periods"]]
@@ -158,7 +161,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("50"), Decimal("60")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=2, category="dining")
 
         assert result["category"] == "dining"
@@ -173,7 +176,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("0"), Decimal("0"), Decimal("0")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=3)
 
         assert result["status"] == "insufficient_data"
@@ -184,7 +187,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("0"), Decimal("0"), Decimal("100")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=3)
 
         assert result["status"] == "insufficient_data"
@@ -194,7 +197,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("100"), Decimal("120")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=1)
 
         assert "periods" in result
@@ -209,7 +212,7 @@ class TestSpendingTrendsMoM:
         from butlers.tools.finance.budgets import spending_trends
 
         pool = _mom_pool([Decimal("100"), Decimal("0"), Decimal("100")])
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="mom", months=3)
 
         # periods[2] has prior = 0 → change_pct is None
@@ -241,7 +244,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("400"), Decimal("380"))
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["comparison"] == "yoy"
@@ -258,7 +261,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("500"), Decimal("400"))  # +25%
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["direction"] == "up"
@@ -269,7 +272,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("300"), Decimal("400"))  # -25%
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["direction"] == "down"
@@ -279,7 +282,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("0"), Decimal("0"))
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["status"] == "insufficient_data"
@@ -289,7 +292,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("200"), Decimal("0"))
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["change_pct"] is None
@@ -299,7 +302,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("100"), Decimal("90"))
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy", category="groceries")
 
         assert result["category"] == "groceries"
@@ -312,7 +315,7 @@ class TestSpendingTrendsYoY:
         from butlers.tools.finance.budgets import spending_trends
 
         pool, _ = await self._yoy_pool(Decimal("200"), Decimal("180"))
-        with patch("butlers.tools.finance.budgets._today", return_value=TODAY_MID_MONTH):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
             result = await spending_trends(pool, comparison="yoy")
 
         assert result["current_period"] == "2026-03"
@@ -389,6 +392,9 @@ def _forecast_pool(
         fetch_responses.append(_budget_rows)
         pool.fetch = AsyncMock(side_effect=fetch_responses)
 
+    # ``state`` lookup behind ``resolve_budget_zone``: no stored general
+    # settings, so the owner timezone resolves to the UTC default.
+    pool.fetchval = AsyncMock(return_value=None)
     return pool
 
 
@@ -408,7 +414,7 @@ class TestSpendingForecastLinear:
             cat_rows=[{"category": "dining", "total": Decimal("150")}],
             hist_rows=[{"category": "dining", "avg_total": Decimal("280")}],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["basis"] == "linear_projection"
@@ -426,7 +432,7 @@ class TestSpendingForecastLinear:
 
         today = date(2026, 3, 15)
         pool = _forecast_pool(current_spend=Decimal("100"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["as_of_date"] == "2026-03-15"
@@ -447,7 +453,7 @@ class TestSpendingForecastLinear:
                 {"category": "dining", "avg_total": Decimal("120")},
             ],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         cats = {c["category"] for c in result["categories"]}
@@ -464,7 +470,7 @@ class TestSpendingForecastLinear:
             cat_rows=[{"category": "groceries", "total": Decimal("100")}],
             hist_rows=[{"category": "groceries", "avg_total": Decimal("220")}],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         groceries = next(c for c in result["categories"] if c["category"] == "groceries")
@@ -481,7 +487,7 @@ class TestSpendingForecastLinear:
             hist_rows=[{"category": "dining", "avg_total": Decimal("280")}],
             budget_rows=[{"category": "dining", "amount": Decimal("300")}],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         dining = next(c for c in result["categories"] if c["category"] == "dining")
@@ -504,7 +510,7 @@ class TestSpendingForecastLinear:
             hist_rows=[],
             budget_rows=[{"category": "dining", "amount": Decimal("200")}],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         dining = next(c for c in result["categories"] if c["category"] == "dining")
@@ -521,7 +527,7 @@ class TestSpendingForecastLinear:
             hist_rows=[],
             budget_rows=[],  # No budget for groceries
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         groceries = next(c for c in result["categories"] if c["category"] == "groceries")
@@ -539,7 +545,7 @@ class TestSpendingForecastLinear:
             hist_rows=[],
             budgets_table_exists=False,
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert "categories" in result
@@ -571,7 +577,7 @@ class TestSpendingForecastFirstOfMonth:
         )
         pool.fetch = AsyncMock(side_effect=[[], [], []])
 
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["basis"] == "prior_month"
@@ -587,7 +593,7 @@ class TestSpendingForecastFirstOfMonth:
             cat_rows=[{"category": "dining", "total": Decimal("50")}],
             hist_rows=[],
         )
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         # Has current spend so uses linear (50 / 1) * 31 = 1550
@@ -608,7 +614,7 @@ class TestSpendingForecastFirstOfMonth:
         )
         pool.fetch = AsyncMock(side_effect=[[], [], []])
 
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["basis"] == "prior_month"
@@ -626,7 +632,7 @@ class TestSpendingForecastResponseShape:
 
         today = date(2026, 3, 15)
         pool = _forecast_pool(current_spend=Decimal("300"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         required = {
@@ -648,7 +654,7 @@ class TestSpendingForecastResponseShape:
 
         today = date(2026, 3, 15)
         pool = _forecast_pool(current_spend=Decimal("100"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["days_elapsed"] + result["days_remaining"] == result["days_in_month"]
@@ -659,7 +665,7 @@ class TestSpendingForecastResponseShape:
 
         today = date(2025, 2, 14)
         pool = _forecast_pool(current_spend=Decimal("100"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["days_in_month"] == 28
@@ -670,7 +676,7 @@ class TestSpendingForecastResponseShape:
 
         today = date(2024, 2, 14)
         pool = _forecast_pool(current_spend=Decimal("100"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["days_in_month"] == 29
@@ -681,7 +687,7 @@ class TestSpendingForecastResponseShape:
 
         today = date(2026, 3, 15)
         pool = _forecast_pool(current_spend=Decimal("0"), cat_rows=[])
-        with patch("butlers.tools.finance.budgets._today", return_value=today):
+        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
             result = await spending_forecast(pool)
 
         assert result["categories"] == []

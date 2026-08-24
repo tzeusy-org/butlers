@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import calendar
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from butlers.core.general_settings import resolve_general_timezone
+
 logger = logging.getLogger(__name__)
 
-# Supported budget periods — used for DATE_TRUNC alignment in budget_status
+# Supported budget periods — see ``_period_bounds`` for how each one is aligned.
 VALID_PERIODS = {"weekly", "monthly", "quarterly", "yearly"}
 
 # Default thresholds
@@ -54,23 +57,55 @@ _FLAT_THRESHOLD_PCT = Decimal("5")  # abs(change_pct) < 5% => direction="flat"
 # ---------------------------------------------------------------------------
 
 
-def _period_trunc(period: str) -> str:
-    """Return the DATE_TRUNC period string for the given budget period."""
-    mapping = {
-        "weekly": "week",
-        "monthly": "month",
-        "quarterly": "quarter",
-        "yearly": "year",
-    }
-    return mapping[period]
+async def resolve_budget_zone(pool: asyncpg.Pool) -> ZoneInfo:
+    """Return the timezone every budget and spending period is measured in.
+
+    A budget period is a claim about the *owner's* calendar: "this week's coffee
+    budget" means the week the owner is living in, and the alert that fires on
+    Monday morning has to be about the week that started that morning. Reading
+    the boundary off UTC — or off whatever local date the daemon's host happens
+    to have — makes that claim false for every owner who is not on UTC, and does
+    so invisibly, because on a UTC machine all three frames coincide (bu-4zd9h).
+
+    The zone is the owner's configured general-settings timezone, the same one
+    the scheduler already uses to interpret cron fields in local time, so a scan
+    fired at the owner's 08:00 measures the owner's period. It falls back to UTC
+    when the setting is unreadable or unset, which keeps this a no-op for
+    unconfigured deployments and for CI.
+    """
+    return ZoneInfo(await resolve_general_timezone(pool))
+
+
+def _period_anchor(zone: ZoneInfo, now: datetime | None = None) -> date:
+    """Return the owner-local calendar date whose period is "the current one"."""
+    return (now or datetime.now(UTC)).astimezone(zone).date()
+
+
+def _period_window(
+    period_start: date,
+    period_end: date,
+    zone: ZoneInfo,
+) -> tuple[datetime, datetime]:
+    """Return the half-open instant range ``[start, end)`` spanning a period.
+
+    Both bounds are owner-local midnights: a period opens when the owner's first
+    day begins and closes when the day *after* its last day begins. Half-open is
+    what makes the upper edge unambiguous — a transaction posted at exactly the
+    boundary instant belongs to the next period and to that period only, so
+    consecutive windows tile the timeline without gap or overlap.
+    """
+    start = datetime.combine(period_start, time.min, tzinfo=zone)
+    end = datetime.combine(period_end + timedelta(days=1), time.min, tzinfo=zone)
+    return start, end
 
 
 def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
     """Return the inclusive (start, end) date bounds of the current budget period.
 
-    Alignment mirrors the ``DATE_TRUNC`` semantics used by ``budget_status`` for
-    spending aggregation (weekly from Monday, monthly from the 1st, quarterly
-    from the quarter start, yearly from Jan 1).
+    Weekly periods run Monday..Sunday, monthly from the 1st, quarterly from the
+    quarter start, yearly from Jan 1. ``anchor`` is a date in the owner's
+    timezone (see :func:`_period_anchor`); the instants that date range covers
+    come from :func:`_period_window`.
 
     Parameters
     ----------
@@ -127,10 +162,6 @@ def _budget_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Internal helpers — spending trends and forecast
 # ---------------------------------------------------------------------------
-
-
-def _today() -> date:
-    return date.today()
 
 
 def _month_start(d: date) -> date:
@@ -409,7 +440,8 @@ async def budget_status(
     if not budgets:
         return {"items": [], "count": 0}
 
-    now = now or datetime.now(UTC)
+    zone = await resolve_budget_zone(pool)
+    anchor = _period_anchor(zone, now)
 
     # Check whether transactions.deleted_at exists (per finance-transaction-schema spec).
     # Guard the filter dynamically so budget_status works on schemas both with and without it.
@@ -435,11 +467,17 @@ async def budget_status(
         warn_threshold: Decimal = budget["warn_threshold"]
         alert_threshold: Decimal = budget["alert_threshold"]
 
-        trunc_unit = _period_trunc(period)
-        period_start, period_end = _period_bounds(period, now.date())
+        period_start, period_end = _period_bounds(period, anchor)
+        window_start, window_end = _period_window(period_start, period_end, zone)
 
         # Aggregate debit spending for this category and currency in the current period window.
         # Filter by currency to avoid incorrect cross-currency aggregation.
+        #
+        # Compared against instants rather than a DATE_TRUNC of the posting
+        # timestamp: truncating in a fixed zone answers "which UTC week is this
+        # in?", which is not the question a weekly budget asks. The half-open
+        # bounds are owner-local midnights, so the aggregate covers exactly the
+        # period reported in ``period_start``/``period_end``.
         spending_row = await pool.fetchrow(
             f"""
             SELECT COALESCE(SUM(amount), 0) AS spent
@@ -448,13 +486,13 @@ async def budget_status(
                {deleted_filter}
                AND category = $1
                AND currency = $2
-               AND DATE_TRUNC($3, posted_at AT TIME ZONE 'UTC')
-                   = DATE_TRUNC($3, $4::TIMESTAMPTZ AT TIME ZONE 'UTC')
+               AND posted_at >= $3
+               AND posted_at <  $4
             """,
             category,
             currency,
-            trunc_unit,
-            now,
+            window_start,
+            window_end,
         )
         spent: Decimal = spending_row["spent"]
 
@@ -575,12 +613,15 @@ async def spending_trends(
     if comparison not in ("mom", "yoy"):
         raise ValueError(f"Invalid comparison {comparison!r}. Must be 'mom' or 'yoy'.")
 
-    today = _today()
+    zone = await resolve_budget_zone(pool)
+    today = _period_anchor(zone)
 
     if comparison == "mom":
-        return await _spending_trends_mom(pool, today=today, months=months, category=category)
+        return await _spending_trends_mom(
+            pool, today=today, months=months, category=category, zone=zone
+        )
     else:
-        return await _spending_trends_yoy(pool, today=today, category=category)
+        return await _spending_trends_yoy(pool, today=today, category=category, zone=zone)
 
 
 async def _fetch_monthly_spend(
@@ -588,14 +629,22 @@ async def _fetch_monthly_spend(
     month_start: date,
     month_end: date,
     category: str | None,
+    zone: ZoneInfo,
 ) -> Decimal:
-    """Fetch total debit spend for a single calendar month."""
+    """Fetch total debit spend over ``month_start``..``month_end`` inclusive.
+
+    The date bounds are days on the owner's calendar, so they are widened here
+    into the half-open instant range those days actually occupy. Casting
+    ``posted_at::date`` instead would have truncated in the *database session's*
+    timezone — a fourth frame, agreeing with the caller only on a UTC host.
+    """
+    window_start, window_end = _period_window(month_start, month_end, zone)
     conditions = [
         "direction = 'debit'",
-        "posted_at::date >= $1",
-        "posted_at::date <= $2",
+        "posted_at >= $1",
+        "posted_at <  $2",
     ]
-    params: list[Any] = [month_start, month_end]
+    params: list[Any] = [window_start, window_end]
 
     if category is not None:
         conditions.append("category = $3")
@@ -625,6 +674,7 @@ async def _spending_trends_mom(
     today: date,
     months: int,
     category: str | None,
+    zone: ZoneInfo,
 ) -> dict[str, Any]:
     """Compute month-over-month spending trend."""
     if months < 2:
@@ -635,7 +685,7 @@ async def _spending_trends_mom(
     for i in range(months - 1, -1, -1):
         m_start = _n_months_ago(today, i)
         m_end = _month_end(m_start)
-        total = await _fetch_monthly_spend(pool, m_start, m_end, category)
+        total = await _fetch_monthly_spend(pool, m_start, m_end, category, zone)
         month_spends.append((_period_label(m_start), total))
 
     # Check if we have sufficient data: at least 2 months must have spend data.
@@ -693,6 +743,7 @@ async def _spending_trends_yoy(
     *,
     today: date,
     category: str | None,
+    zone: ZoneInfo,
 ) -> dict[str, Any]:
     """Compute year-over-year spending trend for the current month vs same month last year."""
     current_start = _month_start(today)
@@ -701,8 +752,8 @@ async def _spending_trends_yoy(
     prior_start = current_start.replace(year=current_start.year - 1)
     prior_end = _month_end(prior_start)
 
-    current_spend = await _fetch_monthly_spend(pool, current_start, current_end, category)
-    prior_spend = await _fetch_monthly_spend(pool, prior_start, prior_end, category)
+    current_spend = await _fetch_monthly_spend(pool, current_start, current_end, category, zone)
+    prior_spend = await _fetch_monthly_spend(pool, prior_start, prior_end, category, zone)
 
     # Insufficient data check
     if current_spend == 0 and prior_spend == 0:
@@ -781,14 +832,15 @@ async def spending_forecast(
                 ]
             }
     """
-    today = _today()
+    zone = await resolve_budget_zone(pool)
+    today = _period_anchor(zone)
     month_start = _month_start(today)
     days_in_month = _days_in_month(month_start)
     days_elapsed = today.day  # day-of-month (1-indexed)
     days_remaining = days_in_month - days_elapsed
 
     # --- Fetch current month spend (overall) ---
-    current_spend = await _fetch_monthly_spend(pool, month_start, today, None)
+    current_spend = await _fetch_monthly_spend(pool, month_start, today, None, zone)
 
     # --- First-of-month edge case ---
     # Also covers: called on day 1 regardless of current spend being zero or not -
@@ -799,7 +851,7 @@ async def spending_forecast(
     if use_prior_month:
         prior_start = _n_months_ago(today, 1)
         prior_end = _month_end(prior_start)
-        prior_spend = await _fetch_monthly_spend(pool, prior_start, prior_end, None)
+        prior_spend = await _fetch_monthly_spend(pool, prior_start, prior_end, None, zone)
         projected_total = prior_spend
         daily_average = _safe_div(prior_spend, Decimal(days_in_month)) or Decimal("0")
         basis = "prior_month"
@@ -809,43 +861,50 @@ async def spending_forecast(
         basis = "linear_projection"
 
     # --- Per-category current spend ---
+    month_to_date_start, month_to_date_end = _period_window(month_start, today, zone)
     cat_rows = await pool.fetch(
         """
         SELECT category,
                SUM(amount) AS total
         FROM transactions
         WHERE direction = 'debit'
-          AND posted_at::date >= $1
-          AND posted_at::date <= $2
+          AND posted_at >= $1
+          AND posted_at <  $2
         GROUP BY category
         ORDER BY total DESC
         """,
-        month_start,
-        today,
+        month_to_date_start,
+        month_to_date_end,
     )
 
     # --- Historical average (last 6 months, not counting current month) ---
     history_start = _n_months_ago(today, 6)
     history_end = _month_end(_n_months_ago(today, 1))
 
+    history_window_start, history_window_end = _period_window(history_start, history_end, zone)
+    # The month a transaction belongs to is the month it fell in for the owner,
+    # so shift each timestamp into the owner's zone before truncating rather
+    # than letting the database session's timezone decide the grouping.
     hist_rows = await pool.fetch(
         """
         SELECT category,
                AVG(monthly_total) AS avg_total
         FROM (
             SELECT category,
-                   TO_CHAR(DATE_TRUNC('month', posted_at), 'YYYY-MM') AS month_label,
+                   TO_CHAR(DATE_TRUNC('month', posted_at AT TIME ZONE $3), 'YYYY-MM')
+                       AS month_label,
                    SUM(amount) AS monthly_total
             FROM transactions
             WHERE direction = 'debit'
-              AND posted_at::date >= $1
-              AND posted_at::date <= $2
-            GROUP BY category, DATE_TRUNC('month', posted_at)
+              AND posted_at >= $1
+              AND posted_at <  $2
+            GROUP BY category, DATE_TRUNC('month', posted_at AT TIME ZONE $3)
         ) monthly_by_cat
         GROUP BY category
         """,
-        history_start,
-        history_end,
+        history_window_start,
+        history_window_end,
+        str(zone),
     )
     hist_by_cat: dict[str, Decimal] = {}
     for r in hist_rows:

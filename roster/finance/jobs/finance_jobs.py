@@ -14,10 +14,11 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import httpx
@@ -28,12 +29,16 @@ from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_
 from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes
 from butlers.tools.finance.anomaly_detection import anomaly_scan
-from butlers.tools.finance.budgets import budget_status
+from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
 from butlers.tools.finance.transactions import _record_transaction
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+# Default zone for the helpers below, used by the scan sections that have not
+# been moved onto the owner's calendar yet (see bu-4zd9h follow-up).
+UTC_ZONE = ZoneInfo("UTC")
 
 logger = logging.getLogger(__name__)
 
@@ -592,32 +597,36 @@ _MONTHLY_TREND_MAX_NOTABLE = 5
 # ---------------------------------------------------------------------------
 
 
-def _scan_anchor_date(now: datetime | None) -> date:
-    """Return the calendar date every window in one insight scan is anchored to."""
-    if now is not None:
-        return now.date()
-    return date.today()
+def _owner_midnight(day: date, zone: ZoneInfo) -> datetime:
+    """Return the instant at which *day* begins on the owner's calendar.
+
+    Every window this scan derives is a range of owner-local days, so its
+    endpoints are owner-local midnights. Building them as ``tzinfo=UTC`` instead
+    shifted each window by the owner's offset, which is invisible on a UTC host
+    and off by up to a day everywhere else (bu-4zd9h).
+    """
+    return datetime.combine(day, time.min, tzinfo=zone)
 
 
-def _end_of_month(ref: date) -> datetime:
-    """Return midnight UTC at the end of the calendar month containing *ref*."""
+def _end_of_month(ref: date, zone: ZoneInfo = UTC_ZONE) -> datetime:
+    """Return the instant the calendar month containing *ref* ends in *zone*."""
     if ref.month == 12:
         next_month_start = date(ref.year + 1, 1, 1)
     else:
         next_month_start = date(ref.year, ref.month + 1, 1)
-    # End-of-month = start of next month, normalised to midnight UTC
-    return datetime(next_month_start.year, next_month_start.month, next_month_start.day, tzinfo=UTC)
+    # End-of-month = start of next month, at that day's opening instant.
+    return _owner_midnight(next_month_start, zone)
 
 
-def _end_of_period_dt(period_end: date) -> datetime:
-    """Return midnight UTC on the day after *period_end* (the period's exclusive end).
+def _end_of_period_dt(period_end: date, zone: ZoneInfo = UTC_ZONE) -> datetime:
+    """Return the instant the day after *period_end* begins (the exclusive end).
 
     Used as the ``expires_at`` for a budget-threshold candidate: it is always
     strictly after any moment on ``period_end`` (which the broker requires), and
-    the candidate naturally expires once its budget period is over.
+    the candidate naturally expires once its budget period is over — as the
+    owner's calendar reckons it, which is the calendar the period was measured on.
     """
-    day_after = period_end + timedelta(days=1)
-    return datetime(day_after.year, day_after.month, day_after.day, tzinfo=UTC)
+    return _owner_midnight(period_end + timedelta(days=1), zone)
 
 
 def _budget_period_scope_token(period: str, period_start: date) -> str:
@@ -638,8 +647,9 @@ def _budget_period_scope_token(period: str, period_start: date) -> str:
     for the same category never share a dedup key (e.g. a monthly and a yearly
     ``dining`` budget both crossing threshold in the same year stay distinct).
 
-    ``period_start`` comes from ``budget_status()`` (DATE_TRUNC-aligned), so the
-    token stays consistent with the window the spending was aggregated over.
+    ``period_start`` comes from ``budget_status()``, which aligns it on the
+    owner's calendar, so the token stays consistent with the window the spending
+    was aggregated over.
     """
     if period == "weekly":
         iso = period_start.isocalendar()
@@ -817,7 +827,11 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     """
     logger.info("Running finance insight scan job")
 
-    today = _scan_anchor_date(now)
+    # One anchor for the whole scan, on the owner's calendar: the month a
+    # candidate names, the week a budget covers and the "due in 3 days" horizon
+    # all have to agree with each other and with the owner's actual date.
+    zone = await resolve_budget_zone(db_pool)
+    today = _period_anchor(zone, now)
     year_month = today.strftime("%Y-%m")
 
     counts: dict[str, int] = {
@@ -861,16 +875,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
               AND posted_at < $2
             GROUP BY category
             """,
-            datetime(month_start.year, month_start.month, month_start.day, tzinfo=UTC),
-            datetime(
-                today.year,
-                today.month,
-                today.day,
-                23,
-                59,
-                59,
-                tzinfo=UTC,
-            ),
+            _owner_midnight(month_start, zone),
+            _owner_midnight(today + timedelta(days=1), zone),
         )
 
         # 3-month rolling average per category (only categories with data in all 3 months)
@@ -878,26 +884,27 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             """
             SELECT
                 category,
-                COUNT(DISTINCT DATE_TRUNC('month', posted_at)) AS month_count,
-                SUM(ABS(amount)) / COUNT(DISTINCT DATE_TRUNC('month', posted_at)) AS avg_monthly
+                COUNT(DISTINCT DATE_TRUNC('month', posted_at AT TIME ZONE $3)) AS month_count,
+                SUM(ABS(amount))
+                    / COUNT(DISTINCT DATE_TRUNC('month', posted_at AT TIME ZONE $3))
+                    AS avg_monthly
             FROM finance.transactions
             WHERE direction = 'debit'
               AND posted_at >= $1
               AND posted_at < $2
             GROUP BY category
-            HAVING COUNT(DISTINCT DATE_TRUNC('month', posted_at)) >= 3
+            HAVING COUNT(DISTINCT DATE_TRUNC('month', posted_at AT TIME ZONE $3)) >= 3
             """,
-            datetime(
-                three_months_ago.year, three_months_ago.month, three_months_ago.day, tzinfo=UTC
-            ),
-            datetime(month_start.year, month_start.month, month_start.day, tzinfo=UTC),
+            _owner_midnight(three_months_ago, zone),
+            _owner_midnight(month_start, zone),
+            str(zone),
         )
 
     rolling_avg: dict[str, Decimal] = {
         row["category"]: Decimal(str(row["avg_monthly"])) for row in rolling_rows
     }
 
-    month_end_dt = _end_of_month(today)
+    month_end_dt = _end_of_month(today, zone)
 
     # bu-ep4ks.6: reconcile the FULL anomalous-category set for this month
     # into the owner condition ledger before submitting any insight
@@ -1021,7 +1028,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             f"Bill due {urgency_label}: {payee} — {currency} {amount:.2f} due on {due.isoformat()}"
         )
         dedup_key = f"finance:bill-due:{bill_id}:{due.isoformat()}"
-        expires_at = datetime(due.year, due.month, due.day, 23, 59, 59, tzinfo=UTC)
+        expires_at = _owner_midnight(due + timedelta(days=1), zone)
 
         keep_going = await _submit(
             priority=priority,
@@ -1175,7 +1182,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             category="budget-threshold",
             dedup_key=dedup_key,
             message=message,
-            expires_at=_end_of_period_dt(period_end),
+            expires_at=_end_of_period_dt(period_end, zone),
             cooldown_days=cooldown_days,
             metadata={
                 "category": category,
@@ -1230,9 +1237,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             f"{currency} {amount:.2f} on {renewal_date.isoformat()}"
         )
         dedup_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
-        expires_at = datetime(
-            renewal_date.year, renewal_date.month, renewal_date.day, 23, 59, 59, tzinfo=UTC
-        )
+        expires_at = _owner_midnight(renewal_date + timedelta(days=1), zone)
 
         keep_going = await _submit(
             priority=priority,
