@@ -7,7 +7,7 @@ Covers (priority_contacts is butler-agnostic — bu-gx13h):
 - Audit entry emitted on POST and DELETE
 
 The cascade-delete audit trigger this file used to defer to was retired in
-``core_203`` (bu-fi36x): no inbound FK can cascade into priority_contacts any
+``core_204`` (bu-fi36x): no inbound FK can cascade into priority_contacts any
 more, so one removal writes exactly one audit row. That is pinned by
 ``tests/migrations/test_priority_contacts_cascade_audit.py``; this file provides
 the basic unit coverage for the CRUD surface.
