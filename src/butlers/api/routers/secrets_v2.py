@@ -616,6 +616,14 @@ class _UserCredentialRecord(BaseModel):
     last_verified: datetime | None = None
     scopes_required: list[str] = Field(default_factory=list)
     scopes_granted: list[str] = Field(default_factory=list)
+    scopes_loaded: bool = True
+    """Whether the scope reads behind ``scopes_required`` / ``scopes_granted`` ran.
+
+    False on the mutation reads that skip them (bu-psw7o). Empty scopes then
+    mean "not fetched", not "none required/granted" — a distinction
+    ``_content_blind_detail`` enforces so a skipped read can never be
+    published as an honest-empty capability list.
+    """
     failure_tail: str | None = None
     test: TestResult | None = None
     audit: list[dict] = Field(default_factory=list)
@@ -640,7 +648,17 @@ def _content_blind_detail(record: _UserCredentialRecord) -> UserSecretDetail:
     Deliberately field-by-field rather than ``model_dump()``: a new field on
     the internal record must be consciously allowed through here before it can
     reach a client.
+
+    Raises ``ValueError`` when handed a record read with ``include_scopes=False``:
+    that record's empty scope lists would project onto empty
+    ``capabilities_required`` / ``capabilities_granted``, which this payload
+    documents as "no capability is recorded", never "not looked up".
     """
+    if not record.scopes_loaded:
+        raise ValueError(
+            "_content_blind_detail requires a record fetched with include_scopes=True; "
+            "capability evidence cannot be derived from a skipped scope read"
+        )
     return UserSecretDetail(
         id=record.id,
         entity_id=record.entity_id,
@@ -2961,6 +2979,7 @@ async def _fetch_single_user_secret(
     provider: str,
     identity: UUID | None,
     include_audit: bool = False,
+    include_scopes: bool = True,
 ) -> _UserCredentialRecord | None:
     """Fetch a single entity_info row matching the given provider.
 
@@ -2974,6 +2993,15 @@ async def _fetch_single_user_secret(
     for the user-detail GET route: it fetches history strictly so an audit
     source failure can be reported explicitly without changing mutation
     semantics.
+
+    ``include_scopes`` defaults to True — unlike ``include_audit`` — because
+    ``scopes_required`` / ``scopes_granted`` are what
+    ``_capability_categories`` turns into published capability evidence, so a
+    caller that forgets to ask would publish an empty list that reads as
+    "nothing granted".  The mutation routes pass False: none of them reads
+    either field, and none of their responses carries capability evidence
+    (bu-psw7o).  The record then carries ``scopes_loaded=False`` so
+    ``_content_blind_detail`` refuses it rather than projecting the gap.
 
     The result is an internal record, not a response payload — route it
     through ``_content_blind_detail`` before returning it to a client.
@@ -3062,14 +3090,18 @@ async def _fetch_single_user_secret(
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "user", row["type"])
     capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
-    scopes_required_map = await _fetch_scopes_required_by_provider(pool)
-    scopes_required_by_provider = {
-        _infer_provider_from_type(catalogue_provider): scopes
-        for catalogue_provider, scopes in scopes_required_map.items()
-    }
+    scopes_required: list[str] = []
     scopes_granted: list[str] = []
-    if provider == "google":
-        scopes_granted = (await _fetch_google_granted_scopes(pool, [entity_id])).get(entity_id, [])
+    if include_scopes:
+        scopes_required_map = await _fetch_scopes_required_by_provider(pool)
+        scopes_required = {
+            _infer_provider_from_type(catalogue_provider): scopes
+            for catalogue_provider, scopes in scopes_required_map.items()
+        }.get(provider, [])
+        if provider == "google":
+            scopes_granted = (await _fetch_google_granted_scopes(pool, [entity_id])).get(
+                entity_id, []
+            )
 
     audit: list[dict] = []
     if include_audit:
@@ -3093,8 +3125,9 @@ async def _fetch_single_user_secret(
         issued=row["created_at"],
         expires=expires_at,
         last_verified=row["last_verified"],
-        scopes_required=scopes_required_by_provider.get(provider, []),
+        scopes_required=scopes_required,
         scopes_granted=scopes_granted,
+        scopes_loaded=include_scopes,
         failure_tail=row["last_test_message"],
         test=test,
         audit=audit,
@@ -5077,7 +5110,11 @@ async def rotate_user_credential(
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
     # Locate the existing row so we can confirm it exists and capture the old token value.
-    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    # Scopes are skipped: this read only supplies `id` and `type`, and the response is
+    # built from the post-update re-read below, which does load them (bu-psw7o).
+    detail = await _fetch_single_user_secret(
+        shared_pool, provider=provider, identity=identity, include_scopes=False
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
     if detail.type in _GUIDED_ROTATE_ONLY_USER_TYPES:
@@ -5200,8 +5237,11 @@ async def disconnect_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Confirm the credential exists before deleting.
-    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    # Confirm the credential exists before deleting.  Scopes are skipped: only `id`
+    # and `type` are read here and the response is a bare status (bu-psw7o).
+    detail = await _fetch_single_user_secret(
+        shared_pool, provider=provider, identity=identity, include_scopes=False
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -5403,8 +5443,13 @@ async def probe_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Fetch the credential to derive current state.
-    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    # Fetch the credential to derive current state.  Scopes are skipped: the probe reads
+    # `id`, `entity_id`, `type`, `state` and `failure_tail`, and publishes a TestResult
+    # that carries no capability evidence (bu-psw7o).  The Google test-mode expiry read
+    # stays — `state` is derived from it.
+    detail = await _fetch_single_user_secret(
+        shared_pool, provider=provider, identity=identity, include_scopes=False
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -5730,8 +5775,12 @@ async def reauthorize_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Look up the credential to decide whether an account reference applies.
-    detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
+    # Look up the credential to decide whether an account reference applies.  Scopes are
+    # skipped: only the presence of the row, its `label`, and its `entity_id` matter here,
+    # and the response is a redirect URL (bu-psw7o).
+    detail = await _fetch_single_user_secret(
+        shared_pool, provider=provider, identity=identity, include_scopes=False
+    )
 
     if detail is None:
         # First-time connect: no entity_info row exists yet.  For OAuth-kind
