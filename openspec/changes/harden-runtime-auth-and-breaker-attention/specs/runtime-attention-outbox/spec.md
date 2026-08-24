@@ -67,6 +67,16 @@ Scope: v1-mandatory
 - **AND** every other failed probe remains dispatch evidence without appending
   a duplicate episode
 
+#### Scenario: Concurrent ceiling denials create one fleet-halt episode
+
+- **WHEN** monthly-ceiling denials call the fleet-halt producer concurrently for
+  the same calendar month
+- **THEN** exactly one `fleet_halt` episode exists for that month
+- **AND** every denial that did not create it is handed that same episode rather
+  than an absent one
+- **AND** the producer alone establishes that, so a denial it resolves without
+  appending an episode commits without waiting on the month's serialization
+
 #### Scenario: Existing incidents are not re-paged during migration
 
 - **WHEN** the outbox migration is deployed while a breaker is already open or

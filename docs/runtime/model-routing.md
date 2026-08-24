@@ -234,8 +234,12 @@ catalog entry. The recorder takes the advisory transaction lock before assigning
 `clock_timestamp()` and the stable bigint ID, so `(ts, id)` reflects recorder
 order even when an older transaction reaches the lock late. A breaker opening
 and its runtime-attention episode commit in that same transaction. Fleet-halt
-denials use the same recorder and create at most one episode per UTC month; a
-month already breached before producer activation is not paged retrospectively.
+denials use the same recorder and create at most one episode per UTC month, but
+they take no recorder-held lock of their own: that guarantee is the producer's,
+which serializes on its own month-scoped advisory lock behind the partial unique
+`fleet_halt` month key, so the deny path — which fires on every spawn while the
+fleet is halted — is not serialized fleet-wide (bu-86t7r). A month already
+breached before producer activation is not paged retrospectively.
 
 Migration `core_199` installs the version-2 producer control and a database
 trigger, `public.runtime_attention_plant_legacy_debounce_marker()`. New

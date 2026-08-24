@@ -3073,16 +3073,18 @@ BEGIN
     AS $runtime_attention_fleet_halt_v2$
     DECLARE
         -- transaction_timestamp(), not clock_timestamp(), and identical to v1's
-        -- declaration below.  The Python caller takes pg_advisory_xact_lock on
-        -- this same month before it inserts the denial row
-        -- (butlers.core.dispatch_outcomes._FLEET_HALT_LOCK_SQL), and a lock key
-        -- computed at BEGIN can only equal the month written later in that
-        -- transaction if both read a value that does not move while the
-        -- transaction runs.  v2 drifted to clock_timestamp(); across a UTC month
-        -- rollover the two then disagreed and the lock serialized a month nobody
-        -- was writing, at exactly the moment the fleet-halt path is most likely
-        -- to fire (bu-jxelx).  The unique index on fleet_halt_month kept that
-        -- from double-paging, so it degraded silently.
+        -- declaration below.  bu-jxelx: v2 had drifted to clock_timestamp() while
+        -- the Python recorder computed a second, independent month expression for
+        -- an advisory lock it took before inserting the denial row.  Across a UTC
+        -- month rollover the two disagreed, so that lock serialized a month nobody
+        -- was writing, at exactly the moment the fleet-halt path is most likely to
+        -- fire; the unique index on fleet_halt_month kept it from double-paging, so
+        -- it degraded silently.  bu-86t7r then removed the recorder's lock as
+        -- redundant with the one this body takes below, which leaves v_month the
+        -- only month the transaction names -- it is what this body locks on, what
+        -- it filters evidence by, and what it writes.  Keep it one declaration read
+        -- by all three: that, rather than the choice of clock, is what makes the
+        -- bu-jxelx class of disagreement impossible.
         v_month DATE := date_trunc('month', now() AT TIME ZONE 'UTC')::date;
         v_denied_count INTEGER;
         v_first_denied_at TIMESTAMPTZ;
