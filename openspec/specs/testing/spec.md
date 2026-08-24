@@ -246,6 +246,29 @@ Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with r
 - **WHEN** the patches are installed at module import time
 - **THEN** they are guarded by sentinel attributes (`__butlers_resilient_startup__`, `__butlers_serialized_start__`, `__butlers_resilient__`) on the patched methods to prevent double-patching
 
+### Requirement: Pytest Run Verdicts Require a Positive Terminator
+A pytest run's outcome SHALL be established by positive evidence that the run finished — a summary line, or the process exit status — never by the absence of a failure line. A run that produced neither is UNKNOWN, and UNKNOWN SHALL NOT be treated as a pass.
+
+#### Scenario: Truncated log has no verdict
+- **WHEN** `scripts/pytest_gate.py verdict LOG` reads a log carrying neither a gate sentinel nor a pytest summary line, including the xdist truncation whose workers report `OSError: cannot send (already closed?)` after their controller is signal-killed
+- **THEN** it reports `UNKNOWN` and exits `2`, so a shell `&&` chain fails closed
+- **AND** it names the killed-controller signature when that marker is present, rather than reporting an undifferentiated UNKNOWN
+
+#### Scenario: Sentinel carries the exit status and outranks the log prose
+- **WHEN** a `## pytest-gate exit=N` sentinel is present
+- **THEN** the verdict comes from `N` alone: `0` is PASS, `1` is FAILED, and `2`, `3`, `4`, `5`, or any `128+signal` value is UNKNOWN because the suite rendered no verdict
+- **AND** a nonzero sentinel outranks an earlier green summary line in the same log
+
+#### Scenario: Summary line classified only on positive counts
+- **WHEN** no sentinel is present but a pytest summary line is
+- **THEN** counts including `failed` or `error` are FAILED, `no tests ran` and any summary counting no passing tests are UNKNOWN, and only a summary reporting passes with no failures or errors is PASS
+- **AND** the last summary line in the log wins, so a rerun's verdict supersedes the earlier one
+
+#### Scenario: Run receipt survives the caller being killed
+- **WHEN** `scripts/pytest_gate.py run` launches pytest and the caller's process group is signalled mid-run
+- **THEN** pytest continues, because the child was started in its own session
+- **AND** the sentinel is appended by that child rather than by the runner, so the receipt is written even though the runner is gone
+
 ### Requirement: E2E Staging Harness Architecture
 The E2E harness SHALL boot a complete disposable butler ecosystem for every test session: real ButlerDaemon processes, real PostgreSQL databases, real Alembic migrations, and real LLM calls via Haiku.
 
