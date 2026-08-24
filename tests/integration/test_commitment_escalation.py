@@ -895,3 +895,111 @@ class TestRenewal:
         renewed = await renew_stale_commitment(pool, source=other_source, fingerprint=fingerprint)
 
         assert renewed is False
+
+
+# ---------------------------------------------------------------------------
+# REQ-commitment-lifecycle-005 — the scheduler's entry point
+# ---------------------------------------------------------------------------
+
+
+class TestScheduledJobHandler:
+    async def test_req_commitment_lifecycle_005_the_registered_handler_runs_the_tick(
+        self, pool: asyncpg.Pool, source: str
+    ) -> None:
+        """The handler the scheduler dispatches must actually reach the ledger.
+
+        It binds the real broker to the injected seam through two deferred
+        imports and returns the tick's counters as the job record. Nothing
+        else exercises that wiring: a broken import or a renamed field would
+        surface only as a failing scheduled job in production.
+        """
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+        from butlers.tools.switchboard.insight.broker import create_insight_tables
+
+        await create_insight_tables(pool)
+        fingerprint = await _commit(pool, source=source)
+        await _age(pool, source, fingerprint, level="L1", silent_days=2, due_in=timedelta(days=3))
+
+        handler = get_deterministic_schedule_job_registry()["switchboard"]["commitment_escalation"]
+        record = await handler(pool, None)
+
+        assert record["scanned"] == 1
+        assert record["surfaced"] == 1
+        queued = await pool.fetchval(
+            "SELECT count(*) FROM insight_candidates WHERE dedup_key = $1",
+            f"commitment:{fingerprint}:L1",
+        )
+        assert queued == 1
+
+
+# ---------------------------------------------------------------------------
+# REQ-commitment-lifecycle-005 — delivery reaches the attention ledger
+# ---------------------------------------------------------------------------
+
+
+class TestAttentionLedgerRecording:
+    async def test_req_commitment_lifecycle_005_delivery_records_the_commitment_in_the_ledger(
+        self, pool: asyncpg.Pool, source: str
+    ) -> None:
+        """A delivered commitment insight is recorded, and resolves back to the commitment.
+
+        REQ-commitment-lifecycle-005's normative sentence — "SHALL compose with
+        the existing insight engine and attention ledger; commitments compete
+        for the same delivery budget as other insights" — is what this proves:
+        the candidate this job proposes travels the ordinary delivery path and
+        lands in ``public.attention_ledger`` with no engine change.
+
+        Its scenario asks for ``source: "commitment"`` and the fingerprint as
+        the reference, and that literal shape is not reachable. ``source`` is a
+        closed vocabulary on the ledger itself
+        (``attention_ledger.VALID_SOURCES`` is ``notify``/``insight``/
+        ``discretion``, and anything else is dropped with a warning), and the
+        value is written by the delivery cycle, not by the proposer — so
+        producing it would mean changing both the attention ledger's vocabulary
+        and the insight engine, which the same requirement forbids in the very
+        next clause ("No changes to the insight engine itself", criterion 10).
+        The two halves of REQ-005 contradict each other, and this is the half
+        that can hold.
+
+        What survives is the substance: ``source`` says the delivery came
+        through the insight path, and the fingerprint travels in ``dedup_key``,
+        so a ledger row for a commitment resolves back to the commitment
+        without the engine needing to learn what a commitment is. This test
+        pins that, so the traceability cannot be lost silently.
+        """
+        from unittest.mock import AsyncMock
+
+        from butlers.tools.switchboard.insight.broker import (
+            create_insight_tables,
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await create_insight_tables(pool)
+        await pool.execute(
+            """
+            INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'
+            """
+        )
+        fingerprint = await _commit(pool, source=source)
+        await _age(pool, source, fingerprint, level="L3", silent_days=20, due_in=timedelta(days=7))
+
+        assert (
+            await run_commitment_escalation(pool, insight_proposer=propose_insight_candidate)
+        ).surfaced == 1
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        result = await delivery_cycle(pool, notify_fn=notify, now=datetime.now(UTC))
+        assert result["skipped"] is False
+        assert result["delivered"]
+
+        row = await pool.fetchrow(
+            "SELECT * FROM public.attention_ledger WHERE dedup_key = $1",
+            f"commitment:{fingerprint}:L3",
+        )
+        assert row is not None
+        assert row["source"] == "insight"
+        assert row["outcome"] in ("delivered", "coalesced")
+        assert row["origin_butler"] == source.split(":", 1)[0]
+        assert fingerprint in row["dedup_key"]

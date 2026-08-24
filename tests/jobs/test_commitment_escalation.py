@@ -391,3 +391,58 @@ class TestInsightEngineComposition:
             "butlers.core.commitments",
             "butlers.core.condition_ledger",
         }
+
+
+# ---------------------------------------------------------------------------
+# REQ-commitment-lifecycle-005 — the job is actually scheduled
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulerRegistration:
+    """ "A scheduled job SHALL check commitment-class ``owner_conditions``".
+
+    A job that is written but not reachable satisfies nothing. The two halves
+    of "scheduled" are a ``[[butler.schedule]]`` entry in the roster config and
+    a handler under that name in the deterministic registry, and nothing else
+    checks that the two agree — a typo in either is a silent no-op at runtime,
+    with the scheduler simply never dispatching.
+    """
+
+    @staticmethod
+    def _schedule_entry() -> dict:
+        import tomllib
+        from pathlib import Path
+
+        config = tomllib.loads(
+            (Path(__file__).resolve().parents[2] / "roster/switchboard/butler.toml").read_text()
+        )
+        entries = [
+            entry
+            for entry in config["butler"]["schedule"]
+            if entry.get("job_name") == "commitment_escalation"
+        ]
+        assert len(entries) == 1, "expected exactly one commitment-escalation schedule entry"
+        return entries[0]
+
+    def test_req_commitment_lifecycle_005_the_roster_schedules_the_job(self) -> None:
+        entry = self._schedule_entry()
+        assert entry["dispatch_mode"] == "job"
+        assert entry["cron"].split()[2:] == ["*", "*", "*"], "the tick must run daily"
+
+    def test_req_commitment_lifecycle_005_the_scheduled_name_resolves_to_a_handler(self) -> None:
+        """The registry is what turns the config's ``job_name`` into a call."""
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        registry = get_deterministic_schedule_job_registry()
+        assert self._schedule_entry()["job_name"] in registry["switchboard"]
+
+    def test_req_commitment_lifecycle_006_the_daily_cadence_matches_the_candidate_ttl(self) -> None:
+        """Candidates expire in one tick, so a slower cadence would leave gaps.
+
+        ``_CANDIDATE_TTL`` is one day precisely because the job runs daily: a
+        candidate this tick proposed is either delivered or replaced by the
+        next tick's, never left to accumulate. A weekly cron would leave six
+        days with no pending commitment candidate at all.
+        """
+        assert self._schedule_entry()["cron"].split()[2:] == ["*", "*", "*"]
+        assert job._CANDIDATE_TTL == timedelta(days=1)

@@ -604,10 +604,11 @@ async def run_commitment_escalation(
     is surfaced on this tick.
 
     Commitments below :data:`~butlers.core.commitments.SURFACING_CONFIDENCE_THRESHOLD`
-    are counted and skipped, never proposed
+    are counted and skipped by the surfacing pass
     (REQ-commitment-lifecycle-004): they remain visible to the dashboard and
-    prep-card queries, and their escalation clock still runs, but they are
-    never pushed at the owner.
+    prep-card queries, and their escalation clock still runs, but the owner is
+    never nudged about them. The collection pass is deliberately outside that
+    gate — see the comment at its call site.
 
     Never raises for a single bad row — a malformed deadline, an unknown
     escalation level, or a broker rejection is logged and counted so one
