@@ -514,6 +514,7 @@ class TestWhatsAppJIDResolution:
     def _make_pool_with_rows(self, *rows: dict[str, Any] | None) -> Any:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(side_effect=list(rows))
+        pool.fetch = AsyncMock(return_value=[])
         return pool
 
     async def test_jid_resolution_paths(self):
@@ -539,10 +540,19 @@ class TestWhatsAppJIDResolution:
             None,
             {"entity_id": owner_entity_id, "name": "Owner", "roles": ["owner"]},
         )
+        pool2.fetch = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": owner_entity_id,
+                    "name": "Owner",
+                    "roles": ["owner"],
+                }
+            ]
+        )
         result2 = await resolve_contact_by_channel(
             pool2, "whatsapp_jid", "15550001111@s.whatsapp.net"
         )
-        assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 2
+        assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 1
 
         # Group JID → no phone fallback, returns None
         pool3 = self._make_pool_with_rows(None)
@@ -556,7 +566,7 @@ class TestWhatsAppJIDResolution:
         result = await resolve_contact_by_channel(
             pool, "whatsapp_jid", "99999999999@s.whatsapp.net"
         )
-        assert result is None and pool.fetchrow.call_count == 2
+        assert result is None and pool.fetchrow.call_count == 1
 
 
 # ---------------------------------------------------------------------------

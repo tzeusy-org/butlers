@@ -170,8 +170,9 @@ async def resolve_and_inject_identity(
 
     return await _inject_unknown_identity(
         pool,
-        channel_type,
+        canonical_identity_channel_type(channel_type),
         channel_value,
+        source_channel_type=channel_type,
         display_name=display_name,
         notify_owner_fn=notify_owner_fn,
         state_pool=state_pool,
@@ -180,12 +181,14 @@ async def resolve_and_inject_identity(
 
 async def _inject_unknown_identity(
     pool: asyncpg.Pool,
-    channel_type: str,
+    identity_channel_type: str,
     channel_value: str,
     *,
+    source_channel_type: str,
     display_name: str | None,
     notify_owner_fn: Callable[[str], Awaitable[None]] | None,
     state_pool: asyncpg.Pool | None,
+    strict_reservation: bool = False,
 ) -> IdentityResolutionResult:
     """Reserve and inject an already-confirmed unresolved sender.
 
@@ -194,11 +197,18 @@ async def _inject_unknown_identity(
     """
     temp_contact = await create_temp_contact(
         pool,
-        channel_type,
+        source_channel_type,
         channel_value,
         display_name=display_name,
-        reservation_state_key=(f"{_TEMP_ENTITY_STATE_KEY_PREFIX}{channel_type}:{channel_value}"),
+        identity_channel_type=identity_channel_type,
+        pre_resolved_miss=True,
+        reservation_state_key=(
+            f"{_TEMP_ENTITY_STATE_KEY_PREFIX}{source_channel_type}:{channel_value}"
+        ),
+        raise_on_error=strict_reservation,
     )
+    if temp_contact is not None and not temp_contact.is_unidentified:
+        return _result_from_resolved_contact(temp_contact, source_channel_type)
 
     # Reserve the owner-notification attempt before delivery. The atomic claim
     # is deliberately made only when a real callback is wired: an unconfigured
@@ -208,13 +218,13 @@ async def _inject_unknown_identity(
     if temp_contact is not None and notify_owner_fn is not None:
         notification_claimed = await _claim_unknown_sender_notification(
             state_pool or pool,
-            channel_type,
+            source_channel_type,
             channel_value,
         )
 
     preamble = build_identity_preamble(
         None,
-        channel_type,
+        source_channel_type,
         temp_contact_id=temp_contact.contact_id if temp_contact else None,
         temp_entity_id=temp_contact.entity_id if temp_contact else None,
     )
@@ -240,7 +250,7 @@ async def _inject_unknown_identity(
     if notification_claimed and notify_owner_fn is not None:
         sender_label = _safe_sender_label(display_name)
         notification_msg = (
-            f"Unknown sender: {sender_label} ({channel_type}). "
+            f"Unknown sender: {sender_label} ({source_channel_type}). "
             f"Review in Unidentified Entities: {_UNIDENTIFIED_ENTITIES_REVIEW_PATH}"
         )
         try:
@@ -249,7 +259,7 @@ async def _inject_unknown_identity(
             logger.warning(
                 "identity.unknown_sender_notification_failed",
                 extra={
-                    "channel_type": channel_type,
+                    "channel_type": source_channel_type,
                     "failure_class": type(exc).__name__,
                 },
             )
@@ -334,7 +344,7 @@ async def resolve_sender_identities(
         if resolved is not None:
             results[channel_value] = _result_from_resolved_contact(
                 resolved,
-                identity_channel,
+                channel_type,
             )
             continue
 
@@ -342,9 +352,11 @@ async def resolve_sender_identities(
             pool,
             identity_channel,
             channel_value,
+            source_channel_type=channel_type,
             display_name=None,
             notify_owner_fn=notify_owner_fn,
             state_pool=state_pool,
+            strict_reservation=True,
         )
 
     return results

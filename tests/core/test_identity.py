@@ -325,9 +325,183 @@ async def test_bulk_whatsapp_user_client_uses_jid_candidates():
     resolved = result[("whatsapp_user_client", "1234567890@s.whatsapp.net")]
     assert resolved is not None
     assert resolved.entity_id == _ENTITY_ID
-    predicates, objects = pool.fetch.await_args.args[1:]
+    predicates, objects = pool.fetch.await_args_list[0].args[1:]
     assert ("has-handle", "1234567890@s.whatsapp.net") in zip(predicates, objects, strict=True)
     assert ("has-phone", "1234567890") in zip(predicates, objects, strict=True)
+    assert any("regexp_replace" in call.args[0] for call in pool.fetch.await_args_list)
+
+
+@pytest.mark.parametrize(
+    "phone_rows",
+    [
+        [
+            {
+                "entity_id": _ENTITY_ID,
+                "name": "Exact One",
+                "roles": [],
+            },
+            {
+                "entity_id": _OWNER_ID,
+                "name": "Exact Two",
+                "roles": [],
+            },
+        ],
+        [
+            {
+                "entity_id": _ENTITY_ID,
+                "name": "Exact Form",
+                "roles": [],
+            },
+            {
+                "entity_id": _OWNER_ID,
+                "name": "Formatted Variant",
+                "roles": [],
+            },
+        ],
+    ],
+    ids=["identical-exact-objects", "formatted-variant"],
+)
+async def test_single_whatsapp_phone_fallback_rejects_every_ambiguous_candidate_set(
+    phone_rows: list[dict[str, Any]],
+) -> None:
+    """REQ-switchboard-identity-001: exact and normalized phone ambiguity share one rule."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            None,
+            _mk_bulk_row(phone_rows[0]),
+        ]
+    )
+    pool.fetch = AsyncMock(return_value=[_mk_bulk_row(row) for row in phone_rows])
+
+    result = await resolve_contact_by_channel(
+        pool,
+        "whatsapp_user_client",
+        "15551234567@s.whatsapp.net",
+    )
+
+    assert result is None
+    assert pool.fetchrow.await_count == 1
+    pool.fetch.assert_awaited_once()
+
+
+async def test_single_whatsapp_phone_fallback_keeps_unique_candidate() -> None:
+    """REQ-switchboard-identity-001: one exact or formatted phone candidate resolves."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            None,
+            _mk_bulk_row(
+                {
+                    "entity_id": _ENTITY_ID,
+                    "name": "Unique Person",
+                    "roles": [],
+                }
+            ),
+        ]
+    )
+    pool.fetch = AsyncMock(
+        return_value=[
+            _mk_bulk_row(
+                {
+                    "entity_id": _ENTITY_ID,
+                    "name": "Unique Person",
+                    "roles": [],
+                }
+            )
+        ]
+    )
+
+    result = await resolve_contact_by_channel(
+        pool,
+        "whatsapp_user_client",
+        "15551234567@s.whatsapp.net",
+    )
+
+    assert result is not None
+    assert result.entity_id == _ENTITY_ID
+    assert pool.fetchrow.await_count == 1
+    pool.fetch.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("exact_rows", "phone_rows"),
+    [
+        (
+            [
+                {
+                    "predicate": "has-phone",
+                    "object": "15551234567",
+                    "entity_id": _ENTITY_ID,
+                    "name": "Exact One",
+                    "roles": [],
+                },
+                {
+                    "predicate": "has-phone",
+                    "object": "15551234567",
+                    "entity_id": _OWNER_ID,
+                    "name": "Exact Two",
+                    "roles": [],
+                },
+            ],
+            [
+                {"entity_id": _ENTITY_ID, "name": "Exact One", "roles": []},
+                {"entity_id": _OWNER_ID, "name": "Exact Two", "roles": []},
+            ],
+        ),
+        (
+            [
+                {
+                    "predicate": "has-phone",
+                    "object": "15551234567",
+                    "entity_id": _ENTITY_ID,
+                    "name": "Exact Form",
+                    "roles": [],
+                }
+            ],
+            [
+                {"entity_id": _ENTITY_ID, "name": "Exact Form", "roles": []},
+                {"entity_id": _OWNER_ID, "name": "Formatted Variant", "roles": []},
+            ],
+        ),
+    ],
+    ids=["identical-exact-objects", "formatted-variant"],
+)
+async def test_bulk_whatsapp_phone_fallback_rejects_every_ambiguous_candidate_set(
+    exact_rows: list[dict[str, Any]],
+    phone_rows: list[dict[str, Any]],
+) -> None:
+    """REQ-switchboard-identity-001: bulk uses the single-path phone ambiguity rule."""
+
+    async def fetch(query: str, *_args: Any) -> list[Any]:
+        rows = phone_rows if "regexp_replace" in query else exact_rows
+        return [_mk_bulk_row(row) for row in rows]
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=fetch)
+    pair = ("whatsapp_user_client", "15551234567@s.whatsapp.net")
+
+    result = await resolve_contacts_by_channel_bulk(pool, [pair])
+
+    assert result[pair] is None
+
+
+async def test_bulk_whatsapp_phone_fallback_keeps_unique_candidate() -> None:
+    """REQ-switchboard-identity-001: bulk resolves one exact or formatted phone candidate."""
+
+    async def fetch(query: str, *_args: Any) -> list[Any]:
+        if "regexp_replace" in query:
+            return [_mk_bulk_row({"entity_id": _ENTITY_ID, "name": "Unique Person", "roles": []})]
+        return []
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=fetch)
+    pair = ("whatsapp_user_client", "15551234567@s.whatsapp.net")
+
+    result = await resolve_contacts_by_channel_bulk(pool, [pair])
+
+    assert result[pair] is not None
+    assert result[pair].entity_id == _ENTITY_ID
 
 
 async def test_whatsapp_user_client_resolution_failure_log_is_content_blind(
@@ -338,12 +512,10 @@ async def test_whatsapp_user_client_resolution_failure_log_is_content_blind(
     sentinel_error = "sentinel SQL parameter: 15551234567"
     caplog.set_level(logging.DEBUG)
 
-    with patch(
-        "butlers.identity._resolve_entity_by_triple",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError(sentinel_error),
-    ):
-        result = await resolve_contact_by_channel(MagicMock(), "whatsapp_user_client", sentinel_jid)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=RuntimeError(sentinel_error))
+
+    result = await resolve_contact_by_channel(pool, "whatsapp_user_client", sentinel_jid)
 
     assert result is None
     assert "identity.contact_resolution_query_failed" in caplog.messages
@@ -360,12 +532,11 @@ async def test_whatsapp_user_client_phone_fallback_failure_log_is_content_blind(
     sentinel_error = "sentinel SQL parameter: 15551234567"
     caplog.set_level(logging.DEBUG)
 
-    with patch(
-        "butlers.identity._resolve_entity_by_triple",
-        new_callable=AsyncMock,
-        side_effect=[None, RuntimeError(sentinel_error)],
-    ):
-        result = await resolve_contact_by_channel(MagicMock(), "whatsapp_user_client", sentinel_jid)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(side_effect=RuntimeError(sentinel_error))
+
+    result = await resolve_contact_by_channel(pool, "whatsapp_user_client", sentinel_jid)
 
     assert result is None
     assert "identity.contact_resolution_phone_fallback_failed" in caplog.messages
@@ -429,6 +600,48 @@ async def test_resolve_contacts_by_channel_bulk_db_error_fails_open():
     result = await resolve_contacts_by_channel_bulk(pool, [("email", "a@example.com")])
 
     assert result == {("email", "a@example.com"): None}
+
+
+def assert_query_failure_is_content_blind(
+    error: BaseException,
+    caplog: pytest.LogCaptureFixture,
+    sentinels: tuple[str, ...],
+) -> None:
+    """Strict identity failures expose only their fixed internal classification."""
+    assert type(error).__name__ == "IdentityResolutionQueryError"
+    assert str(error) == "Identity resolution query failed"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}\n{error!r}\n{error.__cause__!r}\n{error.__context__!r}\n{caplog.text}"
+    for sentinel in sentinels:
+        assert sentinel not in rendered
+
+
+async def test_strict_bulk_query_failure_is_typed_and_content_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-switchboard-identity-002: strict lookup fails closed without DB detail."""
+    sentinels = (
+        "15551234567@s.whatsapp.net",
+        "15551234567",
+        "SELECT secret_phone FROM relationship.entity_facts",
+        "postgresql://sentinel-user:sentinel-pass@db.example/sentinel",
+        "sentinel inbound message body",
+    )
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError(" | ".join(sentinels)))
+
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError) as raised,
+    ):
+        await resolve_contacts_by_channel_bulk(
+            pool,
+            [("whatsapp_user_client", sentinels[0])],
+            raise_on_error=True,
+        )
+
+    assert_query_failure_is_content_blind(raised.value, caplog, sentinels)
 
 
 # ---------------------------------------------------------------------------

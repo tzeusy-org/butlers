@@ -56,6 +56,7 @@ def _temp_entity(*, name: str = "Unknown (telegram 12345)") -> ResolvedContact:
         name=name,
         roles=[],
         entity_id=_TEMP_ENTITY_ID,
+        is_unidentified=True,
     )
 
 
@@ -354,72 +355,284 @@ async def test_batch_resolution_deduplicates_and_reuses_bulk_known_results():
     assert reserve_unknown.await_args.kwargs.get("display_name") is None
 
 
-async def test_strict_bulk_failure_raises_instead_of_minting_unknown_entities():
-    """REQ-switchboard-identity-002: a bulk DB outage is not an unknown-sender result."""
+async def test_strict_bulk_failure_raises_instead_of_minting_unknown_entities(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-switchboard-identity-002: a bulk DB outage raises only a fixed typed failure."""
+    sentinels = (
+        "15551234567@s.whatsapp.net",
+        "15551234567",
+        "SELECT secret_phone FROM relationship.entity_facts",
+        "postgresql://sentinel-user:sentinel-pass@db.example/sentinel",
+        "sentinel inbound message body",
+    )
     pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    pool.fetch = AsyncMock(side_effect=RuntimeError(" | ".join(sentinels)))
 
-    with pytest.raises(RuntimeError, match="database unavailable"):
+    with (
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError) as raised,
+    ):
         await resolve_contacts_by_channel_bulk(
             pool,
-            [("email", "speaker@example.com")],
+            [("whatsapp_user_client", sentinels[0])],
             raise_on_error=True,
         )
 
+    assert type(raised.value).__name__ == "IdentityResolutionQueryError"
+    assert str(raised.value) == "Identity resolution query failed"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = f"{raised.value!s}\n{raised.value!r}\n{caplog.text}"
+    for sentinel in sentinels:
+        assert sentinel not in rendered
 
-async def test_batch_bulk_failure_does_not_enter_unknown_reservation_path():
+
+async def test_batch_bulk_failure_does_not_enter_unknown_reservation_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """REQ-switchboard-identity-002: strict lookup failure cannot mint false entities."""
+    sentinels = (
+        "15551234567@s.whatsapp.net",
+        "15551234567",
+        "SELECT secret_phone FROM relationship.entity_facts",
+        "postgresql://sentinel-user:sentinel-pass@db.example/sentinel",
+        "sentinel inbound message body",
+    )
     pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError(" | ".join(sentinels)))
     reserve_unknown = AsyncMock()
 
     with (
-        patch.object(
-            identity_inject,
-            "resolve_contacts_by_channel_bulk",
-            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
-            create=True,
-        ),
         patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError) as raised,
     ):
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await identity_inject.resolve_sender_identities(
-                pool,
-                "whatsapp_user_client",
-                ["111@s.whatsapp.net"],
-            )
+        await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            [sentinels[0]],
+        )
 
     reserve_unknown.assert_not_awaited()
+    assert type(raised.value).__name__ == "IdentityResolutionQueryError"
+    assert str(raised.value) == "Identity resolution query failed"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = f"{raised.value!s}\n{raised.value!r}\n{caplog.text}"
+    for sentinel in sentinels:
+        assert sentinel not in rendered
 
 
 async def test_batch_unknown_reservation_skips_redundant_fail_open_lookup():
-    """REQ-switchboard-identity-002: a bulk miss enters reservation without re-resolving."""
-    pool = AsyncMock()
-    bulk = AsyncMock(return_value={("whatsapp_jid", "222@s.whatsapp.net"): None})
-    redundant_lookup = AsyncMock(
-        side_effect=AssertionError("batch unknown must not perform a second lookup")
+    """REQ-switchboard-identity-002: a bulk miss uses the real strict reservation seam."""
+    sentinel = "15551234567@s.whatsapp.net"
+    entity_id = uuid.uuid4()
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=AssertionError("pre-resolved batch miss must not query the pool again")
     )
-    create_unknown = AsyncMock(return_value=_temp_entity())
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=[{"value": {}}, None, None])
+    conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(return_value=entity_id)
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    bulk = AsyncMock(return_value={("whatsapp_jid", sentinel): None})
 
-    with (
-        patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk),
-        patch.object(identity_inject, "resolve_contact_by_channel", redundant_lookup),
-        patch.object(identity_inject, "create_temp_contact", create_unknown),
-    ):
+    with patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk):
         results = await identity_inject.resolve_sender_identities(
             pool,
             "whatsapp_user_client",
-            ["222@s.whatsapp.net", "222@s.whatsapp.net"],
+            [sentinel, sentinel],
         )
 
-    redundant_lookup.assert_not_awaited()
-    create_unknown.assert_awaited_once_with(
-        pool,
-        "whatsapp_jid",
-        "222@s.whatsapp.net",
-        display_name=None,
-        reservation_state_key=("identity:unknown_entity:whatsapp_jid:222@s.whatsapp.net"),
+    pool.fetchrow.assert_not_awaited()
+    identity_queries = [
+        call
+        for call in conn.fetchrow.await_args_list
+        if "relationship.entity_facts" in call.args[0]
+    ]
+    assert len(identity_queries) == 1
+    conn.fetch.assert_awaited_once()
+    _sql, canonical_name, metadata = conn.fetchval.await_args.args
+    assert canonical_name == "Unknown (whatsapp_user_client sender)"
+    assert metadata["source_channel"] == "whatsapp_user_client"
+    assert metadata["source_value"] == sentinel
+    assert results[sentinel].entity_id == entity_id
+    assert results[sentinel].channel_value == sentinel
+
+    from butlers.tools.relationship.relationship_assert_fact import assert_sender_channel_fact
+
+    with patch(
+        "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact",
+        new_callable=AsyncMock,
+    ) as assert_fact:
+        await assert_sender_channel_fact(
+            pool,
+            results[sentinel].entity_id,
+            "whatsapp_user_client",
+            results[sentinel].channel_value,
+        )
+
+    assert_fact.assert_awaited_once()
+    _pool, subject, predicate, object_value = assert_fact.await_args.args
+    assert subject == entity_id
+    assert predicate == "has-handle"
+    assert object_value == sentinel
+
+
+async def test_batch_reservation_query_failure_is_strict_and_content_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-switchboard-identity-002: a fresh race-check outage cannot mint an unknown."""
+    sentinel = "15551234567@s.whatsapp.net"
+    sentinels = (
+        sentinel,
+        "15551234567",
+        "SELECT secret_phone FROM relationship.entity_facts",
+        "postgresql://sentinel-user:sentinel-pass@db.example/sentinel",
+        "sentinel inbound message body",
     )
-    assert results["222@s.whatsapp.net"].entity_id == _TEMP_ENTITY_ID
+    sentinel_error = " | ".join(sentinels)
+    pool = MagicMock()
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=[{"value": {}}, RuntimeError(sentinel_error)])
+    conn.fetchval = AsyncMock(return_value=uuid.uuid4())
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    bulk = AsyncMock(return_value={("whatsapp_jid", sentinel): None})
+
+    with (
+        patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk),
+        caplog.at_level(logging.DEBUG),
+        pytest.raises(RuntimeError) as raised,
+    ):
+        await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            [sentinel],
+        )
+
+    conn.fetchval.assert_not_awaited()
+    assert type(raised.value).__name__ == "IdentityResolutionQueryError"
+    assert str(raised.value) == "Identity resolution query failed"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "identity.contact_resolution_query_failed" in caplog.messages
+    rendered = f"{raised.value!s}\n{raised.value!r}\n{caplog.text}"
+    for secret in sentinels:
+        assert secret not in rendered
+
+
+async def test_populated_reservation_yields_to_new_canonical_fact() -> None:
+    """REQ-switchboard-identity-001: the post-lock canonical lookup wins the race."""
+    sentinel = "15551234567@s.whatsapp.net"
+    reserved_entity_id = uuid.uuid4()
+    confirmed_entity_id = uuid.uuid4()
+    call_order: list[str] = []
+    pool = MagicMock()
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+
+    async def fetchrow(query: str, *_args: object) -> dict[str, object] | None:
+        if "SELECT value FROM state" in query:
+            call_order.append("reservation")
+            return {"value": {"entity_id": str(reserved_entity_id)}}
+        if "relationship.entity_facts" in query:
+            call_order.append("canonical")
+            return {
+                "entity_id": confirmed_entity_id,
+                "name": "Confirmed Person",
+                "roles": [],
+                "is_unidentified": False,
+            }
+        if "FROM public.entities" in query:
+            call_order.append("reserved")
+            return {
+                "canonical_name": "Unknown sender",
+                "roles": [],
+                "is_unidentified": True,
+            }
+        raise AssertionError("unexpected query")
+
+    conn.fetchrow = AsyncMock(side_effect=fetchrow)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(side_effect=AssertionError("must not mint another entity"))
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    bulk = AsyncMock(return_value={("whatsapp_jid", sentinel): None})
+
+    with patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk):
+        results = await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            [sentinel],
+        )
+
+    assert results[sentinel].entity_id == confirmed_entity_id
+    assert results[sentinel].is_known is True
+    assert call_order == ["reservation", "canonical"]
+
+
+async def test_populated_reservation_does_not_reuse_tombstoned_entity() -> None:
+    """REQ-switchboard-identity-001: stale reservation targets are never reused."""
+    sentinel = "15551234568@s.whatsapp.net"
+    reserved_entity_id = uuid.uuid4()
+    replacement_entity_id = uuid.uuid4()
+    pool = MagicMock()
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+
+    async def fetchrow(query: str, *_args: object) -> dict[str, object] | None:
+        if "SELECT value FROM state" in query:
+            return {"value": {"entity_id": str(reserved_entity_id)}}
+        if "relationship.entity_facts" in query:
+            return None
+        if "FROM public.entities" in query:
+            if "merged_into" not in query or "deleted_at" not in query:
+                return {
+                    "canonical_name": "Tombstoned Unknown",
+                    "roles": [],
+                    "is_unidentified": True,
+                }
+            return None
+        raise AssertionError("unexpected query")
+
+    conn.fetchrow = AsyncMock(side_effect=fetchrow)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.fetchval = AsyncMock(return_value=replacement_entity_id)
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=transaction)
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    bulk = AsyncMock(return_value={("whatsapp_jid", sentinel): None})
+
+    with patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk):
+        results = await identity_inject.resolve_sender_identities(
+            pool,
+            "whatsapp_user_client",
+            [sentinel],
+        )
+
+    assert results[sentinel].entity_id == replacement_entity_id
+    assert results[sentinel].entity_id != reserved_entity_id
 
 
 async def test_second_batch_reuses_transitory_entity_without_displaying_identifier():

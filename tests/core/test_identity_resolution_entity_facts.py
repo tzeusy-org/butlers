@@ -86,6 +86,17 @@ async def _add_fact(
     )
 
 
+async def _tombstone_entity(pool, entity_id, key: str, value: str) -> None:
+    await pool.execute(
+        "UPDATE public.entities "
+        "SET metadata = metadata || jsonb_build_object($2::text, $3::text) "
+        "WHERE id = $1",
+        entity_id,
+        key,
+        value,
+    )
+
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -231,17 +242,26 @@ async def test_whatsapp_user_client_resolves_like_whatsapp_jid(provisioned_postg
         )
 
 
+@pytest.mark.parametrize(
+    "stored_numbers",
+    [
+        ("441234567890", "441234567890"),
+        ("+44 1234 567890", "44 1234 567890"),
+    ],
+    ids=["identical-exact-objects", "formatted-variants"],
+)
 async def test_whatsapp_user_client_ambiguous_phone_digits_returns_none(
     provisioned_postgres_pool,
+    stored_numbers: tuple[str, str],
 ) -> None:
-    """Spec: REQ-switchboard-identity-001."""
+    """REQ-switchboard-identity-001: every exact/normalized ambiguity stays unresolved."""
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_PROVISION_SCHEMA)
 
         first = await _mk_entity(pool, "First")
         second = await _mk_entity(pool, "Second")
-        await _add_fact(pool, first, "has-phone", "+44 1234 567890")
-        await _add_fact(pool, second, "has-phone", "44 1234 567890")
+        await _add_fact(pool, first, "has-phone", stored_numbers[0])
+        await _add_fact(pool, second, "has-phone", stored_numbers[1])
 
         value = "441234567890@s.whatsapp.net"
         single_result = await resolve_contact_by_channel(pool, "whatsapp_user_client", value)
@@ -251,6 +271,72 @@ async def test_whatsapp_user_client_ambiguous_phone_digits_returns_none(
 
         assert single_result is None
         assert bulk_result[("whatsapp_user_client", value)] is None
+
+
+@pytest.mark.parametrize(
+    ("tombstone_key", "tombstone_value"),
+    [
+        ("merged_into", "00000000-0000-0000-0000-000000000001"),
+        ("deleted_at", "2026-08-24T00:00:00+00:00"),
+    ],
+    ids=["merged", "deleted"],
+)
+async def test_whatsapp_resolution_counts_only_live_entities(
+    provisioned_postgres_pool,
+    tombstone_key: str,
+    tombstone_value: str,
+) -> None:
+    """REQ-switchboard-identity-001: tombstones neither resolve nor create ambiguity."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVISION_SCHEMA)
+
+        exact_value = "15550002001@s.whatsapp.net"
+        live_exact = await _mk_entity(pool, "Live Exact")
+        dead_exact = await _mk_entity(pool, "Dead Exact")
+        await _add_fact(pool, live_exact, "has-handle", exact_value)
+        await _add_fact(pool, dead_exact, "has-handle", exact_value)
+        await _tombstone_entity(pool, dead_exact, tombstone_key, tombstone_value)
+
+        phone_value = "15550002002@s.whatsapp.net"
+        live_phone = await _mk_entity(pool, "Live Phone")
+        dead_phone = await _mk_entity(pool, "Dead Phone")
+        await _add_fact(pool, live_phone, "has-phone", "15550002002")
+        await _add_fact(pool, dead_phone, "has-phone", "+1 555 000 2002")
+        await _tombstone_entity(pool, dead_phone, tombstone_key, tombstone_value)
+
+        dead_only_exact_value = "15550002003@s.whatsapp.net"
+        dead_only_exact = await _mk_entity(pool, "Dead Only Exact")
+        await _add_fact(pool, dead_only_exact, "has-handle", dead_only_exact_value)
+        await _tombstone_entity(pool, dead_only_exact, tombstone_key, tombstone_value)
+
+        dead_only_phone_value = "15550002004@s.whatsapp.net"
+        dead_only_phone = await _mk_entity(pool, "Dead Only Phone")
+        await _add_fact(pool, dead_only_phone, "has-phone", "15550002004")
+        await _tombstone_entity(pool, dead_only_phone, tombstone_key, tombstone_value)
+
+        pairs = [
+            ("whatsapp_user_client", exact_value),
+            ("whatsapp_user_client", phone_value),
+            ("whatsapp_user_client", dead_only_exact_value),
+            ("whatsapp_user_client", dead_only_phone_value),
+        ]
+        single_results = [
+            await resolve_contact_by_channel(pool, channel_type, channel_value)
+            for channel_type, channel_value in pairs
+        ]
+        bulk_results = await resolve_contacts_by_channel_bulk(pool, pairs)
+
+        assert single_results[0] is not None
+        assert single_results[0].entity_id == live_exact
+        assert single_results[1] is not None
+        assert single_results[1].entity_id == live_phone
+        assert single_results[2:] == [None, None]
+        assert bulk_results[pairs[0]] is not None
+        assert bulk_results[pairs[0]].entity_id == live_exact
+        assert bulk_results[pairs[1]] is not None
+        assert bulk_results[pairs[1]].entity_id == live_phone
+        assert bulk_results[pairs[2]] is None
+        assert bulk_results[pairs[3]] is None
 
 
 # ---------------------------------------------------------------------------
