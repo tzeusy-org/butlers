@@ -2884,9 +2884,33 @@ CREATE TABLE IF NOT EXISTS runtime_attention_admin.bootstrap_configuration (
     producer_activated_at TIMESTAMPTZ
 );
 ALTER TABLE runtime_attention_admin.bootstrap_configuration
-    ADD COLUMN IF NOT EXISTS interface_version INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS interface_version INTEGER NOT NULL DEFAULT 1
+        CHECK (interface_version IN (1, 2)),
     ADD COLUMN IF NOT EXISTS producers_enabled BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS producer_activated_at TIMESTAMPTZ;
+-- ADD COLUMN IF NOT EXISTS skips its entire subcommand once the column exists,
+-- CHECK included, so databases already carried through the unconstrained ALTER
+-- can only be converged by installing the constraint explicitly. PostgreSQL has
+-- no ADD CONSTRAINT IF NOT EXISTS, hence the catalog guard.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint AS version_constraint
+        JOIN pg_attribute AS constrained_column
+          ON constrained_column.attrelid = version_constraint.conrelid
+         AND constrained_column.attnum = ANY (version_constraint.conkey)
+        WHERE version_constraint.conrelid
+                  = 'runtime_attention_admin.bootstrap_configuration'::regclass
+          AND version_constraint.contype = 'c'
+          AND constrained_column.attname = 'interface_version'
+    ) THEN
+        ALTER TABLE runtime_attention_admin.bootstrap_configuration
+            ADD CONSTRAINT bootstrap_configuration_interface_version_check
+            CHECK (interface_version IN (1, 2));
+    END IF;
+END;
+$$;
 REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC;
 
 INSERT INTO runtime_attention_admin.bootstrap_configuration (
