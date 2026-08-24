@@ -1323,6 +1323,8 @@ def _receipt_row(
     session_id: str | None = None,
     mind_map_id: str | None = None,
     calibration_ready_at: datetime | None = None,
+    calibration_notice_outcome: str | None = None,
+    calibration_notice_accepted_at: datetime | None = None,
     failure_reason: str | None = None,
     triggered_at: datetime | None = None,
     settled_at: datetime | None = None,
@@ -1337,6 +1339,8 @@ def _receipt_row(
             "session_id": session_id,
             "mind_map_id": uuid.UUID(mind_map_id) if mind_map_id else None,
             "calibration_ready_at": calibration_ready_at,
+            "calibration_notice_outcome": calibration_notice_outcome,
+            "calibration_notice_accepted_at": calibration_notice_accepted_at,
             "failure_reason": failure_reason,
             "requested_at": datetime.now(UTC),
             "triggered_at": triggered_at,
@@ -1710,6 +1714,333 @@ class TestCurriculumRequestDetachedWork:
         assert "Python" in prompt
         assert "web dev" in prompt
         assert "state_delete" not in prompt
+
+
+class TestCalibrationNoticeEvidence:
+    """Delivery is read from the notification path, never from flow state.
+
+    ``calibration_ready_at`` proves the teaching flow reached ``diagnosing``.
+    It proves nothing about whether the notice the session was asked to send
+    ever reached a channel, and the two facts diverge in exactly the case that
+    matters: calibration is live and the owner was never told. These tests hold
+    the two apart (bu-358jk).
+    """
+
+    @staticmethod
+    def _evidence(outcome: str, occurred_at: datetime | None = None):
+        from butlers.core.attention_ledger import NotifyDispatchEvidence
+
+        return NotifyDispatchEvidence(
+            outcome=outcome,
+            occurred_at=occurred_at or datetime.now(UTC),
+            channel="telegram",
+            reason=None if outcome == "delivered" else f"delivery_error:{outcome}",
+            notification_ref="notif-1",
+        )
+
+    async def test_failed_notification_records_no_delivery(self):
+        """The receipt must not claim contact when the notify() failed.
+
+        This is the case the column exists for: the flow is calibrating, so
+        readiness is true, while the notice never left. A receipt that read
+        delivery off readiness would assert owner contact here.
+        """
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-live")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                # calibration_ready=True: the flow IS diagnosing.
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(
+                edu,
+                "find_notify_dispatch_for_session",
+                new_callable=AsyncMock,
+                return_value=self._evidence("failed"),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "completed"
+        assert kwargs["calibration_ready"] is True
+        assert kwargs["notice_outcome"] == "failed"
+        assert kwargs["notice_accepted_at"] is None
+
+    async def test_suppressed_notification_records_no_delivery(self):
+        """A held notice is not a delivered one."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-quiet")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(
+                edu,
+                "find_notify_dispatch_for_session",
+                new_callable=AsyncMock,
+                return_value=self._evidence("suppressed"),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["notice_outcome"] == "suppressed"
+        assert kwargs["notice_accepted_at"] is None
+
+    async def test_silent_notification_path_records_no_record(self):
+        """No ledger row is absence of evidence, and must be named as such.
+
+        A calibrating flow with no notify row is precisely the state that used
+        to render as "the butler messaged you".
+        """
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-silent")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(
+                edu,
+                "find_notify_dispatch_for_session",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["notice_outcome"] == edu._NOTICE_NO_RECORD
+        assert kwargs["notice_accepted_at"] is None
+
+    async def test_unreadable_ledger_is_not_reported_as_absence(self):
+        """ "Could not check" and "checked, found nothing" are different answers."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-dbdown")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(
+                edu,
+                "find_notify_dispatch_for_session",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("relation does not exist"),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["notice_outcome"] == edu._NOTICE_UNPROVEN
+        assert kwargs["notice_accepted_at"] is None
+
+    async def test_absent_pool_leaves_delivery_unproven(self):
+        """With no pool there is nothing to consult, which is not an absence."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        outcome, accepted_at = await edu._notice_evidence(None, "sess-any", datetime.now(UTC))
+        assert outcome == edu._NOTICE_UNPROVEN
+        assert accepted_at is None
+
+    async def test_missing_session_id_leaves_delivery_unproven(self):
+        """Without a session id there is no key to consult the ledger with."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id=None)
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        find = AsyncMock(return_value=None)
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(edu, "find_notify_dispatch_for_session", new=find),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        find.assert_not_awaited()
+        kwargs = settle.await_args.kwargs
+        assert kwargs["notice_outcome"] == edu._NOTICE_UNPROVEN
+        assert kwargs["notice_accepted_at"] is None
+
+    async def test_delivered_notification_records_the_channel_acceptance(self):
+        """Delivery evidence carries the ledger's moment, not the settle moment."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-ok")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        accepted_at = datetime(2026, 8, 24, 10, 3, tzinfo=UTC)
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                # calibration_ready=False: readiness and delivery are independent.
+                return_value=(str(uuid.uuid4()), False),
+            ),
+            patch.object(
+                edu,
+                "find_notify_dispatch_for_session",
+                new_callable=AsyncMock,
+                return_value=self._evidence("delivered", accepted_at),
+            ),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        kwargs = settle.await_args.kwargs
+        assert kwargs["calibration_ready"] is False
+        assert kwargs["notice_outcome"] == "delivered"
+        assert kwargs["notice_accepted_at"] == accepted_at
+
+    async def test_ledger_is_queried_for_this_session_within_the_trigger_window(self):
+        """The correlation key is the session, so an unrelated notify cannot count."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-scoped")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        find = AsyncMock(return_value=None)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(str(uuid.uuid4()), True),
+            ),
+            patch.object(edu, "find_notify_dispatch_for_session", new=find),
+            patch.object(edu, "_settle_receipt", new_callable=AsyncMock, return_value=True),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        find.assert_awaited_once()
+        kwargs = find.await_args.kwargs
+        assert kwargs["origin_butler"] == edu._NOTIFY_ORIGIN_BUTLER
+        assert kwargs["session_id"] == "sess-scoped"
+        assert kwargs["since"] is not None
+
+    async def test_failed_request_never_asks_about_a_notice(self):
+        """A request with no curriculum has no calibration notice to evidence."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        mock_client = AsyncMock()
+        mock_client.call_tool.return_value = _trigger_result(session_id="sess-empty")
+        mock_mgr = AsyncMock()
+        mock_mgr.get_client.return_value = mock_client
+
+        find = AsyncMock(return_value=None)
+        settle = AsyncMock(return_value=True)
+        with (
+            patch.object(edu, "_mark_receipt_running", new_callable=AsyncMock),
+            patch.object(
+                edu,
+                "_correlate_curriculum",
+                new_callable=AsyncMock,
+                return_value=(None, False),
+            ),
+            patch.object(edu, "find_notify_dispatch_for_session", new=find),
+            patch.object(edu, "_settle_receipt", new=settle),
+        ):
+            await edu._run_curriculum_request(
+                mock_mgr, mock_pool, str(uuid.uuid4()), "Python", None
+            )
+
+        find.assert_not_awaited()
+        kwargs = settle.await_args.kwargs
+        assert kwargs["status"] == "failed"
+        assert kwargs.get("notice_outcome") is None
 
 
 class TestReadCurriculumRequest:

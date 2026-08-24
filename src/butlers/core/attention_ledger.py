@@ -103,6 +103,24 @@ Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
 VALID_SOURCES = frozenset({"notify", "insight", "discretion"})
 VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
 
+# Metadata key carrying the runtime session id that was executing when the
+# ledger row was written (bu-358jk).
+#
+# The ledger's columns describe the *decision* — which butler, which channel,
+# which outcome. None of them say *who was executing* at the time, so a caller
+# that spawned a session and now wants to know what became of the notice that
+# session was asked to send has nothing to join on, and is pushed towards
+# inferring delivery from whatever adjacent state it can reach. That inference
+# is the overclaim this key removes: with it, "did this session's notify()
+# reach a channel?" is answerable from the notification path's own record
+# instead of from state that merely correlates with it.
+#
+# It lives in ``metadata`` rather than in a column so correlating a
+# notification needs no core migration;
+# :func:`find_notify_dispatch_for_session` is the only reader and owns the
+# JSON path.
+ATTENTION_LEDGER_SESSION_KEY = "session_id"
+
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The
 # attention policy (quiet hours, context-bus dnd/sleeping) fails OPEN for any
@@ -175,6 +193,7 @@ async def record_attention_event(
     dedup_key: str | None = None,
     reason: str | None = None,
     notification_ref: str | None = None,
+    session_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> str | None:
     """Record one attention-ledger row. Best-effort — never raises.
@@ -185,6 +204,11 @@ async def record_attention_event(
     return value for delivery-affecting decisions — it exists purely for
     tests and for callers that want to correlate a ledger row with a
     downstream reference (e.g. logging).
+
+    *session_id* is the runtime session that was executing when this decision
+    was made. It is folded into ``metadata`` under
+    :data:`ATTENTION_LEDGER_SESSION_KEY` so the row can later be correlated
+    back to that session (see :func:`find_notify_dispatch_for_session`).
     """
     if pool is None:
         return None
@@ -202,6 +226,8 @@ async def record_attention_event(
     # Database.connect()) and a bare asyncpg pool with no custom codec (tests
     # that connect directly). Mirrors the existing pattern in
     # propose_insight_candidate() — never bind a raw dict without this cast.
+    if session_id:
+        metadata = {**(metadata or {}), ATTENTION_LEDGER_SESSION_KEY: session_id}
     metadata_json = json.dumps(metadata) if metadata is not None else None
 
     try:
@@ -292,6 +318,96 @@ async def record_owner_ingress_rollup(
 # ---------------------------------------------------------------------------
 # Reader helpers (notify-path counting / future dashboard use)
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NotifyDispatchEvidence:
+    """One notify() dispatch outcome, as the notification path itself recorded it.
+
+    Every field is copied verbatim from the ledger row; nothing here is
+    inferred. In particular ``outcome`` carries the ledger's own vocabulary and
+    keeps its meaning:
+
+    ``delivered``
+        Switchboard's ``deliver()`` returned a non-failed status, which it does
+        only after the Messenger reported the channel accepted the message.
+        That is acceptance by the delivery channel. It is **not** evidence the
+        recipient received the message, and certainly not that they read it.
+    ``failed``
+        The dispatch errored terminally at this attempt and nothing retries it
+        on its own.
+    ``deferred`` / ``suppressed`` / ``coalesced``
+        The attention policy held, dropped, or folded the message rather than
+        sending it now.
+
+    A caller rendering this to a person must not promote any of these words to
+    a stronger claim than the one above.
+    """
+
+    outcome: str
+    occurred_at: datetime
+    channel: str | None
+    reason: str | None
+    notification_ref: str | None
+
+
+async def find_notify_dispatch_for_session(
+    pool: asyncpg.Pool | None,
+    *,
+    origin_butler: str,
+    session_id: str,
+    since: datetime | None = None,
+) -> NotifyDispatchEvidence | None:
+    """Return what the notification path recorded for *session_id*'s notify().
+
+    Correlation is by the runtime session id stamped into every notify-boundary
+    ledger row (:data:`ATTENTION_LEDGER_SESSION_KEY`), so the answer is the
+    notification path's own record of that session and never a guess drawn from
+    a time window or from unrelated state that happens to move at the same
+    moment.
+
+    Returns ``None`` when the ledger holds no notify row for that session. That
+    means *no evidence* — the session may never have called ``notify()``, or the
+    best-effort ledger write may itself have failed — and callers MUST NOT read
+    it as proof that nothing was sent.
+
+    When several rows exist for one session (a session may notify more than
+    once), a ``delivered`` row wins, and among equals the most recent. A caller
+    asking this question wants to know whether anything from that session
+    reached a channel.
+
+    Unlike the writer, this reader does **not** fail open: a database error
+    propagates, because "the ledger holds no record" and "the ledger could not
+    be consulted" are different answers and a caller that must not overclaim has
+    to be able to tell them apart.
+    """
+    if pool is None:
+        return None
+
+    row = await pool.fetchrow(
+        f"""
+        SELECT outcome, occurred_at, channel, reason, notification_ref
+          FROM public.attention_ledger
+         WHERE source = 'notify'
+           AND origin_butler = $1
+           AND metadata->>'{ATTENTION_LEDGER_SESSION_KEY}' = $2
+           AND ($3::timestamptz IS NULL OR occurred_at >= $3)
+         ORDER BY (outcome = 'delivered') DESC, occurred_at DESC
+         LIMIT 1
+        """,
+        origin_butler,
+        session_id,
+        since,
+    )
+    if row is None:
+        return None
+    return NotifyDispatchEvidence(
+        outcome=row["outcome"],
+        occurred_at=row["occurred_at"],
+        channel=row["channel"],
+        reason=row["reason"],
+        notification_ref=row["notification_ref"],
+    )
 
 
 async def count_attention_events_since(

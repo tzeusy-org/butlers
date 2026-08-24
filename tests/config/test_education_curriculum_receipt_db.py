@@ -94,7 +94,12 @@ async def pool(postgres_container, migrated_db_url: str):
 
 
 async def test_receipt_table_exists_after_migration(pool: asyncpg.Pool) -> None:
-    """education_004 must create the receipt table with its evidence columns."""
+    """The chain must create the receipt table with its evidence columns.
+
+    ``education_005`` adds the notice-evidence pair (bu-358jk). Asserting the
+    exact set, not a subset, so a column that quietly appears has to be named
+    and justified here rather than shipping unreviewed.
+    """
     cols = {
         r["column_name"]
         for r in await pool.fetch(
@@ -114,6 +119,8 @@ async def test_receipt_table_exists_after_migration(pool: asyncpg.Pool) -> None:
         "session_id",
         "mind_map_id",
         "calibration_ready_at",
+        "calibration_notice_outcome",
+        "calibration_notice_accepted_at",
         "failure_reason",
         "requested_at",
         "triggered_at",
@@ -153,6 +160,101 @@ async def test_open_receipt_must_not_be_settled(pool: asyncpg.Pool) -> None:
             VALUES ('Python', 'running', now())
             """
         )
+
+
+async def test_accepted_notice_requires_an_acceptance_timestamp(pool: asyncpg.Pool) -> None:
+    """ "Delivered" with no moment is a claim with no evidence behind it."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO education.curriculum_requests
+                (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
+            VALUES ('Python', 'accepted', 'delivered', NULL)
+            """
+        )
+
+
+async def test_unaccepted_notice_must_not_carry_an_acceptance_timestamp(
+    pool: asyncpg.Pool,
+) -> None:
+    """The failure direction, which is the one that would overclaim.
+
+    A timestamp beside a non-delivered outcome is exactly the row a UI would
+    render as "the butler messaged you" while the notice never left.
+    """
+    outcomes = ("failed", "suppressed", "deferred", "coalesced", "no_record", "unproven")
+    assert outcomes, "no outcomes to check; the loop below would be vacuous"
+    for outcome in outcomes:
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                """
+                INSERT INTO education.curriculum_requests
+                    (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
+                VALUES ('Python', 'accepted', $1, now())
+                """,
+                outcome,
+            )
+
+
+async def test_null_notice_outcome_must_not_carry_an_acceptance_timestamp(
+    pool: asyncpg.Pool,
+) -> None:
+    """ "Never asked" cannot come with an answer attached."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO education.curriculum_requests
+                (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
+            VALUES ('Python', 'accepted', NULL, now())
+            """
+        )
+
+
+async def test_unknown_notice_outcome_is_rejected(pool: asyncpg.Pool) -> None:
+    """The vocabulary is closed, so an invented word cannot reach the UI."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO education.curriculum_requests
+                (topic, status, calibration_notice_outcome)
+            VALUES ('Python', 'accepted', 'probably_sent')
+            """
+        )
+
+
+async def test_every_notice_outcome_the_router_can_write_is_accepted(
+    pool: asyncpg.Pool,
+) -> None:
+    """The CHECK and the router must agree on the vocabulary.
+
+    Covers the ledger's own outcomes plus the router's two sentinels, so a
+    constraint that silently drops one cannot 500 a settle in production.
+    """
+    outcomes = [
+        "delivered",
+        "coalesced",
+        "deferred",
+        "suppressed",
+        "failed",
+        edu._NOTICE_NO_RECORD,
+        edu._NOTICE_UNPROVEN,
+    ]
+    assert outcomes, "no outcomes to check; the loop below would be vacuous"
+    for outcome in outcomes:
+        accepted_at = datetime.now(UTC) if outcome == "delivered" else None
+        request_id = await pool.fetchval(
+            """
+            INSERT INTO education.curriculum_requests
+                (topic, status, settled_at,
+                 calibration_notice_outcome, calibration_notice_accepted_at)
+            VALUES ('Python', 'completed', now(), $1, $2)
+            RETURNING id
+            """,
+            outcome,
+            accepted_at,
+        )
+        assert request_id is not None, f"{outcome} was rejected by the notice CHECK"
+        await pool.execute("DELETE FROM education.curriculum_requests WHERE id = $1", request_id)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +392,73 @@ async def test_failed_settle_keeps_session_evidence(pool: asyncpg.Pool) -> None:
     assert after["status"] == "failed"
     assert after["session_id"] == "sess-boom"
     assert after["failure_reason"] == edu._FAILURE_SESSION_ERROR
+
+
+async def test_settle_records_notice_evidence_from_the_notification_path(
+    pool: asyncpg.Pool,
+) -> None:
+    """Delivery evidence round-trips as the pair the CHECK requires."""
+    row = await edu._create_receipt(pool, "Python", None)
+    accepted_at = datetime.now(UTC) - timedelta(seconds=5)
+
+    assert await edu._settle_receipt(
+        pool,
+        str(row["id"]),
+        status="completed",
+        session_id="sess-ok",
+        mind_map_id=None,
+        calibration_ready=True,
+        notice_outcome="delivered",
+        notice_accepted_at=accepted_at,
+    )
+
+    after = await edu._get_receipt(pool, str(row["id"]))
+    assert after["calibration_notice_outcome"] == "delivered"
+    assert after["calibration_notice_accepted_at"] == accepted_at
+
+
+async def test_settle_records_a_failed_notice_without_claiming_delivery(
+    pool: asyncpg.Pool,
+) -> None:
+    """The central case: calibration live, notice never delivered.
+
+    ``calibration_ready_at`` is set and the notice outcome is ``failed``, so the
+    receipt says both true things at once and neither one implies the other.
+    """
+    row = await edu._create_receipt(pool, "Python", None)
+
+    assert await edu._settle_receipt(
+        pool,
+        str(row["id"]),
+        status="completed",
+        session_id="sess-boom",
+        calibration_ready=True,
+        notice_outcome="failed",
+        notice_accepted_at=None,
+    )
+
+    after = await edu._get_receipt(pool, str(row["id"]))
+    assert after["calibration_ready_at"] is not None, "flow reached diagnosing"
+    assert after["calibration_notice_outcome"] == "failed"
+    assert after["calibration_notice_accepted_at"] is None
+
+
+async def test_settle_without_notice_evidence_leaves_the_columns_untouched(
+    pool: asyncpg.Pool,
+) -> None:
+    """A settle that has nothing to say about the notice must say nothing."""
+    row = await edu._create_receipt(pool, "Python", None)
+
+    assert await edu._settle_receipt(
+        pool,
+        str(row["id"]),
+        status="failed",
+        failure_reason=edu._FAILURE_TRIGGER_UNREACHABLE,
+    )
+
+    after = await edu._get_receipt(pool, str(row["id"]))
+    assert after["calibration_notice_outcome"] is None
+    assert after["calibration_notice_accepted_at"] is None
 
 
 # ---------------------------------------------------------------------------

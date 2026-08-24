@@ -4582,6 +4582,20 @@ export type CurriculumRequestFailureReason =
  * terminal `status` always carries `settled_at`, and `failed` always carries
  * `failure_reason`.
  */
+/**
+ * Outcomes a curriculum receipt can carry for its calibration notice. The first
+ * five are the attention ledger's own words for a dispatch; the last two
+ * describe the state of our evidence rather than a dispatch.
+ */
+export type CurriculumNoticeOutcome =
+  | "delivered"
+  | "coalesced"
+  | "deferred"
+  | "suppressed"
+  | "failed"
+  | "no_record"
+  | "unproven";
+
 export interface CurriculumRequestReceipt {
   request_id: string;
   topic: string;
@@ -4590,6 +4604,20 @@ export interface CurriculumRequestReceipt {
   session_id?: string | null;
   mind_map_id?: string | null;
   calibration_ready_at?: string | null;
+  /**
+   * What the notification path attests about the calibration notice, from
+   * `public.attention_ledger` — never inferred from teaching-flow state.
+   *
+   * `delivered` is the only value that means a delivery channel accepted the
+   * message, and it is the only one that carries
+   * `calibration_notice_accepted_at`. `no_record` means the ledger was read and
+   * held no notify row for the session; `unproven` means it could not be read
+   * at all. `null` means the question was never asked. None of these, including
+   * `delivered`, attests that the owner read anything.
+   */
+  calibration_notice_outcome?: CurriculumNoticeOutcome | string | null;
+  /** When a delivery channel accepted the notice. Set only for `delivered`. */
+  calibration_notice_accepted_at?: string | null;
   failure_reason?: CurriculumRequestFailureReason | string | null;
   requested_at: string;
   triggered_at?: string | null;

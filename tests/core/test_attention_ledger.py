@@ -8,14 +8,17 @@ tests at the notify()/delivery_cycle() boundaries.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.core.attention_ledger import (
+    ATTENTION_LEDGER_SESSION_KEY,
     URGENT_PRIORITY_THRESHOLD,
     count_attention_events_since,
+    find_notify_dispatch_for_session,
     get_suppressing_context,
     get_suppressing_context_signal,
     is_priority_urgent,
@@ -346,3 +349,125 @@ class TestRecordOwnerIngressRollup:
 
         # Must not raise.
         await record_owner_ingress_rollup(pool)
+
+
+class TestSessionCorrelation:
+    """The ledger must be able to answer "what became of THAT session's notify?".
+
+    Without a correlation key the ledger can only be read by butler and time
+    window, so a caller that spawned a session and wants to know whether the
+    notice it asked for reached a channel has to guess from adjacent state.
+    Guessing from adjacent state is exactly the overclaim bu-358jk exists to
+    prevent, so the key is part of the notification path, not of the caller.
+    """
+
+    async def test_session_id_is_stamped_into_metadata(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="row-1")
+
+        await record_attention_event(
+            pool,
+            origin_butler="education",
+            source="notify",
+            outcome="delivered",
+            session_id="sess-abc",
+        )
+
+        metadata_json = pool.fetchval.await_args.args[11]
+        assert json.loads(metadata_json)[ATTENTION_LEDGER_SESSION_KEY] == "sess-abc"
+
+    async def test_session_id_is_merged_beside_existing_metadata(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="row-1")
+
+        await record_attention_event(
+            pool,
+            origin_butler="education",
+            source="notify",
+            outcome="failed",
+            reason="delivery_error:boom",
+            session_id="sess-abc",
+            metadata={"retryable": True},
+        )
+
+        metadata = json.loads(pool.fetchval.await_args.args[11])
+        assert metadata["retryable"] is True
+        assert metadata[ATTENTION_LEDGER_SESSION_KEY] == "sess-abc"
+
+    async def test_absent_session_id_leaves_metadata_null(self):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="row-1")
+
+        await record_attention_event(
+            pool,
+            origin_butler="education",
+            source="notify",
+            outcome="delivered",
+        )
+
+        assert pool.fetchval.await_args.args[11] is None
+
+
+class TestFindNotifyDispatchForSession:
+    async def test_no_row_means_no_evidence(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        assert (
+            await find_notify_dispatch_for_session(
+                pool, origin_butler="education", session_id="sess-abc"
+            )
+            is None
+        )
+
+    async def test_row_is_returned_verbatim(self):
+        occurred = datetime.now(UTC)
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "outcome": "failed",
+                "occurred_at": occurred,
+                "channel": "telegram",
+                "reason": "delivery_error:switchboard_unreachable",
+                "notification_ref": None,
+            }
+        )
+
+        evidence = await find_notify_dispatch_for_session(
+            pool, origin_butler="education", session_id="sess-abc"
+        )
+
+        assert evidence is not None
+        assert evidence.outcome == "failed"
+        assert evidence.occurred_at == occurred
+        assert evidence.channel == "telegram"
+        assert evidence.reason == "delivery_error:switchboard_unreachable"
+
+    async def test_query_is_scoped_to_the_session_and_the_notify_source(self):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        since = datetime.now(UTC) - timedelta(minutes=5)
+
+        await find_notify_dispatch_for_session(
+            pool, origin_butler="education", session_id="sess-abc", since=since
+        )
+
+        query, *args = pool.fetchrow.await_args.args
+        assert "public.attention_ledger" in query
+        assert f"metadata->>'{ATTENTION_LEDGER_SESSION_KEY}'" in query
+        assert args == ["education", "sess-abc", since]
+
+    async def test_db_error_propagates(self):
+        """An unreadable ledger is not an empty one, so this must not fail open.
+
+        The caller has to be able to tell "the path holds no record" apart from
+        "the path could not be consulted"; swallowing the error here would
+        collapse those into one answer.
+        """
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+
+        with pytest.raises(RuntimeError):
+            await find_notify_dispatch_for_session(
+                pool, origin_butler="education", session_id="sess-abc"
+            )

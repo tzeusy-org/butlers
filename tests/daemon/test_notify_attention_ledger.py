@@ -20,6 +20,7 @@ rather than re-testing the pure helpers in isolation (see
 
 from __future__ import annotations
 
+import json
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.context_bus import ContextEntry
+from butlers.core.attention_ledger import ATTENTION_LEDGER_SESSION_KEY
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_session_id,
+    set_current_runtime_session_id,
+)
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -964,3 +970,92 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         assert row is not None
         assert row[1] == "switchboard"
         assert row[9] == "unexpected_error:RuntimeError"
+
+
+class TestRuntimeSessionCorrelation:
+    """Every notify-boundary ledger row names the session that made the call.
+
+    Without it the ledger is only queryable by butler and time window, so a
+    caller that spawned a session and wants to know what became of the notice
+    it asked for has to infer delivery from adjacent state (bu-358jk). The
+    stamp is what makes that inference unnecessary.
+    """
+
+    async def test_delivered_row_carries_the_runtime_session_id(self, butler_dir: Path) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+
+        token = set_current_runtime_session_id("sess-runtime-1")
+        try:
+            with (
+                _configured_owner_default_recipient(daemon),
+                patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            ):
+                result = await notify_fn(channel="telegram", message="All good")
+        finally:
+            reset_current_runtime_session_id(token)
+
+        assert result["status"] == "ok"
+
+        ledger_calls = _ledger_insert_calls(mock_pool)
+        assert ledger_calls, "no attention_ledger insert was made; the assertion below is vacuous"
+        metadata = json.loads(ledger_calls[0][11])
+        assert metadata[ATTENTION_LEDGER_SESSION_KEY] == "sess-runtime-1"
+
+    async def test_failed_row_carries_the_runtime_session_id(self, butler_dir: Path) -> None:
+        """A failure has to be as correlatable as a success.
+
+        Otherwise a caller finds no row for its session and cannot tell "the
+        notice failed" from "the session never sent one".
+        """
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+
+        failing_client = AsyncMock()
+        failing_client.call_tool = AsyncMock(side_effect=ConnectionError("switchboard gone"))
+        daemon.switchboard_client = failing_client
+
+        token = set_current_runtime_session_id("sess-runtime-2")
+        try:
+            with (
+                _configured_owner_default_recipient(daemon),
+                patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            ):
+                result = await notify_fn(channel="telegram", message="All good")
+        finally:
+            reset_current_runtime_session_id(token)
+
+        assert result["status"] == "error"
+
+        rows = [c for c in _ledger_insert_calls(mock_pool) if c[8] == "failed"]
+        assert rows, "no failed attention_ledger row was written; the assertion below is vacuous"
+        metadata = json.loads(rows[0][11])
+        assert metadata[ATTENTION_LEDGER_SESSION_KEY] == "sess-runtime-2"
+
+    async def test_no_runtime_session_leaves_the_row_unstamped(self, butler_dir: Path) -> None:
+        """A notify() outside a spawned session has no session to name."""
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+
+        token = set_current_runtime_session_id(None)
+        try:
+            with (
+                _configured_owner_default_recipient(daemon),
+                patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            ):
+                result = await notify_fn(channel="telegram", message="All good")
+        finally:
+            reset_current_runtime_session_id(token)
+
+        assert result["status"] == "ok"
+
+        ledger_calls = _ledger_insert_calls(mock_pool)
+        assert ledger_calls, "no attention_ledger insert was made; the assertion below is vacuous"
+        metadata_json = ledger_calls[0][11]
+        metadata = json.loads(metadata_json) if metadata_json else {}
+        assert ATTENTION_LEDGER_SESSION_KEY not in metadata
