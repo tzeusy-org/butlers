@@ -6,11 +6,11 @@ requirement matches the shipped code, and that archiving lands the baseline.
 
 ### 1. connector-lifecycle-ceremony
 
-Verified against `src/butlers/api/routers/ingestion_connectors.py` (pause,
-run-now, archive/unarchive, disconnect, rotate-token, reauth handlers),
-`src/butlers/modules/approvals/{park,command_contracts,executor,gate}.py`,
-`roster/switchboard/tools/connector/lifecycle.py`, and
-`roster/switchboard/migrations/{002,012,022}_*.py`.
+- [ ] 1.1 Verified against `src/butlers/api/routers/ingestion_connectors.py` (pause, run-now,
+      archive/unarchive, disconnect, rotate-token, reauth handlers),
+      `src/butlers/modules/approvals/{park,command_contracts,executor,gate}.py`,
+      `roster/switchboard/tools/connector/lifecycle.py`, and
+      `roster/switchboard/migrations/{002,012,022}_*.py`.
 
 Acceptance:
 - Gate matrix, status codes, and audit action strings match the handlers.
@@ -23,11 +23,10 @@ Acceptance:
 
 ### 2. connector-replay-idempotency-policy
 
-Verified against `src/butlers/core/ingestion_events.py`
-(`ingestion_events_replay_policy`, the replay-policy CTEs, the transition SQL),
-`src/butlers/api/routers/ingestion_events.py` (bulk retry handler),
-`src/butlers/connectors/filtered_event_buffer.py` (drain loop), and
-`roster/switchboard/migrations/{012,013}_*.py`.
+- [ ] 2.1 Verified against `src/butlers/core/ingestion_events.py` (`ingestion_events_replay_policy`, the
+      replay-policy CTEs, the transition SQL), `src/butlers/api/routers/ingestion_events.py` (bulk
+      retry handler), `src/butlers/connectors/filtered_event_buffer.py` (drain loop), and
+      `roster/switchboard/migrations/{012,013}_*.py`.
 
 Acceptance:
 - Batch cap, 400-not-truncate behaviour, and 409 pre-flight atomicity match.
@@ -38,9 +37,9 @@ Acceptance:
 
 ### 3. connector-state-aggregates
 
-Verified against `src/butlers/api/routers/ingestion_pipeline.py`,
-`src/butlers/modules/metrics/prometheus.py`, and
-`src/butlers/api/routers/ingestion_connectors.py` (`/cross-summary`).
+- [ ] 3.1 Verified against `src/butlers/api/routers/ingestion_pipeline.py`,
+      `src/butlers/modules/metrics/prometheus.py`, and
+      `src/butlers/api/routers/ingestion_connectors.py` (`/cross-summary`).
 
 Acceptance:
 - `_CACHE_TTL_SECONDS = 60.0`, window-keyed cache, and degraded envelope match.
@@ -49,8 +48,8 @@ Acceptance:
 
 ### 4. ingestion-priority-contacts
 
-Verified against `src/butlers/api/routers/priority_contacts.py` and
-`alembic/versions/core/core_{101,129,131}_*.py`.
+- [ ] 4.1 Verified against `src/butlers/api/routers/priority_contacts.py` and
+      `alembic/versions/core/core_{101,129,131}_*.py`.
 
 Acceptance:
 - Table is butler-agnostic (core_129) and anchored on `public.entities`
@@ -62,8 +61,8 @@ Acceptance:
 
 ### 5. connector-gmail (MODIFIED)
 
-Verified against `src/butlers/connectors/gmail_policy.py`
-(`GmailPolicyEvaluator`, `_PRIORITY_CONTACTS_TTL = 900`).
+- [ ] 5.1 Verified against `src/butlers/connectors/gmail_policy.py` (`GmailPolicyEvaluator`,
+      `_PRIORITY_CONTACTS_TTL = 900`).
 
 Acceptance:
 - The added scenarios do not drop any clause of the baseline
@@ -71,8 +70,8 @@ Acceptance:
 
 ### 6. ingestion-policy (MODIFIED)
 
-Verified against `src/butlers/api/routers/channel_defaults.py` and
-`alembic/versions/core/core_102_channel_defaults.py`.
+- [ ] 6.1 Verified against `src/butlers/api/routers/channel_defaults.py` and
+      `alembic/versions/core/core_102_channel_defaults.py`.
 
 Acceptance:
 - Table DDL, the 400-on-unknown-channel behaviour, and the 405 DELETE surface
@@ -80,12 +79,12 @@ Acceptance:
 
 ### 7. dashboard-ingestion-dispatch-console (MODIFIED)
 
-Verified against `frontend/src/router-config.tsx`, `frontend/src/router.tsx`
-(`IngestionTabRedirect`, `ConnectorDetailRedirect`),
-`frontend/src/components/ingestion/TimelineTab.tsx`,
-`frontend/src/components/ingestion/timeline/useEventDrawerState.ts`,
-`frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`, and
-`frontend/src/hooks/use-ingestion.ts`.
+- [ ] 7.1 Verified against `frontend/src/router-config.tsx`, `frontend/src/router.tsx`
+      (`IngestionTabRedirect`, `ConnectorDetailRedirect`),
+      `frontend/src/components/ingestion/TimelineTab.tsx`,
+      `frontend/src/components/ingestion/timeline/useEventDrawerState.ts`,
+      `frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`, and
+      `frontend/src/hooks/use-ingestion.ts`.
 
 Acceptance:
 - The added clauses do not drop any clause of the baseline
@@ -100,10 +99,10 @@ Acceptance:
 
 ### 8. Gates
 
-- `uv run openspec validate --strict`
-- `python3 scripts/check_spec_overwrites.py`
-- `python3 scripts/check_archived_requirements_landed.py`
-- Archive-rehearsal in a throwaway copy of `openspec/` proves the four new
+- [ ] 8.1 `uv run openspec validate --strict`
+- [ ] 8.2 `python3 scripts/check_spec_overwrites.py`
+- [ ] 8.3 `python3 scripts/check_archived_requirements_landed.py`
+- [ ] 8.4 Archive-rehearsal in a throwaway copy of `openspec/` proves the four new
   capability specs and the modified blocks land in the baseline, and that the
   matching `check_archived_requirements_landed.py` findings for
   `2026-05-19-redesign-ingestion-dispatch-console` clear.
@@ -118,6 +117,6 @@ Acceptance:
   with the `connector-gmail` delta held back and applied in a follow-up. A
   rehearsal with that one delta removed archives cleanly and applies 23
   requirements across the other five capabilities.
-- On archive, remove the healed entries from
+- [ ] 8.5 On archive, remove the healed entries from
   `scripts/archived-requirements-baseline.json` by hand (never
   `--update-baseline`; the script has no such flag by design).
