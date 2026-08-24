@@ -6811,6 +6811,71 @@ export interface ChroniclerUpdateRoutineRequest {
 // Relationship butler: entity-level tab types
 // ---------------------------------------------------------------------------
 
+/** A note fact for a relationship entity (predicate='contact_note'). */
+export interface EntityNote {
+  id: string;
+  content: string;
+  emotion: string | null;
+  created_at: string | null;
+}
+
+/** An interaction fact for a relationship entity (predicate LIKE 'interaction_%'). */
+export interface EntityInteraction {
+  id: string;
+  type: string;
+  summary: string | null;
+  occurred_at: string | null;
+  direction: string | null;
+}
+
+/**
+ * A drafted reach-out for a relationship entity (predicate='reach_out_draft').
+ *
+ * A draft is drafted, never sent: there is no send endpoint behind this
+ * surface, and `channel` records the channel the owner had in mind rather
+ * than a delivery attempt. `status` is always "draft" today.
+ */
+export interface EntityReachOutDraft {
+  id: string;
+  message: string | null;
+  channel: string | null;
+  status: string;
+  created_at: string | null;
+}
+
+/** Request body for POST /api/relationship/entities/{id}/notes. */
+export interface CreateEntityNoteRequest {
+  content: string;
+  emotion?: string | null;
+}
+
+/**
+ * Request body for POST /api/relationship/entities/{id}/interactions.
+ *
+ * `occurred_at` is an ISO timestamp. Omitting it defaults to now server-side;
+ * sending it also opts the write into the backend's same-day idempotency
+ * guard, which answers 409 rather than logging the interaction twice.
+ */
+export interface CreateEntityInteractionRequest {
+  type: string;
+  summary?: string | null;
+  occurred_at?: string | null;
+  direction?: string | null;
+  duration_minutes?: number | null;
+}
+
+/** Request body for POST /api/relationship/entities/{id}/gifts. */
+export interface CreateEntityGiftRequest {
+  description: string;
+  occasion?: string | null;
+}
+
+/** Request body for POST /api/relationship/entities/{id}/reach-out-drafts. */
+export interface CreateEntityReachOutDraftRequest {
+  message: string;
+  channel?: string | null;
+}
+
 /** A gift fact for a relationship entity (predicate='gift'). */
 export interface EntityGift {
   id: string;

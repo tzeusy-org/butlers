@@ -88,6 +88,11 @@ if _models_path.exists():
         EntityGift = _models_module.EntityGift
         EntityLoan = _models_module.EntityLoan
         EntityTimelineItem = _models_module.EntityTimelineItem
+        EntityReachOutDraft = _models_module.EntityReachOutDraft
+        CreateEntityNoteRequest = _models_module.CreateEntityNoteRequest
+        CreateEntityInteractionRequest = _models_module.CreateEntityInteractionRequest
+        CreateEntityGiftRequest = _models_module.CreateEntityGiftRequest
+        CreateEntityReachOutDraftRequest = _models_module.CreateEntityReachOutDraftRequest
         LinkedContactSummary = _models_module.LinkedContactSummary
         EntityImportantDate = _models_module.EntityImportantDate
         DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
@@ -3042,6 +3047,98 @@ async def list_entity_notes(
 
 
 # ---------------------------------------------------------------------------
+# Entity-level tab WRITE endpoints (bu-6t8ix.4)
+#
+# The tab GETs above are read-only, which left the ``log-interaction``,
+# ``gift-idea``, and ``draft-reach-out`` operator verbs with no write path
+# (bu-86c4c.15 / PR #2894 deferred all three rather than wire a button to
+# nothing).  Each POST persists through the relationship butler's OWN fact-store
+# tool — the same ``facts`` rows the sibling GET reads — so a dashboard-authored
+# record is indistinguishable from a butler-authored one and nothing lands in a
+# parallel store.  No new tables, columns, or seeded predicates are required.
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_response(code: str, message: str, existing_id: str | None) -> HTTPException:
+    """Build the 409 raised when a fact-store tool reports ``skipped='duplicate'``.
+
+    The tools dedupe rather than raise, returning the id of the record that
+    already covers the request.  Surfacing ``existing_id`` lets the dashboard
+    point at the row the operator already created instead of showing a bare
+    failure.
+    """
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "message": message, "existing_id": existing_id},
+    )
+
+
+def _invalid_input_response(code: str, exc: ValueError) -> HTTPException:
+    """Map a fact-store tool's ``ValueError`` onto a 422 the dashboard can render.
+
+    The tools validate domain rules the request model cannot (reserved
+    interaction types, direction vocabulary).  Those are caller errors, not
+    server faults, so they must not escape as a 500.
+    """
+    return HTTPException(status_code=422, detail={"code": code, "message": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/notes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/notes", response_model=EntityNote, status_code=201)
+async def create_entity_note(
+    entity_id: UUID,
+    body: CreateEntityNoteRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityNote:
+    """Record a note for an entity.
+
+    Writes a ``contact_note`` fact through ``note_create_for_entity`` — the
+    same predicate, scope, and entity key that ``GET .../notes`` reads.
+
+    Owner-only authz gate (Amendment 12a): returns HTTP 403 with
+    ``{"code": "owner_required"}`` for a non-owner caller.
+    Returns 404 if the entity does not exist, and 409 with the existing id
+    when the identical note was already recorded for this entity within the
+    dedup window.
+    """
+    from butlers.tools.relationship import notes as notes_tools
+
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        result = await notes_tools.note_create_for_entity(
+            pool,
+            entity_id,
+            body.content,
+            emotion=body.emotion,
+        )
+    except ValueError as exc:
+        raise _invalid_input_response("invalid_note", exc) from exc
+
+    if result.get("skipped") == "duplicate":
+        raise _duplicate_response(
+            "duplicate_note",
+            "An identical note was already recorded for this entity.",
+            result.get("existing_id"),
+        )
+
+    return EntityNote(
+        id=result["id"],
+        content=result["content"],
+        emotion=result.get("emotion"),
+        created_at=result.get("created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /entities/{entity_id}/interactions
 # ---------------------------------------------------------------------------
 
@@ -3102,6 +3199,71 @@ async def list_entity_interactions(
 
 
 # ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/interactions — the ``log-interaction`` verb
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/entities/{entity_id}/interactions",
+    response_model=EntityInteraction,
+    status_code=201,
+)
+async def create_entity_interaction(
+    entity_id: UUID,
+    body: CreateEntityInteractionRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityInteraction:
+    """Log an interaction with an entity.
+
+    Delegates to ``interaction_log`` — the butler's own MCP-backed writer — so
+    the resulting ``interaction_{type}`` fact is identical to one the butler
+    would have written itself, including its direction normalisation, reserved
+    type guard, and same-day idempotency.
+
+    Owner-only authz gate (Amendment 12a): 403 ``{"code": "owner_required"}``
+    for a non-owner caller.  404 when the entity does not exist.  409 when an
+    explicit ``occurred_at`` collides with an already-logged interaction of the
+    same type, day, and direction.  422 when the tool rejects the type or
+    direction.
+    """
+    from butlers.tools.relationship import interactions as interactions_tools
+
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        result = await interactions_tools.interaction_log(
+            pool,
+            entity_id,
+            body.type,
+            summary=body.summary,
+            occurred_at=body.occurred_at,
+            direction=body.direction,
+            duration_minutes=body.duration_minutes,
+        )
+    except ValueError as exc:
+        raise _invalid_input_response("invalid_interaction", exc) from exc
+
+    if result.get("skipped") == "duplicate":
+        raise _duplicate_response(
+            "duplicate_interaction",
+            "An interaction of this type is already logged for that day.",
+            result.get("existing_id"),
+        )
+
+    return EntityInteraction(
+        id=result["id"],
+        type=result["type"],
+        summary=result.get("summary"),
+        occurred_at=result.get("occurred_at"),
+        direction=result.get("direction"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /entities/{entity_id}/gifts
 # ---------------------------------------------------------------------------
 
@@ -3158,6 +3320,174 @@ async def list_entity_gifts(
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/gifts — the ``gift-idea`` verb
+# ---------------------------------------------------------------------------
+
+
+@router.post("/entities/{entity_id}/gifts", response_model=EntityGift, status_code=201)
+async def create_entity_gift(
+    entity_id: UUID,
+    body: CreateEntityGiftRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityGift:
+    """Capture a gift idea for an entity.
+
+    Writes a ``gift`` fact at ``status='idea'`` through
+    ``gift_add_for_entity``, so ``gift_update_status`` and the contact-keyed
+    ``gift_list`` see it exactly as they see a butler-authored gift.
+
+    Owner-only authz gate (Amendment 12a): 403 ``{"code": "owner_required"}``
+    for a non-owner caller.  404 when the entity does not exist.  409 when the
+    same idea is already recorded for this entity.
+    """
+    from butlers.tools.relationship import gifts as gifts_tools
+
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        result = await gifts_tools.gift_add_for_entity(
+            pool,
+            entity_id,
+            body.description,
+            occasion=body.occasion,
+        )
+    except ValueError as exc:
+        raise _invalid_input_response("invalid_gift", exc) from exc
+
+    if result.get("skipped") == "duplicate":
+        raise _duplicate_response(
+            "duplicate_gift",
+            "This gift idea is already recorded for this entity.",
+            result.get("existing_id"),
+        )
+
+    return EntityGift(
+        id=result["id"],
+        description=result.get("description"),
+        occasion=result.get("occasion"),
+        status=result.get("status"),
+        created_at=result.get("created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /entities/{entity_id}/reach-out-drafts — the ``draft-reach-out`` verb
+#
+# A draft is drafted, never sent.  Neither handler touches the MCP manager, a
+# connector, or ``notify()``; there is no send path behind this surface at all.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/entities/{entity_id}/reach-out-drafts",
+    response_model=list[EntityReachOutDraft],
+)
+async def list_entity_reach_out_drafts(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityReachOutDraft]:
+    """List reach-out drafts for an entity, newest first.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+
+    Provenance fields come from the model defaults rather than the literal
+    SELECT columns the older tab GETs carry; the rendered JSON is identical
+    and the ``facts`` table has no such columns to read either way.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, content, metadata, created_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate = 'reach_out_draft'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY created_at DESC
+        OFFSET $2 LIMIT $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+    return [
+        EntityReachOutDraft(
+            id=r["id"],
+            message=r["content"],
+            channel=(r["metadata"] or {}).get("channel"),
+            status=(r["metadata"] or {}).get("status") or "draft",
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+@router.post(
+    "/entities/{entity_id}/reach-out-drafts",
+    response_model=EntityReachOutDraft,
+    status_code=201,
+)
+async def create_entity_reach_out_draft(
+    entity_id: UUID,
+    body: CreateEntityReachOutDraftRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityReachOutDraft:
+    """Draft a reach-out message for an entity.  Sends nothing.
+
+    The draft is stored as an inert ``reach_out_draft`` fact at
+    ``status='draft'``.  ``channel`` records the channel the owner has in mind;
+    it is intent, not delivery.  Turning a draft into a sent message is a
+    separate, deliberate act that this endpoint does not perform and cannot
+    trigger.
+
+    Owner-only authz gate (Amendment 12a): 403 ``{"code": "owner_required"}``
+    for a non-owner caller.  404 when the entity does not exist.  409 when the
+    identical text was already drafted for this entity within the dedup window.
+    """
+    from butlers.tools.relationship import reach_out as reach_out_tools
+
+    pool = _pool(db)
+
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        result = await reach_out_tools.reach_out_draft_create(
+            pool,
+            entity_id,
+            body.message,
+            channel=body.channel,
+        )
+    except ValueError as exc:
+        raise _invalid_input_response("invalid_reach_out_draft", exc) from exc
+
+    if result.get("skipped") == "duplicate":
+        raise _duplicate_response(
+            "duplicate_reach_out_draft",
+            "An identical draft already exists for this entity.",
+            result.get("existing_id"),
+        )
+
+    return EntityReachOutDraft(
+        id=result["id"],
+        message=result.get("message"),
+        channel=result.get("channel"),
+        status=result.get("status", "draft"),
+        created_at=result.get("created_at"),
+    )
 
 
 # ---------------------------------------------------------------------------

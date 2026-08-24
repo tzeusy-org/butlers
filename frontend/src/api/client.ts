@@ -313,6 +313,13 @@ import type {
   SubmitCorrectionRequest,
   EntityGift,
   EntityLoan,
+  EntityNote,
+  EntityInteraction,
+  EntityReachOutDraft,
+  CreateEntityNoteRequest,
+  CreateEntityInteractionRequest,
+  CreateEntityGiftRequest,
+  CreateEntityReachOutDraftRequest,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
@@ -2966,6 +2973,79 @@ export function getEntityGifts(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/gifts?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/gifts`;
   return apiFetch<EntityGift[]>(path);
+}
+
+/** Fetch reach-out drafts for a relationship entity (drafts only; nothing sent). */
+export function getEntityReachOutDrafts(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityReachOutDraft[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`;
+  return apiFetch<EntityReachOutDraft[]>(path);
+}
+
+// ---------------------------------------------------------------------------
+// Relationship butler: entity-level tab writes — the log-interaction,
+// gift-idea, and draft-reach-out operator verbs (bu-6t8ix.4).
+//
+// Each POST persists through the relationship butler's own fact-store tool, so
+// a dashboard-authored record is indistinguishable from a butler-authored one.
+// All four are owner-gated (403 `owner_required`) and answer 409 with an
+// `existing_id` rather than writing a duplicate.
+// ---------------------------------------------------------------------------
+
+/** Record a note for a relationship entity. */
+export function createEntityNote(
+  entityId: string,
+  request: CreateEntityNoteRequest,
+): Promise<EntityNote> {
+  return apiFetch<EntityNote>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/notes`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Log an interaction with a relationship entity. */
+export function createEntityInteraction(
+  entityId: string,
+  request: CreateEntityInteractionRequest,
+): Promise<EntityInteraction> {
+  return apiFetch<EntityInteraction>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/interactions`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Capture a gift idea for a relationship entity. */
+export function createEntityGift(
+  entityId: string,
+  request: CreateEntityGiftRequest,
+): Promise<EntityGift> {
+  return apiFetch<EntityGift>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/gifts`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/**
+ * Draft a reach-out message for a relationship entity.
+ *
+ * Drafts only. There is no send endpoint behind this call, and the backend
+ * contacts no channel: `channel` records intent, not delivery.
+ */
+export function createEntityReachOutDraft(
+  entityId: string,
+  request: CreateEntityReachOutDraftRequest,
+): Promise<EntityReachOutDraft> {
+  return apiFetch<EntityReachOutDraft>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
 }
 
 /** Fetch loans tab data for a relationship entity. */

@@ -51,6 +51,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { DunbarEntry } from "@/api/types";
+import { EntityVerbRail } from "@/components/relationship/EntityVerbRail";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Page } from "@/components/ui/page";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -1252,6 +1253,16 @@ function EntityDossier({
 
       {/* Latest touch per channel; the block hides itself when empty. */}
       <LatestInteractionsBlock entityId={entityId} />
+
+      {/* Operator verbs: log an interaction, capture a gift idea, draft a
+          reach-out, or note something without leaving the canvas. Compact
+          because the dossier rail is 18rem wide (bu-6t8ix.4). */}
+      <section>
+        <p className="mb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
+          Record
+        </p>
+        <EntityVerbRail entityId={entityId} compact />
+      </section>
     </aside>
   );
 }

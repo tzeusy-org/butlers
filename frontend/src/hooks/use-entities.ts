@@ -26,9 +26,14 @@ import {
   getEntityCoreDates,
   getEntityDeltaFacts,
   getEntityFacts,
+  createEntityGift,
+  createEntityInteraction,
+  createEntityNote,
+  createEntityReachOutDraft,
   getEntityGifts,
   getEntityLinkedContacts,
   getEntityLoans,
+  getEntityReachOutDrafts,
   getEntityMessageThreads,
   getEntityNeighbours,
   getPlexHalo,
@@ -47,6 +52,10 @@ import {
 import type {
   AddEntityContactRequest,
   CompareEntitiesRequest,
+  CreateEntityGiftRequest,
+  CreateEntityInteractionRequest,
+  CreateEntityNoteRequest,
+  CreateEntityReachOutDraftRequest,
   DismissEntityPairRequest,
   UpdateEntityContactRequest,
   EntityFactsParams,
@@ -84,6 +93,15 @@ export function useEntityGifts(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-gifts", entityId],
     queryFn: () => getEntityGifts(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch reach-out drafts for a relationship entity (drafted, never sent). */
+export function useEntityReachOutDrafts(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-reach-out-drafts", entityId],
+    queryFn: () => getEntityReachOutDrafts(entityId!),
     enabled: !!entityId,
   });
 }
@@ -923,5 +941,89 @@ export function useClearPreferredChannel() {
       ["entity-linked-contacts", entityId],
       ["entity-facts", entityId],
     ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entity tab write mutations — the log-interaction, gift-idea, and
+// draft-reach-out operator verbs (bu-6t8ix.4)
+//
+// All four are HONEST-PENDING, not optimistic: each writes a real fact into
+// the relationship butler's store, so the affordance stays in its pending
+// state until the server confirms rather than pretending the record exists.
+// Each invalidates the unified timeline, which is what actually renders these
+// predicates on the entity tabs; there is no separate per-tab query to refresh.
+// ---------------------------------------------------------------------------
+
+/** Record a note for an entity. Invalidates the timeline that renders it. */
+export function useCreateEntityNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityNoteRequest }) =>
+      createEntityNote(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+    },
+  });
+}
+
+/**
+ * Log an interaction with an entity.
+ *
+ * Also invalidates the activity bins and the latest-touch block, both of which
+ * are derived from interaction facts and would otherwise show a freshly logged
+ * call as never having happened.
+ */
+export function useCreateEntityInteraction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      request,
+    }: {
+      entityId: string;
+      request: CreateEntityInteractionRequest;
+    }) => createEntityInteraction(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
+    },
+  });
+}
+
+/** Capture a gift idea for an entity. Invalidates the gifts tab and the timeline. */
+export function useCreateEntityGift() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityGiftRequest }) =>
+      createEntityGift(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-gifts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
+    },
+  });
+}
+
+/**
+ * Draft a reach-out message for an entity.
+ *
+ * Drafts only: nothing is sent, so no message-thread or interaction query is
+ * invalidated here. A draft becomes a real touch only if the owner separately
+ * sends it and logs that.
+ */
+export function useCreateEntityReachOutDraft() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      request,
+    }: {
+      entityId: string;
+      request: CreateEntityReachOutDraftRequest;
+    }) => createEntityReachOutDraft(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-reach-out-drafts", entityId] });
+    },
   });
 }

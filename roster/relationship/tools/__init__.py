@@ -59,6 +59,7 @@ from butlers.tools.relationship.feed import (
 from butlers.tools.relationship.gifts import (
     _GIFT_STATUS_ORDER,
     gift_add,
+    gift_add_for_entity,
     gift_list,
     gift_update_status,
 )
@@ -90,8 +91,12 @@ from butlers.tools.relationship.loans import (
 )
 from butlers.tools.relationship.notes import (
     note_create,
+    note_create_for_entity,
     note_list,
     note_search,
+)
+from butlers.tools.relationship.reach_out import (
+    reach_out_draft_create,
 )
 from butlers.tools.relationship.relationship_assert_fact import (
     PREFERS_CHANNEL_PREDICATE,
@@ -185,6 +190,7 @@ __all__ = [
     "get_contact_dunbar",
     "get_tier_ranking",
     "gift_add",
+    "gift_add_for_entity",
     "gift_list",
     "gift_update_status",
     "group_add_member",
@@ -203,8 +209,10 @@ __all__ = [
     "loan_list",
     "loan_settle",
     "note_create",
+    "note_create_for_entity",
     "note_list",
     "note_search",
+    "reach_out_draft_create",
     "relationship_add",
     "relationship_list",
     "relationship_remove",
