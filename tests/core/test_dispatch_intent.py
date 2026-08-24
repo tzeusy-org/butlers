@@ -439,3 +439,88 @@ def test_all_exclusions_are_reported_not_just_the_first() -> None:
         FitCode.CONTEXT_WINDOW_TOO_SMALL,
         FitCode.DEADLINE_EXCEEDED,
     }
+
+
+# ---------------------------------------------------------------------------
+# Import-graph direction (the Finder guard, enforced from tests/ as well)
+# ---------------------------------------------------------------------------
+
+
+def test_model_capabilities_is_an_import_leaf() -> None:
+    """``model_capabilities`` must not import first-party code -- lazily or not.
+
+    ``/entities/search`` already reaches this module transitively (router ->
+    identity -> relationship tools -> memory -> scheduler -> model_routing ->
+    dispatch_intent -> here), and Brief 6b Amendment 15 requires that endpoint's
+    import graph to stay free of LLM SDKs. ``butlers.core.runtimes`` imports
+    ``anthropic``, so one edge from here to there puts the SDK in the Finder's
+    graph.
+
+    ``roster/relationship/tests/test_finder_no_llm_transitive.py`` is the guard of
+    record, but it lives under ``roster/`` -- which the documented local gate
+    (``pytest tests/ --ignore=tests/e2e``) does not run. This test states the same
+    invariant where the local gate can see it, so re-introducing the edge fails
+    before CI rather than after. A lazy ``from butlers.core.runtimes import ...``
+    inside a function is NOT an escape hatch: that walker follows function-body
+    imports in every file past its entry point.
+    """
+    import ast
+    import pathlib
+
+    import butlers.core.model_capabilities as mod
+
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders += [
+                f"line {node.lineno}: import {a.name}"
+                for a in node.names
+                if a.name.split(".")[0] == "butlers"
+            ]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                offenders.append(f"line {node.lineno}: relative import")
+            elif node.module and node.module.split(".")[0] == "butlers":
+                offenders.append(f"line {node.lineno}: from {node.module} import ...")
+
+    assert not offenders, (
+        "butlers.core.model_capabilities must stay a first-party import leaf; "
+        "invert the dependency (have the other module call set_adapter_lookup) "
+        "instead of importing from here. Offenders: " + "; ".join(offenders)
+    )
+
+
+def test_importing_runtimes_installs_the_adapter_lookup() -> None:
+    """The inverted edge is actually wired: importing the package pushes the lookup in."""
+    import butlers.core.runtimes  # noqa: F401  -- import IS the thing under test
+    from butlers.core.model_capabilities import (
+        adapter_capability_baseline,
+        clear_adapter_capability_cache,
+    )
+
+    clear_adapter_capability_cache()
+    baseline = adapter_capability_baseline("api")
+    assert baseline != EMPTY_CAPABILITIES, (
+        "importing butlers.core.runtimes must install the registry lookup; "
+        "an empty baseline for a real runtime_type means set_adapter_lookup never ran"
+    )
+
+
+def test_missing_adapter_lookup_is_fail_closed(caplog: pytest.LogCaptureFixture) -> None:
+    """With no registry installed, every capability reads UNKNOWN -- loudly."""
+    import butlers.core.runtimes  # noqa: F401
+    from butlers.core.model_capabilities import (
+        adapter_capability_baseline,
+        set_adapter_lookup,
+    )
+    from butlers.core.runtimes import get_adapter
+
+    try:
+        set_adapter_lookup(None)
+        with caplog.at_level("WARNING"):
+            assert adapter_capability_baseline("api") == EMPTY_CAPABILITIES
+        assert any("No runtime adapter registry installed" in r.message for r in caplog.records)
+    finally:
+        set_adapter_lookup(get_adapter)

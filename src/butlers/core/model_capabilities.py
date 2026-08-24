@@ -35,7 +35,7 @@ import dataclasses
 import enum
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
 logger = logging.getLogger(__name__)
@@ -223,6 +223,36 @@ def parse_capability_descriptor(
 # attributes on registered adapter classes), so resolve each runtime_type once.
 _adapter_baseline_cache: dict[str, CapabilityDescriptor] = {}
 
+# The registry lookup is *pushed in* by ``butlers.core.runtimes.base`` at import
+# time rather than pulled in from here, and this module keeps zero first-party
+# imports as a result.
+#
+# That is not style. ``roster/relationship/tests/test_finder_no_llm_transitive.py``
+# walks the whole first-party import graph reachable from ``/entities/search`` and
+# fails if any file in it imports an LLM SDK -- and, for every file past the
+# entry point, it follows imports inside function bodies too, so a lazy
+# ``from butlers.core.runtimes import get_adapter`` here is just as reachable to
+# that walker as a top-level one. ``/entities/search`` already reaches this module
+# (router -> identity -> relationship tools -> memory -> scheduler -> model_routing
+# -> dispatch_intent -> here), so pulling the adapter registry in from this side
+# drags ``anthropic`` into the Finder's graph and violates Brief 6b Amendment 15.
+# Inverting the edge keeps the Finder provably LLM-free without a lazy-import
+# loophole. ``test_model_capabilities_is_an_import_leaf`` holds the line.
+_adapter_lookup: Callable[[str], type] | None = None
+
+
+def set_adapter_lookup(lookup: Callable[[str], type] | None) -> None:
+    """Install the runtime-adapter registry lookup (called by ``runtimes.base``).
+
+    Passing ``None`` uninstalls it, which is what a test wanting the
+    no-registry behaviour should do rather than reaching into the module global.
+    Either way the memoized baselines are dropped, since they were derived from
+    the outgoing lookup.
+    """
+    global _adapter_lookup
+    _adapter_lookup = lookup
+    _adapter_baseline_cache.clear()
+
 
 def clear_adapter_capability_cache() -> None:
     """Drop the memoized adapter baselines (tests that register fake adapters)."""
@@ -235,7 +265,10 @@ def adapter_capability_baseline(runtime_type: str) -> CapabilityDescriptor:
     An unregistered ``runtime_type`` yields :data:`EMPTY_CAPABILITIES` -- every
     feature UNKNOWN. That is the fail-closed answer, not a fail-open one: a
     dispatch that *requires* a feature will exclude the candidate for lack of
-    proof, while one that requires nothing is unaffected.
+    proof, while one that requires nothing is unaffected. The same answer covers
+    the case where no lookup has been installed at all (nothing in the process
+    ever imported ``butlers.core.runtimes``), logged at WARNING because that one
+    is a wiring defect rather than an ordinary miss.
 
     A malformed declaration on an adapter class is a code defect, but it must not
     take the fleet down at resolution time: the offending key is dropped with a
@@ -247,10 +280,18 @@ def adapter_capability_baseline(runtime_type: str) -> CapabilityDescriptor:
     if cached is not None:
         return cached
 
-    try:
-        from butlers.core.runtimes import get_adapter
+    lookup = _adapter_lookup
+    if lookup is None:
+        logger.warning(
+            "No runtime adapter registry installed; treating every capability as "
+            "unknown for runtime_type=%r. Import butlers.core.runtimes to wire it.",
+            runtime_type,
+        )
+        _adapter_baseline_cache[runtime_type] = EMPTY_CAPABILITIES
+        return EMPTY_CAPABILITIES
 
-        adapter_cls = get_adapter(runtime_type)
+    try:
+        adapter_cls = lookup(runtime_type)
     except (ImportError, ValueError):
         logger.debug(
             "No runtime adapter registered for runtime_type=%r; "
