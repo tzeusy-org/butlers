@@ -188,8 +188,22 @@ async def propose_insight_candidate(
     cooldown_days: int | None = None,
     channel: str | None = None,
     metadata: dict | None = None,
+    now: datetime | None = None,
 ) -> dict[str, str]:
     """Validate and insert an insight candidate into the staging table.
+
+    Parameters
+    ----------
+    now:
+        Reference instant for the ``expires_at`` freshness check. Defaults to the
+        broker's own clock. A scan that reads its clock once and derives
+        ``expires_at`` from it should pass that same instant, so a wall clock that
+        advances between the two reads — a UTC-midnight crossing, say, against an
+        ``expires_at`` pinned to the end of a calendar date — cannot invalidate a
+        candidate the caller just built. Narrowing the frame does not weaken the
+        check: a candidate that is stale relative to the caller's own instant is
+        still rejected, and ``expire_candidates()`` re-checks against its own clock
+        at delivery time.
 
     Returns
     -------
@@ -233,7 +247,8 @@ async def propose_insight_candidate(
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=UTC)
 
-    if expires_dt <= datetime.now(UTC):
+    reference_now = now if now is not None else datetime.now(UTC)
+    if expires_dt <= reference_now:
         return {"status": "error", "reason": "expires_at must be in the future"}
 
     # --- Verbosity gate ---
