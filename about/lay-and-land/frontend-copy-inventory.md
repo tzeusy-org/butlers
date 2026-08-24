@@ -476,6 +476,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Couldn&rsquo;t load activity. Retry.
 - Retry
 - Gifts
+- Drafts
+- not sent
 - Loans
 - Message threads
 - Facts
@@ -869,7 +871,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Failed to delete {}
 - Verified {}/{} models{}{}
 - · {} failed
-- · {} skipped
+- · {} could not be probed
 - Verify all was called recently. Wait 60 seconds before retrying.
 
 ## `frontend/src/pages/SettingsPermissionsPage.tsx`
@@ -2603,6 +2605,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Name this filter combination to restore it later.
 - Cancel
 - Scoped to trace
+- Dismiss
 - Scoped to
 - Failed to load ingestion events.
 - Retry
@@ -3313,6 +3316,30 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Create failed: {}
 - {} failed for {} {}: {}
 
+## `frontend/src/components/relationship/EntityVerbRail.tsx`
+
+- Saving...
+- Save interaction
+- Save gift idea
+- Save draft
+- Saved as a draft only. Nothing is sent.
+- Save note
+- Record something
+- Log an interaction
+- Interaction type
+- What happened
+- What happened?
+- Capture a gift idea
+- Gift idea
+- Occasion
+- Draft a reach-out
+- Draft message
+- What do you want to say?
+- Channel
+- Add a note
+- Note
+- Something worth remembering
+
 ## `frontend/src/components/relationship/LatestInteractionsBlock.tsx`
 
 - Latest interactions
@@ -3363,6 +3390,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Dates
 - Facts
 - Nothing recorded yet.
+- Record
 - Worth attention
 - No one is owed a call.
 - Capacity
@@ -3803,9 +3831,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Backups
 - Backup recency and reachability
 - Could not load backup facts.
+- Run failed
 - Stale
 - Healthy
 - Unverified
+- Last run
+- No run outcome recorded
+- Succeeded
+- Failed
 - Restore drill
 - No drill yet
 - Passed
@@ -4103,4 +4136,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3208*
+*Total strings: 3238*
