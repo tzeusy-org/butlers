@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import importlib.util
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import asyncpg
 import pytest
 import pytest_asyncio
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
@@ -281,5 +284,157 @@ def test_bootstrap_rollback_disables_producers_without_restoring_direct_paths(
                     "SELECT to_regprocedure('public.append_runtime_attention_fleet_halt()') IS NOT NULL"
                 )
             ).scalar_one()
+    finally:
+        engine.dispose()
+
+
+@contextmanager
+def _transient_role(engine: Engine, role: str, options: str) -> Iterator[None]:
+    """Create one cluster role for the duration of a test, then drop it again.
+
+    The Postgres testcontainer is session scoped, so a leaked role stays visible
+    to every later test that inspects ``pg_roles``.
+    """
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE ROLE "{role}" {options}'))
+    try:
+        yield
+    finally:
+        with engine.begin() as connection:
+            # A committed SET SESSION AUTHORIZATION outlives its transaction and
+            # rides the pooled connection back here, where Postgres refuses to
+            # drop the role the session is currently running as.
+            connection.execute(text("RESET SESSION AUTHORIZATION"))
+            connection.execute(text(f'DROP OWNED BY "{role}"'))
+            connection.execute(text(f'DROP ROLE "{role}"'))
+
+
+def _database_at_finalized_v1(postgres_container) -> tuple[str, str]:
+    """Provision a disposable database parked at the finalized v1 interface.
+
+    ``core_198`` runs as the ordinary NOSUPERUSER migration login the harness
+    creates, exactly as production does, so
+    ``bootstrap_configuration.migration_role`` is that login and no superuser
+    session can accidentally also satisfy the guard's migration-role disjunct.
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core_198")
+    return db_name, migration_bootstrap_db_url(postgres_container, db_name)
+
+
+def test_upgrade_admits_a_cluster_superuser_that_is_not_the_migration_role(
+    postgres_container,
+) -> None:
+    """The ``rolsuper`` disjunct alone must admit the manual-rerun operator.
+
+    ``scripts/init-db.sql`` documents that "a different superuser may perform a
+    later rerun", and that operator has no automated caller in the tree.  Every
+    other test that reaches ``upgrade_producers_v2`` arrives through Alembic as
+    the migration login, which ``butlers.testing.migration`` creates
+    NOSUPERUSER, so the migration-role disjunct is the only one they can
+    exercise.  This test drives the other one directly.
+    """
+    db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
+    operator_role = f"rerun_operator_{db_name}"
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with _transient_role(engine, operator_role, "NOLOGIN SUPERUSER"):
+            with engine.begin() as connection:
+                connection.execute(text(f'SET SESSION AUTHORIZATION "{operator_role}"'))
+                (
+                    caller_is_superuser,
+                    caller_is_migration_role,
+                    caller_is_bootstrap_owner,
+                ) = connection.execute(
+                    text(
+                        """
+                        SELECT
+                            COALESCE(
+                                (SELECT rolsuper FROM pg_roles WHERE rolname = session_user),
+                                false
+                            ),
+                            session_user = configuration.migration_role,
+                            session_user = configuration.bootstrap_role
+                        FROM runtime_attention_admin.bootstrap_configuration AS configuration
+                        WHERE configuration.singleton
+                        """
+                    )
+                ).one()
+                # Without these three facts an admitted call proves nothing:
+                # it could have been admitted by the migration-role disjunct,
+                # or by the caller happening to be the bootstrap owner.
+                assert caller_is_superuser
+                assert not caller_is_migration_role
+                assert not caller_is_bootstrap_owner
+
+                connection.execute(text("SELECT runtime_attention_admin.upgrade_producers_v2()"))
+
+                assert connection.execute(
+                    text(
+                        """
+                        SELECT interface_version = 2 AND producers_enabled
+                        FROM runtime_attention_admin.bootstrap_configuration
+                        WHERE singleton
+                        """
+                    )
+                ).scalar_one()
+                assert connection.execute(
+                    text(
+                        """
+                        SELECT interface_version = 2 AND producers_enabled
+                        FROM public.runtime_attention_producer_control
+                        WHERE singleton
+                        """
+                    )
+                ).scalar_one()
+    finally:
+        engine.dispose()
+
+
+def test_upgrade_refuses_a_non_superuser_that_is_not_the_migration_role(
+    postgres_container,
+) -> None:
+    """Admission has to be attributable to one of the guard's two properties.
+
+    The superuser test above would stay green if the guard were deleted
+    outright.  This one goes red in that case, so the pair pins the guard to
+    exactly its two disjuncts rather than to "the function can be called".
+    """
+    db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
+    probe_role = f"upgrade_probe_{db_name}"
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with _transient_role(engine, probe_role, "NOLOGIN NOSUPERUSER"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'GRANT USAGE ON SCHEMA runtime_attention_admin TO "{probe_role}"')
+                )
+                connection.execute(
+                    text(
+                        "GRANT EXECUTE ON FUNCTION "
+                        f'runtime_attention_admin.upgrade_producers_v2() TO "{probe_role}"'
+                    )
+                )
+            with engine.connect() as connection:
+                connection.execute(text(f'SET SESSION AUTHORIZATION "{probe_role}"'))
+                assert probe_role != f"migration_{db_name}"
+                # The grants above exist so that the refusal below comes from
+                # the guard and not from an ACL check the caller never reached.
+                assert connection.execute(
+                    text(
+                        "SELECT has_function_privilege(session_user, "
+                        "'runtime_attention_admin.upgrade_producers_v2()', 'EXECUTE')"
+                    )
+                ).scalar_one()
+                with pytest.raises(DBAPIError) as refusal:
+                    connection.execute(
+                        text("SELECT runtime_attention_admin.upgrade_producers_v2()")
+                    )
+        assert "runtime-attention v2 upgrade requires its configured migration role" in str(
+            refusal.value
+        )
     finally:
         engine.dispose()
