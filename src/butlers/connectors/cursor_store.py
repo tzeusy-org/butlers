@@ -31,14 +31,30 @@ logger = logging.getLogger(__name__)
 # SQL
 # ---------------------------------------------------------------------------
 
+# A row created by this module is storage state, not a running process, so it
+# is stamped ``operational_role = 'checkpoint'`` on INSERT. The conflict branch
+# deliberately does NOT touch ``operational_role``: most connectors use their
+# canonical heartbeat identity as the cursor key, and for those the row is a
+# ``runtime_instance`` that also happens to carry a cursor. Re-stamping it here
+# would demote a live connector out of the fleet roster on its next checkpoint
+# save. Ownership is one-way — the heartbeat producer promotes a row to
+# ``runtime_instance``, and nothing here demotes it back.
+#
+# ``parent_endpoint_identity`` only ever fills in a value: an explicit parent
+# supplied by the caller wins, otherwise any parent already recorded is kept.
 _UPSERT_SQL = """\
 INSERT INTO switchboard.connector_registry
-    (connector_type, endpoint_identity, checkpoint_cursor, checkpoint_updated_at)
-VALUES ($1, $2, $3, $4)
+    (connector_type, endpoint_identity, checkpoint_cursor, checkpoint_updated_at,
+     operational_role, parent_endpoint_identity)
+VALUES ($1, $2, $3, $4, 'checkpoint', $5)
 ON CONFLICT (connector_type, endpoint_identity)
 DO UPDATE SET
-    checkpoint_cursor     = EXCLUDED.checkpoint_cursor,
-    checkpoint_updated_at = EXCLUDED.checkpoint_updated_at
+    checkpoint_cursor        = EXCLUDED.checkpoint_cursor,
+    checkpoint_updated_at    = EXCLUDED.checkpoint_updated_at,
+    parent_endpoint_identity = COALESCE(
+        EXCLUDED.parent_endpoint_identity,
+        connector_registry.parent_endpoint_identity
+    )
 """
 
 _SELECT_SQL = """\
@@ -59,10 +75,28 @@ async def save_cursor(
     connector_type: str,
     endpoint_identity: str,
     cursor_value: str,
+    *,
+    parent_endpoint_identity: str | None = None,
 ) -> None:
     """Upsert checkpoint cursor into ``switchboard.connector_registry``.
 
-    If no row exists for (connector_type, endpoint_identity), one is inserted.
+    If no row exists for (connector_type, endpoint_identity), one is inserted
+    with ``operational_role = 'checkpoint'`` — storage state, with no runtime
+    liveness or fleet-health authority. An existing row keeps whatever role its
+    producer already stamped, so a connector that checkpoints under its own
+    heartbeat identity stays a ``runtime_instance``.
+
+    Args:
+        pool: asyncpg pool that can reach the ``switchboard`` schema.
+        connector_type: Connector type this cursor belongs to.
+        endpoint_identity: Cursor key. May encode extra dimensions (account,
+            resource) beyond the connector's heartbeat identity.
+        cursor_value: Opaque cursor to persist.
+        parent_endpoint_identity: The ``endpoint_identity`` of the runtime
+            instance this cursor belongs to, when the cursor key is not itself
+            that identity. Pass it whenever the key carries extra dimensions so
+            the checkpoint stays inspectable under its parent instead of
+            floating unattached. ``None`` leaves any recorded parent unchanged.
     """
     now = datetime.now(UTC)
     async with pool.acquire() as conn:
@@ -72,6 +106,7 @@ async def save_cursor(
             endpoint_identity,
             cursor_value,
             now,
+            parent_endpoint_identity,
         )
     logger.debug(
         "Saved cursor to DB: connector_type=%s, endpoint=%s",

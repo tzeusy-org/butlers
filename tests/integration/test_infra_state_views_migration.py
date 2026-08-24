@@ -70,8 +70,9 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
     await pool.execute(
         """
         INSERT INTO switchboard.connector_registry
-            (connector_type, endpoint_identity, state, last_heartbeat_at, first_seen_at)
-        VALUES ($1, $2, $3, $4, $5)
+            (connector_type, endpoint_identity, state, last_heartbeat_at, first_seen_at,
+             operational_role)
+        VALUES ($1, $2, $3, $4, $5, 'runtime_instance')
         """,
         "gmail",
         "owner@example.com",
@@ -83,8 +84,8 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
         """
         INSERT INTO switchboard.connector_registry
             (connector_type, endpoint_identity, state, last_heartbeat_at,
-             first_seen_at, archived_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+             first_seen_at, archived_at, operational_role)
+        VALUES ($1, $2, $3, $4, $5, $6, 'runtime_instance')
         """,
         "spotify",
         "owner",
@@ -97,8 +98,8 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
         """
         INSERT INTO switchboard.connector_registry
             (connector_type, endpoint_identity, state, last_heartbeat_at,
-             first_seen_at, deleted_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+             first_seen_at, deleted_at, operational_role)
+        VALUES ($1, $2, $3, $4, $5, $6, 'runtime_instance')
         """,
         "owntracks",
         "owner",
@@ -111,8 +112,8 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
         """
         INSERT INTO switchboard.connector_registry
             (connector_type, endpoint_identity, checkpoint_cursor,
-             checkpoint_updated_at, first_seen_at)
-        VALUES ($1, $2, $3, $4, $5)
+             checkpoint_updated_at, first_seen_at, operational_role)
+        VALUES ($1, $2, $3, $4, $5, 'checkpoint')
         """,
         "google_health",
         "google_health:user:owner@example.com:account-id:hrv",
@@ -124,8 +125,8 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
         """
         INSERT INTO switchboard.connector_registry
             (connector_type, endpoint_identity, instance_id, checkpoint_cursor,
-             checkpoint_updated_at, first_seen_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+             checkpoint_updated_at, first_seen_at, operational_role)
+        VALUES ($1, $2, $3, $4, $5, $6, 'runtime_instance')
         """,
         "telegram_bot",
         "owner",
@@ -148,6 +149,10 @@ async def test_connector_view_surfaces_live_row_and_excludes_non_liveness_rows(
 
     rows = await pool.fetch("SELECT * FROM public.v_qa_connector_state ORDER BY connector_type")
 
+    # sw_031: the view excludes rows by their persisted ``operational_role``, not
+    # by column nullability. The google_health row is gone because it SAYS it is a
+    # checkpoint; the webhook row (role never established, so 'unknown') stays
+    # visible so an unclassified connector can be investigated rather than dropped.
     assert [r["connector_type"] for r in rows] == ["gmail", "telegram_bot", "webhook"]
     row = rows[0]
     assert row["endpoint_identity"] == "owner@example.com"

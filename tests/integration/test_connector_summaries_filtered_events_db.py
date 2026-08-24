@@ -86,6 +86,10 @@ async def pool(postgres_container, migrated_db_url: str):
             counter_messages_failed BIGINT NOT NULL DEFAULT 0,
             deleted_at TIMESTAMPTZ,
             archived_at TIMESTAMPTZ,
+            checkpoint_cursor TEXT,
+            checkpoint_updated_at TIMESTAMPTZ,
+            operational_role TEXT NOT NULL DEFAULT 'unknown',
+            parent_endpoint_identity TEXT,
             PRIMARY KEY (connector_type, endpoint_identity)
         )
     """)
@@ -135,8 +139,9 @@ async def _seed_registry(
 ) -> None:
     await pool.execute(
         """
-        INSERT INTO connector_registry (connector_type, endpoint_identity, first_seen_at)
-        VALUES ($1, $2, now())
+        INSERT INTO connector_registry
+            (connector_type, endpoint_identity, first_seen_at, operational_role)
+        VALUES ($1, $2, now(), 'runtime_instance')
         ON CONFLICT (connector_type, endpoint_identity) DO NOTHING
         """,
         connector_type,

@@ -54,6 +54,10 @@ def _registry_row(
     first_seen_at: dt.datetime | None = None,
     last_heartbeat_at: dt.datetime | None = None,
     archived_at: dt.datetime | None = None,
+    operational_role: str = "runtime_instance",
+    parent_endpoint_identity: str | None = None,
+    checkpoint_cursor: str | None = None,
+    checkpoint_updated_at: dt.datetime | None = None,
 ) -> MagicMock:
     if first_seen_at is None:
         first_seen_at = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.UTC)
@@ -70,6 +74,10 @@ def _registry_row(
             "counter_messages_ingested": 10,
             "counter_messages_failed": 0,
             "archived_at": archived_at,
+            "operational_role": operational_role,
+            "parent_endpoint_identity": parent_endpoint_identity,
+            "checkpoint_cursor": checkpoint_cursor,
+            "checkpoint_updated_at": checkpoint_updated_at,
         }
     )
 
@@ -322,6 +330,10 @@ async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
                 "counter_messages_ingested": 1_781_451_647,
                 "counter_messages_failed": 0,
                 "archived_at": None,
+                "operational_role": "runtime_instance",
+                "parent_endpoint_identity": None,
+                "checkpoint_cursor": None,
+                "checkpoint_updated_at": None,
             }
         )
     ]

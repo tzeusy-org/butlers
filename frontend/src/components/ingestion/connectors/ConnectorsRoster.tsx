@@ -10,8 +10,17 @@
  * 2. Column headers (mono uppercase)
  * 3. Active connector rows (auth-needed first, then by liveness, then alphabetical)
  * 4. DormantList (collapsible, from available-catalog profiles not yet registered)
- * 5. KPI footer band (total connectors, healthy, auth-needed, events/24h)
- * 6. "add connector" action
+ * 5. UnparentedCheckpointsList (collapsible, cursors with no resolvable owner)
+ * 6. KPI footer band (total connectors, healthy, auth-needed, events/24h)
+ * 7. "add connector" action
+ *
+ * The roster lists executable runtime instances only (bu-6jv4m.11). Persisted
+ * checkpoint cursors are storage state, not connectors: the backend nests them
+ * under the runtime instance that owns them (`checkpoints`) and returns the
+ * ones it cannot place in `unparented_checkpoints`. A record whose operational
+ * role was never established stays in the roster with an `unclassified`
+ * verdict — visible, but outside the fleet-liveness KPIs, since nothing has
+ * claimed it as a process.
  *
  * Data: uses useConnectorSummariesWithAggregates and useAvailableConnectors
  * hooks. Per-connector `hourly_events` (ingested) and `hourly_filtered_events`
@@ -51,6 +60,7 @@ import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { DormantList } from './DormantList'
 import { ArchivedConnectorsList } from './ArchivedConnectorsList'
 import { ArchiveCandidatesList } from './ArchiveCandidatesList'
+import { UnparentedCheckpointsList } from './UnparentedCheckpointsList'
 import { deriveConnectorDispatchInfo } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
@@ -172,6 +182,26 @@ export function ConnectorsRoster() {
   const owntracksCadenceAvailable =
     connectorsResp?.data?.owntracks_cadence_available !== false
 
+  // Checkpoint cursors whose owning runtime instance could not be resolved
+  // (bu-6jv4m.11). They are not connectors and never enter the roster, the
+  // attention strip, or the KPI band — but they are not swallowed either.
+  // Audited for bu-ep4ks.5: this coercion cannot fabricate calm. The list renders
+  // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
+  // note instead of an empty section. The `?? []` covers only an older cached
+  // response that predates the field.
+  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
+  const unparentedCheckpoints = connectorsResp?.data?.unparented_checkpoints ?? []
+
+  // Registry records nothing has claimed as a process. They stay in the roster
+  // below with an `unclassified` verdict; this count is the roster-level signal
+  // that the registry holds records whose role was never established.
+  // Audited for bu-ep4ks.5: this coercion cannot fabricate calm. The note renders
+  // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
+  // note instead of a reassuring zero. The `?? 0` covers only an older cached
+  // response that predates the field.
+  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
+  const unclassifiedCount = connectorsResp?.data?.unclassified_count ?? 0
+
   // Available dormant profiles (catalog entries not yet registered)
   const catalogProfiles = availableResp?.data ?? []
   const registeredTypes = new Set(allConnectors.map((c) => c.connector_type))
@@ -193,21 +223,32 @@ export function ConnectorsRoster() {
     ...allConnectors.flatMap((c) => c.hourly_events ?? []),
   )
 
-  // KPI aggregates
-  const totalConnectors = allConnectors.length
-  const healthyCount = allConnectors.filter(
+  // KPI aggregates.
+  //
+  // Fleet-liveness KPIs count executable runtime instances only (bu-6jv4m.11).
+  // A record whose operational role was never established has no process, so
+  // counting it as live — or as healthy — would be an inference; it is reported
+  // separately below the band instead. The filter keys off the `unclassified`
+  // liveness rather than `operational_role` so an older cached response (which
+  // carries neither field) still counts every connector it returned.
+  const runtimeInstances = allConnectors.filter((c) => c.liveness !== 'unclassified')
+  const totalConnectors = runtimeInstances.length
+  const healthyCount = runtimeInstances.filter(
     (c) => !deriveConnectorDispatchInfo(c).needsAttention,
   ).length
+  // "needs attention" is the operator queue, not a liveness count, so it spans
+  // every roster row — an unclassified record is precisely something to look at.
+  // It therefore matches the attention strip above rather than the band beside it.
   const attentionNeededCount = allConnectors.filter(
     (c) =>
       deriveConnectorDispatchInfo(c).needsAttention ||
       Boolean(c.operational_warnings?.length),
   ).length
-  const authNeededCount = allConnectors.filter(
+  const authNeededCount = runtimeInstances.filter(
     (c) => deriveConnectorDispatchInfo(c).authStatus === 'needs_reauth',
   ).length
   // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
-  const totalEvents24h = allConnectors.reduce(
+  const totalEvents24h = runtimeInstances.reduce(
     (s, c) => s + (c.today?.messages_ingested ?? 0),
     0,
   )
@@ -314,6 +355,10 @@ export function ConnectorsRoster() {
           excluded from the active roster + KPIs above, history still reachable. */}
           <ArchivedConnectorsList connectors={archivedConnectors} />
 
+          {/* Checkpoint cursors with no resolvable owner (bu-6jv4m.11) —
+          storage state, listed so an orphaned cursor stays visible. */}
+          <UnparentedCheckpointsList checkpoints={unparentedCheckpoints} />
+
           {/* KPI footer band */}
           <div
             className="mt-9 pt-4 border-t border-border grid gap-6"
@@ -337,6 +382,21 @@ export function ConnectorsRoster() {
               </div>
             ))}
           </div>
+
+          {/* Unclassified records (bu-6jv4m.11). `connectors · live` counts
+          executable runtime instances, so a record whose role was never
+          established is deliberately outside that number. Say so, rather than
+          letting it read as a fleet that is one connector smaller than it is. */}
+          {unclassifiedCount > 0 && (
+            <p
+              className="mt-4 font-mono text-[10.5px] text-[var(--amber-text)]"
+              data-testid="connectors-unclassified-note"
+            >
+              {unclassifiedCount} registry record{unclassifiedCount !== 1 ? 's' : ''} unclassified ·
+              no runtime instance observed, so {unclassifiedCount !== 1 ? 'they are' : 'it is'} not
+              counted as live
+            </p>
+          )}
 
       {/* Hourly events source degraded note -- never let a failed hourly query hide
           behind a quiet "events · 24h" total or empty-looking sparklines (bu-scyro). */}

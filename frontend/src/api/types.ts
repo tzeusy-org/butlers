@@ -3698,11 +3698,45 @@ export interface ConnectorDeviceLiveness {
   stale: boolean;
 }
 
+/**
+ * One persisted checkpoint cursor belonging to a parent connector (bu-6jv4m.11).
+ *
+ * connector_registry has two producers: the heartbeat tool, which registers an
+ * executable connector process, and cursor_store, which persists a restart-safe
+ * cursor per stream. A connector whose streams advance independently (Google
+ * Health keeps one cursor per account AND per resource) therefore accumulates
+ * registry rows that never heartbeat. These are STORAGE records: they belong
+ * under their parent runtime instance and carry no liveness, state, or health
+ * of their own — that authority is the parent's alone.
+ */
+export interface ConnectorCheckpointRecord {
+  connector_type: string;
+  endpoint_identity: string;
+  /** The runtime instance this cursor belongs to, or null when unresolved. */
+  parent_endpoint_identity: string | null;
+  /**
+   * The part of the cursor key its parent identity does not already account
+   * for — e.g. `<account_uuid>:<resource>`. Falls back to the full identity
+   * when no parent is recorded.
+   */
+  label: string;
+  checkpoint_cursor: string | null;
+  checkpoint_updated_at: string | null;
+  /** Soft-archive state inherited from the registry row itself. */
+  archived: boolean;
+}
+
 /** A connector with current liveness and today's stats (GET /api/connectors). */
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
-  liveness: string; // "online" | "stale" | "offline"
+  /**
+   * "online" | "stale" | "offline" for a runtime instance, or "unclassified"
+   * when `operational_role` is `unknown` — no producer has claimed the row, so
+   * there is no heartbeat contract to measure it against. "unclassified" is a
+   * named unavailable state, never a healthy or an offline verdict.
+   */
+  liveness: string;
   state: string; // "healthy" | "degraded" | "error"
   error_message: string | null;
   version: string | null;
@@ -3764,6 +3798,22 @@ export interface ConnectorSummary {
    * sourced from durable location points rather than generic ingestion counts.
    */
   operational_warnings?: string[];
+  /**
+   * Persisted operational role (bu-6jv4m.11, migration sw_031):
+   * `runtime_instance` (an executable connector process — the only role with
+   * runtime-health authority), `checkpoint` (storage state, never returned in
+   * this list — see `checkpoints` below), or `unknown` (role not established).
+   * Optional/additive: absent on older cached responses — treat as `unknown`.
+   */
+  operational_role?: string;
+  /**
+   * Checkpoint cursors belonging to this runtime instance, label-sorted. These
+   * used to appear in the roster as separate OFFLINE connectors; they are now
+   * nested here, inspectable but with no status authority. Grouped per
+   * (connector_type, parent), so two accounts of one connector type never
+   * collect each other's cursors. Optional/additive.
+   */
+  checkpoints?: ConnectorCheckpointRecord[];
 }
 
 /** Metadata for the legacy GET /api/switchboard/connectors roster endpoint. */
@@ -3952,6 +4002,21 @@ export interface ConnectorSummariesResponse {
    * Optional/additive; absent on older cached responses is treated as available.
    */
   owntracks_cadence_available?: boolean;
+  /**
+   * Checkpoint records whose parent runtime instance could not be resolved —
+   * no parent recorded, or a parent whose registry row is gone (bu-6jv4m.11).
+   * Surfaced rather than dropped: an orphaned cursor is a real condition an
+   * operator should see, and hiding it would trade one invisibility bug for
+   * another. Optional/additive.
+   */
+  unparented_checkpoints?: ConnectorCheckpointRecord[];
+  /**
+   * How many returned connectors have an unestablished operational role. These
+   * still appear in `connectors` with `liveness: "unclassified"`; the count is
+   * the roster-level signal that the registry holds records nothing has
+   * claimed. Optional/additive.
+   */
+  unclassified_count?: number;
 }
 
 /**

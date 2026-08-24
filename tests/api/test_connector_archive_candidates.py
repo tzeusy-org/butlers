@@ -43,12 +43,14 @@ def _row(
     endpoint_identity: str,
     last_heartbeat_at: dt.datetime | None,
     archived_at: dt.datetime | None = None,
+    operational_role: str = "runtime_instance",
 ) -> dict:
     return {
         "connector_type": connector_type,
         "endpoint_identity": endpoint_identity,
         "last_heartbeat_at": last_heartbeat_at,
         "archived_at": archived_at,
+        "operational_role": operational_role,
     }
 
 
@@ -157,6 +159,7 @@ def _make_registry_row(
     endpoint_identity: str,
     last_heartbeat_at: dt.datetime | None,
     archived_at: dt.datetime | None = None,
+    operational_role: str = "runtime_instance",
 ) -> MagicMock:
     data = {
         "connector_type": connector_type,
@@ -170,6 +173,10 @@ def _make_registry_row(
         "counter_messages_ingested": 10,
         "counter_messages_failed": 0,
         "archived_at": archived_at,
+        "operational_role": operational_role,
+        "parent_endpoint_identity": None,
+        "checkpoint_cursor": None,
+        "checkpoint_updated_at": None,
     }
     row = MagicMock()
     row.__getitem__ = lambda self, k: data[k]
