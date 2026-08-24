@@ -19,7 +19,8 @@ echo "Current: $CURRENT | current-cycle baseline (2026-08-24): 12195 | Delta: $(
 # CI-selection collection (population only, not test-execution timing):
 uv run --no-sync pytest tests/ roster/ --collect-only -q \
   --ignore=tests/e2e \
-  -m "not integration and not e2e and not nightly and not bench and not perf"
+  -m "not integration and not e2e and not nightly and not bench and not perf" \
+  2>/dev/null | tail -1   # clamp: without this it prints ~15k lines of stdout
 
 # Check which beads are open in the active maintenance epic
 bd list --status all 2>/dev/null | grep -i 'test.*condens\|test.*phase'
@@ -187,9 +188,13 @@ uv run --no-sync pytest tests/ --collect-only -q
 # Contract tests
 uv run --no-sync pytest tests/contracts/ -q --tb=short -m contract
 
-# Mirror the REQUIRED CI job (no Docker; ~minutes). Integration + e2e are
-# SEPARATE jobs; frontend/e2e/check are NOT required GitHub checks.
-uv run --no-sync pytest tests/ -m "not integration and not e2e" -q --maxfail=3 --tb=short
+# Mirror the CI `check` job's unit step. Keep this in sync with the `run:` line
+# in .github/workflows/ci.yml (search for `--cov-report=json`) — it drifts.
+# NOTE: unit / smoke / integration are sequential STEPS of the single `check`
+# job, not separate jobs.
+uv run --no-sync pytest tests/ roster/ -q --maxfail=1 --tb=short \
+  --ignore=tests/e2e \
+  -m "not integration and not e2e and not nightly and not bench and not perf"
 
 # Compare before/after (counts sync and async test functions)
 TEST_DEF_PATTERN='^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_'

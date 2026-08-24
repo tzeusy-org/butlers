@@ -1,6 +1,6 @@
 ---
 name: butler-test-condensation
-description: Guide for discovering, analyzing, and pruning the Butlers test suite. Use when working on test condensation beads (Phase 1 epic bu-rhztl and Phase 2 epic bu-hg8rl both CLOSED; Phase 3 maintenance cycle underway 2026-06-21), assessing test bloat, identifying pruning targets, or rewriting tests to be contract-driven. Triggers on test reduction, test pruning, test consolidation, or condensation tasks for this project. Also use when a fresh session needs to assess test health, create new condensation beads, or resume in-progress condensation work.
+description: Guide for discovering, analyzing, and pruning the Butlers test suite. Use when working on test condensation beads (Phase 1 epic bu-rhztl and Phase 2 epic bu-hg8rl both CLOSED; a Phase 3 maintenance cycle was drafted 2026-06-21 but never filed), assessing test bloat, identifying pruning targets, or rewriting tests to be contract-driven. Triggers on test reduction, test pruning, test consolidation, or condensation tasks for this project. Also use when a fresh session needs to assess test health, create new condensation beads, or resume in-progress condensation work.
 ---
 
 # Butler Test Condensation
@@ -16,12 +16,17 @@ contract, or an OpenSpec capability.
 - **Phase 2 epic `bu-hg8rl`** (2026-05-03 → 2026-05-05, **CLOSED**): "all steps
   complete." Children bu-9riic (Tier 1 backfill), bu-gg4y1 (api), bu-m564i
   (chronicler) all done. Suite was ~3,700 at open.
-- **Phase 3 maintenance cycle (2026-06-21, underway)**: suite **DOUBLED** to
-  **7,494 `def test_` functions / 8,107 collected across 657 files** — almost
-  entirely legitimate feature coverage, not bloat. A disciplined moderate pass
-  this cycle found only **~1,050–1,250 SAFELY removable**. Do NOT over-trim
-  chasing a target number; most growth is real behavior. Per-domain counts +
-  the migrations-boilerplate lever live in [references/domains.md](references/domains.md).
+- **Phase 3 maintenance cycle (drafted 2026-06-21, NEVER FILED)**: at that
+  snapshot the suite had **DOUBLED** to **7,494 `def test_` functions / 8,107
+  collected across 657 files** — almost entirely legitimate feature coverage,
+  not bloat. A disciplined moderate pass found only **~1,050–1,250 SAFELY
+  removable**. **No Phase 3 epic was ever opened**, so that trim never ran and
+  the suite kept growing. Re-measured **2026-08-24**: **12,322 `def test_`
+  across 1,006 files** in `tests/` (+64% on the 2026-06-21 snapshot), plus
+  **3,956** in `roster/`; **15,267 collected** under the CI selection. Do NOT
+  over-trim chasing a target number; most growth is real behavior. Per-domain
+  counts + the migrations-boilerplate lever live in
+  [references/domains.md](references/domains.md).
 
 > **Suite-doubling cadence**: the suite reliably ~doubles between condensation
 > cycles on real feature work. Budget a recurring (≈monthly) maintenance pass,
@@ -31,11 +36,15 @@ contract, or an OpenSpec capability.
 
 1. **Rediscover current state** — never trust hardcoded counts in this skill:
    ```bash
-   CURRENT=$(grep -rc 'def test_' tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
-   echo "Current test count: $CURRENT (Phase 3 baseline 7,494 on 2026-06-21; Phase 1 closed at 2,196)"
+   # Anchored so a commented-out or in-string `def test_` cannot inflate the count.
+   CURRENT=$(grep -rEc '^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_' tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
+   echo "Current test count in tests/: $CURRENT"
+   echo "  (2026-08-24 measured 12,322; 2026-06-21 snapshot 7,494; Phase 1 closed at 2,196)"
    ```
 2. **Check epic status**: `bd list --status all` — Phase 1 (`bu-rhztl`) and
-   Phase 2 (`bu-hg8rl`) are both CLOSED. Look for an active Phase 3 epic.
+   Phase 2 (`bu-hg8rl`) are both CLOSED. **No Phase 3 epic exists**; the 2026-06-21
+   proposal in [references/beads.md](references/beads.md) was never filed. Do not
+   file one casually — READY beads auto-trigger the autonomous fleet.
 3. **Read your bead**: `bd show <bead-id>` for targets and acceptance criteria
 4. **Load doctrine**: read `about/heart-and-soul/` for invariants, relevant RFCs in `about/legends-and-lore/`
 5. **Run scoped discovery** on your domain — see [references/discovery.md](references/discovery.md)

@@ -14,10 +14,12 @@ then-current `main` checkout. It is intentionally separate from the historical
 phase snapshots below; re-run the commands in
 [discovery.md](discovery.md) after pulling a newer head.
 
-- **Static test-function count:** **12,195** `def test_` / `async def test_`
-  functions under `tests/`. This is not a pytest collection count.
-- **CI-selection collection:** **18,790 total** tests, with **14,819 selected**
-  and **3,971 deselected**, measured with:
+- **Static test-function count (2026-08-24):** **12,322** `def test_` /
+  `async def test_` functions across **1,006 files** under `tests/` (plus
+  **3,956** under `roster/`, for **16,278** combined). This is not a pytest
+  collection count.
+- **CI-selection collection (2026-08-24):** **19,270 total** tests, with
+  **15,267 selected** and **4,003 deselected**, measured with:
 
   ```bash
   uv run --no-sync pytest tests/ roster/ --collect-only -q \
@@ -27,9 +29,12 @@ phase snapshots below; re-run the commands in
 
   Collection establishes the selected-test population; it is not test-execution
   timing.
-- **Latest green CI duration evidence:** unit stage about **15m48s** and
-  integration stage about **18m25s**. Treat these as separate job durations,
-  not as collection measurements.
+- **CI duration evidence (re-check before relying on it):** unit ~**15m48s**,
+  integration ~**18m25s**. These are sequential **steps of the single `check`
+  job**, NOT separate jobs — `check` as a whole runs ~45min+ (unit → smoke →
+  testcontainers integration). Enumerate real per-step timings with
+  `gh api repos/Tzeusy/butlers/actions/jobs/<job_id> --jq '.steps[]'`.
+  Durations, not collection measurements.
 
 ## Historical Phase 3 snapshot (2026-06-21)
 

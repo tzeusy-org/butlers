@@ -4,7 +4,12 @@
 > auto-triggers the autonomous fleet (opens + merges PRs within minutes). Keep
 > any proposed beads BLOCKED until a coordinated cycle is intentionally started.
 
-## Phase 3 (proposed, 2026-06-21) — NOT YET FILED
+## Phase 3 (proposed, 2026-06-21) — NEVER FILED, TARGETS STALE
+
+> The numbers below are a **frozen 2026-06-21 snapshot**. This epic was never
+> opened and the suite has since grown to **12,322 def-test / 1,006 files** in
+> `tests/` (2026-08-24). The `7,494 → ~6,300` target and every per-domain
+> figure are historical — **re-measure before filing anything.**
 
 Baseline **7,494 def-test / 8,107 collected, 657 files**. A 22-auditor pass found
 only **~1,050–1,250 SAFELY removable** — most growth is real coverage. Target a
