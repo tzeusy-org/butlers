@@ -55,10 +55,20 @@ fingerprint version.
 
 When the first observation under the newer contract explicitly names the
 retired fingerprint as its predecessor, the shared ledger persists reciprocal
-episode links and records ``superseded_by_identity_version_bump`` rather than
-presenting the absence as recovery. The old fingerprint remains immutable;
-unlinked version changes and incomplete snapshots retain the ordinary
-snapshot-absence behavior.
+episode links under ``metadata.identity_payload`` and records
+``superseded_by_identity_version_bump`` in top-level
+``metadata.resolution_reason`` — the same key an explicit resolution writes,
+so a reader never has to know which path ended an episode (bu-o4i4j) —
+rather than presenting the absence as recovery. The old fingerprint remains
+immutable; unlinked version changes and incomplete snapshots retain the
+ordinary snapshot-absence behavior.
+
+Because the ledger writes that key here too, ``reconcile_snapshot`` below
+refuses an observation whose ``metadata`` claims one of
+``condition_ledger.RESOLUTION_METADATA_KEYS`` (``resolution_reason``,
+``evidence_closed``), before any database access — otherwise the
+creation-wins resolution merge would silently drop the terminal reason for
+any producer that had already claimed the name.
 """
 
 from __future__ import annotations
@@ -69,6 +79,9 @@ from typing import Any
 import asyncpg
 
 from butlers.core.condition_ledger import ESCALATION_LEVELS as ESCALATION_LEVELS
+from butlers.core.condition_ledger import (
+    RESOLUTION_METADATA_KEYS as RESOLUTION_METADATA_KEYS,
+)
 from butlers.core.condition_ledger import VALID_STATES as VALID_STATES
 from butlers.core.condition_ledger import ConditionTransition, Observation
 from butlers.core.condition_ledger import TransitionKind as TransitionKind
@@ -79,6 +92,7 @@ from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snaps
 
 __all__ = [
     "ESCALATION_LEVELS",
+    "RESOLUTION_METADATA_KEYS",
     "VALID_STATES",
     "ConditionTransition",
     "Observation",
@@ -104,6 +118,9 @@ async def reconcile_snapshot(
 
     See ``butlers.core.condition_ledger.reconcile_snapshot`` for the full
     contract (AC1-AC4). This facade binds ``table="public.infra_conditions"``.
+
+    Raises ``ValueError``, before any database access, when an observation's
+    ``metadata`` claims one of ``RESOLUTION_METADATA_KEYS``.
     """
     return await _reconcile_snapshot(
         pool,

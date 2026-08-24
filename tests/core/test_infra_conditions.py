@@ -17,6 +17,7 @@ import pytest
 
 from butlers.core.infra_conditions import (
     ESCALATION_LEVELS,
+    RESOLUTION_METADATA_KEYS,
     Observation,
     compute_fingerprint,
     reconcile_snapshot,
@@ -107,6 +108,27 @@ class TestReconcileSnapshotValidation:
                     Observation(fingerprint="abc"),
                     Observation(fingerprint="abc"),
                 ],
+                snapshot_complete=True,
+                initial_grace_seconds=60,
+            )
+        pool.acquire.assert_not_called()
+
+    @pytest.mark.parametrize("reserved_key", sorted(RESOLUTION_METADATA_KEYS))
+    async def test_rejects_metadata_claiming_a_reserved_resolution_key(self, reserved_key: str):
+        """bu-o4i4j: the reservation covers this ledger too, not just owner_conditions.
+
+        The supersede path resolves infra episodes and writes the terminal
+        reason to top-level ``metadata.resolution_reason`` through the same
+        creation-wins merge an explicit resolution uses. A producer that had
+        already claimed the key would win that merge and the terminal reason
+        would vanish with no error, so the key is refused here instead.
+        """
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match=reserved_key):
+            await reconcile_snapshot(
+                pool,
+                source="deploy_drift",
+                observations=[Observation(fingerprint="abc", metadata={reserved_key: "preset"})],
                 snapshot_complete=True,
                 initial_grace_seconds=60,
             )

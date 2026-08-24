@@ -40,6 +40,21 @@ Only a complete snapshot with a strictly higher declared successor version
 records reciprocal episode links and the superseded terminal reason. The
 fingerprint itself is never migrated or reinterpreted.
 
+Resolution evidence has one location
+------------------------------------
+``metadata.resolution_reason`` (top-level) is where a resolved episode says
+why it ended, for BOTH resolution paths: the explicit
+:func:`resolve_condition` (whose caller supplies the reason) and the
+identity-version supersede path inside :func:`reconcile_snapshot` (which
+records ``superseded_by_identity_version_bump``). A reader therefore never
+needs to know which path ended an episode before it knows where to look, and
+one query answers "why did this close" across every row. Identity lineage —
+the ``successor``/``predecessor`` cross-references — stays under
+``metadata.identity_payload`` beside the ``version`` it correlates; it is
+lineage, not resolution evidence. ``RESOLUTION_METADATA_KEYS`` is refused at
+the producer boundary so the creation-wins merge below can never swallow
+what the ledger writes there.
+
 ``reconcile_snapshot`` is the snapshot-driven reconciliation entry point: it
 accepts everything a producer currently observes for one ``source`` plus
 whether that observation is a complete, successful snapshot of the producer's
@@ -77,6 +92,32 @@ import asyncpg
 
 VALID_STATES = frozenset({"open", "aging", "resolved"})
 ESCALATION_LEVELS = ("L0", "L1", "L2", "L3")
+
+#: The terminal reason the supersede path records on a predecessor episode.
+SUPERSEDED_BY_IDENTITY_VERSION_BUMP = "superseded_by_identity_version_bump"
+
+#: Top-level ``metadata`` keys the ledger itself writes when an episode is
+#: resolved — see :func:`resolve_condition` (explicit resolution) and
+#: :func:`_resolve_episode`'s supersede path. Both write ``resolution_reason``
+#: to the same top-level key, so a reader never has to know which path ended
+#: the episode (bu-o4i4j).
+#:
+#: REQ-owner-condition-ledger-004 merges resolution metadata *creation-wins*,
+#: the right rule for a producer's own evidence: closing a condition must
+#: never rewrite why it opened. Applied to these two keys it inverts into a
+#: trap — a producer that set ``resolution_reason`` or ``evidence_closed`` at
+#: creation time would keep its own value, and the ledger's closing evidence,
+#: including the ``session_id`` provenance REQ-owner-condition-ledger-005
+#: requires, would be dropped with no error and no signal in the returned
+#: envelope. :func:`reconcile_snapshot` therefore refuses them at the producer
+#: boundary (REQ-owner-condition-ledger-006). These names belong to the
+#: ledger, not to the producer.
+#:
+#: The reservation lives here rather than on the owner-conditions facade
+#: because the ledger writes ``resolution_reason`` for BOTH tables now: the
+#: supersede path resolves infra episodes too, so refusing the key only at the
+#: owner boundary would leave the infra terminal reason silently droppable.
+RESOLUTION_METADATA_KEYS: frozenset[str] = frozenset({"resolution_reason", "evidence_closed"})
 
 TransitionKind = Literal[
     "opened",
@@ -215,6 +256,28 @@ def _validate_resolution_inputs(
         ) from exc
 
 
+def _reject_reserved_metadata_keys(observations: Sequence[Observation]) -> None:
+    """Raise ``ValueError`` if any observation claims a ledger-owned metadata key.
+
+    Raised before the pool is touched so a rejected snapshot writes nothing —
+    the same "invalid input never reaches the pool" contract the broker's
+    fingerprint and ``resolution_reason`` validation already keeps.
+    """
+    for obs in observations:
+        metadata = obs.metadata
+        if not isinstance(metadata, dict):
+            continue
+        reserved = sorted(RESOLUTION_METADATA_KEYS.intersection(metadata))
+        if reserved:
+            raise ValueError(
+                "reconcile_snapshot: observation metadata may not set "
+                f"{', '.join(repr(k) for k in reserved)} "
+                f"(fingerprint={obs.fingerprint!r}) — "
+                "reserved for the closing evidence written when the condition is "
+                "resolved. Record producer-side context under a different key."
+            )
+
+
 def _metadata_with_identity_payload(obs: Observation) -> dict[str, Any] | None:
     """Add declared identity-version evidence without changing caller metadata."""
     if obs.identity_version is None:
@@ -289,8 +352,9 @@ async def reconcile_snapshot(
     mutates the resolved row.
 
     Raises ``ValueError`` for an empty ``table``/``source``, a negative
-    ``initial_grace_seconds``, or a duplicate fingerprint within
-    ``observations``.
+    ``initial_grace_seconds``, a duplicate fingerprint within
+    ``observations``, or an observation whose ``metadata`` claims one of
+    :data:`RESOLUTION_METADATA_KEYS`. All of it before any database access.
     """
     if not table:
         raise ValueError("reconcile_snapshot: table must be non-empty")
@@ -314,6 +378,7 @@ async def reconcile_snapshot(
     ]
     if len(set(predecessor_fingerprints)) != len(predecessor_fingerprints):
         raise ValueError("reconcile_snapshot: duplicate predecessor_fingerprint in observations")
+    _reject_reserved_metadata_keys(observations)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -614,11 +679,23 @@ async def _resolve_episode(
     resolution_metadata: dict[str, Any] | None = None,
 ) -> ConditionTransition:
     recovered_after_s = (now - row["first_detected_at"]).total_seconds()
+    # Why the supersede reason goes top-level and its successor link does not
+    # (bu-o4i4j): `resolution_reason` is the ledger's answer to "why did this
+    # episode end", and it has exactly ONE home — top-level `metadata` —
+    # whichever path ended the episode. The supersede path used to nest it
+    # inside `identity_payload`, so a reader had to know which path had run
+    # before it knew where to look. The successor reference stays nested
+    # because it is identity lineage, not resolution evidence: it belongs
+    # beside the `version` it correlates and the reciprocal `predecessor`
+    # link `_link_identity_predecessor` writes on the successor row.
     provenance: str | None = None
     if successor is not None:
+        resolution_metadata = {
+            **(resolution_metadata or {}),
+            "resolution_reason": SUPERSEDED_BY_IDENTITY_VERSION_BUMP,
+        }
         provenance = json.dumps(
             {
-                "resolution_reason": "superseded_by_identity_version_bump",
                 "successor": {
                     "condition_id": str(successor.condition_id),
                     "fingerprint": successor.fingerprint,

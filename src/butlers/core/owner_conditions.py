@@ -76,6 +76,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.condition_ledger import ESCALATION_LEVELS as ESCALATION_LEVELS
+from butlers.core.condition_ledger import RESOLUTION_METADATA_KEYS as _RESOLUTION_METADATA_KEYS
 from butlers.core.condition_ledger import VALID_STATES as VALID_STATES
 from butlers.core.condition_ledger import ConditionTransition, Observation
 from butlers.core.condition_ledger import TransitionKind as TransitionKind
@@ -102,49 +103,12 @@ __all__ = [
 
 _TABLE = "public.owner_conditions"
 
-#: Top-level ``metadata`` keys the ledger itself writes when a condition is
-#: explicitly resolved — see :func:`resolve_condition` and the Switchboard's
-#: ``resolve_owner_condition`` MCP tool above it.
-#:
-#: REQ-owner-condition-ledger-004 merges resolution metadata *creation-wins*,
-#: which is the right rule for a producer's own evidence: closing a condition
-#: must never rewrite why it opened. Applied to these two keys it inverts into
-#: a trap — a producer that set ``resolution_reason`` or ``evidence_closed`` at
-#: creation time would keep its own value and the resolver's closing evidence,
-#: including the ``session_id`` provenance REQ-owner-condition-ledger-005
-#: requires, would be dropped with no error and no signal in the returned
-#: envelope. :func:`reconcile_snapshot` therefore refuses them at the producer
-#: boundary (REQ-owner-condition-ledger-006). These names belong to the ledger,
-#: not to the producer.
-#:
-#: This lives on the owner-conditions facade rather than in
-#: ``condition_ledger`` because explicit resolution is an owner-condition
-#: capability: ``infra_conditions`` resolves only by omission from a complete
-#: snapshot and writes no resolution metadata at all. If it ever gains an
-#: explicit resolver, this constant moves down to the shared engine with it.
-RESOLUTION_METADATA_KEYS: frozenset[str] = frozenset({"resolution_reason", "evidence_closed"})
-
-
-def _reject_reserved_metadata_keys(observations: Sequence[Observation]) -> None:
-    """Raise ``ValueError`` if any observation claims a ledger-owned metadata key.
-
-    Raised before the pool is touched so a rejected snapshot writes nothing —
-    the same "invalid input never reaches the pool" contract the broker's
-    fingerprint and ``resolution_reason`` validation already keeps.
-    """
-    for obs in observations:
-        metadata = obs.metadata
-        if not isinstance(metadata, dict):
-            continue
-        reserved = sorted(RESOLUTION_METADATA_KEYS.intersection(metadata))
-        if reserved:
-            raise ValueError(
-                "reconcile_snapshot: observation metadata may not set "
-                f"{', '.join(repr(k) for k in reserved)} "
-                f"(fingerprint={obs.fingerprint!r}) — "
-                "reserved for the closing evidence written when the condition is "
-                "resolved. Record producer-side context under a different key."
-            )
+#: Re-exported from the shared engine, which owns the reservation (bu-o4i4j):
+#: both resolution paths — :func:`resolve_condition` here and the
+#: identity-version supersede path inside ``reconcile_snapshot`` — write
+#: ``resolution_reason`` to the same top-level ``metadata`` key, so the keys
+#: they occupy are refused at every producer boundary, not just this one.
+RESOLUTION_METADATA_KEYS = _RESOLUTION_METADATA_KEYS
 
 
 async def reconcile_snapshot(
@@ -166,7 +130,6 @@ async def reconcile_snapshot(
     ``metadata`` claims one of :data:`RESOLUTION_METADATA_KEYS`
     (REQ-owner-condition-ledger-006).
     """
-    _reject_reserved_metadata_keys(observations)
     return await _reconcile_snapshot(
         pool,
         table=_TABLE,

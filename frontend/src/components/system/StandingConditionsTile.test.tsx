@@ -242,9 +242,11 @@ describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)
           {
             ...resolvedCondition,
             metadata: {
+              // bu-o4i4j: the terminal reason is top-level for every
+              // resolution path; only the successor lineage stays nested.
+              resolution_reason: "superseded_by_identity_version_bump",
               identity_payload: {
                 version: 1,
-                resolution_reason: "superseded_by_identity_version_bump",
                 successor: { fingerprint: "c".repeat(64), version: 2 },
               },
             },
