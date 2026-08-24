@@ -148,9 +148,17 @@ def _probe_url_for_provider(provider_type: str, config: dict[str, Any]) -> str |
 
     For 'ollama', reads ``config['base_url']`` and appends ``/api/version``.
     Returns None if the config is insufficient to form a URL.
+
+    ``config`` is operator-supplied JSON round-tripped through a JSONB column,
+    so ``base_url`` may be present but hold a non-string (``null``, a number, a
+    list). That is treated as "no probe URL" rather than raising out of the
+    handler, which promises a structured result instead of a 5xx.
     """
     if provider_type == "ollama":
-        base_url = config.get("base_url", "").rstrip("/")
+        raw_base_url = config.get("base_url")
+        if not isinstance(raw_base_url, str):
+            return None
+        base_url = raw_base_url.rstrip("/")
         if base_url:
             return f"{base_url}/api/version"
     return None

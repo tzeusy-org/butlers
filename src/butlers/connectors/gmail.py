@@ -293,6 +293,33 @@ def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
     return is_auth_revocation, description
 
 
+def _header_name_is(header: Any, expected_lower_name: str) -> bool:
+    """Return True when *header* is a Gmail header entry named *expected_lower_name*.
+
+    Header entries arrive verbatim from the Gmail API. Nothing guarantees an
+    entry is a dict, nor that its ``name`` is a string -- ``.get("name", "")``
+    only substitutes the default when the key is *absent*. A malformed entry is
+    treated as non-matching so it is skipped rather than raising mid-poll.
+
+    *expected_lower_name* must already be lowercase.
+    """
+    if not isinstance(header, dict):
+        return False
+    name = header.get("name")
+    return isinstance(name, str) and name.lower() == expected_lower_name
+
+
+def _header_str_value(header: dict[str, Any], default: str = "") -> str:
+    """Return a Gmail header's ``value`` when it is a string, else *default*.
+
+    Guards the same provider-shape assumption as :func:`_header_name_is`: a
+    non-string value must never escape into ingestion typed as ``str``. A
+    present-but-empty string is a real value and is returned as-is.
+    """
+    value = header.get("value")
+    return value if isinstance(value, str) else default
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -784,8 +811,8 @@ class GmailConnectorRuntime:
 
             headers = response.json().get("payload", {}).get("headers", [])
             for h in headers:
-                if isinstance(h, dict) and h.get("name", "").lower() == "message-id":
-                    raw = (h.get("value") or "").strip()
+                if _header_name_is(h, "message-id"):
+                    raw = _header_str_value(h).strip()
                     if raw:
                         bare = raw.strip("<>").strip()
                         if bare:
@@ -2322,8 +2349,8 @@ class GmailConnectorRuntime:
         """Extract the raw From header value from a Gmail message payload."""
         headers = message_data.get("payload", {}).get("headers", [])
         for header in headers:
-            if isinstance(header, dict) and header.get("name", "").lower() == "from":
-                return header.get("value", "")
+            if _header_name_is(header, "from"):
+                return _header_str_value(header)
         return ""
 
     @staticmethod
@@ -2331,8 +2358,8 @@ class GmailConnectorRuntime:
         """Extract the Subject header value from a Gmail message payload."""
         headers = message_data.get("payload", {}).get("headers", [])
         for header in headers:
-            if isinstance(header, dict) and header.get("name", "").lower() == "subject":
-                return header.get("value", "")
+            if _header_name_is(header, "subject"):
+                return _header_str_value(header, "(no subject)")
         return "(no subject)"
 
     @staticmethod
@@ -2591,15 +2618,17 @@ class GmailConnectorRuntime:
     )
 
     @staticmethod
-    def _charset_from_headers(headers: list[dict[str, str]]) -> str:
+    def _charset_from_headers(headers: list[Any]) -> str:
         """Extract charset from the Content-Type header in a MIME part's headers list.
 
         Returns the charset string if present and recognised by :mod:`codecs`,
-        otherwise returns ``"utf-8"`` as a safe fallback.
+        otherwise returns ``"utf-8"`` as a safe fallback. Malformed entries
+        (non-dict, or a non-string ``name``/``value``) are skipped -- these come
+        straight from the provider payload and are not shape-guaranteed.
         """
         for header in headers:
-            if header.get("name", "").lower() == "content-type":
-                match = re.search(r"charset=([^\s;\"']+)", header.get("value", ""), re.IGNORECASE)
+            if _header_name_is(header, "content-type"):
+                match = re.search(r"charset=([^\s;\"']+)", _header_str_value(header), re.IGNORECASE)
                 if match:
                     charset_name = match.group(1).strip()
                     try:
