@@ -30,6 +30,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+import butlers.api.routers.secrets_v2 as _secrets_v2
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import _get_db_manager
@@ -1362,3 +1363,144 @@ def test_rotate_github_revoke_network_error_does_not_fail_rotation(monkeypatch):
 
     assert resp.status_code == 200
     assert "data" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Tests: mutation reads skip the scope-evidence queries (bu-psw7o)
+# ---------------------------------------------------------------------------
+# The content-blind projection turns `scopes_required` / `scopes_granted` into
+# `capabilities_required` / `capabilities_granted`, and only two callers
+# publish that: `GET /user/{provider}` and the post-update re-read inside
+# `/rotate`.  Every other user-credential mutation read discarded the two
+# queries behind those fields, so they no longer run there.
+#
+# These tests spy on the SQL actually issued (`pool.fetch`) rather than on the
+# response shape: the responses were already correct before the skip, so only
+# the issued-SQL set can show the work stopped.
+# ---------------------------------------------------------------------------
+
+#: `_fetch_scopes_required_by_provider` — the provider→required-scopes catalogue.
+_CATALOGUE_SQL = "public.provider_feature_catalogue"
+#: `_fetch_google_granted_scopes` — per-account granted scopes.
+_GRANTED_SCOPES_SQL = "granted_scopes"
+#: `_fetch_google_test_mode_expiry` — same table, different column; NOT skipped,
+#: because `state` is derived from the expiry it returns.
+_TEST_MODE_EXPIRY_SQL = "last_token_refresh_at"
+
+
+def _issued_sql(shared_pool: AsyncMock) -> list[str]:
+    """Every SQL string the route issued through ``pool.fetch``."""
+    return [call.args[0] for call in shared_pool.fetch.await_args_list if call.args]
+
+
+def _matching(shared_pool: AsyncMock, marker: str) -> list[str]:
+    return [sql for sql in _issued_sql(shared_pool) if marker in sql]
+
+
+def _stub_revoke(monkeypatch) -> None:
+    """Keep provider revocation off the network; these tests only watch SQL."""
+
+    async def _skipped(*_args: object, **_kwargs: object) -> str:
+        return "skipped"
+
+    monkeypatch.setattr(_secrets_v2, "_revoke_oauth_token", _skipped)
+
+
+def test_rotate_loads_scope_evidence_only_for_the_published_read(monkeypatch):
+    """rotate reads the credential twice; only the response read needs scopes.
+
+    The pre-update read supplies `id` and `type` for the in-place UPDATE and the
+    provider revoke — it never reaches `_content_blind_detail`.  So exactly one
+    catalogue read and one granted-scopes read may happen, not two.
+    """
+    _stub_revoke(monkeypatch)
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/rotate", json={"value": "new-tok"})
+
+    assert resp.status_code == 200, resp.text
+    assert len(_matching(shared_pool, _CATALOGUE_SQL)) == 1, (
+        "rotate must read the scope catalogue only for the response re-read"
+    )
+    assert len(_matching(shared_pool, _GRANTED_SCOPES_SQL)) == 1, (
+        "rotate must read granted scopes only for the response re-read"
+    )
+    # The evidence still ships: an unloaded record would have raised instead.
+    assert "capabilities_required" in resp.json()["data"]
+
+
+def test_disconnect_issues_no_scope_evidence_queries(monkeypatch):
+    """disconnect returns a bare status; nothing it publishes needs scopes."""
+    _stub_revoke(monkeypatch)
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="tok")
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/disconnect")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {"status": "disconnected"}
+    assert _matching(shared_pool, _CATALOGUE_SQL) == []
+    assert _matching(shared_pool, _GRANTED_SCOPES_SQL) == []
+
+
+def test_probe_issues_no_scope_evidence_queries_but_keeps_the_expiry_read():
+    """probe publishes a TestResult, which carries no capability evidence.
+
+    The Google test-mode expiry read stays: `detail.state` is derived from it,
+    and probe branches on that state.  Asserting it is still issued is what
+    keeps this a scope-only skip rather than a blanket one.
+    """
+    row = _make_entity_info_row(info_type="google_oauth_refresh", last_test_ok=True, value="tok")
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/probe")
+
+    assert resp.status_code == 200, resp.text
+    assert _matching(shared_pool, _CATALOGUE_SQL) == []
+    assert _matching(shared_pool, _GRANTED_SCOPES_SQL) == []
+    assert _matching(shared_pool, _TEST_MODE_EXPIRY_SQL), (
+        "probe still needs the test-mode expiry read that `state` is derived from"
+    )
+
+
+def test_reauthorize_issues_no_scope_evidence_queries():
+    """reauthorize publishes a redirect URL; it reads only presence and label."""
+    entity_id = str(uuid4())
+    row = _make_entity_info_row(info_type="google_oauth_refresh", entity_id=entity_id)
+    mock_db = _make_db(user_row=row, oauth_app_configured=True)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/user/google/reauthorize")
+
+    assert resp.status_code == 200, resp.text
+    assert f"account_ref={entity_id}" in resp.json()["data"]["redirect_url"]
+    assert _matching(shared_pool, _CATALOGUE_SQL) == []
+    assert _matching(shared_pool, _GRANTED_SCOPES_SQL) == []
+
+
+def test_content_blind_detail_refuses_a_record_whose_scopes_were_skipped():
+    """The skip must never be projected as honest-empty capability evidence.
+
+    Empty `capabilities_granted` is documented to mean "nothing is recorded".
+    A record read with `include_scopes=False` cannot support that claim, so the
+    projection rejects it instead of publishing a gap as a fact.
+    """
+    skipped = _secrets_v2._UserCredentialRecord(
+        id=str(uuid4()),
+        entity_id=str(uuid4()),
+        type="google_oauth_refresh",
+        provider="google",
+        state="ok",
+        scopes_loaded=False,
+    )
+
+    with pytest.raises(ValueError, match="include_scopes=True"):
+        _secrets_v2._content_blind_detail(skipped)
