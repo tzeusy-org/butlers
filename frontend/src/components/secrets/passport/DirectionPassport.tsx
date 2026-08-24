@@ -321,6 +321,7 @@ export function DirectionPassport({
   // (bu-976n0: this was the fabricated-alarm bug — 19 amber rows of which
   // only 3 were actually broken).
   const needsAttention = inventory.failingCount;
+  const inventoryIncomplete = (inventory.sourcesDegraded?.length ?? 0) > 0;
 
   // Rough count of what "probe all" is about to sweep — never_set/missing
   // rows have nothing to verify, so they're excluded from this hint. Not a
@@ -386,11 +387,13 @@ export function DirectionPassport({
                   maxWidth: "28ch",
                 }}
               >
-                {needsAttention === 0
-                  ? "Every credential, accounted for."
-                  : needsAttention === 1
-                    ? "One credential needs attention."
-                    : `${needsAttention} credentials need attention.`}
+                {inventoryIncomplete
+                  ? "Credential inventory incomplete."
+                  : needsAttention === 0
+                    ? "Every credential, accounted for."
+                    : needsAttention === 1
+                      ? "One credential needs attention."
+                      : `${needsAttention} credentials need attention.`}
               </h1>
             </div>
             {needsAttention > 0 && (

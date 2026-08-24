@@ -198,7 +198,7 @@ import os
 import re
 import secrets as _secrets_mod
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1538,9 +1538,9 @@ async def _fetch_audit_bulk(
     ``targets`` are canonical credential keys as written by
     ``normalize_credential_key`` (e.g. ``"u:google"``, ``"s:BUTLER_TELEGRAM_TOKEN"``).
 
-    Uses a window function (ROW_NUMBER partitioned by target) instead of one
-    query per credential — the same N+1-avoidance shape as
-    ``_fetch_probe_logs_bulk``.
+    Uses an index-backed lateral top-N lookup instead of one query per
+    credential, avoiding both N+1 round-trips and ranking a credential's full
+    audit history before retaining the requested rows.
 
     Returns a dict mapping target → list of ``{ts, actor, action, note}``
     dicts (newest first, pre-formatted timestamps). This is the router's
@@ -1563,19 +1563,25 @@ async def _fetch_audit_bulk(
     """
     if not targets:
         return {}
+    targets = list(dict.fromkeys(targets))
     try:
         rows = await pool.fetch(
             """
-            SELECT target, ts, actor, action, note
-            FROM (
-                SELECT
-                    target, ts, actor, action, note,
-                    ROW_NUMBER() OVER (PARTITION BY target ORDER BY ts DESC) AS rn
-                FROM public.audit_log
-                WHERE target = ANY($1)
-            ) ranked
-            WHERE rn <= $2
-            ORDER BY target, ts DESC
+            WITH requested_targets AS (
+                SELECT DISTINCT requested.target
+                FROM unnest($1::text[]) AS requested(target)
+            )
+            SELECT audit.target, audit.ts, audit.actor, audit.action, audit.note
+            FROM requested_targets
+            CROSS JOIN LATERAL (
+                SELECT audit_row.target, audit_row.ts, audit_row.actor,
+                       audit_row.action, audit_row.note
+                FROM public.audit_log AS audit_row
+                WHERE audit_row.target = requested_targets.target
+                ORDER BY audit_row.ts DESC
+                LIMIT $2
+            ) AS audit
+            ORDER BY audit.target, audit.ts DESC
             """,
             targets,
             limit,
@@ -1975,6 +1981,7 @@ async def _fetch_system_secrets(
     source_schema: str | None = None,
     schema_absent_at_start: bool = False,
     tracker: DegradedSources | None = None,
+    raise_on_audit_failure: bool = False,
 ) -> list[SystemSecret]:
     """Fetch all butler_secrets rows from a single butler's schema pool.
 
@@ -2051,7 +2058,11 @@ async def _fetch_system_secrets(
     credential_keys = [row["secret_key"] for row in rows]
     probe_map = await _fetch_probe_logs_bulk(pool, "system", credential_keys)
     audit_targets = [normalize_credential_key("system", key) for key in credential_keys]
-    audit_map = await _fetch_audit_bulk(pool, audit_targets)
+    audit_map = await _fetch_audit_bulk(
+        pool,
+        audit_targets,
+        raise_on_failure=raise_on_audit_failure,
+    )
 
     results: list[SystemSecret] = []
     for row in rows:
@@ -2096,6 +2107,8 @@ async def _fetch_user_secrets(
     pool: Any,
     *,
     identity: UUID | None,
+    raise_on_failure: bool = False,
+    raise_on_audit_failure: bool = False,
 ) -> list[UserSecret]:
     """Fetch entity_info rows from the shared pool.
 
@@ -2247,6 +2260,8 @@ async def _fetch_user_secrets(
         if "does not exist" in msg or "undefined" in msg.lower():
             logger.debug("entity_info or entities table not available: %s", exc)
             return []
+        if raise_on_failure:
+            raise
         logger.warning("Failed to fetch user secrets: %s", exc)
         return []
 
@@ -2261,7 +2276,11 @@ async def _fetch_user_secrets(
     providers_by_row = [_infer_provider_from_type(row["type"]) for row in rows]
 
     audit_targets = [normalize_credential_key("user", provider) for provider in providers_by_row]
-    audit_map = await _fetch_audit_bulk(pool, audit_targets)
+    audit_map = await _fetch_audit_bulk(
+        pool,
+        audit_targets,
+        raise_on_failure=raise_on_audit_failure,
+    )
 
     scopes_required_map = await _fetch_scopes_required_by_provider(pool)
     # Key by the same PROVIDER_CATALOG-resolved slug that `providers_by_row`
@@ -2328,6 +2347,8 @@ async def _fetch_user_secrets(
 
 async def _fetch_cli_secrets(
     pool: Any,
+    *,
+    raise_on_failure: bool = False,
 ) -> list[CliRuntime]:
     """Fetch CLI runtime tokens from the shared credential pool.
 
@@ -2366,6 +2387,8 @@ async def _fetch_cli_secrets(
     except Exception as exc:  # noqa: BLE001
         # Schema drift (e.g. a missing column) is a real failure, not an
         # absent table — surface it instead of silently returning nothing.
+        if raise_on_failure:
+            raise
         logger.warning("Failed to fetch CLI secrets: %s", exc)
         return []
 
@@ -2422,6 +2445,8 @@ async def _fetch_cli_secrets(
 async def _fetch_identity_info(
     pool: Any,
     entity_ids: list[str],
+    *,
+    raise_on_failure: bool = False,
 ) -> list[IdentityInfo]:
     """Fetch identity metadata for a list of entity UUIDs.
 
@@ -2451,6 +2476,8 @@ async def _fetch_identity_info(
         logger.debug("public.entities not available for identity enrichment: %s", exc)
         return []
     except Exception as exc:  # noqa: BLE001
+        if raise_on_failure:
+            raise
         logger.warning("Transient error fetching identity info: %s", exc)
         return []
 
@@ -2597,6 +2624,119 @@ def _unverified_count(items: list[Any]) -> int:
     return sum(1 for item in items if getattr(item, "state", "warn") == "warn")
 
 
+_INVENTORY_SOURCE_TIMEOUT_S = 3.0
+_INVENTORY_REQUEST_BUDGET_S = 10.0
+_INVENTORY_MAX_CONCURRENT_SOURCES = 6
+
+
+@dataclass(frozen=True)
+class _InventorySharedSourceResult:
+    """All inventory families that share the public credential pool."""
+
+    system_secrets: list[SystemSecret]
+    user_secrets: list[UserSecret]
+    cli_secrets: list[CliRuntime]
+    identities: list[IdentityInfo]
+
+
+async def _fetch_inventory_system_source(
+    *,
+    db: DatabaseManager,
+    pool: Any,
+    butler_name: str,
+) -> list[SystemSecret]:
+    """Fetch one butler source atomically for the bounded inventory read."""
+    source_tracker = DegradedSources(logger)
+    rows = await _fetch_system_secrets(
+        pool,
+        butler_name,
+        source_schema=_secrets_source_schema(db, butler_name),
+        schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+        tracker=source_tracker,
+        raise_on_audit_failure=True,
+    )
+    if source_tracker.failed:
+        raise RuntimeError(f"inventory source {butler_name!r} is unavailable")
+    return rows
+
+
+async def _fetch_inventory_shared_source(
+    *,
+    db: DatabaseManager,
+    pool: Any,
+    identity: UUID | None,
+) -> _InventorySharedSourceResult:
+    """Fetch the public-pool inventory families as one truthful source unit."""
+    source_tracker = DegradedSources(logger)
+    system_secrets = await _fetch_system_secrets(
+        pool,
+        "shared-public",
+        read_only=False,
+        source_schema=_secrets_source_schema(db, "shared-public"),
+        schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        tracker=source_tracker,
+        raise_on_audit_failure=True,
+    )
+    if source_tracker.failed:
+        raise RuntimeError("inventory shared source is unavailable")
+
+    user_secrets = await _fetch_user_secrets(
+        pool,
+        identity=identity,
+        raise_on_failure=True,
+        raise_on_audit_failure=True,
+    )
+    cli_secrets = await _fetch_cli_secrets(pool, raise_on_failure=True)
+
+    seen_entity_ids: list[str] = []
+    seen_entity_id_set: set[str] = set()
+    for user_secret in user_secrets:
+        if user_secret.entity_id not in seen_entity_id_set:
+            seen_entity_ids.append(user_secret.entity_id)
+            seen_entity_id_set.add(user_secret.entity_id)
+    identities = await _fetch_identity_info(
+        pool,
+        seen_entity_ids,
+        raise_on_failure=True,
+    )
+    return _InventorySharedSourceResult(
+        system_secrets=system_secrets,
+        user_secrets=user_secrets,
+        cli_secrets=cli_secrets,
+        identities=identities,
+    )
+
+
+async def _run_bounded_inventory_source(
+    semaphore: asyncio.Semaphore,
+    operation_factory: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Apply the inventory's concurrency and per-source response budgets."""
+    async with semaphore:
+        return await asyncio.wait_for(operation_factory(), timeout=_INVENTORY_SOURCE_TIMEOUT_S)
+
+
+def _consume_detached_inventory_task(task: asyncio.Task[Any]) -> None:
+    """Retrieve a cancelled source task's terminal exception without delaying the response."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        # The response already records this source as degraded. This callback
+        # only prevents a late exception from becoming an un-retrieved task
+        # warning after the request deadline has elapsed.
+        pass
+
+
+def _cancel_detached_inventory_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+    """Cancel unfinished source work without making endpoint completion depend on it."""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+        task.add_done_callback(_consume_detached_inventory_task)
+
+
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
@@ -2659,72 +2799,92 @@ async def get_inventory(
     except KeyError:
         shared_pool = None
 
-    # --- Fetch system secrets across all butler schemas + the shared pool ---
-    # tracker records genuine per-butler fetch failures (schema drift, dropped
-    # connections, etc. — see _is_missing_secrets_schema_error) so they are
-    # surfaced via meta.sources_degraded instead of silently zero-filling
-    # (bu-38ae1). A butler with no pool wired at all (KeyError below) is a
-    # configuration fact, not a degraded source, and is not tracked.
+    # --- Fetch inventory sources under bounded concurrent fan-out ---
+    # A partial response is preferable to consuming the browser deadline. Each
+    # source result is retained only when its credential and audit evidence are
+    # complete; failures are recorded in configured source order below.
     tracker = DegradedSources(logger)
-    system_secrets: list[SystemSecret] = []
+    semaphore = asyncio.Semaphore(_INVENTORY_MAX_CONCURRENT_SOURCES)
+    source_tasks: list[tuple[str, asyncio.Task[Any]]] = []
+
     for butler_name in db.butler_names:
         try:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        butler_rows = await _fetch_system_secrets(
-            pool,
-            butler_name,
-            source_schema=_secrets_source_schema(db, butler_name),
-            schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
-            tracker=tracker,
+        source_tasks.append(
+            (
+                butler_name,
+                asyncio.create_task(
+                    _run_bounded_inventory_source(
+                        semaphore,
+                        lambda pool=pool, butler_name=butler_name: _fetch_inventory_system_source(
+                            db=db, pool=pool, butler_name=butler_name
+                        ),
+                    )
+                ),
+            )
         )
-        system_secrets.extend(butler_rows)
 
-    # Shared application config (Google OAuth app credentials, butler email /
-    # telegram tokens, S3, Spotify, …) lives in public.butler_secrets via the
-    # shared credential pool, which is NOT one of the per-butler schemas above.
-    # Surface those rows so the System family reflects shared config; tag them
-    # butler="shared-public" so the frontend adapter can wire mutations to
-    # target="shared-public" (which routes writes to this pool).
-    # Exclude category 'cli'/'cli-auth' rows: CLI runtime tokens have their own
-    # family and are read separately from this same pool by _fetch_cli_secrets().
-    # Including them here would double-list them across the system and cli
-    # arrays and double-count them in meta.severity / meta.failing_count /
-    # meta.unverified_count.
-    #
-    # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
-        shared_system = await _fetch_system_secrets(
-            shared_pool,
-            "shared-public",
-            read_only=False,
-            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
-            tracker=tracker,
+        source_tasks.append(
+            (
+                "shared-public",
+                asyncio.create_task(
+                    _run_bounded_inventory_source(
+                        semaphore,
+                        lambda: _fetch_inventory_shared_source(
+                            db=db, pool=shared_pool, identity=identity
+                        ),
+                    )
+                ),
+            )
         )
-        system_secrets.extend(s for s in shared_system if s.category not in ("cli", "cli-auth"))
 
-    # --- Fetch user secrets from shared pool ---
+    pending: set[asyncio.Task[Any]] = set()
+    try:
+        if source_tasks:
+            _, pending = await asyncio.wait(
+                [task for _source, task in source_tasks],
+                timeout=_INVENTORY_REQUEST_BUDGET_S,
+            )
+    except BaseException:
+        _cancel_detached_inventory_tasks([task for _source, task in source_tasks])
+        raise
+    if pending:
+        _cancel_detached_inventory_tasks(list(pending))
+
+    source_results: dict[str, Any] = {}
+    for source, task in source_tasks:
+        if task in pending:
+            tracker.mark(source, msg="Secrets inventory source exceeded request budget")
+            continue
+        try:
+            source_results[source] = task.result()
+        except TimeoutError:
+            tracker.mark(source, msg="Secrets inventory source timed out")
+        except Exception:
+            tracker.mark(source, msg="Secrets inventory source failed")
+
+    system_secrets: list[SystemSecret] = []
+    for butler_name in db.butler_names:
+        butler_rows = source_results.get(butler_name)
+        if isinstance(butler_rows, list):
+            system_secrets.extend(butler_rows)
+
     user_secrets: list[UserSecret] = []
-    if shared_pool is not None:
-        user_secrets = await _fetch_user_secrets(shared_pool, identity=identity)
-
-    # --- Fetch CLI tokens from shared pool ---
     cli_secrets: list[CliRuntime] = []
-    if shared_pool is not None:
-        cli_secrets = await _fetch_cli_secrets(shared_pool)
-
-    # --- Enrich identities: join public.entities for name + role ---
-    # Collect unique entity_ids in encounter order (owner first in default path).
     identities: list[IdentityInfo] = []
-    if shared_pool is not None and user_secrets:
-        seen_eids: list[str] = []
-        seen_set: set[str] = set()
-        for us in user_secrets:
-            if us.entity_id not in seen_set:
-                seen_eids.append(us.entity_id)
-                seen_set.add(us.entity_id)
-        identities = await _fetch_identity_info(shared_pool, seen_eids)
+    shared_result = source_results.get("shared-public")
+    if isinstance(shared_result, _InventorySharedSourceResult):
+        system_secrets.extend(
+            secret
+            for secret in shared_result.system_secrets
+            if secret.category not in ("cli", "cli-auth")
+        )
+        user_secrets = shared_result.user_secrets
+        cli_secrets = shared_result.cli_secrets
+        identities = shared_result.identities
 
     # --- Build response ---
     # State counts (aggregate and family-specific) must be computed over a

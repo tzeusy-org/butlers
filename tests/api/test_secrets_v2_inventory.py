@@ -30,6 +30,7 @@ ix_secret_probe_log_lookup) and is noted here as a static-check only.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -48,6 +49,7 @@ from butlers.api.routers.secrets_v2 import (
     DEFAULT_EXPIRING_LEAD_TIME,
     DEFAULT_STALENESS_S,
     USER_PROVIDER_VOCABULARY,
+    SystemSecret,
     _dedupe_most_severe,
     _derive_state,
     _failing_count,
@@ -72,6 +74,7 @@ from butlers.api.routers.secrets_v2 import (
     _row_to_test_result,
     _unverified_count,
     _used_by_for_key,
+    get_inventory,
     resolve_staleness_window_s,
 )
 
@@ -785,6 +788,187 @@ def test_inventory_no_sources_degraded_when_all_butlers_healthy():
     assert "sources_degraded" not in resp.json()["meta"]
 
 
+async def test_inventory_reads_butler_sources_concurrently():
+    """Two blocked sources must both enter before either is allowed to return."""
+    entered: list[str] = []
+    release = asyncio.Event()
+
+    async def _barrier_fetch(_pool, butler_name, **_kwargs):
+        entered.append(butler_name)
+        if len(entered) == 2:
+            release.set()
+        await release.wait()
+        return []
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["alpha", "beta"]
+    mock_db.pool = MagicMock(side_effect=lambda name: MagicMock(name=name))
+    mock_db.credential_shared_pool = MagicMock(side_effect=KeyError)
+    mock_db.relation_observed_since_start = MagicMock(return_value=True)
+
+    with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _barrier_fetch):
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.1)
+
+    assert entered == ["alpha", "beta"]
+    assert "sources_degraded" not in response.meta.model_dump(exclude_none=True)
+
+
+async def test_inventory_timeout_omits_only_the_slow_source(monkeypatch):
+    """A timed-out source is named while healthy source data remains usable."""
+    never = asyncio.Event()
+    healthy_row = SystemSecret(
+        key="HEALTHY_KEY",
+        state="ok",
+        fingerprint="fingerprint",
+        butler="healthy",
+    )
+
+    async def _source_fetch(_pool, butler_name, **_kwargs):
+        if butler_name == "slow":
+            await never.wait()
+        return [healthy_row]
+
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_SOURCE_TIMEOUT_S",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_REQUEST_BUDGET_S",
+        0.05,
+        raising=False,
+    )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["slow", "healthy"]
+    mock_db.pool = MagicMock(side_effect=lambda name: MagicMock(name=name))
+    mock_db.credential_shared_pool = MagicMock(side_effect=KeyError)
+    mock_db.relation_observed_since_start = MagicMock(return_value=True)
+
+    with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _source_fetch):
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.2)
+
+    assert [secret.key for secret in response.data.system] == ["HEALTHY_KEY"]
+    assert response.meta.sources_degraded == ["slow"]
+    assert response.meta.model_dump()["failing_count"] == 0
+    assert response.meta.model_dump()["unverified_count"] == 0
+
+
+async def test_inventory_timeout_omits_shared_source_but_retains_butler_rows(monkeypatch):
+    """A slow shared bundle cannot hide a completed butler-source result."""
+    never = asyncio.Event()
+    healthy_row = SystemSecret(
+        key="HEALTHY_KEY",
+        state="ok",
+        fingerprint="fingerprint",
+        butler="healthy",
+    )
+
+    async def _source_fetch(_pool, butler_name, **_kwargs):
+        if butler_name == "shared-public":
+            await never.wait()
+        return [healthy_row]
+
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_SOURCE_TIMEOUT_S",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_REQUEST_BUDGET_S",
+        0.05,
+        raising=False,
+    )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["healthy"]
+    mock_db.pool = MagicMock(return_value=MagicMock(name="healthy"))
+    mock_db.credential_shared_pool = MagicMock(return_value=MagicMock(name="shared"))
+    mock_db.relation_observed_since_start = MagicMock(return_value=True)
+
+    with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _source_fetch):
+        response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.2)
+
+    assert [secret.key for secret in response.data.system] == ["HEALTHY_KEY"]
+    assert response.meta.sources_degraded == ["shared-public"]
+
+
+async def test_inventory_request_budget_does_not_wait_for_noncooperative_source(monkeypatch):
+    """The endpoint responds even if a cancelled source delays its cleanup."""
+    never = asyncio.Event()
+    cancellation_observed = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _noncooperative_fetch(_pool, _butler_name, **_kwargs):
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            cancellation_observed.set()
+            await release.wait()
+            raise
+
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_SOURCE_TIMEOUT_S",
+        1.0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "butlers.api.routers.secrets_v2._INVENTORY_REQUEST_BUDGET_S",
+        0.01,
+        raising=False,
+    )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["slow"]
+    mock_db.pool = MagicMock(return_value=MagicMock(name="slow"))
+    mock_db.credential_shared_pool = MagicMock(side_effect=KeyError)
+    mock_db.relation_observed_since_start = MagicMock(return_value=True)
+
+    try:
+        with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _noncooperative_fetch):
+            response = await asyncio.wait_for(get_inventory(identity=None, db=mock_db), timeout=0.5)
+
+        assert response.data.system == []
+        assert response.meta.sources_degraded == ["slow"]
+        await asyncio.wait_for(cancellation_observed.wait(), timeout=0.1)
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+
+
+async def test_inventory_request_cancellation_cancels_source_tasks():
+    """A client disconnect cancels outstanding source work before the route exits."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_fetch(_pool, _butler_name, **_kwargs):
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            cancelled.set()
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["slow"]
+    mock_db.pool = MagicMock(return_value=MagicMock(name="slow"))
+    mock_db.credential_shared_pool = MagicMock(side_effect=KeyError)
+    mock_db.relation_observed_since_start = MagicMock(return_value=True)
+
+    try:
+        with patch("butlers.api.routers.secrets_v2._fetch_system_secrets", _blocking_fetch):
+            request_task = asyncio.create_task(get_inventory(identity=None, db=mock_db))
+            await asyncio.wait_for(started.wait(), timeout=0.1)
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+
+        await asyncio.wait_for(cancelled.wait(), timeout=0.1)
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+
+
 def test_inventory_surfaces_sources_degraded_for_genuine_per_butler_failure():
     """One butler's schema drifts (UndefinedColumnError on an existing table)
     while another butler is fine: the healthy butler's rows still show up,
@@ -885,6 +1069,58 @@ def test_inventory_surfaces_sources_degraded_for_shared_pool_failure():
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["meta"]["sources_degraded"] == ["shared-public"]
+
+
+def test_inventory_omits_butler_rows_when_audit_evidence_fails():
+    """Unreadable audit history makes a populated butler source unavailable."""
+    audit_failure_sentinel = "sentinel-audit-source-failure"
+    mock_db = _make_db_manager(
+        butler_names=["finance"],
+        system_rows=[_make_system_row(key="FINANCE_API_KEY", value="finance-value")],
+    )
+    butler_pool = mock_db.pool("finance")
+    original_fetch = butler_pool.fetch.side_effect
+
+    async def _failing_audit_fetch(sql, *args):
+        if "audit_log" in sql:
+            raise RuntimeError(audit_failure_sentinel)
+        return await original_fetch(sql, *args)
+
+    butler_pool.fetch = AsyncMock(side_effect=_failing_audit_fetch)
+
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["system"] == []
+    assert body["meta"]["sources_degraded"] == ["finance"]
+    assert audit_failure_sentinel not in resp.text
+
+
+def test_inventory_omits_shared_rows_when_audit_evidence_fails():
+    """Unreadable audit history makes the full shared source unavailable."""
+    audit_failure_sentinel = "sentinel-shared-audit-source-failure"
+    mock_db = _make_db_manager(
+        butler_names=[],
+        shared_system_rows=[_make_system_row(key="SHARED_API_KEY", value="shared-value")],
+    )
+    shared_pool = mock_db.credential_shared_pool()
+    original_fetch = shared_pool.fetch.side_effect
+
+    async def _failing_audit_fetch(sql, *args):
+        if "audit_log" in sql:
+            raise RuntimeError(audit_failure_sentinel)
+        return await original_fetch(sql, *args)
+
+    shared_pool.fetch = AsyncMock(side_effect=_failing_audit_fetch)
+
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["system"] == []
+    assert body["meta"]["sources_degraded"] == ["shared-public"]
+    assert audit_failure_sentinel not in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -2750,10 +2986,21 @@ async def test_fetch_audit_bulk_returns_recent_rows_per_target_newest_first():
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=[newer, older, other])
 
-    result = await _fetch_audit_bulk(pool, ["u:google", "s:BUTLER_TELEGRAM_TOKEN"])
+    result = await _fetch_audit_bulk(
+        pool,
+        ["u:google", "s:BUTLER_TELEGRAM_TOKEN", "u:google"],
+    )
 
     assert [row["action"] for row in result["u:google"]] == ["rotated", "verified"]
     assert result["s:BUTLER_TELEGRAM_TOKEN"][0]["action"] == "set"
+
+    sql, targets, limit = pool.fetch.await_args.args
+    assert "CROSS JOIN LATERAL" in sql
+    assert "ORDER BY audit_row.ts DESC" in sql
+    assert "LIMIT $2" in sql
+    assert "ROW_NUMBER" not in sql
+    assert targets == ["u:google", "s:BUTLER_TELEGRAM_TOKEN"]
+    assert limit == 3
 
 
 async def test_fetch_audit_bulk_empty_when_no_history_or_table_missing():
