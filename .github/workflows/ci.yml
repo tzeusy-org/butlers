@@ -145,6 +145,29 @@ jobs:
       - name: Check archived change requirements reached the baseline
         run: python3 scripts/check_archived_requirements_landed.py
 
+  countable-tasks-guard:
+    # Fast, dependency-free gate (bu-h7igs): `openspec archive`'s incomplete-task
+    # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
+    # sections with per-task acceptance bullets -- richer than most checkbox files
+    # here, not lazier -- matches zero of them, so archive reports
+    # `Task status: No tasks`, cannot be incomplete, and archives unprompted. The
+    # defect is not the missing warning but that the gate's silence is
+    # indistinguishable from its pass: "archived with no task warning" reads as
+    # evidence the tasks were done. This fails on any unarchived change the gate
+    # cannot see, so the difference is restored before the change reaches archive.
+    # Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check every change's tasks.md is countable by the archive gate
+        run: python3 scripts/check_countable_tasks.py
+
   check:
     runs-on: ubuntu-latest
 
