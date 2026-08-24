@@ -6,16 +6,29 @@ verification-persistence surface --- plus the control plane built on it: the
 capability, the coordinator, Switchboard's private route, and the dedicated
 Dashboard/Scheduler client.
 
-It deliberately ships no production key mount, so the deployed route is
-fail-closed unavailable and the client signs nothing; the whole path is
-exercised only against isolated fixture keys.  Cutting Test, verify-all, and
-the scheduled sweep over to it belongs to a later leaf of the same change.
+Since bu-0uqgo.11 it also carries the production mount and the activation
+gate: the signer is mounted to the Dashboard alone, the verifier keyring to
+every process that must check a capability, and Model Test, verify-all, and
+the hourly sweep reach a runtime only through this plane.  Every signing path
+goes through :func:`activated_signer_snapshot`, so an image that still holds a
+dashboard-local probe signs nothing even with the mount present.
 
 See ``docs/operations/runtime-probe-control-keys.md`` for the operator contract.
 """
 
 from __future__ import annotations
 
+from butlers.core.runtime_probe_control.activation import (
+    DEFERRED_LOCAL_PROBE_MODULES,
+    GUARDED_MODULES,
+    LOCAL_PROBE_PRESENT_REASON,
+    LOCAL_PROBE_SYMBOLS,
+    SWITCHBOARD_CONTROL_PORT,
+    activated_signer_snapshot,
+    local_model_probe_callsites,
+    probe_client,
+    switchboard_control_base_url,
+)
 from butlers.core.runtime_probe_control.capability import (
     CALLERS,
     DEFAULT_LIFETIME,
@@ -88,8 +101,12 @@ __all__ = [
     "CONTROL_PATH",
     "CapabilityRejected",
     "DEFAULT_LIFETIME",
+    "DEFERRED_LOCAL_PROBE_MODULES",
     "GLOBAL_CONCURRENCY",
+    "GUARDED_MODULES",
     "HTTP_STATUS",
+    "LOCAL_PROBE_PRESENT_REASON",
+    "LOCAL_PROBE_SYMBOLS",
     "MAX_CAPABILITY_LIFETIME",
     "MAX_RETIREMENT_OVERLAP",
     "MIN_RETIREMENT_OVERLAP",
@@ -110,6 +127,7 @@ __all__ = [
     "RuntimeProbeCoordinator",
     "RuntimeProbeVerificationPersistence",
     "SIGNER_PATH",
+    "SWITCHBOARD_CONTROL_PORT",
     "SignerKey",
     "SignerSnapshot",
     "VERIFIER_KEYRING_PATH",
@@ -118,18 +136,22 @@ __all__ = [
     "VerifierKey",
     "VerifierKeyring",
     "VerifierSnapshot",
+    "activated_signer_snapshot",
     "build_runtime_probe_control_route",
     "build_runtime_probe_readiness_route",
     "load_signer",
+    "local_model_probe_callsites",
     "load_verifier_keyring",
     "match_signer_to_keyring",
     "nonce_digest",
     "parse_signer_document",
     "parse_verifier_keyring_document",
+    "probe_client",
     "read_signer_snapshot",
     "read_verifier_snapshot",
     "sign_capability",
     "signer_snapshot",
+    "switchboard_control_base_url",
     "verifier_snapshot",
     "verify_capability",
 ]

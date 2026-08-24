@@ -1,0 +1,4 @@
+{
+  "unprovisioned": "Intentionally not a signing key.",
+  "how_to_provision": "Set RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE to the provisioned document on the host; see docs/operations/runtime-probe-control-keys.md. The loader rejects this file on its field set, so the Dashboard signed client reports itself unavailable and signs nothing while it is still mounted."
+}

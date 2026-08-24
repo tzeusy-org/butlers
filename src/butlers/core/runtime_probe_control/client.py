@@ -6,11 +6,13 @@ There is no way to ask it for a different prompt, a different model, different
 runtime arguments, or a different audience, because those are the parameters an
 attacker who reached the dashboard would want.
 
-Fail-closed means what it says.  With no signer mounted --- which is the state
-of every deployment in this phase, since no production signer mount exists yet
+Fail-closed means what it says.  With no usable signer --- no mount, an
+unprovisioned placeholder, or an image the activation gate refuses to let sign
 --- :meth:`RuntimeProbeControlClient.probe` signs nothing, opens no connection,
 and returns :attr:`~ProbeStatus.UNAVAILABLE`.  It does not fall back to a
-bearer token, a shared secret, or a local adapter.
+bearer token, a shared secret, or a local adapter.  Callers reach their signer
+through :func:`butlers.core.runtime_probe_control.activation.probe_client`,
+never by reading the mount themselves.
 
 A mounted signer is necessary but not sufficient.  REQ-core-credentials-002
 lets the canonical launcher start Dashboard before all-butlers, so this client

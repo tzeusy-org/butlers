@@ -16,7 +16,10 @@ stale, closing the loop the manual button alone left open.
 Design
 ------
 - Reuses ``run_verify_all_models`` directly — no parallel verification
-  implementation to drift from the manual endpoint's behavior. The manual
+  implementation to drift from the manual endpoint's behavior. Since
+  bu-0uqgo.11 that core signs a runtime-probe capability and asks Switchboard
+  to run the probe; this process builds no runtime adapter and writes no
+  verification evidence of its own. The manual
   endpoint's once-per-minute rate limit is an HTTP-surface concern specific
   to that route; this job calls the shared core function directly on its own
   (much coarser) hourly cadence, so the two never fight over the same
@@ -38,7 +41,6 @@ import asyncio
 import logging
 
 from butlers.api.db import DatabaseManager
-from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +50,17 @@ DEFAULT_MODEL_VERIFY_INTERVAL_S = 3600.0
 
 _AUDIT_ACTOR = "model_verify_sweep"
 
+#: The caller class this sweep signs its runtime-probe capabilities as.  It is
+#: the *only* internal scheduled caller of the control plane (bu-0uqgo.11); the
+#: capability grammar accepts exactly ``dashboard`` and ``scheduler``, and the
+#: dashboard's owner-initiated routes own the other one.
+_CALLER = "scheduler"
+
 
 async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     """Run one verify-all sweep against the shared credential pool.
 
-    Returns a summary dict ``{total, ok, failed, skipped}``, or ``None`` if no
+    Returns a summary dict ``{total, ok, failed, unavailable}``, or ``None`` if no
     shared pool is configured (mirrors ``run_secrets_lifecycle_check``'s
     no-pool short-circuit). Never raises — a failure inside the verification
     core is logged and swallowed so the loop is never killed by one bad tick.
@@ -68,17 +76,12 @@ async def run_model_verify_sweep(db: DatabaseManager) -> dict[str, int] | None:
     # pattern used throughout butlers.core.*_attention modules).
     from butlers.api.routers.model_settings import run_verify_all_models
 
-    codex_auth_authority = CredentialStore(pool, system_global_pool=pool)
-    result = await run_verify_all_models(
-        pool,
-        audit_actor=_AUDIT_ACTOR,
-        codex_auth_authority=codex_auth_authority,
-    )
+    result = await run_verify_all_models(pool, audit_actor=_AUDIT_ACTOR, caller=_CALLER)
     return {
         "total": result.total,
         "ok": result.ok,
         "failed": result.failed,
-        "skipped": result.skipped,
+        "unavailable": result.unavailable,
     }
 
 

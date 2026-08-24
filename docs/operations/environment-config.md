@@ -51,6 +51,23 @@ secrets/connectors/gmail                  # Gmail connector credentials
 
 Missing files are tolerated -- the corresponding services will fail to start without their credentials, but other services remain unaffected. The `secrets/` directory is entirely gitignored.
 
+### Runtime-probe control keys
+
+Two deployment documents sit outside the credential resolution order below, because they are
+mounted files rather than credentials:
+
+```
+RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE   # host path -> /run/secrets/runtime_probe_control_signing_key (Dashboard only)
+RUNTIME_PROBE_CONTROL_VERIFIERS_FILE     # host path -> /run/secrets/runtime_probe_control_verifiers (Dashboard + all-butlers)
+```
+
+Both variables name a **host path**, not a value; Compose mounts the file. Leave them unset and the
+stack still boots on tracked placeholders that every parser rejects, which closes the control plane
+instead of half-opening it. There is no environment-variable, database, or Secrets-API fallback for
+either document --- `RUNTIME_PROBE_CONTROL_SIGNING_KEY` is a reserved name in the Secrets API and
+every mutation of it is refused. See
+[Runtime-Probe Control Keys](runtime-probe-control-keys.md).
+
 ## Credential Resolution Order
 
 Butlers uses a DB-first credential resolution model:

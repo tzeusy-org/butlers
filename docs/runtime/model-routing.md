@@ -49,6 +49,27 @@ first boot, read through the 30s TTL cache in `RuntimeConfigAccessor`
 and require a daemon restart to take effect. Do not look for model settings on the runtime-config
 surface, and do not add operational limits to the catalog.
 
+### Verification evidence is not routing evidence
+
+The catalog also carries four verification columns, and they answer a narrower question than
+anything else on this page. They are written by exactly one thing: a runtime probe that Switchboard
+ran under a signed control capability, on the owner's `Test` / verify-all action or the scheduled
+sweep (`src/butlers/jobs/model_verify.py`). Nothing else writes them, and the `SECURITY DEFINER`
+function that does cannot reach `enabled`, `priority`, or breaker state.
+
+So keep three signals apart:
+
+| Signal | Says | Does not say |
+|---|---|---|
+| Verification columns | this entry answered a fixed probe prompt at that time | that routed traffic is healthy |
+| `model_dispatch_attempts` | what real routed dispatch did | anything about probes --- a probe never writes an attempt, a session, or routed provenance |
+| Breaker state | routing's own health judgement | anything a probe can change --- a green probe never closes an open breaker |
+
+A failed probe is also not the same as a control-plane failure. `401`, `409`, `429`, `503`, and
+`504` from the control plane are statements about the plane, not the model; they write no
+verification evidence and the Models tab renders them as "could not be probed". See
+[Runtime-Probe Control Keys](../operations/runtime-probe-control-keys.md).
+
 ## Per-Butler Overrides
 
 The `public.butler_model_overrides` table allows per-butler customization without duplicating catalog entries. An override row references a catalog entry and can remap `enabled`, `priority`, and `complexity_tier`. Overrides use `COALESCE` semantics: when an override field is NULL, the catalog value is used.

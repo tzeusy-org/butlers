@@ -259,6 +259,18 @@ services:
       # there is no env_file here, so only vars listed explicitly reach the
       # container. Point it at an off-host push/heartbeat monitor URL.
       EXTERNAL_DEADMAN_URL: ${EXTERNAL_DEADMAN_URL:-}
+    # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
+    # side, so it is the only service that receives the private signer.  The
+    # keyring below is public and shared with every verifying process; the
+    # signer is not shared with anything.  Both are read once at process
+    # start, so rotation is a restart, never a live file swap.
+    secrets:
+      - source: runtime_probe_control_signing_key
+        target: runtime_probe_control_signing_key
+        mode: 0400
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -645,6 +657,12 @@ services:
       # butlers.jobs.decision_review's module docstring for why this is the
       # only path from beads issue data into the running system today.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+    # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
+    # here, so all-butlers receives the public keyring and deliberately declares
+    # no `secrets:` at all -- there is no private file for this stack to hold.
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
       interval: 5s
@@ -780,6 +798,12 @@ services:
       # bu-ckkpz.4: see butlers-up's own volumes block above for why only
       # this one file is mounted, never the whole .beads/ dir.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+    # bu-0uqgo.11 (REQ-core-credentials-002): Switchboard verifies capabilities
+    # here, so all-butlers receives the public keyring and deliberately declares
+    # no `secrets:` at all -- there is no private file for this stack to hold.
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
     networks:
       db:
       backend:
@@ -832,6 +856,18 @@ services:
       - butlers_backups:/backups:ro
       # bu-hmdqz.6: see dashboard-api's own volumes block above for why.
       - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
+    # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
+    # side, so it is the only service that receives the private signer.  The
+    # keyring below is public and shared with every verifying process; the
+    # signer is not shared with anything.  Both are read once at process
+    # start, so rotation is a restart, never a live file swap.
+    secrets:
+      - source: runtime_probe_control_signing_key
+        target: runtime_probe_control_signing_key
+        mode: 0400
+    configs:
+      - source: runtime_probe_control_verifiers
+        target: /run/secrets/runtime_probe_control_verifiers
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s
@@ -857,6 +893,27 @@ services:
           - dashboard-api
       egress:
     restart: unless-stopped
+
+# ── Runtime-probe control keys ──────────────────────────────────────────
+# REQ-core-credentials-002.  A host path is configuration, not key material;
+# neither document is ever committed.  Both default to a tracked placeholder
+# that is deliberately not a key, so the canonical launcher still performs one
+# ordinary full-stack up on a machine that has not provisioned them -- and the
+# plane stays closed while it has not: the signer placeholder is rejected on
+# its mode and its field set, the keyring placeholder on its field set, so
+# Dashboard signs nothing and Switchboard answers 503/unavailable.
+# Provisioning and rotation: docs/operations/runtime-probe-control-keys.md.
+
+secrets:
+  runtime_probe_control_signing_key:
+    file: "${RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE:-./deploy/runtime-probe-control/signing-key-unprovisioned.json}"
+
+configs:
+  # Public keys only. Every verifying process reads this; nobody but the
+  # provisioning operator may write it, since whoever writes it chooses which
+  # keys Switchboard will accept.
+  runtime_probe_control_verifiers:
+    file: "${RUNTIME_PROBE_CONTROL_VERIFIERS_FILE:-./deploy/runtime-probe-control/verifiers-unprovisioned.json}"
 
 # ── Volumes ─────────────────────────────────────────────────────────────
 

@@ -31,6 +31,19 @@ Additional toggles may be added here as the hardening cycle progresses. Each
 new toggle will follow the same pattern: safe-in-dev default, explicit
 opt-in for hardened.
 
+### What Posture Does Not Gate: Runtime-Probe Control
+
+The runtime-probe control keys are **not** posture-gated, and deliberately so. Both postures mount
+the same documents the same way — the signing key into Dashboard as a secret, the verifier keyring
+into Dashboard and all-butlers as a config — and both fail closed when those documents are absent
+or unprovisioned. There is no dev-convenience fallback that lets an unsigned or shared-bearer probe
+through, because the convenient version of that path is the one the requirement exists to remove.
+
+The dev-versus-production difference is only *which host files you point at*
+(`RUNTIME_PROBE_CONTROL_SIGNING_KEY_FILE`, `RUNTIME_PROBE_CONTROL_VERIFIERS_FILE`); a machine that
+points at neither runs with the plane closed and model verification reporting entries as
+*unavailable*. See [Runtime-Probe Control Keys](runtime-probe-control-keys.md).
+
 ## Opting Into Dev Posture
 
 Dev posture is the default. No action required. When running the observability

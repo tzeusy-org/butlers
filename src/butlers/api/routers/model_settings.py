@@ -16,9 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -37,9 +36,8 @@ from butlers.core.model_routing import (
     get_routing_scores,
     resolve_model,
 )
-from butlers.core.runtimes.base import get_adapter
-from butlers.core.spawner import resolve_provider_config
-from butlers.credential_store import CredentialStore
+from butlers.core.runtime_probe_control.activation import probe_client
+from butlers.core.runtime_probe_control.coordinator import HTTP_STATUS, ProbeResult, ProbeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -118,13 +116,20 @@ class ModelPriorityDelta(BaseModel):
 
 
 class VerifyAllResult(BaseModel):
-    """Response from POST /api/settings/models/verify-all."""
+    """Response from POST /api/settings/models/verify-all.
+
+    ``failed`` counts models that were probed and did not answer.  Models the
+    control plane could not probe at all land in ``unavailable`` instead, and
+    keep whatever verification evidence they already had --- an outage is not
+    a verdict about a model.
+    """
 
     accepted: bool
     total: int = 0
     ok: int = 0
     failed: int = 0
     skipped: int = 0
+    unavailable: int = 0
 
 
 class FailureEntry(BaseModel):
@@ -269,10 +274,13 @@ class TokenUsageResponse(BaseModel):
 
 
 class ModelTestResult(BaseModel):
-    """Response from the model test endpoint."""
+    """Response from the model test endpoint.
+
+    Carries no provider reply text: the probe runs on Switchboard and the
+    control plane returns a verdict and a latency, never the model's words.
+    """
 
     success: bool
-    reply: str | None = None
     error: str | None = None
     duration_ms: int = 0
 
@@ -681,55 +689,56 @@ async def update_model_priority(
 # Shared verify-all core (bu-hmdqz.2) — used by both the manual POST endpoint
 # and the hourly automated sweep (butlers.jobs.model_verify), so the two can
 # never drift in what "verified" means or how the result is persisted.
+#
+# Since bu-0uqgo.11 neither of them builds a runtime adapter.  A verification
+# is a signed request to Switchboard's private runtime-probe control plane,
+# and the *coordinator* --- not this process --- writes the catalog's
+# verification columns through the migration-owned definer function.  That is
+# what makes REQ-core-credentials-002's central promise checkable: a Dashboard
+# that holds the private signer holds no runtime child, and a control-plane
+# outage cannot write a model failure, because this module has no way to write
+# one at all.
 # ---------------------------------------------------------------------------
 
-# Truncate stored error text the same way error_message is truncated on
-# public.model_dispatch_attempts rows (_write_dispatch_attempt in spawner.py)
-# — long tracebacks/CLI dumps should not bloat the catalog row indefinitely.
-_VERIFY_ERROR_TRUNCATE_LEN = 4096
+#: The one caller class the dashboard's owner-initiated paths sign as.  The
+#: hourly sweep signs as ``scheduler`` (``butlers.jobs.model_verify``); the
+#: capability grammar accepts no other value.
+DASHBOARD_CALLER = "dashboard"
 
 
-async def _create_verification_adapter(
-    pool: asyncpg.Pool,
-    runtime_type: str,
-    model_id: str,
-    *,
-    codex_auth_authority: CredentialStore | None,
-) -> Any:
-    """Construct a verification adapter without inferring Codex authority.
+def _probe_client(caller: str) -> Any:
+    """The signed control client for *caller*.
 
-    Generic provider configuration remains unchanged for every non-Codex
-    runtime. Codex deliberately receives only the explicitly supplied
-    authority, never the catalog/model-resolution pool by implication.
+    Indirected through a module-level function purely so a test can substitute
+    a scripted client without reaching into the activation cache.
     """
-    adapter_cls = get_adapter(runtime_type)
-    provider_config = await resolve_provider_config(pool, model_id)
-    if runtime_type == "codex":
-        return adapter_cls(credential_store=codex_auth_authority)
-    try:
-        return adapter_cls(provider_config=provider_config)
-    except TypeError:
-        return adapter_cls()
+    return probe_client(caller)
 
 
 async def run_verify_all_models(
     pool: asyncpg.Pool,
     *,
     audit_actor: str = "owner",
-    codex_auth_authority: CredentialStore | None = None,
+    caller: str = DASHBOARD_CALLER,
 ) -> VerifyAllResult:
-    """Issue a 1-token completion against every enabled model in parallel.
+    """Probe every enabled model in parallel through the signed control plane.
 
-    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``. Writes
-    ``last_verified_at``, ``last_verified_latency_ms``, ``last_verified_ok``,
-    and ``last_verified_error`` (cleared to ``NULL`` on success, populated
-    with the truncated exception text on failure) for each model. A Codex
-    entry is skipped without a catalog write when no explicit system-global
-    authority is supplied; infrastructure absence must not mark it failed and
-    exclude it from routing. Calls
-    ``audit.append("models.verify_all", actor=audit_actor)`` once per run so
-    the audit trail distinguishes an owner-initiated verification from the
-    hourly automated sweep.
+    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``, matching the
+    coordinator's own global limit so a full sweep does not shed its own
+    requests.  Each entry's outcome falls into exactly one bucket:
+
+    * ``ok`` --- the probe ran and the model answered;
+    * ``failed`` --- the probe ran and the model did not;
+    * ``unavailable`` --- the control plane could not run a probe at all
+      (no signer, no readiness, busy, timed out, replayed, or refused);
+    * ``skipped`` --- nothing to probe.
+
+    Only the first two are evidence about a model, and only the coordinator
+    writes them.  Everything else leaves the catalog's verification history
+    exactly as it was, which is the difference between "this model is broken"
+    and "we could not ask".  Calls ``audit.append("models.verify_all",
+    actor=audit_actor)`` once per run so the trail distinguishes an
+    owner-initiated verification from the hourly automated sweep.
 
     Does NOT enforce the manual endpoint's once-per-minute rate limit — that
     is a caller concern specific to the HTTP surface (``verify_all_models``
@@ -737,7 +746,7 @@ async def run_verify_all_models(
     """
     rows = await pool.fetch(
         """
-        SELECT id, runtime_type, model_id, extra_args
+        SELECT id
         FROM public.model_catalog
         WHERE enabled = true
         """
@@ -747,100 +756,27 @@ async def run_verify_all_models(
         await audit.append(pool, audit_actor, "models.verify_all", result="success")
         return VerifyAllResult(accepted=True, total=0, ok=0, failed=0, skipped=0)
 
+    client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
-    async def _verify_one(row: Any) -> bool | None:
-        entry_id = row["id"]
-        runtime_type = row["runtime_type"]
-        model_id = row["model_id"]
-        extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
-
-        if runtime_type == "codex" and (
-            codex_auth_authority is None or not codex_auth_authority.has_system_global_authority
-        ):
-            logger.warning(
-                "verify-all: Codex model %s skipped because system-global authority is unavailable",
-                model_id,
-            )
-            return None
-
+    async def _verify_one(row: Any) -> ProbeResult:
         async with sem:
-            t0 = time.monotonic()
-            ok = False
-            error_text: str | None = None
-            try:
-                adapter = await _create_verification_adapter(
-                    pool,
-                    runtime_type,
-                    model_id,
-                    codex_auth_authority=codex_auth_authority,
-                )
+            return await client.probe(row["id"])
 
-                result_text, _, _ = await adapter.invoke(
-                    prompt="Reply with exactly: OK",
-                    system_prompt="You are a test assistant. Reply concisely.",
-                    mcp_servers={},
-                    env=dict(os.environ),
-                    max_turns=1,
-                    model=model_id,
-                    runtime_args=extra_args or None,
-                    timeout=30,
-                )
-                ok = bool(result_text and result_text.strip())
-                if not ok:
-                    error_text = "verification returned an empty response"
-            except Exception as exc:
-                if runtime_type == "codex":
-                    logger.warning(
-                        "verify-all: Codex model verification failed safely (model_id=%s)",
-                        model_id,
-                    )
-                    error_text = "Codex verification failed"
-                else:
-                    logger.warning(
-                        "verify-all: model %s/%s failed: %s", runtime_type, model_id, exc
-                    )
-                    error_text = f"{type(exc).__name__}: {exc}"[:_VERIFY_ERROR_TRUNCATE_LEN]
-                ok = False
+    results = await asyncio.gather(*[_verify_one(row) for row in rows])
 
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            ts = datetime.now(UTC)
-
-            try:
-                await pool.execute(
-                    """
-                    UPDATE public.model_catalog
-                       SET last_verified_at        = $1,
-                           last_verified_latency_ms = $2,
-                           last_verified_ok         = $3,
-                           last_verified_error      = $4,
-                           updated_at               = now()
-                     WHERE id = $5
-                    """,
-                    ts,
-                    latency_ms,
-                    ok,
-                    error_text,
-                    entry_id,
-                )
-            except Exception as exc:
-                logger.warning("verify-all: failed to persist result for %s: %s", entry_id, exc)
-
-            return ok
-
-    results = await asyncio.gather(*[_verify_one(r) for r in rows], return_exceptions=False)
-
-    ok_count = sum(1 for r in results if r is True)
-    failed_count = sum(1 for r in results if r is False)
-    skipped_count = sum(1 for r in results if r is None)
+    completed = [result for result in results if result.status is ProbeStatus.COMPLETED]
+    ok_count = sum(1 for result in completed if result.ok)
+    failed_count = len(completed) - ok_count
+    unavailable_count = len(results) - len(completed)
 
     audit_result = "error" if failed_count else "success"
     audit_error = (
         f"{failed_count} of {len(results)} model verifications failed" if failed_count else None
     )
     audit_note = (
-        f"{skipped_count} Codex verification(s) skipped: system-global authority unavailable"
-        if skipped_count
+        f"{unavailable_count} verification(s) could not run: runtime-probe control unavailable"
+        if unavailable_count
         else None
     )
     await audit.append(
@@ -857,7 +793,8 @@ async def run_verify_all_models(
         total=len(results),
         ok=ok_count,
         failed=failed_count,
-        skipped=skipped_count,
+        skipped=0,
+        unavailable=unavailable_count,
     )
 
 
@@ -887,12 +824,7 @@ async def verify_all_models(
     _verify_all_last_run = now
 
     pool = _shared_pool(db)
-    codex_auth_authority = CredentialStore(pool, system_global_pool=pool)
-    result = await run_verify_all_models(
-        pool,
-        audit_actor="owner",
-        codex_auth_authority=codex_auth_authority,
-    )
+    result = await run_verify_all_models(pool, audit_actor="owner")
     return ApiResponse[VerifyAllResult](data=result)
 
 
@@ -1570,6 +1502,20 @@ async def resolve_model_preview(
 # POST /api/settings/models/{entry_id}/test — test a model config
 # ---------------------------------------------------------------------------
 
+#: Every control outcome that is not a completed probe keeps its own HTTP
+#: status on this route, reusing the control plane's own mapping so the two
+#: cannot drift.  Collapsing any of them into a model failure would show an
+#: outage to the operator as a broken model --- and, worse, a 200 with
+#: ``success: false`` would read as verified evidence that this route never
+#: gathered.
+_TEST_UNAVAILABLE_DETAIL = {
+    ProbeStatus.UNAUTHORIZED: "runtime-probe control rejected this request",
+    ProbeStatus.REPLAY: "this verification capability was already used",
+    ProbeStatus.BUSY: "runtime-probe control is at capacity — retry shortly",
+    ProbeStatus.UNAVAILABLE: "runtime-probe control is unavailable",
+    ProbeStatus.TIMEOUT: "the model did not answer within the probe deadline",
+}
+
 
 @catalog_router.post(
     "/{entry_id}/test",
@@ -1579,118 +1525,46 @@ async def test_catalog_entry(
     entry_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ModelTestResult]:
-    """Spawn a minimal LLM session to verify the model config works.
+    """Probe one catalog entry through the signed runtime-probe control plane.
 
-    Sends a simple prompt with no MCP servers and returns the reply.
+    The probe is a one-turn completion with no MCP servers, run by Switchboard
+    inside the shared runtime home.  This process builds no adapter, spawns no
+    child, and writes no verification evidence; it only asks, and reports what
+    came back.
+
+    Provider text never crosses the control plane, so a successful probe
+    returns latency rather than the model's words.  That is deliberate: a raw
+    provider reply in an API payload is exactly the disclosure this plane was
+    built to remove.
     """
     pool = _shared_pool(db)
-    row = await pool.fetchrow(
-        """
-        SELECT runtime_type, model_id, extra_args
-        FROM public.model_catalog
-        WHERE id = $1
-        """,
+    exists = await pool.fetchval(
+        "SELECT 1 FROM public.model_catalog WHERE id = $1",
         entry_id,
     )
-    if row is None:
+    if not exists:
         raise HTTPException(status_code=404, detail="Catalog entry not found")
 
-    runtime_type = row["runtime_type"]
-    model_id = row["model_id"]
-    extra_args = _coerce_extra_args(_row_value(row, "extra_args"))
-    codex_auth_authority = (
-        CredentialStore(pool, system_global_pool=pool) if runtime_type == "codex" else None
+    result = await _probe_client(DASHBOARD_CALLER).probe(entry_id)
+
+    if result.status is not ProbeStatus.COMPLETED:
+        raise HTTPException(
+            status_code=HTTP_STATUS[result.status],
+            detail=_TEST_UNAVAILABLE_DETAIL[result.status],
+        )
+
+    duration_ms = result.latency_ms or 0
+    if result.ok:
+        return ApiResponse[ModelTestResult](
+            data=ModelTestResult(success=True, duration_ms=duration_ms)
+        )
+    return ApiResponse[ModelTestResult](
+        data=ModelTestResult(
+            success=False,
+            error="the model did not complete the verification probe",
+            duration_ms=duration_ms,
+        )
     )
-
-    try:
-        adapter = await _create_verification_adapter(
-            pool,
-            runtime_type,
-            model_id,
-            codex_auth_authority=codex_auth_authority,
-        )
-    except ValueError as exc:
-        return ApiResponse[ModelTestResult](data=ModelTestResult(success=False, error=str(exc)))
-
-    t0 = time.monotonic()
-    try:
-        result_text, _, _ = await adapter.invoke(
-            prompt="Reply with exactly: OK",
-            system_prompt="You are a test assistant. Reply concisely.",
-            mcp_servers={},
-            env=dict(os.environ),
-            max_turns=1,
-            model=model_id,
-            runtime_args=extra_args or None,
-            timeout=30,
-        )
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        if not result_text or not result_text.strip():
-            if runtime_type == "codex":
-                error_msg = "Codex model returned an empty response"
-                logger.warning("Model test empty response for Codex model %s", model_id)
-                return ApiResponse[ModelTestResult](
-                    data=ModelTestResult(
-                        success=False,
-                        error=error_msg,
-                        duration_ms=duration_ms,
-                    )
-                )
-            # Surface process-level diagnostics for subprocess-based adapters
-            proc_info = getattr(adapter, "last_process_info", None)
-            stderr_hint = ""
-            if isinstance(proc_info, dict):
-                stderr_raw = proc_info.get("stderr", "")
-                exit_code = proc_info.get("exit_code")
-                if stderr_raw:
-                    stderr_hint = f" stderr: {stderr_raw[:1000]}"
-                if exit_code and exit_code != 0:
-                    stderr_hint = f" (exit code {exit_code}){stderr_hint}"
-            error_msg = f"Model returned an empty response{stderr_hint}"
-            logger.warning(
-                "Model test empty response for %s/%s: %s", runtime_type, model_id, error_msg
-            )
-            return ApiResponse[ModelTestResult](
-                data=ModelTestResult(
-                    success=False,
-                    error=error_msg,
-                    duration_ms=duration_ms,
-                )
-            )
-        return ApiResponse[ModelTestResult](
-            data=ModelTestResult(
-                success=True,
-                reply=result_text.strip(),
-                duration_ms=duration_ms,
-            )
-        )
-    except Exception as exc:
-        duration_ms = int((time.monotonic() - t0) * 1000)
-        if runtime_type == "codex":
-            logger.warning("Model test failed safely for Codex model %s", model_id)
-            return ApiResponse[ModelTestResult](
-                data=ModelTestResult(
-                    success=False,
-                    error="Codex model verification failed.",
-                    duration_ms=duration_ms,
-                )
-            )
-        proc_info = getattr(adapter, "last_process_info", None)
-        stderr_hint = ""
-        if isinstance(proc_info, dict):
-            stderr_raw = proc_info.get("stderr", "")
-            if stderr_raw:
-                stderr_hint = f" | stderr: {stderr_raw[:1000]}"
-        logger.warning(
-            "Model test failed for %s/%s: %s%s", runtime_type, model_id, exc, stderr_hint
-        )
-        return ApiResponse[ModelTestResult](
-            data=ModelTestResult(
-                success=False,
-                error=f"{exc}{stderr_hint}",
-                duration_ms=duration_ms,
-            )
-        )
 
 
 # ---------------------------------------------------------------------------
