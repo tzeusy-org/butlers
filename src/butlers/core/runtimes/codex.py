@@ -31,10 +31,10 @@ import pwd
 import re
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
@@ -1581,6 +1581,9 @@ class CodexAdapter(RuntimeAdapter):
             credential_store=self._credential_store,
             butler_name=self._butler_name,
         )
+
+    #: The CLI receives the butler's MCP server config and executes its tools.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
 
     @property
     def binary_name(self) -> str:

@@ -27,9 +27,10 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -262,6 +263,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     """
 
     supports_resume = True
+
+    #: The CLI receives the butler's MCP server config and executes its tools.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
 
     def __init__(
         self,

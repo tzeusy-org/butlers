@@ -24,8 +24,9 @@ import asyncio
 import json
 import logging
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -225,6 +226,9 @@ class GeminiAdapter(RuntimeAdapter):
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
         return GeminiAdapter(gemini_binary=self._gemini_binary)
+
+    #: The CLI receives the butler's MCP server config and executes its tools.
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
 
     @property
     def binary_name(self) -> str:

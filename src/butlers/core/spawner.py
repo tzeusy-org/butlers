@@ -57,6 +57,7 @@ from butlers.core.dashboard_turns import (
     register_session_and_check_cancel,
     release_invoke,
 )
+from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.dispatch_outcomes import record_dispatch_attempt
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.logging import resolve_log_root
@@ -1289,10 +1290,24 @@ class Spawner:
         # fold's quota_ok data applies to the pre-rule candidate, not the rule's
         # target).
         _initial_quota_confirmed = False
+        # Dispatch intent (bu-6jv4m.7): what this particular spawn actually needs from a
+        # model, derived deterministically from the trigger source and complexity -- no
+        # LLM, no prompt content. Its load-bearing job here is capability fit: every
+        # trigger source except ``healing``/``qa`` gets MCP tool wiring below, and a
+        # runtime that cannot accept tools (``ApiAdapter`` raises on non-empty
+        # ``mcp_servers``) must be disqualified during resolution rather than at invoke
+        # time, when the session has already been created and the fallback is a failure.
+        dispatch_intent = derive_dispatch_intent(
+            trigger_source, complexity, deadline_s=timeout_override
+        )
         if self._pool is not None:
             try:
                 catalog_result = await resolve_model_with_effective_tier(
-                    self._pool, self._config.name, complexity, quota_aware=True
+                    self._pool,
+                    self._config.name,
+                    complexity,
+                    quota_aware=True,
+                    intent=dispatch_intent,
                 )
                 _initial_quota_confirmed = catalog_result is not None
             except TierQuotaExhausted as _quota_exc:
