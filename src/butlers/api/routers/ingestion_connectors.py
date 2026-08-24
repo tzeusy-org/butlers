@@ -50,6 +50,21 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
+from butlers.connectors.registry_roles import (
+    CHECKPOINT as _ROLE_CHECKPOINT,
+)
+from butlers.connectors.registry_roles import (
+    RUNTIME_INSTANCE as _ROLE_RUNTIME_INSTANCE,
+)
+from butlers.connectors.registry_roles import (
+    UNCLASSIFIED_LIVENESS as _LIVENESS_UNCLASSIFIED,
+)
+from butlers.connectors.registry_roles import (
+    UNKNOWN as _ROLE_UNKNOWN,
+)
+from butlers.connectors.registry_roles import (
+    normalize_operational_role as _normalize_role,
+)
 from butlers.modules.approvals.command_contracts import (
     CONNECTOR_DISCONNECT_COMMAND,
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
@@ -107,6 +122,105 @@ def _owntracks_cadence_warning(point_count: int) -> str:
     )
 
 
+def _partition_by_operational_role(
+    rows: list[Any] | Any,
+) -> tuple[list[Any], list[Any]]:
+    """Split registry rows into runtime-authoritative rows and storage rows.
+
+    ``connector_registry`` holds two kinds of record (bu-6jv4m.11, sw_031). The
+    first return value is every row that carries runtime authority — the
+    executable ``runtime_instance`` processes plus any ``unknown`` row, which is
+    kept visible precisely so an unclassified record is investigated rather than
+    silently dropped. The second is the ``checkpoint`` rows: persisted cursors
+    belonging to a parent instance, with no heartbeat and therefore no liveness
+    or health authority of their own.
+
+    The split reads the persisted ``operational_role`` column. It never inspects
+    the opaque ``endpoint_identity`` string, and never re-derives the role from
+    which columns happen to be NULL.
+    """
+    roster_rows: list[Any] = []
+    checkpoint_rows: list[Any] = []
+    for r in rows:
+        if _normalize_role(r["operational_role"]) == _ROLE_CHECKPOINT:
+            checkpoint_rows.append(r)
+        else:
+            roster_rows.append(r)
+    return roster_rows, checkpoint_rows
+
+
+def _row_liveness(row: Any) -> str:
+    """Liveness for one registry row, honouring its persisted operational role.
+
+    An ``unknown`` row reports :data:`_LIVENESS_UNCLASSIFIED` rather than a
+    heartbeat-derived verdict: nothing has claimed the row as a process, so
+    there is no heartbeat contract to measure it against and calling it
+    ``offline`` (or, worse, letting it fall through to a healthy read) would be
+    an inference. Runtime instances keep the ordinary heartbeat-derived
+    online/stale/offline verdict.
+    """
+    if _normalize_role(row["operational_role"]) == _ROLE_UNKNOWN:
+        return _LIVENESS_UNCLASSIFIED
+    return _liveness(row["last_heartbeat_at"])
+
+
+def _checkpoint_record(row: Any) -> dict[str, Any]:
+    """Describe one storage-only checkpoint row for display under its parent.
+
+    ``label`` is the part of the cursor key that its parent identity does not
+    already account for — for Google Health, the ``<account_uuid>:<resource>``
+    tail that names which stream this cursor tracks. When no parent is recorded,
+    the label falls back to the full identity rather than inventing a shorter
+    name for a record whose owner is unknown.
+    """
+    parent = row["parent_endpoint_identity"]
+    identity = row["endpoint_identity"]
+    prefix = f"{parent}:" if parent else None
+    label = identity[len(prefix) :] if prefix and identity.startswith(prefix) else identity
+    return {
+        "connector_type": row["connector_type"],
+        "endpoint_identity": identity,
+        "parent_endpoint_identity": parent,
+        "label": label,
+        "checkpoint_cursor": row["checkpoint_cursor"],
+        "checkpoint_updated_at": (
+            row["checkpoint_updated_at"].isoformat() if row["checkpoint_updated_at"] else None
+        ),
+        "archived": row["archived_at"] is not None,
+    }
+
+
+def _group_checkpoints(
+    checkpoint_rows: list[Any] | Any,
+    roster_keys: set[tuple[str, str]],
+) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Nest checkpoint records under their parent runtime instance.
+
+    Returns ``(by_parent, unparented)``. A checkpoint whose recorded parent is
+    not in ``roster_keys`` — no parent stored, or a parent whose registry row is
+    gone — lands in ``unparented`` instead of being dropped: an orphaned cursor
+    is a real condition an operator should be able to see, and hiding it would
+    trade one invisibility bug for another.
+
+    Records are grouped per ``(connector_type, parent_endpoint_identity)``, so
+    two accounts of the same connector type never collect each other's cursors.
+    """
+    by_parent: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    unparented: list[dict[str, Any]] = []
+    for r in checkpoint_rows:
+        record = _checkpoint_record(r)
+        parent = record["parent_endpoint_identity"]
+        key = (record["connector_type"], parent)
+        if parent is not None and key in roster_keys:
+            by_parent.setdefault(key, []).append(record)
+        else:
+            unparented.append(record)
+    for records in by_parent.values():
+        records.sort(key=lambda rec: rec["label"])
+    unparented.sort(key=lambda rec: (rec["connector_type"], rec["endpoint_identity"]))
+    return by_parent, unparented
+
+
 def _online_identities_by_type(
     rows: list[Any] | Any,
 ) -> dict[str, set[str]]:
@@ -114,13 +228,18 @@ def _online_identities_by_type(
 
     Used as the "newer online sibling" test for the archive review queue
     (bu-u19yv). An archived identity never counts as a live sibling — archiving
-    it must not, in turn, make its offline peers look archivable.
+    it must not, in turn, make its offline peers look archivable. Neither does a
+    row that is not a ``runtime_instance``: only an executable process can be a
+    live sibling, so storage and unclassified rows are skipped (bu-6jv4m.11).
 
     ``rows`` are registry rows (mappings) with ``connector_type``,
-    ``endpoint_identity``, ``archived_at`` and ``last_heartbeat_at`` keys.
+    ``endpoint_identity``, ``archived_at``, ``last_heartbeat_at`` and
+    ``operational_role`` keys.
     """
     by_type: dict[str, set[str]] = {}
     for r in rows:
+        if _normalize_role(r["operational_role"]) != _ROLE_RUNTIME_INSTANCE:
+            continue
         if r["archived_at"] is None and _liveness(r["last_heartbeat_at"]) == "online":
             by_type.setdefault(r["connector_type"], set()).add(r["endpoint_identity"])
     return by_type
@@ -266,6 +385,26 @@ async def list_connector_summaries_with_aggregates(
     DB queries that can independently fail (``hourly_events_available``,
     ``device_liveness_available`` below).
 
+    ``connectors`` lists **runtime instances only** (bu-6jv4m.11). Each entry
+    carries its persisted ``operational_role`` from ``connector_registry``:
+    ``runtime_instance`` for an executable connector process, or ``unknown``
+    when no producer has claimed the row. Rows whose role is ``checkpoint`` —
+    persisted cursors that never heartbeat — are excluded from this list and
+    nested under their parent as that entry's ``checkpoints`` array instead;
+    before this, Google Health's per-account, per-resource cursors were listed
+    as separate OFFLINE listening connectors beside the one genuinely-online
+    account and pulled fleet attention with them. Checkpoints whose parent
+    cannot be resolved appear in the top-level ``unparented_checkpoints`` array
+    rather than being dropped.
+
+    An ``unknown`` row reports ``liveness: "unclassified"`` — a named
+    unavailable state, deliberately not one of ``online``/``stale``/``offline``.
+    Nothing has claimed the row as a process, so there is no heartbeat contract
+    to measure it against, and both a healthy read and an ``offline`` verdict
+    would be inferences. The top-level ``unclassified_count`` summarises how
+    many such rows exist; they are excluded from the fleet health rollups in
+    ``cross-summary`` and ``/api/switchboard/connectors/summary``.
+
     Each connector entry includes ``hourly_events`` — a 24-element array of
     per-hour event counts for the last 24 hours (oldest bucket first, newest
     last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
@@ -366,7 +505,11 @@ async def list_connector_summaries_with_aggregates(
                 first_seen_at,
                 counter_messages_ingested,
                 counter_messages_failed,
-                archived_at
+                archived_at,
+                operational_role,
+                parent_endpoint_identity,
+                checkpoint_cursor,
+                checkpoint_updated_at
             FROM connector_registry
             WHERE deleted_at IS NULL
             ORDER BY first_seen_at DESC
@@ -375,6 +518,19 @@ async def list_connector_summaries_with_aggregates(
     except Exception:
         logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
         return ApiResponse[dict](data={"connectors": [], "connector_registry_available": False})
+
+    # Split runtime authority from storage state (bu-6jv4m.11). Only
+    # `runtime_instance` rows (plus `unknown` rows, kept visible as explicitly
+    # unclassified) belong in the roster; `checkpoint` rows are persisted
+    # cursors that never heartbeat, and listing them as connectors is exactly
+    # what made Google Health's per-resource cursors read as separate OFFLINE
+    # sub-identities beside the one genuinely-online account. Every derived
+    # signal below — device badges, archive candidates, KPI inputs — is
+    # computed from `rows` (the roster set) so none of them can be skewed by a
+    # storage row.
+    rows, checkpoint_rows = _partition_by_operational_role(rows)
+    roster_keys = {(r["connector_type"], r["endpoint_identity"]) for r in rows}
+    checkpoints_by_parent, unparented_checkpoints = _group_checkpoints(checkpoint_rows, roster_keys)
 
     # Count registry rows per connector_type. The `devices` badge list (below)
     # exists specifically for connector_types where connector_registry cannot
@@ -615,8 +771,12 @@ async def list_connector_summaries_with_aggregates(
     online_by_type = _online_identities_by_type(rows)
 
     connectors = []
+    unclassified_count = 0
     for r in rows:
-        liveness = _liveness(r["last_heartbeat_at"])
+        role = _normalize_role(r["operational_role"])
+        if role == _ROLE_UNKNOWN:
+            unclassified_count += 1
+        liveness = _row_liveness(r)
         key = (r["connector_type"], r["endpoint_identity"])
         hourly = hourly_map.get(key, [0] * 24)
         hourly_filtered = hourly_filtered_map.get(key, [0] * 24)
@@ -637,6 +797,13 @@ async def list_connector_summaries_with_aggregates(
             {
                 "connector_type": r["connector_type"],
                 "endpoint_identity": r["endpoint_identity"],
+                # Persisted operational role (bu-6jv4m.11). `runtime_instance`
+                # is an executable process and the only runtime-health
+                # authority; `unknown` means no producer has claimed the row,
+                # and pairs with `liveness: "unclassified"` so it can never be
+                # read as active or healthy. `checkpoint` rows never appear
+                # here — they are nested under their parent instead.
+                "operational_role": role,
                 "liveness": liveness,
                 "state": r["state"],
                 "error_message": r["error_message"],
@@ -698,6 +865,13 @@ async def list_connector_summaries_with_aggregates(
                     < len(device_map.get(r["connector_type"], []))
                     else None
                 ),
+                # Storage-only cursor records owned by this runtime instance
+                # (bu-6jv4m.11). Present so checkpoint history stays
+                # inspectable under the connector it belongs to, labelled by
+                # the stream it tracks. Carries no status: these rows never
+                # heartbeat, so they contribute nothing to this connector's
+                # liveness, health, or any rollup.
+                "checkpoints": checkpoints_by_parent.get(key, []),
             }
         )
 
@@ -708,6 +882,17 @@ async def list_connector_summaries_with_aggregates(
             # distinguishes an actually empty registry from the HTTP-200
             # fallback above when its query failed.
             "connector_registry_available": True,
+            # Checkpoint rows whose parent runtime instance could not be
+            # resolved — no parent recorded, or the parent's registry row is
+            # gone. Surfaced explicitly rather than dropped: an orphaned cursor
+            # is a real condition worth seeing, and it has no status authority
+            # here either (bu-6jv4m.11).
+            "unparented_checkpoints": unparented_checkpoints,
+            # How many roster rows carry no established operational role. These
+            # are listed with `liveness: "unclassified"` and are excluded from
+            # the fleet online/stale/offline rollups, so this count is the only
+            # place their existence is summarised.
+            "unclassified_count": unclassified_count,
             "device_liveness_available": device_liveness_available,
             # False only if the combined ingested+filtered hourly query itself
             # raised — mirrors device_liveness_available
@@ -736,6 +921,15 @@ async def get_cross_connector_summary_with_aggregates(
     includes ``aggregates_available`` indicating whether Prometheus-backed
     per-connector time-series metrics are expected to be valid.
 
+    Only rows whose persisted ``operational_role`` is ``runtime_instance``
+    count toward ``total_connectors``, the online/stale/offline split, and the
+    message totals (bu-6jv4m.11): fleet liveness is a statement about
+    executable processes, and a persisted cursor has no process to be live or
+    dead. Rows with role ``unknown`` are reported separately as
+    ``connectors_unclassified`` — never folded into the healthy or the offline
+    side, since neither reading is established. ``checkpoint`` rows are
+    excluded entirely.
+
     Always returns HTTP 200 — database errors fall back to zero-value summary.
     """
     pool = _pool(db)
@@ -760,6 +954,7 @@ async def get_cross_connector_summary_with_aggregates(
         "connectors_online": 0,
         "connectors_stale": 0,
         "connectors_offline": 0,
+        "connectors_unclassified": 0,
         "total_messages_ingested": 0,
         "total_messages_failed": 0,
         "overall_error_rate_pct": 0.0,
@@ -775,6 +970,7 @@ async def get_cross_connector_summary_with_aggregates(
             """
             SELECT
                 last_heartbeat_at,
+                operational_role,
                 coalesce(counter_messages_ingested, 0) AS messages_ingested,
                 coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM connector_registry
@@ -792,9 +988,19 @@ async def get_cross_connector_summary_with_aggregates(
     if rows is None:
         return ApiResponse[dict](data=_zero_summary)
 
-    online = stale = offline = 0
+    online = stale = offline = unclassified = 0
+    runtime_instances = 0
     total_ingested = total_failed = 0
     for r in rows:
+        role = _normalize_role(r["operational_role"])
+        if role == _ROLE_CHECKPOINT:
+            # Storage state. It has no process, so it has no liveness to count
+            # and no volume to attribute to the fleet (bu-6jv4m.11).
+            continue
+        if role == _ROLE_UNKNOWN:
+            unclassified += 1
+            continue
+        runtime_instances += 1
         lv = _liveness(r["last_heartbeat_at"])
         if lv == "online":
             online += 1
@@ -810,10 +1016,11 @@ async def get_cross_connector_summary_with_aggregates(
 
     return ApiResponse[dict](
         data={
-            "total_connectors": len(rows),
+            "total_connectors": runtime_instances,
             "connectors_online": online,
             "connectors_stale": stale,
             "connectors_offline": offline,
+            "connectors_unclassified": unclassified,
             "total_messages_ingested": total_ingested,
             "total_messages_failed": total_failed,
             "overall_error_rate_pct": round(error_rate_pct, 2),

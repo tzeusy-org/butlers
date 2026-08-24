@@ -42,6 +42,11 @@ from butlers.api.oauth_scope_registry import (
     get_scope_manifest,
 )
 from butlers.config import load_config
+from butlers.connectors.registry_roles import CHECKPOINT as CHECKPOINT_ROLE
+from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
+from butlers.connectors.registry_roles import (
+    normalize_operational_role as _normalize_role,
+)
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query
 from butlers.tools.switchboard.registry.registry import (
@@ -1051,6 +1056,8 @@ def _row_to_connector_entry(r: dict) -> Any:
         checkpoint_updated_at=str(r["checkpoint_updated_at"])
         if r.get("checkpoint_updated_at")
         else None,
+        operational_role=_normalize_role(r.get("operational_role")),
+        parent_endpoint_identity=r.get("parent_endpoint_identity"),
         settings=r.get("settings"),
         auth=auth_block,
         scopes=scope_rows,
@@ -1087,6 +1094,7 @@ async def list_connectors(
             " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
             " cr.counter_dedupe_accepted,"
             " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " cr.operational_role, cr.parent_endpoint_identity,"
             " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"
@@ -1140,6 +1148,12 @@ async def get_connectors_summary(
     Drives the summary stats row at the top of the Connectors tab
     (total, online, stale, offline, ingested, failed, error rate).
 
+    Counts runtime instances only (bu-6jv4m.11): fleet liveness describes
+    executable connector processes, and a stored checkpoint cursor has no
+    process to be live or dead. Rows whose persisted ``operational_role`` is
+    ``unknown`` land in ``unknown_count`` instead of being guessed into the
+    online or the offline side.
+
     Falls back gracefully to a zero-value summary on DB errors.
     """
     pool = _pool(db)
@@ -1152,6 +1166,7 @@ async def get_connectors_summary(
             """
             SELECT
                 last_heartbeat_at,
+                operational_role,
                 coalesce(counter_messages_ingested, 0) AS messages_ingested,
                 coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM switchboard.connector_registry
@@ -1171,9 +1186,19 @@ async def get_connectors_summary(
     if rows is None:
         return ApiResponse[ConnectorSummary](data=ConnectorSummary())
 
-    online = stale = offline = 0
+    online = stale = offline = unknown = 0
+    runtime_instances = 0
     total_ingested = total_failed = 0
     for r in rows:
+        role = _normalize_role(r["operational_role"])
+        if role == CHECKPOINT_ROLE:
+            # Storage state, not a process: no liveness to count and no volume
+            # to attribute to the fleet (bu-6jv4m.11).
+            continue
+        if role == UNKNOWN_ROLE:
+            unknown += 1
+            continue
+        runtime_instances += 1
         lv = _liveness(r["last_heartbeat_at"])
         if lv == "online":
             online += 1
@@ -1188,10 +1213,11 @@ async def get_connectors_summary(
     error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
 
     summary = ConnectorSummary(
-        total_connectors=len(rows),
+        total_connectors=runtime_instances,
         online_count=online,
         stale_count=stale,
         offline_count=offline,
+        unknown_count=unknown,
         total_messages_ingested=total_ingested,
         total_messages_failed=total_failed,
         error_rate_pct=round(error_rate_pct, 2),
@@ -1228,6 +1254,7 @@ async def get_connector_detail(
             " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
             " cr.counter_dedupe_accepted,"
             " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " cr.operational_role, cr.parent_endpoint_identity,"
             " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"

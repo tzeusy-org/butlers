@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
+
 
 class RoutingEntry(BaseModel):
     """A single entry in the switchboard routing log."""
@@ -202,6 +204,14 @@ class ConnectorEntry(BaseModel):
     # Checkpoint info
     checkpoint_cursor: str | None = None
     checkpoint_updated_at: str | None = None
+    # Persisted operational role (bu-6jv4m.11, sw_031): `runtime_instance` for
+    # an executable connector process, `checkpoint` for a stored cursor with no
+    # process behind it, `unknown` when no producer has claimed the row. Only
+    # `runtime_instance` carries runtime-health authority; see
+    # butlers.connectors.registry_roles. `parent_endpoint_identity` names the
+    # runtime instance a checkpoint belongs to (None on runtime instances).
+    operational_role: str = UNKNOWN_ROLE
+    parent_endpoint_identity: str | None = None
     # Runtime-configurable settings (e.g. discretion thresholds)
     settings: dict | None = None
     # OAuth scope surface (connector-oauth-scope-surface capability)
@@ -216,6 +226,10 @@ class ConnectorSummary(BaseModel):
     Drives the summary row at the top of the Connectors tab.
     """
 
+    # Runtime instances only (bu-6jv4m.11): stored checkpoints have no process
+    # and therefore no liveness to roll up. `unknown_count` carries the rows
+    # whose operational role is unestablished — counted apart from the
+    # online/stale/offline split rather than being guessed into either side.
     total_connectors: int = 0
     online_count: int = 0
     stale_count: int = 0

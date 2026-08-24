@@ -1567,7 +1567,17 @@ class GoogleHealthConnector:
             return
         endpoint = _cursor_endpoint_identity(ctx.email, account_uuid, state.bundle.resource)
         try:
-            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
+            # Every per-resource cursor is storage state belonging to this
+            # account's runtime instance. Recording the parent keeps the
+            # checkpoint inspectable under the account that owns it instead of
+            # surfacing as its own never-heartbeating connector (bu-6jv4m.11).
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                endpoint,
+                cursor_value,
+                parent_endpoint_identity=_endpoint_identity_for_user(ctx.email),
+            )
             state.last_cursor = cursor_value
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")

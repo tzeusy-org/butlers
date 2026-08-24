@@ -397,10 +397,11 @@ async def heartbeat(
                 counter_dedupe_accepted,
                 checkpoint_cursor,
                 checkpoint_updated_at,
-                capabilities
+                capabilities,
+                operational_role
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $8, 'self',
-                $9, $10, $11, $12, $13, $14, $15, $16
+                $9, $10, $11, $12, $13, $14, $15, $16, 'runtime_instance'
             )
             ON CONFLICT (connector_type, endpoint_identity) DO UPDATE SET
                 instance_id = EXCLUDED.instance_id,
@@ -416,7 +417,14 @@ async def heartbeat(
                 counter_dedupe_accepted = EXCLUDED.counter_dedupe_accepted,
                 checkpoint_cursor = EXCLUDED.checkpoint_cursor,
                 checkpoint_updated_at = EXCLUDED.checkpoint_updated_at,
-                capabilities = EXCLUDED.capabilities
+                capabilities = EXCLUDED.capabilities,
+                -- A heartbeat is proof that an executable process owns this
+                -- identity, so it claims the row unconditionally. This is the
+                -- one place a registry row becomes a runtime instance; a row
+                -- created earlier by a checkpoint or settings write is
+                -- promoted here on the process's first check-in
+                -- (butlers.connectors.registry_roles).
+                operational_role = 'runtime_instance'
             """,
             connector_type,
             endpoint_identity,

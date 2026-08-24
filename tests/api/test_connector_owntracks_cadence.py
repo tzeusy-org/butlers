@@ -26,6 +26,10 @@ def _registry_row(
     endpoint_identity: str,
     *,
     archived_at: dt.datetime | None = None,
+    operational_role: str = "runtime_instance",
+    parent_endpoint_identity: str | None = None,
+    checkpoint_cursor: str | None = None,
+    checkpoint_updated_at: dt.datetime | None = None,
 ) -> MagicMock:
     now = dt.datetime.now(dt.UTC)
     return _row(
@@ -41,6 +45,10 @@ def _registry_row(
             "counter_messages_ingested": 100,
             "counter_messages_failed": 0,
             "archived_at": archived_at,
+            "operational_role": operational_role,
+            "parent_endpoint_identity": parent_endpoint_identity,
+            "checkpoint_cursor": checkpoint_cursor,
+            "checkpoint_updated_at": checkpoint_updated_at,
         }
     )
 

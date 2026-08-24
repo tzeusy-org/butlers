@@ -22,6 +22,7 @@
  * false-flag every connector. Key off error_message + state instead.
  *
  * Mappings:
+ * - liveness "unclassified" (operational_role unknown)            → auth "unconfigured",        health "unclassified"
  * - liveness "online"  + state "healthy"                          → auth "ok",                  health "ok"
  * - liveness "online"  + state "degraded" (no auth error_message) → auth "ok",                  health "degraded"
  * - liveness "online"  + state "degraded" + "api_forbidden"       → auth "needs_reauth",         health "degraded"
@@ -48,8 +49,14 @@ export type DerivedAuthStatus =
   | 'needs_primary_account'
   | 'unconfigured'
 
-/** Derived health — maps to the health dot on the roster row. */
-export type DerivedHealth = 'ok' | 'degraded' | 'error' | 'off'
+/**
+ * Derived health — maps to the health dot on the roster row.
+ *
+ * `unclassified` is not a degree of health: it means the registry record has no
+ * established operational role, so no health verdict can honestly be derived
+ * for it at all (bu-6jv4m.11).
+ */
+export type DerivedHealth = 'ok' | 'degraded' | 'error' | 'off' | 'unclassified'
 
 /** All derived Dispatch-model fields derived from a ConnectorSummary. */
 export interface ConnectorDispatchInfo {
@@ -69,6 +76,21 @@ export interface ConnectorDispatchInfo {
  * function so the status label and color are consistent.
  */
 export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispatchInfo {
+  // Unclassified is checked before everything else, including offline. A record
+  // whose operational_role was never established has no heartbeat contract, so
+  // every downstream signal here (a null heartbeat, a default `state`) would be
+  // read out of a vacuum: it would render as a dead connector, or — if the
+  // stored `state` happened to say 'healthy' — as a live one. Neither is known.
+  // Naming the gap is the only honest verdict (bu-6jv4m.11).
+  if (c.liveness === 'unclassified') {
+    return {
+      authStatus: 'unconfigured',
+      health: 'unclassified',
+      needsAttention: true,
+      authNote: 'role unclassified · no runtime instance observed',
+    }
+  }
+
   // Offline takes priority over a stored `error` state: a dead process's last
   // heartbeat can freeze `state: 'error'` indefinitely, and that frozen label
   // must not be read as a live auth/config diagnosis. Offline is always a
@@ -219,6 +241,8 @@ export function healthDotColor(health: DerivedHealth): string {
       return 'bg-[color:var(--red,oklch(0.62_0.20_25))]'
     case 'off':
       return 'bg-muted-foreground/40'
+    case 'unclassified':
+      return 'bg-[color:var(--amber,oklch(0.72_0.12_70))]'
   }
 }
 
@@ -233,6 +257,8 @@ export function healthTextColor(health: DerivedHealth): string {
       return 'text-[color:var(--red,oklch(0.62_0.20_25))]'
     case 'off':
       return 'text-muted-foreground/40'
+    case 'unclassified':
+      return 'text-[color:var(--amber,oklch(0.72_0.12_70))]'
   }
 }
 
@@ -247,6 +273,7 @@ export function healthTextColor(health: DerivedHealth): string {
  * liveness value.
  */
 export function healthVerdictWord(c: ConnectorSummary, info: ConnectorDispatchInfo): string {
+  if (info.health === 'unclassified') return 'unclassified'
   if (info.health === 'error') return c.liveness === 'offline' ? 'offline' : 'error'
   if (info.health === 'degraded') return c.liveness === 'stale' ? 'stale' : 'degraded'
   if (info.health === 'off') return 'offline'

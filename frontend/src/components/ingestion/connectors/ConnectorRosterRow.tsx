@@ -31,6 +31,7 @@
 import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import type { ConnectorSummary } from '@/api/types'
+import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
 import {
@@ -261,6 +262,14 @@ export function ConnectorRosterRow({
       <span aria-hidden="true" className="font-mono text-[13px] text-muted-foreground justify-self-end">
         ›
       </span>
+
+      {/* Persisted checkpoint cursors owned by this runtime instance
+          (bu-6jv4m.11). Storage state only: labelled and inspectable, with no
+          liveness or health of their own. They used to appear as separate
+          offline connectors in the roster above. */}
+      {c.checkpoints && c.checkpoints.length > 0 && (
+        <ConnectorCheckpoints checkpoints={c.checkpoints} connectorType={c.connector_type} />
+      )}
 
       {/* Per-device liveness — only present for multi-device connector_types
           (e.g. OwnTracks). Wraps to its own implicit grid row below the main
