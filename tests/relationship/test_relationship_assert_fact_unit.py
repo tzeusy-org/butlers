@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.relationship_assert_fact import (
     AssertOutcome,
     _assert_on_conn,
@@ -163,6 +164,7 @@ async def test_supersession_insert_is_conflict_safe() -> None:
         weight=None,
         verified=False,
         primary=None,
+        packet=EvidencePacket(items=(), src="source-b", origin="direct"),
     )
 
     insert_sql = conn.fetchval.call_args.args[0]
@@ -173,8 +175,12 @@ async def test_supersession_insert_is_conflict_safe() -> None:
     assert "DO UPDATE" not in insert_sql
 
     # The supersession UPDATE must be guarded on the row id AND validity='active'
-    # so a lost race re-reads instead of double-superseding.
-    update_sql = conn.execute.call_args.args[0]
+    # so a lost race re-reads instead of double-superseding. Select it by content:
+    # supersession also carries the prior row's evidence forward, which issues a
+    # later execute() on the same mock.
+    update_sql = next(
+        call.args[0] for call in conn.execute.call_args_list if "superseded" in call.args[0]
+    )
     assert "validity   = 'superseded'" in update_sql or "validity = 'superseded'" in update_sql
     assert "validity = 'active'" in update_sql
 
@@ -197,6 +203,8 @@ async def test_create_pending_action_reuses_existing_pending_row() -> None:
         "relationship_assert_fact",
         {"subject": "s", "predicate": "p", "object": "o"},
         "summary",
+        src="source-a",
+        observed_at=datetime.now(UTC),
         dedup_match={"subject": "s", "predicate": "p", "object": "o"},
         why="why",
         evidence=["a", "b"],
@@ -221,6 +229,8 @@ async def test_create_pending_action_inserts_with_why_and_evidence() -> None:
         "relationship_assert_fact",
         {"subject": "s", "predicate": "p", "object": "o"},
         "summary",
+        src="source-a",
+        observed_at=datetime.now(UTC),
         dedup_match={"subject": "s", "predicate": "p", "object": "o"},
         why="human-readable rationale",
         evidence=["ci_id=123", "contact_id=456"],

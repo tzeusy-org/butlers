@@ -1080,6 +1080,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         weight: int | None = None,
         verified: bool = False,
         primary: bool | None = None,
+        evidence: list[dict[str, str]] | None = None,
+        approval_action_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         """Assert a fact triple in relationship.entity_facts (central writer).
 
@@ -1100,6 +1102,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             weight: Relational aggregation weight (nullable).
             verified: Owner-confirmed flag (default False).
             primary: Primary-of-kind flag for multi-valued contact predicates.
+            evidence: Ordered typed references justifying the assertion, each
+                {"type": "fact"|"entity"|"url"|"text", "ref": ..., "note": ...}.
+                Recorded immutably in relationship.fact_evidence alongside the
+                fact. Cite sources — refs and notes are capped and the ledger
+                rejects copied source content.
+            approval_action_id: Set only by approval dispatch, which replays the
+                stored tool_args of an approved pending_actions row.
 
         Returns:
             Dict with keys: outcome ('inserted' | 'unchanged' | 'superseded' |
@@ -1107,15 +1116,31 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
         Owner carve-out (RFC 0017 §2.3): when subject resolves to the owner
         entity, a pending_actions row is created for approval instead of
-        writing the triple directly.
+        writing the triple directly. Approving that row dispatches back into
+        THIS tool with the stored tool_args, which is why
+        ``approval_action_id`` appears in the signature at all: without it the
+        replay would re-park the write forever.
 
-        Security note: ``src`` is intentionally NOT exposed as a parameter here.
-        It is hardcoded to ``"relationship"`` (the untrusted LLM-session default)
-        to prevent privilege escalation via trusted-source spoofing (bu-vj46x).
-        Trusted sources (``owner-self``, ``owner-bootstrap``) are reachable ONLY
-        from internal daemon/bootstrap code that calls the underlying
-        :func:`relationship_assert_fact` library function directly.
+        Security note: no caller of this tool can choose the asserting source.
+        It is hardcoded to ``"relationship"`` for a fresh write, and an approved
+        replay reads it from relationship.fact_approval_context — a row only the
+        writer ever wrote, deliberately kept out of tool_args so it never
+        becomes a parameter here. So an LLM session cannot spoof a trusted
+        source (``owner-self``, ``owner-bootstrap``) either by passing one or by
+        claiming an approval it does not have (bu-vj46x). Trusted sources remain
+        reachable ONLY from internal daemon/bootstrap code that calls the
+        underlying :func:`relationship_assert_fact` library function directly.
         """
+        # Approval dispatch calls this closure directly with the stored JSONB
+        # tool_args (daemon.py::_execute_approved_tool -> original_fn(**args)),
+        # so it bypasses FastMCP's schema coercion entirely: uuids and timestamps
+        # arrive as the strings JSONB round-tripped them to. Coerce here rather
+        # than letting asyncpg reject a text value for a uuid/timestamptz column.
+        subject = uuid.UUID(subject) if isinstance(subject, str) else subject
+        if isinstance(approval_action_id, str):
+            approval_action_id = uuid.UUID(approval_action_id)
+        if isinstance(last_seen, str):
+            last_seen = datetime.fromisoformat(last_seen)
         result = await _assert_fact_lib(
             module._get_pool(),
             subject,
@@ -1128,8 +1153,120 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             weight=weight,
             verified=verified,
             primary=primary,
+            evidence=evidence,
+            approval_action_id=approval_action_id,
         )
         return result.as_dict()
+
+    from butlers.tools.relationship.fact_coverage import (
+        predicate_coverage as _predicate_coverage,
+    )
+    from butlers.tools.relationship.fact_coverage import (
+        record_coverage as _record_coverage,
+    )
+    from butlers.tools.relationship.fact_evidence import (
+        read_fact_evidence as _read_fact_evidence,
+    )
+
+    @_tool("entity")
+    async def relationship_fact_evidence(fact_id: uuid.UUID) -> dict[str, Any]:
+        """Read one fact's truth packet: the triple, its provenance, its evidence.
+
+        READ-ONLY. Use this to answer "why do we believe this?" before repeating
+        a fact to the owner or acting on it.
+
+        Args:
+            fact_id: id of a relationship.entity_facts row (returned by
+                relationship_assert_fact and relationship_lookup).
+
+        Returns a dict:
+            fact: the triple and its state, or null when the id is unknown.
+            provenance: {origin ('direct' | 'approved' | null), session_id,
+                action_id} — how the row came to be active.
+            evidence: ordered typed references [{seq, type, ref, note, src,
+                origin, session_id, action_id, carried_from, recorded_at}].
+                ``carried_from`` marks evidence inherited from a superseded
+                row. An empty list means the write cited nothing, NOT that the
+                evidence was lost: the ledger is append-only.
+
+        The ledger stores references into sources, never copies of source
+        content, so this never returns message or document bodies.
+        """
+        return await _read_fact_evidence(module._get_pool(), fact_id)
+
+    @_tool("entity")
+    async def relationship_predicate_coverage(
+        entity_id: uuid.UUID,
+        predicates: list[str],
+    ) -> dict[str, Any]:
+        """Ask whether a predicate is genuinely absent or merely unknown.
+
+        READ-ONLY. An empty fact list is ambiguous — it means either "nobody
+        ever looked" or "we looked and there is nothing". Call this before
+        telling the owner you have no value for something.
+
+        Args:
+            entity_id: subject entity.
+            predicates: predicates to report on, in the order you want them.
+
+        Returns a dict:
+            target: 'available', or 'unavailable' when the entity is gone or
+                was merged away — its predicates are unanswerable, not absent.
+            coverage: {predicate: {state, value_count, receipts}} where state is
+                one of:
+                  present       — at least one active value.
+                  absent_proven — no value AND a source recorded looking.
+                  unavailable   — the entity or every source is unreachable.
+                  unknown       — nobody looked, or the receipts are stale.
+                ``receipts`` lists the per-source observations behind the state.
+
+        ``unknown`` is the default for anything uncovered. Never report
+        ``unknown`` to the owner as "you have no X"; report it as "I have not
+        checked".
+        """
+        return await _predicate_coverage(module._get_pool(), entity_id, predicates)
+
+    @_tool("entity")
+    async def relationship_record_coverage(
+        entity_id: uuid.UUID,
+        predicate: str,
+        outcome: str,
+    ) -> dict[str, Any]:
+        """Record that you looked for a predicate, and what you found.
+
+        This is what turns a fruitless search into knowledge instead of silence:
+        without a receipt, a later read reports ``unknown`` forever and the
+        owner gets asked the same question again.
+
+        Call it ONLY after actually looking, and only for what you looked at.
+
+        Args:
+            entity_id: subject entity you searched.
+            predicate: predicate you searched for.
+            outcome: 'present' (found a value), 'absent' (looked, nothing there),
+                or 'unavailable' (could not consult the source at all — never
+                use this to mean 'nothing found').
+
+        Returns {"subject", "predicate", "src", "outcome", "recorded"}.
+        The source is recorded as 'relationship'; you cannot record a receipt on
+        another source's behalf.
+        """
+        pool = module._get_pool()
+        async with pool.acquire() as conn:
+            await _record_coverage(
+                conn,
+                subject=entity_id,
+                predicate=predicate,
+                src="relationship",
+                outcome=outcome,
+            )
+        return {
+            "subject": str(entity_id),
+            "predicate": predicate,
+            "src": "relationship",
+            "outcome": outcome,
+            "recorded": True,
+        }
 
     from butlers.tools.relationship import relationship_lookup as _rlu
 
@@ -1163,7 +1300,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity: {id, canonical_name, entity_type, aliases, roles, tier
                 (null unless a Dunbar tier override is pinned), state} or null.
             facts: active facts from both stores (identity rows first, then
-                narrative), each {store, predicate, object, object_kind, src,
+                narrative), each {store, fact_id (identity only — pass it to
+                relationship_fact_evidence to see why the fact is believed),
+                predicate, object, object_kind, src,
                 conf, verified, primary, observed_at, last_seen (identity only),
                 staleness_band: fresh|aging|stale}.
             recency: {last_seen, last_interaction_at, staleness_band} or null.

@@ -112,6 +112,7 @@ def _state_row(
 
 def _identity_fact_row(
     *,
+    id: uuid.UUID | None = None,
     predicate: str = "has-email",
     object: str = "ops@northwind.test",
     object_kind: str = "literal",
@@ -124,6 +125,9 @@ def _identity_fact_row(
     staleness_band: str = "fresh",
 ) -> _Row:
     return _Row(
+        # The identity SELECT returns f.id so callers can ask the evidence
+        # ledger why the fact is believed; the stub must carry it too.
+        id=id or uuid.uuid4(),
         predicate=predicate,
         object=object,
         object_kind=object_kind,

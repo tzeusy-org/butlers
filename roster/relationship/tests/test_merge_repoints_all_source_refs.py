@@ -27,6 +27,8 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -158,6 +160,9 @@ async def pool(provisioned_postgres_pool):
             CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
                 ON contact_entity_map (entity_id)
         """)
+        # rel_034: the central writer persists evidence and a coverage receipt in
+        # the same transaction as the fact, so this schema is not optional.
+        await apply_evidence_schema(p)
         yield p
 
 

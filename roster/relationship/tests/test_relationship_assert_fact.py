@@ -27,12 +27,14 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.relationship_assert_fact import (
     _PREDICATE_ALIAS_MAP,
     AssertOutcome,
     _insert_active_fact,
     relationship_assert_fact,
 )
+from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # ---------------------------------------------------------------------------
 # Test markers
@@ -153,6 +155,9 @@ async def pool(provisioned_postgres_pool):
             )
         """)
 
+        # rel_034: the central writer persists evidence and a coverage receipt in
+        # the same transaction as the fact, so this schema is not optional.
+        await apply_evidence_schema(p)
         yield p
 
 
@@ -942,6 +947,7 @@ async def _provision_schema(p: asyncpg.Pool) -> None:
             ON relationship.entity_facts (subject, predicate, object)
             WHERE validity = 'active'
     """)
+    await apply_evidence_schema(p)
 
 
 class TestConcurrentWriterRace:
@@ -995,6 +1001,7 @@ class TestConcurrentWriterRace:
                     object="alice@example.com",
                     object_kind="literal",
                     src="competitor",
+                    packet=EvidencePacket(items=(), src="competitor", origin="direct"),
                     conf=0.9,
                     last_seen=None,
                     observed_at=obs_a,
@@ -1012,6 +1019,7 @@ class TestConcurrentWriterRace:
                     object="alice@example.com",
                     object_kind="literal",
                     src="writer-a",
+                    packet=EvidencePacket(items=(), src="writer-a", origin="direct"),
                     conf=0.4,
                     last_seen=None,
                     observed_at=obs_b,

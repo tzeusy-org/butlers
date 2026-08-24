@@ -34,6 +34,31 @@ from typing import Any
 
 import pytest
 
+
+def _apply_evidence_schema():
+    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
+
+    ``roster/`` is not an importable package from ``tests/`` (no ``__init__``,
+    not on ``sys.path``), but the rel_034 DDL must not be copy-pasted here — it
+    would drift from the migration the moment either side changes.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "relationship"
+        / "tests"
+        / "evidence_schema.py"
+    )
+    spec = importlib.util.spec_from_file_location("_rel034_evidence_schema", schema_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.apply_evidence_schema
+
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -103,6 +128,10 @@ async def identity_pool(provisioned_postgres_pool):
                 ON relationship.entity_facts (subject, predicate, object)
                 WHERE validity = 'active'
         """)
+        # rel_034: the central writer stamps assert provenance on the fact row
+        # and persists evidence in the same transaction, so a hand-rolled
+        # entity_facts without those objects cannot execute the writer at all.
+        await _apply_evidence_schema()(pool)
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
                 predicate   TEXT        NOT NULL PRIMARY KEY,
