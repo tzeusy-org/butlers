@@ -2914,6 +2914,194 @@ async def _emit_oauth_audit(
 
 
 # ---------------------------------------------------------------------------
+# Generic-provider account identity
+# ---------------------------------------------------------------------------
+
+
+class _ProfileIdentityError(Exception):
+    """Raised when a provider profile body cannot yield an account identity."""
+
+
+#: Profile fields the generic callback reads, in the order it prefers them: the
+#: address if the provider granted one, otherwise the provider's own account id.
+_PROFILE_IDENTITY_FIELDS: tuple[str, ...] = ("email", "id")
+
+#: Why profile resolution produced no account identity.  A closed set of
+#: locally-authored tokens: the reason travels into an audit note, so nothing
+#: provider-supplied may be interpolated into one.
+_PROFILE_UNREACHABLE = "profile_unreachable"
+_PROFILE_HTTP_ERROR = "profile_http_error"
+_PROFILE_UNPARSEABLE = "profile_unparseable"
+_PROFILE_MALFORMED = "profile_malformed"
+_PROFILE_NO_IDENTITY = "profile_has_no_identity"
+_PROFILE_UNEXPECTED_ERROR = "profile_unexpected_error"
+
+
+def _extract_profile_account_identity(payload: object) -> str | None:
+    """Read an account identity out of a provider profile body, or refuse it.
+
+    The generic callback used to do this inline as
+    ``profile_data.get("email") or profile_data.get("id")``, which makes two
+    assumptions nothing checked. That the body is a JSON object: it may not be,
+    and then ``.get`` raises ``AttributeError``. And that whichever field
+    answers first holds a string: a non-string is still truthy, so it satisfies
+    the ``or`` chain and becomes the account identity.
+
+    The identity only reaches a log line and an audit note, so neither shape
+    corrupts stored state -- but an audit note that reads ``account=[...]`` is
+    asserting an identity that was never established, which is worse than
+    recording nothing.
+
+    ``None``, absent, and blank are *not* refused. A provider that did not grant
+    an address answers exactly that way, and the ``or`` chain already treats it
+    as "try the next field", so those keep their current verdict. Whitespace-only
+    is the one shape whose verdict moves: it is truthy today and would reach the
+    note as an account key, and it strips to absent here -- the same
+    normalisation ``_required_nonempty_string`` applies on the token side.
+
+    A present-but-wrong-typed field rejects the whole body rather than falling
+    through to the next candidate. Falling through would mint an identity from a
+    body already known to be malformed and hide the malformedness, which is the
+    dishonest-telemetry problem this function exists to remove.
+
+    Raises
+    ------
+    _ProfileIdentityError
+        If the payload is not a JSON object, or a candidate field is present
+        with a non-string, non-null value. The message carries fixed local text
+        plus a type name only -- never a provider-supplied value.
+    """
+    if not isinstance(payload, dict):
+        raise _ProfileIdentityError(
+            f"Profile response is not a JSON object (got {type(payload).__name__})."
+        )
+
+    for key in _PROFILE_IDENTITY_FIELDS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise _ProfileIdentityError(
+                f"Profile response has an invalid {key} (got {type(value).__name__})."
+            )
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+async def _resolve_profile_account_identity(
+    *, provider: str, profile_url: str, access_token: str
+) -> tuple[str | None, str | None]:
+    """Fetch a provider profile and report either an identity or why there is none.
+
+    Returns ``(identity, None)`` on success and ``(None, reason)`` otherwise,
+    where *reason* is one of the ``_PROFILE_*`` tokens above. Exactly one of the
+    two is ever set.
+
+    This whole call is best-effort by design and stays that way: the
+    authorization code is spent by the time it runs, so letting a failure escape
+    would cost the user the credential they just granted and force a full
+    re-consent -- a bad trade for an identity that only decorates a log line and
+    an audit note.
+
+    What changed is the *silence*. The predecessor was a single
+    ``except Exception`` answered by a ``logger.debug``, which is off wherever
+    this actually runs; a body that violated the contract and a fetch that was
+    never attempted came out of it looking identical. The four failures worth
+    telling apart now say which one happened, and the catch-all that remains --
+    kept deliberately, and narrow clauses first so it only sees the genuinely
+    unclassified, of which ``httpx.InvalidURL`` is a real member since it
+    derives from ``Exception`` and not ``httpx.HTTPError`` -- records itself
+    instead of vanishing.
+
+    No exception message and no response body reaches a log line: an
+    unclassified failure is by definition one whose text is not known to be safe
+    to record, so only its type name is. That rules out ``exc_info`` here too.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            profile_resp = await http_client.get(profile_url, headers=headers)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "Profile endpoint unreachable (provider=%s, error=%s); OAuth continues "
+            "without an account identity",
+            provider,
+            type(exc).__name__,
+        )
+        return None, _PROFILE_UNREACHABLE
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Profile fetch failed for an unclassified reason (provider=%s, error=%s); "
+            "OAuth continues without an account identity",
+            provider,
+            type(exc).__name__,
+        )
+        return None, _PROFILE_UNEXPECTED_ERROR
+
+    if profile_resp.status_code != 200:
+        logger.warning(
+            "Profile endpoint returned HTTP %d (provider=%s); OAuth continues without "
+            "an account identity",
+            profile_resp.status_code,
+            provider,
+        )
+        return None, _PROFILE_HTTP_ERROR
+
+    try:
+        payload = profile_resp.json()
+    except ValueError as exc:
+        # JSONDecodeError and UnicodeDecodeError are both ValueError; a 200 whose
+        # body will not parse is one outcome either way.
+        logger.warning(
+            "Profile response did not parse (provider=%s, error=%s); OAuth continues "
+            "without an account identity",
+            provider,
+            type(exc).__name__,
+        )
+        return None, _PROFILE_UNPARSEABLE
+
+    try:
+        identity = _extract_profile_account_identity(payload)
+    except _ProfileIdentityError as exc:
+        logger.warning(
+            "Profile response could not supply an account identity (provider=%s): %s",
+            provider,
+            exc,
+        )
+        return None, _PROFILE_MALFORMED
+
+    if identity is None:
+        # Not a fault: the provider answered correctly and simply granted no
+        # address or id.  Recorded separately so the audit trail can tell a
+        # declined scope from a broken contract.
+        logger.info(
+            "Profile response carried no account identity (provider=%s); OAuth continues",
+            provider,
+        )
+        return None, _PROFILE_NO_IDENTITY
+    return identity, None
+
+
+def _oauth_complete_note(account_email: str | None, unresolved_reason: str | None) -> str:
+    """Compose the ``connected`` audit note for the generic provider callback.
+
+    Three outcomes, three notes.  Before this, "resolution failed" and
+    "resolution was never attempted" shared one string, so the audit trail could
+    not tell them apart -- which is the defect, not a cosmetic detail: the note
+    is the only durable record the profile fetch leaves.
+    """
+    if account_email:
+        return f"OAuth dance complete (account={account_email})"
+    if unresolved_reason:
+        return f"OAuth dance complete (account unresolved: {unresolved_reason})"
+    return "OAuth dance complete"
+
+
+# ---------------------------------------------------------------------------
 # Generalised /{provider}/start endpoint
 # ---------------------------------------------------------------------------
 
@@ -3365,22 +3553,21 @@ async def oauth_provider_callback(
 
     # --- Fetch account identity via profile URL if available ---
     account_email: str | None = None
+    # None means resolution was never attempted, which is a different outcome
+    # from attempting it and getting nothing back.
+    identity_unresolved_reason: str | None = None
     if access_token and provider_cfg.profile_url:
         # Test-mode stub: skip real HTTP call and return synthetic profile.
         if _is_oauth_stub_active():
             logger.debug("OAuth stub: returning synthetic profile for provider=%s", provider)
             stub_profile = dict(_STUB_SYNTHETIC_SPOTIFY_PROFILE)
-            account_email = stub_profile.get("email") or stub_profile.get("id")
+            account_email = _extract_profile_account_identity(stub_profile)
         else:
-            try:
-                headers = {"Authorization": f"Bearer {access_token}"}
-                async with httpx.AsyncClient(timeout=10.0) as http_client:
-                    profile_resp = await http_client.get(provider_cfg.profile_url, headers=headers)
-                if profile_resp.status_code == 200:
-                    profile_data = profile_resp.json()
-                    account_email = profile_data.get("email") or profile_data.get("id")
-            except Exception:  # noqa: BLE001
-                logger.debug("Profile fetch failed for provider=%s (non-fatal)", provider)
+            account_email, identity_unresolved_reason = await _resolve_profile_account_identity(
+                provider=provider,
+                profile_url=provider_cfg.profile_url,
+                access_token=access_token,
+            )
 
     # --- Persist credentials in shared credential store ---
     cred_store = _make_credential_store(db_manager)
@@ -3458,11 +3645,7 @@ async def oauth_provider_callback(
         shared_pool,
         action="connected",
         provider=provider,
-        note=(
-            f"OAuth dance complete (account={account_email})"
-            if account_email
-            else "OAuth dance complete"
-        ),
+        note=_oauth_complete_note(account_email, identity_unresolved_reason),
     )
 
     # --- Redirect ---
