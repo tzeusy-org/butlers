@@ -25,6 +25,7 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 from butlers.tools.relationship.entity_merge import LockedGuardRejected  # noqa: E402
 from butlers.tools.relationship.whatsapp_reconciliation import (  # noqa: E402
     ContentBlindReconciliationReport,
+    PartialApplyError,
     PlanDigestMismatch,
     ReconciliationCategory,
     apply_whatsapp_reconciliation,
@@ -149,6 +150,18 @@ async def main(argv: list[str] | None = None) -> int:
     except PlanDigestMismatch:
         _emit_json({"error": "plan_digest_mismatch"}, error=True)
         return 1
+    except PartialApplyError as exc:
+        _emit_json(
+            {
+                "error": "partial_apply",
+                "applied": exc.applied,
+                "planned": exc.planned,
+                "stop_category": exc.stop_category,
+                "plan_digest": exc.plan_digest,
+            },
+            error=True,
+        )
+        return 3
     except LockedGuardRejected:
         _emit_json({"error": "plan_drift"}, error=True)
         return 1

@@ -19,6 +19,7 @@ import pytest
 
 from butlers.tools.relationship.whatsapp_reconciliation import (
     ContentBlindReconciliationReport,
+    PartialApplyError,
     PlanDigestMismatch,
     ReconciliationCategory,
     WhatsAppReconciliationPlan,
@@ -182,6 +183,40 @@ async def test_main_maps_digest_mismatch_without_raw_exception(
 
 
 @pytest.mark.asyncio
+async def test_main_distinguishes_partial_commits_content_blindly(
+    script_module,
+    monkeypatch,
+    capsys,
+    caplog,
+) -> None:
+    """REQ-entity-identity-002: committed partial apply has a distinct safe result."""
+    sentinel = "SENSITIVE_PARTIAL_6599999999@s.whatsapp.net"
+    stopped = PartialApplyError(
+        applied=1,
+        planned=3,
+        stop_category="postcondition_failed",
+        plan_digest="f" * 64,
+    )
+    stopped.__cause__ = RuntimeError(sentinel)
+    monkeypatch.setattr(script_module, "run", AsyncMock(side_effect=stopped))
+
+    exit_code = await script_module.main(["--apply", "--plan-digest", "f" * 64])
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err + caplog.text
+    assert exit_code == 3
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": "partial_apply",
+        "applied": 1,
+        "planned": 3,
+        "stop_category": "postcondition_failed",
+        "plan_digest": "f" * 64,
+    }
+    assert sentinel not in combined
+
+
+@pytest.mark.asyncio
 async def test_main_never_echoes_dsn_or_exception_sentinels(
     script_module, monkeypatch, capsys, caplog
 ) -> None:
@@ -223,6 +258,7 @@ async def test_main_rejects_unpaired_authorization_arguments(
 
 
 def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
+    """REQ-entity-identity-002: no daemon, scheduler, or migration can auto-apply."""
     source = _SCRIPT_PATH.read_text(encoding="utf-8")
     lines = source.splitlines()
 

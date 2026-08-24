@@ -86,7 +86,10 @@ key references, protected account ownership, or conflicting review decision.
 Dry-run output contains counts and a SHA-256 digest only. Apply requires `--apply` plus that digest,
 recomputes the plan, and revalidates each pair under deterministic row locks. The audited relationship
 merge transaction will be factored behind a FastAPI-free service, with an empty-shell precondition
-executed in the same transaction. The command stops on the first failed postcondition.
+executed in the same transaction. The command stops on the first failed postcondition. Pair
+transactions remain independently audited commits; if a later stop follows one or more commits, the
+operator receives a content-blind partial-apply count and stop category rather than a false rollback
+claim.
 
 Alternatives rejected:
 

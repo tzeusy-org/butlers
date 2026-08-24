@@ -1,7 +1,8 @@
 # Regression evidence
 
 This record preserves the pre-implementation failures required by task 1.2. Each RED was observed
-before its corresponding production change; later task reports retain the full command output.
+before its corresponding production change. Where only the collection-level command summary was
+retained, the record says so and does not infer a specific assertion failure.
 
 ## Canonical transport identity
 
@@ -21,8 +22,8 @@ $ uv run pytest tests/test_passive_interaction_sender_identity.py::TestWhatsAppB
 .....FFFF
 ```
 
-The four failures showed mapped LIDs, unmapped LIDs, device-qualified phone JIDs, and distinct
-unknown group speakers leaking raw transport values or missing the structured history projection.
+This retained RED is collection-level evidence: four tests in the focused producer class failed.
+Their individual assertion traces were not retained in this record.
 
 ## Authoritative excerpt identity
 
@@ -31,8 +32,8 @@ $ uv run pytest tests/modules/test_module_pipeline.py tests/integration/test_dec
 4 failed, 90 passed in 41.26s
 ```
 
-Three failures were the absent authoritative-map interfaces; the integration failure showed that a
-model-supplied sender, identity, entity UUID, text, and timestamp survived normalization.
+This retained RED is collection-level evidence: four tests in the affected pipeline and integration
+collection failed. Their individual assertion traces were not retained in this record.
 
 ## Fact-storage transport-name guard
 
@@ -41,8 +42,8 @@ $ uv run pytest tests/modules/test_module_memory.py -q --tb=short
 3 failed, 51 passed in 15.18s
 ```
 
-Phone JID, device-qualified JID, and numeric LID fact-storage calls all delegated to entity creation
-instead of returning the required content-blind rejection.
+This retained RED is collection-level evidence: three tests in the focused memory-module collection
+failed. Their individual assertion traces were not retained in this record.
 
 ## Guarded reconciliation
 

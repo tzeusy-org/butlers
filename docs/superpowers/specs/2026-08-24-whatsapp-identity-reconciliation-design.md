@@ -1,6 +1,6 @@
 # WhatsApp Identity Resolution and Reconciliation Design
 
-**Date:** 2026-08-24  
+**Date:** 2026-08-24
 **Status:** Approved for implementation
 **Scope:** WhatsApp sender identity resolution, conversation decomposition identity propagation,
 fact-storage protection, and guarded cleanup of existing false transitory entities
@@ -252,6 +252,12 @@ command aborts on the first failed invariant. After each operation it verifies:
 - no source references remain;
 - exactly one merged review outcome exists for the pair;
 - the pair no longer appears in a fresh reconciliation plan.
+
+Pair transactions remain independently audited commits. If a later pair or postcondition stops the
+authorized apply after one or more pair transactions committed, the command returns a distinct
+content-blind `partial_apply` result with the committed count, planned count, opaque plan digest, and
+fixed stop category. It never claims those committed pairs were rolled back. A failure before the
+first pair commits retains the existing zero-write rejection category.
 
 The command is included and tested but is not run automatically as part of this change.
 

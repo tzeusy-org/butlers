@@ -1,13 +1,13 @@
 """PostgreSQL contracts for guarded WhatsApp entity reconciliation.
 
-Spec anchor: ``REQ-entity-identity-002`` (guarded WhatsApp transitory
-reconciliation).  The tests exercise the real catalog, locking, audit, and
-reference semantics rather than substituting an in-memory repository.
+The tests exercise the real catalog, locking, audit, and reference semantics
+rather than substituting an in-memory repository.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -24,7 +24,6 @@ from butlers.tools.relationship.entity_merge import (
 from butlers.tools.relationship.whatsapp_reconciliation import (
     PlanDigestMismatch,
     ReconciliationCategory,
-    ReconciliationPostconditionError,
     apply_whatsapp_reconciliation,
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
@@ -626,6 +625,84 @@ async def test_exact_pair_decisions_are_preserved_without_invented_columns(
     assert plan.pairs[0].review_state == "none"
 
 
+async def test_double_encoded_pending_decision_is_excluded(reconciliation_pool) -> None:
+    """REQ-entity-identity-002: historical JSON strings preserve an exact rejection."""
+    pool = reconciliation_pool
+    source, target = await _source_with_target(pool, "6592250001")
+    await pool.execute(
+        """
+        INSERT INTO relationship.pending_actions (tool_name, tool_args, status)
+        VALUES ('memory_entity_merge', $1, 'rejected')
+        """,
+        json.dumps(
+            {
+                "source_entity_id": str(source),
+                "target_entity_id": str(target),
+            }
+        ),
+    )
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert not plan.pairs
+    assert _count(plan, ReconciliationCategory.EXISTING_REVIEW_DECISION) == 1
+
+
+async def test_malformed_pending_decision_fails_planner_closed(reconciliation_pool) -> None:
+    """REQ-entity-identity-002: malformed historical decisions never leave a pair eligible."""
+    pool = reconciliation_pool
+    await _source_with_target(pool, "6592250002")
+    await pool.execute(
+        """
+        INSERT INTO relationship.pending_actions (tool_name, tool_args, status)
+        VALUES ('entity_merge', $1, 'abandoned')
+        """,
+        "not-json",
+    )
+
+    plan = await build_whatsapp_reconciliation_plan(pool)
+
+    assert not plan.pairs
+    assert _count(plan, ReconciliationCategory.EXISTING_REVIEW_DECISION) == 1
+
+
+async def test_malformed_pending_decision_fails_locked_guard_closed(
+    reconciliation_pool,
+) -> None:
+    """REQ-entity-identity-002: locked revalidation treats malformed history as drift."""
+    pool = reconciliation_pool
+    source, target = await _source_with_target(pool, "6592250003")
+    plan = await build_whatsapp_reconciliation_plan(pool)
+    expected = plan.pairs[0]
+    await pool.execute(
+        """
+        INSERT INTO relationship.pending_actions (tool_name, tool_args, status)
+        VALUES ('entity_merge', $1, 'pending')
+        """,
+        "not-json",
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, canonical_name, entity_type, aliases, metadata, roles, updated_at
+                FROM public.entities
+                WHERE id = ANY($1::uuid[])
+                ORDER BY id
+                FOR UPDATE
+                """,
+                [source, target],
+            )
+            locked = {row["id"]: row for row in rows}
+            with pytest.raises(LockedGuardRejected, match="^plan_drift$"):
+                await validate_empty_shell_locked(
+                    conn,
+                    LockedEntityPair(source=locked[source], target=locked[target]),
+                    expected=expected,
+                )
+
+
 async def test_review_reference_to_a_different_pair_protects_the_source(
     reconciliation_pool,
 ) -> None:
@@ -796,6 +873,55 @@ async def test_locked_guard_serializes_new_decisions_and_protected_references(
     )
 
 
+async def test_apply_fences_third_candidate_eligibility_without_mutation(
+    reconciliation_pool,
+) -> None:
+    """REQ-entity-identity-002: a concurrent third candidate makes apply fail closed."""
+    pool = reconciliation_pool
+    source, target = await _source_with_target(pool, "6594620001")
+    third = await _entity(
+        pool,
+        "Candidate under review",
+        metadata={"unidentified": True},
+    )
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src)
+        VALUES ($1, 'has-phone', '+65 9462 0001', 'literal', 'test')
+        """,
+        third,
+    )
+    plan = await build_whatsapp_reconciliation_plan(pool)
+    assert [(pair.source_entity_id, pair.target_entity_id) for pair in plan.pairs] == [
+        (source, target)
+    ]
+
+    async with pool.acquire() as writer:
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await writer.execute(
+                "UPDATE public.entities SET metadata = '{}'::jsonb WHERE id = $1",
+                third,
+            )
+
+            async with asyncio.timeout(2):
+                with pytest.raises(LockedGuardRejected, match="^plan_drift$"):
+                    await apply_whatsapp_reconciliation(pool, authorized_digest=plan.digest)
+
+            assert (
+                await pool.fetchval(
+                    "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1",
+                    source,
+                )
+                is None
+            )
+            assert await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews") == 0
+        finally:
+            await transaction.rollback()
+
+
 async def test_writer_before_apply_yields_content_blind_drift_without_mutation(
     reconciliation_pool,
 ) -> None:
@@ -886,7 +1012,7 @@ async def test_postcondition_rejects_late_memory_catalog_entity_reference(
     reconciliation_pool,
     monkeypatch,
 ) -> None:
-    """The post-merge check reuses protected memory_catalog.entity_id discovery."""
+    """REQ-entity-identity-002: postconditions expose a committed-but-unsafe stop."""
     pool = reconciliation_pool
     source, _target = await _source_with_target(pool, "6595500001")
     plan = await build_whatsapp_reconciliation_plan(pool)
@@ -907,9 +1033,14 @@ async def test_postcondition_rejects_late_memory_catalog_entity_reference(
 
     monkeypatch.setattr(reconciliation, "merge_entity_pair", merge_then_add_catalog_reference)
 
-    with pytest.raises(ReconciliationPostconditionError, match="^postcondition_failed$"):
+    with pytest.raises(Exception) as caught:
         await apply_whatsapp_reconciliation(pool, authorized_digest=plan.digest)
 
+    assert type(caught.value).__name__ == "PartialApplyError"
+    assert caught.value.applied == 1
+    assert caught.value.planned == 1
+    assert caught.value.stop_category == "postcondition_failed"
+    assert caught.value.plan_digest == plan.digest
     assert (
         await pool.fetchval(
             "SELECT count(*) FROM public.memory_catalog WHERE entity_id = $1",
@@ -943,6 +1074,60 @@ async def test_apply_stops_on_first_pair_failure(reconciliation_pool, monkeypatc
         await pool.fetchval("SELECT count(*) FROM public.entities WHERE metadata ? 'merged_into'")
         == 0
     )
+
+
+async def test_apply_reports_prior_commits_when_a_later_pair_fails(
+    reconciliation_pool,
+    monkeypatch,
+) -> None:
+    """REQ-entity-identity-002: a stopped apply never conceals committed tombstones."""
+    pool = reconciliation_pool
+    first_source = UUID("00000000-0000-0000-0000-000000000201")
+    second_source = UUID("00000000-0000-0000-0000-000000000202")
+    first_source, first_target = await _source_with_target(
+        pool,
+        "6596100001",
+        source_id=first_source,
+    )
+    second_source, _second_target = await _source_with_target(
+        pool,
+        "6596100002",
+        source_id=second_source,
+    )
+    plan = await build_whatsapp_reconciliation_plan(pool)
+    original_merge = merge_entity_pair
+    calls = 0
+
+    async def merge_first_then_fail(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return await original_merge(*args, **kwargs)
+        raise LockedGuardRejected(ReconciliationCategory.PLAN_DRIFT.value)
+
+    monkeypatch.setattr(reconciliation, "merge_entity_pair", merge_first_then_fail)
+
+    with pytest.raises(Exception) as caught:
+        await apply_whatsapp_reconciliation(pool, authorized_digest=plan.digest)
+
+    assert type(caught.value).__name__ == "PartialApplyError"
+    assert caught.value.applied == 1
+    assert caught.value.planned == 2
+    assert caught.value.stop_category == "plan_drift"
+    assert caught.value.plan_digest == plan.digest
+    assert calls == 2
+    assert await pool.fetchval(
+        "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1",
+        first_source,
+    ) == str(first_target)
+    assert (
+        await pool.fetchval(
+            "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1",
+            second_source,
+        )
+        is None
+    )
+    assert await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews") == 1
 
 
 async def test_report_types_are_content_blind_by_construction() -> None:

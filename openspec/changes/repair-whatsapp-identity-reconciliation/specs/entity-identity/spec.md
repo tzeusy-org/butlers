@@ -80,6 +80,12 @@ Scope: v1-mandatory
 - **AND** the target MUST remain live, no source references may remain, and one merged review outcome
   MUST record the pair
 
+#### Scenario: Committed partial apply is reported honestly
+
+- **WHEN** apply stops after one or more independently audited pair transactions have committed
+- **THEN** the command MUST report a content-blind committed count and fixed stop category
+- **AND** it MUST stop before later pairs and MUST NOT claim the committed pairs were rolled back
+
 #### Scenario: Reconciliation never runs automatically
 
 - **WHEN** migrations, daemons, connectors, deployments, or schedulers start

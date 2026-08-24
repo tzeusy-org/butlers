@@ -44,6 +44,7 @@ _SEMANTIC_FK_TABLES = frozenset(
 )
 _CONTROL_RELATIONS = frozenset(
     {
+        ("public", "entities"),
         ("public", "whatsmeow_lid_map"),
         ("relationship", "contact_entity_map"),
         ("relationship", "entity_facts"),
@@ -108,6 +109,28 @@ class PlanDigestMismatch(WhatsAppReconciliationError):
 class ReconciliationPostconditionError(WhatsAppReconciliationError):
     def __init__(self) -> None:
         super().__init__("postcondition_failed")
+
+
+class PartialApplyError(WhatsAppReconciliationError):
+    """An apply stopped after one or more pair transactions committed."""
+
+    def __init__(
+        self,
+        *,
+        applied: int,
+        planned: int,
+        stop_category: str,
+        plan_digest: str,
+    ) -> None:
+        self.applied = applied
+        self.planned = planned
+        self.stop_category = (
+            stop_category
+            if re.fullmatch(r"[a-z][a-z0-9_]*", stop_category)
+            else "reconciliation_failed"
+        )
+        self.plan_digest = plan_digest
+        super().__init__("partial_apply")
 
 
 @dataclass(frozen=True)
@@ -256,24 +279,52 @@ async def _review_state(executor: Any, source_id: UUID, target_id: UUID) -> str:
         source_id,
         target_id,
     )
-    pending_statuses = await executor.fetch(
+    pending_actions = await executor.fetch(
         """
-        SELECT DISTINCT status
+        SELECT status, tool_args
         FROM relationship.pending_actions
-        WHERE tool_name = ANY($3::text[])
-          AND status = ANY($4::text[])
-          AND tool_args ->> 'source_entity_id' = $1
-          AND tool_args ->> 'target_entity_id' = $2
-        ORDER BY status
+        WHERE tool_name = ANY($1::text[])
+          AND status = ANY($2::text[])
+        ORDER BY status, id
         """,
-        str(source_id),
-        str(target_id),
         list(_MERGE_TOOL_NAMES),
         list(_DECISION_STATUSES),
     )
     states = [f"review:{row['outcome']}" for row in merge_outcomes]
-    states.extend(f"action:{row['status']}" for row in pending_statuses)
+    pending_states: set[str] = set()
+    for row in pending_actions:
+        pair = _pending_merge_pair(row["tool_args"])
+        if pair is None:
+            pending_states.add("action:malformed")
+        elif pair == (str(source_id), str(target_id)):
+            pending_states.add(f"action:{row['status']}")
+    states.extend(sorted(pending_states))
     return ",".join(states) if states else _NO_REVIEW_DECISION
+
+
+def _pending_merge_pair(tool_args: Any) -> tuple[str, str] | None:
+    """Decode one object or historical JSON-string merge argument payload."""
+    decoded = tool_args
+    for _ in range(2):
+        if isinstance(decoded, Mapping):
+            break
+        if not isinstance(decoded, str):
+            return None
+        try:
+            decoded = json.loads(decoded)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(decoded, Mapping):
+        return None
+
+    source = decoded.get("source_entity_id")
+    target = decoded.get("target_entity_id")
+    if not isinstance(source, str) or not isinstance(target, str):
+        return None
+    try:
+        return str(UUID(source)), str(UUID(target))
+    except ValueError:
+        return None
 
 
 def _quote_identifier(value: str) -> str:
@@ -389,25 +440,23 @@ async def _merge_review_reference_exists(
 
 
 async def _pending_merge_reference_exists(executor: Any, source_id: UUID) -> bool:
-    return bool(
-        await executor.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM relationship.pending_actions
-                WHERE tool_name = ANY($2::text[])
-                  AND status = ANY($3::text[])
-                  AND (
-                        tool_args ->> 'source_entity_id' = $1
-                        OR tool_args ->> 'target_entity_id' = $1
-                  )
-            )
-            """,
-            str(source_id),
-            list(_MERGE_TOOL_NAMES),
-            list(_DECISION_STATUSES),
-        )
+    rows = await executor.fetch(
+        """
+        SELECT tool_args
+        FROM relationship.pending_actions
+        WHERE tool_name = ANY($1::text[])
+          AND status = ANY($2::text[])
+        ORDER BY id
+        """,
+        list(_MERGE_TOOL_NAMES),
+        list(_DECISION_STATUSES),
     )
+    source = str(source_id)
+    for row in rows:
+        pair = _pending_merge_pair(row["tool_args"])
+        if pair is None or source in pair:
+            return True
+    return False
 
 
 async def _known_reference_exists(
@@ -812,13 +861,32 @@ async def apply_whatsapp_reconciliation(
 
     applied = 0
     for pair in plan.pairs:
-        await merge_entity_pair(
-            pool,
-            source_entity_id=pair.source_entity_id,
-            target_entity_id=pair.target_entity_id,
-            locked_guard=partial(validate_empty_shell_locked, expected=pair),
-        )
-        await _verify_postconditions(pool, pair)
+        committed_current_pair = False
+        try:
+            await merge_entity_pair(
+                pool,
+                source_entity_id=pair.source_entity_id,
+                target_entity_id=pair.target_entity_id,
+                locked_guard=partial(validate_empty_shell_locked, expected=pair),
+            )
+            committed_current_pair = True
+            await _verify_postconditions(pool, pair)
+        except Exception as exc:
+            committed = applied + int(committed_current_pair)
+            if committed:
+                if isinstance(exc, LockedGuardRejected):
+                    stop_category = exc.category
+                elif isinstance(exc, WhatsAppReconciliationError):
+                    stop_category = exc.classification
+                else:
+                    stop_category = "reconciliation_failed"
+                raise PartialApplyError(
+                    applied=committed,
+                    planned=len(plan.pairs),
+                    stop_category=stop_category,
+                    plan_digest=plan.digest,
+                ) from exc
+            raise
         applied += 1
 
     return ContentBlindReconciliationReport(
@@ -832,6 +900,7 @@ async def apply_whatsapp_reconciliation(
 
 __all__ = [
     "ContentBlindReconciliationReport",
+    "PartialApplyError",
     "PlanDigestMismatch",
     "PlannedWhatsAppMerge",
     "ReconciliationCategory",
