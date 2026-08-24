@@ -7155,11 +7155,30 @@ export interface RestoreDrillFacts {
   detail: string | null;
 }
 
-/** Backup recency, verified artifact health, and restore-drill facts.
+/** Outcome of the most recent backup *run*, successful or not (bu-xrqyu).
  *
- * `last_backup_status`/`backup_stale`/`restore_drill` are optional so
- * fixtures written before bu-9r3hd.5 keep typechecking; components must
- * treat their absence as "unknown", never as a fabricated healthy state.
+ * A different question from `last_backup_at`/`backup_stale`, which describe
+ * the newest surviving *artifact*. The backup script refuses to publish a bad
+ * dump, so a failed run leaves yesterday's good file untouched and freshness
+ * keeps reading as healthy -- this is the run's own signal.
+ *
+ * `result: "unknown"` means no readable receipt was found -- a real "we do not
+ * know", never folded into a pass, and never rendered as a failure either.
+ */
+export interface BackupRunFacts {
+  result: "success" | "failed" | "unknown";
+  finished_at: string | null;
+  exit_code: number | null;
+  reason: string | null;
+}
+
+/** Backup recency, verified artifact health, run outcome, and drill facts.
+ *
+ * `last_backup_status`/`backup_stale`/`restore_drill`/`last_run` are optional
+ * so fixtures written before bu-9r3hd.5 and bu-xrqyu keep typechecking;
+ * components must treat their absence as "unknown", never as a fabricated
+ * healthy state. For `last_run` that absence is the same state the backend
+ * spells `result: "unknown"`, so both collapse onto one code path.
  */
 export interface BackupFacts {
   last_backup_at: string | null;
@@ -7168,6 +7187,7 @@ export interface BackupFacts {
   backup_history: BackupEvent[];
   last_backup_status?: "healthy" | "corrupt" | "empty" | "missing";
   backup_stale?: boolean;
+  last_run?: BackupRunFacts;
   restore_drill?: RestoreDrillFacts;
 }
 

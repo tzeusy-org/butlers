@@ -824,6 +824,67 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     expect(html).not.toContain('data-testid="system-verdict-all-clear"');
   });
 
+  it("surfaces a failed backup run alongside a fresh, verified-healthy artifact (bu-u41p0)", () => {
+    // pg_dump.sh publishes nothing on failure, so every artifact fact below
+    // still reads clean. Without the run's own signal the banner would say
+    // "Instance healthy: ... backed up 3h ago" the morning after it died.
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: false,
+          last_run: {
+            result: "failed",
+            finished_at: "2026-01-02T02:00:00Z",
+            exit_code: 1,
+            reason: "pg_dump_failed",
+          },
+          restore_drill: { checked_at: "2026-01-01T00:00:00Z", result: "pass", detail: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("last backup run failed");
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
+  it("raises no clause for an unknown backup run result (bu-u41p0)", () => {
+    // "unknown" is the default for every deployment predating the run
+    // receipt, and the QA source files no finding on it. A permanent clause
+    // here would be noise, not honesty.
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: false,
+          last_run: { result: "unknown", finished_at: null, exit_code: null, reason: null },
+          restore_drill: { checked_at: "2026-01-01T00:00:00Z", result: "pass", detail: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).not.toContain("last backup run failed");
+    expect(html).toContain('data-testid="system-verdict-all-clear"');
+  });
+
   it("surfaces degraded fleet sources rather than a falsely confident all-clear", () => {
     setAllSuccess({ sourcesPartiallyDegraded: true });
     const html = renderPage();

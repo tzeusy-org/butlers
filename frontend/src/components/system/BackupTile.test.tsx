@@ -8,6 +8,8 @@
 //   - Unreachable source: graceful unavailable notice (not an error state)
 //   - Reachable with last_backup_at: Time rendered with the timestamp
 //   - Reachable without last_backup_at: "Never run" fallback
+//   - Last-run outcome (bu-u41p0): a failed run out-ranks the freshness
+//     verdict in the badge; "unknown" moves the badge in neither direction
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest"
@@ -330,5 +332,122 @@ describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
     const html = render()
     expect(html).toContain("restore drill ledger unavailable")
     expect(html).not.toContain(marker)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. Last-run outcome (bu-u41p0) -- freshness cannot see a failed run
+// ---------------------------------------------------------------------------
+
+describe("BackupTile -- last run outcome (bu-u41p0)", () => {
+  it("badges a failed run even when the artifact is verified healthy and fresh", () => {
+    // The regression this bead exists for: pg_dump.sh publishes nothing on
+    // failure, so yesterday's good dump is still there and every freshness
+    // fact reads clean. The badge must not say "Healthy".
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_backup_status: "healthy",
+        backup_stale: false,
+        last_run: {
+          result: "failed",
+          finished_at: "2026-05-02T02:00:00Z",
+          exit_code: 1,
+          reason: "pg_dump_failed",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("Run failed")
+    expect(html).not.toContain(">Healthy<")
+  })
+
+  it("reports a failed run's finish time and reason in its own row", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_run: {
+          result: "failed",
+          finished_at: "2026-05-02T02:00:00Z",
+          exit_code: 1,
+          reason: "artifact_corrupt",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-run-failed")
+    expect(html).toContain("artifact failed integrity verification")
+    expect(html).toContain("2026-05-02T02:00:00Z")
+  })
+
+  it("withholds a reason outside the script's fixed vocabulary", () => {
+    const marker = "backup-run-private-marker"
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_run: {
+          result: "failed",
+          finished_at: null,
+          exit_code: null,
+          reason: `postgresql://backup:${marker}@db.example.test/postgres`,
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-run-failed")
+    expect(html).not.toContain(marker)
+  })
+
+  it("renders 'unknown' as neither healthy nor failed in the run row", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_run: { result: "unknown", finished_at: null, exit_code: null, reason: null },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-run-unknown")
+    expect(html).not.toContain("backup-tile-run-success")
+    expect(html).not.toContain("backup-tile-run-failed")
+  })
+
+  it("treats an absent last_run the same as an explicit 'unknown'", () => {
+    mockResult = { isPending: false, data: makeBackupFacts({ last_run: undefined }) }
+    expect(render()).toContain("backup-tile-run-unknown")
+  })
+
+  it("leaves the badge on 'Stale' when the run result is unknown", () => {
+    // "unknown" is the absence of a signal, so it neither rescues a stale
+    // artifact nor demotes it further -- the freshness verdict still stands.
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_backup_status: "healthy",
+        backup_stale: true,
+        last_run: { result: "unknown", finished_at: null, exit_code: null, reason: null },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("Stale")
+    expect(html).toContain("backup-tile-run-unknown")
+  })
+
+  it("leaves the badge on 'Healthy' when the run succeeded", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        last_backup_status: "healthy",
+        backup_stale: false,
+        last_run: {
+          result: "success",
+          finished_at: "2026-05-01T02:00:00Z",
+          exit_code: 0,
+          reason: "ok",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("Healthy")
+    expect(html).toContain("backup-tile-run-success")
   })
 })
