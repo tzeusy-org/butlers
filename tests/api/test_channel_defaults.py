@@ -6,6 +6,7 @@ Covers:
 - GET returns 503 on DB unavailable
 - PATCH upserts and returns updated document
 - PATCH validates per-channel schema (missing fields → 400)
+- PATCH ignores a caller-supplied updated_by (attribution is server-derived)
 - PATCH rejects unknown channels (400)
 - PATCH rejects invalid priority_action (400)
 - PATCH returns 503 on DB unavailable
@@ -24,6 +25,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.channel_defaults import _get_db_manager
 
@@ -152,6 +154,54 @@ async def test_patch_channel_default_emits_audit(app):
     call_kwargs = mock_audit.await_args.kwargs
     assert call_kwargs["action"] == "ingestion.channel_default.update"
     assert call_kwargs["target"] == "telegram"
+
+
+async def test_patch_channel_default_ignores_caller_supplied_updated_by(app):
+    """A caller cannot forge attribution (bu-4y9ck).
+
+    ``updated_by`` is derived from the authenticated principal, so a value in
+    the request body is never persisted, never echoed back, and never used as
+    the audit actor.  The assertion is on the argument actually handed to the
+    upsert — the value that lands in ``public.channel_defaults``.
+    """
+    forged = "someone-else-entirely"
+    stored: dict[str, object] = {}
+
+    async def _capture_upsert(_sql, channel, policy, updated_at, updated_by):
+        stored["updated_by"] = updated_by
+        return _make_record(
+            {
+                "channel": channel,
+                "default_policy_json": policy,
+                "updated_at": updated_at,
+                "updated_by": updated_by,
+            }
+        )
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=_capture_upsert)
+    _app_with_mock_db(app, shared_pool=pool)
+
+    with patch(
+        "butlers.api.routers.channel_defaults._audit_append", new_callable=AsyncMock
+    ) as mock_audit:
+        mock_audit.return_value = 1
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(
+                "/api/ingestion/channel-defaults/telegram",
+                json={
+                    "default_policy_json": {"priority_action": "pass_through"},
+                    "updated_by": forged,
+                },
+            )
+
+    assert resp.status_code == 200
+    expected = authenticated_principal()
+    assert stored["updated_by"] == expected
+    assert resp.json()["updated_by"] == expected
+    assert mock_audit.await_args.kwargs["actor"] == expected
 
 
 async def test_patch_channel_default_400_missing_required_field(app):

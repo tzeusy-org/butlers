@@ -4674,10 +4674,14 @@ export interface ChannelDefaultEntry {
   updated_by: string;
 }
 
-/** Request body for PATCH /api/ingestion/channel-defaults/:channel. */
+/**
+ * Request body for PATCH /api/ingestion/channel-defaults/:channel.
+ *
+ * No `updated_by`: the backend derives the row's attribution from the
+ * authenticated principal and ignores any actor a client sends.
+ */
 export interface ChannelDefaultUpdate {
   default_policy_json: ChannelDefaultPolicy;
-  updated_by?: string;
 }
 
 // ---------------------------------------------------------------------------
