@@ -10,7 +10,14 @@ Covers:
 - ``GoogleHealthConnector._get_health_state()`` maps internal flags to the
   allowed heartbeat states (``healthy | degraded | error``) without ever
   returning ``broken``.
+- ``_normalize_google_health_record`` / ``_record_identity`` /
+  ``_format_sleep_duration_label`` unpack every daily union shape; an unmapped
+  union key is silent data loss, not a crash.
+- ``build_sleep_session_envelope`` / ``build_daily_summary_envelope`` key
+  events and idempotency per account email.
+- ``_cursor_endpoint_identity`` keeps per-account cursors distinct.
 - Scope/resource discovery preserves every required OAuth scope and V4 endpoint.
+- Filtered-content privacy tier: policy blocks persist no raw payload.
 
 [bu-k5l35.2.1]
 """
@@ -33,6 +40,9 @@ from butlers.connectors.google_health import (
     ResourceState,
     _cursor_endpoint_identity,
     _endpoint_identity_for_user,
+    _format_sleep_duration_label,
+    _normalize_google_health_record,
+    _record_identity,
     build_daily_summary_envelope,
     build_sleep_session_envelope,
 )
@@ -507,6 +517,58 @@ def test_build_post_body_same_day_window_requests_single_page() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Daily union unpacking / record identity / duration formatting
+#
+# An unmapped ``_DAILY_UNION_FIELDS`` key is silent data loss: normalization
+# falls through to ``dict(record)``, ``_record_identity`` returns None, and
+# ``_poll_resource`` skips the record with outcome="success". Every daily
+# resource therefore needs a positive assertion here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "resource,union_key,value_key,value",
+    [
+        ("resting_hr", "dailyRestingHeartRate", "beatsPerMinute", 58),
+        ("hrv", "dailyHeartRateVariability", "averageHeartRateVariabilityMilliseconds", 42.5),
+        ("spo2", "dailyOxygenSaturation", "averagePercentage", 96.3),
+        ("breathing_rate", "dailyRespiratoryRate", "breathsPerMinute", 14.2),
+        ("vo2_max", "dailyVo2Max", "vo2Max", 41.7),
+    ],
+)
+def test_normalize_daily_record_unpacks_every_union_shape(
+    resource: str,
+    union_key: str,
+    value_key: str,
+    value: object,
+) -> None:
+    """Each daily resource's union key maps to the flat ``date``/``value`` contract."""
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == resource)
+    record = _normalize_google_health_record(
+        bundle,
+        {union_key: {"date": {"year": 2026, "month": 4, "day": 24}, value_key: value}},
+    )
+
+    assert record["date"] == "2026-04-24"
+    assert record["value"] == value
+
+
+@pytest.mark.parametrize(
+    "ms,expected",
+    [(0, "0m"), (60_000, "1m"), (3_600_000, "1h 0m")],
+)
+def test_format_sleep_duration_label_sub_hour_and_whole_hour(ms: int, expected: str) -> None:
+    """The ``hours == 0`` branch and the zero-minute remainder both render."""
+    assert _format_sleep_duration_label(ms) == expected
+
+
+def test_record_identity_for_daily_falls_back_to_start_time() -> None:
+    """A daily record without ``date`` keys off ``startTime``, truncated to the day."""
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "activity")
+    assert _record_identity(bundle, {"startTime": "2026-04-23T00:00:00Z"}) == "2026-04-23"
+
+
+# ---------------------------------------------------------------------------
 # Resource state cursor advance
 # ---------------------------------------------------------------------------
 
@@ -546,7 +608,7 @@ async def test_poll_resource_emits_envelope_for_new_record(
     from datetime import UTC, datetime
 
     class _PollClock(datetime):
-        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(8))
+        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(30))
 
         @classmethod
         def now(cls, _tz: object = None) -> datetime:
@@ -637,6 +699,8 @@ async def test_poll_resource_emits_envelope_for_new_record(
         sleep_envelope["control"]["idempotency_key"]
         == retry_sleep_envelope["control"]["idempotency_key"]
     )
+    assert sleep_envelope["control"]["policy_tier"] == "default"
+    assert sleep_envelope["control"]["ingestion_tier"] == "full"
     assert sleep_envelope["payload"]["normalized_text"] == "Slept 8h 30m (88% efficiency)"
     assert sleep_envelope["payload"]["raw"]["stages"]["deep"] == 90
 
