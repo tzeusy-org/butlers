@@ -2874,19 +2874,28 @@ class MessagePipeline:
                                     butler_name=self._source_butler,
                                     credential_store=self._credential_store,
                                 )
-                            except Exception:
-                                logger.exception(
-                                    "Structured classification fast lane raised "
-                                    "unexpectedly; falling back to CLI classification",
-                                    extra=self._log_fields(
-                                        source=source,
-                                        chat_id=chat_id,
-                                        target_butler=None,
-                                        latency_ms=None,
-                                        content_blind=content_blind_observability,
-                                        request_id=request_id,
-                                    ),
+                            except Exception as exc:
+                                structured_log_fields = self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler=None,
+                                    latency_ms=None,
+                                    content_blind=content_blind_observability,
+                                    request_id=request_id,
                                 )
+                                if content_blind_observability:
+                                    logger.warning(
+                                        "Structured classification fast lane raised; "
+                                        "falling back to CLI classification failure_class=%s",
+                                        type(exc).__name__,
+                                        extra=structured_log_fields,
+                                    )
+                                else:
+                                    logger.exception(
+                                        "Structured classification fast lane raised "
+                                        "unexpectedly; falling back to CLI classification",
+                                        extra=structured_log_fields,
+                                    )
                                 spawn_result = None
 
                         if spawn_result is None:
@@ -3546,21 +3555,20 @@ class MessagePipeline:
                         },
                     )
 
-                    logger.info(
-                        "Pipeline routed message",
-                        extra=self._log_fields(
-                            source=source,
-                            chat_id=chat_id,
-                            target_butler=target_butler,
-                            latency_ms=total_latency_ms,
-                            content_blind=content_blind_observability,
-                            classification_latency_ms=spawn_latency_ms,
-                            routing_latency_ms=spawn_latency_ms,
-                            request_id=request_id,
-                            lifecycle_state=lifecycle_state,
-                            cc_summary=cc_output[:200] if cc_output else "",
-                        ),
+                    routed_log_fields = self._log_fields(
+                        source=source,
+                        chat_id=chat_id,
+                        target_butler=target_butler,
+                        latency_ms=total_latency_ms,
+                        content_blind=content_blind_observability,
+                        classification_latency_ms=spawn_latency_ms,
+                        routing_latency_ms=spawn_latency_ms,
+                        request_id=request_id,
+                        lifecycle_state=lifecycle_state,
                     )
+                    if not content_blind_observability:
+                        routed_log_fields["cc_summary"] = cc_output[:200] if cc_output else ""
+                    logger.info("Pipeline routed message", extra=routed_log_fields)
 
                     if message_inbox_id:
                         completed_at = datetime.now(UTC)

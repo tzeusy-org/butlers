@@ -559,6 +559,119 @@ async def test_decomposition_ingress_dedupe_failure_is_content_blind(
     assert not pipeline_exception.called
 
 
+async def test_content_blind_structured_classification_failure_has_no_traceback(
+    caplog: pytest.LogCaptureFixture,
+):
+    sentinel = "postgresql://secret-dsn 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        local_tool_server_provider=lambda: object(),
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            new=AsyncMock(side_effect=RuntimeError(sentinel)),
+        ),
+        patch("butlers.modules.pipeline.logger.exception") as pipeline_exception,
+        patch("butlers.modules.pipeline.logger.warning") as pipeline_warning,
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "PRIVATE MESSAGE SQL SELECT",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_identity": "15551234567@s.whatsapp.net",
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-888888888888",
+            },
+        )
+
+    assert result.acked_targets == ["finance"]
+    assert not pipeline_exception.called
+    observability = (
+        caplog.text
+        + repr(pipeline_warning.call_args_list)
+        + repr([record.__dict__ for record in caplog.records])
+    )
+    assert sentinel not in observability
+
+
+async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic() -> None:
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        local_tool_server_provider=lambda: object(),
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            new=AsyncMock(side_effect=RuntimeError("ordinary diagnostic detail")),
+        ),
+        patch("butlers.modules.pipeline.logger.exception") as pipeline_exception,
+    ):
+        result = await pipeline.process(
+            "ordinary message",
+            tool_args={"source_channel": "telegram_bot", "source_identity": "owner"},
+        )
+
+    assert result.acked_targets == ["finance"]
+    pipeline_exception.assert_called_once()
+
+
+async def test_conversation_history_routed_log_omits_raw_model_output() -> None:
+    sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output=sentinel, tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=_decomp_messages("private message")
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch("butlers.modules.pipeline.logger.info") as pipeline_info,
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-999999999999",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="66666666-6666-4666-8666-666666666666",
+        )
+
+    assert result.acked_targets == ["finance"]
+    routed_log = next(
+        call
+        for call in pipeline_info.call_args_list
+        if call.args and call.args[0] == "Pipeline routed message"
+    )
+    assert sentinel not in repr(routed_log)
+    assert "cc_summary" not in routed_log.kwargs["extra"]
+
+
 def _dashboard_tool_args(**overrides: Any) -> dict[str, Any]:
     """Build a dashboard ingress shape with its mandatory immutable turn id."""
     args: dict[str, Any] = {

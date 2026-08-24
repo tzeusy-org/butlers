@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import time
 from contextlib import suppress
@@ -159,6 +160,40 @@ def test_batch_history_uses_shared_structured_sender_contract(
             "reply_to": None,
         }
     ]
+
+
+def test_batch_history_missing_date_warning_is_content_blind(
+    connector: TelegramUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    message_id = 15551234567
+    chat_id = "-10015551234567"
+    sender_id = 777000111
+    message = SimpleNamespace(
+        id=message_id,
+        chat_id=int(chat_id),
+        sender_id=sender_id,
+        sender=SimpleNamespace(first_name="Alice", username=None),
+        message="PRIVATE MESSAGE SQL SELECT",
+        text="PRIVATE MESSAGE SQL SELECT",
+        date=None,
+        reply_to_msg_id=None,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        envelope = connector._build_batch_envelope(
+            chat_id,
+            [message],
+            [message],
+            participant_count=2,
+            chat_type="private",
+        )
+
+    assert envelope["payload"]["raw"]["conversation_history"][0]["timestamp"] is None
+    observability = caplog.text + repr([record.__dict__ for record in caplog.records])
+    assert str(message_id) not in observability
+    assert chat_id not in observability
+    assert str(sender_id) not in observability
 
 
 # ---------------------------------------------------------------------------
