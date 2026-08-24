@@ -242,6 +242,37 @@ fallback (gitignored, costs disk per worktree).
 
 The script symlinks `frontend/node_modules` and silently skips if the main repo hasn't run `npm install` yet. It is safe to run multiple times (idempotent).
 
+### Worktree `.venv` must be real, never a symlink (bu-1redj)
+
+`node_modules` is safe to symlink between worktrees. **`.venv` is not.** The venv holds an
+editable-install `.pth` (`.venv/lib/python3.12/site-packages/_editable_impl_butlers.pth`) naming one
+absolute source root. Symlink a worktree's `.venv` at the main repo's venv and that worktree's
+`import butlers` resolves to **main's** `src/`, so a local test run validates main's code while
+appearing to validate the branch diff. CI is unaffected (fresh checkout, fresh install) — what the
+symlink destroys is local pre-push confidence. Observed 2026-08-24 on the `bu-istke.5` and
+`bu-u7iwh` worktrees, and on `bu-erfdj`, whose worktree has since been removed.
+
+Detection — the third line is the one that settles it:
+```bash
+ls -ld .venv                                                            # symlink or real dir?
+cat .venv/lib/python3.12/site-packages/_editable_impl_butlers.pth       # which src/ is wired in?
+./.venv/bin/python -c "import butlers; print(butlers.__file__)"         # must print THIS worktree
+```
+
+This now runs automatically: the root `conftest.py` refuses to start pytest when `butlers` resolves
+outside `<checkout>/src`, naming the offending path and the repair. It hard-fails rather than warns
+because the failure mode is false confidence, and a warning in a 40-minute run scrolls away.
+`BUTLERS_ALLOW_EXTERNAL_PACKAGE=1` opts out for the rare deliberate case.
+
+Repair, from inside the affected worktree:
+```bash
+rm .venv && uv sync --dev    # rm on a symlink drops the link only, never the target
+```
+
+**Never run `uv sync` / `uv pip` / `pip install` while `.venv` is still a symlink.** It operates on
+the *linked* venv and can re-point main's `.pth` at a worktree, breaking main and every other
+symlinked worktree at once. Check `ls -ld .venv` before any installer command.
+
 ### Key Concepts
 
 - **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.

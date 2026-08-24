@@ -7,6 +7,7 @@ re-exports them so they are equally visible from ``roster/*/tests/``.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import shutil
@@ -16,14 +17,96 @@ import uuid
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from importlib.machinery import ModuleSpec
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+# --- Package-source guard (bu-1redj) -----------------------------------------
+#
+# A worktree whose ``.venv`` is a *symlink* to another checkout's venv inherits
+# that venv's editable-install ``.pth``, which hardcodes the other checkout's
+# ``src/``.  ``import butlers`` then resolves outside this tree and the suite
+# validates someone else's working copy while looking like it validated the
+# branch diff.  CI never sees it (fresh checkout, fresh install); what it
+# destroys is local pre-push confidence.
+#
+# Because the damage *is* false confidence, this refuses to run rather than
+# warning into a scrollback nobody reads.  It runs before the first ``butlers``
+# import below, so the wrong package is never loaded at all.
+
+PACKAGE_SOURCE_GUARD_BANNER = "the `butlers` package does not resolve inside this checkout"
+
+_ALLOW_EXTERNAL_PACKAGE_ENV = "BUTLERS_ALLOW_EXTERNAL_PACKAGE"
+_REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _package_source_paths(spec: ModuleSpec | None) -> list[Path]:
+    """Every filesystem location *spec* would load the package from.
+
+    Both halves matter: ``origin`` is the ``__init__.py`` a regular package
+    loads, ``submodule_search_locations`` is all a namespace package has.
+    """
+    if spec is None:
+        return []
+    paths = [Path(spec.origin)] if spec.origin and spec.origin != "namespace" else []
+    paths.extend(Path(location) for location in spec.submodule_search_locations or [])
+    return paths
+
+
+def _external_package_error(repo_root: Path, source_paths: list[Path]) -> str | None:
+    """Describe an out-of-tree ``butlers``, or return ``None`` when it is in tree.
+
+    "In tree" means under ``<repo_root>/src``, not merely under *repo_root*: a
+    stale non-editable copy sitting in the worktree's own ``.venv`` is the same
+    hazard, since the code under test is a copy rather than the working tree.
+
+    An empty *source_paths* means nothing is installed; that is a plain
+    ``ImportError`` a moment later, and it already says so clearly.
+    """
+    expected_root = (repo_root / "src").resolve()
+    for path in source_paths:
+        resolved = path.resolve()
+        if resolved == expected_root or expected_root in resolved.parents:
+            continue
+        return (
+            f"\n{PACKAGE_SOURCE_GUARD_BANNER}.\n\n"
+            f"  this checkout : {repo_root}\n"
+            f"  expected under: {expected_root}\n"
+            f"  resolved to   : {resolved}\n\n"
+            "Running the suite now would validate that other source tree instead of\n"
+            "this one (bu-1redj). The usual cause is a `.venv` symlinked to another\n"
+            "checkout's venv, whose editable-install .pth hardcodes that checkout's src/.\n\n"
+            "  check:  ls -ld .venv\n"
+            "  repair: rm .venv && uv sync --dev    # rm on a symlink drops the link only\n\n"
+            "Do NOT run `uv sync` while .venv is still a symlink: it mutates the linked\n"
+            "venv and can re-point the other checkout's .pth at this worktree.\n\n"
+            f"Set {_ALLOW_EXTERNAL_PACKAGE_ENV}=1 to test the external package on purpose.\n"
+        )
+    return None
+
+
+def _assert_butlers_resolves_in_tree() -> None:
+    if os.environ.get(_ALLOW_EXTERNAL_PACKAGE_ENV):
+        return
+    message = _external_package_error(
+        _REPO_ROOT, _package_source_paths(importlib.util.find_spec("butlers"))
+    )
+    if message is not None:
+        raise RuntimeError(message)
+
+
+_assert_butlers_resolves_in_tree()
+
 # Trigger roster module discovery so dynamically-loaded modules
 # are available in sys.modules before test collection.
-from butlers.modules.registry import default_registry as _default_registry
-from butlers.testing.shared_fixtures import MockSpawner, SpawnerResult, mock_spawner
+from butlers.modules.registry import default_registry as _default_registry  # noqa: E402
+from butlers.testing.shared_fixtures import (  # noqa: E402
+    MockSpawner,
+    SpawnerResult,
+    mock_spawner,
+)
 
 __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
 

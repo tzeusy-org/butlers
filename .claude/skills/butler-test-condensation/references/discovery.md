@@ -175,9 +175,11 @@ ls -1 src/butlers/modules/ | grep -v '__\|\.py$'
 ## Post-Condensation Verification
 
 ```bash
-# In a worktree first: worktrees have no .venv. Condensation only edits tests/,
-# so symlink the root venv and run with --no-sync (avoids racing re-syncs).
-ln -s /home/tze/gt/butlers/.venv "$PWD/.venv"
+# In a worktree first: a fresh worktree has no .venv. Create a REAL one -- never
+# symlink the main repo's venv, whose editable-install .pth hardcodes main's
+# src/, so `import butlers` would resolve to main and the run would validate
+# main's code (bu-1redj). The root conftest.py refuses to run in that state.
+uv sync --dev
 
 # Run scoped suite (PREFER THIS — fast, 12-30s per domain)
 uv run --no-sync pytest tests/YOUR_DOMAIN -q --tb=short
