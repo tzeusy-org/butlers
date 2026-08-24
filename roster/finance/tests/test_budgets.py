@@ -1461,3 +1461,64 @@ async def test_budget_crud_functions_importable_from_package():
     assert callable(budget_list)
     assert callable(budget_remove)
     assert callable(budget_status)
+
+
+# ---------------------------------------------------------------------------
+# resolve_budget_zone fallback [bu-4zd9h]
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBudgetZoneFallsBackToUTC:
+    """``resolve_budget_zone`` must never hand ``ZoneInfo`` an invalid name.
+
+    ``resolve_budget_zone`` is documented as falling back to UTC "when the
+    setting is unreadable or unset", and ``budget_status`` calls it on every
+    invocation. Nothing pinned that: the guarantee lives one module away, in
+    ``resolve_general_timezone``'s blanket ``except Exception``. If a later
+    change makes that function re-raise — or narrows the ``except`` — then an
+    owner with a corrupted stored timezone stops being able to read their
+    budgets at all, and no finance test would notice, because every other test
+    stores a valid zone.
+
+    These run in the unit lane on a mocked pool rather than in
+    ``test_budget_period_timezone.py``, whose module-level ``skipif`` on Docker
+    would let them be silently skipped exactly where a regression is cheapest
+    to ship.
+    """
+
+    async def test_unreadable_settings_yield_utc(self):
+        from butlers.tools.finance.budgets import resolve_budget_zone
+
+        pool = AsyncMock()
+        with patch(
+            "butlers.core.general_settings.load_general_settings",
+            side_effect=RuntimeError("db down"),
+        ):
+            assert (await resolve_budget_zone(pool)).key == "UTC"
+
+    async def test_a_corrupted_stored_timezone_yields_utc(self):
+        """A stored value that is not an IANA name must not reach ``ZoneInfo``.
+
+        ``load_general_settings`` normalizes, and normalization *raises* on an
+        unknown zone rather than returning a default, so the failure arrives at
+        ``resolve_budget_zone`` as an exception and not as a bad string.
+        """
+        from butlers.tools.finance.budgets import resolve_budget_zone
+
+        pool = AsyncMock()
+        with patch(
+            "butlers.core.general_settings.load_general_settings",
+            side_effect=ValueError("Unknown timezone: 'Not/AZone'"),
+        ):
+            assert (await resolve_budget_zone(pool)).key == "UTC"
+
+    async def test_a_configured_zone_is_honoured(self):
+        """The fallback must not be the only path — otherwise it proves nothing."""
+        from butlers.tools.finance.budgets import resolve_budget_zone
+
+        pool = AsyncMock()
+        with patch(
+            "butlers.core.general_settings.load_general_settings",
+            return_value={"timezone": "Asia/Singapore"},
+        ):
+            assert (await resolve_budget_zone(pool)).key == "Asia/Singapore"
