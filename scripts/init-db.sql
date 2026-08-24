@@ -2884,7 +2884,8 @@ CREATE TABLE IF NOT EXISTS runtime_attention_admin.bootstrap_configuration (
     producer_activated_at TIMESTAMPTZ
 );
 ALTER TABLE runtime_attention_admin.bootstrap_configuration
-    ADD COLUMN IF NOT EXISTS interface_version INTEGER NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS interface_version INTEGER NOT NULL DEFAULT 1
+        CHECK (interface_version IN (1, 2)),
     ADD COLUMN IF NOT EXISTS producers_enabled BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS producer_activated_at TIMESTAMPTZ;
 REVOKE ALL PRIVILEGES ON TABLE runtime_attention_admin.bootstrap_configuration FROM PUBLIC;
