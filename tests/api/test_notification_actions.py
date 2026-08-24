@@ -122,6 +122,30 @@ class TestRetryNotification:
             resp = await client.post(f"/api/notifications/{NOTIF_ID}/retry")
         assert resp.status_code == 409
 
+    async def test_rejection_detail_is_operator_readable_and_names_the_status(self):
+        """The 409 ``detail`` is the operator-facing rejection copy.
+
+        NotificationsPage renders it verbatim as the toast description when a
+        stale list still offers "Retry" on a row another tab already actioned
+        (bu-6t8ix.1), so a rejection that only carried a status code would
+        surface as an unexplained failure. It must say why, and never leak a
+        redelivery having happened -- ``deliver()`` is not even patched here,
+        so any real send attempt would raise instead of silently succeeding.
+        """
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=_row(status="read"))
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/notifications/{NOTIF_ID}/retry")
+
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert "Only failed notifications can be retried" in detail
+        assert "'read'" in detail
+        pool.execute.assert_not_awaited()
+
     async def test_successful_retry_marks_original_read_and_returns_new_attempt(self):
         pool = AsyncMock()
         # fetchrow order: initial status read, atomic claim, owner lookup

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
+import { toast } from "sonner";
 
 import type { NotificationParams } from "@/api/types";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
@@ -296,10 +297,30 @@ export default function NotificationsPage() {
   // affordances route through the same mutation.
   const handleDismiss = handleMarkRead;
 
+  // Retry and escalate are real re-sends whose outcome the operator has to see
+  // (bu-6t8ix.1). Two outcomes were previously silent, so the verb looked like
+  // it had worked in both: a 409 rejection, which is exactly what a stale list
+  // still offering "Retry" on a row another tab already actioned produces, and
+  // a 200 whose new attempt itself came back "failed". Both now toast, mirroring
+  // IssuesPage's ping/run-now idiom (bu-86c4c.15).
   const handleRetry = useCallback(
     (notificationId: string) => {
       setPendingRetryIds((prev) => new Set(prev).add(notificationId));
       retry(notificationId, {
+        onSuccess: (result) => {
+          if (result.status === "sent") {
+            toast.success(`Notification re-sent on ${result.channel}`);
+          } else {
+            toast.error("Retry failed again", {
+              description: result.error ?? undefined,
+            });
+          }
+        },
+        onError: (err) => {
+          toast.error("Could not retry notification", {
+            description: err instanceof Error ? err.message : undefined,
+          });
+        },
         onSettled: () => {
           setPendingRetryIds((prev) => {
             const next = new Set(prev);
@@ -316,6 +337,20 @@ export default function NotificationsPage() {
     (notificationId: string) => {
       setPendingEscalateIds((prev) => new Set(prev).add(notificationId));
       escalate(notificationId, {
+        onSuccess: (result) => {
+          if (result.status === "sent") {
+            toast.success(`Notification escalated to ${result.channel}`);
+          } else {
+            toast.error("Escalation failed", {
+              description: result.error ?? undefined,
+            });
+          }
+        },
+        onError: (err) => {
+          toast.error("Could not escalate notification", {
+            description: err instanceof Error ? err.message : undefined,
+          });
+        },
         onSettled: () => {
           setPendingEscalateIds((prev) => {
             const next = new Set(prev);

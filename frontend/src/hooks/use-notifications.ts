@@ -122,7 +122,7 @@ export function useAcknowledgeAllFailed() {
  */
 export function useRetryNotification() {
   const queryClient = useQueryClient();
-  return useMutation<NotificationActionResult | undefined, unknown, string>({
+  return useMutation<NotificationActionResult, unknown, string>({
     mutationFn: async (notificationId: string) => {
       const resp = await retryNotification(notificationId);
       return resp.data;
@@ -143,7 +143,7 @@ export function useRetryNotification() {
  */
 export function useEscalateNotification() {
   const queryClient = useQueryClient();
-  return useMutation<NotificationActionResult | undefined, unknown, string>({
+  return useMutation<NotificationActionResult, unknown, string>({
     mutationFn: async (notificationId: string) => {
       const resp = await escalateNotification(notificationId);
       return resp.data;
