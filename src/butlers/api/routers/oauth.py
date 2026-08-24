@@ -2572,6 +2572,78 @@ class _UserinfoError(Exception):
     """Raised when the Google userinfo endpoint call fails."""
 
 
+#: Userinfo fields the callbacks read. Both are optional -- Google omits
+#: ``email`` when the ``email`` scope was not granted -- and both are consumed
+#: as strings: ``email`` keys the account row, ``name`` becomes its display name.
+_USERINFO_STRING_FIELDS: tuple[str, ...] = ("email", "name")
+
+
+def _validate_google_userinfo_payload(payload: object) -> dict[str, Any]:
+    """Give ``_fetch_google_userinfo``'s return annotation something behind it.
+
+    The helper is typed ``-> dict[str, Any]`` and used as one: both callbacks do
+    ``userinfo.get("email")`` inside a ``try`` that catches only
+    :class:`_UserinfoError`. Nothing checked that the parsed body *was* a dict,
+    so a JSON array or scalar made ``.get`` raise ``AttributeError`` -- not the
+    error the handler names, so it escaped and the callback answered 500 instead
+    of the structured 502 that exists for exactly this case. An ``email`` that is
+    present but not a string had a quieter ending: it stayed truthy, so it passed
+    the ``if ... and account_email:`` guard and reached
+    ``create_google_account(email=...)``, filing a credential under a key that
+    is not an address.
+
+    Both are the same missing check, so it lives here rather than at each call
+    site, and rejection uses :class:`_UserinfoError` -- the type the callers are
+    already written to answer.
+
+    The distinction that matters is *malformed* versus *merely absent*. Absent,
+    ``null``, and blank all mean "Google did not give me this field", which the
+    callbacks already handle by skipping account resolution and completing the
+    flow; those normalise to absent, exactly where the old ``.get`` sent them, so
+    no currently-accepted body changes verdict. A ``list`` or an ``int`` is not
+    that case and is rejected, matching how
+    :func:`butlers.oauth_token_payload.validate_oauth_token_payload` treats an
+    optional field that is present but unusable.
+
+    Whitespace-only is the one shape whose verdict does move. ``"   "`` is
+    truthy, so today it reaches the registry as an account key; stripping it to
+    absent is the same normalisation ``_required_nonempty_string`` applies on the
+    token side.
+
+    Fields this function does not know about are passed through untouched.
+
+    Raises
+    ------
+    _UserinfoError
+        If the payload is not a JSON object, or a known field is present with a
+        non-string value. The message carries fixed local text plus a type name
+        only -- never a provider-supplied value.
+    """
+    if not isinstance(payload, dict):
+        raise _UserinfoError(
+            f"Userinfo response is not a JSON object (got {type(payload).__name__})."
+        )
+
+    validated = dict(payload)
+    for key in _USERINFO_STRING_FIELDS:
+        if key not in validated:
+            continue
+        value = validated[key]
+        if value is None:
+            del validated[key]
+            continue
+        if not isinstance(value, str):
+            raise _UserinfoError(
+                f"Userinfo response has an invalid {key} (got {type(value).__name__})."
+            )
+        stripped = value.strip()
+        if stripped:
+            validated[key] = stripped
+        else:
+            del validated[key]
+    return validated
+
+
 async def _exchange_code_for_tokens(
     *,
     code: str,
@@ -2657,12 +2729,17 @@ async def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
     Returns
     -------
     dict
-        Userinfo payload from Google (includes ``email``, ``name``, etc.).
+        Userinfo payload from Google, validated by
+        :func:`_validate_google_userinfo_payload`: it is a ``dict``, and
+        ``email`` and ``name`` are each either absent or a non-empty ``str``.
+        Callers may therefore ``.get`` those fields and treat the result as
+        ``str | None``. Other keys are passed through unchecked.
 
     Raises
     ------
     _UserinfoError
-        If the request fails for any reason (HTTP error, network error, JSON error).
+        If the request fails for any reason (HTTP error, network error, JSON
+        error), or if the body does not meet the contract above.
 
     Notes
     -----
@@ -2687,9 +2764,13 @@ async def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
         raise _UserinfoError(f"Userinfo endpoint returned HTTP {response.status_code}")
 
     try:
-        return response.json()
+        payload = response.json()
     except json.JSONDecodeError as exc:
         raise _UserinfoError(f"Invalid JSON in userinfo response: {exc}") from exc
+
+    # Validate before returning, not at the call sites: a 200 and a parse only
+    # prove the transport and the syntax, and both callers read this as a dict.
+    return _validate_google_userinfo_payload(payload)
 
 
 # ---------------------------------------------------------------------------
