@@ -1088,6 +1088,58 @@ async def test_insight_scan_pretrip_departing_today_has_future_expiry(
         assert expires_at > _utcnow()
 
 
+async def test_insight_scan_pretrip_survives_wall_clock_crossing_utc_midnight(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    """A same-day departure stays acceptable once the wall clock passes UTC midnight.
+
+    Reproduces the CI failure on PR #3814: the scan ran at 23:58:35Z and the broker
+    validated the candidate at 00:16:40Z the next day. The scan stamps ``expires_at``
+    as the final instant of the departure *date*, so a broker that re-reads its own
+    wall clock sees an instant already in the past and rejects the candidate.
+
+    Both clocks are pinned to explicit instants straddling the boundary, so the
+    crossing is reproduced at any wall-clock hour rather than only near midnight.
+    """
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.switchboard.insight import broker as insight_broker
+
+    scan_instant = datetime(2026, 8, 23, 23, 58, 35, tzinfo=UTC)
+    broker_instant = datetime(2026, 8, 24, 0, 16, 40, tzinfo=UTC)
+
+    class _BrokerClock(datetime, metaclass=_RealInstanceCheck):
+        """The broker's own clock, already on the far side of UTC midnight."""
+
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return broker_instant
+
+    # The autouse fixture already points the job module's date/datetime at the
+    # frozen classes; both read ``_NOW`` at call time, so rebinding it here moves
+    # the scan's clock without disturbing the broker's.
+    monkeypatch.setitem(globals(), "_NOW", scan_instant)
+    monkeypatch.setattr(insight_broker, "datetime", _BrokerClock)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        await _insert_trip(
+            pool,
+            start_date=scan_instant.date(),
+            end_date=scan_instant.date() + timedelta(days=3),
+        )
+
+        result = await run_insight_scan(pool)
+
+        assert result["candidates_errored"] == 0
+        assert result["candidates_accepted"] == 1
+        expires_at = await pool.fetchval(
+            "SELECT expires_at FROM insight_candidates WHERE category = 'pre-trip'"
+        )
+        assert expires_at == datetime(2026, 8, 23, 23, 59, 59, 999999, tzinfo=UTC)
+
+
 async def test_insight_scan_trip_candidates_include_correlation_metadata(
     provisioned_postgres_pool,
     monkeypatch,

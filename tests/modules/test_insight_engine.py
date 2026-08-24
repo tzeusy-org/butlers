@@ -2209,6 +2209,55 @@ class TestProposeInsightCandidateUnit:
         assert "expires_at must be in the future" in result["reason"]
         pool.fetchrow.assert_not_called()
 
+    async def test_injected_now_governs_expires_at_freshness(self):
+        """The caller's reference instant, not the broker's clock, judges freshness.
+
+        A scan that reads its clock once and derives ``expires_at`` from it must be
+        able to hand that same instant down, so a wall clock that advances between
+        the two reads (a UTC-midnight crossing, for instance) cannot invalidate a
+        candidate the scan just built.
+        """
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        reference = datetime(2026, 8, 23, 23, 58, 35, tzinfo=UTC)
+
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="travel",
+            priority=92,
+            category="pre-trip",
+            dedup_key="travel:pre-trip:trip-1:2026-08-23",
+            message="valid",
+            expires_at=datetime(2026, 8, 23, 23, 59, 59, 999999, tzinfo=UTC),
+            now=reference,
+        )
+
+        assert result["status"] == "accepted"
+        pool.execute.assert_called_once()
+
+    async def test_injected_now_still_rejects_stale_expires_at(self):
+        """Injecting ``now`` narrows the reference frame; it does not disable the check."""
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        pool = self._make_mock_pool()
+        reference = datetime(2026, 8, 23, 23, 58, 35, tzinfo=UTC)
+
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="travel",
+            priority=92,
+            category="pre-trip",
+            dedup_key="travel:pre-trip:trip-1:2026-08-22",
+            message="valid",
+            expires_at=reference - timedelta(seconds=1),
+            now=reference,
+        )
+
+        assert result["status"] == "error"
+        assert "expires_at must be in the future" in result["reason"]
+        pool.execute.assert_not_called()
+
     @pytest.mark.parametrize(
         "verbosity,custom_budget",
         [("off", None), ("minimal", 0)],
