@@ -146,27 +146,34 @@ async def test_query_uses_entity_facts_not_contact_info() -> None:
 _JID = "15551234567@s.whatsapp.net"
 
 
-def _make_seq_pool(rows: list[MagicMock | None]) -> AsyncMock:
+def _make_seq_pool(
+    rows: list[MagicMock | None],
+    *,
+    phone_rows: list[MagicMock] | None = None,
+) -> AsyncMock:
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(side_effect=rows)
+    pool.fetch = AsyncMock(return_value=phone_rows or [])
     return pool
 
 
 async def test_whatsapp_phone_fallback_resolves_known_via_has_phone() -> None:
-    # has-handle miss, then has-phone hit on the extracted E.164 number.
-    pool = _make_seq_pool([None, _make_row(["colleague"])])
+    # has-handle miss, then the ambiguity-aware has-phone scan returns one entity.
+    pool = _make_seq_pool([None], phone_rows=[_make_row(["colleague"])])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().known
-    assert pool.fetchrow.call_count == 2
+    assert pool.fetchrow.call_count == 1
     assert pool.fetchrow.call_args_list[0].args[1] == "has-handle"
     assert pool.fetchrow.call_args_list[0].args[2] == _JID
-    assert pool.fetchrow.call_args_list[1].args[1] == "has-phone"
-    assert pool.fetchrow.call_args_list[1].args[2] == "15551234567"
+    pool.fetch.assert_awaited_once()
+    phone_call = pool.fetch.await_args
+    assert "ef.predicate   = 'has-phone'" in phone_call.args[0]
+    assert phone_call.args[1] == "15551234567"
 
 
 async def test_whatsapp_phone_fallback_inner_circle() -> None:
-    pool = _make_seq_pool([None, _make_row(["family"])])
+    pool = _make_seq_pool([None], phone_rows=[_make_row(["family"])])
     resolver = ContactWeightResolver(pool)
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().inner_circle
@@ -180,6 +187,7 @@ async def test_whatsapp_group_jid_does_not_fabricate_phone_fallback() -> None:
     weight = await resolver.resolve("whatsapp_jid", "1203630-1622640@g.us")
     assert weight == WeightTier().unknown
     assert pool.fetchrow.call_count == 1
+    pool.fetch.assert_not_awaited()
 
 
 async def test_whatsapp_has_handle_hit_skips_phone_fallback() -> None:
@@ -190,6 +198,7 @@ async def test_whatsapp_has_handle_hit_skips_phone_fallback() -> None:
     weight = await resolver.resolve("whatsapp_jid", _JID)
     assert weight == WeightTier().known  # from has-handle, not the unused owner row
     assert pool.fetchrow.call_count == 1
+    pool.fetch.assert_not_awaited()
 
 
 async def test_non_whatsapp_channel_never_triggers_phone_fallback() -> None:
