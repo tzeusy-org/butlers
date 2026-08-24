@@ -9,20 +9,45 @@ sent Sam the book") — and it delegates every database effect to
 ``butlers.core.commitments``. There is no SQL here (REQ-commitment-lifecycle-002
 keeps the ledger behind one validating doorway).
 
+How this reaches the butler
+---------------------------
+Two MCP tools in ``roster/relationship/modules/tools.py`` (group ``tracking``)
+wrap the two capture functions: ``commitment_capture`` and
+``commitment_resolve_from_utterance``. The ``commitment-capture`` session skill
+tells the session what to pass them — the owner's sentence verbatim — and the
+closures take ``session_id`` from the runtime contextvar rather than from a tool
+argument, so the provenance REQ-commitment-lifecycle-008 requires is the
+runtime's account of the session and not the model's.
+
 Why a deterministic predicate rather than an LLM judgement
 ----------------------------------------------------------
-RFC 0026 §8 describes confidence as "an LLM judgment". That is true of the
-*general* case, and the ``commitment-capture`` session skill still routes
-free-form conversation through this module rather than around it. But
-REQ-commitment-lifecycle-007 draws its line at "explicit first-person
-commitment patterns", and a false positive here is expensive in a specific way:
-it manufactures an obligation the owner never took on and then escalates it at
-them for weeks. An explicit-pattern gate is the part of that judgement that can
-be *measured* — see ``roster/relationship/tests/test_commitment_extraction.py``,
-which pins the predicate against a curated near-miss set. An LLM that decides
-"this is a commitment" and calls the capture tool still has to get past this
-gate, so the gate is the floor on how wrong the system can be, not a
-replacement for the model's reading.
+RFC 0026 §8 says "confidence is an LLM judgment", and that governs
+``create_commitment``'s general contract — which ``butlers.core.commitments``
+honours, since confidence is a caller-supplied parameter there and any butler
+may pass its own. This module is narrower. REQ-commitment-lifecycle-007 scopes
+itself to "explicit first-person commitment patterns", gives literal patterns as
+its examples ("I'll send", "I promised", "I need to follow up"), and fixes its
+scenario's confidence at 0.9 — a constant, not a judgement. A marker table is a
+faithful reading of *that* requirement.
+
+The division of labour is therefore: the session decides whether a turn is worth
+offering at all, and this gate decides whether the words are explicit enough to
+create a durable record. Both must say yes. The gate is a floor on how wrong the
+system can be, not a replacement for the model's reading — and unlike the
+model's reading it can be *measured*, which
+``roster/relationship/tests/test_commitment_extraction.py`` does against a
+curated near-miss set.
+
+A false positive is expensive in a specific way, which is what justifies the
+floor: it manufactures an obligation the owner never took on, and then escalates
+it at them for weeks.
+
+What this module cannot currently express is an LLM confidence *lower* than the
+marker's — a session that reads a commitment as explicit-but-shaky has no way to
+file it in the 0.6-0.8 "created but never surfaced" band RFC 0026 §8 defines.
+That band is reachable through the core facade directly; wiring it through here
+needs a caller-supplied confidence parameter and is deliberately left out until
+something needs it.
 
 The predicate, stated once
 --------------------------

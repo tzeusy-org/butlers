@@ -16,6 +16,7 @@ from typing import Any
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
     """Register all relationship MCP tools as closures over *module*."""
 
+    from butlers.core.tool_call_capture import get_current_runtime_session_id
     from butlers.modules.base import group_enabled
 
     def _tool(group: str):
@@ -26,6 +27,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
     from butlers.tools.relationship import channel as _ci
+    from butlers.tools.relationship import commitments as _commitments
     from butlers.tools.relationship import contacts as _contacts
     from butlers.tools.relationship import dates as _dates
     from butlers.tools.relationship import dunbar as _dunbar
@@ -863,6 +865,56 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     ) -> None:
         """Delete a task."""
         await _tasks.task_delete(module._get_pool(), task_id)
+
+    # =================================================================
+    # Commitment tools (group: tracking)
+    # =================================================================
+    # REQ-commitment-lifecycle-007: the Relationship butler is the producer of
+    # commitment-class owner_conditions, and it produces them from conversation.
+    # Both tools take the owner's words verbatim and let the extractor decide —
+    # the session does not get to assert "this is a commitment" and have it
+    # believed, because a false positive escalates a fabricated obligation at
+    # the owner for weeks. See the `commitment-capture` skill.
+
+    @_tool("tracking")
+    async def commitment_capture(utterance: str) -> dict[str, Any]:
+        """Record a commitment the owner just made, if the words explicitly state one.
+
+        Pass the owner's sentence verbatim — do not paraphrase it into a
+        commitment, and do not strip hedges. The extractor refuses hedged,
+        conditional, second-person, and third-party statements, and refuses
+        anything whose counterparty does not resolve to a known contact.
+
+        Returns ``{"status": "created"|"confirmed"}`` when a commitment was
+        opened or re-confirmed, or ``{"status": "skipped", "reason": ...}``
+        with ``no_commitment_pattern``, ``counterparty_unresolved``, or
+        ``below_threshold``. A skip is a normal outcome, not an error.
+        """
+        return await _commitments.capture_commitment(
+            module._get_pool(),
+            utterance=utterance,
+            session_id=get_current_runtime_session_id(),
+        )
+
+    @_tool("tracking")
+    async def commitment_resolve_from_utterance(utterance: str) -> dict[str, Any]:
+        """Close an active commitment the owner just reported finishing.
+
+        Pass the owner's sentence verbatim ("I sent Sam the book"). The active
+        commitments for the named counterparty are matched by action overlap;
+        an ambiguous match resolves nothing, because closing the wrong
+        commitment is worse than closing none.
+
+        Returns ``{"status": "resolved", ...}`` or ``{"status": "skipped",
+        "reason": ...}`` with ``no_completion_pattern``,
+        ``counterparty_unresolved``, ``no_matching_commitment``, or
+        ``ambiguous_match``.
+        """
+        return await _commitments.capture_completion(
+            module._get_pool(),
+            utterance=utterance,
+            session_id=get_current_runtime_session_id(),
+        )
 
     # =================================================================
     # vCard tools (group: contacts_extended)

@@ -247,3 +247,111 @@ class TestLexiconAgreement:
         signal = detect_commitment("I'll send Sam that book tomorrow.", now=NOW)
         assert signal is not None
         assert signal.direction in COMMITMENT_DIRECTIONS
+
+
+class TestToolRegistration:
+    """The extractor is only real if the butler can reach it.
+
+    REQ-commitment-lifecycle-007 puts the obligation on *the Relationship
+    Butler*, not on a library function. A module that passes every predicate
+    test while being unreachable from the MCP surface satisfies none of it, so
+    these tests register the production group set and invoke the closures.
+    """
+
+    _PRODUCTION_GROUPS = ["contacts", "interactions", "management", "tracking"]
+
+    async def _register(self, module=None):
+        from fastmcp import FastMCP
+
+        from butlers.modules._roster_relationship import (
+            RelationshipModule,
+            RelationshipModuleConfig,
+        )
+
+        mod = module or RelationshipModule()
+        mcp = FastMCP("test-relationship")
+        await mod.register_tools(
+            mcp,
+            RelationshipModuleConfig(groups=self._PRODUCTION_GROUPS),
+            db=getattr(mod, "_db", None),
+            butler_name="relationship",
+        )
+        return mcp
+
+    async def test_req_commitment_lifecycle_007_capture_tools_are_registered(self) -> None:
+        mcp = await self._register()
+        names = {tool.name for tool in await mcp.list_tools()}
+
+        assert "commitment_capture" in names
+        assert "commitment_resolve_from_utterance" in names
+
+    async def test_req_commitment_lifecycle_007_capture_closure_reaches_the_library(
+        self, monkeypatch
+    ) -> None:
+        """The closure must call the submodule, not a shadowing package export.
+
+        ``butlers.tools.relationship`` re-exports ``capture_commitment`` at
+        package level, which is the same shape that once broke
+        ``relationship_assert_fact`` dispatch (see
+        ``test_assert_fact_registration.py``). Registration alone would not
+        catch it; the closure has to actually run.
+        """
+        import importlib
+        from unittest.mock import AsyncMock, MagicMock
+
+        from butlers.modules._roster_relationship import RelationshipModule
+
+        capture = AsyncMock(return_value={"status": "skipped", "reason": "no_commitment_pattern"})
+        lib = importlib.import_module("butlers.tools.relationship.commitments")
+        monkeypatch.setattr(lib, "capture_commitment", capture)
+
+        mod = RelationshipModule()
+        mod._db = MagicMock()
+        mcp = await self._register(mod)
+        tool = await mcp.get_tool("commitment_capture")
+        result = await tool.fn(utterance="I'll send Sam that book tomorrow.")
+
+        capture.assert_awaited_once()
+        assert capture.await_args.kwargs["utterance"] == "I'll send Sam that book tomorrow."
+        assert result["status"] == "skipped"
+
+    async def test_req_commitment_lifecycle_008_closures_bind_the_ambient_session_id(
+        self, monkeypatch
+    ) -> None:
+        """Session provenance comes from the runtime, not from the model.
+
+        REQ-commitment-lifecycle-008 requires ``evidence_closed`` to carry the
+        session ID. Asking the LLM to pass its own session id would make the
+        provenance only as trustworthy as the model's self-report, so the
+        closures read the contextvar the MCP runtime guard already binds.
+        """
+        import importlib
+        from unittest.mock import AsyncMock, MagicMock
+
+        from butlers.core.tool_call_capture import (
+            reset_current_runtime_session_id,
+            set_current_runtime_session_id,
+        )
+        from butlers.modules._roster_relationship import RelationshipModule
+
+        lib = importlib.import_module("butlers.tools.relationship.commitments")
+        capture = AsyncMock(return_value={"status": "skipped", "reason": "no_commitment_pattern"})
+        complete = AsyncMock(return_value={"status": "skipped", "reason": "no_completion_pattern"})
+        monkeypatch.setattr(lib, "capture_commitment", capture)
+        monkeypatch.setattr(lib, "capture_completion", complete)
+
+        mod = RelationshipModule()
+        mod._db = MagicMock()
+        mcp = await self._register(mod)
+
+        token = set_current_runtime_session_id("session-from-runtime")
+        try:
+            await (await mcp.get_tool("commitment_capture")).fn(utterance="I'll call Sam.")
+            await (await mcp.get_tool("commitment_resolve_from_utterance")).fn(
+                utterance="I called Sam."
+            )
+        finally:
+            reset_current_runtime_session_id(token)
+
+        assert capture.await_args.kwargs["session_id"] == "session-from-runtime"
+        assert complete.await_args.kwargs["session_id"] == "session-from-runtime"
