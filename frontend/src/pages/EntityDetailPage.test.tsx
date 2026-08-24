@@ -54,6 +54,40 @@ vi.mock("@/hooks/use-memory", () => ({
 
 // Relationship-scoped hooks consumed by the consolidated page
 vi.mock("@/hooks/use-entities", () => ({
+  // EntityDetailPage renders EntityVerbRail (bu-6t8ix.4); its four write verbs each
+  // call a mutation hook from this module. Inert here: these suites submit nothing,
+  // the hooks only need to exist and report an idle state. Declared inline because a
+  // vi.mock factory is hoisted above any module-level const it might otherwise share.
+  useEntityReachOutDrafts: vi.fn(() => ({
+    data: [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  })),
+  useCreateEntityNote: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    error: null,
+  })),
+  useCreateEntityInteraction: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    error: null,
+  })),
+  useCreateEntityGift: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    error: null,
+  })),
+  useCreateEntityReachOutDraft: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    error: null,
+  })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
