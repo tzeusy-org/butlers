@@ -100,7 +100,7 @@ still honoring the MCP-only rule.
   `roster/<butler>/domain_events.toml` (schema version, required/optional
   fields, retention policy, permitted subscribers, reaction expectation and
   contract). Publishes and subscriptions are admitted against those
-  declarations and fail closed; `core_205`'s
+  declarations and fail closed; `core_206`'s
   `public.domain_event_contracts` is a startup-materialized read projection,
   never the permission check. Every wake now opens an append-only lifecycle
   in `public.domain_event_reactions` and is expected to close through the

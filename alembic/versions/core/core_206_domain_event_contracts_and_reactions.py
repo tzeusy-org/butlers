@@ -1,7 +1,7 @@
 """domain events: publisher-owned contracts + append-only reaction receipts.
 
-Revision ID: core_205
-Revises: core_203
+Revision ID: core_206
+Revises: core_205
 Create Date: 2026-08-22 00:00:00.000000
 
 bu-6jv4m.8 (JARVIS pursuit run 08, ranked move #8). Two tables that split
@@ -30,8 +30,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_205"
-down_revision = "core_203"
+revision = "core_206"
+down_revision = "core_205"
 branch_labels = None
 depends_on = None
 
