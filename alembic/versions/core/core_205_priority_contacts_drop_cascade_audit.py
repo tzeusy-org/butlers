@@ -1,7 +1,7 @@
 """priority_contacts: retire the unreachable cascade-delete audit trigger.
 
-Revision ID: core_204
-Revises: core_203
+Revision ID: core_205
+Revises: core_204
 Create Date: 2026-08-24 00:00:00.000000
 
 Issue: bu-fi36x.
@@ -54,7 +54,7 @@ defect fixed here, and no live path can produce another one.
 Reversibility
 -------------
 ``downgrade()`` recreates the butler-less trigger function and trigger exactly as
-``core_129`` left them, restoring the pre-``core_204`` behaviour (double audit
+``core_129`` left them, restoring the pre-``core_205`` behaviour (double audit
 rows included).
 """
 
@@ -62,8 +62,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_204"
-down_revision = "core_203"
+revision = "core_205"
+down_revision = "core_204"
 branch_labels = None
 depends_on = None
 
@@ -100,7 +100,7 @@ def upgrade() -> None:
         DO $$
         BEGIN
             IF to_regclass('{_TABLE}') IS NULL THEN
-                RAISE NOTICE 'core_204: {_TABLE} not found — nothing to drop';
+                RAISE NOTICE 'core_205: {_TABLE} not found — nothing to drop';
                 RETURN;
             END IF;
             DROP TRIGGER IF EXISTS {_TRIGGER} ON {_TABLE};

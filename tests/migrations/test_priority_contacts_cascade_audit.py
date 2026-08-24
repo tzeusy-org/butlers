@@ -24,17 +24,17 @@ its own ``ingestion.priority_contact.remove`` audit row. One removal therefore
 produced two audit rows, the second asserting a provenance
 (``contact removed from public.contacts``) that could no longer occur.
 
-``core_204`` drops the trigger and its function. A conditional trigger was
+``core_205`` drops the trigger and its function. A conditional trigger was
 rejected: there is no surviving cascade path for a condition to select for, and
 a trigger cannot distinguish the router's DELETE from any other direct DELETE.
 
 Historical rows: the pre-existing ``ingestion.priority_contact.cascade_remove``
 rows are left untouched. Audit history is immutable — rewriting or deleting
 landed audit rows to make them retroactively accurate would be a worse defect
-than the inaccurate note. ``core_204``'s docstring records the same decision.
+than the inaccurate note. ``core_205``'s docstring records the same decision.
 
 These tests replay the real migration chain (``core_101`` → ``core_129`` →
-``core_131`` → ``core_134`` → ``core_204``) against a live PostgreSQL instance,
+``core_131`` → ``core_134`` → ``core_205``) against a live PostgreSQL instance,
 then exercise the real router against the resulting schema.
 """
 
@@ -61,7 +61,7 @@ _VERSIONS_DIR = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "
 _CASCADE_ACTION = "ingestion.priority_contact.cascade_remove"
 _REMOVE_ACTION = "ingestion.priority_contact.remove"
 _TRIGGER_FN = "priority_contacts_cascade_audit"
-_RETIRE_MIGRATION = "core_204_priority_contacts_drop_cascade_audit"
+_RETIRE_MIGRATION = "core_205_priority_contacts_drop_cascade_audit"
 
 
 def _load_migration(name: str):
@@ -145,7 +145,7 @@ async def _provision_tables(pool: asyncpg.Pool) -> None:
     await _run_upgrade_sqls(pool, _load_migration("core_131_priority_contacts_add_entity_id"))
     await _run_upgrade_sqls(pool, _load_migration("core_134_drop_public_contacts"))
 
-    # Retire the now-unreachable cascade-audit trigger (core_204).
+    # Retire the now-unreachable cascade-audit trigger (core_205).
     await _run_upgrade_sqls(pool, _load_migration(_RETIRE_MIGRATION))
 
 
@@ -191,7 +191,7 @@ async def _seed_priority_contact(pool: asyncpg.Pool, name: str = "Alice") -> UUI
 
 
 def test_migration_revision_chain():
-    """Migration revision metadata links core_101 → core_129 → core_204."""
+    """Migration revision metadata links core_101 → core_129 → core_205."""
     mod = _load_migration("core_101_priority_contacts")
     assert mod.revision == "core_101"
     assert mod.down_revision == "core_100"
@@ -201,13 +201,13 @@ def test_migration_revision_chain():
     assert drop.down_revision == "core_128"
 
     retire = _load_migration(_RETIRE_MIGRATION)
-    assert retire.revision == "core_204"
-    assert retire.down_revision == "core_203"
+    assert retire.revision == "core_205"
+    assert retire.down_revision == "core_204"
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> None:
-    """core_204 leaves no user trigger on public.priority_contacts."""
+    """core_205 leaves no user trigger on public.priority_contacts."""
     triggers = await cascade_pool.fetch(
         """
         SELECT tgname FROM pg_trigger
@@ -223,7 +223,7 @@ async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> N
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_no_cascade_audit_function_remains(cascade_pool: asyncpg.Pool) -> None:
-    """core_204 also drops the orphaned trigger function, not just the trigger."""
+    """core_205 also drops the orphaned trigger function, not just the trigger."""
     count = await cascade_pool.fetchval(
         """
         SELECT count(*) FROM pg_proc p
@@ -242,7 +242,7 @@ async def test_no_cascade_audit_function_remains(cascade_pool: asyncpg.Pool) -> 
 async def test_no_inbound_fk_can_cascade_delete_priority_contacts(
     cascade_pool: asyncpg.Pool,
 ) -> None:
-    """The premise of core_204: no FK deletes a priority_contacts row for us.
+    """The premise of core_205: no FK deletes a priority_contacts row for us.
 
     ``confdeltype`` is ``'c'`` for ON DELETE CASCADE. The surviving FK
     (``entity_id`` → ``public.entities``) is ``'n'`` (SET NULL), which nulls a
@@ -259,7 +259,7 @@ async def test_no_inbound_fk_can_cascade_delete_priority_contacts(
     )
     assert [c["conname"] for c in cascading] == [], (
         "A cascading inbound FK on public.priority_contacts would delete rows with no "
-        "audit trail — core_204 removed the trigger precisely because none exists"
+        "audit trail — core_205 removed the trigger precisely because none exists"
     )
 
 
