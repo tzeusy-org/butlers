@@ -169,12 +169,15 @@ Before marking a bead complete:
   merge over them red. Don't rely on them; gate locally.
 - Local pre-merge gate = ruff + the non-integration subset + `--collect-only`.
 
-**Verifying in a worktree** (worktrees have no `.venv`): condensation only edits
-`tests/`, so symlink the root venv and run with `--no-sync` (prevents racing
-re-syncs of the shared venv):
+**Verifying in a worktree** (a fresh worktree has no `.venv`): give it a **real**
+one. Do not symlink the main repo's venv — this step used to say to, and that is
+what left three worktrees running on main's editable-install `.pth`, so their
+`import butlers` resolved to main's `src/` and their local runs validated main's
+code while looking like they validated the branch diff (bu-1redj). The root
+`conftest.py` now refuses to run in that state.
 ```bash
-ln -s /home/tze/gt/butlers/.venv "$PWD/.venv"
-uv run --no-sync pytest tests/YOUR_DOMAIN -q --tb=short
+uv sync --dev                                          # real per-worktree venv
+uv run --no-sync pytest tests/YOUR_DOMAIN -q --tb=short  # --no-sync: no re-sync churn
 ```
 
 ## Updating OpenSpec When Tests Reveal Gaps
