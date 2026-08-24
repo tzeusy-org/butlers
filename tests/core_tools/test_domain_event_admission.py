@@ -199,14 +199,10 @@ class TestSubscriptionAdmission:
 
 
 class TestReactionReceiptTool:
-    async def test_a_session_closes_its_wake_with_its_own_session_id(
-        self, monkeypatch
-    ) -> None:
+    async def test_a_session_closes_its_wake_with_its_own_session_id(self, monkeypatch) -> None:
         record = AsyncMock(return_value=str(uuid.uuid4()))
         monkeypatch.setattr(_domain_events, "record_reaction", record)
-        monkeypatch.setattr(
-            _domain_events, "get_current_runtime_session_id", lambda: "session-xyz"
-        )
+        monkeypatch.setattr(_domain_events, "get_current_runtime_session_id", lambda: "session-xyz")
         tools = _register("finance")
 
         result = await tools["report_event_reaction"](
@@ -242,9 +238,7 @@ class TestReactionReceiptTool:
         assert result["status"] == "error"
         assert "vibes" in result["error"]
 
-    async def test_closing_an_already_closed_wake_reports_the_conflict(
-        self, monkeypatch
-    ) -> None:
+    async def test_closing_an_already_closed_wake_reports_the_conflict(self, monkeypatch) -> None:
         from butlers.core.domain_event_reactions import DomainEventReactionError
 
         monkeypatch.setattr(

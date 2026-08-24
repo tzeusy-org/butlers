@@ -9703,6 +9703,58 @@ export interface SubscriptionEntry {
 }
 
 /**
+ * The latest step of a subscriber's reaction lifecycle for one event
+ * (bu-6jv4m.8). Distinct from `DeliveryEntry.status`: that says the wake was
+ * handed over, this says what the subscriber did about it.
+ */
+export interface ReactionSummary {
+  /** "scheduled" | "running" | "acted" | "ignored" | "deferred" | "failed" | "unreported" */
+  status: string;
+  session_id: string | null;
+  note: string | null;
+  recorded_at: string;
+}
+
+/**
+ * One public.domain_event_reactions row -- an append-only step in one
+ * subscriber's reaction to one event (bu-6jv4m.8).
+ */
+export interface ReactionEntry {
+  id: string;
+  event_id: string;
+  subscriber_butler: string;
+  /** "scheduled" | "running" | "acted" | "ignored" | "deferred" | "failed" | "unreported" */
+  status: string;
+  session_id: string | null;
+  task_name: string | null;
+  note: string | null;
+  evidence: Array<{ kind: string; ref: string; label?: string }>;
+  recorded_at: string;
+}
+
+/**
+ * One public.domain_event_contracts row -- a publisher's materialized,
+ * versioned declaration of an event type it owns (bu-6jv4m.8). The git
+ * declaration under roster/<butler>/domain_events.toml is the source of
+ * truth; this is the published projection of it.
+ */
+export interface ContractEntry {
+  event_type: string;
+  publisher: string;
+  schema_version: number;
+  summary: string;
+  /** "standard" | "minimized-derived" */
+  retention_policy: string;
+  /** "expected" | "optional" */
+  reaction_expectation: string;
+  reaction_contract: string;
+  permitted_subscribers: string[];
+  required_fields: string[];
+  optional_fields: string[];
+  materialized_at: string;
+}
+
+/**
  * One public.domain_event_deliveries row joined with its event -- a fan-out
  * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
  */
@@ -9723,4 +9775,10 @@ export interface DeliveryEntry {
   event_type: string;
   source_butler: string;
   occurred_at: string;
+  /**
+   * Latest reaction step for this (event, subscriber), or null when the
+   * subscriber has recorded nothing. `status` above is transport only --
+   * "delivered" means the wake was scheduled, never that anyone acted.
+   */
+  reaction: ReactionSummary | null;
 }

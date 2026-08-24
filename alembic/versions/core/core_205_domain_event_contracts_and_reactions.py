@@ -1,6 +1,6 @@
 """domain events: publisher-owned contracts + append-only reaction receipts.
 
-Revision ID: core_204
+Revision ID: core_205
 Revises: core_203
 Create Date: 2026-08-22 00:00:00.000000
 
@@ -30,7 +30,7 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_204"
+revision = "core_205"
 down_revision = "core_203"
 branch_labels = None
 depends_on = None

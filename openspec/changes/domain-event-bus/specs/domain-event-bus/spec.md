@@ -256,6 +256,120 @@ Because the semantics are descriptive, the contract SHALL be stated where the co
   time before acting, with that instruction placed outside the
   `<domain_event>` fence
 
+### Requirement: Publisher-Owned Event Contracts
+
+Every active event type SHALL have a contract owned by its publishing butler and declared in that butler's git configuration (`roster/<butler>/domain_events.toml`), carrying a schema version, a summary, the minimized set of payload fields (required and optional), a named retention policy, the exhaustive list of permitted subscriber butlers, and the reaction expectation plus the prose reaction contract the publisher intends.
+
+The git declaration SHALL be the source of truth for admission. The `public.domain_event_contracts` table is a projection each butler materializes for its own declarations at startup so the fleet can read them; a failure to materialize SHALL narrow visibility only, never widen permission.
+
+Admission SHALL fail closed in both directions. A publish of an undeclared event type, a publish under a namespace the caller does not own, a publish carrying a field the contract does not declare, and a publish missing a required field SHALL all be refused before any row is written. A subscription to an undeclared event type, or by a butler the publisher's `permitted_subscribers` does not name, SHALL be refused before any registration is written. An explicitly empty `permitted_subscribers` is a valid publisher policy meaning "no subscribers yet"; an omitted key is a malformed declaration and SHALL fail to load.
+
+`reaction_expectation` and `reaction_contract` SHALL be infrastructure-only documentation of what the publisher hopes for. They SHALL NOT compel a subscriber to act: whether acting is correct remains the subscriber's own manifesto's decision, and Switchboard's amended contract stays infrastructure-only.
+
+#### Scenario: An undeclared event type cannot be published
+
+- **WHEN** a butler calls `publish_event` with a syntactically valid
+  `event_type` that no `roster/<butler>/domain_events.toml` declares
+- **THEN** the call returns `{"status": "error", ...}` naming the missing
+  declaration, and no `public.domain_events` row is inserted
+
+#### Scenario: An unpermitted subscriber cannot register
+
+- **WHEN** a butler calls `subscribe_to_event` for an event type whose
+  publisher's `permitted_subscribers` does not name it
+- **THEN** the call returns `{"status": "error", ...}` and no
+  `public.butler_subscriptions` row is written
+
+#### Scenario: A payload outside the declared shape is refused
+
+- **WHEN** a publish carries a field the contract declares neither required
+  nor optional, or omits a required field
+- **THEN** the publish is refused before any write, naming the offending
+  field
+
+#### Scenario: Admission does not depend on the projection
+
+- **WHEN** `public.domain_event_contracts` is empty or stale for a
+  publisher whose git declaration exists
+- **THEN** admission still succeeds against the git declaration; the
+  projection is a read surface, never the permission check
+
+### Requirement: Reaction Lifecycle Receipts
+
+Every delivery attempt SHALL be correlated with a reaction lifecycle in the append-only `public.domain_event_reactions` ledger, keyed by `(event_id, subscriber_butler)`, whose steps are `scheduled`, `running`, `acted`, `ignored`, `deferred`, `failed`, and `unreported`.
+
+A lifecycle SHALL end in exactly one terminal step. That exactly-once property SHALL be a database invariant (a partial unique index over the terminal statuses), not a convention held only in application code.
+
+A terminal step SHALL carry the runtime session id that produced it where one exists, and MAY carry typed evidence references (`task`, `session`, `event`, `delegation`, `memory`), each with a non-empty ref. Malformed evidence SHALL be refused before any write.
+
+Success SHALL NOT be inferred. A wake task completing, an LLM process exiting zero, or a delivery reaching `delivered` SHALL NOT produce `acted`, `ignored`, or `deferred`: only the subscriber's own `report_event_reaction` call may claim those. The reconciliation sweep MAY write `running` for an in-flight wake and `unreported` for a wake that ended without a receipt, and SHALL write nothing else.
+
+#### Scenario: A scheduled wake opens a lifecycle
+
+- **WHEN** a subscriber-local wake task is created for a delivery
+- **THEN** a `scheduled` reaction step is recorded for that
+  `(event_id, subscriber_butler)` carrying the wake task name
+
+#### Scenario: The subscriber closes its own loop
+
+- **WHEN** a woken session calls `report_event_reaction` with `acted`,
+  `ignored`, `deferred`, or `failed`
+- **THEN** a terminal step is recorded carrying that session's id, and a
+  second terminal step for the same `(event_id, subscriber_butler)` is
+  refused
+
+#### Scenario: A session cannot claim it was never asked
+
+- **WHEN** a session calls `report_event_reaction` with `unreported`
+- **THEN** the call is refused: `unreported` is a verdict the sweep records
+  about a session, not a status a session may claim for itself
+
+#### Scenario: A wake that ends silently is marked unreported, not acted
+
+- **WHEN** a delivered wake's task has finished (or has aged past the
+  orphan horizon) and no terminal receipt exists after the grace period
+- **THEN** the sweep records `unreported`, and never `acted`
+
+### Requirement: Transport And Domain Outcome Are Reported Separately
+
+The delivery API and the dashboard SHALL present the transport status of a delivery and the domain outcome of the subscriber's reaction as separately labelled facts. `delivered` SHALL be presented as "a wake was scheduled", never as "the subscriber handled it".
+
+A delivered wake with no terminal receipt SHALL be visibly distinguished from a delivery that has not yet been attempted. The full append-only trace for an event SHALL be reachable from the delivery surface by keyboard alone.
+
+#### Scenario: A delivery row carries its reaction
+
+- **WHEN** `GET /api/domain-events/deliveries` returns a delivery whose
+  subscriber recorded a reaction
+- **THEN** the response carries the latest reaction step (status, session
+  id, note, timestamp) alongside, and distinct from, the delivery status
+
+#### Scenario: A delivered wake with no receipt is not rendered as complete
+
+- **WHEN** a delivery is `delivered` and no reaction step exists
+- **THEN** the API reports no reaction and the panel labels it as
+  unreported rather than leaving the row looking handled
+
+#### Scenario: The trace is reachable without a pointer
+
+- **WHEN** a reader tabs to a delivery row's trace control and activates it
+  with the keyboard
+- **THEN** the event's ordered reaction trace is revealed, with the control
+  reporting its expanded state to assistive technology
+
+### Requirement: Incomplete Receiver Responses Are Terminal, Not Silent
+
+A fan-out whose target returns a structurally incomplete success payload (a `route()` result whose unwrapped body is not a mapping carrying a recognizable status) SHALL be classified as a non-retryable delivery failure with the receiver's response preserved verbatim in the error text, and SHALL NOT record any reaction receipt.
+
+This is the shape observed in the live ledger for Travel to Finance: the receiver appeared present and configured, yet the delivery ended `failed_permanent`. Diagnosing it SHALL remain a read-only exercise; replaying, restarting, or otherwise mutating the live connector or runtime is a separate owner-authorized action and SHALL NOT be performed by any test, sweep, or worker.
+
+#### Scenario: An incomplete success payload fails permanently and loudly
+
+- **WHEN** `receive_domain_event` on the target returns a payload the
+  unwrapper cannot read as a status
+- **THEN** the delivery is marked `failed_permanent` with an error naming
+  the target and the verbatim response, and no reaction row is written for
+  that `(event_id, subscriber_butler)`
+
 ## Source References
 
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication through the Switchboard)

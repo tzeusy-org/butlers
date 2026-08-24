@@ -358,6 +358,8 @@ import type {
   DelegationLedgerEntry,
   SubscriptionEntry,
   DeliveryEntry,
+  ReactionEntry,
+  ContractEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -6091,6 +6093,39 @@ export function listDomainEventDeliveries(
   const qs = query.toString();
   return apiFetch<PaginatedResponse<DeliveryEntry>>(
     `/domain-events/deliveries${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * Fetch the full reaction trace for one domain event from
+ * GET /api/domain-events/events/{event_id}/reactions (bu-6jv4m.8), oldest
+ * step first -- every step every subscriber recorded, not just the outcome.
+ */
+export function listDomainEventReactions(
+  eventId: string,
+): Promise<ApiResponse<ReactionEntry[]>> {
+  return apiFetch<ApiResponse<ReactionEntry[]>>(
+    `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
+  );
+}
+
+/** Params for listDomainEventContracts(). */
+export interface DomainEventContractsParams {
+  publisher?: string;
+}
+
+/**
+ * List materialized publisher-owned event contracts from
+ * GET /api/domain-events/contracts (bu-6jv4m.8).
+ */
+export function listDomainEventContracts(
+  params: DomainEventContractsParams = {},
+): Promise<ApiResponse<ContractEntry[]>> {
+  const query = new URLSearchParams();
+  if (params.publisher) query.set("publisher", params.publisher);
+  const qs = query.toString();
+  return apiFetch<ApiResponse<ContractEntry[]>>(
+    `/domain-events/contracts${qs ? `?${qs}` : ""}`,
   );
 }
 
