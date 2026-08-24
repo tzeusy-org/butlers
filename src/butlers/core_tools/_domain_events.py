@@ -58,6 +58,12 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from butlers.config import ButlerType
+from butlers.core.domain_event_contracts import get_contract_registry
+from butlers.core.domain_event_reactions import (
+    REPORTABLE_REACTION_STATUSES,
+    DomainEventReactionError,
+    record_reaction,
+)
 from butlers.core.domain_event_wake import handle_receive_domain_event
 from butlers.core.domain_events import (
     claim_delivery,
@@ -76,6 +82,7 @@ from butlers.core.domain_events import (
 )
 from butlers.core.metrics import record_domain_event_delivery_failed_permanent
 from butlers.core.telemetry import tool_span
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route
 
@@ -684,6 +691,28 @@ async def run_domain_event_reconciliation_sweep(
                 logger.error("domain-event reconciliation sweep advisory lock was not held")
 
 
+def _contract_error(error: str) -> dict[str, Any]:
+    """Shape a fail-closed admission refusal as an ordinary tool error result."""
+    return {"status": "error", "error": error}
+
+
+def _refuse_undeclared_publish(
+    *, event_type: str, source_butler: str, payload: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return a refusal when the publisher's git contract does not permit this publish.
+
+    Read from the git declarations, never from the ``public.
+    domain_event_contracts`` projection: a projection that is stale, partly
+    materialized, or missing must never be able to *widen* what a butler may
+    publish. Called before any durable write so a refused publish leaves no
+    event row behind.
+    """
+    error = get_contract_registry().check_publish(
+        event_type=event_type, publisher=source_butler, payload=payload or {}
+    )
+    return _contract_error(error) if error is not None else None
+
+
 def _invalid_event_type_error(event_type: str) -> dict[str, Any]:
     return {
         "status": "error",
@@ -712,6 +741,11 @@ async def publish_domain_event(
     """
     if not is_valid_event_type(event_type):
         return _invalid_event_type_error(event_type)
+    refusal = _refuse_undeclared_publish(
+        event_type=event_type, source_butler=source_butler, payload=payload
+    )
+    if refusal is not None:
+        return refusal
 
     event_id = await record_event(
         pool, event_type=event_type, source_butler=source_butler, payload=payload
@@ -822,6 +856,11 @@ async def publish_domain_event_once(
     """
     if not is_valid_event_type(event_type):
         return _invalid_event_type_error(event_type)
+    refusal = _refuse_undeclared_publish(
+        event_type=event_type, source_butler=source_butler, payload=payload
+    )
+    if refusal is not None:
+        return refusal
 
     state_key = f"domain_event_once:{event_type}:{dedup_namespace}"
     event_id = await _claim_and_record_event(
@@ -920,6 +959,11 @@ def register_domain_event_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "(lowercase, e.g. 'travel.trip_booked')."
                 ),
             }
+        error = get_contract_registry().check_subscription(
+            event_type=event_type, subscriber=butler_name
+        )
+        if error is not None:
+            return _contract_error(error)
         row = await upsert_subscription(pool, subscriber_butler=butler_name, event_type=event_type)
         return {"status": "ok", "subscription": row}
 
@@ -972,3 +1016,77 @@ def register_domain_event_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             payload=payload,
             subscriber_butler=butler_name,
         )
+
+    @_core_tool("domain_events")
+    @tool_span("report_event_reaction", butler_name=butler_name)
+    async def report_event_reaction(
+        event_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The event_id from the domain-event wake prompt that brought you here."
+                )
+            ),
+        ],
+        status: Annotated[
+            str,
+            Field(
+                description=(
+                    "How this wake ended: 'acted' (you took a domain action), 'ignored' (you "
+                    "judged it not actionable), 'deferred' (you will act later), or 'failed' "
+                    "(you tried and could not)."
+                )
+            ),
+        ],
+        note: Annotated[
+            str | None,
+            Field(description="One or two sentences on what you did and why."),
+        ] = None,
+        evidence: Annotated[
+            list[dict[str, str]] | None,
+            Field(
+                description=(
+                    "Typed references to what you produced, e.g. "
+                    "[{'kind': 'task', 'ref': '<task name>'}]. Allowed kinds: task, session, "
+                    "event, delegation, memory. Prose belongs in 'note', not here."
+                )
+            ),
+        ] = None,
+    ) -> dict:
+        """Close out a domain-event wake with what you actually did.
+
+        A delivery only records that you were woken. This records the
+        outcome, and nothing else can: a session that ends without calling
+        this is recorded as ``unreported``, never as success. ``ignored`` is
+        a real, respectable outcome — if the event was not relevant to your
+        domain, say so here rather than exiting silently.
+
+        Whether acting was the right call is your manifesto's business, not
+        the bus's. One wake closes exactly once.
+        """
+        if status not in REPORTABLE_REACTION_STATUSES:
+            return {
+                "status": "error",
+                "error": (
+                    f"status={status!r} is not something a session may report. Use one of "
+                    f"{', '.join(sorted(REPORTABLE_REACTION_STATUSES))}. In particular "
+                    "'unreported' describes a wake that said nothing at all, which is "
+                    "recorded for you rather than claimed by you."
+                ),
+            }
+        try:
+            reaction_id = await record_reaction(
+                pool,
+                event_id=event_id,
+                subscriber_butler=butler_name,
+                status=status,
+                session_id=get_current_runtime_session_id(),
+                task_name=None,
+                note=note,
+                evidence=evidence,
+            )
+        except DomainEventReactionError as exc:
+            return {"status": "error", "error": str(exc)}
+        except ValueError as exc:
+            return {"status": "error", "error": f"event_id={event_id!r} is not a valid id: {exc}"}
+        return {"status": "ok", "reaction_id": reaction_id, "reaction_status": status}

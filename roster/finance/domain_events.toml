@@ -1,0 +1,26 @@
+# Publisher-owned domain-event contracts for the Finance butler (bu-6jv4m.8).
+# See roster/travel/domain_events.toml for the format and the ownership rule.
+
+[[event]]
+type = "finance.budget_pressure"
+schema_version = 1
+summary = "A budget category crossed a pressure threshold during the insight scan."
+retention_policy = "minimized-derived"
+reaction_expectation = "optional"
+reaction_contract = """
+A derived advisory, published at most once per (category, period, status) crossing. \
+`valid_until` is the publisher's advisory horizon, not a freshness guarantee: the bus \
+never filters on it, so a subscriber must re-check it against the current time before \
+acting. No transactions, merchants, or account identifiers cross the bus — only the \
+category, the period window, and the aggregate amounts the advisory is about."""
+permitted_subscribers = []
+required_fields = ["category", "period", "status"]
+optional_fields = [
+    "spent",
+    "budget_amount",
+    "currency",
+    "utilization_pct",
+    "period_start",
+    "period_end",
+    "valid_until",
+]

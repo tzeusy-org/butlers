@@ -113,7 +113,7 @@ def test_staffer_gets_no_domain_event_tools():
     assert registered == {}
 
 
-def test_all_five_tools_registered():
+def test_all_domain_event_tools_registered():
     registered = _register()
     assert set(registered) == {
         "publish_event",
@@ -121,6 +121,7 @@ def test_all_five_tools_registered():
         "unsubscribe_from_event",
         "list_my_subscriptions",
         "receive_domain_event",
+        "report_event_reaction",
     }
 
 
@@ -203,6 +204,46 @@ class TestReceiveDomainEvent:
         assert result == {"status": "ok", "state": "task_created"}
         assert handler_mock.await_args.kwargs["subscriber_butler"] == "finance"
         assert handler_mock.await_args.kwargs["event_id"] == "event-1"
+
+
+def _synthetic_declaration(event_type: str) -> dict[str, object]:
+    """A publisher-owned contract for a test-only event type (bu-6jv4m.8).
+
+    Admission is fail-closed against the live roster declarations, so a test
+    that publishes a synthetic event type must state its own contract rather
+    than have the production roster carry test vocabulary.
+    """
+    return {
+        "type": event_type,
+        "schema_version": 1,
+        "summary": f"Synthetic test event {event_type}.",
+        "retention_policy": "standard",
+        "reaction_expectation": "optional",
+        "reaction_contract": "No reaction expected; this event exists only in tests.",
+        "permitted_subscribers": [],
+        "required_fields": [],
+        "optional_fields": ["trip_id", "n"],
+    }
+
+
+@pytest.fixture
+def synthetic_contracts():
+    """Admit the synthetic event types these dedup tests publish."""
+    from butlers.core.domain_event_contracts import (
+        DomainEventContractRegistry,
+        set_contract_registry,
+    )
+
+    set_contract_registry(
+        DomainEventContractRegistry.from_declarations(
+            [
+                ("travel", _synthetic_declaration("travel.dedup_concurrency_test")),
+                ("travel", _synthetic_declaration("travel.dedup_sequential_test")),
+            ]
+        )
+    )
+    yield
+    set_contract_registry(None)
 
 
 class TestPublishDomainEventOnce:
@@ -331,7 +372,7 @@ class TestPublishDomainEventOnce:
     @pytest.mark.integration
     @pytest.mark.skipif(not docker_available, reason="Docker not available")
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_concurrent_same_key_publishes_exactly_once(self, real_pool):
+    async def test_concurrent_same_key_publishes_exactly_once(self, real_pool, synthetic_contracts):
         results = await asyncio.gather(
             publish_domain_event_once(
                 real_pool,
@@ -372,7 +413,7 @@ class TestPublishDomainEventOnce:
     @pytest.mark.integration
     @pytest.mark.skipif(not docker_available, reason="Docker not available")
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_sequential_distinct_keys_both_publish(self, real_pool):
+    async def test_sequential_distinct_keys_both_publish(self, real_pool, synthetic_contracts):
         first = await publish_domain_event_once(
             real_pool,
             None,

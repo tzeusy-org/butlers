@@ -290,6 +290,30 @@ async def run_startup(daemon: Any) -> None:
     #      /secrets has server-side data from the first boot onward.
     await upsert_provider_feature_catalogue(pool)
 
+    # 8d3. Materialize this butler's own domain-event contracts (idempotent;
+    #      non-fatal). The declarations live in roster/<butler>/
+    #      domain_events.toml and are the source of truth; this projects them
+    #      into public.domain_event_contracts so other butlers and the
+    #      dashboard can read what this namespace promises. Admission control
+    #      reads git, never this table, so a skipped projection narrows what
+    #      is *visible*, never what is permitted.
+    try:
+        from butlers.core.domain_event_contracts import materialize_own_contracts
+
+        materialized = await materialize_own_contracts(pool, publisher=daemon.config.name)
+        if materialized:
+            logger.info(
+                "Materialized %d domain-event contract(s) for %s",
+                len(materialized),
+                daemon.config.name,
+            )
+    except Exception:
+        logger.warning(
+            "materialize_own_contracts failed for butler=%s (best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
     # 8e. Recover orphaned sessions from a previous daemon run.
     #     Any sessions row with completed_at IS NULL at startup is necessarily
     #     orphaned — this daemon is the sole writer and is just booting. Without
