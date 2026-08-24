@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -365,6 +366,150 @@ async def test_credential_resolution_failure_log_uses_failure_class_only(
         item
         for item in caplog.records
         if item.message == "WhatsApp credential resolution candidate unavailable"
+    )
+    assert record.failure_class == "RuntimeError"
+    assert record.exc_info is None
+
+
+async def test_checkpoint_success_logs_are_identifier_blind(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    checkpoint = "batch:12036315551234567@g.us:private-message"
+    saved_payloads: list[str] = []
+
+    async def save_cursor(
+        _pool: Any,
+        _connector_type: str,
+        _endpoint_identity: str,
+        payload: str,
+    ) -> None:
+        saved_payloads.append(payload)
+
+    with (
+        patch(
+            "butlers.connectors.cursor_store.load_cursor",
+            new=AsyncMock(return_value=json.dumps({"last_event_id": checkpoint})),
+        ),
+        patch("butlers.connectors.cursor_store.save_cursor", side_effect=save_cursor),
+        caplog.at_level(logging.DEBUG),
+    ):
+        await connector._load_checkpoint()
+        await connector._save_checkpoint()
+
+    assert connector._last_event_id == checkpoint
+    assert json.loads(saved_payloads[0]) == {"last_event_id": checkpoint}
+    observability = _captured_observability(caplog)
+    assert checkpoint not in observability
+    assert "12036315551234567" not in observability
+    loaded = next(item for item in caplog.records if item.message == "Loaded checkpoint from DB")
+    saved = next(item for item in caplog.records if item.message == "Saved checkpoint to DB")
+    assert loaded.checkpoint_present is True
+    assert saved.checkpoint_present is True
+
+
+@pytest.mark.parametrize("operation", ["load", "save"])
+async def test_checkpoint_failure_logs_use_failure_class_only(
+    connector: WhatsAppUserClientConnector,
+    caplog: pytest.LogCaptureFixture,
+    operation: str,
+) -> None:
+    sentinel = (
+        "postgresql://owner:secret@db/private 12036315551234567@g.us "
+        "SELECT last_event_id FROM connector_cursor"
+    )
+    load = AsyncMock(side_effect=RuntimeError(sentinel))
+    save = AsyncMock(side_effect=RuntimeError(sentinel))
+
+    with (
+        patch("butlers.connectors.cursor_store.load_cursor", new=load),
+        patch("butlers.connectors.cursor_store.save_cursor", new=save),
+        caplog.at_level(logging.WARNING),
+    ):
+        if operation == "load":
+            await connector._load_checkpoint()
+        else:
+            connector._last_event_id = "12036315551234567@g.us"
+            await connector._save_checkpoint()
+
+    observability = _captured_observability(caplog)
+    assert sentinel not in observability
+    assert "12036315551234567" not in observability
+    record = next(
+        item for item in caplog.records if item.message == f"WhatsApp checkpoint {operation} failed"
+    )
+    assert record.failure_class == "RuntimeError"
+    assert record.exc_info is None
+
+
+async def test_backfill_start_log_is_endpoint_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    endpoint = "whatsapp:+12025559876"
+    connector = WhatsAppUserClientConnector(
+        WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity=endpoint,
+            backfill_window_h=24,
+        ),
+        cursor_pool=MagicMock(),
+    )
+    reader = MagicMock()
+    writer = MagicMock(
+        write=MagicMock(),
+        drain=AsyncMock(),
+        close=MagicMock(),
+        wait_closed=AsyncMock(),
+    )
+
+    with (
+        patch("asyncio.open_unix_connection", new=AsyncMock(return_value=(reader, writer))),
+        patch(
+            "butlers.connectors.whatsapp_user_client._read_backfill_acknowledgement",
+            new=AsyncMock(return_value=7),
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        await connector._request_backfill()
+
+    observability = _captured_observability(caplog)
+    assert endpoint not in observability
+    assert "12025559876" not in observability
+    requested = next(
+        item for item in caplog.records if item.message == "Requesting backfill from bridge"
+    )
+    assert requested.backfill_enabled is True
+    assert requested.window_hours == 24
+
+
+async def test_backfill_failure_log_uses_failure_class_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    endpoint = "whatsapp:+12025559876"
+    sentinel = (
+        "postgresql://owner:secret@db/private 12036315551234567@g.us SELECT replay FROM whatsapp"
+    )
+    connector = WhatsAppUserClientConnector(
+        WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity=endpoint,
+            backfill_window_h=24,
+        ),
+        cursor_pool=MagicMock(),
+    )
+
+    with (
+        patch("asyncio.open_unix_connection", new=AsyncMock(side_effect=RuntimeError(sentinel))),
+        caplog.at_level(logging.WARNING),
+    ):
+        await connector._request_backfill()
+
+    observability = _captured_observability(caplog)
+    assert endpoint not in observability
+    assert sentinel not in observability
+    assert "12036315551234567" not in observability
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp backfill request failed"
     )
     assert record.failure_class == "RuntimeError"
     assert record.exc_info is None

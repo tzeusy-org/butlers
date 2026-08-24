@@ -2047,6 +2047,26 @@
       "excerpt": "- **AND** the executor holds a database `FOR UPDATE` row lock from its approved/null eligibility check through handle..."
     }
   ],
+  "repair-whatsapp-identity-reconciliation/conversation-decomposition/Cherry-Picked Message Excerpts": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "7d4fe56fc65b",
+      "excerpt": "As built, the dedicated signal-extraction prompt instructs the runtime to cherry-pick per-concept `excerpts`, and the..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Conceptual message structure",
+      "digest": "2fd284e687c9",
+      "excerpt": "- `tool_name`: MCP tool to call on target butler"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Conceptual message structure",
+      "digest": "e323266b5652",
+      "excerpt": "- `excerpts`: array of `{sender, text, timestamp, message_id}` cherry-picked from the conversation"
+    }
+  ],
   "respec-unknown-sender-owner-notification/switchboard-identity/Inbound message identity resolution": [
     {
       "kind": "prose",

@@ -191,6 +191,42 @@ def _wrap_routed_message(prompt: str) -> str:
     return f"<routed_message>\n{prompt}\n</routed_message>"
 
 
+async def _find_successful_route_session(
+    executor: Any,
+    *,
+    request_id: str,
+    subrequest_id: str | None,
+) -> Any:
+    """Find a completed route session at the envelope's dedupe granularity."""
+    if subrequest_id is None:
+        return await executor.fetchval(
+            """
+            SELECT id FROM sessions
+            WHERE request_id = $1
+              AND trigger_source = 'route'
+              AND success = true
+              AND started_at > now() - interval '24 hours'
+            LIMIT 1
+            """,
+            request_id,
+        )
+    return await executor.fetchval(
+        """
+        SELECT s.id
+        FROM sessions s
+        JOIN route_inbox ri ON ri.session_id = s.id
+        WHERE s.request_id = $1
+          AND s.trigger_source = 'route'
+          AND s.success = true
+          AND s.started_at > now() - interval '24 hours'
+          AND ri.route_envelope #>> '{subrequest,subrequest_id}' = $2
+        LIMIT 1
+        """,
+        request_id,
+        subrequest_id,
+    )
+
+
 def _parse_telegram_thread_identity(thread_identity: str | None) -> tuple[str, int] | None:
     """Parse a Telegram ``source_thread_identity`` of the form ``chat_id:message_id``.
 
@@ -646,6 +682,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
 
         route_context = parsed_route.request_context.model_dump(mode="json")
         route_request_id = str(parsed_route.request_context.request_id)
+        route_subrequest_id = (
+            parsed_route.subrequest.subrequest_id if parsed_route.subrequest is not None else None
+        )
         _route_internal_context: dict[str, Any] = {}
         if isinstance(parsed_route.input.context, dict):
             _conceptual_message = parsed_route.input.context.get("conceptual_message")
@@ -719,16 +758,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 target_butler=daemon.config.name,
                             )
                             if control.outcome == "active":
-                                existing_session = await conn.fetchval(
-                                    """
-                                    SELECT id FROM sessions
-                                    WHERE request_id = $1
-                                      AND trigger_source = 'route'
-                                      AND success = true
-                                      AND started_at > now() - interval '24 hours'
-                                    LIMIT 1
-                                    """,
-                                    route_request_id,
+                                existing_session = await _find_successful_route_session(
+                                    conn,
+                                    request_id=route_request_id,
+                                    subrequest_id=route_subrequest_id,
                                 )
                                 if existing_session is not None:
                                     terminal = await mark_terminal(
@@ -811,17 +844,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         ),
                     )
             else:
-                # --- Dedup guard: reject if a session already succeeded for this request_id ---
-                existing_session = await pool.fetchval(
-                    """
-                    SELECT id FROM sessions
-                    WHERE request_id = $1
-                      AND trigger_source = 'route'
-                      AND success = true
-                      AND started_at > now() - interval '24 hours'
-                    LIMIT 1
-                    """,
-                    route_request_id,
+                # --- Dedup guard: legacy routes use request_id; fan-out routes
+                # add their target-visible subrequest identity. ---
+                existing_session = await _find_successful_route_session(
+                    pool,
+                    request_id=route_request_id,
+                    subrequest_id=route_subrequest_id,
                 )
                 if existing_session is not None:
                     observability_session_id = (

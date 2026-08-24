@@ -948,7 +948,7 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
     fact_results: dict[str, dict[str, Any]] = {}
     anchored_entity_ids: dict[str, str | None] = {}
 
-    async def target_trigger(**_kwargs: Any) -> Any:
+    async def target_trigger(**trigger_kwargs: Any) -> Any:
         routing_context = _routing_ctx_var.get()
         assert isinstance(routing_context, dict)
         session_id = str(uuid.uuid4())
@@ -965,6 +965,16 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
                 predicate=f"route_boundary_{signal_type}",
                 content=excerpt.get("text") or "missing anchor must be rejected",
                 entity_id=excerpt.get("sender_entity_id"),
+            )
+            await identity_pool.execute(
+                """
+                INSERT INTO sessions (
+                    id, prompt, trigger_source, success, request_id, started_at, completed_at
+                ) VALUES ($1, $2, 'route', true, $3, now(), now())
+                """,
+                uuid.UUID(session_id),
+                trigger_kwargs["prompt"],
+                trigger_kwargs["request_id"],
             )
         finally:
             reset_current_runtime_session_id(token)
@@ -1024,7 +1034,7 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
         },
         {
             "signal_type": "health",
-            "target_butler": "health",
+            "target_butler": "finance",
             "tool_name": "health_record_symptom",
             "tool_args": {"symptom": "model-forged"},
             "confidence": "HIGH",
@@ -1032,7 +1042,7 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
         },
         {
             "signal_type": "general",
-            "target_butler": "general",
+            "target_butler": "finance",
             "tool_name": "memory_store_fact",
             "tool_args": {"entity_id": str(uuid.uuid4())},
             "confidence": "HIGH",
@@ -1048,7 +1058,10 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
     async def invoke_target(_endpoint: str, tool_name: str, args: dict[str, Any]) -> Any:
         assert tool_name == "route.execute"
         forwarded_target_args.append(dict(args))
-        return await route_execute(**args)
+        response = await route_execute(**args)
+        while target_daemon._route_inbox_tasks:
+            await asyncio.gather(*tuple(target_daemon._route_inbox_tasks))
+        return response
 
     with (
         patch(
@@ -1080,7 +1093,9 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
         if target_daemon._route_inbox_tasks:
             await asyncio.gather(*target_daemon._route_inbox_tasks)
 
-    assert set(result.acked_targets) == {"finance", "health", "general"}
+    assert result.acked_targets == ["finance", "finance", "finance"]
+    assert len(forwarded_target_args) == 3
+    assert len({args["subrequest"]["subrequest_id"] for args in forwarded_target_args}) == 3
     assert all("__conceptual_message" not in args for args in forwarded_target_args)
     assert all("internal_context" not in args for args in forwarded_target_args)
     assert all("conceptual_message" in args["input"]["context"] for args in forwarded_target_args)

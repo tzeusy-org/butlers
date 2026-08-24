@@ -3161,6 +3161,75 @@ class TestDecompositionSignalSchema:
         MessagePipeline,
         "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
+        return_value=_decomp_messages("One message, two finance concepts"),
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_same_target_concepts_receive_unique_target_visible_subrequests(
+        self,
+        mock_route,
+        mock_load,
+        mock_history,
+    ):
+        """Each same-target concept has independent route.execute dedupe identity."""
+        signals = [
+            {
+                "signal_type": signal_type,
+                "target_butler": "finance",
+                "tool_name": "expense_log",
+                "tool_args": {"concept": signal_type},
+                "excerpts": [{"message_id": "m1"}],
+                "confidence": "HIGH",
+            }
+            for signal_type in ("expense", "subscription")
+        ]
+
+        async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+            return FakeSpawnerResult(output=json.dumps(signals), success=True, tool_calls=[])
+
+        pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+        assert result.acked_targets == ["finance", "finance"]
+        route_args = [call.kwargs["args"] for call in mock_route.await_args_list]
+        assert len(route_args) == 2
+        assert {args["request_context"]["request_id"] for args in route_args} == {
+            route_args[0]["request_context"]["request_id"]
+        }
+        subrequest_ids = [args["subrequest"]["subrequest_id"] for args in route_args]
+        segment_ids = [args["subrequest"]["segment_id"] for args in route_args]
+        assert len(set(subrequest_ids)) == 2
+        assert len(set(segment_ids)) == 2
+        for args in route_args:
+            assert args["request_context"]["subrequest_id"] == args["subrequest"]["subrequest_id"]
+            assert args["request_context"]["segment_id"] == args["subrequest"]["segment_id"]
+            assert args["subrequest"]["fanout_mode"] == "ordered"
+            assert (
+                args["__switchboard_route_context"]["segment_id"]
+                == args["subrequest"]["segment_id"]
+            )
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_messages",
+        new_callable=AsyncMock,
         return_value=_decomp_messages("flight confirmation"),
     )
     @patch(

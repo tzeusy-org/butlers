@@ -2202,12 +2202,21 @@ class WhatsAppUserClientConnector:
                 self._last_event_id = data.get("last_event_id")
                 logger.info(
                     "Loaded checkpoint from DB",
-                    extra={"last_event_id": self._last_event_id},
+                    extra={"checkpoint_present": self._last_event_id is not None},
                 )
             else:
-                logger.info("No checkpoint in DB, starting from scratch")
-        except Exception:
-            logger.exception("Failed to load checkpoint from DB, starting from scratch")
+                logger.info(
+                    "No checkpoint in DB, starting from scratch",
+                    extra={"checkpoint_present": False},
+                )
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp checkpoint load failed",
+                extra={
+                    "checkpoint_present": False,
+                    "failure_class": type(exc).__name__,
+                },
+            )
 
     async def _save_checkpoint(self) -> None:
         """Persist checkpoint to DB."""
@@ -2228,10 +2237,13 @@ class WhatsAppUserClientConnector:
             self._last_checkpoint_save = time.time()
             logger.debug(
                 "Saved checkpoint to DB",
-                extra={"last_event_id": self._last_event_id},
+                extra={"checkpoint_present": self._last_event_id is not None},
             )
-        except Exception:
-            logger.exception("Failed to save checkpoint to DB")
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp checkpoint save failed",
+                extra={"failure_class": type(exc).__name__},
+            )
 
     # -------------------------------------------------------------------------
     # Internal: Backfill
@@ -2251,7 +2263,7 @@ class WhatsAppUserClientConnector:
             "Requesting backfill from bridge",
             extra={
                 "window_hours": self._config.backfill_window_h,
-                "endpoint_identity": self._config.endpoint_identity,
+                "backfill_enabled": True,
             },
         )
 
@@ -2297,7 +2309,10 @@ class WhatsAppUserClientConnector:
             )
         except Exception as exc:
             # Non-fatal: replay supplements the normal live stream.
-            logger.warning("Failed to request backfill from bridge: %s", exc)
+            logger.warning(
+                "WhatsApp backfill request failed",
+                extra={"failure_class": type(exc).__name__},
+            )
 
 
 # ---------------------------------------------------------------------------

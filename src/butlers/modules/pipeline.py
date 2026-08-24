@@ -1315,6 +1315,7 @@ class MessagePipeline:
     def _build_decomp_route_envelope(
         *,
         target_butler: str,
+        concept_index: int,
         request_id: str,
         received_at: datetime,
         source: str,
@@ -1328,6 +1329,8 @@ class MessagePipeline:
         concept can contain several speakers, and facts must use the matching
         authoritative excerpt anchor rather than borrow the routing sender.
         """
+        subrequest_id = f"decomposition-{concept_index}"
+        segment_id = f"decomp-{concept_index}-{target_butler}"
         route_request_context: dict[str, Any] = {
             "request_id": request_id,
             "received_at": received_at.isoformat(),
@@ -1336,6 +1339,8 @@ class MessagePipeline:
             "source_sender_identity": str(
                 source_metadata.get("source_id") or source_metadata.get("identity") or "unknown"
             ),
+            "subrequest_id": subrequest_id,
+            "segment_id": segment_id,
             "trace_context": {},
         }
         if request_context is not None:
@@ -1359,6 +1364,11 @@ class MessagePipeline:
                 "prompt": _CONCEPTUAL_ROUTE_PROMPT,
                 "context": {"conceptual_message": conceptual_message},
             },
+            "subrequest": {
+                "subrequest_id": subrequest_id,
+                "segment_id": segment_id,
+                "fanout_mode": "ordered",
+            },
             "target": {
                 "butler": target_butler,
                 "tool": "route.execute",
@@ -1367,7 +1377,7 @@ class MessagePipeline:
             "__switchboard_route_context": {
                 "request_id": request_id,
                 "fanout_mode": "decomposition",
-                "segment_id": f"decomp-{target_butler}",
+                "segment_id": segment_id,
                 "attempt": 1,
             },
         }
@@ -3180,7 +3190,7 @@ class MessagePipeline:
                         _decomp_failed_details: list[str] = []
                         _decomp_dropped: list[dict[str, str]] = []
 
-                        for _sig in _decomp_signals:
+                        for _concept_index, _sig in enumerate(_decomp_signals, start=1):
                             # Signals are normalized to the full schema upstream, so
                             # target_butler is always present and routable here.
                             _target = _sig["target_butler"]
@@ -3235,7 +3245,7 @@ class MessagePipeline:
                                     "__switchboard_route_context": {
                                         "request_id": request_id,
                                         "fanout_mode": "decomposition",
-                                        "segment_id": f"decomp-{_target}",
+                                        "segment_id": f"decomp-{_concept_index}-{_target}",
                                         "attempt": 1,
                                     },
                                 }
@@ -3257,6 +3267,7 @@ class MessagePipeline:
                             else:
                                 _route_args = self._build_decomp_route_envelope(
                                     target_butler=_target,
+                                    concept_index=_concept_index,
                                     request_id=request_id,
                                     received_at=received_at,
                                     source=source,
