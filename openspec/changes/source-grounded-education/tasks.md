@@ -27,7 +27,7 @@ Acceptance:
 
 ### 3. Concept-type classification in curriculum planner
 
-- [ ] 3.1 Extend `curriculum_generate` to assign `metadata.concept_type` per node.
+- [x] 3.1 Extend `curriculum_generate` to assign `metadata.concept_type` per node.
       Classification inferred from label/description. Source mapping when registered
       sources exist. Update curriculum-planning skill instructions.
 

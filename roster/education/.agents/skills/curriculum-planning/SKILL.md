@@ -91,6 +91,22 @@ mind_map_node_create(
 concept — `node_id` is needed for edge creation and mastery tracking, and `entity_id` is needed
 for `memory_store_fact()` calls later in teaching and review sessions.
 
+Write the `description` deliberately: `curriculum_generate` classifies each node's concept type
+from its label and description, and a vague description costs the node its classification. Say
+what kind of knowing the concept demands — "the definition of X", "how to implement Y", "why Z
+behaves this way", "designing your own W".
+
+### Step 3b: Check for Registered Source Material
+
+Call `source_material_list()`. If the owner has registered sources relevant to this topic, note
+which concepts each source covers — you will pass them to `curriculum_generate` in Step 5.
+
+Map a concept to a source location **only when you actually recall where that source covers it**
+(a chapter, section, or page you know from the source's own structure or table of contents).
+Never invent a plausible-sounding chapter to fill a gap: an unmapped concept is correct, a wrong
+citation is not. The butler never fetches source contents, so this mapping is model recall and is
+labelled `model-recalled` accordingly.
+
 ### Step 4: Create Prerequisite Edges
 
 For each prerequisite relationship (parent must be learned before child):
@@ -116,7 +132,8 @@ After all nodes and edges are created, call:
 curriculum_generate(
     mind_map_id=<mind_map_id>,
     goal=<user's learning goal if provided, else None>,
-    diagnostic_results=<dict of {node_label: quality_score} from diagnostic phase, or None>
+    diagnostic_results=<dict of {node_label: quality_score} from diagnostic phase, or None>,
+    source_refs=<dict of {node_label: [{source_id, location}, ...]} from Step 3b, or None>
 )
 ```
 
@@ -128,9 +145,34 @@ This tool:
    - `effort_minutes` (lower effort first within same depth — quick wins build momentum)
    - Diagnostic mastery (partially-known concepts before fully-unknown — reinforce rather than start cold)
 4. Writes `sequence` integers to each node.
-5. Transitions mind map status to `'active'`.
+5. Assigns `metadata.concept_type` per node and merges validated `metadata.source_refs`.
+6. Transitions mind map status to `'active'`.
 
-Returns: `{ mind_map_id, node_count, edge_count, status }`.
+Returns: `{ mind_map_id, node_count, edge_count, status, concept_types_assigned,
+source_refs_assigned, source_refs_skipped }`.
+
+A non-zero `source_refs_skipped` means some refs named an unregistered source or a label no node
+carries. That is not an error — do not retry with invented locations.
+
+### Concept Types
+
+Each node is tagged with a `concept_type` that tells the teaching phase which technique fits:
+
+| Type | The concept is about | Teaching phase leans on |
+| --- | --- | --- |
+| `factual` | definitions, terminology, syntax, notation | retrieval practice |
+| `procedural` | how to do or build something, step sequences | worked examples |
+| `conceptual` | why something works, principles, trade-offs | elaboration |
+| `creative` | designing, composing, producing original work | open-ended prompts |
+
+Classification is deliberately conservative. A node whose label and description give mixed or no
+signal is left **without** a `concept_type`, and the teaching phase falls back to its Socratic
+default. That is the intended outcome, not a failure — do not force a type onto an ambiguous
+concept by rewording its label.
+
+If you are confident a node's type differs from what the heuristic would infer, set it yourself
+at creation time via `mind_map_node_create(metadata={"concept_type": "conceptual"})`. A valid
+type already present in node metadata is preserved, never overwritten.
 
 ### Step 6: Advance Flow State
 

@@ -1032,3 +1032,326 @@ class TestTopologicalOrderingIntegration:
         assert result_after[0] == a["id"]
         # Then B (diagnosed) before C (unseen)
         assert result_after.index(b["id"]) < result_after.index(c["id"])
+
+
+# ---------------------------------------------------------------------------
+# Tests: concept-type classification heuristic
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyConceptType:
+    """classify_concept_type infers a pedagogy category from label + description."""
+
+    def _classify(self, label: str, description: str | None = None) -> str | None:
+        from butlers.tools.education.concept_types import classify_concept_type
+
+        return classify_concept_type(label, description)
+
+    def test_definition_label_is_factual(self) -> None:
+        assert self._classify("Definition of Recursion") == "factual"
+
+    def test_what_is_label_is_factual(self) -> None:
+        assert self._classify("What is a Hash Table") == "factual"
+
+    def test_how_to_label_is_procedural(self) -> None:
+        assert self._classify("How to Implement Quicksort") == "procedural"
+
+    def test_configuration_label_is_procedural(self) -> None:
+        assert self._classify("Configuring a Reverse Proxy") == "procedural"
+
+    def test_why_label_is_conceptual(self) -> None:
+        assert self._classify("Why Gradient Descent Converges") == "conceptual"
+
+    def test_tradeoff_label_is_conceptual(self) -> None:
+        assert self._classify("Trade-offs Between Consistency Models") == "conceptual"
+
+    def test_design_label_is_creative(self) -> None:
+        assert self._classify("Composing an Original Melody") == "creative"
+
+    def test_neutral_label_is_unclassified(self) -> None:
+        assert self._classify("Transformers") is None
+
+    def test_empty_label_is_unclassified(self) -> None:
+        assert self._classify("") is None
+
+    def test_description_contributes_when_label_is_neutral(self) -> None:
+        assert (
+            self._classify("Backpropagation", "Why the chain rule makes this work") == "conceptual"
+        )
+
+    def test_label_outweighs_description(self) -> None:
+        """A label marker (weight 2) beats a single competing description marker."""
+        assert self._classify("How to Train a Model", "The theory is covered elsewhere") == (
+            "procedural"
+        )
+
+    def test_balanced_evidence_is_unclassified(self) -> None:
+        """Equal top scores mean low confidence, so no type is assigned."""
+        assert self._classify("Definitions and Principles") is None
+
+    def test_returns_only_known_vocabulary(self) -> None:
+        from butlers.tools.education.concept_types import CONCEPT_TYPES
+
+        result = self._classify("How to Implement Quicksort")
+        assert result in CONCEPT_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Tests: curriculum_generate — concept-type annotation
+# ---------------------------------------------------------------------------
+
+
+def _metadata_patch_call(pool: AsyncMock) -> Any | None:
+    """Return the batched node-metadata patch execute() call, if it was issued."""
+    for call in pool.execute.call_args_list:
+        sql = str(call.args[0]) if call.args else ""
+        if "s.patch" in sql:
+            return call
+    return None
+
+
+def _metadata_patches(pool: AsyncMock) -> dict[str, dict[str, Any]]:
+    """Return {node_id: patch_dict} from the batched metadata patch call."""
+    import json
+
+    call = _metadata_patch_call(pool)
+    if call is None:
+        return {}
+    node_ids, patches = call.args[1], call.args[2]
+    return {nid: json.loads(patch) for nid, patch in zip(node_ids, patches, strict=True)}
+
+
+class TestCurriculumGenerateConceptTypes:
+    """curriculum_generate annotates node metadata with concept_type."""
+
+    async def test_classifiable_node_gets_concept_type(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="How to Implement Quicksort", depth=0)
+        pool = _make_generate_pool(map_id=map_id, nodes=[node], edges=[])
+        await curriculum_generate(pool, map_id)
+        assert _metadata_patches(pool) == {node["id"]: {"concept_type": "procedural"}}
+
+    async def test_unclassifiable_node_gets_no_concept_type(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = _make_generate_pool(map_id=map_id, nodes=[node], edges=[])
+        await curriculum_generate(pool, map_id)
+        assert _metadata_patch_call(pool) is None
+
+    async def test_existing_valid_concept_type_is_preserved(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(
+            label="How to Implement Quicksort",
+            depth=0,
+            metadata={"concept_type": "creative"},
+        )
+        pool = _make_generate_pool(map_id=map_id, nodes=[node], edges=[])
+        result = await curriculum_generate(pool, map_id)
+        assert _metadata_patch_call(pool) is None
+        assert result["concept_types_assigned"] == 0
+
+    async def test_summary_counts_assigned_concept_types(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        nodes = [
+            _node(label="Definition of Recursion", depth=0),
+            _node(label="Why Gradient Descent Converges", depth=0),
+            _node(label="Transformers", depth=0),
+        ]
+        pool = _make_generate_pool(map_id=map_id, nodes=nodes, edges=[])
+        result = await curriculum_generate(pool, map_id)
+        assert result["concept_types_assigned"] == 2
+        assert sorted(p["concept_type"] for p in _metadata_patches(pool).values()) == [
+            "conceptual",
+            "factual",
+        ]
+
+    async def test_description_is_used_for_classification(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Backpropagation", depth=0)
+        node["description"] = "Why the chain rule makes this work"
+        pool = _make_generate_pool(map_id=map_id, nodes=[node], edges=[])
+        await curriculum_generate(pool, map_id)
+        assert _metadata_patches(pool)[node["id"]]["concept_type"] == "conceptual"
+
+
+# ---------------------------------------------------------------------------
+# Tests: curriculum_generate — source reference mapping
+# ---------------------------------------------------------------------------
+
+_SOURCE_ID = "11111111-1111-4111-8111-111111111111"
+
+
+def _source_rows(*source_ids: str) -> list[Any]:
+    """Build state-store rows for the education source registry."""
+    return [_make_row({"key": f"education/source/{sid}", "value": {}}) for sid in source_ids]
+
+
+class TestCurriculumGenerateSourceRefs:
+    """curriculum_generate maps planner-supplied source refs onto node metadata."""
+
+    def _pool_with_registry(
+        self,
+        *,
+        map_id: str,
+        nodes: list[dict[str, Any]],
+        registered: tuple[str, ...],
+    ) -> AsyncMock:
+        return _make_pool(
+            fetchrow_returns=[_make_row({"id": map_id, "status": "active"})],
+            fetch_returns=[[_make_row(n) for n in nodes], [], _source_rows(*registered)],
+            execute_returns=["UPDATE 1"] * 20,
+        )
+
+    async def test_registered_source_ref_is_written(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        result = await curriculum_generate(
+            pool,
+            map_id,
+            source_refs={"Transformers": [{"source_id": _SOURCE_ID, "location": "Chapter 3"}]},
+        )
+        assert result["source_refs_assigned"] == 1
+        assert _metadata_patches(pool)[node["id"]]["source_refs"] == [
+            {
+                "source_id": _SOURCE_ID,
+                "location": "Chapter 3",
+                "provenance": "model-recalled",
+            }
+        ]
+
+    async def test_unregistered_source_ref_is_dropped(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=())
+        result = await curriculum_generate(
+            pool,
+            map_id,
+            source_refs={"Transformers": [{"source_id": _SOURCE_ID, "location": "Chapter 3"}]},
+        )
+        assert result["source_refs_assigned"] == 0
+        assert result["source_refs_skipped"] == 1
+        assert _metadata_patch_call(pool) is None
+
+    async def test_unknown_node_label_is_skipped(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        result = await curriculum_generate(
+            pool,
+            map_id,
+            source_refs={"Nonexistent": [{"source_id": _SOURCE_ID, "location": "Chapter 3"}]},
+        )
+        assert result["source_refs_assigned"] == 0
+        assert result["source_refs_skipped"] == 1
+
+    async def test_explicit_referenced_provenance_is_kept(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        await curriculum_generate(
+            pool,
+            map_id,
+            source_refs={
+                "Transformers": [
+                    {
+                        "source_id": _SOURCE_ID,
+                        "location": "Chapter 3",
+                        "provenance": "referenced",
+                    }
+                ]
+            },
+        )
+        refs = _metadata_patches(pool)[node["id"]]["source_refs"]
+        assert refs[0]["provenance"] == "referenced"
+
+    async def test_existing_refs_are_merged_without_duplicates(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        existing = {
+            "source_id": _SOURCE_ID,
+            "location": "Chapter 3",
+            "provenance": "referenced",
+        }
+        node = _node(label="Transformers", depth=0, metadata={"source_refs": [existing]})
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        result = await curriculum_generate(
+            pool,
+            map_id,
+            source_refs={
+                "Transformers": [
+                    {"source_id": _SOURCE_ID, "location": "Chapter 3"},
+                    {"source_id": _SOURCE_ID, "location": "Chapter 4"},
+                ]
+            },
+        )
+        refs = _metadata_patches(pool)[node["id"]]["source_refs"]
+        assert [r["location"] for r in refs] == ["Chapter 3", "Chapter 4"]
+        assert result["source_refs_assigned"] == 1
+
+    async def test_missing_location_raises(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        with pytest.raises(ValueError, match="location"):
+            await curriculum_generate(
+                pool,
+                map_id,
+                source_refs={"Transformers": [{"source_id": _SOURCE_ID}]},
+            )
+
+    async def test_malformed_ref_raises(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        with pytest.raises(ValueError, match="source_refs"):
+            await curriculum_generate(pool, map_id, source_refs={"Transformers": "Chapter 3"})
+
+    async def test_unknown_provenance_raises(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        node = _node(label="Transformers", depth=0)
+        pool = self._pool_with_registry(map_id=map_id, nodes=[node], registered=(_SOURCE_ID,))
+        with pytest.raises(ValueError, match="provenance"):
+            await curriculum_generate(
+                pool,
+                map_id,
+                source_refs={
+                    "Transformers": [
+                        {"source_id": _SOURCE_ID, "location": "Ch 3", "provenance": "invented"}
+                    ]
+                },
+            )
+
+    async def test_registry_is_not_queried_without_source_refs(self) -> None:
+        from butlers.tools.education import curriculum_generate
+
+        map_id = str(uuid.uuid4())
+        pool = _make_generate_pool(map_id=map_id, nodes=[_node(label="Transformers")], edges=[])
+        await curriculum_generate(pool, map_id)
+        # Only the node fetch and the edge fetch — no source-registry lookup.
+        assert pool.fetch.call_count == 2

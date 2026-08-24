@@ -389,13 +389,23 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
         mind_map_id: str,
         goal: str | None = None,
         diagnostic_results: dict[str, Any] | None = None,
+        source_refs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Validate a concept graph, run topological sort, assign learning sequence."""
+        """Validate a concept graph, sort it, sequence it, and annotate pedagogy metadata.
+
+        Assigns each node a ``concept_type`` (factual/procedural/conceptual/creative)
+        inferred from its label and description; nodes that cannot be classified
+        confidently are left without one.  ``source_refs`` optionally maps node labels
+        to registered source material as
+        ``{node_label: [{source_id, location, provenance?}]}``; refs naming an
+        unregistered source or an unknown label are dropped rather than fabricated.
+        """
         return await _curriculum.curriculum_generate(
             module._get_pool(),
             mind_map_id,
             goal=goal,
             diagnostic_results=diagnostic_results,
+            source_refs=source_refs,
         )
 
     @_tool("curriculum")

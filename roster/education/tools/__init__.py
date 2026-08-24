@@ -13,6 +13,10 @@ from butlers.tools.education.analytics import (
     analytics_get_snapshot,
     analytics_get_trend,
 )
+from butlers.tools.education.concept_types import (
+    CONCEPT_TYPES,
+    classify_concept_type,
+)
 from butlers.tools.education.curriculum import (
     curriculum_generate,
     curriculum_next_node,
@@ -108,6 +112,8 @@ __all__ = [
     "curriculum_generate",
     "curriculum_replan",
     "curriculum_next_node",
+    "classify_concept_type",
+    "CONCEPT_TYPES",
     # teaching flows
     "teaching_flow_start",
     "teaching_flow_get",
