@@ -1056,14 +1056,14 @@ _REQUIRED_OPERATIONS_EXPLANATIONS = (
 )
 
 
-def _fenced_code_blocks(markdown: str) -> str:
+def _fenced_code_text(markdown: str) -> str:
     """Every ``` fenced block's body, joined.  Indented and ``<pre>`` blocks are not seen."""
     return "\n".join(match.group(1) for match in _FENCE.finditer(markdown))
 
 
 def _operator_recipe_violations(markdown: str) -> list[str]:
     """Runnable commands that would hand an operator a shared-role escape hatch."""
-    runnable = _fenced_code_blocks(markdown)
+    runnable = _fenced_code_text(markdown)
     return [
         match.group(0)
         for pattern in (_ROLE_WIDENING_RECIPE, _MANUAL_RESTORE_DB_RECIPE)
