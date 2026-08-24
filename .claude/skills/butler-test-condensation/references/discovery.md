@@ -6,15 +6,20 @@ staleness check first if resuming from a previous session.
 ## Staleness Check (Run First on Resume)
 
 ```bash
-# Compare actual count against current skill baseline.
+# Compare actual count against the dated current-cycle baseline.
 # Phase 1 (bu-rhztl) baseline 2026-04-05: 13,675 tests; closed at 2,196.
 # Phase 2 (bu-hg8rl) baseline 2026-05-03: 3,704; CLOSED 2026-05-05.
-# Phase 3 baseline 2026-06-21: 7,494 def-test funcs / 8,107 collected, 657 files.
-CURRENT=$(grep -rc 'def test_' tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
-echo "Current: $CURRENT | Phase 3 baseline (2026-06-21): 7494 | Delta: $((CURRENT - 7494))"
+# Historical Phase 3 snapshot 2026-06-21: 7,494 def-test funcs / 8,107 collected, 657 files.
+# Current cycle baseline 2026-08-24: 12,195 test functions.
+# The explicit optional `async` keeps both `def test_` and `async def test_`.
+TEST_DEF_PATTERN='^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_'
+CURRENT=$(grep -rEc "$TEST_DEF_PATTERN" tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
+echo "Current: $CURRENT | current-cycle baseline (2026-08-24): 12195 | Delta: $((CURRENT - 12195))"
 
-# Authoritative count (collection — catches parametrize/markers grep misses):
-uv run pytest tests/ --collect-only -q 2>/dev/null | tail -1
+# CI-selection collection (population only, not test-execution timing):
+uv run --no-sync pytest tests/ roster/ --collect-only -q \
+  --ignore=tests/e2e \
+  -m "not integration and not e2e and not nightly and not bench and not perf"
 
 # Check which beads are open in the active maintenance epic
 bd list --status all 2>/dev/null | grep -i 'test.*condens\|test.*phase'
@@ -186,6 +191,7 @@ uv run --no-sync pytest tests/contracts/ -q --tb=short -m contract
 # SEPARATE jobs; frontend/e2e/check are NOT required GitHub checks.
 uv run --no-sync pytest tests/ -m "not integration and not e2e" -q --maxfail=3 --tb=short
 
-# Compare before/after
-grep -rc 'def test_' tests/ --include='*.py' | awk -F: '{sum+=$2} END {print "Final count:", sum}'
+# Compare before/after (counts sync and async test functions)
+TEST_DEF_PATTERN='^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_'
+grep -rEc "$TEST_DEF_PATTERN" tests/ --include='*.py' | awk -F: '{sum+=$2} END {print "Final count:", sum}'
 ```
