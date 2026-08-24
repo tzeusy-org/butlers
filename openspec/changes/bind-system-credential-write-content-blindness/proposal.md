@@ -67,7 +67,11 @@ None.
 - Breaking for any client reading `breaks[]`, `test.message`, or an audit
   `note` off this response. No such consumer exists in-repo; the frontend types
   and client are updated in the same change.
-- The `s:` write surface is now projected end to end. Not addressed here: the
-  frontend's `SecretsUserDetail` type still describes the pre-projection user
-  payload (`scopes_required`, `failure_tail`, `breaks`) that the backend
-  stopped returning, which is stale typing rather than a leak.
+- The `s:` write surface is now projected end to end. The frontend's
+  `SecretsUserDetail` type lagged behind it for a while, still describing the
+  pre-projection user payload (`scopes_required`, `failure_tail`, `breaks`)
+  that the backend had stopped returning. That was stale typing rather than a
+  leak, and it was closed separately by bu-uzi94 (PR #3778): the type now
+  carries `capabilities_required`, `capabilities_granted`, and the
+  content-blind `SecretsCredential*` outcome family. Nothing is outstanding on
+  this axis.
