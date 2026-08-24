@@ -2897,13 +2897,11 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint AS version_constraint
-        JOIN pg_class AS relation ON relation.oid = version_constraint.conrelid
-        JOIN pg_namespace AS admin_schema ON admin_schema.oid = relation.relnamespace
         JOIN pg_attribute AS constrained_column
-          ON constrained_column.attrelid = relation.oid
+          ON constrained_column.attrelid = version_constraint.conrelid
          AND constrained_column.attnum = ANY (version_constraint.conkey)
-        WHERE admin_schema.nspname = 'runtime_attention_admin'
-          AND relation.relname = 'bootstrap_configuration'
+        WHERE version_constraint.conrelid
+                  = 'runtime_attention_admin.bootstrap_configuration'::regclass
           AND version_constraint.contype = 'c'
           AND constrained_column.attname = 'interface_version'
     ) THEN
