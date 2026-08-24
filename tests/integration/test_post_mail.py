@@ -7,6 +7,8 @@ import shutil
 
 import pytest
 
+from butlers.testing.schema_standins import CONNECTOR_REGISTRY
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -64,23 +66,11 @@ async def pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        # Minimal connector_registry (bu-nz1wx): only the columns
-        # heartbeat._get_previous_snapshot selects, so the arc-closer teeth test
-        # can prove that switchboard-qualified read resolves under a public-only
-        # search_path. Mirrors the switchboard-schema table from migration 002.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS connector_registry (
-                connector_type TEXT NOT NULL,
-                endpoint_identity TEXT NOT NULL,
-                instance_id UUID,
-                counter_messages_ingested BIGINT DEFAULT 0,
-                counter_messages_failed BIGINT DEFAULT 0,
-                counter_source_api_calls BIGINT DEFAULT 0,
-                counter_checkpoint_saves BIGINT DEFAULT 0,
-                counter_dedupe_accepted BIGINT DEFAULT 0,
-                PRIMARY KEY (connector_type, endpoint_identity)
-            )
-        """)
+        # connector_registry in the switchboard schema (bu-nz1wx), so the
+        # arc-closer teeth test can prove heartbeat._get_previous_snapshot's
+        # qualified read resolves under a public-only search_path. The shared
+        # declaration keeps it from drifting off the chain (bu-r8opr).
+        await p.execute(CONNECTOR_REGISTRY.ddl(schema="switchboard"))
         yield p
 
 
