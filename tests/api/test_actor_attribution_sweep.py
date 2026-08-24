@@ -268,7 +268,14 @@ class _StrictModel(IgnoresCallerAssertedActor):
 
 
 class _RenamedFieldModel(IgnoresCallerAssertedActor):
-    """Stand-in for a model whose legacy wire name was not ``actor``."""
+    """Stand-in for a model whose legacy wire name was not ``actor``.
+
+    ``extra="forbid"`` is deliberate: without the strip, the legacy field would
+    reach validation and 422 an older client, so this model fails loudly if the
+    strip ever stops running.
+    """
+
+    model_config = {"extra": "forbid"}
 
     caller_asserted_actor_fields = ("submitted_by",)
 
