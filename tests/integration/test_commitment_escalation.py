@@ -969,6 +969,10 @@ class TestAttentionLedgerRecording:
         """
         from unittest.mock import AsyncMock
 
+        from butlers.core.approvals_policy import (
+            get_approvals_policy_quiet_hours,
+            is_policy_quiet_now,
+        )
         from butlers.tools.switchboard.insight.broker import (
             create_insight_tables,
             delivery_cycle,
@@ -989,8 +993,29 @@ class TestAttentionLedgerRecording:
             await run_commitment_escalation(pool, insight_proposer=propose_insight_candidate)
         ).surfaced == 1
 
+        # delivery_cycle consults the Owner Attention Policy, and the migration
+        # seeds quiet hours 23:00-08:00 Asia/Singapore -- 15:00-24:00 UTC. Read
+        # with the real clock this assertion therefore failed for nine hours of
+        # every day and passed for the other fifteen. Pin both halves: the
+        # policy, so a change to the seed cannot silently re-break it, and the
+        # instant, so the test asserts what it means to assert.
+        await pool.execute(
+            """
+            INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
+            VALUES (1, 23, 8, 'UTC')
+            ON CONFLICT (id) DO UPDATE
+                SET quiet_start_hour = EXCLUDED.quiet_start_hour,
+                    quiet_end_hour = EXCLUDED.quiet_end_hour,
+                    timezone = EXCLUDED.timezone
+            """
+        )
+        delivery_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+        assert not is_policy_quiet_now(
+            await get_approvals_policy_quiet_hours(pool), now=delivery_at
+        )
+
         notify = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(pool, notify_fn=notify, now=datetime.now(UTC))
+        result = await delivery_cycle(pool, notify_fn=notify, now=delivery_at)
         assert result["skipped"] is False
         assert result["delivered"]
 
