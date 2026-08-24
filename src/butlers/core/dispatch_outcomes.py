@@ -83,6 +83,12 @@ async def _produce_edge(
         return None, True
 
 
+# ``ts`` is deliberately ``clock_timestamp()`` and must stay that way:
+# REQ-model-catalog-001 orders outcomes by the instant they were serialized,
+# not by BEGIN time, so a transaction that waited on the breaker lock has to
+# stamp its row after the transaction it waited for.  ``now()`` would order the
+# waiter first.  This is the one place the recorder reads the statement clock;
+# the fleet-halt month below is transaction-stable for the opposite reason.
 _DISPATCH_ATTEMPTS_INSERT = """
     INSERT INTO public.model_dispatch_attempts
         (session_id, catalog_entry_id, butler, outcome,
@@ -97,6 +103,20 @@ _BREAKER_LOCK_SQL = """
     SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 """
 
+# ``now()`` here is load-bearing and must stay in step with the ``v_month``
+# declaration in ``public.append_runtime_attention_fleet_halt`` (defined once in
+# ``runtime_attention_admin.install_fleet_halt_producer_v2``, scripts/init-db.sql).
+# This lock is taken at the top of the transaction; the producer computes its
+# month later in that same transaction.  Only a transaction-stable timestamp
+# makes the two provably equal -- with clock_timestamp on either side, a month
+# rollover between the two evaluations leaves the lock serializing a key nobody
+# is writing, which is exactly when the fleet-halt path is most likely to fire
+# (bu-jxelx).  The denial row's ``ts`` stays on the statement clock, so a
+# transaction that crosses the rollover stamps its row in the month after
+# ``v_month``; the producer's evidence query then does not count that row.  That
+# asymmetry is v1's long-standing shape, not something this lock introduces, and
+# it only bites when the crossing transaction carries the month's *first*
+# ceiling denial -- see bu-jxelx's follow-up note.
 _FLEET_HALT_LOCK_SQL = """
     SELECT pg_advisory_xact_lock(
         hashtextextended(
@@ -217,6 +237,20 @@ async def record_dispatch_attempt(
                     raise RuntimeError("dispatch-attempt insert returned no stable bigint id")
 
                 if outcome == "runtime_failure" and not breaker_was_open:
+                    # The breaker path keeps a clock asymmetry the fleet-halt
+                    # month above does not, and it is load-bearing.  Edge
+                    # detection here evaluates the half-open cooldown against
+                    # ``now()`` (model_routing's ``_BREAKER_OPEN_CTE``); the v2
+                    # producer re-proves the same window against
+                    # ``clock_timestamp()`` and raises ``23514`` -- which is not
+                    # absorbed, so it would roll the attempt row back too -- if it
+                    # finds the edge was already open.  Because now() <=
+                    # clock_timestamp, ``now() - ts < 15 min`` is the weaker test:
+                    # "Python says already open" is a superset of "SQL says already
+                    # open", so whenever the producer would raise, this branch has
+                    # already declined to call it.  Keep it that way; aligning the
+                    # producer to now() here without re-deriving that containment
+                    # would put a transaction-losing raise back in reach.
                     breaker_is_open = (await get_breaker_state(connection, catalog_entry_id)).open
                     if breaker_is_open:
                         episode_id, unauthorized = await _produce_edge(
