@@ -100,6 +100,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -175,15 +176,33 @@ def test_files(root: Path) -> list[Path]:
 
     ``testpaths = ["tests", "roster"]``, and butler tests live at
     ``roster/<butler>/tests/``, so the directory name is the reliable marker
-    rather than a fixed top-level list. Dot-prefixed directories are skipped so
-    a worker's ``.worktrees/`` copy of the repo is not scanned alongside it.
+    rather than a fixed top-level list. Dot-prefixed directories are out of
+    scope: a worker's ``.worktrees/`` copy of the repo is a *different* checkout
+    whose tests cite whatever that branch is mid-way through changing, and whose
+    ``openspec/`` tree is a different tree.
+
+    They are pruned during the walk rather than filtered out of its results,
+    which is a cost decision, not a correctness one -- a post-filter reaches the
+    same answer. AGENTS.md puts a full checkout, ``.venv`` and all, under
+    ``.worktrees/parallel-agents/<id>/``. Measured on one such repo root:
+    descending into them and discarding them afterwards traverses 2.3M entries
+    in ~19s to select the same ~1.2k files a pruning walk reaches in 0.3s, and
+    the whole guard did not finish inside 120s. CI checks out a clean tree and
+    never pays it, so the cost falls entirely on the developer running this
+    before pushing -- the one run that has to be cheap enough to actually happen.
     """
-    return sorted(
-        path
-        for path in root.rglob("*.py")
-        if "tests" in path.relative_to(root).parts
-        and not any(part.startswith(".") for part in path.relative_to(root).parts)
-    )
+    found: list[Path] = []
+    for directory, subdirectories, names in os.walk(root):
+        # In-place, so os.walk itself never descends -- this is the whole point.
+        subdirectories[:] = [name for name in subdirectories if not name.startswith(".")]
+        if "tests" not in Path(directory).relative_to(root).parts:
+            continue
+        found.extend(
+            Path(directory) / name
+            for name in names
+            if name.endswith(".py") and not name.startswith(".")
+        )
+    return sorted(found)
 
 
 def collect(root: Path) -> list[Citation]:

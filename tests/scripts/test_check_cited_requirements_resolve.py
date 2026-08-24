@@ -27,7 +27,9 @@ The load-bearing cases here are the two a naive predicate gets wrong:
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -265,6 +267,94 @@ def test_half_applied_archive_names_only_the_id_that_did_not_land(tmp_path: Path
     assert result.returncode == 1, f"half-applied archive reported clean:\n{result.stdout}"
     assert AUTHORED_TOO in result.stdout
     assert AUTHORED not in result.stdout, "named an id that did land"
+
+
+def _load_guard():
+    """Import the guard as a module so its walk can be observed.
+
+    Every other test here drives the script through ``subprocess``, which is the
+    right shape for behaviour. The property below is not behavioural -- pruning
+    and post-filtering return the identical file set -- so it can only be pinned
+    by watching the traversal itself.
+    """
+    spec = importlib.util.spec_from_file_location("_cited_requirements_guard", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: @dataclass resolves annotations through
+    # sys.modules[cls.__module__], which is None for an unregistered module.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_dot_prefixed_directory_is_never_descended_into(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pruned during the walk, not filtered out of its results.
+
+    Post-filtering is *correct* -- the test above passes either way -- so
+    nothing about the guard's output can distinguish the two. What separates
+    them is cost, and on the layout AGENTS.md prescribes the difference is not
+    marginal: a repo root carrying agent worktrees, each with its own ``.venv``,
+    puts ~2.3M entries behind a walk that has ~1.2k files to find, and the guard
+    does not finish inside two minutes. That is the difference between a check a
+    developer runs before pushing and one they skip, so the pruning is
+    load-bearing and pinned here rather than left to a comment.
+    """
+    guard = _load_guard()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_widgets.py").write_text('"""Widget tests."""\n', encoding="utf-8")
+    buried = tmp_path / ".worktrees" / "parallel-agents" / "bu-xxxxx" / "tests"
+    buried.mkdir(parents=True)
+    (buried / "test_stray.py").write_text('"""Stray tests."""\n', encoding="utf-8")
+
+    descended: list[str] = []
+    real_walk = os.walk
+
+    def recording_walk(top, *args, **kwargs):
+        for directory, subdirectories, names in real_walk(top, *args, **kwargs):
+            descended.append(directory)
+            yield directory, subdirectories, names
+
+    monkeypatch.setattr(guard.os, "walk", recording_walk)
+    found = guard.test_files(tmp_path)
+
+    assert [path.name for path in found] == ["test_widgets.py"]
+    assert descended, "the walk was never observed -- the spy is not wired to the guard"
+    dotted = [entry for entry in descended if ".worktrees" in Path(entry).parts]
+    assert not dotted, f"descended into a pruned directory: {dotted}"
+
+
+def test_a_dot_prefixed_copy_of_the_repo_is_not_scanned(tmp_path: Path) -> None:
+    """An agent worktree under ``.worktrees/`` is a second repo, not this one.
+
+    AGENTS.md puts a full checkout at ``.worktrees/parallel-agents/<id>/``. Its
+    tests cite whatever that branch is mid-way through changing, and its
+    ``openspec/`` tree is a different tree -- reading the two as one would
+    report a citation against a definition set that never coexists with it. The
+    dot prefix is the marker, so any dot-prefixed directory is out of scope,
+    ``.venv`` included.
+    """
+    _tree(
+        tmp_path,
+        baseline={"widgets": [IN_BASELINE]},
+        cited={"tests/test_widgets.py": [IN_BASELINE]},
+    )
+    stray = tmp_path / ".worktrees" / "parallel-agents" / "bu-xxxxx" / "tests"
+    stray.mkdir(parents=True)
+    (stray / "test_stray.py").write_text(
+        f'"""Stray tests."""\n\n\ndef test_stray() -> None:\n'
+        f'    """{DANGLING}: the widget is served."""\n    assert True\n',
+        encoding="utf-8",
+    )
+
+    result = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+
+    assert result.returncode == 0, (
+        f"a citation inside a dot-prefixed worktree copy was scanned:\n{result.stdout}"
+    )
+    assert DANGLING not in result.stdout
+    assert "test_stray.py" not in result.stdout
 
 
 def test_citations_in_roster_butler_tests_are_scanned(tmp_path: Path) -> None:
