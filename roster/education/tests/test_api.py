@@ -2487,3 +2487,108 @@ class TestGetStrugglingNodes:
         assert resp.status_code == 200
         node = resp.json()["nodes"][0]
         assert node["reason"] == "consecutive_low_quality,declining_score"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/sources — source-material registry (bu-istke.5)
+# ---------------------------------------------------------------------------
+
+
+class TestListSourceMaterial:
+    """The registry side of the node-detail source-annotation lookup.
+
+    The dashboard resolves each ``metadata.source_refs`` entry against this
+    list. An ID missing from it is a dangling reference the UI must label as
+    unregistered, so this endpoint must never invent or omit a record.
+    """
+
+    async def test_returns_registered_sources(self):
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                _MockRecord(
+                    {
+                        "key": "education/source/src-1",
+                        "value": {
+                            "title": "Structure and Interpretation of Computer Programs",
+                            "authors": ["Harold Abelson", "Gerald Jay Sussman"],
+                            "type": "book",
+                            "url": "https://example.test/sicp",
+                            "registered_at": "2026-08-21T00:00:00+00:00",
+                        },
+                    }
+                )
+            ]
+        )
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources")
+
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {
+                "source_id": "src-1",
+                "title": "Structure and Interpretation of Computer Programs",
+                "authors": ["Harold Abelson", "Gerald Jay Sussman"],
+                "type": "book",
+                "url": "https://example.test/sicp",
+                "registered_at": "2026-08-21T00:00:00+00:00",
+            }
+        ]
+
+    async def test_empty_registry_returns_empty_list(self):
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_optional_fields_absent_are_null(self):
+        """A record registered without a URL must report null, not a guess."""
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                _MockRecord(
+                    {
+                        "key": "education/source/src-2",
+                        "value": {
+                            "title": "RFC 793",
+                            "authors": [],
+                            "type": "documentation",
+                            "registered_at": "2026-08-21T00:00:00+00:00",
+                        },
+                    }
+                )
+            ]
+        )
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources")
+
+        body = resp.json()
+        assert body[0]["url"] is None
+        assert body[0]["authors"] == []
+
+    async def test_pool_unavailable_returns_503(self):
+        """A 503 keeps the UI honest: it cannot classify refs it never resolved."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool, pool_available=False)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/education/sources")
+
+        assert resp.status_code == 503

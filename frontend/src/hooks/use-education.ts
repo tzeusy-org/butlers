@@ -13,6 +13,7 @@ import {
   getEducationMindMaps,
   getEducationPendingReviews,
   getEducationQuizResponses,
+  getEducationSources,
   requestEducationCurriculum,
   updateEducationMindMapStatus,
 } from "@/api/index.ts";
@@ -50,6 +51,23 @@ export function useMindMap(mindMapId: string | null) {
     queryFn: () => getEducationMindMap(mindMapId!),
     enabled: !!mindMapId,
     refetchInterval: EDUCATION_POLL_MS,
+  });
+}
+
+/**
+ * List registered source material.
+ *
+ * Backs the node detail panel's source-annotation lookup. The registry is
+ * small and changes only when the owner registers or removes a source, so it
+ * rides the slow cadence. Consumers MUST distinguish `isLoading`/`isError`
+ * from a resolved miss: an unreachable registry says nothing about whether a
+ * `source_id` is still registered.
+ */
+export function useEducationSources() {
+  return useQuery({
+    queryKey: ["education", "sources"],
+    queryFn: getEducationSources,
+    refetchInterval: EDUCATION_POLL_SLOW_MS,
   });
 }
 

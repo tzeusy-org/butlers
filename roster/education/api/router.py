@@ -33,6 +33,7 @@ from butlers.tools.education.analytics import (
 from butlers.tools.education.mastery import mastery_detect_struggles, mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
+from butlers.tools.education.source_material import source_material_list
 from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
 from butlers.tools.education.teaching_flows import teaching_flow_list
 
@@ -59,6 +60,7 @@ if _spec is not None and _spec.loader is not None:
     MindMapResponse = _models.MindMapResponse
     PendingReviewNodeResponse = _models.PendingReviewNodeResponse
     QuizResponseModel = _models.QuizResponseModel
+    SourceMaterialResponse = _models.SourceMaterialResponse
     StatusUpdateRequest = _models.StatusUpdateRequest
     StrugglingNodeEntry = _models.StrugglingNodeEntry
     StrugglingNodesResponse = _models.StrugglingNodesResponse
@@ -416,6 +418,38 @@ async def get_cross_topic_analytics(
         weakest_topic=result.get("weakest_topic"),
         portfolio_mastery=float(result.get("portfolio_mastery", 0.0)),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/sources — registered source material
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sources", response_model=list[SourceMaterialResponse])
+async def list_source_material(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[SourceMaterialResponse]:
+    """Return every registered source, so callers can resolve a ``source_id``.
+
+    Mind map nodes carry ``metadata.source_refs`` entries that name a source by
+    ID only. This endpoint is the registry side of that lookup: an ID absent
+    from this list is a dangling reference (its source was removed), and the
+    caller must say so rather than render it as a citation.
+    """
+    pool = _pool(db)
+
+    sources = await source_material_list(pool)
+    return [
+        SourceMaterialResponse(
+            source_id=str(s["source_id"]),
+            title=str(s.get("title") or ""),
+            authors=[str(a) for a in (s.get("authors") or [])],
+            type=str(s.get("type") or ""),
+            url=str(s["url"]) if s.get("url") else None,
+            registered_at=str(s["registered_at"]) if s.get("registered_at") else None,
+        )
+        for s in sources
+    ]
 
 
 # ---------------------------------------------------------------------------

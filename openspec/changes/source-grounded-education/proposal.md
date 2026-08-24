@@ -80,8 +80,10 @@ never autonomously scraped from the web.
 - `roster/education/modules/tools.py` (extended: `source_material_register`,
   `source_material_list`; `mind_map_node_create/update` document `source_refs`
   and `concept_type` metadata conventions)
+- `roster/education/api/` (added: `GET /api/education/sources`, the registry
+  read the dashboard resolves `source_refs` against)
 - `frontend/src/components/` education mind map (extended: source annotation
-  display)
+  display with provenance labels)
 - Tests: source material registration, citation in teaching session output,
   pedagogy selection per concept type
 

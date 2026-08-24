@@ -53,6 +53,21 @@ class MindMapResponse(BaseModel):
     edges: list[MindMapEdgeResponse] = []
 
 
+class SourceMaterialResponse(BaseModel):
+    """A registered source-material record from the education state store.
+
+    Metadata only: the registry never stores or fetches source contents, so
+    there is nothing here a reader could mistake for the source itself.
+    """
+
+    source_id: str
+    title: str
+    authors: list[str] = []
+    type: str
+    url: str | None = None
+    registered_at: str | None = None
+
+
 class QuizResponseModel(BaseModel):
     """A recorded quiz response for a concept node."""
 
