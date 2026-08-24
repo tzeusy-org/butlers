@@ -54,3 +54,26 @@ def test_leak_guard_rejects_an_unrestored_engine(
     message = str(excinfo.value)
     assert "compute_tier_ranking" in message
     assert request.node.nodeid in message
+
+
+def test_leak_guard_restores_the_engine_so_later_tests_are_not_punished(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+):
+    """After reporting a leak the guard puts the real callable back.
+
+    A leak is sticky: nothing else restores the module global.  Without the
+    repair the guard would fail the leaker and then every test after it, which
+    is the mystery-failure-in-an-unrelated-file symptom it exists to abolish.
+    Assert the repair directly, because a guard that only reports would still
+    pass every test in this file.
+    """
+    pristine = dunbar.compute_tier_ranking
+    monkeypatch.setattr(dunbar, "compute_tier_ranking", AsyncMock())
+
+    with pytest.raises(AssertionError):
+        _registered_guard(request).function(item=request.node)
+
+    assert dunbar.compute_tier_ranking is pristine
+
+    # A second, clean teardown now passes, so the run continues honestly.
+    _registered_guard(request).function(item=request.node)

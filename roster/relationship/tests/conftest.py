@@ -37,9 +37,18 @@ def pytest_runtest_teardown(item: pytest.Item) -> None:
         for name, pristine in _PRISTINE_DUNBAR_GLOBALS.items()
         if current.get(name) is not pristine
     )
+    # Repair before reporting.  A leak is sticky by construction -- nothing else
+    # will put the real callable back -- so without this the guard would fail the
+    # leaker AND every test that runs after it, burying the one useful nodeid
+    # under a wall of errors in unrelated files.  That is the same
+    # mystery-failure-elsewhere symptom the guard exists to abolish.
+    for name in leaked:
+        setattr(_dunbar_engine, name, _PRISTINE_DUNBAR_GLOBALS[name])
     assert not leaked, (
         f"{item.nodeid} leaked a patch on butlers.tools.relationship.dunbar: "
-        f"{', '.join(leaked)}. Use monkeypatch.setattr so pytest restores it."
+        f"{', '.join(leaked)}. Use monkeypatch.setattr so pytest restores it. "
+        f"The engine has been restored so the rest of this run stays honest; "
+        f"this failure names the leaker, not a victim."
     )
 
 
