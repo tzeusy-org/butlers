@@ -22,7 +22,16 @@ def _utcnow() -> datetime:
 
 
 def _today() -> date:
-    return date.today()
+    """The UTC calendar date.
+
+    Every fixture in this module stamps its rows as explicit UTC instants
+    (``tzinfo=UTC``) and the code under test resolves its windows in the owner's
+    configured timezone, which is UTC for these unconfigured test pools.  A
+    LOCAL date here would put the fixture in a third frame, so these tests would
+    pass or fail according to the developer's UTC offset -- which is exactly how
+    a real production timezone skew stayed invisible to a UTC CI (bu-4zd9h).
+    """
+    return datetime.now(UTC).date()
 
 
 # ---------------------------------------------------------------------------
