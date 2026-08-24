@@ -271,6 +271,9 @@ _NON_NAME_CAPITALS = frozenset(
 
 _NAME_RE = re.compile(r"\b" + _NAME_RUN)
 
+# Trailing clitics stripped off a candidate before it is judged as a name.
+_CLITIC_RE = re.compile(r"['’](?:ll|ve|re|d|m|s)$", re.IGNORECASE)
+
 _FOLLOW_UP_HINTS = ("follow up", "follow-up", "check in", "check-in", "circle back", "get back to")
 
 # Content-free tokens dropped before overlap scoring. Kept deliberately small:
@@ -498,7 +501,7 @@ def _name_candidates(text: str) -> tuple[str, ...]:
     """Capitalised runs in *text* that could name a person, in reading order."""
     candidates: list[str] = []
     for match in _NAME_RE.finditer(text):
-        name = _strip_possessive(match.group(0))
+        name = _strip_clitic(match.group(0))
         if not name or name.lower() in _NON_NAME_CAPITALS:
             continue
         if name not in candidates:
@@ -506,9 +509,16 @@ def _name_candidates(text: str) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def _strip_possessive(name: str) -> str:
-    """Drop a trailing possessive so "Maya's draft" proposes the person, not the string."""
-    return re.sub(r"['’]s$", "", name.strip()).strip()
+def _strip_clitic(name: str) -> str:
+    """Drop a trailing clitic so "Maya's draft" proposes the person, not the string.
+
+    The possessive is the obvious case. The pronoun contractions matter for a
+    less obvious one: candidates are found by scanning for capitalised runs, and
+    "I'll" in "… that book and I'll call Devi" is a capitalised run that is not
+    a name. Reducing it to "I" hands it to :data:`_NON_NAME_CAPITALS`, which
+    already refuses it, instead of sending it to the entity resolver.
+    """
+    return _CLITIC_RE.sub("", name.strip()).strip()
 
 
 def _is_vetoed(sentence: str) -> bool:
@@ -555,7 +565,7 @@ def _detect_commitment_in_sentence(sentence: str, now: datetime) -> CommitmentSi
             return None
         candidates: tuple[str, ...] = ()
         if relay_name:
-            candidates += (_strip_possessive(relay_name),)
+            candidates += (_strip_clitic(relay_name),)
         candidates += tuple(n for n in _name_candidates(action) if n not in candidates)
         lowered_action = action.lower()
         resolved_kind = (
