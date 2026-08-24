@@ -123,25 +123,42 @@ export function SystemVerdictBanner() {
   const backupData = backups.data?.data;
   if (backupData && !backupData.backup_source_reachable) {
     problems.push({ key: "backup-unreachable", text: "backup source unreachable" });
-  } else if (backupData && !backupData.last_backup_at) {
-    problems.push({ key: "backup-never", text: "never backed up" });
-  } else if (backupData) {
-    if (backupData.last_backup_status === "corrupt" || backupData.last_backup_status === "empty") {
-      problems.push({
-        key: "backup-artifact",
-        text: `backup artifact ${backupData.last_backup_status}`,
-      });
+  } else {
+    // bu-u41p0: a failed run is aggregated here for the same reason "last
+    // deploy failed" is, below -- both are the most recent run of a scheduled
+    // operational job reporting failure, and the banner already aggregates
+    // every other member of the backup family. Without it the banner would
+    // assert "Instance healthy: ... backed up 3h ago" on the exact morning
+    // the run died, because pg_dump.sh leaves yesterday's artifact in place.
+    // result="unknown" raises nothing: it is the default for every deployment
+    // predating the run receipt, and the QA source deliberately files no
+    // finding on it either.
+    if (backupData?.last_run?.result === "failed") {
+      problems.push({ key: "backup-run-failed", text: "last backup run failed" });
     }
-    if (backupData.backup_stale) {
-      problems.push({ key: "backup-stale", text: "backup is stale" });
-    }
-    const drill = backupData.restore_drill;
-    if (drill?.result === "fail") {
-      problems.push({ key: "restore-drill-fail", text: "restore drill failed" });
-    } else if (drill?.result === "degraded") {
-      problems.push({ key: "restore-drill-degraded", text: "restore drill status unavailable" });
-    } else if (!drill || drill.result === "pending") {
-      problems.push({ key: "restore-drill-pending", text: "restore drill never run" });
+    if (backupData && !backupData.last_backup_at) {
+      problems.push({ key: "backup-never", text: "never backed up" });
+    } else if (backupData) {
+      if (
+        backupData.last_backup_status === "corrupt" ||
+        backupData.last_backup_status === "empty"
+      ) {
+        problems.push({
+          key: "backup-artifact",
+          text: `backup artifact ${backupData.last_backup_status}`,
+        });
+      }
+      if (backupData.backup_stale) {
+        problems.push({ key: "backup-stale", text: "backup is stale" });
+      }
+      const drill = backupData.restore_drill;
+      if (drill?.result === "fail") {
+        problems.push({ key: "restore-drill-fail", text: "restore drill failed" });
+      } else if (drill?.result === "degraded") {
+        problems.push({ key: "restore-drill-degraded", text: "restore drill status unavailable" });
+      } else if (!drill || drill.result === "pending") {
+        problems.push({ key: "restore-drill-pending", text: "restore drill never run" });
+      }
     }
   }
 

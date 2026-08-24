@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// BackupTile -- backup recency, verified artifact health, and restore-drill
-// state (bu-ngfzz.6, deepened by bu-9r3hd.5)
+// BackupTile -- backup recency, verified artifact health, run outcome, and
+// restore-drill state (bu-ngfzz.6, deepened by bu-9r3hd.5 and bu-u41p0)
 //
 // Data source: useBackupFacts -> GET /api/system/backups
 // Fields used: backup_source_reachable, last_backup_at, last_backup_status,
-// backup_stale, restore_drill
+// backup_stale, last_run, restore_drill
 //
 // bu-9r3hd.5: the "Reachable" badge used to render green purely from
 // backup_source_reachable, regardless of whether the backup artifact was
@@ -13,9 +13,17 @@
 // as a problem, and a failed restore drill (the strongest possible check --
 // an actual restore attempt) is surfaced as its own row, never silently
 // folded into a green badge.
+//
+// bu-u41p0: freshness alone still could not see a FAILED run. pg_dump.sh
+// refuses to publish a bad dump, so a failure leaves yesterday's good file
+// untouched and the badge read "Healthy" the morning after the run died.
+// A failed run now out-ranks the freshness verdict in the badge, and the run
+// gets its own row. result="unknown" is the absence of a signal -- it never
+// moves the badge in either direction, exactly as the QA source raises no
+// finding on it (core/qa/sources/infra_state.py).
 // ---------------------------------------------------------------------------
 
-import type { BackupFacts, RestoreDrillFacts } from "@/api/types"
+import type { BackupFacts, BackupRunFacts, RestoreDrillFacts } from "@/api/types"
 import {
   Card,
   CardContent,
@@ -73,6 +81,15 @@ function TileError() {
  * older backend, or a fixture predating bu-9r3hd.5) render as "Unverified"
  * rather than silently assuming health. Tailwind classes are static per
  * branch (not built from a dynamic string) so the JIT compiler can see them.
+ *
+ * Ranked worst-first by what it costs the operator: a corrupt or empty
+ * artifact means the file you would restore from is known bad; a failed run
+ * (bu-u41p0) means no new copy was taken, and it out-ranks both "Stale" and
+ * "Healthy" because it is the *cause* of the staleness that surfaces a day
+ * later. An "unknown" run result is skipped entirely -- it is the default for
+ * every deployment predating the run receipt, and degrading a verified-healthy
+ * artifact on the strength of a missing file would be noise, not honesty. The
+ * Last-run row below still reports it.
  */
 function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
   if (facts.last_backup_status === "corrupt" || facts.last_backup_status === "empty") {
@@ -82,6 +99,16 @@ function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
         className="bg-[var(--red)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
       >
         {facts.last_backup_status === "corrupt" ? "Corrupt" : "Empty"}
+      </span>
+    )
+  }
+  if (facts.last_run?.result === "failed") {
+    return (
+      <span
+        data-testid="backup-tile-status-badge"
+        className="bg-[var(--red)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      >
+        Run failed
       </span>
     )
   }
@@ -112,6 +139,73 @@ function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
     >
       Unverified
     </span>
+  )
+}
+
+// Human wording for the fixed reason vocabulary the backup script emits
+// (mirrored from _BACKUP_RUN_REASONS in api/routers/system.py). Reasons
+// outside this map -- including the backend's own "unrecognized reason"
+// placeholder -- render no detail at all, the same guard RestoreDrillRow
+// applies: this string arrives off a mounted volume and must not become
+// arbitrary dashboard-visible text.
+const BACKUP_RUN_FAILURE_DETAIL: Record<string, string> = {
+  pg_dump_failed: "pg_dump failed",
+  artifact_undersize: "artifact was undersize",
+  artifact_corrupt: "artifact failed integrity verification",
+  unexpected_error: "unexpected error",
+}
+
+/**
+ * The most recent run's own outcome, which artifact freshness cannot report.
+ *
+ * An absent `last_run` and `result: "unknown"` are the same state -- no
+ * readable receipt -- and share one branch. Neither is rendered as a pass:
+ * absence of evidence is not evidence of success.
+ */
+function BackupRunRow({ run }: { run: BackupRunFacts | undefined }) {
+  if (!run || run.result === "unknown") {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Last run</dt>
+        <dd data-testid="backup-tile-run-unknown" className="text-muted-foreground text-sm">
+          No run outcome recorded
+        </dd>
+      </div>
+    )
+  }
+
+  if (run.result === "success") {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Last run</dt>
+        <dd data-testid="backup-tile-run-success" className="text-sm">
+          <span className="text-[var(--green)]">Succeeded</span>
+          {run.finished_at ? (
+            <>
+              {" "}
+              <Time value={run.finished_at} mode="relative" />
+            </>
+          ) : null}
+        </dd>
+      </div>
+    )
+  }
+
+  const failureDetail = run.reason ? BACKUP_RUN_FAILURE_DETAIL[run.reason] : undefined
+  return (
+    <div>
+      <dt className="text-muted-foreground text-xs">Last run</dt>
+      <dd data-testid="backup-tile-run-failed" className="text-sm">
+        <span className="text-[var(--red-text)]">Failed</span>
+        {run.finished_at ? (
+          <>
+            {" "}
+            <Time value={run.finished_at} mode="relative" />
+          </>
+        ) : null}
+        {failureDetail ? <span className="text-muted-foreground"> -- {failureDetail}</span> : null}
+      </dd>
+    </div>
   )
 }
 
@@ -223,6 +317,7 @@ export function BackupTile() {
               )}
             </dd>
           </div>
+          <BackupRunRow run={facts.last_run} />
           <RestoreDrillRow drill={facts.restore_drill} />
         </dl>
       </CardContent>
