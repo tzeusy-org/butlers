@@ -1894,6 +1894,16 @@ class TestCalibrationNoticeEvidence:
         assert kwargs["notice_outcome"] == edu._NOTICE_UNPROVEN
         assert kwargs["notice_accepted_at"] is None
 
+    async def test_absent_pool_leaves_delivery_unproven(self):
+        """With no pool there is nothing to consult, which is not an absence."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        outcome, accepted_at = await edu._notice_evidence(None, "sess-any", datetime.now(UTC))
+        assert outcome == edu._NOTICE_UNPROVEN
+        assert accepted_at is None
+
     async def test_missing_session_id_leaves_delivery_unproven(self):
         """Without a session id there is no key to consult the ledger with."""
         mock_pool = AsyncMock()

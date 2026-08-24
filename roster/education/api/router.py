@@ -1008,11 +1008,13 @@ async def _notice_evidence(
     began; only the ledger can speak to whether the owner was told, and the two
     diverge in exactly the case that matters (bu-358jk).
     """
-    if not session_id:
-        # No correlation key, so the ledger cannot be asked about this session
+    if pool is None or not session_id:
+        # No pool, or no correlation key, so the ledger cannot be asked about
+        # this session
         # specifically. Guessing by butler and time window could credit an
         # unrelated education notify, which is how "unproven" becomes a false
-        # "delivered".
+        # "delivered". Note this is `unproven`, not `no_record`: we did not
+        # look, so we cannot report an absence.
         return _NOTICE_UNPROVEN, None
 
     try:
