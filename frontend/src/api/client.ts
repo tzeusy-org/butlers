@@ -2975,34 +2975,6 @@ export function getEntityGifts(
   return apiFetch<EntityGift[]>(path);
 }
 
-/** Fetch notes tab data for a relationship entity. */
-export function getEntityNotes(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityNote[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/notes?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/notes`;
-  return apiFetch<EntityNote[]>(path);
-}
-
-/** Fetch interactions tab data for a relationship entity. */
-export function getEntityInteractions(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityInteraction[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
-  return apiFetch<EntityInteraction[]>(path);
-}
-
 /** Fetch reach-out drafts for a relationship entity (drafts only; nothing sent). */
 export function getEntityReachOutDrafts(
   entityId: string,

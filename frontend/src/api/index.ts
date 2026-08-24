@@ -85,8 +85,6 @@ export {
   clearEntityPreferredChannel,
   getEntityGifts,
   getEntityLoans,
-  getEntityNotes,
-  getEntityInteractions,
   getEntityReachOutDrafts,
   createEntityNote,
   createEntityInteraction,

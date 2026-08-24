@@ -31,10 +31,8 @@ import {
   createEntityNote,
   createEntityReachOutDraft,
   getEntityGifts,
-  getEntityInteractions,
   getEntityLinkedContacts,
   getEntityLoans,
-  getEntityNotes,
   getEntityReachOutDrafts,
   getEntityMessageThreads,
   getEntityNeighbours,
@@ -95,24 +93,6 @@ export function useEntityGifts(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-gifts", entityId],
     queryFn: () => getEntityGifts(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch notes tab data for a relationship entity. */
-export function useEntityNotes(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-notes", entityId],
-    queryFn: () => getEntityNotes(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch interactions tab data for a relationship entity. */
-export function useEntityInteractions(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-interactions", entityId],
-    queryFn: () => getEntityInteractions(entityId!),
     enabled: !!entityId,
   });
 }
@@ -971,18 +951,17 @@ export function useClearPreferredChannel() {
 // All four are HONEST-PENDING, not optimistic: each writes a real fact into
 // the relationship butler's store, so the affordance stays in its pending
 // state until the server confirms rather than pretending the record exists.
-// Each invalidates the tab query it feeds plus the unified timeline, which
-// renders every one of these predicates.
+// Each invalidates the unified timeline, which is what actually renders these
+// predicates on the entity tabs; there is no separate per-tab query to refresh.
 // ---------------------------------------------------------------------------
 
-/** Record a note for an entity. Invalidates the notes tab and the timeline. */
+/** Record a note for an entity. Invalidates the timeline that renders it. */
 export function useCreateEntityNote() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityNoteRequest }) =>
       createEntityNote(entityId, request),
     onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-notes", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });
@@ -1006,7 +985,6 @@ export function useCreateEntityInteraction() {
       request: CreateEntityInteractionRequest;
     }) => createEntityInteraction(entityId, request),
     onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-interactions", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
