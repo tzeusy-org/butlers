@@ -35,7 +35,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 
 if TYPE_CHECKING:
     import asyncpg
@@ -340,7 +340,16 @@ async def save_ha_checkpoint(
         transport=transport,
     )
     try:
-        await save_cursor(pool, _CONNECTOR_TYPE, endpoint_identity, checkpoint.to_json())
+        # One checkpoint per HA instance, keyed by the same identity the
+        # connector's heartbeat registers, so this row IS the runtime
+        # instance's own (bu-ogs8x).
+        await save_cursor(
+            pool,
+            _CONNECTOR_TYPE,
+            endpoint_identity,
+            checkpoint.to_json(),
+            parent_endpoint_identity=NO_PARENT,
+        )
         logger.debug(
             "ha-connector: saved checkpoint for endpoint=%s: "
             "last_event_ts=%s entity_id=%s transport=%s",

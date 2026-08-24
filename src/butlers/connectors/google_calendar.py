@@ -56,7 +56,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
@@ -1188,8 +1188,15 @@ class CalendarConnectorRuntime:
         if self._cursor_pool is None:
             return
         try:
+            # One syncToken per calendar account, keyed by the same identity
+            # the account's heartbeat registers, so this row IS the runtime
+            # instance's own (bu-ogs8x).
             await save_cursor(
-                self._cursor_pool, _CONNECTOR_TYPE, self._config.endpoint_identity, token
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                self._config.endpoint_identity,
+                token,
+                parent_endpoint_identity=NO_PARENT,
             )
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")

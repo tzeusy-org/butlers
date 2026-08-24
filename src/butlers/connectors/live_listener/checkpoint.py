@@ -26,7 +26,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.live_listener.envelope import endpoint_identity
 
 if TYPE_CHECKING:
@@ -175,7 +175,16 @@ async def save_voice_checkpoint(
         session_last_ts=session_last_ts,
     )
     try:
-        await save_cursor(pool, _CONNECTOR_TYPE, ep_id, ckpt.to_json())
+        # One checkpoint per mic, keyed by the same identity that mic's
+        # heartbeat registers, so this row IS the runtime instance's own
+        # (bu-ogs8x).
+        await save_cursor(
+            pool,
+            _CONNECTOR_TYPE,
+            ep_id,
+            ckpt.to_json(),
+            parent_endpoint_identity=NO_PARENT,
+        )
         logger.debug(
             "live-listener: saved checkpoint for mic=%s: last_ts=%s session_id=%s",
             device_name,

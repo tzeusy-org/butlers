@@ -105,7 +105,7 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import Counter, generate_latest
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
@@ -1460,7 +1460,16 @@ class ActivityWatchConnector:
         if pool is None:
             return
         try:
-            await save_cursor(pool, _CONNECTOR_TYPE, self._endpoint_identity, ts.isoformat())
+            # One cursor per watched machine, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x).
+            await save_cursor(
+                pool,
+                _CONNECTOR_TYPE,
+                self._endpoint_identity,
+                ts.isoformat(),
+                parent_endpoint_identity=NO_PARENT,
+            )
             self._last_checkpoint_ts = ts
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save(status="success")

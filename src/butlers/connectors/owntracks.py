@@ -70,7 +70,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
@@ -1521,7 +1521,16 @@ class OwnTracksConnector:
 
         pool = self._cursor_pool or self._db_pool
         try:
-            await save_cursor(pool, _CONNECTOR_TYPE, device.endpoint_identity, str(tst))
+            # OwnTracks registers one runtime instance per device (bu-86zll)
+            # and each device runs its own heartbeat under this same identity,
+            # so the checkpoint row IS that instance's own (bu-ogs8x).
+            await save_cursor(
+                pool,
+                _CONNECTOR_TYPE,
+                device.endpoint_identity,
+                str(tst),
+                parent_endpoint_identity=NO_PARENT,
+            )
             device.last_checkpoint_tst = tst
             device.last_checkpoint_save = time.time()
             device.metrics.record_checkpoint_save(status="success")

@@ -2144,7 +2144,7 @@ class TelegramUserClientConnector:
     async def _save_checkpoint(self) -> None:
         """Persist checkpoint (message ID + Telethon update state) to DB."""
         try:
-            from butlers.connectors.cursor_store import save_cursor
+            from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
             payload: dict[str, Any] = {"last_message_id": self._last_message_id}
 
@@ -2154,11 +2154,16 @@ class TelegramUserClientConnector:
             if update_state is not None:
                 payload["telethon_update_state"] = update_state
 
+            # One user session, one cursor, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x). The Telethon update state travels inside the cursor
+            # payload, not as a second registry row.
             await save_cursor(
                 self._cursor_pool,
                 "telegram_user_client",
                 self._config.endpoint_identity,
                 json.dumps(payload),
+                parent_endpoint_identity=NO_PARENT,
             )
             self._last_checkpoint_save = time.time()
             logger.debug(

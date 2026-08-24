@@ -212,7 +212,18 @@ class TestTelegramConnectorConformance:
         """Test that Telegram connector can recover from checkpoint after crash."""
         saved_value: str | None = None
 
-        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+        async def fake_save(
+            _pool: object,
+            _prov: str,
+            _eid: str,
+            val: str,
+            *,
+            parent_endpoint_identity: str | None,
+        ) -> None:
+            # bu-ogs8x: the ownership declaration is required at the call
+            # boundary, so the double has to accept it. This connector keys its
+            # cursor by its own runtime identity, hence no parent.
+            assert parent_endpoint_identity is None
             nonlocal saved_value
             saved_value = val
 
@@ -387,7 +398,18 @@ class TestGmailConnectorConformance:
         # Save checkpoint and simulate recovery via DB mocks
         saved_value: str | None = None
 
-        async def fake_save(_pool: object, _prov: str, _eid: str, val: str) -> None:
+        async def fake_save(
+            _pool: object,
+            _prov: str,
+            _eid: str,
+            val: str,
+            *,
+            parent_endpoint_identity: str | None,
+        ) -> None:
+            # bu-ogs8x: the ownership declaration is required at the call
+            # boundary, so the double has to accept it. This connector keys its
+            # cursor by its own runtime identity, hence no parent.
+            assert parent_endpoint_identity is None
             nonlocal saved_value
             saved_value = val
 

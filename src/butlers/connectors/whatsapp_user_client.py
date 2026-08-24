@@ -2173,14 +2173,18 @@ class WhatsAppUserClientConnector:
     async def _save_checkpoint(self) -> None:
         """Persist checkpoint to DB."""
         try:
-            from butlers.connectors.cursor_store import save_cursor
+            from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
             payload: dict[str, Any] = {"last_event_id": self._last_event_id}
+            # One bridge session, one cursor, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x).
             await save_cursor(
                 self._cursor_pool,
                 _CONNECTOR_TYPE,
                 self._config.endpoint_identity,
                 json.dumps(payload),
+                parent_endpoint_identity=NO_PARENT,
             )
             self._last_checkpoint_save = time.time()
             logger.debug(

@@ -1224,14 +1224,19 @@ class DiscordUserConnector:
     async def _save_checkpoint(self) -> None:
         """Persist per-channel checkpoints to DB."""
         try:
-            from butlers.connectors.cursor_store import save_cursor
+            from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
             checkpoints_snapshot = dict(self._channel_checkpoints)
+            # Per-channel positions are folded into one payload under the
+            # account identity the heartbeat registers, rather than one registry
+            # row per channel, so this row IS the runtime instance's own
+            # (bu-ogs8x).
             await save_cursor(
                 self._cursor_pool,
                 "discord_user",
                 self._config.endpoint_identity,
                 json.dumps({"channel_checkpoints": checkpoints_snapshot}),
+                parent_endpoint_identity=NO_PARENT,
             )
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save(status="success")

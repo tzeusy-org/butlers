@@ -11,8 +11,10 @@ Covers bu-6jv4m.11:
     into a runtime instance.
   - ``public.v_qa_connector_state`` reads the persisted role instead of
     re-inferring one from column nullability.
-  - ``cursor_store.save_cursor`` stamps ``checkpoint`` on insert and never
-    demotes a row the heartbeat producer already claimed.
+  - ``cursor_store.save_cursor`` stamps the role its caller's ownership
+    declaration implies (``checkpoint`` for a declared parent, ``unknown`` for
+    a cursor keyed by the connector's own runtime identity -- bu-ogs8x) and
+    never demotes a row the heartbeat producer already claimed.
   - Downgrade removes the constraint and both columns cleanly, restoring the
     sw_028 view.
 
@@ -435,7 +437,7 @@ def test_heartbeat_promotes_a_cursor_created_row(switchboard_db_url):
     """The heartbeat producer claims the row: role ownership flows one way."""
     import asyncpg
 
-    from butlers.connectors.cursor_store import save_cursor
+    from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
     heartbeat = _heartbeat_tool()
 
@@ -444,9 +446,12 @@ def test_heartbeat_promotes_a_cursor_created_row(switchboard_db_url):
     async def _write() -> None:
         pool = await asyncpg.create_pool(switchboard_db_url)
         try:
-            # cursor_store gets there first — the row starts as storage state.
-            await save_cursor(pool, "gmail", identity, "synthetic-cursor")
-            assert _sw_row(switchboard_db_url, identity).startswith("(checkpoint,")
+            # cursor_store gets there first — the row starts unclaimed, since
+            # persisting a cursor is no evidence that a process is running.
+            await save_cursor(
+                pool, "gmail", identity, "synthetic-cursor", parent_endpoint_identity=NO_PARENT
+            )
+            assert _sw_row(switchboard_db_url, identity).startswith("(unknown,")
             await heartbeat(pool, _synthetic_heartbeat("gmail", identity))
         finally:
             await pool.close()
@@ -460,7 +465,7 @@ def test_save_cursor_never_demotes_a_runtime_instance(switchboard_db_url):
     """A live connector checkpointing under its own identity stays in the fleet."""
     import asyncpg
 
-    from butlers.connectors.cursor_store import save_cursor
+    from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 
     heartbeat = _heartbeat_tool()
 
@@ -470,7 +475,9 @@ def test_save_cursor_never_demotes_a_runtime_instance(switchboard_db_url):
         pool = await asyncpg.create_pool(switchboard_db_url)
         try:
             await heartbeat(pool, _synthetic_heartbeat("gmail", identity))
-            await save_cursor(pool, "gmail", identity, "synthetic-cursor")
+            await save_cursor(
+                pool, "gmail", identity, "synthetic-cursor", parent_endpoint_identity=NO_PARENT
+            )
         finally:
             await pool.close()
 

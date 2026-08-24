@@ -54,11 +54,30 @@ of the opaque `endpoint_identity` string.
 - **THEN** that row's `operational_role` SHALL be set to `runtime_instance`,
   whether the row is newly registered or already existed
 
-#### Scenario: A checkpoint save creates storage state
+#### Scenario: A checkpoint save declares what kind of row it is creating
 
-- **WHEN** `save_cursor` inserts a row that did not exist
+`save_cursor` SHALL require its caller to declare the cursor's ownership; the
+declaration has no default, so a connector cannot create a row without saying
+which kind it is.
+
+- **WHEN** `save_cursor` inserts a row that did not exist, and the caller names
+  a `parent_endpoint_identity`
 - **THEN** that row's `operational_role` SHALL be `checkpoint`
-- **AND** `parent_endpoint_identity` SHALL be set when the caller supplies one
+- **AND** its `parent_endpoint_identity` SHALL be that identity
+
+- **WHEN** `save_cursor` inserts a row that did not exist, and the caller
+  declares that the cursor key IS the connector's own runtime identity
+- **THEN** that row's `operational_role` SHALL be `unknown` — unclaimed until a
+  heartbeat proves a process owns it
+- **AND** it SHALL NOT be `checkpoint`, because it is not storage state
+  belonging to a parent
+
+- **AND** `save_cursor` SHALL NOT write `runtime_instance` in either case:
+  persisting a cursor is not evidence that a process is running
+
+A row created by `save_cursor` therefore SHALL NOT be a `checkpoint` with a NULL
+`parent_endpoint_identity`. A NULL parent on a `checkpoint` row means the row was
+orphaned before this rule existed, and never that its writer omitted a value.
 
 #### Scenario: A checkpoint save never demotes a runtime instance
 
@@ -78,6 +97,16 @@ heartbeat promotes, and nothing demotes.
   resource
 - **THEN** it SHALL pass its canonical heartbeat identity as the cursor's
   `parent_endpoint_identity`
+
+#### Scenario: A heartbeat written by SQL claims the role like any other
+
+- **WHEN** a connector keeps a registry row's `last_heartbeat_at` current by
+  writing the column directly rather than through the `connector.heartbeat` tool
+- **THEN** that write SHALL also set `operational_role` to `runtime_instance`
+
+Writing a heartbeat is what claims a row, regardless of which code path writes
+it. A producer that refreshes liveness but leaves the role alone strands its own
+identities in whatever state something else happened to create them in.
 
 ### Requirement: Backfill classifies existing rows from persisted evidence
 

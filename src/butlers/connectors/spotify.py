@@ -60,7 +60,7 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, generate_latest
 
-from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
@@ -1641,7 +1641,16 @@ class SpotifyConnector:
         if cursor == self._last_checkpoint_cursor:
             return
         try:
-            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, self._endpoint_identity, cursor)
+            # One cursor per Spotify user, keyed by the same identity the
+            # heartbeat registers, so this row IS the runtime instance's own
+            # (bu-ogs8x).
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                self._endpoint_identity,
+                cursor,
+                parent_endpoint_identity=NO_PARENT,
+            )
             self._last_checkpoint_cursor = cursor
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")
