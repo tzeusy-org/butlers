@@ -168,8 +168,10 @@ export interface CliCredential {
   lastUsed: string | null;
   issued: string | null;
   expires: string | null;
-  scopesGranted: string[];
-  scopesRequired: string[];
+  // No capability evidence: nothing in this system records a scope or
+  // capability for a CLI runtime token (bu-v8mlr). butler_secrets has no
+  // scope column, cli_auth has no scope concept, and CliRuntimeSummary — the
+  // inventory row these are adapted from — carries no capability field.
   test: TestResult | null;
 }
 

@@ -76,8 +76,6 @@ function cred(overrides: Partial<CliCredential> = {}): CliCredential {
     lastUsed: "today",
     issued: "2026-02-10",
     expires: null,
-    scopesGranted: [],
-    scopesRequired: [],
     test: null,
     ...overrides,
   };
