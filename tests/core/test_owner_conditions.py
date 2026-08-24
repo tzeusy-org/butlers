@@ -212,3 +212,13 @@ def test_reuses_the_same_engine_as_infra_conditions():
     assert owner_conditions.ESCALATION_LEVELS is condition_ledger.ESCALATION_LEVELS
     assert infra_conditions.compute_fingerprint is condition_ledger.compute_fingerprint
     assert owner_conditions.compute_fingerprint is condition_ledger.compute_fingerprint
+
+
+def test_every_facade_re_exports_the_engines_row_decoder():
+    """One decoder, three facades: a second copy would be free to drift."""
+    from butlers.core import commitments, condition_ledger, infra_conditions, owner_conditions
+
+    assert not hasattr(condition_ledger, "_row_to_dict")
+    for facade in (owner_conditions, infra_conditions, commitments):
+        assert facade.row_to_dict is condition_ledger.row_to_dict
+        assert "row_to_dict" in facade.__all__

@@ -85,6 +85,7 @@ from butlers.core.condition_ledger import get_active_condition as _get_active_co
 from butlers.core.condition_ledger import list_conditions as _list_conditions
 from butlers.core.condition_ledger import reconcile_snapshot as _reconcile_snapshot
 from butlers.core.condition_ledger import resolve_condition as _resolve_condition
+from butlers.core.condition_ledger import row_to_dict as row_to_dict
 
 __all__ = [
     "ESCALATION_LEVELS",
@@ -99,6 +100,7 @@ __all__ = [
     "list_conditions",
     "reconcile_snapshot",
     "resolve_condition",
+    "row_to_dict",
 ]
 
 _TABLE = "public.owner_conditions"

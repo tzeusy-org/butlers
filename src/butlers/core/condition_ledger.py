@@ -787,7 +787,15 @@ async def _link_identity_predecessor(
 # ---------------------------------------------------------------------------
 
 
-def _row_to_dict(row: Any) -> dict[str, Any]:
+def row_to_dict(row: Any) -> dict[str, Any]:
+    """Decode one ledger row into the shape every ledger reader returns.
+
+    Public because the facades (``owner_conditions``, ``infra_conditions``,
+    ``commitments``) re-export it: a facade that runs its own query instead of
+    :func:`list_conditions` still has to hand back rows with ``metadata``
+    decoded to a dict whether or not the pool registered a JSONB codec. One
+    decoder, owned here beside the writes, keeps those results from drifting.
+    """
     result = dict(row)
     metadata = _metadata_object(result.get("metadata"))
     if metadata is not None:
@@ -814,7 +822,7 @@ async def get_active_condition(
         source,
         fingerprint,
     )
-    return _row_to_dict(row) if row is not None else None
+    return row_to_dict(row) if row is not None else None
 
 
 async def list_conditions(
@@ -864,4 +872,4 @@ async def list_conditions(
         offset,
         limit,
     )
-    return int(total or 0), [_row_to_dict(r) for r in rows]
+    return int(total or 0), [row_to_dict(r) for r in rows]
