@@ -110,8 +110,8 @@ class TestPhoneFormattingFallback:
         assert weight == WeightTier().unknown
 
     async def test_exact_stored_match_still_works(self) -> None:
-        """Back-compat: an exactly-stored number never reaches the fallback."""
-        pool = _pool_matching("has-phone", "6598150802", roles=[])
+        """An exact stored object remains one candidate in the ambiguity-aware scan."""
+        pool = _pool_with_digits_match("6598150802", roles=[])
         resolver = ContactWeightResolver(pool)
 
         weight = await resolver.resolve("whatsapp_jid", "6598150802@s.whatsapp.net")
