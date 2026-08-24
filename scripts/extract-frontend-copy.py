@@ -178,6 +178,9 @@ def generate_report(files: list[Path]) -> tuple[str, int]:
         "Do **not** edit manually. Regenerate (no args) with:",
         "`python3 scripts/extract-frontend-copy.py`",
         "",
+        "CI job `frontend-copy-inventory-guard` regenerates this file and fails the",
+        "build if the committed copy differs, so it is always current.",
+        "",
     ]
 
     total = 0
