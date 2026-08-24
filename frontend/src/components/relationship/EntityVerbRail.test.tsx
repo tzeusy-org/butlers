@@ -23,7 +23,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useCreateEntityReachOutDraft: vi.fn(),
 }));
 
-import { EntityVerbRail, verbErrorMessage } from "./EntityVerbRail";
+import { EntityVerbRail } from "./EntityVerbRail";
+import { verbErrorMessage } from "./verb-error-message";
 import {
   useCreateEntityGift,
   useCreateEntityInteraction,

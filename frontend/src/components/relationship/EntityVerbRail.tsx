@@ -22,7 +22,7 @@
 
 import { useState } from "react";
 
-import { ApiError } from "@/api/client";
+import { verbErrorMessage } from "@/components/relationship/verb-error-message";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -45,38 +45,6 @@ const INTERACTION_TYPES = ["call", "message", "email", "meeting", "visit"] as co
 
 /** Channels the draft-reach-out verb can record as intent. Nothing is sent. */
 const REACH_OUT_CHANNELS = ["telegram", "email", "sms", "in person"] as const;
-
-/**
- * Turn a failed verb write into one honest sentence.
- *
- * The backend answers these routes with a structured `detail` object rather
- * than a bare string, so `ApiError.message` is a JSON blob unless we read the
- * dict ourselves. Three cases are worth naming explicitly:
- *   409 -> the record already exists (dedupe, not failure);
- *   403 -> the owner gate rejected the caller;
- *   422 -> the tool rejected the input (bad direction, reserved type).
- */
-export function verbErrorMessage(error: unknown, alreadyExists: string): string {
-  if (!(error instanceof ApiError)) {
-    return error instanceof Error && error.message
-      ? error.message
-      : "Something went wrong. Nothing was recorded.";
-  }
-  const detail =
-    error.detail && typeof error.detail === "object"
-      ? (error.detail as Record<string, unknown>)
-      : undefined;
-  const detailMessage = typeof detail?.message === "string" ? detail.message : undefined;
-
-  if (error.status === 409) return alreadyExists;
-  if (error.status === 403) {
-    return "Only the owner can write to this record.";
-  }
-  if (error.status === 404) {
-    return "This entity no longer exists.";
-  }
-  return detailMessage || error.message || "Nothing was recorded.";
-}
 
 /** Shared status line: pending, saved, or the reason nothing was saved. */
 function VerbStatus({
