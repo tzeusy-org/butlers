@@ -10,6 +10,7 @@ Covers:
 - PUT /api/butlers/{name}/tools/{tool} — upserts grant with audit
 - GET /api/butlers/{name}/memory-access — offline fallback returns empty
 - POST /api/butlers/{name}/kill — audit entry + 503 on unreachable
+- PUT/POST routes ignore a caller-supplied ``actor`` (bu-6zlqt)
 """
 
 from __future__ import annotations
@@ -21,11 +22,16 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from butlers.api.app import create_app
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.butler_management import _get_db_manager
 
 pytestmark = pytest.mark.unit
+
+#: A value no server-derived principal can ever equal, so an assertion against
+#: it cannot pass by coincidence with the real principal.
+_FORGED_ACTOR = "attacker-not-the-owner"
 
 
 # ---------------------------------------------------------------------------
@@ -518,3 +524,110 @@ async def test_kill_butler_invalid_grace_seconds(app):
         )
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Attribution is server-derived, not caller-asserted (bu-6zlqt / bu-4y9ck)
+# ---------------------------------------------------------------------------
+
+
+async def test_put_prompt_ignores_caller_supplied_actor(app):
+    """A forged ``actor`` must not reach ``updated_by`` or the audit entry."""
+    inserted_row = _make_record(
+        {
+            "butler_name": "qa",
+            "prompt": "Updated prompt text.",
+            "version": 4,
+            "updated_at": datetime(2026, 5, 16, tzinfo=UTC),
+            "updated_by": authenticated_principal(),
+        }
+    )
+    pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=3)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+
+    with patch(
+        "butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock
+    ) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/butlers/qa/prompt",
+                json={"prompt": "Updated prompt text.", "actor": _FORGED_ACTOR},
+            )
+
+    # Backward compatibility: the now-ignored field is dropped, never rejected.
+    assert resp.status_code == 200
+
+    # Persisted row: INSERT binds ($1 name, $2 prompt, $3 updated_by).
+    persisted_updated_by = pool.fetchrow.await_args.args[3]
+    assert persisted_updated_by == authenticated_principal()
+
+    # Audit entry: append(conn, actor, action, ...).
+    assert mock_audit.call_args.args[1] == authenticated_principal()
+
+
+async def test_put_tool_ignores_caller_supplied_actor(app):
+    """A forged ``actor`` must not reach ``butler_tools.updated_by`` or the audit."""
+    updated_row = _make_record(
+        {
+            "tool_name": "log.tail",
+            "description": "Tail logs",
+            "allowed": False,
+            "scope": None,
+        }
+    )
+    pool = _make_pool(fetchrow_return=updated_row)
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+
+    with patch(
+        "butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock
+    ) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put(
+                "/api/butlers/qa/tools/log.tail",
+                json={"allowed": False, "actor": _FORGED_ACTOR},
+            )
+
+    assert resp.status_code == 200
+
+    # Persisted row: INSERT binds ($1 name, $2 tool, $3 allowed, $4 scope, $5 updated_by).
+    persisted_updated_by = pool.fetchrow.await_args.args[5]
+    assert persisted_updated_by == authenticated_principal()
+
+    assert mock_audit.call_args.args[1] == authenticated_principal()
+
+
+async def test_kill_ignores_caller_supplied_actor(app):
+    """A forged ``actor`` must not reach the ``butler.kill`` audit entry."""
+    import json
+
+    from butlers.api.deps import get_mcp_manager
+
+    pool = _make_pool()
+    db = _make_db(pool)
+
+    mock_result = MagicMock()
+    mock_result.content = [MagicMock(text=json.dumps({"status": "shutting_down"}))]
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=mock_result)
+    mock_manager = MagicMock()
+    mock_manager.get_client = AsyncMock(return_value=mock_client)
+
+    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_manager
+    app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
+
+    with patch(
+        "butlers.api.routers.butler_management.audit_append", new_callable=AsyncMock
+    ) as mock_audit:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/butlers/qa/kill",
+                json={"grace_seconds": 30, "actor": _FORGED_ACTOR},
+            )
+
+    assert resp.status_code == 200
+    assert mock_audit.call_args.args[1] == authenticated_principal()
