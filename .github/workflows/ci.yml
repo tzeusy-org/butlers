@@ -167,6 +167,36 @@ jobs:
 
       - name: Check every change's tasks.md is countable by the archive gate
         run: python3 scripts/check_countable_tasks.py
+  cited-requirements-guard:
+    # Fast, dependency-free gate (bu-lpwjc): the third side of the ledger. The
+    # two guards above read the spec tree against itself and have never opened a
+    # test file, so nothing ever checked that a REQ id cited by a test docstring
+    # resolves to a definition at all. Measured at introduction: 39 distinct ids
+    # are cited, 30 resolve only to a change that has not archived yet, and
+    # REQ-cli-runtime-auth-003 resolves nowhere -- there is no cli-runtime-auth
+    # capability in the repo. openspec/specs/ and unarchived changes are the two
+    # definition sources; openspec/changes/archive/** deliberately is NOT one,
+    # because an archived change has already had its chance to write the
+    # requirement into the baseline. Counting it would make this blind to
+    # exactly the case it exists for (`openspec archive --skip-specs` moves the
+    # delta and writes no baseline) and would hide a half-applied archive, since
+    # the ids that landed and the ids that did not would read the same.
+    # Pending-only citations pass but are printed with the change they lean on:
+    # that is the state that rots. A ratchet
+    # (scripts/cited-requirements-baseline.json) freezes today's one dangling
+    # citation per (test file, id); there is no re-freeze flag on purpose.
+    # Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check REQ ids cited by tests resolve to a definition
+        run: python3 scripts/check_cited_requirements_resolve.py
 
   frontend-copy-inventory-guard:
     # Fast, dependency-free gate (bu-erfdj): about/lay-and-land/frontend-copy-inventory.md

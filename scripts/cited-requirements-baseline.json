@@ -1,0 +1,5 @@
+{
+  "tests/dashboard/test_briefing.py": [
+    "REQ-cli-runtime-auth-003"
+  ]
+}

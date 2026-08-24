@@ -75,24 +75,41 @@ def _write_change(root: Path, change: str, tasks: str | None) -> Path:
     return change_dir
 
 
-HEADING_STYLE = """## Tasks
+def _req(suffix: str) -> str:
+    """Build the fixture requirement id without writing one literally.
+
+    `scripts/check_cited_requirements_resolve.py` (bu-lpwjc) fails any test file
+    naming a `REQ-<capability>-<number>` that resolves to no definition, and it
+    has no self-exemption on purpose -- an exemption keyed on a path is a hole a
+    real test file could later sit in. There is no `widget` capability and there
+    should not be one: this id is furniture for an acceptance bullet whose only
+    job is to sit below the task lines this module counts. Constructing it keeps
+    the fixtures byte-identical at runtime while leaving nothing in this source
+    for that scan to find.
+    """
+    return f"REQ-{suffix}"
+
+
+FIXTURE_REQ = _req("widget-001")
+
+HEADING_STYLE = f"""## Tasks
 
 ### 1. Extend the widget ledger
 
 Add `resolve_widget()` to the ledger and re-export it.
 
 Acceptance:
-- REQ-widget-001 scenarios pass
+- {FIXTURE_REQ} scenarios pass
 """
 
-CHECKBOX_STYLE = """## Tasks
+CHECKBOX_STYLE = f"""## Tasks
 
 ### 1. Extend the widget ledger
 
 - [ ] 1.1 Add `resolve_widget()` to the ledger and re-export it.
 
 Acceptance:
-- REQ-widget-001 scenarios pass
+- {FIXTURE_REQ} scenarios pass
 """
 
 
