@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import re
 import shutil
 import uuid
 
@@ -487,18 +489,135 @@ async def test_schedule_costs_date_range_filters_runs(pool):
 # ---------------------------------------------------------------------------
 
 
+# Destructive SQL *statements*, matched with word boundaries so that English
+# prose ("a truncated one") and identifiers ("truncated") cannot trip them.
+# The optional TABLE keyword plus the trailing character class keeps both
+# ``TRUNCATE sessions`` and ``TRUNCATE TABLE sessions`` in scope, including the
+# f-string case where the table name is an interpolation rather than a literal.
+_DESTRUCTIVE_SQL = (
+    re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE),
+    re.compile(r"\bTRUNCATE\s+(?:TABLE\b\s*)?[\w\"]", re.IGNORECASE),
+    re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+)
+_DESTRUCTIVE_NAME_WORDS = ("delete", "drop", "truncate")
+# Stand-in for an f-string interpolation, so a table name supplied at runtime
+# still looks like a table name to the patterns above.
+_INTERPOLATION = "_expr_"
+
+
+def _docstring_node_ids(tree: ast.AST) -> set[int]:
+    """ids of the Constant nodes that sit in a docstring position."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            ids.add(id(first.value))
+    return ids
+
+
+def _string_literals(source: str) -> list[str]:
+    """Every non-docstring string literal in ``source``, f-strings reassembled."""
+    tree = ast.parse(source)
+    skip = _docstring_node_ids(tree)
+    literals: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                skip.add(id(value))
+                parts.append(value.value)
+            else:
+                parts.append(_INTERPOLATION)
+        literals.append("".join(parts))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in skip:
+            literals.append(node.value)
+
+    return literals
+
+
+def _exposed_definition_names(source: str) -> list[str]:
+    """Public functions, classes and methods that ``source`` itself defines.
+
+    Module-level and class-body definitions only: those are the surface the
+    module exposes. Definitions nested inside a function body are locals, not
+    surface, and names starting with ``_`` are private helpers whose safety is
+    established by the SQL scan rather than by their spelling.
+    """
+    names: list[str] = []
+
+    def visit(body: list[ast.stmt]) -> None:
+        for node in body:
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            if not node.name.startswith("_"):
+                names.append(node.name)
+            if isinstance(node, ast.ClassDef):
+                visit(node.body)
+
+    visit(ast.parse(source).body)
+    return names
+
+
 def test_no_delete_or_truncate_in_sessions_module():
-    """sessions module must not expose delete/truncate/drop functions."""
+    """sessions module must not execute destructive SQL or define destructive callables.
+
+    The session log is append-only, so this guard asks one question: does this
+    module issue DELETE/TRUNCATE/DROP against the sessions tables?
+
+    It answers it over the AST rather than over raw source text, because a bare
+    substring scan cannot distinguish SQL from prose. The previous version
+    asserted ``"TRUNCATE" not in source.upper()`` across the whole file, which
+    fired on the English word "truncated" in a docstring and on any identifier
+    containing it — a standing tax on a module whose subject is counting — while
+    never checking ``DELETE FROM`` at all (bu-rqbac).
+
+    Docstrings are deliberately excluded from the literal scan. A docstring is
+    prose by construction and is never handed to a database driver: reaching one
+    would take an explicit ``__doc__`` dereference, which is not a way anybody
+    smuggles a DELETE past review. Including them buys no safety and reinstates
+    exactly the false positive this guard exists to stop having. Every other
+    string literal — including f-string fragments, which are where this
+    codebase's SQL actually lives — is scanned.
+
+    The member half walks the public definitions the module itself makes,
+    replacing a ``dir(mod)`` scan that counted imported modules (``asyncpg``,
+    ``json``, ``uuid``) as members while never seeing a method on a class
+    defined here. Private helpers are exempt from the name check: a
+    ``_truncate_cadence_window`` describes enumeration, not SQL, and rejecting
+    it was the same tax in a different spelling. What a private helper actually
+    does to the database is caught by the literal scan above.
+    """
     import inspect
 
     import butlers.core.sessions as mod
 
     source = inspect.getsource(mod)
-    assert "DROP TABLE" not in source.upper()
-    assert "TRUNCATE" not in source.upper()
-    members = dir(mod)
-    assert not any(
-        "delete" in m.lower() or "drop" in m.lower() or "truncate" in m.lower() for m in members
+
+    offenders = [
+        literal
+        for literal in _string_literals(source)
+        if any(pattern.search(literal) for pattern in _DESTRUCTIVE_SQL)
+    ]
+    assert not offenders, f"destructive SQL in sessions module: {offenders}"
+
+    destructive_defs = [
+        name
+        for name in _exposed_definition_names(source)
+        if any(word in name.lower() for word in _DESTRUCTIVE_NAME_WORDS)
+    ]
+    assert not destructive_defs, (
+        f"destructive public definitions in sessions module: {destructive_defs}"
     )
 
 
