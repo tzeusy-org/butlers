@@ -6,8 +6,11 @@ Covers (priority_contacts is butler-agnostic — bu-gx13h):
 - DELETE remove (204, 404 on missing)
 - Audit entry emitted on POST and DELETE
 
-Comprehensive wave-2 tests (cascade-delete audit emission etc.) are in §3.12
-(Phase 3d) — this file provides the basic unit coverage for the CRUD surface.
+The cascade-delete audit trigger this file used to defer to was retired in
+``core_204`` (bu-fi36x): no inbound FK can cascade into priority_contacts any
+more, so one removal writes exactly one audit row. That is pinned by
+``tests/migrations/test_priority_contacts_cascade_audit.py``; this file provides
+the basic unit coverage for the CRUD surface.
 """
 
 from __future__ import annotations
