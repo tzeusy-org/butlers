@@ -30,8 +30,26 @@ from butlers.testing.migration import (
 
 
 @pytest.fixture(scope="module")
-def migrated_v2_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+def migrated_v2_db_name() -> str:
+    return migration_db_name()
+
+
+@pytest.fixture(scope="module")
+def migrated_v2_db_url(postgres_container, migrated_v2_db_name: str) -> str:
+    return create_migrated_test_db(postgres_container, migrated_v2_db_name, chains=["core"])
+
+
+@pytest.fixture(scope="module")
+def migrated_v2_bootstrap_url(
+    postgres_container, migrated_v2_db_name: str, migrated_v2_db_url: str
+) -> str:
+    """Privileged view of the same database.
+
+    ``create_migrated_test_db`` returns the ordinary migration login, and
+    ``finalize_interface`` revokes every privilege that login holds on
+    ``public.runtime_attention_outbox``, so episodes are only readable here.
+    """
+    return migration_bootstrap_db_url(postgres_container, migrated_v2_db_name)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -199,6 +217,112 @@ async def test_legacy_runtime_writers_get_debounce_markers_planted_for_them(
         ), "the retired audit vocabulary is still being planted"
     finally:
         await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_rollover_crossing_denial_is_evidence_for_the_month_being_guarded(
+    migrated_v2_pool: asyncpg.Pool,
+    migrated_v2_bootstrap_url: str,
+) -> None:
+    """bu-guxz8: the fleet-halt month and the denial's ``ts`` read two clocks.
+
+    ``v_month`` is transaction-stable (``now()``) so it matches the month the
+    producer locks and writes; the denial row's ``ts`` stays on the statement
+    clock because REQ-model-catalog-001 orders outcomes by the instant they were
+    serialized.  A transaction that crosses the UTC month rollover between BEGIN
+    and its insert therefore stamps the denial in the month *after* the one the
+    call is guarding.
+
+    The seeded row is the state that leaves behind: one ceiling denial stamped
+    at the first instant of the next UTC month, none in the current one, read by
+    a caller whose ``now()`` is still inside the current month.  No test can push
+    a real server clock past a real rollover, so the row is hand-dated to the
+    instant a crossing ``clock_timestamp()`` would have written; the producer
+    reads only ``now()`` and the stored ``ts``, so it cannot tell the two apart.
+
+    An equality on both bounds skipped that row, so the count was zero and the
+    producer raised ``23514``; ``_produce_edge`` does not absorb that, so the
+    denial's own ``model_dispatch_attempts`` row rolled back with it.
+    """
+    pool = migrated_v2_pool
+    await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+    try:
+        entry_id = uuid.uuid4()
+        await pool.execute(
+            """
+            INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
+            VALUES ($1, 'fleet-halt-rollover', 'codex', 'fleet-halt-rollover-model')
+            """,
+            entry_id,
+        )
+        guarded_month = await pool.fetchval(
+            "SELECT date_trunc('month', now() AT TIME ZONE 'UTC')::date"
+        )
+        await pool.execute(
+            """
+            INSERT INTO public.model_dispatch_attempts (
+                catalog_entry_id, ts, butler, outcome, failure_reason
+            )
+            VALUES (
+                $1,
+                (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month')
+                    AT TIME ZONE 'UTC',
+                'general', 'quota_skip',
+                'Monthly spend ceiling reached: rollover-crossing denial'
+            )
+            """,
+            entry_id,
+        )
+        assert (
+            await pool.fetchval(
+                """
+                SELECT count(*)
+                FROM public.model_dispatch_attempts
+                WHERE outcome = 'quota_skip'
+                  AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = $1
+                """,
+                guarded_month,
+            )
+            == 0
+        ), "the seeded denial landed inside the guarded month, so nothing is under test"
+
+        async with pool.acquire() as connection:
+            await connection.execute('SET ROLE "butler_general_rw"')
+            try:
+                episode_id = await connection.fetchval(
+                    "SELECT public.append_runtime_attention_fleet_halt()"
+                )
+            finally:
+                await connection.execute("RESET ROLE")
+        assert isinstance(episode_id, uuid.UUID)
+
+        engine = create_engine(migrated_v2_bootstrap_url)
+        try:
+            with engine.connect() as connection:
+                episode = connection.execute(
+                    text(
+                        """
+                        SELECT fleet_halt_month, source_snapshot
+                        FROM public.runtime_attention_outbox
+                        WHERE id = CAST(:episode_id AS uuid)
+                        """
+                    ),
+                    {"episode_id": str(episode_id)},
+                ).one()
+        finally:
+            engine.dispose()
+        # The episode belongs to the month the call guarded, not to the month
+        # the crossing denial's ts fell into.
+        assert episode.fleet_halt_month == guarded_month
+        assert episode.source_snapshot["denied_count"] == 1
+    finally:
+        await pool.execute("TRUNCATE public.audit_log, public.model_dispatch_attempts CASCADE")
+        engine = create_engine(migrated_v2_bootstrap_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("DELETE FROM public.runtime_attention_outbox"))
+        finally:
+            engine.dispose()
 
 
 def test_bootstrap_rollback_disables_producers_without_restoring_direct_paths(
