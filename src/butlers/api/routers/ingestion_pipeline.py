@@ -13,6 +13,14 @@ Stats are sourced from Prometheus via PromQL through
 seconds per (window) key.  On any Prometheus failure the endpoint returns
 zeros with ``aggregates_available: false`` — it NEVER returns HTTP 500.
 
+"Failure" includes a well-formed response we cannot read: an unparseable or
+non-finite scalar, and an unusable sparkline matrix, both degrade the whole
+envelope (bu-0m31b).  A zero meaning "Prometheus said zero" and a zero meaning
+"we could not read Prometheus" must not be the same zero on the wire, so the
+only zeros published with ``aggregates_available: true`` are ones Prometheus
+actually reported — including an empty result set, which is a real observation
+of "no series, therefore no events".
+
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
       connector-state-aggregates/spec.md
       ingestion-event-registry/spec.md  (Pipeline Stats Endpoint requirement)
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from typing import Literal
@@ -106,9 +115,17 @@ _SPARK24H_STEP = "3600"  # 1 hour in seconds
 async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
     """Fetch true hourly buckets for the 24h sparkline via a Prometheus range query.
 
-    Returns a list of exactly 24 ints (oldest bucket first, most-recent last),
-    or ``None`` on any Prometheus error / empty matrix (caller falls back to
-    uniform distribution via ``_build_spark24h``).
+    Returns a list of exactly 24 ints (oldest bucket first, most-recent last)
+    when the matrix is readable — including ``[0] * 24`` for an empty result
+    set, because Prometheus answering "no series" for a
+    ``sum(increase(...))`` is a real observation of zero.
+
+    Returns ``None`` when the matrix is *unreadable*: a query error, an
+    unexpected result shape, a series carrying no points, or a bucket value
+    that will not parse as a finite number.  The caller degrades the whole
+    envelope in that case.  It used to spread the ingested total evenly across
+    24 buckets instead, which drew a flat line Prometheus never reported and
+    left ``aggregates_available: true`` over it (bu-0m31b).
     """
     now = int(time.time())
     start = str(now - 24 * 3600)
@@ -122,28 +139,34 @@ async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
         step=_SPARK24H_STEP,
     )
 
-    if not results or "error" in results[0]:
-        if results:
-            logger.warning(
-                "spark24h range query failed: %s", results[0].get("error", "unknown error")
-            )
-        else:
-            logger.debug("spark24h range query returned empty matrix")
+    if results and "error" in results[0]:
+        logger.warning("spark24h range query failed: %s", results[0].get("error", "unknown error"))
         return None
+
+    if not results:
+        # No series at all: the counter has no samples in the window. That is a
+        # truthful zero, not an unreadable answer.
+        logger.debug("spark24h range query returned an empty matrix — reading as zero")
+        return [0] * 24
 
     # The first (and only, because the query is a sum) series contains the values.
     try:
         raw_values: list[list] = results[0]["values"]
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, TypeError):
         logger.warning("spark24h range query: unexpected result shape")
         return None
 
     if not raw_values:
+        logger.warning("spark24h range query: series carried no points")
         return None
 
     # Convert string values to ints.  Prometheus may return 24 or 25 points
     # depending on boundary alignment; take the last 24 to stay within window.
-    buckets = [int(float(v)) for _, v in raw_values]
+    try:
+        buckets = [int(_finite(v)) for _, v in raw_values]
+    except (TypeError, ValueError):
+        logger.warning("spark24h range query: unparseable bucket value")
+        return None
     if len(buckets) > 24:
         buckets = buckets[-24:]
     elif len(buckets) < 24:
@@ -153,10 +176,67 @@ async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
     return buckets
 
 
+async def _query_scalar(prom_url: str, query: str, *, label: str, window: str) -> float | None:
+    """Run one instant query and return its scalar, or ``None`` if unreadable.
+
+    ``None`` is the "we could not observe this" signal every caller must route
+    to :func:`_degraded_response`; it covers both a Prometheus-reported error
+    and a response whose value will not parse.
+    """
+    results = await async_query(prom_url, query)
+    if results and "error" in results[0]:
+        logger.warning(
+            "pipeline_stats: Prometheus error for %s [%s]: %s",
+            label,
+            window,
+            results[0]["error"],
+        )
+        return None
+    value = _extract_scalar(results)
+    if value is None:
+        logger.warning("pipeline_stats: unreadable %s value [%s]: %r", label, window, results[0])
+    return value
+
+
+async def _query_routed_by_butler(
+    prom_url: str, prom_window: str, *, window: str
+) -> dict[str, int] | None:
+    """Return the per-butler routed breakdown, or ``None`` if it is unreadable.
+
+    A series whose value will not parse is a butler whose routed count is
+    unknown. Dropping it and returning the rest understates ``routed_pct``
+    without saying so, so the whole breakdown reads as unreadable instead.
+    """
+    results = await async_query(
+        prom_url,
+        f"sum by (butler_name) (increase(ingestion_events_routed_total[{prom_window}]))",
+    )
+    if results and "error" in results[0]:
+        logger.warning(
+            "pipeline_stats: Prometheus error for routed [%s]: %s", window, results[0]["error"]
+        )
+        return None
+
+    breakdown: dict[str, int] = {}
+    for series in results:
+        butler_name = series.get("metric", {}).get("butler_name", "unknown")
+        try:
+            breakdown[butler_name] = int(_finite(series["value"][1]))
+        except (KeyError, ValueError, IndexError, TypeError):
+            logger.warning(
+                "pipeline_stats: unreadable routed series for %s [%s]", butler_name, window
+            )
+            return None
+    return breakdown
+
+
 async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
     """Fetch pipeline funnel stats from Prometheus.
 
     Returns the stats dict on success, or the degraded-mode dict on any failure.
+    A failure is any value the handler could not actually read — an errored
+    query, an unparseable scalar, or an unusable sparkline matrix — never a
+    substituted zero (bu-0m31b).
 
     Prometheus metric names expected:
     - ``ingestion_events_ingested_total``   — counter of ingested events
@@ -169,80 +249,68 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
     """
     prom_window = {"1h": "1h", "24h": "24h", "7d": "7d"}[window]
 
-    # ---- ingested total for the window ----
-    ingested_results = await async_query(
+    # ---- funnel scalars, in query order ----
+    # Any value we cannot read degrades the whole envelope, and does so
+    # immediately: a partially-observed funnel published under
+    # aggregates_available=true is exactly the confident zero this endpoint
+    # must not emit, and a Prometheus that failed one query is rarely about to
+    # answer the next six.
+    ingested = await _query_scalar(
         prom_url,
         f"sum(increase(ingestion_events_ingested_total[{prom_window}]))",
+        label="ingested",
+        window=window,
     )
-    if ingested_results and "error" in ingested_results[0]:
-        logger.warning(
-            "pipeline_stats: Prometheus error for ingested [%s]: %s",
-            window,
-            ingested_results[0]["error"],
-        )
+    if ingested is None:
         return _degraded_response(window)
-    ingested = _extract_scalar(ingested_results)
 
-    # ---- filtered total ----
-    filtered_results = await async_query(
+    filtered = await _query_scalar(
         prom_url,
         f"sum(increase(ingestion_events_filtered_total[{prom_window}]))",
+        label="filtered",
+        window=window,
     )
-    if filtered_results and "error" in filtered_results[0]:
-        logger.warning("pipeline_stats: Prometheus error for filtered [%s]", window)
+    if filtered is None:
         return _degraded_response(window)
-    filtered = _extract_scalar(filtered_results)
 
-    # ---- errored total ----
-    errored_results = await async_query(
+    errored = await _query_scalar(
         prom_url,
         f"sum(increase(ingestion_events_errored_total[{prom_window}]))",
+        label="errored",
+        window=window,
     )
-    if errored_results and "error" in errored_results[0]:
-        logger.warning("pipeline_stats: Prometheus error for errored [%s]", window)
+    if errored is None:
         return _degraded_response(window)
-    errored = _extract_scalar(errored_results)
 
     # ---- per-butler routed breakdown ----
-    routed_results = await async_query(
-        prom_url,
-        f"sum by (butler_name) (increase(ingestion_events_routed_total[{prom_window}]))",
-    )
-    routed_by_butler: dict[str, int] = {}
-    if routed_results and "error" not in routed_results[0]:
-        for series in routed_results:
-            butler_name = series.get("metric", {}).get("butler_name", "unknown")
-            try:
-                routed_by_butler[butler_name] = int(float(series["value"][1]))
-            except (KeyError, ValueError, IndexError):
-                pass
+    routed_by_butler = await _query_routed_by_butler(prom_url, prom_window, window=window)
+    if routed_by_butler is None:
+        return _degraded_response(window)
 
     # ---- rate1h (events per minute over trailing 60 min) ----
-    rate_results = await async_query(
+    rate1h = await _query_scalar(
         prom_url,
         "sum(rate(ingestion_events_ingested_total[1h])) * 60",
+        label="rate1h",
+        window=window,
     )
-    rate1h = 0.0
-    if rate_results and "error" not in rate_results[0]:
-        rate1h = _extract_float(rate_results)
+    if rate1h is None:
+        return _degraded_response(window)
 
     # ---- filtered24h (filtered events in last 24h) ----
-    filtered24h_results = await async_query(
+    filtered24h = await _query_scalar(
         prom_url,
         "sum(increase(ingestion_events_filtered_total[24h]))",
+        label="filtered24h",
+        window=window,
     )
-    filtered24h = 0
-    if filtered24h_results and "error" not in filtered24h_results[0]:
-        filtered24h = int(_extract_scalar(filtered24h_results))
+    if filtered24h is None:
+        return _degraded_response(window)
 
     # ---- spark24h — 24 hourly buckets (always 24h, regardless of window) ----
-    # Attempt a true per-hour range query; fall back to uniform distribution when
-    # Prometheus is unavailable or returns no data.
-    spark24h_buckets = await _query_spark24h_buckets(prom_url)
-    if spark24h_buckets is None:
-        spark24h: list[int] = _build_spark24h(int(ingested))
-    else:
-        spark24h = spark24h_buckets
+    spark24h = await _query_spark24h_buckets(prom_url)
+    if spark24h is None:
+        return _degraded_response(window)
 
     # ---- routed_pct ----
     total_events = ingested + filtered + errored
@@ -259,37 +327,39 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
         "spark24h": spark24h,
         "rate1h": round(rate1h, 4),
         "routed_pct": round(routed_pct, 2),
-        "filtered24h": filtered24h,
+        "filtered24h": int(filtered24h),
     }
 
 
-def _extract_scalar(results: list) -> float:
-    """Extract first scalar value from an instant PromQL result."""
+def _finite(raw: object) -> float:
+    """Parse a PromQL sample value, rejecting ``NaN``/``Inf``.
+
+    Prometheus renders "no samples in range" as ``NaN``, which ``float()``
+    accepts. Coercing that to a number would publish an absence as a
+    measurement, so it raises here and the caller degrades instead.
+    """
+    value = float(raw)  # type: ignore[arg-type]
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite PromQL sample value: {raw!r}")
+    return value
+
+
+def _extract_scalar(results: list) -> float | None:
+    """Extract the first scalar value from an instant PromQL result.
+
+    An empty result set returns ``0.0``: Prometheus answering "no series" for a
+    ``sum(increase(...))`` is a real observation that nothing happened.
+
+    A result that IS present but cannot be read returns ``None`` — unknown, not
+    zero. This used to return ``0.0`` for both, which put a value on the wire
+    with an authority the code was never positioned to give (bu-0m31b).
+    """
     if not results:
         return 0.0
     try:
-        return float(results[0]["value"][1])
+        return _finite(results[0]["value"][1])
     except (KeyError, IndexError, ValueError, TypeError):
-        return 0.0
-
-
-def _extract_float(results: list) -> float:
-    """Extract first float value from an instant PromQL result."""
-    return _extract_scalar(results)
-
-
-def _build_spark24h(ingested_24h: int) -> list[int]:
-    """Build a 24-bucket spark array.
-
-    In degraded mode or when we only have a total (not a range breakdown),
-    distribute the total evenly across 24 hourly buckets.  Callers that
-    have a proper range result should build their own bucket array.
-    """
-    if ingested_24h <= 0:
-        return [0] * 24
-    base = ingested_24h // 24
-    remainder = ingested_24h % 24
-    return [base + (1 if i < remainder else 0) for i in range(24)]
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +519,12 @@ async def get_pipeline_stats(
     - ``rate1h``: events per minute over the trailing 60 minutes
     - ``routed_pct``: percentage of events routed vs. total
     - ``filtered24h``: count of filtered events in the last 24 hours
-    - ``aggregates_available``: false when Prometheus is unreachable
+    - ``aggregates_available``: false when any of the values above could not be
+      observed — Prometheus unreachable or unconfigured, a query error, an
+      unparseable or non-finite scalar, or an unusable sparkline matrix. When
+      it is true, every zero above is a zero Prometheus actually reported
+      (an empty result set included); the endpoint never substitutes one
+      (bu-0m31b)
 
     Plus, independent of Prometheus (bu-g4oiu — DB truth, not windowed/derived):
     - ``failed_total``: current count of ``public.ingestion_events`` rows with
