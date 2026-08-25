@@ -4,94 +4,23 @@ from __future__ import annotations
 
 import pytest
 
+from butlers.testing.schema_standins import APPROVAL_EVENTS, APPROVAL_RULES, PENDING_ACTIONS
+
 
 @pytest.fixture
 async def approvals_pool(provisioned_postgres_pool):
     """Provision a fresh database with approvals tables and return a pool.
 
-    WARNING: Schema defined here must be kept in sync with the actual Alembic
-    migrations in src/butlers/modules/approvals/migrations/. If you modify the
-    migration SQL, update this fixture accordingly to prevent schema drift.
+    Table shapes come from :mod:`butlers.testing.schema_standins`, which the
+    parity guard diffs against ``src/butlers/modules/approvals/migrations/``.
+    The indexes and the append-only trigger below stay local: a stand-in
+    deliberately mirrors columns and table constraints only, and this fixture's
+    immutability tests need the trigger.
     """
     async with provisioned_postgres_pool() as pool:
-        # Run the approvals migrations to create the tables
-        # Migration 001: Create pending_actions and approval_rules tables
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS pending_actions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                agent_summary TEXT,
-                session_id UUID,
-                requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                decided_by TEXT,
-                decided_at TIMESTAMPTZ,
-                execution_result JSONB,
-                why TEXT,
-                evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-                blast_radius TEXT,
-                reversibility TEXT,
-                approval_rule_id UUID,
-                CONSTRAINT pending_actions_status_check
-                    CHECK (status IN (
-                        'pending', 'approved', 'rejected', 'expired', 'executed', 'abandoned'
-                    )),
-                CONSTRAINT pending_actions_blast_radius_check
-                    CHECK (blast_radius IS NULL OR blast_radius IN (
-                        'none', 'self', 'contact', 'external'
-                    )),
-                CONSTRAINT pending_actions_reversibility_check
-                    CHECK (reversibility IS NULL OR reversibility IN (
-                        'reversible', 'compensable', 'irreversible'
-                    ))
-            )
-        """)
-
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS approval_rules (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                arg_constraints JSONB NOT NULL DEFAULT '{}'::jsonb,
-                description TEXT NOT NULL,
-                created_from UUID,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                max_uses INTEGER,
-                use_count INTEGER NOT NULL DEFAULT 0,
-                active BOOLEAN NOT NULL DEFAULT true
-            )
-        """)
-
-        # Migration 002: Create approval_events table with immutability trigger
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS approval_events (
-                event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_id UUID REFERENCES pending_actions(id),
-                rule_id UUID REFERENCES approval_rules(id),
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                reason TEXT,
-                event_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                CONSTRAINT approval_events_link_check
-                    CHECK (action_id IS NOT NULL OR rule_id IS NOT NULL),
-                CONSTRAINT approval_events_type_check
-                    CHECK (event_type IN (
-                        'action_queued',
-                        'action_auto_approved',
-                        'action_approved',
-                        'action_rejected',
-                        'action_expired',
-                        'action_abandoned',
-                        'action_execution_succeeded',
-                        'action_execution_failed',
-                        'rule_created',
-                        'rule_revoked'
-                    ))
-            )
-        """)
+        await pool.execute(PENDING_ACTIONS.ddl())
+        await pool.execute(APPROVAL_RULES.ddl())
+        await pool.execute(APPROVAL_EVENTS.ddl())
 
         await pool.execute("""
             CREATE INDEX IF NOT EXISTS idx_approval_events_action_id

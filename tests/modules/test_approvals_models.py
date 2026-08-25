@@ -452,6 +452,8 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         with engine.begin() as conn:
+            # schema-standin-exempt: a deliberately pre-migration shape, stamped
+            # at an old revision so run_migrations() can be tested upgrading it.
             conn.execute(
                 text(
                     "CREATE TABLE pending_actions ("
@@ -524,6 +526,8 @@ class TestApprovalsMigration:
         ]
 
         with engine.begin() as conn:
+            # schema-standin-exempt: a deliberately pre-migration shape, stamped
+            # at an old revision so run_migrations() can be tested upgrading it.
             conn.execute(
                 text(
                     "CREATE TABLE pending_actions ("

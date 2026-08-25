@@ -37,6 +37,7 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_entity_dedup_curation,
 )
 from butlers.modules.approvals.retention import RetentionPolicy, cleanup_old_actions
+from butlers.testing.schema_standins import PENDING_ACTIONS
 
 relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
 
@@ -68,27 +69,7 @@ CREATE TABLE IF NOT EXISTS public.entities (
 )
 """
 
-_CREATE_PENDING_ACTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS pending_actions (
-    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    tool_name    TEXT        NOT NULL,
-    tool_args    JSONB       NOT NULL,
-    agent_summary TEXT,
-    session_id   UUID,
-    status       VARCHAR     NOT NULL DEFAULT 'pending',
-    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at   TIMESTAMPTZ,
-    decided_by   TEXT,
-    decided_at   TIMESTAMPTZ,
-    execution_result JSONB,
-    approval_rule_id UUID,
-    why          TEXT,
-    evidence     JSONB       NOT NULL DEFAULT '[]'::jsonb,
-    blast_radius TEXT,
-    reversibility TEXT,
-    deduplication_key TEXT
-)
-"""
+_CREATE_PENDING_ACTIONS_SQL = PENDING_ACTIONS.ddl()
 
 _CREATE_STATE_SQL = """
 CREATE TABLE IF NOT EXISTS state (

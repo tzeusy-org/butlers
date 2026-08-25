@@ -34,6 +34,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.schema_standins import PENDING_ACTIONS
+
 
 def _apply_evidence_schema():
     """Load ``roster/relationship/tests/evidence_schema.py`` by path.
@@ -164,26 +166,7 @@ async def identity_pool(provisioned_postgres_pool):
                 status                   TEXT NOT NULL DEFAULT 'ingested'
             )
         """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS pending_actions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                agent_summary TEXT,
-                session_id UUID,
-                requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                decided_by TEXT,
-                decided_at TIMESTAMPTZ,
-                execution_result JSONB,
-                why TEXT,
-                evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-                approval_rule_id UUID,
-                blast_radius TEXT,
-                reversibility TEXT
-            )
-        """)
+        await pool.execute(PENDING_ACTIONS.ddl())
         yield pool
 
 

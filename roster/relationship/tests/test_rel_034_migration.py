@@ -114,6 +114,8 @@ async def pool(provisioned_postgres_pool):
                 created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # schema-standin-exempt: the pre-rel_034 shape this migration upgrades,
+        # in the relationship schema; the head-state stand-in would void the test.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS relationship.pending_actions (
                 id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
