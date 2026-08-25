@@ -16,19 +16,33 @@ five of the nine failures on PR #3853 exactly this way (bu-r8opr).
 So a stand-in is declared once, here, and imported.  Two guards in
 ``tests/config/test_schema_standin_parity.py`` keep that honest: one diffs each
 declaration against the table the real chain builds (naming the drifted
-columns), the other refuses a new hand-written copy anywhere under ``tests/``.
+columns, constraints and indexes), the other refuses a new hand-written copy
+anywhere under ``tests/``.
 
-A stand-in mirrors columns, primary keys and CHECK constraints -- the surface a
-query binds to, and the surface that decides whether a row is accepted.  It
-deliberately does not mirror foreign keys, indexes, triggers, views or seed
-data.  Foreign keys are excluded so each table stays independently creatable
-(``pending_actions`` and ``approval_rules`` reference each other in the real
-chain, via a DEFERRABLE constraint a stand-in has no way to reproduce alone);
-a fixture that needs an index, a trigger or referential integrity adds it next
-to the ``ddl()`` call, or takes the real chain via
-:func:`butlers.testing.migration.create_migrated_test_db`.  ``STANDINS``
-therefore cannot catch index drift -- ``approvals_013``'s unique partial index
-on ``deduplication_key`` is real and is not mirrored here.
+A stand-in mirrors columns, primary keys, CHECK constraints and indexes -- the
+surface a query binds to, and the surface that decides whether a row is
+accepted.  Indexes belong in that set because a unique one is not decoration:
+``approvals_013``'s ``ux_pending_actions_active_deduplication_key`` is what
+enforces dedup among active rows, so a stand-in missing it accepts writes the
+real schema rejects (bu-cwv9l).
+
+Two things stay out, on purpose.
+
+*Foreign keys*, so each table stays independently creatable.  ``pending_actions``
+and ``approval_rules`` reference each other in the real chain via a DEFERRABLE
+constraint, and mirroring that would leave neither table creatable alone --
+which is the entire point of a stand-in.
+
+*Triggers*, because the ones on these tables are mostly foreign keys wearing a
+different hat and inherit that exclusion: ``approvals_008``/``009``/``011``
+replaced dropped FKs with plpgsql guards that read the *sibling* table
+unqualified, so mirroring them into a stand-in's schema would either fail to
+create or silently validate against whatever ``search_path`` reached first.
+The one self-contained trigger, ``approvals_001``'s append-only guard on
+``approval_events``, lives beside the ``ddl()`` call in
+``tests/modules/conftest.py``.  A fixture needing referential integrity or a
+trigger adds it there, or takes the real chain via
+:func:`butlers.testing.migration.create_migrated_test_db`.
 
 Chains may be shared (``core``), roster (``switchboard``) or module
 (``approvals``, under ``src/butlers/modules/<chain>/migrations/``);
@@ -69,13 +83,22 @@ class TableStandin:
     table_constraints: tuple[str, ...] = ()
     """Table-level constraint clauses (primary key, checks)."""
 
+    indexes: tuple[str, ...] = ()
+    """``CREATE INDEX`` statements, with ``{table}`` for the qualified name."""
+
     def ddl(self, *, schema: str | None = None) -> str:
-        """Return ``CREATE TABLE IF NOT EXISTS`` DDL, optionally schema-qualified."""
+        """Return the ``CREATE TABLE`` plus index DDL, optionally schema-qualified.
+
+        The result is a single ``;``-separated script, which both asyncpg's
+        argument-free ``execute`` and psycopg2 run as one call.
+        """
         qualified = f"{schema}.{self.table}" if schema else self.table
         clauses = [f"{name} {definition}" for name, definition in self.columns]
         clauses.extend(self.table_constraints)
         body = ",\n    ".join(clauses)
-        return f"CREATE TABLE IF NOT EXISTS {qualified} (\n    {body}\n)"
+        statements = [f"CREATE TABLE IF NOT EXISTS {qualified} (\n    {body}\n)"]
+        statements += [index.replace("{table}", qualified) for index in self.indexes]
+        return ";\n".join(statements)
 
 
 CONNECTOR_REGISTRY = TableStandin(
@@ -118,6 +141,20 @@ CONNECTOR_REGISTRY = TableStandin(
             "CONSTRAINT valid_operational_role CHECK ("
             "operational_role IN ('runtime_instance', 'checkpoint', 'unknown'))"
         ),
+    ),
+    # sw_002 (three lookup indexes), sw_012 (active), sw_022 (live).
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS ix_connector_registry_last_heartbeat_at "
+        "ON {table} (last_heartbeat_at DESC) WHERE last_heartbeat_at IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_connector_registry_state_last_heartbeat "
+        "ON {table} (state, last_heartbeat_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_connector_registry_connector_type "
+        "ON {table} (connector_type)",
+        "CREATE INDEX IF NOT EXISTS ix_connector_registry_active "
+        "ON {table} (connector_type, endpoint_identity) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS ix_connector_registry_live "
+        "ON {table} (connector_type, endpoint_identity) "
+        "WHERE deleted_at IS NULL AND archived_at IS NULL",
     ),
 )
 
@@ -168,6 +205,18 @@ PENDING_ACTIONS = TableStandin(
             "('reversible', 'compensable', 'irreversible'))"
         ),
     ),
+    # approvals_001 (two lookup indexes), approvals_013 (dedup uniqueness).
+    # The unique one is behaviour: it is what makes a second active action with
+    # the same deduplication_key fail, so a stand-in without it lets a test
+    # write rows production would reject.
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_pending_actions_status_requested "
+        "ON {table} (status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS idx_pending_actions_session_id ON {table} (session_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_actions_active_deduplication_key "
+        "ON {table} (deduplication_key) WHERE deduplication_key IS NOT NULL "
+        "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
+    ),
 )
 
 
@@ -187,6 +236,9 @@ APPROVAL_RULES = TableStandin(
         ("max_uses", "INT"),
         ("use_count", "INT NOT NULL DEFAULT 0"),
         ("active", "BOOL NOT NULL DEFAULT true"),
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_approval_rules_tool_active ON {table} (tool_name, active)",
     ),
 )
 
@@ -224,6 +276,12 @@ APPROVAL_EVENTS = TableStandin(
             "'promotion_superseded', 'demotion_suggested', 'demotion_confirmed', "
             "'demotion_dismissed'))"
         ),
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_approval_events_action_id ON {table} (action_id)",
+        "CREATE INDEX IF NOT EXISTS idx_approval_events_rule_id ON {table} (rule_id)",
+        "CREATE INDEX IF NOT EXISTS idx_approval_events_occurred_at ON {table} (occurred_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_approval_events_event_type ON {table} (event_type)",
     ),
 )
 

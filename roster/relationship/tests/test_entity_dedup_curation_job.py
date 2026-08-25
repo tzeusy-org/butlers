@@ -84,14 +84,9 @@ CREATE TABLE IF NOT EXISTS state (
 async def _setup_schema(pool: asyncpg.Pool) -> None:
     """Create the minimal schema needed by run_entity_dedup_curation tests."""
     await pool.execute(_CREATE_ENTITIES_SQL)
+    # The dedup uniqueness these tests rely on ships with the stand-in itself
+    # (schema_standins.PENDING_ACTIONS.indexes), diffed against approvals_013.
     await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
-    await pool.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS "
-        "ux_pending_actions_active_deduplication_key "
-        "ON pending_actions (deduplication_key) "
-        "WHERE deduplication_key IS NOT NULL "
-        "AND status IN ('pending', 'approved', 'rejected', 'abandoned')"
-    )
     await pool.execute(_CREATE_STATE_SQL)
 
 
