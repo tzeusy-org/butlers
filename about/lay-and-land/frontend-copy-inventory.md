@@ -7,6 +7,29 @@ Do **not** edit manually. Regenerate (no args) with:
 CI job `frontend-copy-inventory-guard` regenerates this file and fails the
 build if the committed copy differs, so it is always current.
 
+## Scope
+
+The generator reads `.tsx` sources as text, so it sees copy in a bounded set of
+places and nowhere else. It collects:
+
+- JSX text nodes -- `<span>Save changes</span>`
+- Values of user-facing attributes -- `title`, `description`, `placeholder`,
+  `alt`, `aria-label`, `label`, `tooltip`, `emptyMessage`, ...
+- Arguments to display calls -- `toast.*`, `confirm`, `alert`
+
+Attribute values and call arguments are scanned as JavaScript, so template
+literals and ternary branches are collected. An interpolated expression renders
+as `{}`: `Verified {}/{} models` is one string with two runtime holes. Only
+literals at the top nesting level of a value or argument list count, which is
+what keeps lookup keys and option bags (`t("errors.save")`, `{ id: "toast-1" }`)
+out of the list.
+
+**Not covered**, so absence from this file is not evidence the UI never shows a
+string: copy built into a local variable or returned by a helper or hook before
+reaching a display site; copy passed through a prop that is not on the attribute
+list above; copy that originates in the backend; and anything outside `.tsx`
+files under `frontend/src/pages` and `frontend/src/components`.
+
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
 - Owner not notified · push failed
@@ -51,6 +74,7 @@ build if the committed copy differs, so it is always current.
 - Approvals
 - Waiting
 - Stalled
+- {} Undo
 - Deny reason (optional)
 - None
 - UTC
@@ -59,11 +83,29 @@ build if the committed copy differs, so it is always current.
 - Autonomy suggestions
 - Rule promotion suggestions
 - Rule promotion metrics
+- Stalled approvals
+- Approvals queue
 - Approval metrics
 - Pending approval metrics
 - Active approval rules
 - Approval pushes
 - Approval lanes
+- Hours must be 1–168
+- Policy saved
+- Save failed: {}
+- Dispatched
+- Still not run
+- Retry failed: {}
+- Abandoned
+- Abandon failed: {}
+- Standing rule created
+- Confirm failed: {}
+- Suggestion dismissed
+- Dismiss failed: {}
+- Routing rule created
+- Rule re-enabled
+- Rule disabled
+- Update failed: {}
 
 ## `frontend/src/pages/AuditLogPage.tsx`
 
@@ -78,6 +120,8 @@ build if the committed copy differs, so it is always current.
 - Next
 - Audit Log
 - Browse audit log entries across all butlers.
+- Remove key filter {}
+- Remove actor filter {}
 - e.g. owner
 - e.g. model.priority
 
@@ -104,6 +148,8 @@ build if the committed copy differs, so it is always current.
 - Loading butler…
 - Something went wrong: Failed to fetch butler data.
 - Force run butler
+- Resume butler
+- Pause butler
 - Open chat panel for general
 - Butler detail: general
 - Loading butler data
@@ -135,6 +181,9 @@ build if the committed copy differs, so it is always current.
 
 - Butlers
 - Butler status board
+- {} restored
+- Failed to restore {}
+- Restoring {}
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
@@ -250,17 +299,112 @@ build if the committed copy differs, so it is always current.
 - Domain overlays: finance bills/renewals, travel, relationship dates, health appointments
 - Calendar events
 - Linked people
+- Create event on {}
+- {} more on {}: open day view
+- Open slot {}: {}
 - Undo move
 - Connected accounts
+- Toggle {}
+- {} {} in view
+- Show
+- Hide
 - Full re-sync from scratch (cursor recovery)
 - This source needs re-authorization
 - e.g. Daily medication
+- Enter a valid snooze time
+- No writable calendar is available to search for free time.
+- Failed to update {}: {}
+- Event {} updated.
+- Failed to update {}.
+- Cannot toggle this source: no owning butler resolved
+- Failed to update source: {}
+- Source enabled for sync
+- Source disabled
+- Reversed {} · undo {}
+- No writable calendar sources are available for user events.
+- Could not resolve calendar owner for this event.
+- Could not resolve butler event for this drag.
+- Change not saved: {}
+- Reverted.
+- Event moved.
+- Failed to save calendar change.
+- Sync queued for {} calendar owner(s).
+- Failed to trigger sync.
+- Source sync failed.
+- Recovery sync joined queued work for {}.
+- Recovery sync queued for {}.
+- Sync joined queued work for {}.
+- Sync queued for {}.
+- Failed to trigger source sync.
+- Failed to create event: {}
+- Failed to update event: {}
+- Created event ({}).
+- Created calendar event.
+- Updated event ({}).
+- Updated calendar event.
+- Title is required.
+- Start and end times must be valid.
+- End time must be after start time.
+- Could not resolve owning butler for this calendar source.
+- Event id is missing for update.
+- Failed to save calendar event.
+- Failed to add calendar event.
+- Could not resolve owning butler for this event.
+- Failed to delete event: {}
+- Deleted event ({}).
+- Deleted calendar event.
+- Failed to delete calendar event.
+- Could not update {}: the new time conflicts with another event.
+- Missing butler event linkage for toggle
+- {} failed: {}
+- Resume
+- Pause
+- Event resumed
+- Event paused
+- Toggle failed
+- Missing butler event linkage for delete
+- Delete "{}"?
+- Delete failed: {}
+- Event deleted
+- Delete failed
+- Missing butler event linkage for snooze
+- Snooze failed: {}
+- Snoozed to {}
+- Snooze failed
+- Missing butler event linkage for dismiss
+- Dismiss failed: {}
+- Reminder dismissed
+- Dismiss failed
+- Select a butler lane before saving
+- Title is required
+- Start time is required
+- End time is required for scheduled events
+- End time must be after start time
+- Scheduled events require either a recurrence frequency or cron expression
+- Until boundary is invalid
+- Missing event context for update
+- Missing butler event linkage for update
+- Failed to create butler event: {}
+- Failed to update butler event: {}
+- Butler event created
+- Butler event updated
+- Event mutation failed
+- Proposal accepted. Event added to the Butlers calendar.
+- Failed to accept the proposed fix.
+- Proposal dismissed.
+- Failed to dismiss the proposed fix.
+- Failed to set primary: change was not persisted
+- Primary calendar updated
+- Failed to set primary: {}
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
 
 - Regeneration failed.
 - Chronicles
 - Retrospective view of lived past time reconstructed from butler evidence.
+- Previous day: archive boundary unavailable
+- Previous day
+- Archive boundary unavailable
 - Next day
 - The day-close summary may be out of date.
 - Day-close summary may be out of date
@@ -275,7 +419,10 @@ build if the committed copy differs, so it is always current.
 
 ## `frontend/src/pages/ConnectorDetailPage.tsx`
 
+- Connector
 - Connector not found
+- No primary account set. Go to Secrets to set a primary account.
+- OAuth error: {}. Try re-authorizing.
 
 ## `frontend/src/pages/DashboardPage.tsx`
 
@@ -297,6 +444,7 @@ build if the committed copy differs, so it is always current.
 - Decisions
 - loading…
 - No decisions waiting.
+- Decision context for {}
 - Decision options
 - Open decisions
 
@@ -374,10 +522,16 @@ build if the committed copy differs, so it is always current.
 - Lives in
 - Works at
 - Family
+- Hide provenance
+- Reveal provenance
 - Fact validity
 - Predicate
 - Weight
 - Last Observed
+- Switch to {} mode
+- {} mode: click to switch to {}
+- Editorial
+- Workbench
 - Context
 - Top relations
 - Metrics
@@ -394,16 +548,53 @@ build if the committed copy differs, so it is always current.
 - Forget this entity
 - Forget this entity: irreversible hard delete
 - Merged entity
+- Entity
 - Remove alias
 - New alias...
 - Remove role
 - New role...
+- Contact unlinked.
+- Failed to unlink: {}
+- Unknown
+- Contact linked.
+- Failed to link: {}
+- Forgot {}
+- Entity name updated
+- Failed to update name: {}
+- Removed alias "{}"
+- Failed to remove alias: {}
+- Alias already exists.
+- Added alias "{}"
+- Failed to add alias: {}
+- Removed role "{}"
+- Failed to remove role: {}
+- Role already exists.
+- Added role "{}"
+- Failed to add role: {}
+- Entity marked as confirmed.
+- Failed to confirm: {}
+- Unknown error
+- Already at the innermost tier.
+- Already at the outermost tier.
+- Tier set to {}
+- Failed to set tier: {}
+- Archived {}
+- Failed to archive: {}
+- Type changed to {}
+- Failed: {}
+
+## `frontend/src/pages/EpisodeDetailPage.tsx`
+
+- derived fact {}: {} · {}
 
 ## `frontend/src/pages/FactDetailPage.tsx`
 
 - Confirm
 - Re-inks the fact: resets decay from today.
 - Marks the record incorrect; agents stop retrieving it.
+- derived from episode {}
+- supersedes {}
+- superseded by {}
 
 ## `frontend/src/pages/HealthOverviewPage.tsx`
 
@@ -415,6 +606,8 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/pages/IngestionConnectorsPage.tsx`
 
 - Every channel the house listens on: status, health, and credential state.
+- No primary account set. Go to Secrets to set a primary account.
+- OAuth error: {}. Try re-authorizing.
 
 ## `frontend/src/pages/IngestionFiltersPage.tsx`
 
@@ -435,10 +628,19 @@ build if the committed copy differs, so it is always current.
 - one issue group
 - &times;
 - Issues
+- Acknowledged issues. They reappear automatically if they recur, or restore one now.
+- Grouped errors and warnings across all butlers, newest first.
 - Time window
 - Severity
 - Butler
 - Clear issue group filter
+- Clear search filter {}
+- {} is reachable
+- {} is still unreachable
+- Failed to ping {}
+- {}: schedule run now
+- {}: tick did not complete successfully
+- Failed to run schedule for {}
 
 ## `frontend/src/pages/MealsPage.tsx`
 
@@ -475,7 +677,14 @@ build if the committed copy differs, so it is always current.
 - Notifications
 - Monitor notification delivery across all butlers.
 - Filter by butler...
+- Acknowledge all {} failed notification{}?
 - Every failed notification is marked read at once. This cannot be undone.
+- Notification re-sent on {}
+- Retry failed again
+- Could not retry notification
+- Notification escalated to {}
+- Escalation failed
+- Could not escalate notification
 
 ## `frontend/src/pages/QaInvestigationDetailPage.tsx`
 
@@ -497,10 +706,20 @@ build if the committed copy differs, so it is always current.
 - Filter by severity
 - Time range
 - Filter by state
+- Butlers: {}
+- Reset QA circuit breaker
+- QA circuit breaker state unknown
+- QA circuit breaker closed
 - Force patrol
 - Trigger an immediate QA patrol cycle now?
 - Runs a new patrol cycle outside the normal schedule.
 - Case rail
+- Patrol triggered
+- Patrol not triggered
+- Force patrol failed: {}
+- Unknown error
+- Circuit breaker reset
+- Circuit breaker reset failed: {}
 
 ## `frontend/src/pages/QaPatrolDetailPage.tsx`
 
@@ -519,11 +738,16 @@ build if the committed copy differs, so it is always current.
 - Research
 - Notes, articles, and references you've gathered. In sync with your Health butler.
 
+## `frontend/src/pages/RuleDetailPage.tsx`
+
+- derived from episode {}
+
 ## `frontend/src/pages/SecretsPage.tsx`
 
 - Loading credentials…
 - Retry
 - Inventory
+- OAuth error: {}
 
 ## `frontend/src/pages/SessionDetailPage.tsx`
 
@@ -547,6 +771,7 @@ build if the committed copy differs, so it is always current.
 - Browse session history across all butlers.
 - Filter by trigger...
 - Filter by request ID...
+- Copied session ID
 
 ## `frontend/src/pages/SettingsConsolePage.tsx`
 
@@ -557,6 +782,7 @@ build if the committed copy differs, so it is always current.
 - system · console
 - Settings
 - Could not load console status.
+- Go to {}
 - Active Butlers
 - Spend MTD
 - Open Approvals
@@ -607,14 +833,46 @@ build if the committed copy differs, so it is always current.
 - Loading catalog…
 - Failed to load model catalog.
 - verify all now →
+- Switch to key-value editor
+- Switch to raw JSON editor
 - Args (JSON array)
+- e.g. ["--max-turns", "10"]
 - CLI arg or key=value
+- Arg {}
+- Remove arg {}
 - e.g. claude-sonnet
 - e.g. claude-sonnet-4-6
 - Enabled
 - Pick a template (optional)
 - Decrease priority
 - Increase priority
+- Reset {} usage for {}
+- Reset {} usage
+- Set {} limit for {}
+- verification failed
+- Excluded by breaker after {} consecutive dispatch failures
+- insufficient dispatch history
+- Disable
+- Enable
+- Edit {}
+- Delete {}
+- Saved changes to {}
+- Added {}
+- Failed to update priority
+- Limit must be a non-negative integer (or blank for unlimited)
+- Set {} limit for {} to {}
+- Failed to set {} limit
+- Failed to reset {} usage
+- Failed to toggle model
+- {}: OK ({}ms)
+- test failed
+- Failed to test {}
+- Deleted {}
+- Failed to delete {}
+- Verified {}/{} models{}{}
+- · {} failed
+- · {} could not be probed
+- Verify all was called recently. Wait 60 seconds before retrying.
 
 ## `frontend/src/pages/SettingsPermissionsPage.tsx`
 
@@ -664,10 +922,13 @@ build if the committed copy differs, so it is always current.
 - Permissions &amp; data
 - Failed to load matrix.
 - Why are you changing this permission?
+- (inherited)
 - Audit reel
 - Export scope
 - permission.set, data.export
 - Webhooks
+- Disable webhook
+- Enable webhook
 - Test webhook
 - Delete webhook
 - Permissions matrix
@@ -675,6 +936,29 @@ build if the committed copy differs, so it is always current.
 - Last 15 privileged-action entries: permission changes, data operations, and webhook events. Heartbeat and routine traffic excluded.
 - Data operations
 - Outbound webhook registrations. Events are signed with HMAC-SHA256.
+- Permission update failed: {}
+- Export ready
+- Export failed: {}
+- Webhook created
+- Create failed: {}
+- Secret copied to clipboard
+- Copy failed. Select and copy the secret manually
+- Webhook updated
+- Update failed: {}
+- Signing secret regenerated
+- Regenerate failed: {}
+- Failed to load webhooks: {}
+- Test passed: HTTP {} in {}ms
+- Test failed: HTTP {}
+- no response
+- Test error: {}
+- Webhook enabled
+- Webhook disabled
+- Toggle failed: {}
+- Webhook deleted
+- Delete failed: {}
+- Failed to load permissions: {}
+- Permission {}: {} · {}
 
 ## `frontend/src/pages/SpendPage.tsx`
 
@@ -739,9 +1023,15 @@ build if the committed copy differs, so it is always current.
 - Days in Month
 - Spend forecast chart
 - Spend breakdown
+- Purpose breakdown
 - Historical attribution
 - Top sessions
 - Schedule costs
+- Routing rule at position {} of {}{}
+- , grabbed. Use arrow keys to move, space or enter to drop, escape to cancel
+- . Press space or enter to reorder with the keyboard
+- Remove routing rule at position {} of {}
+- Remove the routing rule at position {}?
 - Butler condition
 - any butler
 - Complexity condition
@@ -758,6 +1048,18 @@ build if the committed copy differs, so it is always current.
 - Forecast actuals
 - Monthly ceiling
 - Forecast attribution
+- Monthly ceiling updated
+- Failed to update ceiling
+- Enter a positive amount
+- Rule created
+- Failed to create rule
+- Per-call cap must be a positive number
+- Set at least one effect: route-to model and/or per-call cap
+- Rule removed from position {}
+- Failed to delete rule
+- Rule restored
+- Failed to restore rule; its full definition is shown above
+- Failed to reorder rule
 
 ## `frontend/src/pages/SymptomsPage.tsx`
 
@@ -791,8 +1093,11 @@ build if the committed copy differs, so it is always current.
 - Sessions, notifications, and errors across every butler: the fleet's single chronicle.
 - Trace scope
 - Timeline
+- Delete saved view {}
 - Retry saved views
 - Retry butler filters
+- Hide internal activity
+- Show internal activity
 - View name
 
 ## `frontend/src/pages/calendar/QuickAddBar.tsx`
@@ -831,6 +1136,7 @@ build if the committed copy differs, so it is always current.
 - Back
 - Keep asking
 - Teach this approval
+- Standing rule created
 
 ## `frontend/src/components/approvals/attention-ledger-panel.tsx`
 
@@ -930,8 +1236,15 @@ build if the committed copy differs, so it is always current.
 - IP
 - Request ID
 - Note
+- Could not load this audit log query.
+- Audit log unavailable.
+- The request was rejected. Check the filters above.
+- Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly.
 - No audit entries found.
 - Audit log entries appear as butlers perform operations.
+- {} audit entry details
+- Collapse
+- Expand
 - Metadata
 
 ## `frontend/src/components/butler-detail/ButlerActivityTab.tsx`
@@ -955,6 +1268,8 @@ build if the committed copy differs, so it is always current.
 - Loading…
 - No items pending review.
 - View all approvals →
+- {} severity
+- Review approval for {}
 - Pending approvals
 
 ## `frontend/src/components/butler-detail/ButlerChroniclerTimelinesTab.tsx`
@@ -967,6 +1282,7 @@ build if the committed copy differs, so it is always current.
 - Longest gap
 - Next assembly
 - Today's episode timeline
+- Source error: {}
 - Source health
 - Today timeline
 - Sources
@@ -998,10 +1314,16 @@ build if the committed copy differs, so it is always current.
 
 - Logs
 - Config
+- Prompt {}
 - Complexity
+- Prompt sent
+- Force run triggered
+- Failed to run butler
+- Failed to {} {}
 
 ## `frontend/src/components/butler-detail/ButlerDetailHeader.tsx`
 
+- Overdue {}, {}. Open schedules.
 - Schedule
 
 ## `frontend/src/components/butler-detail/ButlerDomainEventsPanel.tsx`
@@ -1027,6 +1349,7 @@ build if the committed copy differs, so it is always current.
 - Select a mind map to see retention trend.
 - No retention data in this window.
 - new Date(e.next_review_at)
+- {}% mastered
 
 ## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
 
@@ -1048,6 +1371,7 @@ build if the committed copy differs, so it is always current.
 - e.g. Whole Foods Market
 - Recent transactions
 - Select all transactions
+- Select transaction {}
 - Subscriptions
 - Accounts
 - Monthly spend
@@ -1055,6 +1379,8 @@ build if the committed copy differs, so it is always current.
 - Next bill
 - Top category · 30d
 - This overlays the selected transactions' facts. It does not modify the original transaction records.
+- Updated {} transaction fact{}.
+- Bulk update failed.
 
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
@@ -1193,6 +1519,8 @@ build if the committed copy differs, so it is always current.
 - Identity & routing
 - Session timeout
 - System prompt
+- Prompt diff · v{} to v{} · {}
+- Edit system prompt · {}
 - Enter system prompt…
 - Tools & integrations
 - Memory access
@@ -1200,7 +1528,10 @@ build if the committed copy differs, so it is always current.
 - Embed model
 - Drops · 7d
 - Activity · last 24 hours
+- {}:00 · {} session{}
 - Kill switch
+- Confirm kill switch · {}
+- System prompt updated
 
 ## `frontend/src/components/butler-detail/ButlerMcpTab.tsx`
 
@@ -1211,6 +1542,8 @@ build if the committed copy differs, so it is always current.
 - Arguments
 - Parsed Result
 - Raw Text
+- Loading tools...
+- Select a tool
 
 ## `frontend/src/components/butler-detail/ButlerMemoryTab.tsx`
 
@@ -1255,6 +1588,10 @@ build if the committed copy differs, so it is always current.
 - Add override
 - Remove Override?
 - Select a model...
+- Model override saved
+- Failed: {}
+- Unknown error
+- Override for "{}" removed
 
 ## `frontend/src/components/butler-detail/ButlerOverviewTab.tsx`
 
@@ -1263,6 +1600,8 @@ build if the committed copy differs, so it is always current.
 - no recent events
 - Could not load approvals.
 - no items pending review
+- Approve {}
+- Reject {}
 - awaiting your action
 
 ## `frontend/src/components/butler-detail/ButlerQaInvestigationsTab.tsx`
@@ -1291,6 +1630,7 @@ build if the committed copy differs, so it is always current.
 - Some data failed to load. Displayed values may be incomplete.
 - Patrol cadence
 - View patrol detail
+- Investigation {}: {}
 - Close investigation detail
 
 ## `frontend/src/components/butler-detail/ButlerRegistryTab.tsx`
@@ -1323,7 +1663,9 @@ build if the committed copy differs, so it is always current.
 - T1 warmth avg
 - Warm / tracked
 - Overdue
+- Warmth: {}
 - Manually pinned
+- Interactions with {}
 
 ## `frontend/src/components/butler-detail/ButlerRoutingLogTab.tsx`
 
@@ -1336,6 +1678,17 @@ build if the committed copy differs, so it is always current.
 - Add schedule
 - Delete Schedule
 - Cancel
+- Schedule "{}" {}
+- Failed to toggle schedule: {}
+- Unknown error
+- Schedule "{}" triggered
+- Failed to trigger schedule: {}
+- Schedule "{}" deleted
+- Failed to delete schedule: {}
+- Schedule "{}" updated
+- Failed to update schedule: {}
+- Schedule "{}" created
+- Failed to create schedule: {}
 
 ## `frontend/src/components/butler-detail/ButlerSessionsTab.tsx`
 
@@ -1386,6 +1739,10 @@ build if the committed copy differs, so it is always current.
 - Up
 - Degraded
 - Down
+- Butler status: Up
+- Butler status: Degraded
+- Butler status: Down
+- Butler status: {}
 
 ## `frontend/src/components/butler-detail/ButlerTravelTripsTab.tsx`
 
@@ -1465,6 +1822,7 @@ build if the committed copy differs, so it is always current.
 
 - Butlers, status board
 - The staff, at a glance
+- {} of {} reporting healthy
 
 ## `frontend/src/components/butlers/StatusBoardCell.tsx`
 
@@ -1478,6 +1836,7 @@ build if the committed copy differs, so it is always current.
 - SPEND
 - LOAD
 - LAST
+- Open {} activity
 - Activity data unavailable
 
 ## `frontend/src/components/calendar/CalendarAgendaView.tsx`
@@ -1496,6 +1855,15 @@ build if the committed copy differs, so it is always current.
 - Noisy threshold
 - No cross-source duplicates in this range. Nothing is being collapsed.
 - Noisy threshold (minimum cluster size)
+- Matched on {}
+- Match strategy set to {}.
+- Failed to update match strategy.
+- Noisy threshold must be a whole number ≥ 2.
+- Noisy threshold set to {}.
+- Failed to update noisy threshold.
+- Cluster kept separate. Copies will show.
+- Cluster will collapse again.
+- Failed to update keep-separate.
 
 ## `frontend/src/components/calendar/CalendarPortabilityDialog.tsx`
 
@@ -1518,6 +1886,11 @@ build if the committed copy differs, so it is always current.
 - Import target calendar
 - Import calendar file
 - Import result
+- Subscribe URL copied
+- Could not copy. Select the URL and copy manually
+- Choose a .ics file to import
+- Choose a calendar to import into
+- Imported {} · skipped {} duplicate{}
 
 ## `frontend/src/components/calendar/CalendarProposalsPanel.tsx`
 
@@ -1532,6 +1905,14 @@ build if the committed copy differs, so it is always current.
 - Accept
 - Dismiss
 - Edit
+- Extraction confidence: {}
+- Source event {}
+- Proposal no longer exists. It was already resolved.
+- Proposal was already resolved and could not be {}.
+- Failed to {} the proposal.
+- Proposal accepted. Event added to the Butlers calendar.
+- Proposal dismissed.
+- End time must be after the start time.
 
 ## `frontend/src/components/calendar/ConflictRadarBanner.tsx`
 
@@ -1546,6 +1927,7 @@ build if the committed copy differs, so it is always current.
 - People
 - Searching…
 - No matches.
+- Remove {}
 - Search people to link…
 - People search
 
@@ -1557,12 +1939,17 @@ build if the committed copy differs, so it is always current.
 - Nothing scheduled across your domains. Tomorrow is clear.
 - Day briefing
 
+## `frontend/src/components/calendar/LinkedPeopleAvatars.tsx`
+
+- Linked people: {}
+
 ## `frontend/src/components/calendar/MeetingPrepRail.tsx`
 
 - Last met
 - Recent messages
 - Meeting prep
 - Loading…
+- Dunbar tier {}
 - No relationship tier
 
 ## `frontend/src/components/chat/ChatPanel.tsx`
@@ -1574,13 +1961,18 @@ build if the committed copy differs, so it is always current.
 - New
 - Start a conversation
 - New conversation
+- Expand sidebar
+- Collapse sidebar
 - Search...
 - Clear search
 - No conversations yet.
+- No results found.
+- Start a conversation below.
 
 ## `frontend/src/components/chat/ConversationReadError.tsx`
 
 - Try again
+- {} Try again.
 
 ## `frontend/src/components/chat/FloatingChatWidget.tsx`
 
@@ -1593,10 +1985,17 @@ build if the committed copy differs, so it is always current.
 - Close chat
 - Close
 - conversation history
+- Talk to Butlers (new reply)
 
 ## `frontend/src/components/chat/MessageInput.tsx`
 
 - Type a message...
+- Stopping…
+- Stop generation
+- Preparing stop control…
+- Stopping this turn
+- Stop this turn
+- Preparing stop control
 - Send message
 
 ## `frontend/src/components/chat/MessageThread.tsx`
@@ -1624,6 +2023,7 @@ build if the committed copy differs, so it is always current.
 - no usual yet
 - Balance is not settled yet for this day.
 - No lane activity recorded for this day.
+- {} balance
 - Loading balance
 - Balance vs usual
 
@@ -1650,7 +2050,9 @@ build if the committed copy differs, so it is always current.
 - Lived
 - Day ribbon
 - Planned calendar blocks (intent)
+- Planned · {}
 - Lived activity blocks
+- {}. Show evidence chain.
 
 ## `frontend/src/components/chronicles/EpisodeDrawer.tsx`
 
@@ -1706,6 +2108,8 @@ build if the committed copy differs, so it is always current.
 - Map
 - Show map
 - Location map
+- Shrink map
+- Expand map
 - Minimize map
 
 ## `frontend/src/components/chronicles/GanttSwimlane.tsx`
@@ -1724,8 +2128,10 @@ build if the committed copy differs, so it is always current.
 - No activity recorded for this window.
 - = windowStartMs && cursorMs
 - No data this period
+- Private activity
 - Filter Gantt categories
 - Gantt timeline
+- {}: no data this period
 
 ## `frontend/src/components/chronicles/ManualRefreshButton.tsx`
 
@@ -1749,14 +2155,22 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/chronicles/RecentDaysIndex.tsx`
 
 - No prior days projected yet.
+- View {}
 
 ## `frontend/src/components/chronicles/SourceStateBadgeStrip.tsx`
 
 - : has recent error
 - : no recent data
 - Adapter planned; not yet implemented
+- {}: active with recent error
+- {}: active
+- {}: no recent data
+- {}: planned
+- {}: deferred
 - Source state
 - Source adapter state
+- Hide deferred lanes
+- Show deferred lanes
 
 ## `frontend/src/components/chronicles/StreakCallouts.tsx`
 
@@ -1794,6 +2208,10 @@ build if the committed copy differs, so it is always current.
 - Declare a schedule
 - Days of the week
 - e.g. Work at Acme
+- Disable
+- Enable
+- Edit {}
+- Delete {}
 - Work schedule
 
 ## `frontend/src/components/costs/CostStripeChart.tsx`
@@ -1881,6 +2299,7 @@ build if the committed copy differs, so it is always current.
 - Next Review
 - Quiz History
 - Node detail panel
+- Concept type: {}
 - Close node details
 
 ## `frontend/src/components/education/NodeSourceAnnotations.tsx`
@@ -1908,6 +2327,7 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/education/ReviewTimeline.tsx`
 
 - No reviews scheduled. Keep learning and reviews will appear here.
+- Open {} in {}
 
 ## `frontend/src/components/education/StrugglingNodesCard.tsx`
 
@@ -1936,6 +2356,9 @@ build if the committed copy differs, so it is always current.
 - Cancel
 - e.g. Hypertension
 - Anything worth remembering about this condition.
+- Name is required.
+- Condition updated.
+- Condition added.
 
 ## `frontend/src/components/health/ConditionTracker.tsx`
 
@@ -1946,10 +2369,15 @@ build if the committed copy differs, so it is always current.
 - Nothing on record yet. Add a condition above, or tell your Health butler.
 - Previous
 - Next
+- Edit {}
+- Delete {}
+- Condition deleted.
+- Failed to delete condition.
 
 ## `frontend/src/components/health/HealthLedgerIndex.tsx`
 
 - Health ledger
+- View {}
 
 ## `frontend/src/components/health/MealForm.tsx`
 
@@ -1964,6 +2392,9 @@ build if the committed copy differs, so it is always current.
 - Cancel
 - e.g. Grilled chicken salad
 - Anything worth remembering about this meal.
+- Description is required.
+- Meal updated.
+- Meal logged.
 
 ## `frontend/src/components/health/MealTracker.tsx`
 
@@ -1977,7 +2408,11 @@ build if the committed copy differs, so it is always current.
 - Nothing logged yet. Log a meal above, or tell your Health butler.
 - Previous
 - Next
+- Edit {}
+- Delete {}
 - Filter by meal type
+- Meal deleted.
+- Failed to delete meal.
 
 ## `frontend/src/components/health/MeasurementChart.tsx`
 
@@ -1993,6 +2428,11 @@ build if the committed copy differs, so it is always current.
 - Measurement chart types
 - Measurement type
 - Measurement trend
+- {} trend
+- no change
+- trending up
+- trending down
+- {} readings
 
 ## `frontend/src/components/health/MeasurementForm.tsx`
 
@@ -2005,7 +2445,14 @@ build if the committed copy differs, so it is always current.
 - Cancel
 - e.g. 120
 - e.g. 80
+- e.g. value in {}
 - Anything worth remembering about this reading.
+- Value must be a valid JSON object.
+- Systolic and diastolic are required.
+- A numeric value is required.
+- Measurement updated.
+- Choose a supported measurement type.
+- Measurement logged.
 
 ## `frontend/src/components/health/MeasurementTracker.tsx`
 
@@ -2020,8 +2467,12 @@ build if the committed copy differs, so it is always current.
 - That reading-log link has invalid type or date filters.
 - Previous
 - Next
+- Edit {}
+- Delete {}
 - Filter by type
 - Measurement types
+- Measurement deleted.
+- Failed to delete measurement.
 
 ## `frontend/src/components/health/MedicationForm.tsx`
 
@@ -2037,6 +2488,9 @@ build if the committed copy differs, so it is always current.
 - e.g. daily
 - Comma-separated times, e.g. 08:00, 20:00
 - Anything worth remembering about this medication.
+- Name, dosage, and frequency are required.
+- Medication updated.
+- Medication added.
 
 ## `frontend/src/components/health/MedicationTracker.tsx`
 
@@ -2055,7 +2509,20 @@ build if the committed copy differs, so it is always current.
 - All
 - Add medication
 - Adherence
+- Log a skipped dose for {}
+- Log dose for {}
+- Edit {}
+- Delete {}
+- {} dose history for {}
+- Hide
+- Show
 - Filter medications
+- Dose recorded as skipped.
+- Dose logged.
+- Failed to record dose.
+- Medication deleted.
+- Failed to delete medication.
+- Failed to log dose.
 
 ## `frontend/src/components/health/ResearchForm.tsx`
 
@@ -2067,6 +2534,10 @@ build if the committed copy differs, so it is always current.
 - e.g. Magnesium and sleep
 - Summary, findings, or notes about this research.
 - comma, separated, tags
+- Title is required.
+- Content is required.
+- Research note updated.
+- Research note added.
 
 ## `frontend/src/components/health/ResearchTracker.tsx`
 
@@ -2081,7 +2552,11 @@ build if the committed copy differs, so it is always current.
 - Nothing saved yet. Add a research note above, or tell your Health butler.
 - Previous
 - Next
+- Edit {}
+- Delete {}
 - Search research...
+- Research note deleted.
+- Failed to delete research note.
 
 ## `frontend/src/components/health/SymptomForm.tsx`
 
@@ -2092,6 +2567,9 @@ build if the committed copy differs, so it is always current.
 - Cancel
 - e.g. Headache
 - Anything worth remembering about this symptom.
+- Name is required.
+- Symptom updated.
+- Symptom logged.
 
 ## `frontend/src/components/health/SymptomTracker.tsx`
 
@@ -2105,7 +2583,11 @@ build if the committed copy differs, so it is always current.
 - Nothing logged yet. Log a symptom above, or tell your Health butler.
 - Previous
 - Next
+- Edit {}
+- Delete {}
 - Filter by name...
+- Symptom deleted.
+- Failed to delete symptom.
 
 ## `frontend/src/components/ingestion/BatchSettingsCard.tsx`
 
@@ -2139,21 +2621,48 @@ build if the committed copy differs, so it is always current.
 - search events…
 - Search events
 - Clear search
+- Filters differ from this view. Click to re-apply it
 - Filters differ from this saved view
+- Filters differ from "{}". Click to re-apply it
+- Delete saved view: {}
+- Delete "{}"
+- Update "{}" with the current filters
 - Save current filter combination as a named view
+- Remove channel filter: {}
 - Add channel filter
+- Select all {} eligible visible event{} (max {})
+- Select at most {} events at once
+- Replaying…
+- Replay selected events
 - Copy selected event IDs to clipboard
 - Remove the email/replay-unsafe events from the selection
 - Connectors requiring attention
+- Select event
+- Filter by {}
+- {} session cost unavailable
+- {} session{} recorded no token usage
+- Replay
+- Replay unavailable: {}
 - hour histogram
 - Filter window aggregate counts
 - window rollup
 - View name…
+- {} event{} queued for replay
+- Clipboard API not available (requires HTTPS or localhost)
+- Failed to copy IDs to clipboard
+- Replay request failed
+- Saved view updated
+- Failed to update view
+- Saved view "{}" created
+- Failed to save view
+- Saved view deleted
+- Failed to delete view
 
 ## `frontend/src/components/ingestion/connectors/ArchiveCandidatesList.tsx`
 
 - review · suggested for archiving
 - Archive failed. The identity was not archived. Try again.
+- Archiving {}
 
 ## `frontend/src/components/ingestion/connectors/ArchivedConnectorsList.tsx`
 
@@ -2199,6 +2708,9 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/ingestion/connectors/ConnectorRosterRow.tsx`
 
 - last · never
+- Open {} connector detail
+- Re-authorize {}
+- Open {} pairing
 
 ## `frontend/src/components/ingestion/connectors/ConnectorsRoster.tsx`
 
@@ -2219,6 +2731,10 @@ build if the committed copy differs, so it is always current.
 
 - checkpoints · owner unresolved
 
+## `frontend/src/components/ingestion/filters/ArchivedRulesSection.tsx`
+
+- Restore rule {}
+
 ## `frontend/src/components/ingestion/filters/ChannelDefaultsBlock.tsx`
 
 - loading current policy…
@@ -2229,6 +2745,7 @@ build if the committed copy differs, so it is always current.
 - No channel defaults configured.
 - e.g. 30
 - Channel defaults
+- Edit default for {}
 
 ## `frontend/src/components/ingestion/filters/FiltersPipeline.tsx`
 
@@ -2247,6 +2764,7 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/ingestion/filters/GateSection.tsx`
 
 - loading…
+- {} rules
 
 ## `frontend/src/components/ingestion/filters/PipelineGateDiagram.tsx`
 
@@ -2263,6 +2781,7 @@ build if the committed copy differs, so it is always current.
 - No priority senders configured.
 - name · handle
 - no email fact: entry matches nothing
+- Remove priority sender {}
 - This contact has no email address in the system. The Gmail policy evaluator resolves priority senders via a linked entity with a has-email fact. Without one, this entry matches nothing.
 
 ## `frontend/src/components/ingestion/filters/RuleEditor.tsx`
@@ -2284,6 +2803,8 @@ build if the committed copy differs, so it is always current.
 - e.g. spotify:acct-1
 - header name
 - e.g. List-Unsubscribe
+- exact value
+- substring to match
 - mime type
 - e.g. text/calendar or image/*
 - chat id
@@ -2293,6 +2814,7 @@ build if the committed copy differs, so it is always current.
 - alerts@example.com
 - source channel
 - spotify:acct-1
+- List-Unsubscribe: <mailto:unsub@example.com> X-Mailer: Outlook
 - mime parts (comma-separated)
 - text/calendar, image/png
 - raw key (optional)
@@ -2304,12 +2826,17 @@ build if the committed copy differs, so it is always current.
 - e.g. finance
 - description (optional)
 - Why this rule exists
-- List-Unsubscribe: <mailto:unsub@example.com>\nX-Mailer: Outlook
 
 ## `frontend/src/components/ingestion/filters/RuleRow.tsx`
 
 - delete?
+- {} rule {}
+- Disable
+- Enable
+- Edit rule {}
+- Confirm delete rule {}
 - Cancel delete
+- Delete rule {}
 
 ## `frontend/src/components/ingestion/timeline/EventDrawer.tsx`
 
@@ -2333,6 +2860,7 @@ build if the committed copy differs, so it is always current.
 - Event detail drawer
 - Close drawer
 - copy id
+- Replay request failed
 
 ## `frontend/src/components/ingestion/timeline/HourFlameStrip.tsx`
 
@@ -2351,6 +2879,10 @@ build if the committed copy differs, so it is always current.
 - Could not load issues.
 - The issues feed is unavailable right now. Retrying automatically; check the backend if this persists.
 - Issues feed
+- No acknowledged issues in {}.
+- No issues in {}.
+- Issues you acknowledge appear here until they recur, or you restore them.
+- This view is scoped: widen the window or clear the filters to look further back.
 
 ## `frontend/src/components/layout/EntityFinder.tsx`
 
@@ -2366,6 +2898,15 @@ build if the committed copy differs, so it is always current.
 - Search entities, pages, butlers, actions…
 - Sessions & state
 - Entities
+
+## `frontend/src/components/layout/GlobalActionsRegistrar.tsx`
+
+- Started {}
+- Failed to run {}
+
+## `frontend/src/components/layout/LiveIndicator.tsx`
+
+- Fleet event stream: {}
 
 ## `frontend/src/components/layout/PageHeader.tsx`
 
@@ -2415,6 +2956,9 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/memory/FactsRegister.tsx`
 
 - , so it CANNOT be a real
+- Fact: {} {}
+- from episode {}
+- Source {}
 - the ledger
 
 ## `frontend/src/components/memory/HousekeepingBand.tsx`
@@ -2460,6 +3004,7 @@ build if the committed copy differs, so it is always current.
 
 ## `frontend/src/components/memory/RulesRegister.tsx`
 
+- Rule: {}
 - standing orders
 
 ## `frontend/src/components/memory/SearchResults.tsx`
@@ -2498,12 +3043,20 @@ build if the committed copy differs, so it is always current.
 - Undo
 - Retry
 - Attention items
+- Severity: {}
+- View: {}
+
+## `frontend/src/components/overview/BriefingStatus.tsx`
+
+- Briefing status: {}. Click to refresh.
 
 ## `frontend/src/components/overview/ButlerIndex.tsx`
 
 - Butler health source unavailable.
 - No butlers active.
 - Operations
+- View {}
+- {} sessions in the last 24 hours
 
 ## `frontend/src/components/overview/KpiStrip.tsx`
 
@@ -2513,6 +3066,8 @@ build if the committed copy differs, so it is always current.
 
 - Internal
 - Nothing scheduled.
+- Hide internal activity
+- Show internal activity
 - Operations now
 
 ## `frontend/src/components/overview/RuntimeSummaryKpi.tsx`
@@ -2538,13 +3093,24 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/qa/CaseDossierHeader.tsx`
 
 - remove dismissal
+- {} severity
 - Dismiss case
 - Retry investigation
 - Remove dismissal
+- Case dismissed.
+- Dismiss failed: {}
+- Unknown error
+- Investigation re-dispatched.
+- Retry queued.
+- Retry failed: {}
 
 ## `frontend/src/components/qa/CaseList.tsx`
 
 - QA cases
+- {} severity
+- PR {}
+- No PR
+- Open {} linked session trace{} for QA case {}
 
 ## `frontend/src/components/qa/CounterEvidence.tsx`
 
@@ -2580,16 +3146,19 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/qa/SessionDoors.tsx`
 
 - Session trace · investigation &amp; failing sessions
+- Open {} session {}
 - Session trace
 
 ## `frontend/src/components/qa/StateTrack.tsx`
 
 - · escalated
 - · failed
+- QA state: {}
 
 ## `frontend/src/components/relationship/ActivitySparkline.tsx`
 
 - No activity in the last 90 days.
+- Activity over the last {} days: {} events across {} days
 
 ## `frontend/src/components/relationship/CirclesPage.tsx`
 
@@ -2610,11 +3179,13 @@ build if the committed copy differs, so it is always current.
 - e.g. VIP
 - #e63946
 - Assign label
+- Remove label {}
 - Circles
 - Contact groups maintained by the relationship butler; manage their labels here.
 - Search circles
 - Search circles…
 - No circles yet.
+- Ask the relationship butler to create one (e.g. "group my family"); circles appear here as the butler organizes contacts into groups.
 
 ## `frontend/src/components/relationship/ConcentrationPage.tsx`
 
@@ -2623,12 +3194,19 @@ build if the committed copy differs, so it is always current.
 - (e.share != null && e.share
 - Retry
 - Predicate filter
+- {} entities
+- Open {}
+- Rank {}
+- Weight {} of {}
+- Weight sum: {}
+- Fact count: {}
 - total touches
 - top entity
 - tail < 1%
 - Could not load concentration data
 - Owner access is required, or no relational predicates are registered.
 - No entities yet.
+- No active triples found for predicate "{}". They will appear here once the butler builds the knowledge graph.
 - Concentration
 - Balance-sheet of relationship weight by predicate. See which entities dominate each relationship type.
 
@@ -2651,8 +3229,23 @@ build if the committed copy differs, so it is always current.
 - Cancel
 - Unverified: owner has not confirmed this channel
 - Mark as verified
+- Edit
+- Edit (secured values cannot be edited inline)
 - Delete
 - Legacy channel: no entity-keyed write path available (read-only)
+- Failed to reveal secret.
+- Marked {} as verified.
+- Failed to verify: {}
+- Unknown error
+- Value cannot be empty.
+- Updated {} entry.
+- Failed to update: {}
+- Deleted {} entry.
+- Failed to delete: {}
+- Added {} entry.
+- Failed to add: {}
+- Preferred channel cleared.
+- Preferred channel updated.
 
 ## `frontend/src/components/relationship/CoreDatesBlock.tsx`
 
@@ -2687,8 +3280,16 @@ build if the committed copy differs, so it is always current.
 - Previous
 - Next
 - Queue
+- Promote {}
 - Promote
+- Archive {}
+- Cannot archive owner
+- Delete {}
+- Cannot delete owner
+- Delete
+- Dismiss {}
 - Dismiss
+- Merge {}
 - Search merge target
 - Search target entity
 - Search failed.
@@ -2696,15 +3297,32 @@ build if the committed copy differs, so it is always current.
 - No entities found.
 - Entities appear as the butler builds the knowledge graph.
 - Select
+- Select {}
 - Duplicate candidate
 - Stale
+- Compare {} with {}
+- Open {}
 - Full name or organisation name
 - Entities
 - Browse the relationship graph: people, organizations, and more.
 - Search entities
 - Search entities…
+- Compare and merge the two selected
+- Select exactly two to merge
 - Entity list
 - Curation queue
+- Promoted {}
+- Promote failed: {}
+- Unknown error
+- Archived {}
+- Archive failed: {}
+- Deleted {}
+- Forget failed: {}
+- Dismissed {}
+- Dismiss failed: {}
+- Created entity "{}"
+- Create failed: {}
+- {} failed for {} {}: {}
 
 ## `frontend/src/components/relationship/EntityVerbRail.tsx`
 
@@ -2739,10 +3357,16 @@ build if the committed copy differs, so it is always current.
 - Review merge
 - Cancel
 - Confirm merge
+- Keep {}
 - Identity facts
 - Narrative facts
 - Shared evidence
 - Divergences
+- Merged {} into {}
+- Merge failed: {}
+- Unknown error
+- Dismissed. Pair removed from the duplicate queue.
+- Dismiss failed: {}
 
 ## `frontend/src/components/relationship/OwnerSetupBanner.tsx`
 
@@ -2760,6 +3384,9 @@ build if the committed copy differs, so it is always current.
 - Owner contact facts
 - Jane Doe
 - @username
+- Please fill in at least one field.
+- Owner identity updated.
+- Failed to save identity: {}
 
 ## `frontend/src/components/relationship/PlexPage.tsx`
 
@@ -2780,11 +3407,20 @@ build if the committed copy differs, so it is always current.
 - Failed to load the graph.
 - No relational facts yet. The record view may hold more.
 - reset view
+- Center plex on {}
+- {} more {} neighbours on the record
 - Hop trail
+- {} dossier
+- Open {}
 - Entities
 - The life graph, centered on you. Click a mark to hop; the trail keeps the way back.
 - Life graph plex
 - Organizations, places & things
+- Pinned {} to {}
+- Pin failed: {}
+- Unknown error
+- Cleared pin for {}
+- Unpin failed: {}
 
 ## `frontend/src/components/relationship/PracticalDrawer.tsx`
 
@@ -2802,6 +3438,11 @@ build if the committed copy differs, so it is always current.
 - Last interaction
 - Last 30 days
 - Open loops
+- Dunbar tier pin cleared.
+- Pinned to {}.
+- tier {}
+- Failed to update tier: {}
+- Unknown
 
 ## `frontend/src/components/relationship/SubpageTabs.tsx`
 
@@ -2828,6 +3469,7 @@ build if the committed copy differs, so it is always current.
 - Done
 - Telegram session ready
 - Telegram credential status
+- Telegram session created successfully!
 
 ## `frontend/src/components/schedules/ScheduleForm.tsx`
 
@@ -2873,6 +3515,7 @@ build if the committed copy differs, so it is always current.
 - |s:
 - |c:
 - probe all
+- Probe all {} credentials
 
 ## `frontend/src/components/secrets/passport/GoogleAppCredentials.tsx`
 
@@ -2882,6 +3525,8 @@ build if the committed copy differs, so it is always current.
 - client secret
 - enter a new client secret
 - refresh token
+- Google app credentials saved.
+- Could not save Google credentials.
 
 ## `frontend/src/components/secrets/passport/ProviderConfigDrawer.tsx`
 
@@ -2914,14 +3559,18 @@ build if the committed copy differs, so it is always current.
 - last sync
 - Disconnect WhatsApp? Removes pairing and all stored credentials.
 - Home Assistant
+- Dismiss {} setup
+- not configured
 - paste long-lived access token
 - Telegram
 - OwnTracks
 - Steam Web API key
 - Steam
+- needs auth
 - Spotify app client_id
 - Spotify
 - WhatsApp pairing QR code
+- pair required
 - WhatsApp
 
 ## `frontend/src/components/secrets/passport/Spine.tsx`
@@ -3016,7 +3665,9 @@ build if the committed copy differs, so it is always current.
 - paste token here
 - paste value here
 - paste override value here
+- paste api key here
 - SECRET_KEY_NAME
+- credential value
 - human-readable label
 
 ## `frontend/src/components/sessions/SessionDetailDrawer.tsx`
@@ -3072,6 +3723,8 @@ build if the committed copy differs, so it is always current.
 - No sessions found.
 - Sessions appear as butlers process triggers and scheduled tasks.
 - Session list
+- Open session detail for {}: {}
+- Filter sessions by request ID {}
 
 ## `frontend/src/components/sessions/SessionsKpiStrip.tsx`
 
@@ -3085,9 +3738,11 @@ build if the committed copy differs, so it is always current.
 - Loading error detail…
 - Error detail temporarily unavailable.
 - Retry error detail
+- Open session detail for {}: {}
 - Pinned sessions
 - Running sessions
 - Recent failures
+- Retry error detail for {}
 
 ## `frontend/src/components/sessions/StatusBadge.tsx`
 
@@ -3097,6 +3752,7 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/sessions/ToolCallTimeline.tsx`
 
 - No tool calls recorded.
+- Tool call outcome: {}
 - Arguments
 - Result
 - Error
@@ -3113,14 +3769,21 @@ build if the committed copy differs, so it is always current.
 - No repositories whitelisted.
 - Remove
 - QA Staffer settings
+- QA staffer configured
+- QA staffer needs setup
 - QA repository URL
 - Sync QA repository
 - GitHub token · BUTLERS_QA_GH_TOKEN
 - Git author name · BUTLERS_QA_GIT_AUTHOR_NAME
 - Git author email · BUTLERS_QA_GIT_AUTHOR_EMAIL
 - Git author name
+- Name set · enter to replace
 - Git author email
+- Email set · enter to replace
+- qa@example.com
 - Save git author identity
+- Toggle {}/{}
+- Remove {}/{}
 - Add allowed repository
 
 ## `frontend/src/components/skeletons/chart-skeleton.tsx`
@@ -3200,6 +3863,11 @@ build if the committed copy differs, so it is always current.
 - Butler Heartbeats
 - Failed to load heartbeat data.
 - No butlers registered.
+- View {}
+- Liveness: {}
+- {}: tick triggered
+- {}: tick did not complete successfully
+- Failed to trigger tick for {}
 
 ## `frontend/src/components/system/DbSizeTile.tsx`
 
@@ -3317,6 +3985,10 @@ build if the committed copy differs, so it is always current.
 - Older timeline events are temporarily unavailable.
 - Retry older events
 - View session
+- {}{}. {} details
+- , {} failed
+- Hide
+- Show
 - No events found.
 - Events appear as butlers process sessions and deliver notifications.
 - Timeline data is partially unavailable.
@@ -3365,6 +4037,13 @@ build if the committed copy differs, so it is always current.
 - sha256:7a3f…
 - BUTLER_TELEGRAM_TOKEN
 
+## `frontend/src/components/ui/Provenance.tsx`
+
+- Staleness: {}
+- Source: {}
+- Verified
+- Unverified
+
 ## `frontend/src/components/ui/Row.tsx`
 
 - Alice Johnson
@@ -3372,8 +4051,12 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/ui/RowLink.tsx`
 
 - inside an
-- //   - `hasNestedInteractive`: renders a `
-- *     ...cell content, including a nested
+- // - `hasNestedInteractive`: renders a `
+- * ...cell content, including a nested
+
+## `frontend/src/components/ui/TierBadge.tsx`
+
+- Tier {}
 
 ## `frontend/src/components/ui/Title.tsx`
 
@@ -3396,6 +4079,17 @@ build if the committed copy differs, so it is always current.
 ## `frontend/src/components/ui/dialog.tsx`
 
 - Close
+
+## `frontend/src/components/ui/dispatch-verdict.tsx`
+
+- Loading {}
+- {} needs attention
+
+## `frontend/src/components/ui/expandable-detail.tsx`
+
+- Hide full {}
+- Show full {}
+- Full {}
 
 ## `frontend/src/components/ui/inline-action-link.tsx`
 
@@ -3450,4 +4144,4 @@ build if the committed copy differs, so it is always current.
 - Preset windows
 
 ---
-*Total strings: 2605*
+*Total strings: 3243*
