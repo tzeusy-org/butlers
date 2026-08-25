@@ -3,7 +3,8 @@
 Provides the complete teaching flow lifecycle:
 - teaching_flow_start: creates mind map, initializes and advances to DIAGNOSING
 - teaching_flow_get: reads current flow state from KV store
-- teaching_flow_advance: drives the state machine through all transitions
+- teaching_flow_advance: drives the state machine through all transitions, recording
+  the pedagogical technique the next concept's type calls for
 - teaching_flow_abandon: marks flow abandoned, cleans up review schedules
 - teaching_flow_list: lists flows with optional status filter, including mastery_pct
 - assemble_session_context: builds structured context for ephemeral sessions
@@ -45,6 +46,7 @@ from butlers.core.state import (
 from butlers.tools.education.mastery import mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_create, mind_map_update_status
+from butlers.tools.education.pedagogy import is_technique, technique_for_node
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ def _initial_flow_state(mind_map_id: str) -> dict[str, Any]:
         "mind_map_id": mind_map_id,
         "current_node_id": None,
         "current_phase": None,
+        "current_technique": None,
         "diagnostic_results": {},
         "session_count": 0,
         "started_at": now,
@@ -118,6 +121,7 @@ def _validate_state_invariants(state: dict[str, Any]) -> None:
     status = state.get("status", "")
     node_id = state.get("current_node_id")
     phase = state.get("current_phase")
+    technique = state.get("current_technique")
 
     if status in _NODE_REQUIRED_STATES and node_id is None:
         raise ValueError(f"current_node_id must be non-null when status is {status!r}")
@@ -126,14 +130,32 @@ def _validate_state_invariants(state: dict[str, Any]) -> None:
     if status not in _PHASE_REQUIRED_STATES and phase is not None:
         # current_phase must be null in all other states
         raise ValueError(f"current_phase must be null when status is {status!r}, got {phase!r}")
+    if status not in _PHASE_REQUIRED_STATES and technique is not None:
+        # A technique outlasting the teaching phase would have the next session
+        # explaining a choice it is no longer acting on.
+        raise ValueError(
+            f"current_technique must be null when status is {status!r}, got {technique!r}"
+        )
+    if technique is not None and not is_technique(technique):
+        raise ValueError(f"current_technique is not a known technique: {technique!r}")
 
 
-async def _determine_next_node(pool: asyncpg.Pool, mind_map_id: str) -> str | None:
-    """Return the ID of the highest-priority frontier node, or None."""
+async def _determine_next_node(pool: asyncpg.Pool, mind_map_id: str) -> dict[str, Any] | None:
+    """Return the highest-priority frontier node, or None when there is none.
+
+    The whole node is returned rather than its ID because entering TEACHING also
+    needs its ``metadata.concept_type`` to pick a technique.
+    """
     nodes = await mind_map_frontier(pool, mind_map_id)
-    if nodes:
-        return str(nodes[0]["id"])
-    return None
+    return nodes[0] if nodes else None
+
+
+def _enter_teaching(state: dict[str, Any], node: dict[str, Any]) -> None:
+    """Point flow *state* at *node* in the TEACHING status, technique and all."""
+    state["status"] = "teaching"
+    state["current_node_id"] = str(node["id"])
+    state["current_phase"] = "explaining"
+    state["current_technique"] = technique_for_node(node)
 
 
 async def _all_nodes_mastered(pool: asyncpg.Pool, mind_map_id: str) -> bool:
@@ -289,10 +311,16 @@ async def teaching_flow_advance(
     Computes the valid next state based on the current state and frontier,
     writes the new state atomically (CAS), and returns the updated state.
 
+    Entering TEACHING also records ``current_technique`` — the evidence-based
+    technique the concept's ``metadata.concept_type`` calls for, with the
+    principle behind it, because the ephemeral teaching session reads the flow
+    state and nothing else. It is cleared on every other transition.
+
     Valid transitions:
     - pending → diagnosing
     - diagnosing → planning
-    - planning → teaching (sets current_node_id from frontier, phase=explaining)
+    - planning → teaching (sets current_node_id from frontier, phase=explaining,
+      current_technique from the node's concept_type)
     - teaching → quizzing (clears current_phase)
     - quizzing → teaching (if frontier has unmastered nodes)
     - quizzing → reviewing (if no frontier nodes but not all mastered)
@@ -338,27 +366,28 @@ async def teaching_flow_advance(
         new_state["status"] = "diagnosing"
         new_state["current_node_id"] = None
         new_state["current_phase"] = None
+        new_state["current_technique"] = None
 
     elif current_status == "diagnosing":
         new_state["status"] = "planning"
         new_state["current_node_id"] = None
         new_state["current_phase"] = None
+        new_state["current_technique"] = None
 
     elif current_status == "planning":
         # Advance to teaching: find first frontier node
-        next_node_id = await _determine_next_node(pool, mind_map_id)
-        if next_node_id is None:
+        next_node = await _determine_next_node(pool, mind_map_id)
+        if next_node is None:
             raise ValueError(
                 f"Cannot advance from planning to teaching: no frontier nodes "
                 f"found for mind_map_id {mind_map_id!r}"
             )
-        new_state["status"] = "teaching"
-        new_state["current_node_id"] = next_node_id
-        new_state["current_phase"] = "explaining"
+        _enter_teaching(new_state, next_node)
 
     elif current_status == "teaching":
         new_state["status"] = "quizzing"
         new_state["current_phase"] = None
+        new_state["current_technique"] = None
         # current_node_id stays the same
 
     elif current_status == "quizzing":
@@ -367,18 +396,18 @@ async def teaching_flow_advance(
             new_state["status"] = "completed"
             new_state["current_node_id"] = None
             new_state["current_phase"] = None
+            new_state["current_technique"] = None
             # Update mind map to completed
             await mind_map_update_status(pool, mind_map_id, "completed")
         else:
-            next_node_id = await _determine_next_node(pool, mind_map_id)
-            if next_node_id is not None:
-                new_state["status"] = "teaching"
-                new_state["current_node_id"] = next_node_id
-                new_state["current_phase"] = "explaining"
+            next_node = await _determine_next_node(pool, mind_map_id)
+            if next_node is not None:
+                _enter_teaching(new_state, next_node)
             else:
                 # No frontier but not all mastered: go to reviewing
                 new_state["status"] = "reviewing"
                 new_state["current_phase"] = None
+                new_state["current_technique"] = None
                 # current_node_id unchanged
 
     elif current_status == "reviewing":
@@ -387,17 +416,17 @@ async def teaching_flow_advance(
             new_state["status"] = "completed"
             new_state["current_node_id"] = None
             new_state["current_phase"] = None
+            new_state["current_technique"] = None
             await mind_map_update_status(pool, mind_map_id, "completed")
         else:
-            next_node_id = await _determine_next_node(pool, mind_map_id)
-            if next_node_id is not None:
-                new_state["status"] = "teaching"
-                new_state["current_node_id"] = next_node_id
-                new_state["current_phase"] = "explaining"
+            next_node = await _determine_next_node(pool, mind_map_id)
+            if next_node is not None:
+                _enter_teaching(new_state, next_node)
             else:
                 # Remain in reviewing (no teachable frontier yet)
                 new_state["status"] = "reviewing"
                 new_state["current_phase"] = None
+                new_state["current_technique"] = None
 
     else:
         raise ValueError(f"Unknown flow status {current_status!r} for mind_map_id {mind_map_id!r}")
@@ -450,6 +479,7 @@ async def teaching_flow_abandon(
     new_state["status"] = "abandoned"
     new_state["last_session_at"] = _now_iso()
     new_state["current_phase"] = None
+    new_state["current_technique"] = None
 
     await _write_state_cas(pool, mind_map_id, new_state, expected_version=version)
 

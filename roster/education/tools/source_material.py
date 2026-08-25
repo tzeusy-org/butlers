@@ -18,6 +18,12 @@ from butlers.core.state import state_delete, state_list, state_set
 SOURCE_KEY_PREFIX = "education/source/"
 _SOURCE_TYPES = frozenset({"article", "book", "documentation", "paper"})
 
+# Where a ``source_refs`` entry's location came from: read out of the source
+# itself, or produced from the model's knowledge of it.  Defined here, next to
+# the registry the distinction is about, so the planner and the teaching session
+# cannot drift apart on the vocabulary (REQ-education-source-grounding-002).
+PROVENANCE_VALUES = frozenset({"referenced", "model-recalled"})
+
 
 def _normalise_required(value: Any, field: str) -> str:
     """Return a non-empty string field or raise a caller-actionable error."""

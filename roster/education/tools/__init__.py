@@ -54,6 +54,13 @@ from butlers.tools.education.mind_maps import (
     mind_map_list,
     mind_map_update_status,
 )
+from butlers.tools.education.pedagogy import (
+    DEFAULT_TECHNIQUE_ID,
+    select_technique,
+    teaching_cite_source,
+    teaching_reading_pathways,
+    technique_for_node,
+)
 from butlers.tools.education.spaced_repetition import (
     sm2_update,
     spaced_repetition_pending_reviews,
@@ -114,6 +121,12 @@ __all__ = [
     "curriculum_next_node",
     "classify_concept_type",
     "CONCEPT_TYPES",
+    # pedagogy
+    "select_technique",
+    "technique_for_node",
+    "teaching_cite_source",
+    "teaching_reading_pathways",
+    "DEFAULT_TECHNIQUE_ID",
     # teaching flows
     "teaching_flow_start",
     "teaching_flow_get",
