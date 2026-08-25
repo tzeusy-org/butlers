@@ -17,6 +17,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import PENDING_ACTIONS
 from butlers.tools.relationship.whatsapp_reconciliation import (
     ContentBlindReconciliationReport,
     PartialApplyError,
@@ -370,14 +371,9 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
                 reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
-            CREATE TABLE relationship.pending_actions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL
-            );
             """
         )
+        await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
         source_id = await conn.fetchval(
             """
             INSERT INTO public.entities (canonical_name, metadata)

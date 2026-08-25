@@ -16,6 +16,7 @@ import asyncpg
 import pytest
 
 import butlers.tools.relationship.whatsapp_reconciliation as reconciliation
+from butlers.testing.schema_standins import PENDING_ACTIONS
 from butlers.tools.relationship.entity_merge import (
     LockedEntityPair,
     LockedGuardRejected,
@@ -166,17 +167,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             )
             """
         )
-        await pool.execute(
-            """
-            CREATE TABLE relationship.pending_actions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                status TEXT NOT NULL,
-                requested_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
+        await pool.execute(PENDING_ACTIONS.ddl(schema="relationship"))
         await pool.execute(
             """
             CREATE TABLE reconciliation_test.arbitrary_entity_reference (
