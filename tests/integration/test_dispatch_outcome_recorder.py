@@ -600,8 +600,20 @@ async def test_the_fleet_halt_month_is_named_once_and_only_by_the_producer(
         assert re.search(r"'fleet_halt',\s*v_month\s*,", definition), (
             "the producer no longer writes v_month into fleet_halt_month"
         )
-        assert "date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month" in definition, (
-            "the producer no longer filters its ceiling-denial evidence by v_month"
+        assert "ts >= (v_month::timestamp AT TIME ZONE 'UTC')" in definition, (
+            "the producer no longer bounds its ceiling-denial evidence by v_month"
+        )
+        # The invariant is "one month expression", not "this exact predicate".
+        # bu-guxz8 widened the evidence window to a lower bound so a denial
+        # stamped across the UTC rollover still counts, and pinning the old
+        # equality text here would have made that fix look like a regression.
+        # What must not come back is a SECOND month derivation: the body may
+        # compute the month once, to define v_month, and every later use must
+        # read that variable.
+        assert definition.count("date_trunc('month'") == 1, (
+            "the producer derives the month more than once; bu-jxelx is a bug "
+            "about two month expressions disagreeing, so a second derivation "
+            "reopens it"
         )
 
         recorder_source = inspect.getsource(dispatch_outcomes)
