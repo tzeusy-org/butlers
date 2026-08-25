@@ -354,11 +354,13 @@ async def test_pipeline_stats_spark24h_from_range_query(app):
     assert body["spark24h"] == hourly_values
 
 
-async def test_pipeline_stats_spark24h_fallback_on_range_error(app):
-    """spark24h falls back to uniform distribution when the range query returns an error.
+async def test_pipeline_stats_spark24h_range_error_degrades(app):
+    """A range-query error lowers aggregates_available instead of inventing a shape.
 
-    The endpoint must still return 200 with aggregates_available=true because the
-    instant queries (ingested, filtered, …) did succeed.
+    Before bu-0m31b the handler filled the sparkline uniformly from the
+    ingested total and left aggregates_available=true, so the dashboard drew a
+    flat 24-bucket line that Prometheus never reported.  An unreadable
+    sparkline is unknown, not flat.
     """
     from butlers.api.routers import ingestion_pipeline as _pip_mod
 
@@ -392,20 +394,62 @@ async def test_pipeline_stats_spark24h_fallback_on_range_error(app):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["aggregates_available"] is True
-    assert len(body["spark24h"]) == 24
-    # Should be uniform distribution: 48 // 24 = 2 per bucket.
-    assert body["spark24h"] == [2] * 24
+    assert body["aggregates_available"] is False, (
+        "an unreadable sparkline matrix must lower the flag, not fill uniformly"
+    )
+    assert body["spark24h"] == [0] * 24
+    assert body["ingested"] == 0
 
 
-async def test_pipeline_stats_spark24h_fallback_on_empty_matrix(app):
-    """spark24h falls back to uniform distribution when the range query returns an empty matrix."""
+async def test_pipeline_stats_spark24h_unusable_matrix_shape_degrades(app):
+    """A matrix element with no ``values`` key is unreadable, not zero."""
     from butlers.api.routers import ingestion_pipeline as _pip_mod
 
     _pip_mod._pipeline_cache.clear()
 
     def _prom_result(value: float):
         return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(48.0),  # ingested
+                _prom_result(0.0),  # filtered
+                _prom_result(0.0),  # errored
+                [],  # routed
+                _prom_result(0.0),  # rate1h
+                _prom_result(0.0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}}],  # matrix element without "values"
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["spark24h"] == [0] * 24
+
+
+async def test_pipeline_stats_spark24h_unparseable_bucket_degrades(app):
+    """A bucket value Prometheus reports as NaN is unknown, not zero."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    buckets = [[1234560000 + i * 3600, "1"] for i in range(24)]
+    buckets[7] = [1234560000 + 7 * 3600, "NaN"]
 
     with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
         with patch(
@@ -423,6 +467,48 @@ async def test_pipeline_stats_spark24h_fallback_on_empty_matrix(app):
             with patch(
                 "butlers.api.routers.ingestion_pipeline.async_query_range",
                 new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": buckets}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["spark24h"] == [0] * 24
+
+
+async def test_pipeline_stats_spark24h_empty_matrix_reads_as_zero(app):
+    """An empty result set is a real Prometheus answer: no series, so no events.
+
+    This is the one case that legitimately produces zeros with the flag still
+    true — Prometheus was reached, answered, and the answer was "nothing".
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                [],  # ingested — empty vector, a truthful zero
+                [],  # filtered
+                [],  # errored
+                [],  # routed
+                [],  # rate1h
+                [],  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
                 return_value=[],  # empty matrix
             ):
                 async with httpx.AsyncClient(
@@ -433,9 +519,253 @@ async def test_pipeline_stats_spark24h_fallback_on_empty_matrix(app):
     assert resp.status_code == 200
     body = resp.json()
     assert body["aggregates_available"] is True
-    assert len(body["spark24h"]) == 24
-    # Uniform distribution: 24 // 24 = 1 per bucket.
-    assert body["spark24h"] == [1] * 24
+    assert body["ingested"] == 0
+    assert body["spark24h"] == [0] * 24
+
+
+async def test_pipeline_stats_unparseable_scalar_degrades(app):
+    """A well-formed response carrying an unparseable scalar lowers the flag.
+
+    Before bu-0m31b ``_extract_scalar`` swallowed the parse failure and
+    returned ``0.0``, so "we could not read Prometheus" and "Prometheus said
+    zero" arrived on the wire as the same zero (bu-0m31b).
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("not-a-number"),  # ingested — unparseable
+                _prom_result("0"),  # filtered
+                _prom_result("0"),  # errored
+                [],  # routed
+                _prom_result("0"),  # rate1h
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False, (
+        "an unparseable scalar must lower the flag, not resolve to 0"
+    )
+    assert body["ingested"] == 0
+
+
+async def test_pipeline_stats_malformed_scalar_shape_degrades(app):
+    """A vector element with no ``value`` key is unreadable, not zero."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("10"),  # ingested
+                [{"metric": {}}],  # filtered — no "value" key
+                _prom_result("0"),  # errored
+                [],  # routed
+                _prom_result("0"),  # rate1h
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    assert resp.json()["aggregates_available"] is False
+
+
+async def test_pipeline_stats_nan_scalar_degrades(app):
+    """``NaN`` parses as a float but is not an observation — it must degrade."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("10"),  # ingested
+                _prom_result("0"),  # filtered
+                _prom_result("0"),  # errored
+                [],  # routed
+                _prom_result("NaN"),  # rate1h — no samples in the range
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["rate1h"] == 0.0
+
+
+async def test_pipeline_stats_rate1h_query_error_degrades(app):
+    """A Prometheus error on the rate1h query must not publish rate1h = 0.0.
+
+    Same shape as the ingested/filtered/errored queries, which already
+    degraded; rate1h, filtered24h and the routed breakdown did not (bu-0m31b).
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("100"),  # ingested
+                _prom_result("0"),  # filtered
+                _prom_result("0"),  # errored
+                [],  # routed
+                [{"error": "query timed out"}],  # rate1h
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["rate1h"] == 0.0
+
+
+async def test_pipeline_stats_routed_query_error_degrades(app):
+    """A failed routed breakdown must not publish routed_pct = 0.0.
+
+    routed_pct is derived from routed_by_butler; an empty breakdown caused by a
+    query error made a fully-routed funnel read as 0% routed.
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("100"),  # ingested
+                _prom_result("0"),  # filtered
+                _prom_result("0"),  # errored
+                [{"error": "connection refused"}],  # routed
+                _prom_result("0"),  # rate1h
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["routed_pct"] == 0.0
+    assert body["routed_by_butler"] == {}
+
+
+async def test_pipeline_stats_unparseable_routed_series_degrades(app):
+    """One unreadable butler series must not silently shrink routed_pct."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: str):
+        return [{"metric": {}, "value": [1234567890.0, value]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result("100"),  # ingested
+                _prom_result("0"),  # filtered
+                _prom_result("0"),  # errored
+                [
+                    {"metric": {"butler_name": "atlas"}, "value": [0, "60"]},
+                    {"metric": {"butler_name": "scribe"}},  # unreadable series
+                ],
+                _prom_result("0"),  # rate1h
+                _prom_result("0"),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "values": [[0, "0"]] * 24}],
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is False
+    assert body["routed_by_butler"] == {}
 
 
 async def test_pipeline_stats_spark24h_trims_25_buckets_to_24(app):

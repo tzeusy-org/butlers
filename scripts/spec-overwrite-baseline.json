@@ -1601,6 +1601,14 @@
       "excerpt": "The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropi..."
     }
   ],
+  "honest-ingestion-aggregate-availability/connector-state-aggregates/Degraded-mode response shape": [
+    {
+      "kind": "scenario",
+      "scenario": "Unparseable scalar reads as zero without lowering the flag",
+      "digest": "afe9098c04cf",
+      "excerpt": "\"Unparseable scalar reads as zero without lowering the flag\" is not in the block"
+    }
+  ],
   "inference-efficiency-pack/catalog-token-limits/Hard Block on Quota Exhaustion": [
     {
       "kind": "scenario",
