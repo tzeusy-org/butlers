@@ -10,6 +10,7 @@ Covers:
 - Evidence -> activity promotion only when a corroborator overlaps the span;
   lane discipline (never work/occupation).
 - Retention-lag monitoring warning.
+- Bounded retroactive evidence -> activity promotion re-check (bu-mul8i).
 - No-LLM AST guardrail.
 """
 
@@ -27,6 +28,8 @@ import pytest
 from butlers.chronicler.adapters.home_assistant_sensor_activity import (
     EPISODE_TYPE_ROOM_ACTIVITY,
     EVENT_TYPE_ENTRY,
+    PROMOTION_LOOKBACK_HOURS,
+    PROMOTION_RECHECK_LIMIT,
     RETENTION_LAG_WARNING_DAYS,
     SOURCE_NAME,
     HomeAssistantSensorActivityAdapter,
@@ -119,9 +122,16 @@ def _read_pool(conn: _FakeReadConn) -> AsyncMock:
 class _FakeChroniclerConn:
     """Fake chronicler-pool connection: fetch() answers overlap queries in order."""
 
-    def __init__(self, fetch_results: list[list[dict]] | None = None) -> None:
+    def __init__(
+        self,
+        fetch_results: list[list[dict]] | None = None,
+        *,
+        execute_result: str = "UPDATE 1",
+    ) -> None:
         self._fetch_results = list(fetch_results or [])
         self.fetch_calls: list[tuple] = []
+        self.execute_calls: list[tuple] = []
+        self.execute_result = execute_result
 
     async def fetch(self, query: str, *args: object) -> list[dict]:
         self.fetch_calls.append((query, args))
@@ -129,8 +139,9 @@ class _FakeChroniclerConn:
             return []
         return self._fetch_results.pop(0)
 
-    async def execute(self, *args: object) -> None:
-        return None
+    async def execute(self, query: str, *args: object) -> str:
+        self.execute_calls.append((query, args))
+        return self.execute_result
 
 
 def _chronicler_pool(conn: _FakeChroniclerConn) -> AsyncMock:
@@ -257,9 +268,14 @@ async def test_missing_filtered_events_table_skips_gracefully() -> None:
 async def test_empty_batch_preserves_watermark() -> None:
     adapter = HomeAssistantSensorActivityAdapter()
     read_conn = _FakeReadConn(table_exists=True, rows=[])
-    result = await adapter.project(_read_pool(read_conn), chronicler_pool=AsyncMock(), since=_NOW)
+    result = await adapter.project(
+        _read_pool(read_conn),
+        chronicler_pool=_chronicler_pool(_FakeChroniclerConn()),
+        since=_NOW,
+    )
     assert result.watermark == _NOW
     assert result.rows_projected == 0
+    assert result.episodes_promoted == 0
 
 
 # ---------------------------------------------------------------------------
@@ -892,3 +908,222 @@ def test_source_name_matches_contracts_registration() -> None:
     names = {s.source_name for s in INITIAL_SOURCES}
     assert SOURCE_NAME in names
     assert SOURCE_NAME == "home_assistant.sensor_activity"
+
+
+# ---------------------------------------------------------------------------
+# Retroactive evidence -> activity promotion re-check (bu-mul8i)
+# ---------------------------------------------------------------------------
+
+
+class _RecheckChroniclerConn:
+    """Chronicler-conn fake that separates candidate-SELECT from corroborator-SELECT."""
+
+    def __init__(
+        self,
+        *,
+        candidates: list[dict] | None = None,
+        corroborators: list[dict] | None = None,
+        execute_result: str = "UPDATE 1",
+    ) -> None:
+        self.candidates = candidates or []
+        self.corroborators = corroborators or []
+        self.candidate_calls: list[tuple] = []
+        self.corroborator_calls: list[tuple] = []
+        self.execute_calls: list[tuple] = []
+        self.execute_result = execute_result
+
+    async def fetch(self, query: str, *args: object) -> list:
+        if "LIMIT $5" in query:
+            self.candidate_calls.append((query, args))
+            return [_Row(r) for r in self.candidates]
+        self.corroborator_calls.append((query, args))
+        return [_Row(r) for r in self.corroborators]
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.execute_calls.append((query, args))
+        return self.execute_result
+
+
+def _evidence_span(*, span_id: uuid.UUID, start_at: datetime, end_at: datetime) -> dict:
+    return {"id": span_id, "start_at": start_at, "end_at": end_at}
+
+
+async def _run_recheck(
+    adapter: HomeAssistantSensorActivityAdapter,
+    conn: _RecheckChroniclerConn,
+    *,
+    now: datetime = _NOW,
+) -> int:
+    with patch(
+        "butlers.chronicler.adapters.home_assistant_sensor_activity._now",
+        return_value=now,
+    ):
+        return await adapter._recheck_evidence_promotions(_chronicler_pool(conn))
+
+
+@pytest.mark.asyncio
+async def test_recheck_promotes_span_whose_corroborator_arrived_late() -> None:
+    span_id = uuid.uuid4()
+    corroborator_id = uuid.uuid4()
+    conn = _RecheckChroniclerConn(
+        candidates=[
+            _evidence_span(
+                span_id=span_id,
+                start_at=_NOW - timedelta(hours=1),
+                end_at=_NOW - timedelta(minutes=50),
+            )
+        ],
+        corroborators=[{"id": corroborator_id}],
+    )
+    promoted = await _run_recheck(HomeAssistantSensorActivityAdapter(), conn)
+
+    assert promoted == 1
+    assert len(conn.execute_calls) == 1
+    query, args = conn.execute_calls[0]
+    assert "UPDATE episodes" in query
+    assert args[0] == span_id
+    assert args[1] == Layer.ACTIVITY.value
+    assert args[2] == Confidence.LOW.value
+    assert args[3] == [str(corroborator_id)]
+
+
+@pytest.mark.asyncio
+async def test_recheck_candidate_query_is_bounded_to_the_lookback_window() -> None:
+    conn = _RecheckChroniclerConn()
+    adapter = HomeAssistantSensorActivityAdapter(promotion_lookback_hours=6)
+    await _run_recheck(adapter, conn, now=_NOW)
+
+    assert len(conn.candidate_calls) == 1
+    query, args = conn.candidate_calls[0]
+    assert "layer = $3" in query and "start_at >= $4" in query
+    assert args[0] == SOURCE_NAME
+    assert args[1] == EPISODE_TYPE_ROOM_ACTIVITY
+    assert args[2] == Layer.EVIDENCE.value
+    assert args[3] == _NOW - timedelta(hours=6)  # bounded, not a full-history sweep
+    assert args[4] == PROMOTION_RECHECK_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_recheck_default_lookback_uses_the_named_constant() -> None:
+    conn = _RecheckChroniclerConn()
+    await _run_recheck(HomeAssistantSensorActivityAdapter(), conn, now=_NOW)
+    assert conn.candidate_calls[0][1][3] == _NOW - timedelta(hours=PROMOTION_LOOKBACK_HOURS)
+
+
+@pytest.mark.asyncio
+async def test_recheck_leaves_uncorroborated_span_alone() -> None:
+    conn = _RecheckChroniclerConn(
+        candidates=[_evidence_span(span_id=uuid.uuid4(), start_at=_NOW, end_at=_NOW)],
+        corroborators=[],
+    )
+    promoted = await _run_recheck(HomeAssistantSensorActivityAdapter(), conn)
+
+    assert promoted == 0
+    assert conn.execute_calls == []  # no write at all — nothing to churn
+
+
+@pytest.mark.asyncio
+async def test_recheck_update_is_guarded_on_evidence_layer() -> None:
+    """The guard is what makes a concurrent second pass a no-op, not a double-promote."""
+    conn = _RecheckChroniclerConn(
+        candidates=[_evidence_span(span_id=uuid.uuid4(), start_at=_NOW, end_at=_NOW)],
+        corroborators=[{"id": uuid.uuid4()}],
+        execute_result="UPDATE 0",  # another run promoted it between SELECT and UPDATE
+    )
+    promoted = await _run_recheck(HomeAssistantSensorActivityAdapter(), conn)
+
+    assert promoted == 0
+    query, args = conn.execute_calls[0]
+    assert "AND layer = $5" in query
+    assert args[4] == Layer.EVIDENCE.value
+
+
+@pytest.mark.asyncio
+async def test_recheck_treats_open_ended_span_like_an_instant() -> None:
+    start = _NOW - timedelta(minutes=30)
+    conn = _RecheckChroniclerConn(
+        candidates=[{"id": uuid.uuid4(), "start_at": start, "end_at": None}],
+        corroborators=[{"id": uuid.uuid4()}],
+    )
+    promoted = await _run_recheck(HomeAssistantSensorActivityAdapter(), conn)
+
+    assert promoted == 1
+    # Corroborator overlap is evaluated over [start, start], never against None.
+    for _query, args in conn.corroborator_calls:
+        assert args[2] == start
+        assert args[3] == start
+
+
+@pytest.mark.asyncio
+async def test_clustering_and_recheck_share_one_corroboration_predicate() -> None:
+    """Both promotion paths must route through the SAME predicate, or they drift."""
+    entity = "binary_sensor.shared_predicate_motion"
+    rows = [
+        _ha_row(
+            row_id=_UUID_1,
+            received_at=_NOW,
+            entity_id=entity,
+            domain="binary_sensor",
+            device_class="motion",
+            new_state="on",
+        ),
+    ]
+    adapter = HomeAssistantSensorActivityAdapter()
+    read_conn = _FakeReadConn(table_exists=True, rows=rows)
+    chron_conn = _FakeChroniclerConn()
+
+    predicate = AsyncMock(return_value=[])
+
+    async def _fake_upsert_episode(conn: object, episode: Episode) -> Episode:
+        episode.id = uuid.uuid4()
+        return episode
+
+    with (
+        patch.object(HomeAssistantSensorActivityAdapter, "_corroborator_episode_ids", predicate),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.upsert_episode",
+            side_effect=_fake_upsert_episode,
+        ),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.upsert_owner_episode_entity",
+            new=AsyncMock(),
+        ),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.get_carryover",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.save_carryover",
+            new=AsyncMock(),
+        ),
+    ):
+        await adapter.project(
+            _read_pool(read_conn), chronicler_pool=_chronicler_pool(chron_conn), since=None
+        )
+
+    # Clustering consulted it; the re-check pass ran and would consult the very
+    # same callable for any candidate it found.
+    assert predicate.await_count >= 1
+    assert not any("start_at < $4" in q for q, _ in chron_conn.fetch_calls), (
+        "corroboration SQL must live only behind _corroborator_episode_ids"
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_runs_recheck_even_when_there_are_no_new_source_rows() -> None:
+    """The late-corroborator case is precisely the empty-batch case."""
+    adapter = HomeAssistantSensorActivityAdapter()
+    read_conn = _FakeReadConn(table_exists=True, rows=[])
+    recheck = AsyncMock(return_value=3)
+
+    with patch.object(HomeAssistantSensorActivityAdapter, "_recheck_evidence_promotions", recheck):
+        result = await adapter.project(
+            _read_pool(read_conn), chronicler_pool=AsyncMock(), since=_NOW
+        )
+
+    recheck.assert_awaited_once()
+    assert result.episodes_promoted == 3

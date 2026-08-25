@@ -38,6 +38,10 @@ class AdapterResult:
     watermark_id: int | None = None
     episodes_opened: int = 0
     episodes_closed: int = 0
+    # Episodes flipped layer=evidence -> layer=activity by a retroactive
+    # corroboration re-check (bu-mul8i). Distinct from episodes_opened/closed:
+    # no episode was written or ended, an existing one changed layer.
+    episodes_promoted: int = 0
     point_events: int = 0
     warnings: list[str] = field(default_factory=list)
 

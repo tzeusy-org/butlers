@@ -36,14 +36,48 @@ corroborator"):
     ``[decision]``, recorded here per the worker skill's decision-autonomy
     protocol.
 
-    A known v1 limitation of this in-adapter check: corroboration is
-    evaluated once, when the span is first clustered from this run's batch.
-    If a corroborating Spotify/occupation_block episode is projected by a
-    *later* adapter run (e.g. an hourly occupation_inferred cron tick that
-    hasn't fired yet), an already-evidence-only ``room_activity_episode``
-    is not retroactively re-checked and promoted. A periodic re-check pass
-    over recent evidence-layer spans would close this gap; tracked as a
-    discovered follow-up, not required for bead-1 scope.
+    Corroboration is evaluated twice: once when the span is first clustered
+    from this run's batch, and again by the bounded retroactive re-check
+    pass described below. The second evaluation exists because corroborators
+    arrive late — the hourly ``chronicler.occupation_inferred`` cron tick
+    routinely fires *after* a motion span has already been clustered, and
+    without a re-check that span would stay ``layer=evidence`` forever
+    despite having since earned promotion (bu-mul8i).
+
+Retroactive promotion re-check (bu-mul8i):
+    After clustering, every run re-evaluates ``room_activity_episode`` rows
+    still at ``layer=evidence`` whose ``start_at`` falls inside the trailing
+    ``promotion_lookback_hours`` window (default
+    ``PROMOTION_LOOKBACK_HOURS``, overridable per-job via
+    ``job_args.promotion_lookback_hours`` — see
+    ``chronicler/jobs.py::run_project_home_assistant_sensor_activity``).
+    The window is what keeps this bounded: it is a trailing re-check, never
+    a full-history sweep, so cost stays flat as ``episodes`` grows.
+
+    The re-check reuses the *same* corroboration predicate as the clustering
+    path (``_corroborator_episode_ids``) — deliberately one function, not two
+    copies of the rule, so promotion and first-projection can never drift
+    apart. A qualifying span is flipped to ``layer=activity,
+    confidence=low`` with the corroborator ids written to ``evidence_refs``,
+    exactly as the clustering path would have done had the corroborator been
+    there at the time.
+
+    Idempotent by construction: the UPDATE is guarded on
+    ``layer = 'evidence'``, so an already-promoted span is neither re-matched
+    by the candidate SELECT nor re-written by a concurrent run, and
+    ``updated_at`` does not churn on a no-op pass. Demotion is *not*
+    implemented — nothing in the existing code demotes, and inventing a
+    reverse rule here would silently contradict the clustering path.
+
+    Observability: each pass logs promoted spans and returns the count as
+    ``AdapterResult.episodes_promoted`` (persisted in the job result by
+    ``chronicler/jobs.py::_adapter_result_to_dict``). ``[decision]`` The
+    ``chronicles`` fleet-event payload published by ``_run_adapter`` is
+    deliberately left unchanged — its shape is asserted wire-exactly by
+    consumers' tests, and a promotion-only run advertising a
+    freshness ping with all-zero counters would be less honest than no ping
+    at all. A promotion-only tick therefore does not publish; the next
+    material projection or rollup run refreshes downstream aggregates.
 
 Lane discipline (bu-whhll.14 composition, design §1.5): ``room_activity_episode``
 resolves to the new ``ambient`` category → ``rest`` lane
@@ -123,6 +157,12 @@ from butlers.chronicler.storage import (
 
 logger = logging.getLogger(__name__)
 
+
+def _now() -> datetime:
+    """Wall-clock now, isolated for test patching (mirrors ``jobs.py``)."""
+    return datetime.now(UTC)
+
+
 SOURCE_NAME = "home_assistant.sensor_activity"
 EPISODE_TYPE_ROOM_ACTIVITY = "room_activity_episode"
 EVENT_TYPE_ENTRY = "entry_event"
@@ -150,6 +190,23 @@ _CORROBORATOR_EPISODE_SOURCES: tuple[tuple[str, str], ...] = (
     ("spotify.session_summary", "listening_episode"),
 )
 
+# Trailing window for the retroactive evidence -> activity promotion re-check
+# (bu-mul8i). Bounded on purpose: only spans starting within this many hours of
+# now are re-evaluated, so the pass cost stays flat as `episodes` grows instead
+# of degrading into a full-history sweep. 12h comfortably covers the hourly
+# `chronicler.occupation_inferred` tick plus a wide margin for a backed-up
+# scheduler, while staying far below the once-daily reconciliation horizon.
+PROMOTION_LOOKBACK_HOURS = 12
+
+# Safety cap on candidate spans examined per re-check pass. The lookback window
+# is the real bound; this only stops a pathological burst of sensor churn from
+# turning one tick into an unbounded row-by-row scan. Candidates are taken
+# oldest-first (they are closest to falling out of the window), so in the
+# pathological case the newest spans wait a tick — they are still inside the
+# window next run. Realistic volume is far below the cap: 12h of 15-minute
+# gap-tolerant clustering yields at most ~48 spans per motion entity.
+PROMOTION_RECHECK_LIMIT = 1000
+
 # Alert threshold for the retention-lag monitoring check (design §5 / §2.6):
 # flag when the adapter's watermark is within this many days of the oldest
 # still-retained connectors.filtered_events partition.
@@ -170,10 +227,12 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
         *,
         batch_limit: int = DEFAULT_BATCH_LIMIT,
         room_activity_gap_minutes: int = ROOM_ACTIVITY_GAP_MINUTES,
+        promotion_lookback_hours: int = PROMOTION_LOOKBACK_HOURS,
     ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
         self.room_activity_gap_minutes = room_activity_gap_minutes
+        self.promotion_lookback_hours = promotion_lookback_hours
 
     async def project(
         self,
@@ -195,7 +254,12 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
             return result
 
         if not rows:
+            # No new source rows is the *common* case for a late-arriving
+            # corroborator (the hourly occupation_inferred tick fires between
+            # this adapter's ticks), so the re-check must run here too — not
+            # only when there is fresh motion to cluster.
             result.watermark = since
+            result.episodes_promoted += await self._recheck_evidence_promotions(chronicler_pool)
             return result
 
         latest_watermark = since
@@ -256,6 +320,8 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
             result.episodes_closed += episodes_upserted
             result.warnings.extend(cluster_warnings)
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
+
+        result.episodes_promoted += await self._recheck_evidence_promotions(chronicler_pool)
 
         lag_warning = await self._check_retention_lag(pool, latest_watermark)
         if lag_warning is not None:
@@ -548,11 +614,7 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
         payload: dict[str, Any] = {"entity_id": entity_id, "device_class": _MOTION_DEVICE_CLASS}
 
         async with chronicler_pool.acquire() as conn:
-            corroborator_ids: list[UUID] = []
-            for source in _CORROBORATOR_EPISODE_SOURCES:
-                corroborator_ids.extend(
-                    await self._fetch_overlapping_episode_ids(conn, source, start_at, end_at)
-                )
+            corroborator_ids = await self._corroborator_episode_ids(conn, start_at, end_at)
 
             if corroborator_ids:
                 layer = Layer.ACTIVITY
@@ -585,6 +647,27 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
             await upsert_owner_episode_entity(conn, episode.id, owner_id=owner_id)
         return episode
 
+    @classmethod
+    async def _corroborator_episode_ids(
+        cls,
+        conn: asyncpg.Connection,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> list[UUID]:
+        """Return corroborating episode ids overlapping ``[start_at, end_at)``.
+
+        THE corroboration predicate for ``room_activity_episode`` — the single
+        definition shared by the clustering path
+        (:meth:`_upsert_room_activity_episode`) and the retroactive re-check
+        pass (:meth:`_recheck_evidence_promotions`). Keep it that way: two
+        copies of this rule would drift, and a span would then be promoted on
+        one path but not the other.
+        """
+        ids: list[UUID] = []
+        for source in _CORROBORATOR_EPISODE_SOURCES:
+            ids.extend(await cls._fetch_overlapping_episode_ids(conn, source, start_at, end_at))
+        return ids
+
     @staticmethod
     async def _fetch_overlapping_episode_ids(
         conn: asyncpg.Connection,
@@ -615,6 +698,92 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
             end_at,
         )
         return [r["id"] for r in rows]
+
+    # ------------------------------------------------------------------
+    # Retroactive evidence -> activity promotion re-check (bu-mul8i)
+    # ------------------------------------------------------------------
+
+    async def _recheck_evidence_promotions(self, chronicler_pool: asyncpg.Pool) -> int:
+        """Re-evaluate recent evidence-layer spans and promote the ones that qualify.
+
+        Bounded to spans starting within the trailing
+        ``promotion_lookback_hours`` window (plus a
+        ``PROMOTION_RECHECK_LIMIT`` safety cap) and idempotent: the UPDATE is
+        guarded on ``layer = 'evidence'``, and a promoted span no longer
+        matches the candidate SELECT, so a second pass touches nothing.
+
+        Cost is two indexed corroborator lookups per candidate span — a
+        handful of narrow queries per tick at realistic sensor volumes, which
+        is why the pass is affordable inline on every run rather than needing
+        a schedule of its own.
+
+        Returns the number of spans promoted.
+        """
+        cutoff = _now() - timedelta(hours=self.promotion_lookback_hours)
+        promoted = 0
+
+        async with chronicler_pool.acquire() as conn:
+            candidates = await conn.fetch(
+                """
+                SELECT id, start_at, end_at FROM episodes
+                WHERE tombstone_at IS NULL
+                  AND source_name = $1
+                  AND episode_type = $2
+                  AND layer = $3
+                  AND start_at >= $4
+                ORDER BY start_at ASC, id ASC
+                LIMIT $5
+                """,
+                self.source_name,
+                EPISODE_TYPE_ROOM_ACTIVITY,
+                Layer.EVIDENCE.value,
+                cutoff,
+                PROMOTION_RECHECK_LIMIT,
+            )
+
+            for row in candidates:
+                start_at: datetime = row["start_at"]
+                # Defensive: an open-ended span has no end_at yet; treat the
+                # instant it started as its window, matching how the clustering
+                # path evaluates a single-ping (start == end) span.
+                end_at: datetime = row["end_at"] or start_at
+
+                corroborator_ids = await self._corroborator_episode_ids(conn, start_at, end_at)
+                if not corroborator_ids:
+                    continue
+
+                updated = await conn.execute(
+                    """
+                    UPDATE episodes
+                    SET layer = $2,
+                        confidence = $3,
+                        evidence_refs = $4,
+                        updated_at = now()
+                    WHERE id = $1
+                      AND layer = $5
+                      AND tombstone_at IS NULL
+                    """,
+                    row["id"],
+                    Layer.ACTIVITY.value,
+                    Confidence.LOW.value,
+                    evidence_refs_from_event_ids(corroborator_ids),
+                    Layer.EVIDENCE.value,
+                )
+                if updated == "UPDATE 0":
+                    # Another run promoted it between our SELECT and UPDATE.
+                    continue
+
+                promoted += 1
+                logger.info(
+                    "%s: retroactively promoted %s %s (%s) to layer=activity on %d corroborator(s)",
+                    SOURCE_NAME,
+                    EPISODE_TYPE_ROOM_ACTIVITY,
+                    row["id"],
+                    start_at.isoformat(),
+                    len(corroborator_ids),
+                )
+
+        return promoted
 
     # ------------------------------------------------------------------
     # Retention-lag monitoring (design §5 / §2.6)
@@ -683,6 +852,8 @@ __all__ = [
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_ROOM_ACTIVITY",
     "EVENT_TYPE_ENTRY",
+    "PROMOTION_LOOKBACK_HOURS",
+    "PROMOTION_RECHECK_LIMIT",
     "RETENTION_LAG_WARNING_DAYS",
     "ROOM_ACTIVITY_GAP_MINUTES",
     "HomeAssistantSensorActivityAdapter",
