@@ -1281,14 +1281,6 @@ class TestReversibleMutationPreStateCapture:
 # ---------------------------------------------------------------------------
 
 
-def _calendar_events_fetchrow_args(pool: MagicMock) -> tuple[object, ...]:
-    for call in pool.fetchrow.await_args_list:
-        sql = call.args[0]
-        if isinstance(sql, str) and "INSERT INTO calendar_events" in sql:
-            return call.args
-    raise AssertionError("expected a calendar_events fetchrow call")
-
-
 class TestProjectionPersistence:
     async def test_upsert_projection_event_persists_source_butler(self):
         """calendar_events.source_butler is NOT NULL with no DB default; the

@@ -151,33 +151,6 @@ async def _insert_bill(
     )
 
 
-async def _insert_subscription(
-    pool,
-    *,
-    service: str = "Netflix",
-    amount: str = "15.49",
-    currency: str = "USD",
-    frequency: str = "monthly",
-    next_renewal: date | None = None,
-    status: str = "active",
-) -> None:
-    if next_renewal is None:
-        next_renewal = _today() + timedelta(days=5)
-    await pool.execute(
-        """
-        INSERT INTO finance.subscriptions
-            (service, amount, currency, frequency, next_renewal, status)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        """,
-        service,
-        amount,
-        currency,
-        frequency,
-        next_renewal,
-        status,
-    )
-
-
 async def _insert_transaction(
     pool,
     *,
