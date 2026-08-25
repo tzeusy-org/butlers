@@ -12,6 +12,15 @@ parent and immutable result tree of the resulting squash commit.
 This is a merge execution guard, not a replacement for the existing
 independent review and terminal-CI gates.  A source Bead may close only when
 the JSON result reports ``source_bead_closure_allowed: true``.
+
+Because this helper is the sole final merge route, it is also where the batch
+halts when the target branch is already broken (bu-vul8u).  Before issuing the
+merge request it consumes ``scripts/main_health_gate.py`` against the exact base
+SHA it is about to merge onto.  A PR's own CI can only ever see its own branch,
+so two PRs can each be green and still collide once both have landed; the
+repository's post-merge detectors see that, and until now nothing read them.
+An unacknowledged red target branch, or one with no trustworthy verdict yet,
+returns nonzero without sending a merge request.
 """
 
 from __future__ import annotations
@@ -20,10 +29,18 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import main_health_gate  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class MergeOutcome(StrEnum):
@@ -33,6 +50,8 @@ class MergeOutcome(StrEnum):
     PREMERGE_HEAD_DRIFT = "premerge-head-drift"
     PREMERGE_BASE_REF_DRIFT = "premerge-base-ref-drift"
     PREMERGE_BASE_DRIFT = "premerge-base-drift"
+    PREMERGE_TARGET_RED = "premerge-target-branch-red"
+    PREMERGE_TARGET_HEALTH_UNKNOWN = "premerge-target-branch-health-unknown"
     MERGE_NOT_COMPLETED = "merge-not-completed"
     MERGE_RESPONSE_MISSING_SHA = "merge-response-missing-sha"
     MERGED_EXACT_BASE = "merged-exact-base"
@@ -69,6 +88,7 @@ class MergeAudit:
     expected_patch_tree_sha: str | None = None
     landed_patch_tree_sha: str | None = None
     patch_identity_matches: bool | None = None
+    target_branch_health: dict[str, Any] | None = None
     message: str | None = None
 
     @property
@@ -84,9 +104,17 @@ class MergeAudit:
         }
 
     @property
+    def target_branch_halt_required(self) -> bool:
+        return self.outcome is MergeOutcome.PREMERGE_TARGET_RED
+
+    @property
     def next_action(self) -> str:
         if self.source_bead_closure_allowed:
             return "eligible-to-close-source-bead"
+        if self.target_branch_halt_required:
+            return "halt-batch-and-repair-target-branch"
+        if self.outcome is MergeOutcome.PREMERGE_TARGET_HEALTH_UNKNOWN:
+            return "wait-for-target-branch-verdict-then-repeat"
         if self.rebase_and_repeat_required:
             return "rebase-and-repeat-exact-head-review-and-ci"
         if self.outcome in {
@@ -102,6 +130,10 @@ class MergeAudit:
     def exit_code(self) -> int:
         if self.source_bead_closure_allowed:
             return 0
+        if self.outcome is MergeOutcome.PREMERGE_TARGET_RED:
+            return 6
+        if self.outcome is MergeOutcome.PREMERGE_TARGET_HEALTH_UNKNOWN:
+            return 7
         if self.rebase_and_repeat_required:
             return 2
         if self.outcome in {
@@ -118,6 +150,7 @@ class MergeAudit:
         payload["outcome"] = self.outcome.value
         payload["source_bead_closure_allowed"] = self.source_bead_closure_allowed
         payload["rebase_and_repeat_required"] = self.rebase_and_repeat_required
+        payload["target_branch_halt_required"] = self.target_branch_halt_required
         payload["next_action"] = self.next_action
         return payload
 
@@ -290,6 +323,7 @@ def _audit(
     expected_patch_tree_sha: str | None = None,
     landed_patch_tree_sha: str | None = None,
     patch_identity_matches: bool | None = None,
+    target_branch_health: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> MergeAudit:
     return MergeAudit(
@@ -304,8 +338,47 @@ def _audit(
         expected_patch_tree_sha=expected_patch_tree_sha,
         landed_patch_tree_sha=landed_patch_tree_sha,
         patch_identity_matches=patch_identity_matches,
+        target_branch_health=target_branch_health,
         message=message,
     )
+
+
+def evaluate_target_branch_health(
+    repo: str,
+    base_sha: str,
+    *,
+    acknowledged_red_workflows: Sequence[str] = (),
+    tree: Path = REPO_ROOT,
+) -> tuple[main_health_gate.Decision, dict[str, Any]]:
+    """Read the target branch's own post-merge detectors for this exact base.
+
+    The batch driver used to check only the PR being merged, so a detector that
+    fired on the previously merged tree had no reader and the batch kept going.
+    This is that reader.
+
+    Only hosted verdicts are consulted here; the local guard sweep needs a
+    scratch checkout of the merged tree and belongs to
+    ``scripts/main_health_gate.py`` run between merges.
+
+    ``acknowledged_red_workflows`` exists so the fix for a red main can still be
+    merged. It names individual workflows, never a blanket override, so a
+    *different* red still halts the batch.
+    """
+    report = main_health_gate.evaluate(repo, base_sha, tree=tree, run_local_guards=False)
+    acknowledged = tuple(
+        name
+        for name, verdict in report.workflows.items()
+        if verdict is main_health_gate.WorkflowVerdict.RED
+        and name in set(acknowledged_red_workflows)
+    )
+    remaining = {
+        name: verdict for name, verdict in report.workflows.items() if name not in acknowledged
+    }
+    decision = main_health_gate.decide(remaining, guard_failures=(), wait_budget_exhausted=False)
+    payload = report.to_dict()
+    payload["decision"] = decision.value
+    payload["acknowledged_red_workflows"] = list(acknowledged)
+    return decision, payload
 
 
 def merge_after_exact_base_revalidation(
@@ -315,6 +388,7 @@ def merge_after_exact_base_revalidation(
     expected_head_sha: str,
     expected_base_ref_name: str,
     expected_base_sha: str,
+    acknowledged_red_workflows: Sequence[str] = (),
 ) -> MergeAudit:
     """Merge only from matching final evidence, then prove the landed patch.
 
@@ -359,6 +433,32 @@ def merge_after_exact_base_revalidation(
             expected_base_sha,
             premerge,
             message="Base branch changed after final revalidation",
+        )
+
+    health_decision, health_payload = evaluate_target_branch_health(
+        repo,
+        expected_base_sha,
+        acknowledged_red_workflows=acknowledged_red_workflows,
+    )
+    if health_decision is main_health_gate.Decision.HALT:
+        return _audit(
+            MergeOutcome.PREMERGE_TARGET_RED,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            target_branch_health=health_payload,
+            message="Target branch is already red; halt the batch instead of merging onto it",
+        )
+    if health_decision is main_health_gate.Decision.WAIT:
+        return _audit(
+            MergeOutcome.PREMERGE_TARGET_HEALTH_UNKNOWN,
+            expected_head_sha,
+            expected_base_ref_name,
+            expected_base_sha,
+            premerge,
+            target_branch_health=health_payload,
+            message="Target branch has no trustworthy verdict yet; wait rather than assume green",
         )
 
     response = request_squash_merge(repo, pr_number, expected_head_sha)
@@ -517,6 +617,17 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="target branch name captured during that same final revalidation",
     )
+    parser.add_argument(
+        "--acknowledge-target-red",
+        dest="acknowledged_red_workflows",
+        action="append",
+        default=[],
+        metavar="WORKFLOW_FILENAME",
+        help=(
+            "merge despite this specific target-branch workflow being red "
+            "(repeatable; any other red still halts the batch)"
+        ),
+    )
     return parser
 
 
@@ -529,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_head_sha=args.expected_head,
             expected_base_ref_name=args.expected_base_ref_name,
             expected_base_sha=args.expected_base,
+            acknowledged_red_workflows=tuple(args.acknowledged_red_workflows),
         )
     except (RuntimeError, ValueError) as exc:
         json.dump(

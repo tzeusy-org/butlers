@@ -4,6 +4,13 @@ The REST merge endpoint conditionally accepts only a pull request head SHA. A
 base branch can advance after a coordinator's final revalidation, so a
 SHA-pinned squash merge must verify its resulting commit parent before a source
 Bead is eligible to close.
+
+This helper is also where a batch halts when the target branch is already broken
+(bu-vul8u): it is the sole final merge route, so a target-branch health check
+placed anywhere else can be forgotten, and forgetting it is exactly what let
+several PRs land on a main that was already red. The autouse fixture below keeps
+that new gate out of the way of every pre-existing test; the gate's own
+behaviour is asserted at the bottom of this file.
 """
 
 from __future__ import annotations
@@ -17,6 +24,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"
 import merge_pr_exact_base as merge_guard  # noqa: E402
 
 pytestmark = pytest.mark.unit
+
+#: Captured before the autouse stub below replaces it, so the gate's own tests
+#: can exercise the real implementation.
+REAL_TARGET_BRANCH_HEALTH = merge_guard.evaluate_target_branch_health
+
+
+@pytest.fixture(autouse=True)
+def healthy_target_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default every test to a healthy target branch, with no network call."""
+    monkeypatch.setattr(
+        merge_guard,
+        "evaluate_target_branch_health",
+        lambda *_a, **_k: (
+            merge_guard.main_health_gate.Decision.PROCEED,
+            {"decision": "proceed", "workflows": {}},
+        ),
+    )
+
 
 REPO = "Tzeusy/butlers"
 PR_NUMBER = 3652
@@ -510,3 +535,192 @@ def test_rest_request_keeps_sha_pinning_and_squash_method(monkeypatch: pytest.Mo
             f"sha={HEAD_SHA}",
         ]
     ]
+
+
+# ---------------------------------------------------------------------------
+# target-branch health gate (bu-vul8u)
+# ---------------------------------------------------------------------------
+
+
+def _halt_on_target_health(
+    monkeypatch: pytest.MonkeyPatch, decision: object, payload: dict[str, object]
+) -> list[tuple[object, ...]]:
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    merge_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(merge_guard, "request_squash_merge", lambda *args: merge_calls.append(args))
+    monkeypatch.setattr(
+        merge_guard, "evaluate_target_branch_health", lambda *_a, **_k: (decision, payload)
+    )
+    return merge_calls
+
+
+def test_red_target_branch_halts_the_batch_without_merging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this gate closes: merging PR N+1 onto a known-red main."""
+    merge_calls = _halt_on_target_health(
+        monkeypatch,
+        merge_guard.main_health_gate.Decision.HALT,
+        {"decision": "halt", "workflows": {"migration-chain-main.yml": "red"}},
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome is merge_guard.MergeOutcome.PREMERGE_TARGET_RED
+    assert result.source_bead_closure_allowed is False
+    assert result.target_branch_halt_required is True
+    assert result.next_action == "halt-batch-and-repair-target-branch"
+    assert result.exit_code == 6
+    assert merge_calls == [], "no merge request may be sent onto a red target branch"
+
+
+def test_unsettled_target_branch_verdict_waits_rather_than_merging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent or in-flight run is UNKNOWN, and UNKNOWN is not green."""
+    merge_calls = _halt_on_target_health(
+        monkeypatch,
+        merge_guard.main_health_gate.Decision.WAIT,
+        {"decision": "wait", "workflows": {"migration-chain-main.yml": "not-created-yet"}},
+    )
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert result.outcome is merge_guard.MergeOutcome.PREMERGE_TARGET_HEALTH_UNKNOWN
+    assert result.source_bead_closure_allowed is False
+    assert result.target_branch_halt_required is False
+    assert result.next_action == "wait-for-target-branch-verdict-then-repeat"
+    assert result.exit_code == 7
+    assert merge_calls == []
+
+
+def test_health_gate_runs_before_the_merge_request_not_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+
+    def fake_health(*_a: object, **_k: object) -> tuple[object, dict[str, object]]:
+        order.append("health")
+        return merge_guard.main_health_gate.Decision.PROCEED, {"decision": "proceed"}
+
+    def fake_merge(*_a: object) -> dict[str, object]:
+        order.append("merge")
+        return {"merged": True, "sha": MERGE_SHA}
+
+    monkeypatch.setattr(merge_guard, "evaluate_target_branch_health", fake_health)
+    monkeypatch.setattr(merge_guard, "request_squash_merge", fake_merge)
+    monkeypatch.setattr(merge_guard, "fetch_commit_parent_shas", lambda *_: [REVIEWED_BASE_SHA])
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_base_ref_name", lambda *_: "main")
+    monkeypatch.setattr(merge_guard, "fetch_commit_tree_sha", lambda *_: EXPECTED_PATCH_TREE_SHA)
+
+    result = merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert order == ["health", "merge"]
+    assert result.outcome is merge_guard.MergeOutcome.MERGED_EXACT_BASE
+
+
+def test_acknowledging_one_red_workflow_does_not_excuse_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The escape hatch names workflows so a different red still halts.
+
+    Landing the fix for a red main has to be possible; a blanket override would
+    reintroduce the defect the first time someone reached for it.
+    """
+    monkeypatch.setattr(
+        merge_guard.main_health_gate,
+        "evaluate",
+        lambda *_a, **_k: merge_guard.main_health_gate.HealthReport(
+            sha=REVIEWED_BASE_SHA,
+            decision=merge_guard.main_health_gate.Decision.HALT,
+            workflows={
+                "migration-chain-main.yml": merge_guard.main_health_gate.WorkflowVerdict.RED,
+                "other-detector.yml": merge_guard.main_health_gate.WorkflowVerdict.RED,
+            },
+        ),
+    )
+
+    acknowledged_one, payload_one = REAL_TARGET_BRANCH_HEALTH(
+        REPO,
+        REVIEWED_BASE_SHA,
+        acknowledged_red_workflows=("migration-chain-main.yml",),
+    )
+    acknowledged_both, payload_both = REAL_TARGET_BRANCH_HEALTH(
+        REPO,
+        REVIEWED_BASE_SHA,
+        acknowledged_red_workflows=("migration-chain-main.yml", "other-detector.yml"),
+    )
+
+    assert acknowledged_one is merge_guard.main_health_gate.Decision.HALT
+    assert payload_one["acknowledged_red_workflows"] == ["migration-chain-main.yml"]
+    assert acknowledged_both is merge_guard.main_health_gate.Decision.PROCEED
+    assert sorted(payload_both["acknowledged_red_workflows"]) == [
+        "migration-chain-main.yml",
+        "other-detector.yml",
+    ]
+
+
+def test_health_gate_consults_the_exact_base_sha_being_merged_onto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading "main" generally is not the same as reading the SHA in hand."""
+    seen: list[tuple[object, ...]] = []
+    monkeypatch.setattr(merge_guard, "fetch_pull_request_snapshot", lambda *_: _snapshot())
+    monkeypatch.setattr(merge_guard, "request_squash_merge", lambda *_: {"merged": False})
+
+    def fake_health(repo: str, base_sha: str, **_k: object) -> tuple[object, dict[str, object]]:
+        seen.append((repo, base_sha))
+        return merge_guard.main_health_gate.Decision.PROCEED, {"decision": "proceed"}
+
+    monkeypatch.setattr(merge_guard, "evaluate_target_branch_health", fake_health)
+
+    merge_guard.merge_after_exact_base_revalidation(
+        REPO,
+        PR_NUMBER,
+        expected_head_sha=HEAD_SHA,
+        expected_base_ref_name="main",
+        expected_base_sha=REVIEWED_BASE_SHA,
+    )
+
+    assert seen == [(REPO, REVIEWED_BASE_SHA)]
+
+
+def test_cli_exposes_the_named_red_acknowledgement() -> None:
+    args = build_parser_args(
+        [
+            "--pr",
+            str(PR_NUMBER),
+            "--expected-head",
+            HEAD_SHA,
+            "--expected-base",
+            REVIEWED_BASE_SHA,
+            "--expected-base-ref",
+            "main",
+            "--acknowledge-target-red",
+            "migration-chain-main.yml",
+        ]
+    )
+    assert args.acknowledged_red_workflows == ["migration-chain-main.yml"]
+
+
+def build_parser_args(argv: list[str]):
+    return merge_guard.build_parser().parse_args(argv)
