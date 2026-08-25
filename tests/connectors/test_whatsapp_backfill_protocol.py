@@ -134,7 +134,12 @@ async def test_request_backfill_rejects_oversized_acknowledgement_before_eof(
 
     await connector._request_backfill()
 
-    assert "Bridge /backfill acknowledgement exceeded" in caplog.text
+    assert "WhatsApp backfill request failed" in caplog.text
+    assert "Bridge /backfill acknowledgement exceeded" not in caplog.text
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp backfill request failed"
+    )
+    assert record.failure_class == "RuntimeError"
     writer.wait_closed.assert_awaited_once()
 
 
@@ -173,8 +178,12 @@ async def test_request_backfill_times_out_without_eof_without_stopping_connector
 
     await connector._request_backfill()
 
-    assert "Failed to request backfill from bridge" in caplog.text
+    assert "WhatsApp backfill request failed" in caplog.text
     assert "Backfill request accepted by bridge" not in caplog.text
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp backfill request failed"
+    )
+    assert record.failure_class == "TimeoutError"
     writer.wait_closed.assert_awaited_once()
 
 
@@ -207,4 +216,8 @@ async def test_request_backfill_rejects_nonaccepted_ack_without_raising(
 
     await connector._request_backfill()
 
-    assert "Failed to request backfill from bridge" in caplog.text
+    assert "WhatsApp backfill request failed" in caplog.text
+    record = next(
+        item for item in caplog.records if item.message == "WhatsApp backfill request failed"
+    )
+    assert record.failure_class == "RuntimeError"
