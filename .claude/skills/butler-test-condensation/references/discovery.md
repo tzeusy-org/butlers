@@ -3,6 +3,29 @@
 Run these to assess the current state of the test suite. Always run the
 staleness check first if resuming from a previous session.
 
+## Active Snapshot (2026-08-26)
+
+The active baseline below was measured from exact current-main HEAD
+`d169401398c22b260ceb9d7b8bac539b2c4e0efe` (the worker checkout was
+`agent/bu-h4wec.11`; this commit matched `origin/main` at capture time). The
+static counts cover both `tests/` and `roster/`, using the async-aware anchored
+pattern; the collection count covers `tests/` plus `roster/` with the exact
+CI-selection marker and ignore filter.
+
+- **Static functions:** **12,838** under `tests/` plus **4,097** under
+  `roster/` (**16,935** combined).
+- **CI-selection collection:** **20,024 total**, **15,884 selected**, and
+  **4,140 deselected**.
+
+## Historical 2026-08-24 Observations
+
+The earlier same-date measurements remain here as historical observations, not
+active anchors: the original staleness note recorded **12,195** static test
+functions under `tests/`, while the domains snapshot recorded **12,322** under
+`tests/`, **3,956** under `roster/`, and **19,270 total / 15,267 selected** in
+the CI-selection collection. They were taken from different checkpoints and
+must not be silently conflated.
+
 ## Staleness Check (Run First on Resume)
 
 ```bash
@@ -10,11 +33,18 @@ staleness check first if resuming from a previous session.
 # Phase 1 (bu-rhztl) baseline 2026-04-05: 13,675 tests; closed at 2,196.
 # Phase 2 (bu-hg8rl) baseline 2026-05-03: 3,704; CLOSED 2026-05-05.
 # Historical Phase 3 snapshot 2026-06-21: 7,494 def-test funcs / 8,107 collected, 657 files.
-# Current cycle baseline 2026-08-24: 12,195 test functions.
+# Active snapshot 2026-08-26: tests/ 12,838; roster/ 4,097; combined 16,935.
+# Historical 2026-08-24 observations are recorded above; do not use them as
+# the active anchor.
 # The explicit optional `async` keeps both `def test_` and `async def test_`.
 TEST_DEF_PATTERN='^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_'
-CURRENT=$(grep -rEc "$TEST_DEF_PATTERN" tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum}')
-echo "Current: $CURRENT | current-cycle baseline (2026-08-24): 12195 | Delta: $((CURRENT - 12195))"
+TESTS_CURRENT=$(grep -rEc "$TEST_DEF_PATTERN" tests/ --include='*.py' | awk -F: '{sum+=$2} END {print sum+0}')
+ROSTER_CURRENT=$(grep -rEc "$TEST_DEF_PATTERN" roster/ --include='*.py' | awk -F: '{sum+=$2} END {print sum+0}')
+ACTIVE_COMBINED_BASELINE=16935
+COMBINED_CURRENT=$((TESTS_CURRENT + ROSTER_CURRENT))
+COMBINED_DELTA=$((COMBINED_CURRENT - ACTIVE_COMBINED_BASELINE))
+COMBINED_DELTA_PERCENT=$(awk -v delta="$COMBINED_DELTA" -v baseline="$ACTIVE_COMBINED_BASELINE" 'BEGIN {printf "%.2f", (delta / baseline) * 100}')
+echo "Current static functions: tests/ $TESTS_CURRENT | roster/ $ROSTER_CURRENT | combined $COMBINED_CURRENT | baseline $ACTIVE_COMBINED_BASELINE | delta $COMBINED_DELTA (${COMBINED_DELTA_PERCENT}%) | active snapshot HEAD d169401398c22b260ceb9d7b8bac539b2c4e0efe"
 
 # CI-selection collection (population only, not test-execution timing):
 uv run --no-sync pytest tests/ roster/ --collect-only -q \
