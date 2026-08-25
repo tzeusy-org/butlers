@@ -22,8 +22,9 @@ GET  /api/ingestion/connectors/{type}/{identity}/routing-rules — scoped rules 
 
 The ``summaries`` and ``cross-summary`` endpoints proxy the existing
 ``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
-endpoints. ``cross-summary`` adds an ``aggregates_available`` flag derived from
-whether the Prometheus backend is reachable (via the pipeline stats cache);
+endpoints. ``cross-summary`` adds an ``aggregates_available`` flag reporting
+whether Prometheus actually answered the funnel queries (resolved through the
+pipeline stats cache, which queries on a cold entry rather than assuming);
 ``summaries`` does not — every field it returns is DB-sourced, so it carries
 its own genuine-failure-only flags (``hourly_events_available``,
 ``device_liveness_available``, ``owntracks_cadence_available``) instead.
@@ -38,7 +39,6 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
@@ -50,6 +50,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
 from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
+from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
 from butlers.connectors.registry_roles import (
     CHECKPOINT as _ROLE_CHECKPOINT,
 )
@@ -360,11 +361,6 @@ def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
         resolve_owner_recipient=_resolve_owner_recipient,
         credential_store=credential_store,
     )
-
-
-def _get_prometheus_url() -> str | None:
-    """Return Prometheus base URL from env, or None if not configured or empty."""
-    return os.environ.get("PROMETHEUS_URL") or None
 
 
 # ---------------------------------------------------------------------------
@@ -917,9 +913,15 @@ async def get_cross_connector_summary_with_aggregates(
 ) -> ApiResponse[dict]:
     """Return cross-connector aggregate summary with ``aggregates_available`` flag.
 
-    Aggregates health and volume counts across all active connectors and
-    includes ``aggregates_available`` indicating whether Prometheus-backed
-    per-connector time-series metrics are expected to be valid.
+    Aggregates health and volume counts across all active connectors. Every
+    number in the response is DB-sourced; ``aggregates_available`` is the one
+    field that is not, and reports whether Prometheus answered the funnel
+    queries backing the console's time-series panels — never merely whether a
+    ``PROMETHEUS_URL`` is configured (bu-avkvr). It is resolved through
+    ``prometheus_aggregates_available``, the same 60-second TTL cache
+    ``GET /api/ingestion/pipeline`` publishes its own flag from, so the two
+    endpoints cannot disagree. A cold cache costs this endpoint one funnel
+    fetch; a failed or unreadable one lowers the flag to ``false``.
 
     Only rows whose persisted ``operational_role`` is ``runtime_instance``
     count toward ``total_connectors``, the online/stale/offline split, and the
@@ -933,21 +935,17 @@ async def get_cross_connector_summary_with_aggregates(
     Always returns HTTP 200 — database errors fall back to zero-value summary.
     """
     pool = _pool(db)
-    aggregates_available = _get_prometheus_url() is not None
 
-    # Check the pipeline cache for a recent successful fetch
+    # Ask the pipeline module whether Prometheus actually answered, rather than
+    # deciding from PROMETHEUS_URL being set: a configured-but-down Prometheus
+    # used to yield the same `true` as a healthy one whenever the shared cache
+    # was cold (bu-avkvr). The probe is best-effort — this endpoint's own
+    # numbers are DB-sourced and must still be served if it fails.
     try:
-        import time
-
-        from butlers.api.routers.ingestion_pipeline import _CACHE_TTL_SECONDS, _pipeline_cache
-
-        cached = _pipeline_cache.get("24h")
-        if cached is not None:
-            ts, data = cached
-            if time.monotonic() - ts < _CACHE_TTL_SECONDS:
-                aggregates_available = data.get("aggregates_available", False)
+        aggregates_available = await prometheus_aggregates_available()
     except Exception:
-        pass
+        logger.warning("cross-summary: aggregate availability probe failed", exc_info=True)
+        aggregates_available = False
 
     _zero_summary = {
         "total_connectors": 0,

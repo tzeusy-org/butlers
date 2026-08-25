@@ -499,6 +499,24 @@ async def _get_cached_pipeline_stats(window: str) -> dict:
     return data
 
 
+async def prometheus_aggregates_available(window: str = "24h") -> bool:
+    """Return whether Prometheus actually answered the funnel queries for ``window``.
+
+    The single authority for ``aggregates_available`` across the ingestion
+    console, so every surface that publishes the flag publishes the same
+    answer, earned the same way. It resolves through the 60-second TTL cache
+    above: a warm entry costs nothing, and a cold one issues the real queries
+    rather than assuming an answer that was never requested.
+
+    Callers outside this module used to read ``_pipeline_cache`` directly and
+    fall back to "``PROMETHEUS_URL`` is set" on a cold cache, which credited a
+    down or unreachable Prometheus with the same ``true`` as one that answered
+    (bu-avkvr).
+    """
+    stats = await _get_cached_pipeline_stats(window)
+    return bool(stats.get("aggregates_available", False))
+
+
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/pipeline
 # ---------------------------------------------------------------------------
