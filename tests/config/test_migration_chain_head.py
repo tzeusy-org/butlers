@@ -10,7 +10,6 @@ for the error paths (unknown chain, multiple unmerged heads).
 from __future__ import annotations
 
 import ast
-import re
 import textwrap
 from fnmatch import fnmatchcase
 from functools import cache
@@ -25,6 +24,15 @@ from butlers.migrations import (
     get_all_chains,
     get_chain_head,
     get_chain_revision_ids,
+)
+from butlers.testing.source_guard import (
+    enclosing_statement,
+    local_bindings,
+    parent_map,
+    pragma_declaration,
+    scope_nodes,
+    scopes,
+    string_constants,
 )
 
 pytestmark = pytest.mark.unit
@@ -312,13 +320,10 @@ def test_get_chain_head_raises_on_multiple_unmerged_heads(tmp_path, monkeypatch)
 
 _GUARDED_SOURCE_ROOTS = ("src", "tests", "roster", "alembic")
 _VERSION_NUM_READ_MARKERS = ("version_num", "alembic_version")
+# The reason after the colon is mandatory (enforced by ``pragma_declaration``):
+# a bare marker would let the guard be silenced without anyone articulating which
+# of the two readings the literal has, and that articulation is the entire point.
 _PINNED_REVISION_PRAGMA = "pinned-revision:"
-# The reason is mandatory. A bare marker would let the guard be silenced without
-# anyone articulating which of the two readings the literal has — and that
-# articulation is the entire point, since the ambiguity is the defect.
-_PINNED_REVISION_DECLARATION = re.compile(
-    rf"#.*{re.escape(_PINNED_REVISION_PRAGMA)}\s*(?P<reason>\S.*)"
-)
 
 
 @cache
@@ -327,18 +332,9 @@ def _all_revision_ids() -> frozenset[str]:
     return frozenset().union(*(get_chain_revision_ids(chain) for chain in get_all_chains()))
 
 
-def _string_constants(node: ast.AST) -> list[str]:
-    """Every string constant anywhere inside *node*, f-string parts included."""
-    return [
-        child.value
-        for child in ast.walk(node)
-        if isinstance(child, ast.Constant) and isinstance(child.value, str)
-    ]
-
-
 def _revision_literals(node: ast.AST) -> set[str]:
     """Revision ids spelled as literals inside *node* (``["core_201"]`` included)."""
-    return {value for value in _string_constants(node) if value in _all_revision_ids()}
+    return {value for value in string_constants(node) if value in _all_revision_ids()}
 
 
 def _reads_alembic_version(node: ast.AST, bindings: dict[str, ast.AST]) -> bool:
@@ -353,90 +349,22 @@ def _reads_alembic_version(node: ast.AST, bindings: dict[str, ast.AST]) -> bool:
         candidates.append(bindings[node.id])
     return any(
         all(
-            marker in " ".join(_string_constants(candidate)).lower()
+            marker in " ".join(string_constants(candidate)).lower()
             for marker in _VERSION_NUM_READ_MARKERS
         )
         for candidate in candidates
     )
 
 
-def _scope_nodes(scope: ast.AST) -> list[ast.AST]:
-    """Every node belonging to *scope*, without descending into nested functions.
-
-    Nested functions are separate scopes with their own bindings, and visiting
-    them once each here (rather than again for every enclosing scope) keeps the
-    whole-repo sweep linear in the size of the tree.
-    """
-    nodes: list[ast.AST] = []
-    stack = list(ast.iter_child_nodes(scope))
-    while stack:
-        node = stack.pop()
-        nodes.append(node)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        stack.extend(ast.iter_child_nodes(node))
-    return nodes
-
-
-def _local_bindings(nodes: list[ast.AST]) -> dict[str, ast.AST]:
-    """Map simple ``name = <expr>`` assignments among *nodes* to their value nodes."""
-    bindings: dict[str, ast.AST] = {}
-    for node in nodes:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    bindings[target.id] = node.value
-    return bindings
-
-
-def _pin_declaration(statement: ast.stmt, lines: list[str]) -> tuple[bool, str | None]:
-    """Find a deliberate-pin declaration on, or in the comment block above, *statement*.
-
-    Returns ``(marker_present, reason)``. A marker with no reason after the
-    colon does not excuse the literal, and is reported differently so the
-    author is told what is missing rather than just that the guard fired.
-    """
-    start = statement.lineno - 1
-    while start > 0 and lines[start - 1].lstrip().startswith("#"):
-        start -= 1
-    end = statement.end_lineno or statement.lineno
-    span = lines[start:end]
-    for line in span:
-        match = _PINNED_REVISION_DECLARATION.search(line)
-        if match is not None:
-            return True, match.group("reason").strip()
-    return any(_PINNED_REVISION_PRAGMA in line for line in span), None
-
-
-def _parent_map(tree: ast.Module) -> dict[int, ast.AST]:
-    return {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-
-
-def _enclosing_statement(node: ast.AST, parents: dict[int, ast.AST]) -> ast.stmt:
-    """The statement a comparison belongs to — where a reader looks, and comments."""
-    current: ast.AST | None = node
-    while current is not None and not isinstance(current, ast.stmt):
-        current = parents.get(id(current))
-    assert isinstance(current, ast.stmt)
-    return current
-
-
-def _scopes(tree: ast.Module) -> list[ast.AST]:
-    """The module plus every function body, so local bindings stay scoped."""
-    return [tree] + [
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-    ]
-
-
 def head_literal_findings(path: Path, source: str) -> list[str]:
     """Report every revision literal compared against an ``alembic_version`` read."""
     tree = ast.parse(source)
     lines = source.splitlines()
-    parents = _parent_map(tree)
+    parents = parent_map(tree)
     findings: dict[int, str] = {}
-    for scope in _scopes(tree):
-        nodes = _scope_nodes(scope)
-        bindings = _local_bindings(nodes)
+    for scope in scopes(tree):
+        nodes = scope_nodes(scope)
+        bindings = local_bindings(nodes)
         for node in nodes:
             if not isinstance(node, ast.Compare):
                 continue
@@ -455,8 +383,8 @@ def head_literal_findings(path: Path, source: str) -> list[str]:
             }
             if not (reads - set(literals)):
                 continue
-            statement = _enclosing_statement(node, parents)
-            marker, reason = _pin_declaration(statement, lines)
+            statement = enclosing_statement(node, parents)
+            marker, reason = pragma_declaration(statement, lines, _PINNED_REVISION_PRAGMA)
             if marker and reason:
                 continue
             spelled = ", ".join(sorted(value for found in literals.values() for value in found))

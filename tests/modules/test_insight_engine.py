@@ -41,6 +41,15 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 # ---------------------------------------------------------------------------
 
 
+# The instant handed to every broker call below that takes ``now=``. The broker
+# derives its whole window from the instant it is given — compute_effective_budget
+# looks back ``window_days``, check_total_disengagement_auto_off truncates to
+# midnight and counts fourteen day buckets, delivery_cycle asks the Owner
+# Attention Policy whether this hour is quiet — so naming the instant is what
+# makes those windows mean the same thing on a 03:00 run and a 23:00 one.
+_PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+
+
 def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
@@ -613,9 +622,14 @@ class TestCooldownEnforcement:
             VALUES (1, 'minimal')
             ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
         """)
+        # delivery_cycle skips the whole cycle during Owner Attention Policy
+        # quiet hours, so a redelivery assertion needs both halves pinned: the
+        # policy (disabled here — this test is about the cooldown upsert, not
+        # about suppression) and the instant it is evaluated at.
+        await _set_owner_attention_policy(insight_pool, quiet_start_hour=None, quiet_end_hour=None)
 
         dedup_key = "health:bp:user-1:2026"
-        t0 = datetime.now(UTC)
+        t0 = _PINNED_NOW
         notify_mock = AsyncMock(return_value={"status": "sent"})
 
         # First delivery. priority=70 -> default cooldown is 7 days (70-89 range).
@@ -626,7 +640,7 @@ class TestCooldownEnforcement:
             category="health",
             dedup_key=dedup_key,
             message="No BP logged in 12 days",
-            expires_at=_future(),
+            expires_at=t0 + timedelta(days=7),
         )
         r1 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=t0)
         assert len(r1["delivered"]) == 1
@@ -690,7 +704,7 @@ class TestCooldownEnforcement:
             "message": "Custom cooldown test",
             "cooldown_days": 3,
         }
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await record_cooldowns(insight_pool, [candidate], now=now)
 
         row = await insight_pool.fetchrow(
@@ -718,7 +732,7 @@ class TestAdaptiveDelivery:
         from butlers.tools.switchboard.insight.broker import compute_effective_budget
 
         settings = {"verbosity": "normal", "custom_budget": None}
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         # Insert 10 deliveries, 6 engaged (60%)
         for i in range(6):
             await insight_pool.execute(
@@ -748,7 +762,7 @@ class TestAdaptiveDelivery:
         from butlers.tools.switchboard.insight.broker import compute_effective_budget
 
         settings = {"verbosity": "normal", "custom_budget": None}
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         # 3 engaged, 10 total → 30% engagement
         for i in range(3):
             await insight_pool.execute(
@@ -778,7 +792,7 @@ class TestAdaptiveDelivery:
         from butlers.tools.switchboard.insight.broker import compute_effective_budget
 
         settings = {"verbosity": "verbose", "custom_budget": None}
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         # 1 engaged, 10 total → 10%
         await insight_pool.execute(
             """
@@ -820,7 +834,7 @@ class TestAdaptiveDelivery:
 
         # Start with minimal budget=1
         settings = {"verbosity": "minimal", "custom_budget": None}
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         # Perfect engagement
         for i in range(5):
             await insight_pool.execute(
@@ -1927,7 +1941,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await self._insert_daily_engagement(
             insight_pool, num_days=14, engaged=False, reference_now=now
         )
@@ -1955,7 +1969,7 @@ class TestAutoOffTotalDisengagement:
         assert await check_total_disengagement_auto_off(insight_pool) is False
 
         # Only 13 days of zero engagement (fewer than 14)
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await self._insert_daily_engagement(
             insight_pool, num_days=13, engaged=False, reference_now=now
         )
@@ -1969,7 +1983,7 @@ class TestAutoOffTotalDisengagement:
             check_total_disengagement_auto_off,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await self._insert_daily_engagement(
             insight_pool, num_days=13, engaged=False, reference_now=now
         )
@@ -1990,7 +2004,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await self._insert_daily_engagement(
             insight_pool, num_days=14, engaged=False, reference_now=now
         )
@@ -2012,7 +2026,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         await self._insert_daily_engagement(
             insight_pool, num_days=14, engaged=False, reference_now=now
         )
@@ -2029,7 +2043,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # 14 complete past days + today's partial row -> still triggers
@@ -2053,7 +2067,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         await self._insert_daily_engagement(
             insight_pool, num_days=13, engaged=False, reference_now=now
@@ -2076,7 +2090,7 @@ class TestAutoOffTotalDisengagement:
             get_insight_settings,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # 7 complete days still present as raw insight_engagement rows.
@@ -2112,7 +2126,7 @@ class TestAutoOffTotalDisengagement:
             check_total_disengagement_auto_off,
         )
 
-        now = datetime.now(UTC)
+        now = _PINNED_NOW
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         await self._insert_daily_engagement(

@@ -254,6 +254,9 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
     identity = next(f for f in result["facts"] if f["store"] == "identity")
     sql_band = identity["staleness_band"]
 
+    # live-clock: the SQL band is computed against Postgres now(); the Python
+    # band must read the same real clock or the two sides are not comparable.
+    # That mixing is what @pytest.mark.pg_clock declares.
     expected = staleness_band(
         store="identity",
         observed_at=observed,
@@ -295,6 +298,8 @@ async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
         last_seen,
     )
     result = await relationship_lookup(pool, entity_id=eid)
+    # live-clock: as above — the recency band comes from the same SQL builder
+    # evaluated against Postgres now(), so the Python side reads the real clock.
     expected = staleness_band(
         store="identity",
         observed_at=None,
