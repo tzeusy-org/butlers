@@ -1,7 +1,7 @@
 ---
 name: teaching-session
-description: Teach one concept at a time using Socratic scaffolding and mastery updates.
-version: 1.0.0
+description: Teach one concept at a time using the technique its concept type calls for, with mastery updates, source citations, and reading pathways.
+version: 1.1.0
 ---
 
 # Skill: Teaching Session
@@ -9,8 +9,8 @@ version: 1.0.0
 ## Purpose
 
 Single-concept teaching loop. Walk the mind map's frontier — pick the next concept whose
-prerequisites are all mastered, teach it with Socratic scaffolding, quiz comprehension, record
-mastery, and schedule a spaced repetition review. One session, one concept.
+prerequisites are all mastered, teach it with the technique its concept type calls for, quiz
+comprehension, record mastery, and schedule a spaced repetition review. One session, one concept.
 
 ## When to Use
 
@@ -41,6 +41,43 @@ what context they are coming from, or why they are curious. Use their answer to 
 Socratic questioning reveals understanding in ways that passive reception does not. Understanding
 demonstrated through dialogue sticks longer than explanation received.
 
+### Technique Follows Concept Type
+
+Socratic questioning is the default, not the only tool. Each concept node carries a
+`metadata.concept_type` (written by `curriculum_generate`), and `teaching_flow_advance()` records
+the matching technique in the flow state as `current_technique` — read it in Step 0 and teach the
+way it says.
+
+| `concept_type` | Technique (`current_technique.id`) | Shape of the explaining phase |
+|---|---|---|
+| `factual` | `retrieval-practice` | Ask for the fact before supplying it; correct in one line; retrieve again later in the session |
+| `procedural` | `worked-example` | One complete worked example narrated step by step, then a near-identical problem with the hardest step done, then fade the scaffolding |
+| `conceptual` | `socratic-analogy` | Ask what they already believe, offer one analogy and ask where it breaks, have them state the principle in their own words |
+| `creative` | `divergent-then-critique` | Ask for several genuinely different attempts before judging any; they pick one; critique only that one, against criteria they named |
+| unset | `socratic` (default) | Ask what they know, calibrate, then explain — the behavior described under "Socratic Before Direct" |
+
+Most nodes have no `concept_type`: the classifier abstains when the markers conflict. That is
+normal, and the Socratic default is the right answer for it. Never infer a type yourself to unlock
+a different technique.
+
+`current_technique.moves` lists the beats in order and `current_technique.label` names the
+technique in plain words. Follow the moves; do not announce them as a checklist.
+
+### Pedagogy Transparency
+
+When the owner asks why you are teaching something this way — "why worked examples?", "why are you
+just asking questions?" — answer from `current_technique`: name the concept type, the technique,
+and the principle in `current_technique.principle`. One short message, in your own words:
+
+> "This is a procedural skill, so I'm starting from a worked example — cognitive load theory says
+> studying a complete example first frees up working memory to build the procedure, which is why it
+> beats being handed the problem cold. Back to it:"
+
+Then resume from exactly where you were. Do not restart the concept, do not re-ask the last
+question, and do not turn the answer into a lesson about pedagogy. If `current_technique` is absent
+(a flow that started before techniques were recorded), say you are using Socratic questioning by
+default because the concept has no recorded type.
+
 ### Positive Reinforcement Protocol
 
 - **Correct on first attempt**: acknowledge specifically — "Exactly — [paraphrase their key insight]"
@@ -56,6 +93,9 @@ Call `teaching_flow_get(mind_map_id)` to read the current flow state. Note:
 - `status`: Should be `TEACHING` or `QUIZZING`
 - `current_node_id`: The node being taught (non-null when status is `TEACHING`)
 - `current_phase`: `explaining`, `questioning`, or `evaluating`
+- `current_technique`: The technique this concept's type calls for — `id`, `label`, `moves`, and
+  the `principle` you cite if asked why. Null outside `TEACHING`; absent on flows that predate
+  technique recording, in which case teach Socratically.
 
 If resuming a partially-complete session (e.g., `current_phase = "questioning"`), skip to the
 appropriate step below.
@@ -78,13 +118,19 @@ deep to start the explanation.
 Note: the node dict returned by `curriculum_next_node()` and `mind_map_node_get()` includes an
 `entity_id` field — save it alongside `node_id` for use in `memory_store_fact()` calls below.
 
-### Step 3: Socratic Opening (Explaining Phase)
+### Step 3: Opening Move (Explaining Phase)
 
-Ask one opening question via `notify()`:
+Open with the first entry in `current_technique.moves`. For the Socratic default and for
+`socratic-analogy`, that is one opening question via `notify()`:
 
 ```
 "Before I explain [concept], what do you already know about it?"
 ```
+
+For `retrieval-practice`, ask for the fact itself first ("What does X mean, as best you can recall?")
+rather than asking what they know about it. For `worked-example`, skip the probe and go straight to
+the worked example in Step 4. For `divergent-then-critique`, ask for several attempts before you
+evaluate anything.
 
 Wait for the answer. Use it to calibrate explanation depth:
 - Strong answer (prior knowledge evident) → start deeper, skip basic scaffolding
@@ -103,12 +149,39 @@ notify(
 
 ### Step 4: Explanation
 
-After receiving the Socratic probe answer, explain the concept clearly:
-- Lead with a concrete analogy or real-world example
+Explain the concept in the shape `current_technique.moves` describes:
+- Lead with a concrete analogy or real-world example (for `worked-example`, lead with the example
+  itself, narrating each decision)
 - Follow with the precise definition
 - For programming topics: include a working code example
 - Keep it focused on one concept — do not survey related ideas
 - Deliver via `notify(channel="telegram", intent="reply", ...)`
+
+**Cite what you are drawing on.** If the node already carries `source_refs` (the curriculum planner
+maps registered sources onto nodes), or you are explaining from a specific place in a work you know,
+say so inline: "as described in [title], [location]". Then record it:
+
+```python
+teaching_cite_source(
+    node_id=<current_node_id>,
+    location="chapter 1.2",           # specific enough to act on
+    provenance="model-recalled",      # or "referenced" — see below
+    source_id=<registered source id or omit>,
+    note=<optional>,
+)
+```
+
+`provenance` is mandatory and the owner sees exactly what you store:
+
+- **`"referenced"`** — only when this session actually read the registered source. Requires a
+  `source_id` from `source_material_list()`. This is the only value that renders as a citation.
+- **`"model-recalled"`** — the location comes from your own knowledge of the work. Use this even
+  when the source *is* registered: the registry proves the book exists, not that you opened it.
+  Claiming `"referenced"` for a remembered page number tells the owner you checked when you did not.
+- Citing a well-known work the owner has not registered: omit `source_id` (it becomes `null`) with
+  `provenance="model-recalled"`.
+
+Do not invent a location to have something to cite. No citation is better than a wrong one.
 
 ### Step 5: Comprehension Check (1–3 Questions, Questioning Phase)
 
@@ -147,6 +220,25 @@ mastery_record_response(
   (`notify(intent="react", emoji="✅", ...)` then `notify(intent="reply", ...)`)
 - Quality < 3: Never say "wrong." Use a Socratic nudge:
   "Not quite — let's think about [guiding question]" then redirect
+
+### Step 5b: Reading Pathway (After the Concept Lands)
+
+Once the concept is explained and checked, call:
+
+```
+teaching_reading_pathways(node_id=<current_node_id>)
+```
+
+For each entry in `pathways`, suggest it as optional further study, with the source title and the
+specific location — never as a prerequisite and never as homework:
+
+> "For deeper study, chapter 1.2 of *Structure and Interpretation of Computer Programs* works
+> through the substitution model in full. Entirely optional."
+
+Phrase a pathway whose `provenance` is `model-recalled` with the hedge it deserves ("I believe it's
+around chapter 3 — worth a look, though I haven't checked the page"). If `pathways` is empty, say
+nothing about further reading and move on: no registered source covers this concept, and inventing
+one would be worse than silence.
 
 ### Step 6: Schedule Spaced Repetition Review
 
@@ -220,7 +312,12 @@ Do not start the next concept. The next session handles the next frontier node.
 
 ## Exit Criteria
 
-- Exactly one concept node has been taught in this session
+- Exactly one concept node has been taught in this session, using the technique in
+  `current_technique` (Socratic when the concept has no recorded type)
+- Any source drawn on is cited inline and recorded via `teaching_cite_source()` with an explicit
+  `provenance`
+- Reading pathways offered via `teaching_reading_pathways()`, or deliberately omitted because none
+  exist
 - 1–3 quiz responses recorded via `mastery_record_response(response_type="teach")`
 - Spaced repetition review scheduled via `spaced_repetition_record_response()`
 - Learning outcome stored in memory via `memory_store_fact()`

@@ -1552,3 +1552,152 @@ class TestCheckStaleFlows:
         # At exactly 30 days, it's on the boundary — should not be abandoned
         # (cutoff = now - 30 days; last_session_at == cutoff → NOT stale)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: technique recorded in flow state (REQ-module-education-teaching-flows-006)
+# ---------------------------------------------------------------------------
+
+
+class TestTechniqueRecording:
+    """Entering TEACHING records which technique the concept's type calls for.
+
+    The ephemeral teaching session reads the flow state and nothing else, so the
+    technique — and the principle behind it, which the owner may ask about — has
+    to be in the state it reads.
+    """
+
+    @staticmethod
+    async def _advance_from_planning(frontier_node: dict[str, Any]) -> dict[str, Any]:
+        """Advance planning → teaching with *frontier_node* as the next concept."""
+        from butlers.tools.education.teaching_flows import teaching_flow_advance
+
+        map_id = str(uuid.uuid4())
+        state = _flow_state(status="planning", current_node_id=None, current_phase=None)
+        state["mind_map_id"] = map_id
+        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=3)])
+
+        with (
+            patch(
+                "butlers.tools.education.teaching_flows.mind_map_frontier",
+                AsyncMock(return_value=[frontier_node]),
+            ),
+            patch(
+                "butlers.tools.education.teaching_flows.state_compare_and_set",
+                AsyncMock(return_value=4),
+            ),
+        ):
+            return await teaching_flow_advance(pool, map_id)
+
+    async def test_procedural_node_records_worked_example(self) -> None:
+        node = {
+            "id": str(uuid.uuid4()),
+            "label": "How to implement quicksort",
+            "metadata": {"concept_type": "procedural"},
+        }
+        result = await self._advance_from_planning(node)
+
+        assert result["status"] == "teaching"
+        assert result["current_technique"]["id"] == "worked-example"
+        assert result["current_technique"]["concept_type"] == "procedural"
+        assert result["current_technique"]["principle"].strip()
+
+    async def test_factual_node_records_retrieval_practice(self) -> None:
+        node = {
+            "id": str(uuid.uuid4()),
+            "label": "Definitions of big-O notation",
+            "metadata": {"concept_type": "factual"},
+        }
+        result = await self._advance_from_planning(node)
+
+        assert result["current_technique"]["id"] == "retrieval-practice"
+
+    async def test_node_without_concept_type_records_socratic_default(self) -> None:
+        node = {"id": str(uuid.uuid4()), "label": "Basics", "metadata": {}}
+        result = await self._advance_from_planning(node)
+
+        assert result["current_technique"]["id"] == "socratic"
+        assert result["current_technique"]["concept_type"] is None
+
+    async def test_node_without_metadata_at_all_records_socratic_default(self) -> None:
+        """Backward compatible: nodes predating concept typing still teach fine."""
+        node = {"id": str(uuid.uuid4()), "label": "Basics"}
+        result = await self._advance_from_planning(node)
+
+        assert result["current_technique"]["id"] == "socratic"
+
+    async def test_quizzing_to_teaching_records_the_next_nodes_technique(self) -> None:
+        from butlers.tools.education.teaching_flows import teaching_flow_advance
+
+        map_id = str(uuid.uuid4())
+        next_node_id = str(uuid.uuid4())
+        state = _flow_state(
+            status="quizzing", current_node_id=str(uuid.uuid4()), current_phase=None
+        )
+        state["mind_map_id"] = map_id
+        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+
+        summary = {"total_nodes": 5, "mastered_count": 1}
+        frontier = [
+            {
+                "id": next_node_id,
+                "label": "Why quicksort degrades",
+                "metadata": {"concept_type": "conceptual"},
+            }
+        ]
+
+        with (
+            patch(
+                "butlers.tools.education.teaching_flows.mastery_get_map_summary",
+                AsyncMock(return_value=summary),
+            ),
+            patch(
+                "butlers.tools.education.teaching_flows.mind_map_frontier",
+                AsyncMock(return_value=frontier),
+            ),
+            patch(
+                "butlers.tools.education.teaching_flows.state_compare_and_set",
+                AsyncMock(return_value=6),
+            ),
+        ):
+            result = await teaching_flow_advance(pool, map_id)
+
+        assert result["current_technique"]["id"] == "socratic-analogy"
+
+    async def test_leaving_teaching_clears_the_technique(self) -> None:
+        from butlers.tools.education.teaching_flows import teaching_flow_advance
+
+        map_id = str(uuid.uuid4())
+        node_id = str(uuid.uuid4())
+        state = _flow_state(status="teaching", current_node_id=node_id, current_phase="questioning")
+        state["mind_map_id"] = map_id
+        state["current_technique"] = {"id": "worked-example", "concept_type": "procedural"}
+        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=4)])
+
+        with patch(
+            "butlers.tools.education.teaching_flows.state_compare_and_set",
+            AsyncMock(return_value=5),
+        ):
+            result = await teaching_flow_advance(pool, map_id)
+
+        assert result["status"] == "quizzing"
+        assert result["current_technique"] is None
+
+    def test_technique_must_be_null_outside_teaching(self) -> None:
+        from butlers.tools.education.teaching_flows import _validate_state_invariants
+
+        state = _flow_state(
+            status="quizzing", current_node_id=str(uuid.uuid4()), current_phase=None
+        )
+        state["current_technique"] = {"id": "socratic"}
+        with pytest.raises(ValueError, match="current_technique"):
+            _validate_state_invariants(state)
+
+    def test_legacy_teaching_state_without_a_technique_still_validates(self) -> None:
+        """Flows written before this change keep advancing; they fall back to Socratic."""
+        from butlers.tools.education.teaching_flows import _validate_state_invariants
+
+        state = _flow_state(
+            status="teaching", current_node_id=str(uuid.uuid4()), current_phase="explaining"
+        )
+        _validate_state_invariants(state)  # no exception

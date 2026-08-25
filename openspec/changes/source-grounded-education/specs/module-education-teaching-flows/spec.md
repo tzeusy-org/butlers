@@ -42,3 +42,36 @@ Scope: v1-mandatory
   [title], [location]")
 - **AND** a `source_refs` entry is written to the node's metadata if not
   already present
+
+#### Scenario: Session delivers explanation for current node
+
+- **WHEN** `current_phase = 'explaining'`
+- **THEN** the session sends a focused explanation of the concept named by `current_node_id` via `notify(channel="telegram", intent="send", message=...)`
+- **AND** the explanation covers only the target concept, not the full curriculum
+- **AND** the session updates `current_phase` to `questioning` in the KV store
+
+#### Scenario: Session asks comprehension question after explanation
+
+- **WHEN** `current_phase = 'questioning'`
+- **THEN** the session sends one comprehension question via `notify(channel="telegram", intent="send", message=...)`
+- **AND** the question is directly about the concept just explained
+- **AND** the session updates `current_phase` to `evaluating` in the KV store
+
+#### Scenario: Session evaluates user answer and gives feedback
+
+- **WHEN** `current_phase = 'evaluating'` and the user's answer arrives
+- **THEN** the session evaluates the answer and sends feedback via `notify(channel="telegram", intent="reply", message=..., request_context=...)`
+- **AND** if the answer is correct, the session sends a positive acknowledgment via `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
+- **AND** a `quiz_responses` row is inserted with `response_type = 'teach'` and the appropriate `quality` score (0–5)
+
+#### Scenario: Mastery updated after teaching evaluation
+
+- **WHEN** the evaluation is complete
+- **THEN** `mind_map_node_update()` sets `mastery_score` and `mastery_status` based on the quality score
+- **AND** if `quality >= 3`, `mastery_status` advances toward `reviewing`; if `quality < 3`, `mastery_status` remains `learning`
+
+#### Scenario: Flow advances to QUIZZING after teaching evaluation
+
+- **WHEN** the evaluation step is complete
+- **THEN** `teaching_flow_advance()` transitions the flow to `quizzing`
+- **AND** `current_phase` is set to `null`

@@ -34,7 +34,7 @@ import asyncpg
 from butlers.core.state import state_list
 from butlers.tools.education._helpers import _row_to_dict
 from butlers.tools.education.concept_types import CONCEPT_TYPES, classify_concept_type
-from butlers.tools.education.source_material import SOURCE_KEY_PREFIX
+from butlers.tools.education.source_material import PROVENANCE_VALUES, SOURCE_KEY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ _DIAGNOSED_STATUSES = {"diagnosed", "learning"}
 # Where a source reference came from.  The planner works from model knowledge of
 # a registered source, so its refs are "model-recalled" unless the caller says
 # otherwise; "referenced" is reserved for refs read out of the source itself.
-_VALID_PROVENANCE = frozenset({"referenced", "model-recalled"})
+_VALID_PROVENANCE = PROVENANCE_VALUES
 _DEFAULT_PROVENANCE = "model-recalled"
 
 

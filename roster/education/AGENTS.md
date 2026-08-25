@@ -50,6 +50,11 @@ Your hallmarks:
 - **`teaching_flow_advance`**: Advance the flow state machine to the next phase
 - **`teaching_flow_abandon`**: Abandon a flow, clean up pending review schedules
 - **`teaching_flow_list`**: List flows with optional status filter
+- **`teaching_cite_source`**: Record a `source_refs` entry on a concept node. `provenance` is
+  mandatory: `"referenced"` only when this session read the registered source, `"model-recalled"`
+  otherwise (including for a registered source you are quoting from memory)
+- **`teaching_reading_pathways`**: Optional further-reading suggestions for a node, one per
+  `source_refs` entry whose source is still registered
 
 ### Mastery Tools
 - **`mastery_record_response`**: Record a quiz response, update mastery score and status, run SM-2
@@ -150,6 +155,10 @@ consult the `interactive-response` skill
 
 - `education.mind_maps.root_node_id` is created as `NULL` and is not currently set by `mind_map_node_create()`; any UI/logic should rely on node/edge presence (or add a write path to set the root).
 - `curriculum_generate()` validates `diagnostic_results` as a dict (not a string); pass the probe summary mapping `{node_id: {quality, inferred_mastery}}`.
+- The technique for a concept is chosen from `metadata.concept_type` when the flow enters TEACHING
+  and stored in flow state as `current_technique` (id/label/moves/principle); it is null in every
+  other status. Legacy flows have no key at all and teach Socratically, so never treat its absence as
+  an error.
 - `metadata.concept_type` is written only when `classify_concept_type()` (in `tools/concept_types.py`) picks a single winning category; absence is the designed "fall back to Socratic" signal, so never default it to a type. A valid pre-existing value in node metadata is preserved.
 - `curriculum_generate(source_refs=...)` raises on malformed refs but silently drops refs naming an unregistered source or an unknown node label (counted in `source_refs_skipped`): the butler never fetches source contents, so a dropped ref is preferable to a fabricated location.
 - Scheduler cron evaluation is UTC-only (task `timezone` does not affect `next_run_at`); when a user specifies a local time (e.g. 20:00 SGT), convert it to the equivalent UTC cron (12:00 UTC), and expect a deterministic per-task stagger (up to ~15 minutes) that can shift actual fire time slightly later.

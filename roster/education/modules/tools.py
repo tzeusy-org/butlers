@@ -27,6 +27,7 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     from butlers.tools.education import mind_map_nodes as _nodes
     from butlers.tools.education import mind_map_queries as _queries
     from butlers.tools.education import mind_maps as _maps
+    from butlers.tools.education import pedagogy as _pedagogy
     from butlers.tools.education import source_material as _source_material
     from butlers.tools.education import spaced_repetition as _sr
     from butlers.tools.education import teaching_flows as _flows
@@ -251,6 +252,47 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     ) -> list[dict[str, Any]]:
         """List teaching flows with optional status filter."""
         return await _flows.teaching_flow_list(module._get_pool(), status=status)
+
+    @_tool("teaching")
+    async def teaching_cite_source(
+        node_id: str,
+        location: str,
+        provenance: str,
+        source_id: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Record where a claim in this explanation came from, on the concept node.
+
+        ``provenance`` is mandatory and is shown to the owner verbatim: pass
+        ``"referenced"`` only if this session read the registered source itself,
+        and ``"model-recalled"`` when the location comes from your own knowledge of
+        the work — a registered ``source_id`` proves the source exists, not that
+        anything read the page. ``"referenced"`` requires a registered
+        ``source_id`` (see ``source_material_list``); cite an unregistered work
+        with ``source_id=None``. ``location`` should be specific (chapter, page
+        range, section) — omit the citation rather than inventing one.
+        """
+        return await _pedagogy.teaching_cite_source(
+            module._get_pool(),
+            node_id,
+            location=location,
+            provenance=provenance,
+            source_id=source_id,
+            note=note,
+        )
+
+    @_tool("teaching")
+    async def teaching_reading_pathways(node_id: str) -> dict[str, Any]:
+        """Return optional further-reading suggestions for a concept node.
+
+        One pathway per ``source_refs`` entry whose source is still registered,
+        with its title, location, and provenance. Suggest them as optional
+        ("for deeper study, see…"), never as a prerequisite, and hedge a
+        ``model-recalled`` location rather than asserting it. An empty
+        ``pathways`` list means no registered source covers this concept —
+        say nothing about further reading and continue teaching.
+        """
+        return await _pedagogy.teaching_reading_pathways(module._get_pool(), node_id)
 
     # =================================================================
     # Mastery tools

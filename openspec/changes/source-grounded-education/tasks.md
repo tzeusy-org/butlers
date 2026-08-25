@@ -39,7 +39,7 @@ Acceptance:
 
 ### 4. Pedagogy-aware teaching session
 
-- [ ] 4.1 Extend teaching-session skill to select technique by concept type. Add
+- [x] 4.1 Extend teaching-session skill to select technique by concept type. Add
       pedagogy transparency ("why this approach?"). Add source citation in
       explanations and reading pathway suggestions after concept completion.
 
