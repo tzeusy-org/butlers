@@ -12,7 +12,9 @@ import asyncio
 import json
 import os
 import sys
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 
 import asyncpg
 
@@ -21,6 +23,28 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # source tree so the operator command executes the exact reviewed repository
 # implementation without packaging the full application dependency set.
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+
+def _register_operator_package(name: str, package_root: Path) -> None:
+    """Expose one package path without executing its application initializer."""
+    if name in sys.modules:
+        return
+
+    package = ModuleType(name)
+    package.__package__ = name
+    package.__path__ = [str(package_root)]
+    package.__spec__ = ModuleSpec(name, loader=None, is_package=True)
+    sys.modules[name] = package
+
+
+# Importing ``butlers.tools`` normally registers every roster's tool package.
+# This standalone operator needs only the audited relationship merge modules;
+# avoid importing unrelated application tools and their undeclared dependencies.
+_register_operator_package("butlers.tools", _REPO_ROOT / "src" / "butlers" / "tools")
+_register_operator_package(
+    "butlers.tools.relationship",
+    _REPO_ROOT / "roster" / "relationship" / "tools",
+)
 
 from butlers.tools.relationship.entity_merge import LockedGuardRejected  # noqa: E402
 from butlers.tools.relationship.whatsapp_reconciliation import (  # noqa: E402

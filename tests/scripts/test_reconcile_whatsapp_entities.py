@@ -271,17 +271,19 @@ def test_script_has_pep_723_metadata_and_no_automatic_runtime_imports() -> None:
     assert "migrations" not in source
 
 
-def test_pep_723_command_can_import_the_repository_package() -> None:
+def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> None:
     """The documented uv invocation must not isolate the script from Butlers."""
     result = subprocess.run(
         ["uv", "run", "--isolated", "--no-project", str(_SCRIPT_PATH), "--help"],
         cwd=_REPO_ROOT,
+        env={**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert result.returncode == 0, result.stderr
+    assert "Failed to register tools" not in result.stderr
     assert "ModuleNotFoundError" not in result.stderr
 
 
