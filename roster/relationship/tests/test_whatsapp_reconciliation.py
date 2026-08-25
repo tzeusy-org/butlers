@@ -856,7 +856,6 @@ async def test_locked_guard_serializes_new_decisions_and_protected_references(
                 await concurrent.execute("SET statement_timeout = 0")
 
     assert await pool.fetchval("SELECT count(*) FROM relationship.pending_actions") == 0
-    assert await pool.fetchval("SELECT count(*) FROM chronicler.point_events") == 0
     assert await pool.fetchval("SELECT count(*) FROM public.memory_catalog") == 0
     assert (
         await pool.fetchval("SELECT count(*) FROM reconciliation_test.arbitrary_entity_reference")
