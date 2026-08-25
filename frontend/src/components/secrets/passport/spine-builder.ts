@@ -59,6 +59,11 @@ export function buildSpineEntries(
     mono: false,
     lastTouchOrder:
       r.state === "never_set" ? 900 : r.test ? i : 500,
+    // bu-hd1vs: this used to end at `used ${r.lastUsed ?? "—"}`. Nothing has
+    // ever persisted a per-credential usage time, so every healthy CLI row
+    // read "used —" in production — which states that usage IS tracked and
+    // there is none. The probe timestamp is the real last-touch signal these
+    // rows have (it already drives lastTouchOrder above), so say that instead.
     subline:
       r.state === "never_set"
         ? "not set"
@@ -66,7 +71,9 @@ export function buildSpineEntries(
           ? "unverified"
         : r.state === "expiring" && r.expires
           ? `expires ${r.expires}`
-          : `used ${r.lastUsed ?? "—"}`,
+          : r.test
+            ? `verified ${r.test.at}`
+            : "not probed",
   }));
 
   const system: SpineEntry[] = inventory.system.map((s, i) => ({
@@ -84,7 +91,7 @@ export function buildSpineEntries(
           : "shared default",
   }));
 
-  const user: SpineEntry[] = userSecrets.map((s, i) => ({
+  const user: SpineEntry[] = userSecrets.map((s) => ({
     key: `u:${s.provider}`,
     family: "user" as const,
     label: inventory.providers[s.provider]?.label ?? s.provider,
@@ -94,7 +101,12 @@ export function buildSpineEntries(
     identity: s.identity,
     state: s.state,
     mono: false,
-    lastTouchOrder: s.lastUsed ? i : 800,
+    // Fixed rank: user rows carry no last-touch signal of their own (no usage
+    // time is tracked anywhere — bu-hd1vs), so they sort as one block after
+    // the system and probed-CLI rows and ahead of the never-set ones. This was
+    // already the production behaviour; the `s.lastUsed ? i : 800` it replaces
+    // could only ever take the 800 branch.
+    lastTouchOrder: 800,
     // bu-86c4c.1 (truth amnesty): these sublines used to hardcode a fake
     // failure age ("refresh failed · 2d") and a fake missing-scope count
     // ("1 scope missing") for EVERY expired / scope_mismatch credential,

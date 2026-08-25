@@ -97,6 +97,17 @@ export interface CapabilityStatus {
  * identifiers, probe messages, and audit note free text are not on that wire
  * and cannot be added back here — the passport shows capability categories
  * from the backend's fixed vocabulary instead.
+ *
+ * `feeds` and `lastUsed` are absent for a related reason (bu-hd1vs). Nothing
+ * ever supplied either one: the adapter hardcoded `feeds: []` / `lastUsed:
+ * null`, so the "Feeds the X butler" line never rendered in production and
+ * the "last used" cell was always "—". Which butlers depend on a credential
+ * IS tracked — `public.provider_feature_catalogue.butler` — and the passport
+ * already shows it live through <WhatBreaks provider={...} />, with the
+ * empty-catalogue case honestly distinguished as "usage not tracked"
+ * (bu-xzaxm). Per-credential usage time is tracked nowhere; the backend drops
+ * `last_used` from its own wire models for exactly that reason
+ * (secrets_v2.py::CliCredentialDetail). Do not reintroduce either field.
  */
 export interface UserCredential {
   provider: string;
@@ -106,7 +117,6 @@ export interface UserCredential {
   issued: string | null;
   expires: string | null;
   lastVerified: string | null;
-  lastUsed: string | null;
   /**
    * Capability categories this credential's provider needs, and the ones it
    * actually has. Members of the backend's CAPABILITY_VOCABULARY —
@@ -115,7 +125,6 @@ export interface UserCredential {
    */
   capabilitiesRequired: string[];
   capabilitiesGranted: string[];
-  feeds: string[];
   test: TestResult | null;
   audit: AuditEvent[];
   failureTail?: string | null;
@@ -159,13 +168,18 @@ export interface SystemCredential {
   readOnly?: boolean;
 }
 
-/** CLI runtime credential. */
+/**
+ * CLI runtime credential.
+ *
+ * No `lastUsed` (bu-hd1vs): nothing persists a per-credential usage time, and
+ * the backend's own `CliCredentialDetail` omits `last_used` rather than ship
+ * an always-null placeholder. See UserCredential's note.
+ */
 export interface CliCredential {
   id: string;
   label: string;
   fingerprint: string | null;
   state: CredentialState;
-  lastUsed: string | null;
   issued: string | null;
   expires: string | null;
   // No capability evidence: nothing in this system records a scope or
