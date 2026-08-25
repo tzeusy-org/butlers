@@ -443,7 +443,9 @@ def test_notification_due_expiry_and_delivery_result():
         is_notification_expired,
     )
 
-    now = datetime.now(UTC)
+    # Every deadline below is expressed as an offset from this instant, so the
+    # test names it rather than reading the wall clock.
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
     # is_notification_due: past pending → due; future/delivered/expired → not due
     assert is_notification_due(

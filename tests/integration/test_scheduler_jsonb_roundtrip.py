@@ -263,7 +263,10 @@ class TestFireChainJobArgsRoundtrip:
             "post-renewal-followup",
         )
 
-        now = datetime.now(UTC)
+        # The assertions below are about the stored jsonb shape, not about
+        # timing; naming the instant keeps the materialized task's run_at
+        # reproducible instead of whatever the run happened to start at.
+        now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
         await _fire_chain(
             pool,
             chain_id=chain_id,
@@ -309,7 +312,10 @@ class TestFireChainJobArgsRoundtrip:
             "no-args-chain",
         )
 
-        now = datetime.now(UTC)
+        # The assertions below are about the stored jsonb shape, not about
+        # timing; naming the instant keeps the materialized task's run_at
+        # reproducible instead of whatever the run happened to start at.
+        now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
         await _fire_chain(
             pool,
             chain_id=chain_id,

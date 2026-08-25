@@ -123,6 +123,17 @@ class _CountingPersistence:
         )
 
 
+def _sign_dashboard_capability(signer, entry_id: UUID) -> str:
+    """Mint one dashboard capability at the real clock, the only clock here."""
+    # live-clock: RuntimeProbeCoordinator.run() verifies against its own
+    # datetime.now(UTC) and the receipts retention trigger compares against
+    # Postgres now(); neither takes an injected instant, so a capability signed
+    # at any other instant is already expired by the time it is used.
+    return cap.sign_capability(
+        signer, caller="dashboard", catalog_entry_id=entry_id, now=datetime.now(UTC)
+    )
+
+
 async def _seed_entry(pool: asyncpg.Pool) -> UUID:
     return await pool.fetchval(
         """
@@ -179,9 +190,7 @@ async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(p
     launches: list[str] = []
     coordinator = _coordinator(pool, keyring, persistence, launches=launches)
 
-    compact = cap.sign_capability(
-        signer, caller="dashboard", catalog_entry_id=entry_id, now=datetime.now(UTC)
-    )
+    compact = _sign_dashboard_capability(signer, entry_id)
 
     first, second = await asyncio.gather(coordinator.run(compact), coordinator.run(compact))
 
@@ -204,9 +213,9 @@ async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, keys):
     entry_id = await _seed_entry(pool)
     coordinator = _coordinator(pool, keyring, _CountingPersistence(pool), launches=[])
 
-    compact = cap.sign_capability(
-        signer, caller="dashboard", catalog_entry_id=entry_id, now=datetime.now(UTC)
-    )
+    compact = _sign_dashboard_capability(signer, entry_id)
+    # live-clock: read back at the same real clock the capability was signed at,
+    # so this reads the nonce the coordinator will have consumed.
     verified = cap.verify_capability(compact, keyring=keyring, now=datetime.now(UTC))
     await coordinator.run(compact)
 
@@ -233,9 +242,7 @@ async def test_a_replay_is_still_denied_after_a_restart(pool, keys, migrated_db_
     launches: list[str] = []
     first = _coordinator(pool, keyring, _CountingPersistence(pool), launches=launches)
 
-    compact = cap.sign_capability(
-        signer, caller="dashboard", catalog_entry_id=entry_id, now=datetime.now(UTC)
-    )
+    compact = _sign_dashboard_capability(signer, entry_id)
     assert (await first.run(compact)).status is ProbeStatus.COMPLETED
 
     restarted_pool = await asyncpg.create_pool(
@@ -259,9 +266,7 @@ async def test_a_replay_leaves_existing_verification_history_unchanged(pool, key
     entry_id = await _seed_entry(pool)
     coordinator = _coordinator(pool, keyring, _CountingPersistence(pool), launches=[])
 
-    compact = cap.sign_capability(
-        signer, caller="dashboard", catalog_entry_id=entry_id, now=datetime.now(UTC)
-    )
+    compact = _sign_dashboard_capability(signer, entry_id)
     await coordinator.run(compact)
     before = dict(await _verification(pool, entry_id))
 
@@ -320,6 +325,9 @@ async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
 
 async def test_purging_an_expired_receipt_does_not_free_a_live_one(pool):
     receipts = RuntimeProbeControlReceipts(pool)
+    # live-clock: the retention trigger refuses a DELETE before capability_exp
+    # + 5s using Postgres now(), so the claimed expiries have to straddle that
+    # same real instant for the purge predicate to be under test at all.
     now = datetime.now(UTC)
     stale, live = b"\x03" * 32, b"\x04" * 32
     await receipts.claim(nonce=stale, kid=_KID, expires_at=now - timedelta(minutes=1))

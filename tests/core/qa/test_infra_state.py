@@ -386,6 +386,9 @@ async def test_registry_and_infra_state_agree_on_staleness(
 
     from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
 
+    # live-clock: InfraStateSource.discover() reads datetime.now(UTC) itself with
+    # no injection point, so the registry side has to be asked about that same
+    # real instant or the parity claim compares two different questions.
     now = datetime.now(UTC)
     registry_row = {
         "eligibility_state": "active",
@@ -415,6 +418,9 @@ async def test_registry_and_infra_state_agree_quarantine_always_stale(monkeypatc
 
     from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
 
+    # live-clock: InfraStateSource.discover() reads datetime.now(UTC) itself with
+    # no injection point, so the registry side has to be asked about that same
+    # real instant or the parity claim compares two different questions.
     now = datetime.now(UTC)
     last_seen_at = now - timedelta(seconds=10)  # well within TTL on its own
     quarantined_at = now - timedelta(minutes=5)

@@ -222,6 +222,12 @@ async def test_collect_probe_targets_continues_after_per_butler_failure_and_trac
 # ---------------------------------------------------------------------------
 
 
+# _is_stale compares a target's last_verified against the instant it is handed,
+# so the tests name that instant rather than reading the wall clock: the age
+# under test is then the age asserted, at every hour of every day.
+_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+
+
 def _make_target(*, last_verified=None, state="ok") -> ProbeTarget:
     return ProbeTarget(
         canonical_key="s:KEY",
@@ -236,19 +242,17 @@ def _make_target(*, last_verified=None, state="ok") -> ProbeTarget:
 
 def test_is_stale_true_when_never_verified():
     target = _make_target(last_verified=None)
-    assert _is_stale(target, staleness_s=3600, now=datetime.now(UTC)) is True
+    assert _is_stale(target, staleness_s=3600, now=_NOW) is True
 
 
 def test_is_stale_false_when_recently_verified():
-    now = datetime.now(UTC)
-    target = _make_target(last_verified=now - timedelta(minutes=5))
-    assert _is_stale(target, staleness_s=3600, now=now) is False
+    target = _make_target(last_verified=_NOW - timedelta(minutes=5))
+    assert _is_stale(target, staleness_s=3600, now=_NOW) is False
 
 
 def test_is_stale_true_when_past_window():
-    now = datetime.now(UTC)
-    target = _make_target(last_verified=now - timedelta(hours=25))
-    assert _is_stale(target, staleness_s=24 * 3600, now=now) is True
+    target = _make_target(last_verified=_NOW - timedelta(hours=25))
+    assert _is_stale(target, staleness_s=24 * 3600, now=_NOW) is True
 
 
 # ---------------------------------------------------------------------------
