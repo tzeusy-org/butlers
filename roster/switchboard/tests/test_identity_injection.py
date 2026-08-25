@@ -461,7 +461,10 @@ async def test_batch_unknown_reservation_skips_redundant_fail_open_lookup():
     assert len(identity_queries) == 1
     conn.fetch.assert_awaited_once()
     _sql, canonical_name, metadata = conn.fetchval.await_args.args
-    assert canonical_name == "Unknown (whatsapp_user_client sender)"
+    label_prefix = "Unknown WhatsApp sender "
+    assert canonical_name.startswith(label_prefix)
+    uuid.UUID(canonical_name.removeprefix(label_prefix))
+    assert sentinel not in canonical_name
     assert metadata["source_channel"] == "whatsapp_user_client"
     assert metadata["source_value"] == sentinel
     assert results[sentinel].entity_id == entity_id
@@ -516,21 +519,20 @@ async def test_batch_reservation_query_failure_is_strict_and_content_blind(
     with (
         patch.object(identity_inject, "resolve_contacts_by_channel_bulk", bulk),
         caplog.at_level(logging.DEBUG),
-        pytest.raises(RuntimeError) as raised,
     ):
-        await identity_inject.resolve_sender_identities(
+        results = await identity_inject.resolve_sender_identities(
             pool,
             "whatsapp_user_client",
             [sentinel],
         )
 
     conn.fetchval.assert_not_awaited()
-    assert type(raised.value).__name__ == "IdentityResolutionQueryError"
-    assert str(raised.value) == "Identity resolution query failed"
-    assert raised.value.__cause__ is None
-    assert raised.value.__context__ is None
+    assert results[sentinel].is_unknown is True
+    assert results[sentinel].entity_id is None
+    assert results[sentinel].channel_value == sentinel
     assert "identity.contact_resolution_query_failed" in caplog.messages
-    rendered = f"{raised.value!s}\n{raised.value!r}\n{caplog.text}"
+    assert "identity.batch_unknown_reservation_failed" in caplog.messages
+    rendered = caplog.text
     for secret in sentinels:
         assert secret not in rendered
 
