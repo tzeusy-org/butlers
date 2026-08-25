@@ -26,6 +26,7 @@ The two halves under test:
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -308,3 +309,189 @@ def test_run_child_survives_a_signal_to_the_callers_process_group(tmp_path: Path
             runner.kill()
 
     assert "## pytest-gate exit=0 " in log.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# run --tee: the log is mirrored live, without a pipe between caller and pytest
+# ---------------------------------------------------------------------------
+
+
+def _run_gate(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(_GATE), "run", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_tee_mirrors_the_run_to_stdout(tmp_path: Path) -> None:
+    """`make test-qg` stays watchable: what lands in the log also lands on stdout."""
+    log = tmp_path / "run.log"
+    result = _run_gate(
+        "--tee", "--log", str(log), "--python", str(_fake_python(tmp_path, 0)), "--", "tests/"
+    )
+    assert result.returncode == PASS, result.stdout + result.stderr
+    assert "fake pytest args:" in result.stdout
+    assert "## pytest-gate exit=0 " in result.stdout
+    assert result.stdout.count("## pytest-gate exit=") == 1
+
+
+def test_without_tee_stdout_stays_quiet(tmp_path: Path) -> None:
+    """The low-context path is unchanged: the log holds the output, not the terminal."""
+    log = tmp_path / "run.log"
+    result = _run_gate("--log", str(log), "--python", str(_fake_python(tmp_path, 0)))
+    assert "fake pytest args:" not in result.stdout
+    assert "fake pytest args:" in log.read_text(encoding="utf-8")
+
+
+def test_tee_does_not_replay_an_existing_log(tmp_path: Path) -> None:
+    """`run` appends. Only this run's output is mirrored, not the previous run's."""
+    log = tmp_path / "run.log"
+    log.write_text("output from an earlier run\n", encoding="utf-8")
+    result = _run_gate("--tee", "--log", str(log), "--python", str(_fake_python(tmp_path, 0)))
+    assert "earlier run" not in result.stdout
+    assert "fake pytest args:" in result.stdout
+
+
+def test_tee_shows_output_while_the_run_is_still_going(tmp_path: Path) -> None:
+    """Mirrored, not buffered to the end -- a 30-minute gate has to show progress."""
+    log = tmp_path / "run.log"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(_GATE),
+            "run",
+            "--tee",
+            "--log",
+            str(log),
+            "--python",
+            str(_fake_python(tmp_path, 0, sleep_seconds=8)),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    started = time.monotonic()
+    try:
+        assert process.stdout is not None
+        line = process.stdout.readline()
+        elapsed = time.monotonic() - started
+        assert "fake pytest args:" in line, line
+        # The child runs for 8s. A mirror that only flushed at the end would
+        # deliver this line at ~8s, and would still be a regression.
+        assert elapsed < 5, f"the first line took {elapsed:.1f}s: nothing was mirrored live"
+        assert process.poll() is None, "the run had already finished; this proves nothing"
+    finally:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def test_tee_leaves_no_pipe_between_the_caller_and_pytest(tmp_path: Path) -> None:
+    """The caller going away must not take the run -- or its receipt -- with it.
+
+    Teeing through a pipe would hand pytest a broken one the moment the caller
+    died. ``--tee`` follows the file instead, so killing the runner leaves the
+    child writing happily to the log in its own session.
+    """
+    log = tmp_path / "run.log"
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            str(_GATE),
+            "run",
+            "--tee",
+            "--log",
+            str(log),
+            "--python",
+            str(_fake_python(tmp_path, 0, sleep_seconds=2)),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        time.sleep(0.75)
+        os.killpg(os.getpgid(runner.pid), signal.SIGKILL)
+        runner.wait(timeout=10)
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if "## pytest-gate exit=0 " in log.read_text(encoding="utf-8"):
+                return
+            time.sleep(0.1)
+        pytest.fail(  # pragma: no cover - only on regression
+            f"no sentinel after the tee'ing runner was killed; log was:\n"
+            f"{log.read_text(encoding='utf-8')}"
+        )
+    finally:
+        if runner.poll() is None:  # pragma: no cover - defensive
+            runner.kill()
+
+
+def test_tee_survives_its_reader_hanging_up(tmp_path: Path) -> None:
+    """`make test-qg | head` closes the pipe early; the run must not care."""
+    log = tmp_path / "run.log"
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            str(_GATE),
+            "run",
+            "--tee",
+            "--log",
+            str(log),
+            "--python",
+            str(_fake_python(tmp_path, 0, sleep_seconds=3)),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert runner.stdout is not None and runner.stderr is not None
+    try:
+        time.sleep(0.5)
+        runner.stdout.close()
+        assert runner.wait(timeout=30) == PASS
+        assert "## pytest-gate exit=0 " in log.read_text(encoding="utf-8")
+        assert b"BrokenPipeError" not in runner.stderr.read()
+    finally:
+        if runner.poll() is None:  # pragma: no cover - defensive
+            runner.kill()
+        runner.stderr.close()
+
+
+# ---------------------------------------------------------------------------
+# The quality-gate targets are wired to it (bu-ecizp)
+# ---------------------------------------------------------------------------
+
+
+def _make_recipe(target: str) -> str:
+    """What `make <target>` would actually run, make variables already expanded."""
+    if shutil.which("make") is None:  # pragma: no cover - make is a dev/CI prerequisite
+        pytest.skip("make is not installed")
+    result = subprocess.run(
+        ["make", "--dry-run", target],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout
+
+
+@pytest.mark.parametrize("target", ["test-qg", "test-qg-serial"])
+def test_quality_gate_targets_run_through_the_gate(target: str) -> None:
+    """A raw `uv run pytest` here is the fail-open hole this tool closes (bu-ecizp)."""
+    recipe = _make_recipe(target)
+    assert "pytest_gate.py run" in recipe
+    assert "pytest_gate.py verdict" in recipe, "without a verdict step nothing reads the receipt"
+    assert "uv run pytest" not in recipe
+    assert ".tmp/test-logs/" in recipe, "the log has to land somewhere a verdict can be read from"
+
+
+@pytest.mark.parametrize("target", ["test-qg", "test-qg-serial"])
+def test_quality_gate_targets_use_the_project_interpreter(target: str) -> None:
+    """`python3` is the venv-less interpreter: ModuleNotFoundError, exit 4, UNKNOWN (adb0261bc)."""
+    recipe = _make_recipe(target)
+    assert "uv run python scripts/pytest_gate.py" in recipe
+    assert "python3 scripts/pytest_gate.py" not in recipe

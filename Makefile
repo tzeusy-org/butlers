@@ -52,15 +52,34 @@ test-e2e-benchmark:
 test-e2e-frontend:
 	cd frontend && npm run test:e2e
 
+# Every quality-gate run goes through scripts/pytest_gate.py (bu-5hp74, bu-ecizp): a killed or
+# truncated run has no summary line and no FAILED line, so a raw `uv run pytest` piped into any
+# grep-shaped check reads as green. `run` records a `## pytest-gate exit=N` receipt written by the
+# child, `verdict` refuses to call a log green without one, and its exit status (0 PASS / 1 FAILED /
+# 2 UNKNOWN) is what make sees -- so an UNKNOWN fails the target instead of passing it.
+#
+# `uv run python`, never `python3`: --python defaults to sys.executable, and a bare python3 on PATH
+# is an interpreter without the `butlers` package -> ModuleNotFoundError -> pytest exit 4 -> UNKNOWN
+# (fixed in adb0261bc for the CLAUDE.md snippet; the same trap applies here).
+#
+# --tee mirrors the log to the terminal as it grows, so these stay watchable. $$$$ is the shell's
+# PID: make eats one $ per pair, and the timestamp+PID pair keeps concurrent runs off each other.
+QG_GATE = uv run python scripts/pytest_gate.py
+QG_LOG = .tmp/test-logs/pytest-$@-$$(date +%Y%m%d-%H%M%S)-$$$$.log
+
 # Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
 # are not torn down mid-module (important for shared FastAPI app and module-scoped DB pools).
 test-qg:
-	uv run pytest $(QG_PYTEST_ARGS) -n auto --dist loadfile
+	LOG="$(QG_LOG)"; \
+	$(QG_GATE) run --tee --log "$$LOG" -- $(QG_PYTEST_ARGS) -n auto --dist loadfile; \
+	$(QG_GATE) verdict "$$LOG"
 
 # Same quality-gate scope as test-qg, serial fallback for order-dependent debugging.
 test-qg-serial:
-	uv run pytest $(QG_PYTEST_ARGS)
+	LOG="$(QG_LOG)"; \
+	$(QG_GATE) run --tee --log "$$LOG" -- $(QG_PYTEST_ARGS); \
+	$(QG_GATE) verdict "$$LOG"
 
 # Explicit parallel alias (backward compatibility)
 test-qg-parallel:

@@ -269,6 +269,12 @@ A pytest run's outcome SHALL be established by positive evidence that the run fi
 - **THEN** pytest continues, because the child was started in its own session
 - **AND** the sentinel is appended by that child rather than by the runner, so the receipt is written even though the runner is gone
 
+#### Scenario: Quality-gate make targets produce a receipt and a verdict
+- **WHEN** `make test-qg` or `make test-qg-serial` runs
+- **THEN** pytest is launched through `scripts/pytest_gate.py run` on the project interpreter (`uv run python`, never a bare `python3`, which resolves outside the venv and turns every run into `ModuleNotFoundError` -> exit 4 -> UNKNOWN), writing its log under `.tmp/test-logs/`
+- **AND** the target ends with `scripts/pytest_gate.py verdict`, whose exit status is the target's, so an UNKNOWN run fails the gate instead of passing silently
+- **AND** the run is mirrored to the terminal as it goes, so routing through the gate costs no interactivity
+
 ### Requirement: E2E Staging Harness Architecture
 The E2E harness SHALL boot a complete disposable butler ecosystem for every test session: real ButlerDaemon processes, real PostgreSQL databases, real Alembic migrations, and real LLM calls via Haiku.
 

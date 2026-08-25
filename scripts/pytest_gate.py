@@ -25,7 +25,7 @@ With neither, the verdict is UNKNOWN, and UNKNOWN is never a pass.
 
 Usage::
 
-    scripts/pytest_gate.py run [--log PATH] [--detach] [--] <pytest args...>
+    scripts/pytest_gate.py run [--log PATH] [--tee] [--detach] [--] <pytest args...>
     scripts/pytest_gate.py verdict PATH
 
 ``verdict`` exits 0 PASS / 1 FAILED / 2 UNKNOWN, so a shell ``&&`` chain fails
@@ -48,6 +48,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 PASS, FAILED, UNKNOWN = 0, 1, 2
 
@@ -66,10 +67,12 @@ _SUMMARY_RE = re.compile(
 #: The tell that a truncated log is a killed controller rather than a stall.
 _KILLED_CONTROLLER_MARKER = "cannot send (already closed?)"
 
-#: The child appends this itself, so the receipt outlives the runner.
+#: The child appends this itself, so the receipt outlives the runner. ``-u`` keeps
+#: the log current: block-buffered output would leave a followed log seconds stale
+#: and would drop the last few KB whenever the run is killed.
 _INNER_SH = f"""\
 interpreter="$1"; shift
-"$interpreter" -m pytest "$@"
+"$interpreter" -u -m pytest "$@"
 exit_code=$?
 printf '{SENTINEL_PREFIX}%s at %s\\n' "$exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 exit "$exit_code"
@@ -151,9 +154,50 @@ def _default_log_path() -> Path:
     return Path(".tmp/test-logs") / f"pytest-{Path.cwd().name}-{stamp}-{os.getpid()}.log"
 
 
+#: How often ``--tee`` looks for new bytes in the log, and how much it takes at a
+#: time. Progress output is sparse, so a fifth of a second reads as live.
+_MIRROR_POLL_SECONDS = 0.2
+_MIRROR_CHUNK_BYTES = 65536
+
+
+def _mirror(reader: BinaryIO, destination: BinaryIO) -> None:
+    """Copy everything the log has gained since the last call."""
+    while chunk := reader.read(_MIRROR_CHUNK_BYTES):
+        destination.write(chunk)
+        destination.flush()
+
+
+def _tee(process: subprocess.Popen[bytes], log_path: Path, start_offset: int) -> int:
+    """Mirror the growing log to this process's stdout until pytest exits.
+
+    Deliberately *not* a pipe. Teeing through one would put the caller between
+    pytest and its output: a closed pipe (the harness that launched `make` going
+    away) would take the run down with it, and with it the receipt this whole
+    tool exists to write. Following the file instead leaves the child writing to
+    a plain file in its own session -- if this runner dies, pytest does not
+    notice, and the sentinel still lands.
+    """
+    try:
+        with log_path.open("rb") as reader:
+            reader.seek(start_offset)
+            while process.poll() is None:
+                _mirror(reader, sys.stdout.buffer)
+                time.sleep(_MIRROR_POLL_SECONDS)
+            _mirror(reader, sys.stdout.buffer)
+    except BrokenPipeError:
+        # Whoever was reading this stdout hung up (``make test-qg | head``). The
+        # mirror is a convenience; the run and its receipt are not, so keep
+        # waiting for it. Point stdout at /dev/null so the interpreter's
+        # exit-time flush does not raise the same error again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        process.wait()
+    return process.returncode
+
+
 def _run(args: argparse.Namespace) -> int:
     log_path = Path(args.log) if args.log else _default_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    start_offset = log_path.stat().st_size if log_path.exists() else 0
 
     with log_path.open("ab") as log_file:
         process = subprocess.Popen(
@@ -173,6 +217,8 @@ def _run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 0
+    if args.tee:
+        return _tee(process, log_path, start_offset)
     return process.wait()
 
 
@@ -205,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
         "--detach",
         action="store_true",
         help="return immediately; poll the log and read the verdict later",
+    )
+    run_parser.add_argument(
+        "--tee",
+        action="store_true",
+        help="also mirror the log to stdout while it runs (ignored with --detach)",
     )
     run_parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_run)
