@@ -14,11 +14,13 @@ its DEGRADED envelope, and the test died much later on ``KeyError:
 file also passed in isolation against its own stand-in, so the cost was only
 paid ~35 minutes into a full run, by whoever changed the schema next.
 
-These two tests move the failure back to the point of breakage:
+These tests move the failure back to the point of breakage:
 
 - :func:`test_standin_matches_the_real_migration_chain` diffs every registered
-  stand-in against the table the real chain builds, naming the exact columns
-  and constraints that drifted.
+  stand-in against the table the real chain builds, naming the exact columns,
+  constraints and indexes that drifted.
+- :func:`test_the_index_diff_can_fail` keeps that index arm honest: a guard
+  nobody has watched go red is indistinguishable from one that cannot.
 - :func:`test_no_test_hand_rolls_a_standin_table` stops the class from
   recurring by refusing a fourth hand-written copy.
 """
@@ -27,16 +29,18 @@ from __future__ import annotations
 
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.testing.schema_standins import STANDINS, TableStandin
+from butlers.testing.schema_standins import PENDING_ACTIONS, STANDINS, TableStandin
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PARITY_SCHEMA = "standin_parity"
+_BLINDED_SCHEMA = "standin_parity_blinded"
 _EXEMPTION_MARKER = "schema-standin-exempt:"
 _EXEMPTION_LOOKBACK_LINES = 8
 
@@ -78,6 +82,21 @@ def _constraints(conn, schema: str, table: str) -> dict[str, str]:
     return {row[0]: row[1] for row in rows}
 
 
+def _indexes(conn, schema: str, table: str) -> dict[str, str]:
+    """Return ``{index name: schema-independent definition}``.
+
+    Postgres canonicalises ``indexdef`` (``USING btree``, parenthesised and
+    cast predicates), so reading both sides out of the catalogue compares the
+    *materialised* index rather than two spellings of the same intent.  Only
+    the schema qualification has to be normalised away.
+    """
+    rows = conn.execute(
+        text("SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = :s AND tablename = :t"),
+        {"s": schema, "t": table},
+    )
+    return {row[0]: row[1].replace(f" ON {schema}.", " ON ") for row in rows}
+
+
 def _describe_drift(standin: TableStandin, real: dict, mirror: dict, kind: str) -> list[str]:
     """Return one human-readable line per drifted item, or an empty list."""
     problems: list[str] = []
@@ -100,38 +119,77 @@ def _describe_drift(standin: TableStandin, real: dict, mirror: dict, kind: str) 
     return problems
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(not docker_available, reason="Docker not available")
-@pytest.mark.parametrize("standin", list(STANDINS.values()), ids=list(STANDINS))
-def test_standin_matches_the_real_migration_chain(parity_db_url: str, standin: TableStandin):
-    """Every stand-in column, type, nullability, default and constraint matches."""
-    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(text(f"DROP SCHEMA IF EXISTS {_PARITY_SCHEMA} CASCADE"))
-            conn.execute(text(f"CREATE SCHEMA {_PARITY_SCHEMA}"))
-            conn.execute(text(standin.ddl(schema=_PARITY_SCHEMA)))
+def _drift(conn, standin: TableStandin, mirror_schema: str) -> list[str]:
+    """Build the stand-in in ``mirror_schema`` and diff it against the real table."""
+    conn.execute(text(f"DROP SCHEMA IF EXISTS {mirror_schema} CASCADE"))
+    conn.execute(text(f"CREATE SCHEMA {mirror_schema}"))
+    conn.execute(text(standin.ddl(schema=mirror_schema)))
 
-            real_columns = _columns(conn, standin.real_schema, standin.table)
-            mirror_columns = _columns(conn, _PARITY_SCHEMA, standin.table)
-            real_constraints = _constraints(conn, standin.real_schema, standin.table)
-            mirror_constraints = _constraints(conn, _PARITY_SCHEMA, standin.table)
-    finally:
-        engine.dispose()
-
+    real_columns = _columns(conn, standin.real_schema, standin.table)
     assert real_columns, (
         f"{standin.real_schema}.{standin.table} was not created by chains "
         f"{list(standin.chains)} -- the stand-in's chain/schema metadata is wrong"
     )
 
-    problems = _describe_drift(standin, real_columns, mirror_columns, "column")
-    problems += _describe_drift(standin, real_constraints, mirror_constraints, "constraint")
+    problems = _describe_drift(
+        standin, real_columns, _columns(conn, mirror_schema, standin.table), "column"
+    )
+    for reader, kind in ((_constraints, "constraint"), (_indexes, "index")):
+        problems += _describe_drift(
+            standin,
+            reader(conn, standin.real_schema, standin.table),
+            reader(conn, mirror_schema, standin.table),
+            kind,
+        )
+    return problems
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.parametrize("standin", list(STANDINS.values()), ids=list(STANDINS))
+def test_standin_matches_the_real_migration_chain(parity_db_url: str, standin: TableStandin):
+    """Every stand-in column, type, nullability, default, constraint and index matches."""
+    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            problems = _drift(conn, standin, _PARITY_SCHEMA)
+    finally:
+        engine.dispose()
+
     assert not problems, (
         f"The {standin.table} test stand-in has drifted from the "
         f"{'/'.join(standin.chains)} migration chain:\n" + "\n".join(problems) + "\n"
         f"Reconcile {standin.constant_path} with the chain. A stale stand-in does not "
         "fail here in CI -- it fails as a DEGRADED envelope and a downstream KeyError "
         "in whichever integration test uses it (PR #3853)."
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_the_index_diff_can_fail(parity_db_url: str):
+    """Dropping a real index from a stand-in must be reported, not tolerated.
+
+    ``ux_pending_actions_active_deduplication_key`` (``approvals_013``) is the
+    concrete case: it is a *unique* partial index, so it decides which rows the
+    real table accepts.  A stand-in without it accepts writes production
+    rejects.  Diffing a deliberately blinded copy proves the index arm of
+    :func:`test_standin_matches_the_real_migration_chain` reports that, rather
+    than passing the way it did while indexes went unread (bu-cwv9l).
+    """
+    engine = create_engine(parity_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            problems = _drift(conn, replace(PENDING_ACTIONS, indexes=()), _BLINDED_SCHEMA)
+    finally:
+        engine.dispose()
+
+    assert any(
+        "MISSING index: ux_pending_actions_active_deduplication_key" in problem
+        for problem in problems
+    ), (
+        "The parity guard did not notice a missing unique partial index. "
+        f"It reported: {problems or 'no drift at all'}"
     )
 
 
