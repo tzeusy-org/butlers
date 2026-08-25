@@ -101,6 +101,15 @@ class Verdict:
         return {PASS: "PASS", FAILED: "FAILED", UNKNOWN: "UNKNOWN"}[self.code]
 
 
+def _reports_failures(body: str) -> bool:
+    """Whether a pytest counts line reports anything that went wrong.
+
+    ``error`` matters as much as ``failed``: Docker contention yields
+    ``N errors`` with no ``N failed`` at all (AGENTS.md).
+    """
+    return "failed" in body or "error" in body
+
+
 def _interrupted_verdict(summary: str | None) -> Verdict:
     """Classify pytest's exit 2, the *interrupted* run, against its own counts.
 
@@ -126,7 +135,7 @@ def _interrupted_verdict(summary: str | None) -> Verdict:
     )
 
 
-def _exit_code_verdict(code: int, summary: str | None = None) -> Verdict:
+def _exit_code_verdict(code: int, summary: str | None) -> Verdict:
     """Classify a pytest process exit status, with the log's last counts line.
 
     Only 0 is a pass and only 1 is a plain failure. Exit 2 means interrupted,
@@ -154,15 +163,6 @@ def _exit_code_verdict(code: int, summary: str | None = None) -> Verdict:
             f"pytest exited {code} = 128+{signal_number} ({signal_name}): killed, not failed",
         )
     return Verdict(UNKNOWN, f"pytest exited {code}: the run did not complete")
-
-
-def _reports_failures(body: str) -> bool:
-    """Whether a pytest counts line reports anything that went wrong.
-
-    ``error`` matters as much as ``failed``: Docker contention yields
-    ``N errors`` with no ``N failed`` at all (AGENTS.md).
-    """
-    return "failed" in body or "error" in body
 
 
 def _summary_verdict(body: str) -> Verdict:
