@@ -9,6 +9,7 @@ GET /api/ingestion/connectors/summaries, and GET /api/ingestion/connectors/cross
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -521,6 +522,115 @@ async def test_pipeline_stats_spark24h_empty_matrix_reads_as_zero(app):
     assert body["aggregates_available"] is True
     assert body["ingested"] == 0
     assert body["spark24h"] == [0] * 24
+
+
+async def test_pipeline_stats_spark24h_flat_zero_beside_nonzero_total_warns(app, caplog):
+    """total>0 with an empty 24h matrix keeps the flag true and logs the disagreement.
+
+    Both halves were observed, and ``aggregates_available`` is contracted as
+    "every published value is one Prometheus actually reported" — not "the
+    published values agree with each other" — so lowering the flag here would
+    report an outage that did not happen. The disagreement is still real, so it
+    goes to the operator log rather than being swallowed (bu-468ck).
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(42),  # ingested — 42 events over the same 24h
+                _prom_result(0),  # filtered
+                _prom_result(0),  # errored
+                [],  # routed
+                _prom_result(0),  # rate1h
+                _prom_result(0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[],  # empty matrix over the very same window
+            ):
+                with caplog.at_level(
+                    logging.WARNING, logger="butlers.api.routers.ingestion_pipeline"
+                ):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is True
+    assert body["ingested"] == 42
+    assert body["spark24h"] == [0] * 24
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "butlers.api.routers.ingestion_pipeline"
+    ]
+    assert any("spark24h" in m and "flat zero" in m and "42" in m for m in warnings), warnings
+
+
+async def test_pipeline_stats_spark24h_flat_zero_beside_7d_total_is_not_a_disagreement(app, caplog):
+    """spark24h is always 24h, so a non-zero 7d total beside a flat sparkline is coherent.
+
+    Events last week and none since is an ordinary, truthful shape. Warning on
+    it would train operators to ignore the warning that matters (bu-468ck).
+    """
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    def _prom_result(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch(
+            "butlers.api.routers.ingestion_pipeline.async_query",
+            new_callable=AsyncMock,
+            side_effect=[
+                _prom_result(42),  # ingested — 42 events over seven days
+                _prom_result(0),  # filtered
+                _prom_result(0),  # errored
+                [],  # routed
+                _prom_result(0),  # rate1h
+                _prom_result(0),  # filtered24h
+            ],
+        ):
+            with patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=[],  # empty matrix over the trailing 24h only
+            ):
+                with caplog.at_level(
+                    logging.WARNING, logger="butlers.api.routers.ingestion_pipeline"
+                ):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    ) as client:
+                        resp = await client.get("/api/ingestion/pipeline?window=7d")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["aggregates_available"] is True
+    assert body["ingested"] == 42
+    assert body["spark24h"] == [0] * 24
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "butlers.api.routers.ingestion_pipeline"
+    ]
+    assert not [m for m in warnings if "flat zero" in m], warnings
 
 
 async def test_pipeline_stats_unparseable_scalar_degrades(app):

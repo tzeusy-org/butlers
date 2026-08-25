@@ -122,7 +122,14 @@ async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
     Returns a list of exactly 24 ints (oldest bucket first, most-recent last)
     when the matrix is readable — including ``[0] * 24`` for an empty result
     set, because Prometheus answering "no series" for a
-    ``sum(increase(...))`` is a real observation of zero.
+    ``sum(increase(...))`` is a real observation of zero.  Those zeros stay
+    published under ``aggregates_available: true`` even when the instant
+    ``ingested`` query over the same window reported a non-zero total: the flag
+    is contracted as "every published value is one Prometheus actually
+    reported", not "the published values agree with each other", so lowering it
+    here would report an unavailability that did not happen — and it is the
+    single authority the connectors cross-summary reads too (bu-468ck).  The
+    caller logs the disagreement instead; see :func:`_fetch_pipeline_stats`.
 
     Returns ``None`` when the matrix is *unreadable*: a query error, an
     unexpected result shape, a series carrying no points, or a bucket value
@@ -315,6 +322,20 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
     spark24h = await _query_spark24h_buckets(prom_url)
     if spark24h is None:
         return _degraded_response(window)
+
+    # A flat-zero sparkline beside a non-zero ingested total is a real
+    # contradiction — but only when the sparkline's fixed 24h actually covers
+    # the requested window. At window=7d, events last week and none since is an
+    # ordinary truthful shape, and warning on it would train operators to
+    # ignore the warning that matters (bu-468ck).
+    if window in ("1h", "24h") and ingested > 0 and not any(spark24h):
+        logger.warning(
+            "pipeline_stats: spark24h is flat zero over 24h while ingested[%s]=%d — "
+            "Prometheus answered both queries, so the envelope stays available, "
+            "but the sparkline and the total disagree",
+            window,
+            int(ingested),
+        )
 
     # ---- routed_pct ----
     total_events = ingested + filtered + errored
