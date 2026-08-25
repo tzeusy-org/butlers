@@ -48,18 +48,6 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationFileAndChain:
-    """Revision-chain contract test."""
-
-    def test_revision_chain(self) -> None:
-        """core_009 -> core_008, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "core_009"
-        assert mod.down_revision == "core_008"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     """Verify the SQL emitted by upgrade() declares the table + indexes.
 

@@ -40,14 +40,6 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        """contacts_005 -> contacts_004, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "contacts_005"
-        assert mod.down_revision == "contacts_004"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_drops_fk_idempotently(self):
         sql = _load_migration()._DROP_FK_SQL
         assert "contacts_source_links_local_contact_id_fkey" in sql

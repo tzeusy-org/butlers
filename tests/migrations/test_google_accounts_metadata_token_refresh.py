@@ -39,14 +39,6 @@ def _load_core_migration():
 # ---------------------------------------------------------------------------
 
 
-def test_core_migration_revision_chain():
-    mod = _load_core_migration()
-    assert mod.revision == "core_078"
-    assert mod.down_revision == "core_077"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
 def test_upgrade_adds_columns_idempotently():
     """Both new columns are added IF NOT EXISTS on public.google_accounts;
     metadata is backfilled then SET NOT NULL."""

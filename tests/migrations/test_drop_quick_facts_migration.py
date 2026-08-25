@@ -12,7 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
@@ -31,14 +30,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_025", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # (a) Unit — structure and source-text guards
 # ---------------------------------------------------------------------------
@@ -46,12 +37,6 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestRel025Structure:
-    def test_revision_chain(self):
-        mod = _load_migration()
-        assert mod.revision == "rel_025"
-        assert mod.down_revision == "rel_024"
-        assert mod.branch_labels is None
-
     def test_named_invariant_guards(self):
         """Self-guarding DROP: to_regclass guard, row-count RuntimeError gate,
         guarded DROP, and downgrade recreate (behaviour exercised by integration)."""

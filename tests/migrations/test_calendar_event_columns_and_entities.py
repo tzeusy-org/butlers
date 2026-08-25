@@ -7,7 +7,6 @@ tests/config/test_migrations.py which runs the full chain including this migrati
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -29,26 +28,6 @@ _REL_MIGRATION_PATH = (
     / "migrations"
     / "007_reminders_to_calendar_events.py"
 )
-
-
-def _load(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_core_migration_revision_chain():
-    mod = _load(_CORE_MIGRATION_PATH, "core_076")
-    assert mod.revision == "core_076"
-    assert mod.down_revision == "core_075"
-
-
-def test_rel_migration_revision_chain():
-    mod = _load(_REL_MIGRATION_PATH, "rel_007")
-    assert mod.revision == "rel_007"
-    assert mod.down_revision == "rel_006"
 
 
 @pytest.mark.parametrize(

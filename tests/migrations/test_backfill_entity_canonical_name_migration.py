@@ -46,14 +46,6 @@ def _load_migration(path: Path, name: str):
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        """core_130 -> core_129, no branch/depends."""
-        mod = _load_migration(_MIGRATION_PATH, "_core_130")
-        assert mod.revision == "core_130"
-        assert mod.down_revision == "core_129"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_backfill_is_additive_only_fills_blank(self):
         sql = _load_migration(_MIGRATION_PATH, "_core_130")._BACKFILL_SQL.text
         # Only touch entities whose name is missing — never overwrite a real one.

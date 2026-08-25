@@ -86,18 +86,6 @@ _MIGRATIONS = [
 ]
 
 
-@pytest.mark.parametrize("path,mod_name,revision,down_revision", _MIGRATIONS)
-def test_revision_chain(path, mod_name, revision, down_revision) -> None:
-    """Each drop migration declares its revision/down_revision, no branch/depends."""
-    mod = _load(path, mod_name)
-    assert mod.revision == revision
-    assert mod.down_revision == down_revision
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-    assert callable(getattr(mod, "upgrade", None))
-    assert callable(getattr(mod, "downgrade", None))
-
-
 # (path, mod_name, table) — every table that upgrade() must DROP
 _DROP_TARGETS = [
     (_SW_014, "sw_014", "connector_source_filters"),

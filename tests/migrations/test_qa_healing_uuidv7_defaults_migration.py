@@ -8,7 +8,6 @@ the documented intent and the sibling QA journal convention.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,20 +26,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_148_qa_healing_uuidv7_defaults.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_148", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "core_148"
-    assert mod.down_revision == "core_147"
 
 
 @pytest.fixture(scope="module")

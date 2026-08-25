@@ -66,15 +66,6 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_revision_chain():
-    """core_103 -> core_102 (channel_defaults), no branch/depends."""
-    mod = _load_migration()
-    assert mod.revision == "core_103"
-    assert mod.down_revision == "core_102"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     """Verify upgrade() emits the expected SQL."""
 

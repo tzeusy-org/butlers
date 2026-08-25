@@ -41,15 +41,6 @@ def test_fresh_schema_uses_active_row_uniqueness() -> None:
     assert "WHERE active = true" in sql
 
 
-def test_rotation_repair_revision_chain() -> None:
-    migration = _load_migration("002_active_session_rotation.py")
-
-    assert migration.revision == "whatsapp_002"
-    assert migration.down_revision == "whatsapp_001"
-    assert migration.branch_labels is None
-    assert migration.depends_on is None
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 async def test_migrated_schema_allows_history_but_only_one_active_session(

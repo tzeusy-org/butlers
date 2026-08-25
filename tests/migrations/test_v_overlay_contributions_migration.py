@@ -48,19 +48,6 @@ def _load_migration():
 
 
 @pytest.mark.unit
-def test_migration_file_exists():
-    assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
-
-
-@pytest.mark.unit
-def test_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_140"
-    assert mod.down_revision == "core_139"
-    assert mod.branch_labels is None
-
-
-@pytest.mark.unit
 def test_contributing_set_is_the_four_specialists():
     mod = _load_migration()
     assert tuple(sorted(mod._SPECIALIST_SCHEMAS)) == (

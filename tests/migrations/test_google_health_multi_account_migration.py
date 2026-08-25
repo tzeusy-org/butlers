@@ -45,34 +45,9 @@ def _load_core_108():
     return mod
 
 
-def _load_core_109():
-    spec = importlib.util.spec_from_file_location("core_109", _EMAIL_MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # File structure and revision chain
 # ---------------------------------------------------------------------------
-
-
-def test_cursor_migration_revision_chain() -> None:
-    mod = _load_core_108()
-    assert mod.revision == "core_108"
-    assert mod.down_revision == "core_107"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
-def test_email_migration_revision_chain() -> None:
-    mod = _load_core_109()
-    assert mod.revision == "core_109"
-    # Must chain from cursor migration.
-    assert mod.down_revision == "core_108"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
 
 
 # ---------------------------------------------------------------------------

@@ -34,14 +34,6 @@ def _collect_sql(method_name: str) -> list[str]:
     return calls
 
 
-def test_revision_chain() -> None:
-    migration = _load_migration()
-    assert migration.revision == "core_192"
-    assert migration.down_revision == "core_191"
-    assert migration.branch_labels is None
-    assert migration.depends_on is None
-
-
 def test_upgrade_adds_only_safe_browser_domain_column() -> None:
     sql = "\n".join(_collect_sql("upgrade"))
     assert "ALTER TABLE IF EXISTS connectors.activitywatch_events" in sql

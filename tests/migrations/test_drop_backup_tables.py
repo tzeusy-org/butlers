@@ -14,7 +14,6 @@ Target tables:
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
@@ -41,22 +40,6 @@ _REL_MIGRATION_PATH = (
 )
 
 
-def _load_core():
-    spec = importlib.util.spec_from_file_location("core_118", _CORE_MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
-def _load_rel():
-    spec = importlib.util.spec_from_file_location("rel_020", _REL_MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # (a) Unit — structure and source-text guards
 # ---------------------------------------------------------------------------
@@ -64,11 +47,6 @@ def _load_rel():
 
 @pytest.mark.unit
 class TestCore118Structure:
-    def test_revision_chain(self):
-        mod = _load_core()
-        assert mod.revision == "core_118"
-        assert mod.down_revision == "core_117"
-
     def test_drops_both_tables_with_if_exists(self):
         src = _CORE_MIGRATION_PATH.read_text()
         # Migration iterates _TABLES tuple and calls DROP TABLE IF EXISTS {qualified}.
@@ -88,11 +66,6 @@ class TestCore118Structure:
 
 @pytest.mark.unit
 class TestRel020Structure:
-    def test_revision_chain(self):
-        mod = _load_rel()
-        assert mod.revision == "rel_020"
-        assert mod.down_revision == "rel_019"
-
     def test_drops_table_with_if_exists(self):
         src = _REL_MIGRATION_PATH.read_text()
         assert "DROP TABLE IF EXISTS _reminders_backup" in src

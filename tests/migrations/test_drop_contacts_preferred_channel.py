@@ -55,13 +55,6 @@ def _load_migration(path: Path, name: str):
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        mod = _load_migration(_MIGRATION_PATH, "_core_123")
-        assert mod.revision == "core_123"
-        assert mod.down_revision == "core_122"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_force_env_parsing(self, monkeypatch):
         mod = _load_migration(_MIGRATION_PATH, "_core_123")
         monkeypatch.delenv("PREFERRED_CHANNEL_DROP_FORCE", raising=False)

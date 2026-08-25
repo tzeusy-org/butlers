@@ -61,12 +61,6 @@ async def _prereq_table(pool: asyncpg.Pool) -> None:
     """)
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "mem_008"
-    assert mod.down_revision == "mem_007"
-
-
 async def test_upgrade_is_noop_when_facts_table_absent(provisioned_postgres_pool) -> None:
     async with provisioned_postgres_pool(schema="public") as pool:
         # No facts table at all (pre-memory-module schema) — must not raise.

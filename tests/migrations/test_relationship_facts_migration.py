@@ -67,18 +67,6 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationFileAndChain:
-    """Revision-chain contract test."""
-
-    def test_revision_chain(self) -> None:
-        """rel_013 -> rel_012, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "rel_013"
-        assert mod.down_revision == "rel_012"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     """Architectural-invariant guards on the CREATE TABLE / index DDL.
 

@@ -46,14 +46,6 @@ def _load_migration():
 
 @pytest.mark.unit
 class TestMigrationStructure:
-    def test_revision_chain(self):
-        """core_133 -> core_132, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "core_133"
-        assert mod.down_revision == "core_132"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
     def test_dedup_snapshots_guards_and_parity_raises(self):
         dedup = _load_migration()._SNAPSHOT_AND_DEDUP_SQL
         assert "to_regclass('public.contacts')" in dedup

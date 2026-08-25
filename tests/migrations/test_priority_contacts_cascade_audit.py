@@ -190,21 +190,6 @@ async def _seed_priority_contact(pool: asyncpg.Pool, name: str = "Alice") -> UUI
     return entity_id
 
 
-def test_migration_revision_chain():
-    """Migration revision metadata links core_101 → core_129 → core_205."""
-    mod = _load_migration("core_101_priority_contacts")
-    assert mod.revision == "core_101"
-    assert mod.down_revision == "core_100"
-
-    drop = _load_migration("core_129_priority_contacts_drop_butler")
-    assert drop.revision == "core_129"
-    assert drop.down_revision == "core_128"
-
-    retire = _load_migration(_RETIRE_MIGRATION)
-    assert retire.revision == "core_205"
-    assert retire.down_revision == "core_204"
-
-
 @pytest.mark.asyncio(loop_scope="session")
 async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> None:
     """core_205 leaves no user trigger on public.priority_contacts."""

@@ -44,12 +44,6 @@ def _load_migration():
     return mod
 
 
-def test_migration_revision_chain():
-    mod = _load_migration()
-    assert mod.revision == "core_117"
-    assert mod.down_revision == "core_116"
-
-
 def test_migration_targets_public_butler_secrets():
     source = _MIGRATION_PATH.read_text()
     assert "public.butler_secrets" in source

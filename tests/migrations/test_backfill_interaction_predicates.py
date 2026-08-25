@@ -58,16 +58,6 @@ def _collect_sqls(fn_name: str) -> list[str]:
     return sqls[1:]
 
 
-class TestMigrationChain:
-    def test_revision_chain(self) -> None:
-        """revision rel_012 -> down_revision rel_011, no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "rel_012"
-        assert mod.down_revision == "rel_011"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     def test_upgrade_emits_typed_then_fallback(self) -> None:
         """upgrade() emits exactly 2 UPDATEs: typed interaction_<type> then interaction_other."""

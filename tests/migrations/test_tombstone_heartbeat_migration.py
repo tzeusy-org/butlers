@@ -53,13 +53,6 @@ def _load_migration():
 class TestMigrationFileAndChain:
     """Revision-chain + chain-discovery contract tests."""
 
-    def test_revision_chain(self, migration_mod) -> None:
-        """chronicler_007 -> chronicler_006, no branch/depends."""
-        assert migration_mod.revision == "chronicler_007"
-        assert migration_mod.down_revision == "chronicler_006"
-        assert migration_mod.branch_labels is None
-        assert migration_mod.depends_on is None
-
     def test_chronicler_chain_includes_007(self) -> None:
         """Migration chain discovery must pick up 007_tombstone_heartbeat_episodes."""
         from butlers.migrations import _resolve_chain_dir

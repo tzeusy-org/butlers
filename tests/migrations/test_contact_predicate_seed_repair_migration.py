@@ -37,14 +37,6 @@ def _collect_upgrade_sqls() -> list[str]:
     return sqls
 
 
-def test_revision_chain() -> None:
-    mod = _load_migration()
-    assert mod.revision == "rel_017"
-    assert mod.down_revision == "rel_016"
-    assert mod.branch_labels is None
-    assert mod.depends_on is None
-
-
 def test_upgrade_upserts_has_handle_predicate() -> None:
     sqls = _collect_upgrade_sqls()
     joined = "\n".join(sqls)

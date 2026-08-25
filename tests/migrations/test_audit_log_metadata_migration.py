@@ -54,12 +54,6 @@ async def audit_log_pool(provisioned_postgres_pool):
         yield pool
 
 
-def test_migration_revision_chain() -> None:
-    mod = _load_migration("core_122", _CORE_122)
-    assert mod.revision == "core_122"
-    assert mod.down_revision == "core_121"
-
-
 async def _upgrade_to_122(pool: asyncpg.Pool) -> None:
     """Build the table exactly as it stood at core_122, and no further.
 

@@ -68,18 +68,6 @@ def _collect_downgrade_sqls() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-class TestMigrationFileAndChain:
-    """Revision-chain contract test."""
-
-    def test_revision_chain(self) -> None:
-        """rel_014 -> rel_013 (entity_facts), no branch/depends."""
-        mod = _load_migration()
-        assert mod.revision == "rel_014"
-        assert mod.down_revision == "rel_013"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-
 class TestUpgradeSQLShape:
     """Verify upgrade() seeds the documented predicate content.
 

@@ -75,15 +75,6 @@ def _executed_sql(function_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_revision_chains_onto_the_current_core_head() -> None:
-    module = _load_migration()
-
-    assert module.revision == "core_201"
-    assert module.down_revision == "core_200"
-    assert module.branch_labels is None
-    assert module.depends_on is None
-
-
 def test_receipt_keeps_only_what_the_replay_decision_needs() -> None:
     """A leaked receipt table must not rebuild into a usable capability."""
     sql = _executed_sql("upgrade")
