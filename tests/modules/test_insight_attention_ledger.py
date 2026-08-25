@@ -14,10 +14,14 @@ Amendment 1): the insight-delivery-cycle side of the attention policy.
 Ledger-row content assertions (the actual INSERT into
 ``public.attention_ledger``) live in
 ``tests/integration/test_attention_ledger_roundtrip.py`` against a fully
-migrated database — the ``insight_pool`` fixture here only creates the four
-insight tables (see ``create_insight_tables``), so ledger writes fail open
-silently, which is itself part of the degraded-honesty contract this test
-file does not need to re-verify.
+migrated database — the ``insight_pool`` fixture here creates only the four
+insight tables (see ``create_insight_tables``) plus the Owner Attention Policy
+row, so ledger writes fail open silently, which is itself part of the
+degraded-honesty contract this test file does not need to re-verify.
+
+The policy row is not optional decoration: it is the difference between a
+quiet-hours assertion that means something and one that is green because the
+table was missing. See ``_DEFAULT_QUIET_START_HOUR`` below.
 """
 
 from __future__ import annotations
@@ -37,21 +41,68 @@ pytestmark = [
 ]
 
 
+# The Owner Attention Policy the ``insight_pool`` fixture seeds — the
+# production default core_160 writes into ``public.approvals_policy`` for this
+# single-owner (Asia/Singapore) deployment.
+#
+# Seeding it is what gives every instant in this file something to be quiet or
+# loud *relative to*. Without the row the table does not exist at all, so
+# ``get_approvals_policy_quiet_hours`` catches the UndefinedTableError, returns
+# ``None``, and ``is_policy_quiet_now`` then reports every hour of every day as
+# awake: the quiet-hours branch of ``delivery_cycle`` is unreachable and a cycle
+# cannot observe suppression however loud the clock gets. With the row present
+# the window is real — 23:00-08:00 SGT is 15:00-24:00 UTC — so a cycle handed
+# the wall clock is suppressed for nine hours of every day, and every call site
+# has to name its own instant.
+_DEFAULT_QUIET_START_HOUR = 23
+_DEFAULT_QUIET_END_HOUR = 8
+_DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
+
+# The instant every cycle in this file that does not name its own is evaluated
+# at. 12:00 UTC is 20:00 SGT — comfortably outside the seeded quiet window, so
+# a cycle run here is awake and any suppression it reports came from the thing
+# the test actually set up. It is also past ``_DAILY_HOLD_FALLBACK_UTC_HOUR``
+# (11), which the travel-day test below relies on.
+_PINNED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+
+
+# ``_future`` stays on the wall clock on purpose: ``_PINNED_NOW`` is a past
+# instant on every real run, so a ``_future()`` expiry is still in the future
+# when a cycle is evaluated at ``_PINNED_NOW``. A test that wants an
+# already-expired candidate would have to anchor the expiry to ``_PINNED_NOW``
+# instead; no test in this file does.
 def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
 
 @pytest.fixture
 async def insight_pool(provisioned_postgres_pool):
+    """Provision a fresh database with insight tables and the owner policy.
+
+    The Owner Attention Policy is part of the schema every one of these tests
+    runs against in production, so it is seeded here with its production
+    default. A test that is *about* quiet-hours suppression overrides it with
+    :func:`_set_owner_attention_policy`.
+    """
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
     async with provisioned_postgres_pool() as pool:
         await create_insight_tables(pool)
+        await _set_owner_attention_policy(
+            pool,
+            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+            timezone=_DEFAULT_QUIET_TIMEZONE,
+        )
         yield pool
 
 
 async def _set_owner_attention_policy(
-    pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None
+    pool,
+    *,
+    quiet_start_hour: int | None,
+    quiet_end_hour: int | None,
+    timezone: str = "UTC",
 ):
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS public.approvals_policy (
@@ -64,7 +115,7 @@ async def _set_owner_attention_policy(
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
-        VALUES (1, $1, $2, 'UTC')
+        VALUES (1, $1, $2, $3)
         ON CONFLICT (id) DO UPDATE
             SET quiet_start_hour = EXCLUDED.quiet_start_hour,
                 quiet_end_hour = EXCLUDED.quiet_end_hour,
@@ -72,6 +123,7 @@ async def _set_owner_attention_policy(
         """,
         quiet_start_hour,
         quiet_end_hour,
+        timezone,
     )
 
 
@@ -121,7 +173,7 @@ class TestUrgentBypassesQuietHours:
         result = await delivery_cycle(
             insight_pool,
             notify_fn=notify_mock,
-            now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            now=_PINNED_NOW,
         )
 
         assert result["skipped"] is False
@@ -152,7 +204,7 @@ class TestUrgentBypassesQuietHours:
         result = await delivery_cycle(
             insight_pool,
             notify_fn=notify_mock,
-            now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
+            now=_PINNED_NOW,
         )
 
         assert result["skipped"] is True
@@ -165,10 +217,25 @@ class TestUrgentBypassesQuietHours:
 
 
 class TestContextBusGating:
+    """Suppression by the context bus alone, with quiet hours inactive.
+
+    "no quiet hours" in these test names means the Owner Attention Policy the
+    ``insight_pool`` fixture seeds is not *active* at the instant the cycle is
+    evaluated at — ``_PINNED_NOW``, which is 20:00 SGT. The policy row itself
+    is always present; without it ``is_policy_quiet_now`` would report every
+    hour awake and these assertions would hold for a reason unrelated to the
+    context bus.
+    """
+
     async def test_dnd_signal_suppresses_routine_when_no_quiet_hours(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        # No quiet-hours configured — only the context bus should suppress.
+        # The fixture's production-default window does not cover
+        # ``_PINNED_NOW``, so quiet hours are inactive at this instant and the
+        # context bus is the only thing left that can suppress. Naming the
+        # instant is what makes that true: on the wall clock this cycle would
+        # be quiet-hours-suppressed for nine hours of every day, and the
+        # assertion below cannot tell that apart from a context-bus hold.
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
@@ -181,7 +248,7 @@ class TestContextBusGating:
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="dnd"),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
@@ -198,12 +265,16 @@ class TestContextBusGating:
         await _insert_candidate(insight_pool, dedup_key="health:routine:4:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:4:2026", priority=92)
 
+        # Hour-independent by construction: an urgent candidate fails open past
+        # quiet hours as well as the context bus (RFC 0011 Amendment 1), so this
+        # outcome holds at every instant. Named anyway so no cycle in this file
+        # reads the wall clock.
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="sleeping"),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
@@ -228,12 +299,15 @@ class TestContextBusGating:
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:m1:2026", priority=70)
 
+        # As in the dnd sibling above: a quiet-hours hold produces the exact
+        # same skipped=True / not-awaited pair, so the awake instant is what
+        # makes `meeting` the demonstrated cause.
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="meeting"),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
@@ -248,12 +322,14 @@ class TestContextBusGating:
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:t1:2026", priority=70)
 
+        # Same indistinguishability as the dnd/meeting siblings: without an
+        # awake instant a quiet-hours hold satisfies both assertions below.
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="traveling"),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
@@ -269,12 +345,13 @@ class TestContextBusGating:
         await _insert_candidate(insight_pool, dedup_key="health:routine:m2:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:m2:2026", priority=93)
 
+        # Hour-independent for the same reason as the dnd/urgent sibling above.
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="meeting"),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
@@ -311,7 +388,7 @@ class TestContextBusGating:
                 new=AsyncMock(return_value="fake-id"),
             ) as ledger_mock,
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is True
         ledger_mock.assert_awaited_once()
@@ -335,7 +412,7 @@ class TestContextBusGating:
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
@@ -542,7 +619,7 @@ class TestUrgentOnlySubCycle:
         )
 
         daily_notify = AsyncMock(return_value={"status": "ok"})
-        daily_result = await delivery_cycle(insight_pool, notify_fn=daily_notify)
+        daily_result = await delivery_cycle(insight_pool, notify_fn=daily_notify, now=_PINNED_NOW)
 
         assert daily_result["delivered"] == [routine_id]
         daily_notify.assert_awaited_once()
@@ -587,7 +664,15 @@ class TestFailedDeliveryLedgerRecording:
             new=AsyncMock(return_value=None),
         )
 
-    async def _seed_normal_no_quiet_hours(self, pool):
+    async def _seed_normal_verbosity(self, pool):
+        """Seed verbosity=normal only.
+
+        The name this used to carry ("no quiet hours") described the fixture's
+        missing ``public.approvals_policy`` table rather than anything this
+        helper does. The policy now exists with its production default; these
+        tests stay out of the quiet-hours branch by evaluating their cycle at
+        ``_PINNED_NOW``, not by leaving the policy unset.
+        """
         await pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
@@ -597,14 +682,14 @@ class TestFailedDeliveryLedgerRecording:
     async def test_notify_error_return_records_failed_ledger_row(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        await self._seed_normal_no_quiet_hours(insight_pool)
+        await self._seed_normal_verbosity(insight_pool)
         await _insert_candidate(insight_pool, dedup_key="health:fail:e1:2026", priority=70)
         cand_id = await _candidate_id(insight_pool, "health:fail:e1:2026")
 
         notify_mock = AsyncMock(return_value={"status": "error", "error": "boom"})
         patcher, calls = self._patch_ledger()
         with patcher, self._no_context_signal():
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # No successful delivery.
         assert result["delivered"] == []
@@ -634,14 +719,14 @@ class TestFailedDeliveryLedgerRecording:
     async def test_notify_exception_records_failed_ledger_row(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        await self._seed_normal_no_quiet_hours(insight_pool)
+        await self._seed_normal_verbosity(insight_pool)
         await _insert_candidate(insight_pool, dedup_key="health:fail:x1:2026", priority=70)
         cand_id = await _candidate_id(insight_pool, "health:fail:x1:2026")
 
         notify_mock = AsyncMock(side_effect=ValueError("weird"))
         patcher, calls = self._patch_ledger()
         with patcher, self._no_context_signal():
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["delivered"] == []
         failed = [c for c in calls if c.get("outcome") == "failed"]
@@ -659,7 +744,7 @@ class TestFailedDeliveryLedgerRecording:
     async def test_third_strike_records_terminally_filtered_metadata(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        await self._seed_normal_no_quiet_hours(insight_pool)
+        await self._seed_normal_verbosity(insight_pool)
         await _insert_candidate(insight_pool, dedup_key="health:fail:t1:2026", priority=70)
         cand_id = await _candidate_id(insight_pool, "health:fail:t1:2026")
         # Two prior failures already recorded; this cycle is the 3rd strike.
@@ -671,7 +756,7 @@ class TestFailedDeliveryLedgerRecording:
         notify_mock = AsyncMock(return_value={"status": "error", "error": "still down"})
         patcher, calls = self._patch_ledger()
         with patcher, self._no_context_signal():
-            await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         failed = [c for c in calls if c.get("outcome") == "failed"]
         assert len(failed) == 1
@@ -699,7 +784,7 @@ class TestFailedDeliveryLedgerRecording:
     async def test_digest_failure_records_one_failed_row_per_candidate(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        await self._seed_normal_no_quiet_hours(insight_pool)
+        await self._seed_normal_verbosity(insight_pool)
         await _insert_candidate(insight_pool, dedup_key="health:fail:d1:2026", priority=72)
         await _insert_candidate(insight_pool, dedup_key="health:fail:d2:2026", priority=71)
         id1 = await _candidate_id(insight_pool, "health:fail:d1:2026")
@@ -708,7 +793,7 @@ class TestFailedDeliveryLedgerRecording:
         notify_mock = AsyncMock(return_value={"status": "error", "error": "digest boom"})
         patcher, calls = self._patch_ledger()
         with patcher, self._no_context_signal():
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # A >1 selection means notify was called once with a digest, and both
         # candidates get their own failed row.
@@ -837,11 +922,19 @@ class TestDailyHoldMode:
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
             new=AsyncMock(return_value="traveling"),
         ):
+            # ``traveling`` has to be the signal that is actually holding this
+            # cycle, so the instant must be awake: quiet hours are checked
+            # first and win the ``_suppression_signal`` slot, and the hard
+            # fallback deadline *does* bypass quiet_hours. 23:00 UTC (the old
+            # instant here) is 07:00 SGT — inside the fixture's window — so it
+            # would exercise the deadline bypass, not the travel-day defer.
+            # ``_PINNED_NOW`` is 20:00 SGT and hour 12 >= the fallback hour
+            # (11), which is what "past hard deadline" needs.
             result = await delivery_cycle(
                 insight_pool,
                 notify_fn=notify_mock,
                 daily_hold_mode=True,
-                now=datetime(2026, 1, 15, 23, 0, tzinfo=UTC),
+                now=_PINNED_NOW,
             )
 
         assert result["skipped"] is True
