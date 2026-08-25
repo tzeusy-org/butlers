@@ -259,6 +259,78 @@ merged the PR, but the result did not have exactly one parent. Its audit retains
 the parent evidence; leave the source Bead open and run the documented
 post-merge audit/investigation rather than treating it as exact-base evidence.
 
+### Target-branch health gate
+
+Before it sends the merge request, the helper reads the target branch's own
+post-merge detectors for the exact base SHA it is about to merge onto, via
+`main_health_gate.py`. Two new outcomes come from that gate and neither issues a
+merge request:
+
+- `premerge-target-branch-red` (exit `6`) means a push-triggered workflow on the
+  target branch concluded red for that base SHA. Halt the batch and repair the
+  branch; do not merge the next PR onto it.
+- `premerge-target-branch-health-unknown` (exit `7`) means there is no
+  trustworthy verdict yet: the run has not been created, is still in flight, or
+  was cancelled. Wait for it to settle (`main_health_gate.py --wait-seconds`)
+  and repeat, rather than reading the absence as green.
+
+`--acknowledge-target-red <workflow-filename>` (repeatable) merges despite one
+named workflow being red, which is how the fix for a red target branch lands. It
+is deliberately not a blanket override: any *other* red still halts the batch.
+
+## main_health_gate.py
+
+Decides whether `main` is healthy enough for the next merge in a batch, and is
+the reader the post-merge detectors never had (bu-vul8u). A pull request's CI can
+only see its own branch, so two PRs can each be green and still collide once both
+have landed. When that happened, the "Migration Chain Integrity (main)" workflow
+went red on the merged tree exactly as designed, and several more PRs were merged
+onto that red main because nothing consumed the result.
+
+It answers `proceed` / `wait` / `halt` for one SHA, from two halves.
+
+**Hosted half.** Polls the push-triggered workflow runs for that exact SHA. Four
+situations look like the same absence on the wire and must not be conflated:
+
+| observed | meaning | action |
+| --- | --- | --- |
+| no run, and the merged commit touched no path the workflow's `paths:` filter covers | legitimately excluded | proceed |
+| no run, and the commit did touch a covered path | webhook lag | wait |
+| run exists, `conclusion` is the empty string (not null) | still in flight | wait |
+| run exists, `conclusion` is `cancelled` | UNKNOWN | wait, never green |
+
+Only workflows that can earn a per-SHA verdict are polled. A workflow whose
+concurrency group is keyed on the branch ref with `cancel-in-progress` cannot
+settle mid-batch, because every push to main cancels the previous run, so `ci.yml`
+is excluded and the local half covers it instead. A tag-only push workflow such as
+`release.yml` never fires on a branch push and is excluded for the same reason.
+Runs are looked up by workflow FILENAME (`migration-chain-main.yml`), never by
+display name.
+
+**Local half.** Runs the repository's repo-wide guards against a checkout of the
+merged tree. This is where a green verdict actually comes from during a batch.
+The guards are enumerated from the tree under test (its own workflow definitions
+and `Makefile` recipes), not from a list frozen in this script: a new repo-wide
+guard is absent from every branch cut before it, and an absent check is invisible
+to both a fail-scan and a required-name list. The sweep also fails if any guard
+leaves the tree dirty, which is how the frontend copy inventory reports staleness.
+
+```bash
+# between merges, against a dedicated scratch worktree (never the repo root)
+python3 scripts/main_health_gate.py \
+  --tree /path/to/scratch-worktree --sync-tree-to origin/main --wait-seconds 300
+
+# hosted verdicts only, no local checkout needed
+python3 scripts/main_health_gate.py --sha "$SHA" --no-local-guards
+```
+
+Exit codes: `0` proceed, `1` definitively red, `2` unresolved (wait and re-run),
+`3` usage or transport error. An exhausted wait budget halts, but still reports
+`2`: it halts for want of evidence, not because something failed.
+
+`--sync-tree-to` refuses to reset anything that is not a linked git worktree, so
+a mistyped path cannot touch the repository root.
+
 ## fix_beads_dependency_timestamps.py
 
 Detects and fixes dependency records with zero timestamps (`created_at="0001-01-01T00:00:00Z"`) in `.beads/issues.jsonl`.

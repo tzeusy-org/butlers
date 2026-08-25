@@ -480,6 +480,27 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 - Capture `headRefOid`, the live target-branch ref name, and its live ref SHA (not the PR's potentially stale `baseRefOid`) together during final terminal-green hosted CI / independent-review revalidation. Every hosted check must be terminal green, regardless of branch-protection required-check configuration. Then use `python3 scripts/merge_pr_exact_base.py --pr <n> --expected-head <head> --expected-base-ref <ref> --expected-base <base>` rather than a bare REST request, `gh pr merge`, or `--auto`. The helper keeps SHA pinning, rejects pre-request head/target-ref/base drift without issuing a merge, then re-reads the merged PR's retained `baseRefName` through GraphQL before auditing the resulting squash commit's sole parent and immutable result tree.
 - Only `merged-exact-base` (`source_bead_closure_allowed: true`) permits source/review Bead closure. `premerge-head-drift`, `premerge-base-ref-drift`, or `premerge-base-drift` requires a rebase onto current `origin/main` followed by fresh CI and independent exact-head review. `postmerge-base-ref-drift` (including a failed post-merge GraphQL lookup), `postmerge-base-drift`, `postmerge-patch-drift`, and `postmerge-unexpected-squash-parent-shape` are nonzero, already-merged classifications: keep the source Bead open and run the documented post-merge audit/investigation; never portray any as exact-current-base evidence. The last classification records parent evidence but found a non-squash parent shape. For patch proof, the audit must record matching `expected_patch_tree_sha` / `landed_patch_tree_sha`: coupled with the verified sole parent equal to the reviewed base, immutable tree equality proves the same net patch without relying on local Git state.
 
+### Batch merge target-branch health contract
+- A pull request's CI can only see its own branch, so a batch that checks each PR and never reads
+  main between merges will happily land PR N+1 on a main that PR N already broke. That is bu-vul8u:
+  two PRs each numbered a migration `core_204`, both green, and the post-merge "Migration Chain
+  Integrity (main)" workflow went red on the merged tree exactly as designed while nothing read it.
+- `scripts/merge_pr_exact_base.py` now consumes `scripts/main_health_gate.py` before it sends the
+  merge request. `premerge-target-branch-red` (exit `6`) halts the batch; `premerge-target-branch-
+  health-unknown` (exit `7`) means wait and repeat. `--acknowledge-target-red <workflow-filename>`
+  merges past one named red so the fix for a red main can land; any other red still halts.
+- Between merges, run `python3 scripts/main_health_gate.py --tree <scratch worktree>
+  --sync-tree-to origin/main --wait-seconds 300`. Use a dedicated scratch worktree, never the repo
+  root; the script refuses to reset anything that is not a linked worktree.
+- Four absences look identical on the wire and mean different things: path-filter excluded
+  (proceed), run not created yet (wait), run in flight (`gh --json conclusion` returns the empty
+  string, not null -- wait), and cancelled (UNKNOWN, never green). "No run" is UNKNOWN, not pass.
+- Main structurally cannot earn a green CI verdict mid-batch: `ci.yml`'s concurrency group is keyed
+  on the branch ref with `cancel-in-progress`, so every push cancels the previous run. The gate
+  therefore never asks `ci.yml` for a verdict and computes green locally instead, from guards
+  enumerated out of the tree under test rather than a hardcoded list that would go stale the moment
+  a new repo-wide guard lands.
+
 ### Calendar projection linkage schema contract
 - Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
 
