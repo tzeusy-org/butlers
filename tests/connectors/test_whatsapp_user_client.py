@@ -383,7 +383,10 @@ async def test_checkpoint_success_logs_are_identifier_blind(
         _connector_type: str,
         _endpoint_identity: str,
         payload: str,
+        *,
+        parent_endpoint_identity: Any,
     ) -> None:
+        assert parent_endpoint_identity is None
         saved_payloads.append(payload)
 
     with (
