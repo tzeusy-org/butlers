@@ -18,6 +18,10 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
   // fabricated alarm for the ~19-of-22 rows that were merely unverified on
   // 2026-07-05. Quiet/dim, no sliver — see NEEDS_HAND_STATES / UNVERIFIED_STATES.
   warn:          { label: "unverified",     tone: "dim",   sliver: false, rank: 4 },
+  checking:      { label: "checking…",      tone: "dim",   sliver: false, rank: 5 },
+  authorization_needed: {
+    label: "authorization needed", tone: "amber", sliver: true, rank: 3,
+  },
   rotating:      { label: "rotating…", tone: "amber", sliver: false, rank: 4 },
   ok:            { label: "healthy",        tone: "ok",    sliver: false, rank: 5 },
   failed:        { label: "failed",         tone: "red",   sliver: true,  rank: 1 },
@@ -34,7 +38,7 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
  * transient in-flight indicator, unchanged from prior behavior.
  */
 export const NEEDS_HAND_STATES = new Set<CredentialState>([
-  "expired", "revoked", "scope_mismatch", "expiring", "rotating", "failed",
+  "expired", "revoked", "scope_mismatch", "expiring", "authorization_needed", "rotating", "failed",
 ]);
 
 /**

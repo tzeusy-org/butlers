@@ -1240,6 +1240,35 @@ def test_inventory_family_counts_relocate_per_butler_cli_auth_rows_to_cli():
     }
 
 
+def test_inventory_family_counts_use_canonical_cli_health_over_stale_mirrors():
+    """Canonical shared CLI health wins over same-key per-butler mirrors."""
+    canonical = _make_system_row(
+        key="cli-auth/codex",
+        category="cli-auth",
+        last_test_ok=True,
+        last_verified=_NOW,
+    )
+    stale_mirror = _make_system_row(
+        key="cli-auth/codex",
+        category="cli-auth",
+        last_test_ok=True,
+        last_verified=_NOW - timedelta(days=2),
+    )
+    client = _build_app(
+        _make_db_manager(
+            butler_names=["travel"],
+            system_rows=[stale_mirror],
+            cli_rows=[canonical],
+        )
+    )
+
+    response = client.get("/api/secrets/inventory")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["meta"]["failing_count_by_family"]["cli"] == 0
+    assert response.json()["meta"]["unverified_count_by_family"]["cli"] == 0
+
+
 def test_inventory_family_counts_exclude_hidden_provider_managed_system_rows():
     """Hidden provider-drawer rows do not inflate visible Passport KPIs."""
     owntracks_failure = _make_system_row(

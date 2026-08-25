@@ -47,8 +47,10 @@ const STATE_RANK: Record<CredentialState, number> = {
   failed: 1,
   scope_mismatch: 2,
   expiring: 3,
+  authorization_needed: 3,
   warn: 4,
   rotating: 4,
+  checking: 5,
   ok: 5,
   never_set: 9,
 };
@@ -458,8 +460,11 @@ export function adaptInventoryResponse(data: {
     return credential;
   });
   const system = groupSystemCredentials(data.system.map(adaptSystemCredential));
+  const cliCredentials = data.cli.map(adaptCliCredential);
+  const canonicalCliIds = new Set(cliCredentials.map((credential) => credential.id));
   const cliFromSystem = system
     .filter(isCliAuthSystemCredential)
+    .filter((credential) => !canonicalCliIds.has(credential.key))
     .map(systemCliAuthToCliCredential);
   const identities = mapIdentities(data.identities);
   const ownerEntityId = identities.find((i) => i.role === "owner")?.id;
@@ -471,7 +476,7 @@ export function adaptInventoryResponse(data: {
         !isProviderManagedSystemCredential(credential),
     ),
     cli:             groupCliCredentials([
-      ...data.cli.map(adaptCliCredential),
+      ...cliCredentials,
       ...cliFromSystem,
     ]),
     identities,

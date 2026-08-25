@@ -164,6 +164,7 @@ import {
 } from "./mock-data.ts";
 import type { SpineEntry } from "./types.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
+import { useSpotifyStatus } from "@/hooks/use-spotify.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -178,6 +179,11 @@ function renderInRouter(element: React.ReactElement, initialEntries: string[] = 
       <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+function spotifySpineRow(html: string): string {
+  const start = html.indexOf('data-key="u:spotify"');
+  return html.slice(start, html.indexOf("</button>", start));
 }
 
 function renderInDomRouter(element: React.ReactElement, initialEntries: string[] = ["/secrets"]) {
@@ -752,12 +758,43 @@ describe("DirectionPassport: renders against mocked inventory", () => {
     );
     const projection = html.slice(html.indexOf('data-connector-passport="spotify"'));
 
+    expect(spotifySpineRow(html)).toContain('data-state="ok"');
     expect(projection).toContain('data-spotify-drawer-content="true"');
     expect(projection).toContain("listening history");
     expect(projection).not.toContain("data-fingerprint");
     expect(projection).not.toContain("visa permissions");
     expect(projection).not.toContain("probe · last test");
     expect(projection).not.toContain("stamps · audit");
+  });
+
+  it("keeps Spotify status-query errors content-blind in the connector projection", () => {
+    const sentinel = "spotify-status-sentinel: refresh_token=not-for-rendering";
+    const failedStatus = {
+      data: undefined,
+      error: new Error(sentinel),
+      isError: true,
+      isLoading: false,
+    } as never;
+    // DirectionPassport and its embedded SpotifyDrawerContent each read the
+    // status hook. Both must see the same failed query state.
+    vi.mocked(useSpotifyStatus)
+      .mockReturnValueOnce(failedStatus)
+      .mockReturnValueOnce(failedStatus);
+    const inventory = {
+      ...MOCK_INVENTORY,
+      user: MOCK_INVENTORY.user.filter((entry) => entry.provider !== "spotify"),
+    };
+
+    const html = renderInRouter(
+      <DirectionPassport inventory={inventory} />,
+      ["/secrets?focus=u%3Aspotify"],
+    );
+
+    expect(html).not.toContain(sentinel);
+    expect(html).toContain("Status unavailable.");
+    expect(spotifySpineRow(html)).toContain('data-state="failed"');
+    expect(html).toContain("needs hand ·");
+    expect(html).not.toContain("probe · last test");
   });
 });
 

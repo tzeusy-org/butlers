@@ -373,6 +373,37 @@ describe("adaptInventoryResponse: user rows are content-blind [bu-iph56]", () =>
 });
 
 describe("adaptInventoryResponse: system credential grouping", () => {
+  it("keeps canonical CLI health over stale per-butler mirrors", () => {
+    const result = adaptInventoryResponse({
+      cli: [
+        {
+          key: "cli-auth/codex",
+          category: "cli-auth",
+          description: "Codex",
+          state: "ok",
+          fingerprint: "canonical",
+          issued: null,
+          expires: null,
+          last_verified: "2026-08-24T14:16:06Z",
+          test: { ok: true, code: null, at: "14:16 today", latency_ms: 374 },
+        },
+      ],
+      system: [
+        makeSystem({
+          key: "cli-auth/codex",
+          category: "cli-auth",
+          state: "warn",
+          butler: "travel",
+        }),
+      ],
+      user: [],
+      identities: [],
+    });
+
+    expect(result.cli).toHaveLength(1);
+    expect(result.cli[0]).toMatchObject({ id: "cli-auth/codex", state: "ok" });
+  });
+
   it("groups duplicate cli-auth system keys into one CLI row", () => {
     const result = adaptInventoryResponse({
       cli: [],

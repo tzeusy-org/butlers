@@ -1237,9 +1237,7 @@ export function SpotifyDrawerContent() {
 
       {statusQuery.error && (
         <Mono size={11} color="var(--red)">
-          {statusQuery.error instanceof Error
-            ? statusQuery.error.message
-            : "Status unavailable."}
+          Status unavailable.
         </Mono>
       )}
 

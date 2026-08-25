@@ -3556,6 +3556,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - spotify · client id
 - from developer.spotify.com/dashboard
 - Disconnect Spotify? Clears locally stored authorization state. Your client ID remains configured.
+- Status unavailable.
 - whatsapp · scan qr code to pair
 - paired successfully
 - qr code expired, try again
@@ -4146,4 +4147,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3245*
+*Total strings: 3246*

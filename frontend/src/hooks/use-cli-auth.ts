@@ -114,8 +114,13 @@ export function useDeleteCLIAuthApiKey() {
 
 /** Test a stored API key by running the provider's test command. */
 export function useTestCLIAuthApiKey() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (provider: string) => testCLIAuthApiKey(provider),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: cliAuthKeys.providers() });
+    },
   });
 }
 

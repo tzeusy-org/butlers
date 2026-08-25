@@ -2606,7 +2606,12 @@ def _dedupe_display_families(
     or a count can name a family with no corresponding visible credential.
     """
     deduped_system = _dedupe_most_severe(system_secrets, lambda secret: secret.key)
-    cli_from_system = [secret for secret in deduped_system if _is_cli_auth_system_secret(secret)]
+    canonical_cli_keys = {secret.key for secret in cli_secrets}
+    cli_from_system = [
+        secret
+        for secret in deduped_system
+        if _is_cli_auth_system_secret(secret) and secret.key not in canonical_cli_keys
+    ]
     visible_system = [
         secret
         for secret in deduped_system

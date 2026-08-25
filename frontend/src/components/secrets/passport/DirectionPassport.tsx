@@ -21,11 +21,13 @@ import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry
 import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
+import { spotifyProjectionState } from "./spotify-projection-state.ts";
 import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { SpotifyDrawer } from "./ProviderConfigDrawer.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
+import { useSpotifyStatus } from "@/hooks/use-spotify.ts";
 import { formatOwnerDateTime } from "@/components/ui/time";
 import { useTimezone } from "@/components/ui/timezone-context";
 
@@ -156,6 +158,12 @@ export function DirectionPassport({
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const ownerTimezone = useTimezone();
+  const spotifyStatus = useSpotifyStatus();
+  const spotifyState = spotifyProjectionState({
+    isLoading: spotifyStatus.isLoading,
+    isError: spotifyStatus.isError,
+    state: spotifyStatus.data?.state,
+  });
 
   // ── URL state ───────────────────────────────────────────────────────────
   const focusParam = searchParams.get("focus");
@@ -191,7 +199,7 @@ export function DirectionPassport({
           family: "user",
           label: "Spotify",
           provider: "spotify",
-          state: "warn",
+          state: spotifyState,
           mono: false,
           lastTouchOrder: 800,
           subline: "connector-managed",
@@ -199,7 +207,7 @@ export function DirectionPassport({
       }
       return projected;
     },
-    [inventory, spineIdentityIds],
+    [inventory, spineIdentityIds, spotifyState],
   );
 
   // Focus key: derived from URL param — URL is the single source of truth.

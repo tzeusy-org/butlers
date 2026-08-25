@@ -10,6 +10,8 @@ export type CredentialState =
   | "expiring"
   | "scope_mismatch"
   | "warn"
+  | "checking"
+  | "authorization_needed"
   | "rotating"
   | "never_set"
   | "failed";
