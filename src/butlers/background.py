@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from butlers.core.domain_event_reaction_sweep import reconcile_reaction_lifecycle
 from butlers.core.memory_hooks import bind_memory_maintenance_dispatch
 from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import (
@@ -189,6 +190,32 @@ async def dispatch_scheduled_task(
 # ---------------------------------------------------------------------------
 
 
+async def _sweep_domain_event_reactions(pool: Any, butler_name: str) -> None:
+    """Close out this butler's domain-event wakes that ended without a receipt.
+
+    Hosted here rather than centrally because the sweep must read the
+    *subscriber's own* ``scheduled_tasks`` (one schema per butler, RFC 0006)
+    -- the Switchboard cannot see a sibling schema's tasks. Best-effort: an
+    outcome-ledger hiccup must never stop scheduled work from dispatching,
+    and the next tick simply retries.
+    """
+    try:
+        summary = await reconcile_reaction_lifecycle(pool, subscriber_butler=butler_name)
+    except Exception:
+        logger.exception(
+            "Scheduler loop: domain-event reaction sweep failed for butler %s; continuing",
+            butler_name,
+        )
+        return
+    if summary["running"] or summary["unreported"]:
+        logger.info(
+            "Domain-event reaction sweep for %s: %d running, %d unreported",
+            butler_name,
+            summary["running"],
+            summary["unreported"],
+        )
+
+
 async def scheduler_loop(
     *,
     pool: Any,
@@ -337,6 +364,7 @@ async def scheduler_loop(
                     "Scheduler loop: tick() raised an exception for butler %s; continuing",
                     butler_name,
                 )
+            await _sweep_domain_event_reactions(pool, butler_name)
     except asyncio.CancelledError:
         logger.info("Scheduler loop cancelled for butler %s", butler_name)
 

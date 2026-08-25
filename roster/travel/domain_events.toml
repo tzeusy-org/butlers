@@ -1,0 +1,43 @@
+# Publisher-owned domain-event contracts for the Travel butler (bu-6jv4m.8).
+#
+# Every event type Travel publishes on the domain-event bus is declared here,
+# versioned, with its payload minimized to an exhaustive field list, its
+# retention policy named, its permitted subscribers listed, and the reaction
+# the publisher believes a subscriber will want. The bus admits a publish or a
+# subscription only against a declaration in this file; see
+# `src/butlers/core/domain_event_contracts.py` for the loader and the
+# fail-closed admission rules.
+#
+# `reaction_contract` is documentation carried to the subscriber. It never
+# obliges the subscriber to act — whether acting is correct is owned by the
+# subscribing butler's own manifesto, not by Travel and not by the bus.
+
+[[event]]
+type = "travel.trip_booked"
+schema_version = 1
+summary = "record_booking created a brand-new trip container from an ingested booking."
+retention_policy = "standard"
+reaction_expectation = "expected"
+reaction_contract = """
+A trip now exists that did not exist before. A subscriber that owns forward-looking \
+domain preparation (e.g. Finance pre-budgeting the trip) normally has an action here. \
+Publisher fields are trip identifiers and dates only; no booking documents, provider \
+references, or traveller details cross the bus."""
+permitted_subscribers = ["finance"]
+required_fields = ["trip_id"]
+optional_fields = ["name", "destination", "start_date", "end_date"]
+
+[[event]]
+type = "travel.trip_active"
+schema_version = 1
+summary = "The travel context producer observed a trip transition into its active window."
+retention_policy = "standard"
+reaction_expectation = "expected"
+reaction_contract = """
+The owner is (or is about to be) travelling. A subscriber that owns time-sensitive \
+domain preparation (e.g. Health front-loading medication prep) normally has an action \
+here. Published at most once per trip activation, so a subscriber that sees it twice \
+is seeing a redelivery, not a second activation."""
+permitted_subscribers = ["health"]
+required_fields = ["trip_id"]
+optional_fields = ["name", "destination", "start_date", "end_date", "status"]

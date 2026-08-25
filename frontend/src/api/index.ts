@@ -912,6 +912,7 @@ export {
   listDelegationLedger,
   listDomainEventSubscriptions,
   listDomainEventDeliveries,
+  listDomainEventReactions,
   getHealingDispatchEvents,
 } from "./client.ts";
 
@@ -942,6 +943,8 @@ export type {
   HeartbeatFacts,
   InsightDeliveryState,
   InstanceFacts,
+  ReactionEntry,
+  ReactionSummary,
   SchemaSize,
   SubscriptionEntry,
   TableSize,

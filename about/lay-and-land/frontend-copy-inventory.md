@@ -1328,9 +1328,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerDomainEventsPanel.tsx`
 
+- no reaction recorded
 - no standing subscriptions
 - no recent deliveries
 - recent deliveries
+- wake = the subscriber was woken · reaction = what it reported doing
+- Reaction trace
 - Subscriptions
 - Deliveries
 - domain events
@@ -4143,4 +4146,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3242*
+*Total strings: 3245*

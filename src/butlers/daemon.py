@@ -157,6 +157,10 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "unsubscribe_from_event",
         "list_my_subscriptions",
         "receive_domain_event",
+        # bu-6jv4m.8: the subscriber's own reaction receipt. Same gate as the
+        # rest of the bus -- only a butler that can receive an event can close
+        # the loop on one.
+        "report_event_reaction",
     }
 )
 

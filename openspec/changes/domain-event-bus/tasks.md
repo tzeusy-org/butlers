@@ -60,3 +60,17 @@
   payload content, the wake prompt carries the freshness-recheck caveat outside the untrusted-data
   fence, and `tests/core/test_domain_event_wake.py` fails if either drifts.
 
+
+## 11. Contract versioning and reaction receipts (bu-6jv4m.8)
+
+- [x] 11.1 `core_206` adds `public.domain_event_contracts` (publisher-owned contract projection) and `public.domain_event_reactions` (append-only reaction ledger) with a partial unique index over the terminal statuses, so "a wake closes exactly once" is a database invariant rather than an application convention.
+- [x] 11.2 `butlers.core.domain_event_contracts`: git declarations at `roster/<butler>/domain_events.toml` are the source of truth (schema version, minimized required/optional fields, retention policy, permitted subscribers, reaction expectation + contract). Loaded once, checked on every publish and subscription, materialized to the projection at daemon startup (`lifecycle.py` step 8d3) for read-only visibility.
+- [x] 11.3 Fail-closed admission wired into `publish_domain_event`, `publish_domain_event_once`, and `subscribe_to_event`: undeclared type, namespace theft, undeclared/missing payload field, and unpermitted subscriber are all refused before any write. Admission reads git, never the projection, so a failed materialization narrows visibility only.
+- [x] 11.4 Declarations authored for the four live event types (`travel.trip_booked`, `travel.trip_active`, `finance.budget_pressure`, `health.recovery_state`), field lists verified against the real publishers' payloads; compatibility tests pin them.
+- [x] 11.5 `butlers.core.domain_event_reactions`: append-only lifecycle (`scheduled|running|acted|ignored|deferred|failed|unreported`) with session id and typed evidence refs, plus batch readers for the API.
+- [x] 11.6 `report_event_reaction` MCP tool -- the only path to `acted|ignored|deferred|failed`. It refuses `unreported`: that is the sweep's verdict about a session, never a session's claim about itself.
+- [x] 11.7 `domain_event_wake` opens the lifecycle (`scheduled`) when it creates a wake task, and the wake prompt tells the session to close it, stating that whether acting is correct is the subscriber's own manifesto's business.
+- [x] 11.8 `butlers.core.domain_event_reaction_sweep`, run at the end of each subscriber's own `scheduler_loop` iteration (only the subscriber can read its own `scheduled_tasks`): correlates task completion without inferring success. It may write `running` and `unreported` and nothing else.
+- [x] 11.9 API: deliveries carry their latest reaction as a separately labelled field; `GET /api/domain-events/events/{event_id}/reactions` returns the ordered trace; `GET /api/domain-events/contracts` exposes the projection.
+- [x] 11.10 `ButlerDomainEventsPanel` labels `wake <status>` and `reaction <status>` as distinct badges, calls out a delivered wake with no receipt, and expands the trace from a real `<button>` with `aria-expanded`/`aria-controls`.
+- [x] 11.11 Regression coverage for the live Travel to Finance `failed_permanent` shape: `tests/core_tools/test_domain_event_incomplete_receiver.py` pins the exact unwrap failure, its verbatim error text, its non-retryable classification, and that no reaction receipt is written. Read-only -- no replay, restart, or mutation of the live connector or runtime.

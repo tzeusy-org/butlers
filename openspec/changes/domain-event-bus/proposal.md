@@ -95,6 +95,25 @@ still honoring the MCP-only rule.
   while Switchboard still has the concrete exception hierarchy. Domain-event
   delivery consumes that signal through its existing bounded retry ledger;
   route/configuration and target-tool failures remain terminal.
+- (bu-6jv4m.8) Contract versioning and reaction receipts. Publishers now own
+  a versioned, minimized contract per event type, declared in git at
+  `roster/<butler>/domain_events.toml` (schema version, required/optional
+  fields, retention policy, permitted subscribers, reaction expectation and
+  contract). Publishes and subscriptions are admitted against those
+  declarations and fail closed; `core_206`'s
+  `public.domain_event_contracts` is a startup-materialized read projection,
+  never the permission check. Every wake now opens an append-only lifecycle
+  in `public.domain_event_reactions` and is expected to close through the
+  new `report_event_reaction` tool -- the only path to `acted`/`ignored`/
+  `deferred`/`failed`. Nothing infers success: a per-butler sweep on the
+  scheduler loop may record only `running` and `unreported`. The API and
+  `ButlerDomainEventsPanel` label the wake (transport) and the reaction
+  (domain outcome) as separate facts, with a keyboard-reachable trace. New
+  core modules: `butlers.core.domain_event_contracts`,
+  `butlers.core.domain_event_reactions`,
+  `butlers.core.domain_event_reaction_sweep`. The live Travel-to-Finance
+  `failed_permanent` shape is pinned as a read-only regression test; no
+  replay or runtime recovery is performed here.
 - Deferred (still reported as a follow-up): a shared `domain-event-bus`
   skill. Not added in this change -- the new publish call sites (Travel's
   context producer, Finance's and Health's insight-scan jobs) are

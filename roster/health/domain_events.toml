@@ -1,0 +1,18 @@
+# Publisher-owned domain-event contracts for the Health butler (bu-6jv4m.8).
+# See roster/travel/domain_events.toml for the format and the ownership rule.
+
+[[event]]
+type = "health.recovery_state"
+schema_version = 1
+summary = "The insight scan derived a recovering/depleted state from recent symptom rows."
+retention_policy = "minimized-derived"
+reaction_expectation = "optional"
+reaction_contract = """
+A derived advisory, published at most once per distinct state crossing. The payload is \
+deliberately minimized to a state label, a severity ceiling, and a count: the specific \
+symptoms, their notes, and any clinical detail never cross the bus. `valid_until` is the \
+publisher's advisory horizon, not a freshness guarantee — re-check it against the current \
+time before acting."""
+permitted_subscribers = []
+required_fields = ["state"]
+optional_fields = ["max_severity", "symptom_count", "window_days", "valid_until"]

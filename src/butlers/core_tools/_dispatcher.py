@@ -44,7 +44,8 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
           dashboard chat confirm-loop reply channel
       14. Delegation tools (delegate_ask, delegate_receive, delegate_answer, delegate_wake)
       15. Domain-event tools (publish_event, subscribe_to_event,
-          unsubscribe_from_event, list_my_subscriptions, receive_domain_event)
+          unsubscribe_from_event, list_my_subscriptions, receive_domain_event,
+          report_event_reaction)
       16. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)

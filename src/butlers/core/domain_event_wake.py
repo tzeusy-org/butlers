@@ -81,6 +81,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.domain_event_reactions import record_reaction
 from butlers.core.scheduler import schedule_create
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,14 @@ def _build_wake_task_prompt(
         "publishing butler) rather than acting on a lapsed snapshot as if it were still "
         "true.\n\n"
         "Take whatever action your domain associates with this event type, using your own "
-        "tools. If nothing is actionable, exit silently.\n\n"
+        "tools. Whether acting is the right call is your own manifesto's business, not the "
+        "publisher's.\n\n"
+        "Then close the loop: call report_event_reaction with this event_id and one of "
+        "'acted', 'ignored', 'deferred', or 'failed', plus a short note and any typed "
+        "evidence. Deciding the event is not relevant to you is a real outcome -- report it "
+        "as 'ignored' rather than exiting silently. A wake that ends without a receipt is "
+        "recorded as 'unreported', which tells the owner nothing about whether the "
+        "collaboration worked.\n\n"
         f"<!-- domain_event_wake_metadata: {json.dumps(metadata, sort_keys=True)} -->"
     )
     return body
@@ -187,6 +195,40 @@ async def _find_local_task_by_name(pool: asyncpg.Pool, name: str) -> dict[str, A
         name,
     )
     return dict(row) if row is not None else None
+
+
+async def _open_reaction_lifecycle(
+    pool: asyncpg.Pool,
+    *,
+    event_id: uuid.UUID | str,
+    subscriber_butler: str,
+    task_name: str,
+) -> None:
+    """Open this wake's reaction lifecycle at ``scheduled`` (bu-6jv4m.8).
+
+    Best-effort on purpose. The wake task is already durably created by the
+    time this runs, and losing the ledger's opening row must never cost the
+    subscriber the wake itself -- the correlation sweep still closes an
+    un-opened wake out, because it keys on the delivery, not on this row.
+    Recorded only for a freshly created task: a re-delivery reconciles onto
+    the same task and must not stack a second ``scheduled`` step onto a
+    lifecycle that is already open.
+    """
+    try:
+        await record_reaction(
+            pool,
+            event_id=event_id,
+            subscriber_butler=subscriber_butler,
+            status="scheduled",
+            task_name=task_name,
+        )
+    except Exception:
+        logger.warning(
+            "domain_event_wake: could not open the reaction lifecycle for event %s on %s",
+            event_id,
+            subscriber_butler,
+            exc_info=True,
+        )
 
 
 async def handle_receive_domain_event(
@@ -269,6 +311,9 @@ async def handle_receive_domain_event(
             "error": f"Task name {task_name!r} collided with unrelated provenance.",
         }
 
+    await _open_reaction_lifecycle(
+        pool, event_id=event_id, subscriber_butler=subscriber_butler, task_name=task_name
+    )
     return {
         "status": "ok",
         "state": "task_created",

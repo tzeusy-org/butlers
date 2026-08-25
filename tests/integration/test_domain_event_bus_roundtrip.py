@@ -62,6 +62,63 @@ pytestmark = [
 ]
 
 
+_PUBLISHED_TEST_EVENT_TYPES = (
+    "travel.trip_booked",
+    "travel.document_expiring",
+    "travel.self_test",
+    "travel.trip_unsubscribed_event",
+)
+
+
+@pytest.fixture(autouse=True)
+def permissive_contracts():
+    """Admit this file's synthetic event types (bu-6jv4m.8).
+
+    Publishing is fail-closed against the publisher's git-declared contract.
+    These tests are about *transport* -- fan-out, idempotence, retry
+    classification -- not about payload minimization, so they declare their
+    own permissive contracts rather than bending the production roster's.
+    Contract admission itself is covered in
+    tests/core_tools/test_domain_event_admission.py.
+    """
+    from butlers.core.domain_event_contracts import (
+        DomainEventContractRegistry,
+        set_contract_registry,
+    )
+
+    set_contract_registry(
+        DomainEventContractRegistry.from_declarations(
+            [
+                (
+                    "travel",
+                    {
+                        "type": event_type,
+                        "schema_version": 1,
+                        "summary": f"Synthetic test event {event_type}.",
+                        "retention_policy": "standard",
+                        "reaction_expectation": "optional",
+                        "reaction_contract": "Test-only; no reaction is expected.",
+                        "permitted_subscribers": ["finance", "health", "travel"],
+                        "required_fields": [],
+                        "optional_fields": [
+                            "trip_id",
+                            "destination",
+                            "name",
+                            "status",
+                            "start_date",
+                            "end_date",
+                            "n",
+                        ],
+                    },
+                )
+                for event_type in _PUBLISHED_TEST_EVENT_TYPES
+            ]
+        )
+    )
+    yield
+    set_contract_registry(None)
+
+
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
     return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])

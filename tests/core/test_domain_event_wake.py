@@ -151,3 +151,118 @@ class TestWakeSchedulingIgnoresPayloadContent:
             fresh_call.args[2],
             fresh_call.kwargs["until_at"],
         ), "payload validity must not steer the wake's cron or expiry"
+
+
+class TestReactionLifecycleIsOpened:
+    """A wake that is scheduled must show up in the reaction ledger (bu-6jv4m.8)."""
+
+    async def test_a_fresh_wake_opens_a_scheduled_receipt(self, monkeypatch):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            domain_event_wake, "schedule_create", AsyncMock(return_value=uuid.uuid4())
+        )
+        recorded: list[dict] = []
+
+        async def _record(_pool, **kwargs):
+            recorded.append(kwargs)
+            return "reaction-id"
+
+        monkeypatch.setattr(domain_event_wake, "record_reaction", _record)
+
+        result = await handle_receive_domain_event(
+            pool,
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            payload={"trip_id": "t-1"},
+            subscriber_butler="finance",
+        )
+
+        assert result["status"] == "ok"
+        assert len(recorded) == 1
+        assert recorded[0]["status"] == "scheduled"
+        assert recorded[0]["subscriber_butler"] == "finance"
+        assert recorded[0]["task_name"] == result["task_name"]
+
+    async def test_a_duplicate_delivery_does_not_reopen_the_lifecycle(self, monkeypatch):
+        """Positive control: a re-delivered wake must not stack a second 'scheduled'."""
+        task_name = domain_event_wake.task_name_for(
+            "11111111-1111-1111-1111-111111111111", "finance"
+        )
+        prompt = domain_event_wake._build_wake_task_prompt(
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            subscriber_butler="finance",
+            payload={"trip_id": "t-1"},
+        )
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            return_value={"id": uuid.uuid4(), "name": task_name, "prompt": prompt}
+        )
+        recorded: list[dict] = []
+
+        async def _record(_pool, **kwargs):
+            recorded.append(kwargs)
+            return "reaction-id"
+
+        monkeypatch.setattr(domain_event_wake, "record_reaction", _record)
+
+        result = await handle_receive_domain_event(
+            pool,
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            payload={"trip_id": "t-1"},
+            subscriber_butler="finance",
+        )
+
+        assert result["reconciled"] is True
+        assert recorded == []
+
+    async def test_a_ledger_write_failure_never_loses_the_wake(self, monkeypatch):
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            domain_event_wake, "schedule_create", AsyncMock(return_value=uuid.uuid4())
+        )
+
+        async def _boom(_pool, **_kwargs):
+            raise RuntimeError("ledger unavailable")
+
+        monkeypatch.setattr(domain_event_wake, "record_reaction", _boom)
+
+        result = await handle_receive_domain_event(
+            pool,
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            payload={"trip_id": "t-1"},
+            subscriber_butler="finance",
+        )
+        assert result["status"] == "ok"
+
+
+class TestWakePromptClosesTheLoop:
+    def test_the_prompt_asks_the_session_to_file_a_receipt(self):
+        prompt = domain_event_wake._build_wake_task_prompt(
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            subscriber_butler="finance",
+            payload={"trip_id": "t-1"},
+        )
+        assert "report_event_reaction" in prompt
+        assert "ignored" in prompt
+
+    def test_the_receipt_instruction_stays_outside_the_untrusted_fence(self):
+        prompt = domain_event_wake._build_wake_task_prompt(
+            event_id="11111111-1111-1111-1111-111111111111",
+            event_type="travel.trip_booked",
+            source_butler="travel",
+            subscriber_butler="finance",
+            payload={"trip_id": "t-1"},
+        )
+        fence = prompt[prompt.index("<domain_event>") : prompt.index("</domain_event>")]
+        assert "report_event_reaction" not in fence

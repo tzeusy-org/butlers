@@ -358,6 +358,7 @@ import type {
   DelegationLedgerEntry,
   SubscriptionEntry,
   DeliveryEntry,
+  ReactionEntry,
   DeploymentFacts,
   ModuleStatus,
   Briefing,
@@ -6091,6 +6092,19 @@ export function listDomainEventDeliveries(
   const qs = query.toString();
   return apiFetch<PaginatedResponse<DeliveryEntry>>(
     `/domain-events/deliveries${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * Fetch the full reaction trace for one domain event from
+ * GET /api/domain-events/events/{event_id}/reactions (bu-6jv4m.8), oldest
+ * step first -- every step every subscriber recorded, not just the outcome.
+ */
+export function listDomainEventReactions(
+  eventId: string,
+): Promise<ApiResponse<ReactionEntry[]>> {
+  return apiFetch<ApiResponse<ReactionEntry[]>>(
+    `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
   );
 }
 
