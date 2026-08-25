@@ -4042,6 +4042,12 @@ export interface ConnectorCrossSummaryResponse {
   total_messages_ingested: number;
   total_messages_failed: number;
   overall_error_rate_pct: number;
+  /**
+   * True only when Prometheus actually answered the funnel queries behind the
+   * console's time-series panels — not merely when a PROMETHEUS_URL is
+   * configured (bu-avkvr). Every other field above is DB-sourced and stays
+   * valid when this is false.
+   */
   aggregates_available: boolean;
 }
 

@@ -876,29 +876,167 @@ async def test_cross_summary_includes_aggregates_available_false_no_prometheus(a
     assert body["data"]["total_connectors"] == 2
 
 
-async def test_cross_summary_aggregates_available_true_with_prometheus(app):
-    """GET /api/ingestion/connectors/cross-summary sets aggregates_available=true
-    when PROMETHEUS_URL is configured (even without a cache hit)."""
+def _healthy_prom_side_effect():
+    """Instant-query results for one full healthy funnel fetch, in query order."""
+
+    def _vector(value: float):
+        return [{"metric": {}, "value": [1234567890.0, str(value)]}]
+
+    return [
+        _vector(100.0),  # ingested
+        _vector(20.0),  # filtered
+        _vector(5.0),  # errored
+        [{"metric": {"butler_name": "atlas"}, "value": [0, "80"]}],  # routed
+        _vector(2.5),  # rate1h
+        _vector(15.0),  # filtered24h
+    ]
+
+
+def _healthy_prom_range_result():
+    """A readable 24-bucket matrix for the sparkline range query."""
+    return [{"metric": {}, "values": [[1234560000 + i * 3600, str(i * 10)] for i in range(24)]}]
+
+
+async def _cross_summary_flag(app, *, env, patches) -> bool:
+    """Call /cross-summary with a cold pipeline cache and return aggregates_available."""
     import datetime as dt
+    from contextlib import ExitStack
 
     now = dt.datetime.now(dt.UTC)
     pool = _make_shared_pool(rows=[_cross_summary_row(last_heartbeat_at=now, messages_ingested=50)])
     _app_with_connectors_db(app, switchboard_pool=pool)
 
-    # Clear pipeline cache so we rely only on PROMETHEUS_URL presence
     from butlers.api.routers import ingestion_pipeline as _pip_mod
 
     _pip_mod._pipeline_cache.clear()
 
-    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+    with ExitStack() as stack:
+        stack.enter_context(patch.dict("os.environ", env))
+        for ctx in patches:
+            stack.enter_context(ctx)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/ingestion/connectors/cross-summary")
 
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"]["aggregates_available"] is True
+    return resp.json()["data"]["aggregates_available"]
+
+
+async def test_cross_summary_aggregates_available_true_when_prometheus_answers(app):
+    """cross-summary reports aggregates_available=true once Prometheus has answered.
+
+    The flag is a claim about the funnel aggregates the console renders, so it
+    is earned by the same queries that back them — not by a configured URL.
+    """
+    available = await _cross_summary_flag(
+        app,
+        env={"PROMETHEUS_URL": "http://lgtm:9090"},
+        patches=[
+            patch(
+                "butlers.api.routers.ingestion_pipeline.async_query",
+                new_callable=AsyncMock,
+                side_effect=_healthy_prom_side_effect(),
+            ),
+            patch(
+                "butlers.api.routers.ingestion_pipeline.async_query_range",
+                new_callable=AsyncMock,
+                return_value=_healthy_prom_range_result(),
+            ),
+        ],
+    )
+
+    assert available is True
+
+
+async def test_cross_summary_aggregates_unavailable_when_configured_prometheus_is_unreachable(app):
+    """A configured-but-unreachable Prometheus SHALL NOT read as available (bu-avkvr).
+
+    The handler used to set the flag from ``PROMETHEUS_URL`` being non-empty
+    whenever the pipeline cache was cold, so a Prometheus that was down
+    produced exactly the same ``true`` as one that answered.
+    """
+    available = await _cross_summary_flag(
+        app,
+        env={"PROMETHEUS_URL": "http://lgtm:9090"},
+        patches=[
+            patch(
+                "butlers.api.routers.ingestion_pipeline.async_query",
+                new_callable=AsyncMock,
+                return_value=[{"error": "connection refused"}],
+            ),
+        ],
+    )
+
+    assert available is False
+
+
+async def test_cross_summary_aggregates_unavailable_when_prometheus_answers_are_unreadable(app):
+    """A well-formed response whose scalar will not parse is not an observation.
+
+    Same discipline as the pipeline endpoint (bu-0m31b): ``NaN`` is how
+    Prometheus renders "no samples in range", and ``float()`` accepts it.
+    """
+    available = await _cross_summary_flag(
+        app,
+        env={"PROMETHEUS_URL": "http://lgtm:9090"},
+        patches=[
+            patch(
+                "butlers.api.routers.ingestion_pipeline.async_query",
+                new_callable=AsyncMock,
+                return_value=[{"metric": {}, "value": [1234567890.0, "NaN"]}],
+            ),
+        ],
+    )
+
+    assert available is False
+
+
+async def test_cross_summary_survives_an_aggregate_probe_that_raises(app):
+    """The probe is best-effort: a raising availability check degrades the flag, not the response."""
+    available = await _cross_summary_flag(
+        app,
+        env={"PROMETHEUS_URL": "http://lgtm:9090"},
+        patches=[
+            patch(
+                "butlers.api.routers.ingestion_connectors.prometheus_aggregates_available",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("event loop went away"),
+            ),
+        ],
+    )
+
+    assert available is False
+
+
+async def test_cross_summary_reuses_the_pipeline_cache_without_requerying(app):
+    """A warm pipeline cache answers the flag; cross-summary issues no query of its own."""
+    import datetime as dt
+    import time as _time
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    now = dt.datetime.now(dt.UTC)
+    pool = _make_shared_pool(rows=[_cross_summary_row(last_heartbeat_at=now, messages_ingested=50)])
+    _app_with_connectors_db(app, switchboard_pool=pool)
+
+    _pip_mod._pipeline_cache.clear()
+    _pip_mod._pipeline_cache["24h"] = (
+        _time.monotonic(),
+        {"window": "24h", "aggregates_available": True, "ingested": 7},
+    )
+
+    query = AsyncMock(side_effect=AssertionError("a warm cache must not be re-queried"))
+    with patch.dict("os.environ", {"PROMETHEUS_URL": "http://lgtm:9090"}):
+        with patch("butlers.api.routers.ingestion_pipeline.async_query", query):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/ingestion/connectors/cross-summary")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["aggregates_available"] is True
+    query.assert_not_awaited()
 
 
 async def test_cross_summary_counts_by_liveness_not_state(app):
