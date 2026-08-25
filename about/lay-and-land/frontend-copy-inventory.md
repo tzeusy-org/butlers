@@ -3661,7 +3661,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - incoming url
 - last seen
 - last verified
-- last used
 - paste token here
 - paste value here
 - paste override value here
@@ -4144,4 +4143,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3243*
+*Total strings: 3242*
