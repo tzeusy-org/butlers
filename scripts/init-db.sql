@@ -3115,7 +3115,24 @@ BEGIN
         WHERE outcome = 'quota_skip'
           AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
                 = 'Monthly spend ceiling reached'
-          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+          -- Lower bound only, and anchored in UTC rather than the session
+          -- TimeZone a bare `ts >= v_month` would borrow.  v_month is
+          -- transaction-stable while the denial row's ts is the statement
+          -- clock, so a transaction that crosses the UTC rollover stamps its
+          -- row in the month *after* the one it locks, filters by, and writes.
+          -- An equality on both bounds did not count that row, and when it was
+          -- the month's first ceiling denial the RAISE below took the attempt
+          -- row down with it (bu-guxz8).  Dropping the upper bound is safe
+          -- here: every ts this query can see is stamped by the same server
+          -- clock as now() -- the recorder writes clock_timestamp() and the
+          -- column defaults to now() -- so a visible row can only sit past the
+          -- month end by this transaction's own age, and a role that could
+          -- hand-date a denial into a later month could equally hand-date one
+          -- into this one, so the upper bound never bounded fabrication.  The
+          -- widening only adds rows above the old window, so min(ts) is
+          -- unchanged and the pre-activation guard below still compares the
+          -- month's *first* denial against activation.
+          AND ts >= (v_month::timestamp AT TIME ZONE 'UTC');
         IF v_denied_count < 1 THEN
             RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
                 USING ERRCODE = '23514';
@@ -4076,7 +4093,11 @@ BEGIN
         WHERE outcome = 'quota_skip'
           AND left(COALESCE(failure_reason, ''), length('Monthly spend ceiling reached'))
                 = 'Monthly spend ceiling reached'
-          AND date_trunc('month', ts AT TIME ZONE 'UTC')::date = v_month;
+          -- Same lower-bound-only window as the v2 body above (bu-guxz8):
+          -- the month key is transaction-stable, the denial's ts is the
+          -- statement clock, and a rollover-crossing denial still has to count
+          -- as evidence for the month this call is guarding.
+          AND ts >= (v_month::timestamp AT TIME ZONE 'UTC');
         IF v_denied_count < 1 THEN
             RAISE EXCEPTION 'runtime-attention fleet-halt trigger lacks current-month ceiling evidence'
                 USING ERRCODE = '23514';
