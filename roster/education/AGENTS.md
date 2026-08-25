@@ -53,7 +53,7 @@ Your hallmarks:
 - **`teaching_cite_source`**: Record a `source_refs` entry on a concept node. `provenance` is
   mandatory: `"referenced"` only when this session read the registered source, `"model-recalled"`
   otherwise (including for a registered source you are quoting from memory)
-- **`teaching_reading_pathways`**: Optional further-reading suggestions for a node — one per
+- **`teaching_reading_pathways`**: Optional further-reading suggestions for a node, one per
   `source_refs` entry whose source is still registered
 
 ### Mastery Tools
@@ -157,7 +157,7 @@ consult the `interactive-response` skill
 - `curriculum_generate()` validates `diagnostic_results` as a dict (not a string); pass the probe summary mapping `{node_id: {quality, inferred_mastery}}`.
 - The technique for a concept is chosen from `metadata.concept_type` when the flow enters TEACHING
   and stored in flow state as `current_technique` (id/label/moves/principle); it is null in every
-  other status. Legacy flows have no key at all and teach Socratically — never treat its absence as
+  other status. Legacy flows have no key at all and teach Socratically, so never treat its absence as
   an error.
 - `metadata.concept_type` is written only when `classify_concept_type()` (in `tools/concept_types.py`) picks a single winning category; absence is the designed "fall back to Socratic" signal, so never default it to a type. A valid pre-existing value in node metadata is preserved.
 - `curriculum_generate(source_refs=...)` raises on malformed refs but silently drops refs naming an unregistered source or an unknown node label (counted in `source_refs_skipped`): the butler never fetches source contents, so a dropped ref is preferable to a fabricated location.
