@@ -29,21 +29,46 @@ test-core:
 test-modules:
 	uv run pytest tests/modules/ -v
 
+# Every pytest-based E2E target below passes `-n 0` (bu-ejgwv). It is not redundant:
+# pytest prepends `addopts` to every invocation, and this repo's addopts carries
+# `-n 3 --dist loadfile` -- so a target that merely *omits* `-n` still booted three xdist
+# workers. E2E cannot survive that. `butler_ecosystem` is session-scoped and every worker
+# gets its own session, so three workers boot three full ecosystems; tests/e2e/conftest.py
+# offsets every roster port by a fixed `E2E_PORT_OFFSET = 11000` with no worker component,
+# so all three contend for the identical ports.
+#
+# The alternative fix -- making E2E_PORT_OFFSET worker-aware -- was rejected because these
+# targets also pass `-s`, and xdist silently drops `-s` (capture=no): under xdist the
+# streamed phase-by-phase bootstrap output these targets exist to show is swallowed. Serial
+# is the only mode in which the recipe means what it says. Worker-aware ports would also
+# triple the real cost of a run (three PostgreSQL testcontainers, three sets of butler
+# daemons, three times the live-model spend) and split the session-end cost/benchmark
+# scorecards across three processes.
+#
+# `-n 0`, not `-p no:xdist`: the latter turns the inherited `-n 3` into an
+# unrecognized-argument error. xdist derives `--dist no` and an empty tx list from `-n 0`,
+# so the leftover `--dist loadfile` in addopts is inert.
+# tests/contracts/test_qg_serial_target.py pins the effective value by running each
+# target's real argv, so addopts cannot silently re-parallelise them again.
+#
+# test-e2e-frontend is unaffected: it shells out to Playwright via npm and never reads
+# pytest's addopts.
+
 # E2E tests — requires ANTHROPIC_API_KEY, claude binary, and Docker
 test-e2e:
-	uv run pytest tests/e2e/ -v -s
+	uv run pytest tests/e2e/ -v -s -n 0
 
 # E2E validate mode — run scenarios with current model, hard fail on first mismatch
 # This is the default E2E mode (no --benchmark flag).
 test-e2e-validate:
-	uv run pytest tests/e2e/ -v -s -m "e2e and not benchmark"
+	uv run pytest tests/e2e/ -v -s -n 0 -m "e2e and not benchmark"
 
 # E2E benchmark mode — iterate over models, accumulate without hard failures,
 # generate scorecards at session end.
 # Requires BENCHMARK_MODELS env var or --benchmark-models=<model1>,<model2> argument.
 # Example: make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
 test-e2e-benchmark:
-	E2E_BENCHMARK_MODELS="$(BENCHMARK_MODELS)" uv run pytest tests/e2e/ -v -s --benchmark \
+	E2E_BENCHMARK_MODELS="$(BENCHMARK_MODELS)" uv run pytest tests/e2e/ -v -s -n 0 --benchmark \
 		$(if $(BENCHMARK_MODELS_FLAG),--benchmark-models=$(BENCHMARK_MODELS_FLAG),)
 
 # Frontend Playwright e2e tests — requires dev server running on localhost:5173

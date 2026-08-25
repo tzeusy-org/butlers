@@ -1,4 +1,4 @@
-"""`make test-qg-serial` must actually be serial, and `make test-qg` parallel (bu-bcujm).
+"""Targets that must be serial must actually be serial (bu-bcujm, bu-ejgwv).
 
 The defect this guards against is invisible in the Makefile. `test-qg-serial` never
 passed `-n`, which reads as "no parallelism" -- but pytest prepends ``addopts`` to
@@ -6,6 +6,13 @@ every invocation, and this repo's ``addopts`` carries ``-n 3 --dist loadfile``. 
 target documented as the "serial fallback for order-dependent debugging" ran on three
 xdist workers: the one tool you reach for when you suspect ordering was the one tool
 guaranteed to reshuffle it.
+
+The e2e targets had the same shape and a harder failure (bu-ejgwv). ``butler_ecosystem``
+is session-scoped and every xdist worker runs its own session, while
+``tests/e2e/conftest.py`` offsets every roster port by a fixed ``E2E_PORT_OFFSET = 11000``
+with no worker component -- so three workers boot three ecosystems onto one set of ports.
+Those targets also pass ``-s``, which xdist silently drops, so the streamed bootstrap
+output they exist to show never appears either.
 
 Nothing noticed, because nothing could. A reviewer reading the recipe sees an absent
 flag and infers the default; the effective value only exists after pytest merges
@@ -20,8 +27,8 @@ flag and infers the default; the effective value only exists after pytest merges
 A grep for ``-n 0`` in the Makefile would pass while pinning nothing: the value that
 matters is the merged one, and it is only knowable by asking pytest.
 
-The probe exits at ``pytest_sessionstart``, so neither subprocess collects a test or
-boots a worker; both are near-instant, including in the failure case.
+The probe exits at ``pytest_sessionstart``, so no subprocess here collects a test or
+boots a worker -- and none of them boots an ecosystem or spends a token on a live model.
 """
 
 from __future__ import annotations
@@ -84,7 +91,13 @@ PROBE_PLUGIN = textwrap.dedent(
 
 
 def _target_pytest_argv(target: str) -> list[str]:
-    """The pytest arguments `make <target>` would really hand to the gate."""
+    """The pytest arguments `make <target>` would really hand to pytest.
+
+    Two recipe shapes exist. The quality gates route pytest through
+    ``scripts/pytest_gate.py run -- <argv>``; the e2e targets invoke ``uv run pytest
+    <argv>`` directly. Both are read out of ``make -n`` rather than by parsing Makefile
+    variables by hand, so what gets measured is the command line that would really run.
+    """
     dry_run = subprocess.run(
         ["make", "-n", target],
         cwd=REPO_ROOT,
@@ -92,13 +105,28 @@ def _target_pytest_argv(target: str) -> list[str]:
         text=True,
         check=True,
     ).stdout
-    recipe = [line for line in dry_run.splitlines() if "pytest_gate.py run" in line]
-    assert len(recipe) == 1, f"expected one gate invocation in `make -n {target}`:\n{dry_run}"
-    # Strip the shell line-continuation and statement separator make prints.
-    line = recipe[0].rstrip().removesuffix("\\").rstrip().removesuffix(";")
-    tokens = shlex.split(line)
-    assert "--" in tokens, f"gate invocation has no `--` separator: {line}"
-    return tokens[tokens.index("--") + 1 :]
+
+    invocations: list[list[str]] = []
+    for raw in dry_run.splitlines():
+        # Strip the shell line-continuation and statement separator make prints.
+        line = raw.rstrip().removesuffix("\\").rstrip().removesuffix(";")
+        if not line.strip():
+            continue
+        tokens = shlex.split(line)
+        gate = next((i for i, t in enumerate(tokens) if t.endswith("pytest_gate.py")), None)
+        if gate is not None:
+            # `pytest_gate.py verdict <log>` reads a finished log; only `run` starts pytest.
+            if tokens[gate + 1 : gate + 2] != ["run"]:
+                continue
+            assert "--" in tokens, f"gate invocation has no `--` separator: {line}"
+            invocations.append(tokens[tokens.index("--") + 1 :])
+        elif "pytest" in tokens:
+            invocations.append(tokens[tokens.index("pytest") + 1 :])
+
+    assert len(invocations) == 1, (
+        f"expected exactly one pytest invocation in `make -n {target}`:\n{dry_run}"
+    )
+    return invocations[0]
 
 
 def _effective_xdist_config(argv: list[str], tmp_path: Path) -> dict:
@@ -116,19 +144,30 @@ def _effective_xdist_config(argv: list[str], tmp_path: Path) -> dict:
     )
     env["QG_SERIAL_PROBE_OUT"] = str(out)
 
-    # --noconftest keeps this to a ~1s process instead of a ~15s one: the repo's root
+    def probe(*flags: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "qg_serial_probe", *flags, *argv],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    # --noconftest keeps this to a ~1s process instead of a ~35s one: the repo's root
     # conftest is imported before `pytest_cmdline_main` and costs most of that. It has no
     # bearing on the *mode* -- `-n` is resolved from argv merged with the ini file's addopts,
     # neither of which lives in a conftest. It does change what `-n auto` resolves *to*, since
     # the root conftest's `pytest_xdist_auto_num_workers` cap is not loaded; nothing below
     # asserts an exact auto count, and nothing here should start to.
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "qg_serial_probe", "--noconftest", *argv],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    result = probe("--noconftest")
+
+    if not out.exists() and "unrecognized arguments" in result.stderr + result.stdout:
+        # This target's argv carries an option that a conftest registers -- `--benchmark`,
+        # from tests/e2e/conftest.py. --noconftest never loads that conftest, so pytest's
+        # strict final parse rejects the flag long before `pytest_sessionstart`. Pay the
+        # conftest import rather than doctoring the argv, which is the whole point here.
+        result = probe()
+
     assert out.exists(), (
         "probe never reported; pytest exited "
         f"{result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -136,13 +175,10 @@ def _effective_xdist_config(argv: list[str], tmp_path: Path) -> dict:
     return json.loads(out.read_text())
 
 
-@pytest.mark.timeout(300)
-def test_qg_serial_target_runs_on_one_process(tmp_path: Path) -> None:
-    argv = _target_pytest_argv("test-qg-serial")
-    effective = _effective_xdist_config(argv, tmp_path)
-
+def _assert_serial(target: str, argv: list[str], effective: dict) -> None:
+    """Fail with the *resolved* -n, since the flag list alone never shows it."""
     assert effective["numprocesses"] == 0, (
-        "`make test-qg-serial` is not serial: pytest resolved -n to "
+        f"`make {target}` is not serial: pytest resolved -n to "
         f"{effective['numprocesses']!r} from argv {argv} merged with pyproject addopts. "
         "The target must pass `-n 0` explicitly to override addopts."
     )
@@ -151,8 +187,14 @@ def test_qg_serial_target_runs_on_one_process(tmp_path: Path) -> None:
     assert effective["dist"] == "no", effective
     assert effective["tx"] == [], effective
     assert effective["dsession"] is False, (
-        f"xdist registered a distributed session for the serial target: {effective}"
+        f"xdist registered a distributed session for `make {target}`: {effective}"
     )
+
+
+@pytest.mark.timeout(300)
+def test_qg_serial_target_runs_on_one_process(tmp_path: Path) -> None:
+    argv = _target_pytest_argv("test-qg-serial")
+    _assert_serial("test-qg-serial", argv, _effective_xdist_config(argv, tmp_path))
 
 
 @pytest.mark.timeout(300)
@@ -163,3 +205,34 @@ def test_qg_target_still_runs_in_parallel(tmp_path: Path) -> None:
 
     assert effective["numprocesses"] not in (0, None), effective
     assert effective["dsession"] is True, f"`make test-qg` is no longer distributed: {effective}"
+
+
+# Every Makefile target that reaches pytest with tests/e2e/ on the command line. Adding an
+# e2e target without adding it here is the regression this list exists to catch;
+# test-e2e-frontend is deliberately absent because it shells out to Playwright via npm and
+# never sees pytest's addopts.
+E2E_TARGETS = ["test-e2e", "test-e2e-validate", "test-e2e-benchmark"]
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("target", E2E_TARGETS)
+def test_e2e_targets_run_on_one_process(target: str, tmp_path: Path) -> None:
+    """E2E cannot survive xdist, and the recipes never said so (bu-ejgwv).
+
+    ``butler_ecosystem`` is session-scoped, each xdist worker runs its own session, and
+    ``tests/e2e/conftest.py`` shifts every roster port by a constant ``E2E_PORT_OFFSET``
+    with no worker component -- so N workers boot N ecosystems onto one set of ports.
+    """
+    argv = _target_pytest_argv(target)
+    _assert_serial(target, argv, _effective_xdist_config(argv, tmp_path))
+
+
+def test_e2e_target_list_is_complete() -> None:
+    """`E2E_TARGETS` above must not drift from the Makefile's own .PHONY list."""
+    phony = (REPO_ROOT / "Makefile").read_text().split("\n", 1)[0]
+    declared = {t for t in phony.split() if t.startswith("test-e2e")}
+    assert declared - {"test-e2e-frontend"} == set(E2E_TARGETS), (
+        f"Makefile declares e2e targets {sorted(declared)}; this file pins {E2E_TARGETS}. "
+        "A new pytest-backed e2e target must be added to E2E_TARGETS (or, if it is not "
+        "pytest-backed, excluded here the way test-e2e-frontend is)."
+    )
