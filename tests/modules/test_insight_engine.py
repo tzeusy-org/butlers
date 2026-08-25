@@ -47,9 +47,36 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 # midnight and counts fourteen day buckets, delivery_cycle asks the Owner
 # Attention Policy whether this hour is quiet — so naming the instant is what
 # makes those windows mean the same thing on a 03:00 run and a 23:00 one.
+#
+# 12:00 UTC is 20:00 in Asia/Singapore, comfortably outside the quiet window the
+# ``insight_pool`` fixture seeds below, so a cycle run at this instant is awake.
 _PINNED_NOW = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
 
+# The Owner Attention Policy the ``insight_pool`` fixture seeds — the production
+# default core_160 writes into ``public.approvals_policy`` for this single-owner
+# (Asia/Singapore) deployment.
+#
+# Seeding it is what gives ``_PINNED_NOW`` something to be quiet or loud
+# *relative to*. Without the row the table does not exist at all, so
+# ``get_approvals_policy_quiet_hours`` catches the UndefinedTableError, returns
+# ``None``, and ``is_policy_quiet_now`` reports every hour of every day as
+# awake: the quiet-hours branch of ``delivery_cycle`` was unreachable and a
+# cycle that omitted ``now=`` could not observe suppression however loud the
+# wall clock got. With the row present the window is real — 23:00-08:00 SGT is
+# 15:00-24:00 UTC — so a cycle handed the wall clock is suppressed for nine
+# hours of every day, and every call site has to name its own instant.
+_DEFAULT_QUIET_START_HOUR = 23
+_DEFAULT_QUIET_END_HOUR = 8
+_DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
 
+
+# ``_future``/``_past`` stay on the wall clock on purpose: they feed
+# ``expires_at``, whose freshness ``propose_insight_candidate`` validates
+# against the real clock unless a caller pins that too. ``_PINNED_NOW`` is a
+# past instant on every real run, so a ``_future()`` expiry is still in the
+# future when a cycle is evaluated at ``_PINNED_NOW`` — but a ``_past()`` expiry
+# is *not* yet past at it, so a test that wants an already-expired candidate
+# must anchor the expiry to ``_PINNED_NOW`` rather than to the wall clock.
 def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
@@ -65,11 +92,23 @@ def _past(days: int = 1) -> datetime:
 
 @pytest.fixture
 async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables for one test."""
+    """Provision a fresh database with insight tables and the owner policy.
+
+    The Owner Attention Policy is part of the schema every one of these tests
+    runs against in production, so it is seeded here with its production
+    default. A test that is *about* suppression overrides it with
+    :func:`_set_owner_attention_policy`.
+    """
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
     async with provisioned_postgres_pool() as pool:
         await create_insight_tables(pool)
+        await _set_owner_attention_policy(
+            pool,
+            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+            timezone=_DEFAULT_QUIET_TIMEZONE,
+        )
         yield pool
 
 
@@ -208,7 +247,10 @@ class TestVerbosityOff:
             ON CONFLICT (id) DO UPDATE SET verbosity = 'off'
         """)
 
-        result = await delivery_cycle(insight_pool)
+        # verbosity=off is a hard user opt-out, checked ahead of any
+        # quiet-hours deferral, so this outcome is the same at every hour. The
+        # instant is named anyway so no cycle in this file reads the wall clock.
+        result = await delivery_cycle(insight_pool, now=_PINNED_NOW)
         assert result["skipped"] is True
 
         status = await insight_pool.fetchval(
@@ -266,7 +308,7 @@ class TestEndToEndInsightFlow:
 
         # Step 2: Run delivery cycle with a mock notify
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # Verify delivery
         assert not cycle_result["skipped"]
@@ -325,12 +367,12 @@ class TestEndToEndInsightFlow:
         notify_mock = AsyncMock(return_value={"status": "sent"})
 
         # First cycle: should deliver
-        r1 = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        r1 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
         assert len(r1["delivered"]) == 1
         assert notify_mock.call_count == 1
 
         # Second cycle: same dedup_key under cooldown, no delivery
-        r2 = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        r2 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
         assert len(r2["delivered"]) == 0
         assert notify_mock.call_count == 1  # No additional call
 
@@ -344,7 +386,10 @@ class TestEndToEndInsightFlow:
             ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
         """)
 
-        # Insert an already-expired candidate manually
+        # Insert an already-expired candidate manually. "Already expired" is a
+        # claim about the instant the cycle is evaluated at, so the expiry is
+        # anchored to that instant rather than to the wall clock — ``_past(2)``
+        # is two days before *today*, which is still ahead of ``_PINNED_NOW``.
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -352,11 +397,11 @@ class TestEndToEndInsightFlow:
             VALUES ('health', 70, 'health', 'health:old:user-1:2025', $1,
                     'Old insight', 'pending')
         """,
-            _past(2),
+            _PINNED_NOW - timedelta(days=2),
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["expired"] >= 1
         assert len(result["delivered"]) == 0
@@ -418,7 +463,7 @@ class TestCrossButlerDeduplication:
         assert r2["status"] == "accepted"
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # Only 1 delivered
         assert len(cycle_result["delivered"]) == 1
@@ -989,7 +1034,7 @@ class TestDigestFormatting:
             assert r["status"] == "accepted"
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert len(result["delivered"]) == 3
         digest_msg = result["delivery_message"]
@@ -1052,7 +1097,7 @@ class TestDigestFormatting:
             assert r["status"] == "accepted"
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert len(result["delivered"]) == 3
         notify_mock.assert_called_once()
@@ -1104,7 +1149,7 @@ class TestDigestFormatting:
             assert r["status"] == "accepted"
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert len(result["delivered"]) == 3
         notify_mock.assert_called_once()
@@ -1466,7 +1511,7 @@ class TestBudgetEnforcement:
             )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # Only 1 delivered (minimal budget)
         assert len(result["delivered"]) == 1
@@ -1514,7 +1559,7 @@ class TestBudgetEnforcement:
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert len(result["delivered"]) == 1
         delivered_id = result["delivered"][0]
@@ -1742,7 +1787,7 @@ class TestDeliveryAttemptTracking:
         async def failing_notify(message, metadata):
             return {"status": "error", "error": "channel unavailable"}
 
-        result = await delivery_cycle(insight_pool, notify_fn=failing_notify)
+        result = await delivery_cycle(insight_pool, notify_fn=failing_notify, now=_PINNED_NOW)
 
         # Candidate should NOT be delivered
         assert result["delivered"] == []
@@ -1776,7 +1821,7 @@ class TestDeliveryAttemptTracking:
         async def failing_notify(message, metadata):
             return {"status": "error", "error": "channel unavailable"}
 
-        await delivery_cycle(insight_pool, notify_fn=failing_notify)
+        await delivery_cycle(insight_pool, notify_fn=failing_notify, now=_PINNED_NOW)
 
         row = await insight_pool.fetchrow(
             "SELECT delivery_attempt_count, status FROM insight_candidates "
@@ -1803,7 +1848,7 @@ class TestDeliveryAttemptTracking:
         )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         row = await insight_pool.fetchrow(
             "SELECT delivery_attempt_count, status FROM insight_candidates "
@@ -1834,7 +1879,11 @@ class TestDeliveryAttemptTracking:
             _future(),
         )
 
-        result = await delivery_cycle(insight_pool, notify_fn=None)
+        # An awake instant is load-bearing here: a suppressed cycle also
+        # returns skipped=True and also leaves the candidate pending, so every
+        # assertion below would hold during quiet hours without the
+        # ``notify_fn=None`` guard being reached at all.
+        result = await delivery_cycle(insight_pool, notify_fn=None, now=_PINNED_NOW)
 
         assert result["skipped"] is True
         assert result["delivered"] == []
@@ -1874,7 +1923,7 @@ class TestDeliveryAttemptTracking:
         )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         row = await insight_pool.fetchrow(
             "SELECT status, delivery_attempt_count FROM insight_candidates "
@@ -2425,7 +2474,10 @@ class TestInsightDeliveryPathsSpec:
         """)
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        # `skipped is False` below is an assertion about suppression, so the
+        # hour it is evaluated at has to be named even though the empty-queue
+        # early return happens to sit ahead of the suppression branch today.
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["delivered"] == [], "no candidates → nothing should be delivered"
         assert result["skipped"] is False, "cycle should not report skipped (not quiet hours)"
@@ -2462,7 +2514,7 @@ class TestInsightDeliveryPathsSpec:
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         assert result["delivered"] == [], (
             "already-delivered candidate must not appear in delivered list"
@@ -2514,7 +2566,7 @@ class TestInsightDeliveryPathsSpec:
             return {"status": "error", "error": "channel unavailable"}
 
         # First cycle: delivery attempt fails
-        result = await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+        result = await delivery_cycle(insight_pool, notify_fn=_failing_notify, now=_PINNED_NOW)
 
         assert result["delivered"] == [], "failed delivery must not appear in delivered list"
 
@@ -2532,7 +2584,7 @@ class TestInsightDeliveryPathsSpec:
         )
 
         # Second cycle: still eligible (count < 3); another failure increments again
-        result2 = await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+        result2 = await delivery_cycle(insight_pool, notify_fn=_failing_notify, now=_PINNED_NOW)
         assert result2["delivered"] == []
 
         row2 = await insight_pool.fetchrow(
@@ -2580,7 +2632,7 @@ class TestInsightDeliveryPathsSpec:
         async def _failing_notify(message, metadata):
             return {"status": "error", "error": "channel permanently unavailable"}
 
-        await delivery_cycle(insight_pool, notify_fn=_failing_notify)
+        await delivery_cycle(insight_pool, notify_fn=_failing_notify, now=_PINNED_NOW)
 
         row = await insight_pool.fetchrow(
             "SELECT status, delivery_attempt_count, metadata FROM insight_candidates "
@@ -2652,7 +2704,7 @@ class TestInsightDeliveryPathsSpec:
 
         # Step 2: Run delivery cycle with mock notify (no real notifications)
         notify_mock = AsyncMock(return_value={"status": "sent"})
-        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+        cycle_result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
 
         # Delivery must succeed
         assert not cycle_result["skipped"], "cycle must not be skipped"
