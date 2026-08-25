@@ -10,11 +10,17 @@ did not render a verdict.
 
 That reading of exit `2` was right about the exit code and wrong about this
 repository's runs. pytest exits `2` when the session is **interrupted**, and
-`--maxfail=1` interrupts on the first ordinary test failure. Every quality-gate
-invocation passes it: `QG_PYTEST_ARGS` in the `Makefile`, and the low-context
-snippet in `CLAUDE.md`. So the moment `bu-ecizp` wired the gate into
-`make test-qg`, every genuine red run started reporting UNKNOWN. Observed on
-that bead's first full run:
+under xdist `--maxfail=1` interrupts on the first ordinary test failure: the
+controller sets `shouldstop` and raises `Interrupted`
+(`xdist/dsession.py`), where a serial run would raise `Failed` and exit `1`.
+
+Both halves of that hold unconditionally here. `pyproject.toml`'s `addopts`
+carries `-n 3 --dist loadfile`, so every pytest invocation in this repository is
+an xdist run whether or not it says so, and every quality-gate invocation passes
+`--maxfail=1`: `QG_PYTEST_ARGS` in the `Makefile`, and the low-context snippet in
+`CLAUDE.md`. So the moment `bu-ecizp` wired the gate into `make test-qg`, every
+genuine red run started reporting UNKNOWN. Observed on that bead's first full
+run:
 
     1 failed, 6482 passed ... ## pytest-gate exit=2
 

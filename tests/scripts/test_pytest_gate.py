@@ -418,6 +418,70 @@ def test_run_child_survives_a_signal_to_the_callers_process_group(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
+# The premise: a real xdist --maxfail run really does exit 2
+# ---------------------------------------------------------------------------
+
+
+def test_a_real_maxfail_run_exits_two_and_reads_as_failed(tmp_path: Path) -> None:
+    """End-to-end, against real pytest: the exit-2 classification is not theoretical.
+
+    Under xdist the controller answers ``--maxfail`` by raising ``Interrupted``
+    (``xdist/dsession.py``), which pytest reports as exit 2 — where a serial run
+    would raise ``Failed`` and exit 1. Every run in this repo is an xdist run
+    (``addopts`` carries ``-n 3``) and every gate invocation passes
+    ``--maxfail=1``, so this is the shape of an ordinary red gate run.
+
+    Pinning it here means that if pytest or xdist ever changes that status, the
+    premise fails loudly instead of the classification quietly going stale.
+    """
+    (tmp_path / "test_red.py").write_text("def test_red():\n    assert 1 == 2\n", encoding="utf-8")
+    (tmp_path / "test_green.py").write_text(
+        "import pytest\n\n\n@pytest.mark.parametrize('i', range(6))\ndef test_ok(i):\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "run.log"
+    subprocess.run(
+        [
+            sys.executable,
+            str(_GATE),
+            "run",
+            "--log",
+            str(log),
+            "--",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:randomly",
+            "--no-header",
+            "-q",
+            "--maxfail=1",
+            "--tb=no",
+            "-n",
+            "2",
+            "--dist",
+            "loadfile",
+            ".",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_text = log.read_text(encoding="utf-8")
+    assert "## pytest-gate exit=2 " in log_text, log_text
+
+    verdict = subprocess.run(
+        [sys.executable, str(_GATE), "verdict", str(log)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verdict.returncode == FAILED, verdict.stdout + verdict.stderr + log_text
+    assert "UNKNOWN" not in verdict.stdout
+
+
+# ---------------------------------------------------------------------------
 # run --tee: the log is mirrored live, without a pipe between caller and pytest
 # ---------------------------------------------------------------------------
 

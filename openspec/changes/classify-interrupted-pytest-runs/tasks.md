@@ -35,3 +35,7 @@
 - [x] 3.7 Regression: exit `4` is UNKNOWN even with a failing summary in the log.
 - [x] 3.8 Regression: exit `143` is UNKNOWN, not FAILED, with a failing summary.
 - [x] 3.9 Regression: exit `0` is PASS even with a stale failing summary.
+- [x] 3.10 End-to-end against real pytest: an xdist `--maxfail=1` run over a
+      failing file really does exit `2`, and the gate reads that log as
+      FAILED. Pins the premise, so a pytest/xdist change breaks loudly
+      instead of leaving the classification quietly stale.

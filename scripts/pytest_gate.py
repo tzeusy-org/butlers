@@ -24,8 +24,11 @@ terminator**:
 With neither, the verdict is UNKNOWN, and UNKNOWN is never a pass.
 
 One exit status needs both terminators read together. pytest exits **2** when a
-run is *interrupted*, and ``--maxfail`` -- which every quality-gate invocation
-passes -- interrupts on an ordinary test failure. Reading the code alone would
+run is *interrupted*, and under xdist ``--maxfail`` interrupts on an ordinary
+test failure: the controller sets ``shouldstop`` and raises ``Interrupted``
+(``xdist/dsession.py``) where a serial run would raise ``Failed`` and exit 1.
+Every run here is an xdist run -- ``addopts`` carries ``-n 3`` -- and every
+quality-gate invocation passes ``--maxfail``. Reading the code alone would
 label the common red run UNKNOWN, teaching readers that UNKNOWN means "probably
 just a real failure": exactly the reflex this tool exists to prevent. So exit 2
 consults the log's last summary line, which is itself a positive terminator. If
@@ -113,11 +116,11 @@ def _reports_failures(body: str) -> bool:
 def _interrupted_verdict(summary: str | None) -> Verdict:
     """Classify pytest's exit 2, the *interrupted* run, against its own counts.
 
-    ``--maxfail`` stops the session on the Nth failure, and a stopped session is
-    an interrupted one, so the gate's own arguments turn every ordinary red run
-    into exit 2. But pytest still printed its counts on the way out, and those
-    counts are a positive terminator. When they report failures, the run is
-    FAILED and calling it UNKNOWN would only blunt the word.
+    Under xdist -- which ``addopts`` makes unconditional here -- ``--maxfail``
+    stops the session by raising ``Interrupted``, so the gate's own arguments
+    turn every ordinary red run into exit 2. But pytest still printed its counts
+    on the way out, and those counts are a positive terminator. When they report
+    failures, the run is FAILED and calling it UNKNOWN would only blunt the word.
 
     The counts cannot rescue the run, only convict it. A Ctrl-C partway through
     a green run prints a summary with no failures in it, and that run still
