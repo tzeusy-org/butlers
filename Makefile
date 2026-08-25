@@ -76,9 +76,18 @@ test-qg:
 	$(QG_GATE) verdict "$$LOG"
 
 # Same quality-gate scope as test-qg, serial fallback for order-dependent debugging.
+#
+# `-n 0` is not redundant (bu-bcujm). pytest prepends `addopts` to every invocation, and this
+# repo's addopts carries `-n 3 --dist loadfile` -- so a target that merely *omits* `-n` still
+# ran on three xdist workers, reshuffling the very execution order this target exists to hold
+# still. `-n 0` is the only thing that overrides it; `-p no:xdist` would instead turn the
+# inherited `-n 3` into an unrecognized-argument error. xdist derives `--dist no` and an empty
+# tx list from `-n 0`, so the leftover `--dist loadfile` in addopts is inert.
+# tests/contracts/test_qg_serial_target.py pins the effective value by running this target's
+# real argv, so addopts cannot silently re-parallelise it again.
 test-qg-serial:
 	LOG="$(QG_LOG)"; \
-	$(QG_GATE) run --tee --log "$$LOG" -- $(QG_PYTEST_ARGS); \
+	$(QG_GATE) run --tee --log "$$LOG" -- $(QG_PYTEST_ARGS) -n 0; \
 	$(QG_GATE) verdict "$$LOG"
 
 # Explicit parallel alias (backward compatibility)
