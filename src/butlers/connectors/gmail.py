@@ -50,6 +50,7 @@ import re
 import signal
 import time
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
@@ -2617,9 +2618,29 @@ class GmailConnectorRuntime:
         }
     )
 
+    # Characters that can surround a Content-Type parameter value but are never
+    # part of a charset name. ``email`` already removes a well-formed pair of
+    # double quotes; this additionally covers the single-quoted form -- which
+    # RFC 2045 does not permit but non-conformant senders emit -- and unbalanced
+    # quotes, whose intent is still legible. ``codecs.lookup`` bounds the
+    # leniency: whatever survives the strip is accepted only if it names a real
+    # encoding.
+    _CHARSET_VALUE_NOISE: str = " \t\r\n\"'"
+
     @staticmethod
     def _charset_from_headers(headers: list[Any]) -> str:
         """Extract charset from the Content-Type header in a MIME part's headers list.
+
+        Parsing is delegated to :mod:`email`, which implements the RFC 2045
+        parameter grammar: quoted values, whitespace around ``=``, parameter
+        names in any case, and RFC 2231 extended values. It also refuses to
+        read ``charset=`` out of some *other* parameter's quoted value, which a
+        substring match would happily do.
+
+        Quote characters :mod:`email` leaves behind -- the single-quoted form,
+        and unbalanced quotes -- are then stripped, because the declared
+        charset is still the sender's real intent and decoding legacy bytes as
+        UTF-8 with replacement would destroy the text irrecoverably.
 
         Returns the charset string if present and recognised by :mod:`codecs`,
         otherwise returns ``"utf-8"`` as a safe fallback. Malformed entries
@@ -2627,18 +2648,22 @@ class GmailConnectorRuntime:
         straight from the provider payload and are not shape-guaranteed.
         """
         for header in headers:
-            if _header_name_is(header, "content-type"):
-                match = re.search(r"charset=([^\s;\"']+)", _header_str_value(header), re.IGNORECASE)
-                if match:
-                    charset_name = match.group(1).strip()
-                    try:
-                        codecs.lookup(charset_name)
-                        return charset_name
-                    except LookupError:
-                        logger.debug(
-                            "Unknown charset %r in Content-Type; falling back to utf-8",
-                            charset_name,
-                        )
+            if not _header_name_is(header, "content-type"):
+                continue
+            parsed = Message()
+            parsed["Content-Type"] = _header_str_value(header)
+            declared = parsed.get_content_charset()
+            if declared is None:
+                continue
+            charset_name = declared.strip(GmailConnectorRuntime._CHARSET_VALUE_NOISE)
+            try:
+                codecs.lookup(charset_name)
+                return charset_name
+            except LookupError:
+                logger.debug(
+                    "Unknown charset %r in Content-Type; falling back to utf-8",
+                    charset_name,
+                )
         return "utf-8"
 
     def _decode_part_bytes(self, raw_bytes: bytes, payload: dict[str, Any]) -> str:
