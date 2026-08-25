@@ -321,6 +321,30 @@ async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
 
 
 @pytest.mark.unit
+async def test_fetch_instances_skips_incomplete_calendar_read_surface() -> None:
+    """The adapter must preflight every table used by its projection query.
+
+    ``calendar_event_instances`` can be present or visible while one of the
+    joined ``calendar_events`` / ``calendar_sources`` tables is absent or not
+    readable by Chronicler's restricted runtime role.  Treat that partial
+    surface like an unavailable optional schema instead of issuing a query
+    that is guaranteed to fail and emit an error-level log.
+    """
+    pool = _make_pool_with_rows([], table_exists=False)
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+
+    rows = await adapter._fetch_instances(pool, "test_schema", None, datetime.now(UTC))
+
+    assert rows is None
+    conn = pool.acquire.return_value._obj
+    availability_sql = conn.fetchval.call_args.args[0]
+    assert "calendar_event_instances" in availability_sql
+    assert "calendar_events" in availability_sql
+    assert "calendar_sources" in availability_sql
+    conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_project_user_lane_rows_are_still_projected() -> None:
     """User-lane calendar events continue to be projected after the fix."""
     user_row = _make_row(event_title="Dentist appointment")

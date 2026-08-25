@@ -162,7 +162,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             rows = await self._fetch_instances(pool, schema, since, now)
             if rows is None:
                 result.warnings.append(
-                    f"calendar_event_instances missing for schema {schema!r}; skipping"
+                    f"calendar read surface unavailable for schema {schema!r}; skipping"
                 )
                 continue
 
@@ -381,17 +381,25 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         quoted = self._quote_ident(schema)
         try:
             async with pool.acquire() as conn:
-                exists = await conn.fetchval(
+                surface_available = await conn.fetchval(
                     """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = $1
-                          AND table_name = 'calendar_event_instances'
-                    )
+                    SELECT count(*) = 3
+                    FROM information_schema.tables
+                    WHERE table_schema = $1
+                      AND table_name IN (
+                          'calendar_event_instances',
+                          'calendar_events',
+                          'calendar_sources'
+                      )
                     """,
                     schema,
                 )
-                if not exists:
+                if not surface_available:
+                    logger.debug(
+                        "CalendarCompletedAdapter: calendar read surface incomplete or "
+                        "inaccessible for schema %r — skipping",
+                        schema,
+                    )
                     return None
 
                 if since is None:
