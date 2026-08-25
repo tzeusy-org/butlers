@@ -23,6 +23,19 @@ terminator**:
 
 With neither, the verdict is UNKNOWN, and UNKNOWN is never a pass.
 
+One exit status needs both terminators read together. pytest exits **2** when a
+run is *interrupted*, and under xdist ``--maxfail`` interrupts on an ordinary
+test failure: the controller sets ``shouldstop`` and raises ``Interrupted``
+(``xdist/dsession.py``) where a serial run would raise ``Failed`` and exit 1.
+Every run here is an xdist run -- ``addopts`` carries ``-n 3`` -- and every
+quality-gate invocation passes ``--maxfail``. Reading the code alone would
+label the common red run UNKNOWN, teaching readers that UNKNOWN means "probably
+just a real failure": exactly the reflex this tool exists to prevent. So exit 2
+consults the log's last summary line, which is itself a positive terminator. If
+those counts report failures the verdict is FAILED; otherwise the run really did
+stop before establishing anything, and it stays UNKNOWN. The summary may only
+take exit 2 *down* to FAILED, never up to PASS.
+
 Usage::
 
     scripts/pytest_gate.py run [--log PATH] [--tee] [--detach] [--] <pytest args...>
@@ -91,17 +104,55 @@ class Verdict:
         return {PASS: "PASS", FAILED: "FAILED", UNKNOWN: "UNKNOWN"}[self.code]
 
 
-def _exit_code_verdict(code: int) -> Verdict:
-    """Classify a pytest process exit status.
+def _reports_failures(body: str) -> bool:
+    """Whether a pytest counts line reports anything that went wrong.
 
-    Only 0 is a pass and only 1 is a failure. Everything else -- interrupted,
-    internal error, usage error, nothing collected, killed by a signal -- means
-    the suite never rendered a verdict, which is precisely what UNKNOWN is for.
+    ``error`` matters as much as ``failed``: Docker contention yields
+    ``N errors`` with no ``N failed`` at all (AGENTS.md).
+    """
+    return "failed" in body or "error" in body
+
+
+def _interrupted_verdict(summary: str | None) -> Verdict:
+    """Classify pytest's exit 2, the *interrupted* run, against its own counts.
+
+    Under xdist -- which ``addopts`` makes unconditional here -- ``--maxfail``
+    stops the session by raising ``Interrupted``, so the gate's own arguments
+    turn every ordinary red run into exit 2. But pytest still printed its counts
+    on the way out, and those counts are a positive terminator. When they report
+    failures, the run is FAILED and calling it UNKNOWN would only blunt the word.
+
+    The counts cannot rescue the run, only convict it. A Ctrl-C partway through
+    a green run prints a summary with no failures in it, and that run still
+    never reached the tests it was interrupted before.
+    """
+    interrupted = "pytest exited 2 (run interrupted, e.g. by --maxfail)"
+    if summary is None:
+        return Verdict(UNKNOWN, f"{interrupted} before printing a summary line")
+    if _reports_failures(summary):
+        return Verdict(FAILED, f"{interrupted}; summary line reports `{summary}`")
+    return Verdict(
+        UNKNOWN,
+        f"{interrupted}; summary line reports `{summary}`, which counts no failures,"
+        "\n  so the run stopped without establishing anything",
+    )
+
+
+def _exit_code_verdict(code: int, summary: str | None) -> Verdict:
+    """Classify a pytest process exit status, with the log's last counts line.
+
+    Only 0 is a pass and only 1 is a plain failure. Exit 2 means interrupted,
+    which ``--maxfail`` makes routine, so it is decided against ``summary``.
+    Everything else -- internal error, usage error, nothing collected, killed by
+    a signal -- means the suite never rendered a verdict, which is precisely
+    what UNKNOWN is for, and no summary line softens that.
     """
     if code == 0:
         return Verdict(PASS, f"pytest exited {code}")
     if code == 1:
         return Verdict(FAILED, f"pytest exited {code} (tests failed)")
+    if code == 2:
+        return _interrupted_verdict(summary)
     if code == 5:
         return Verdict(UNKNOWN, f"pytest exited {code} (no tests collected); nothing was verified")
     if code > 128:
@@ -119,7 +170,7 @@ def _exit_code_verdict(code: int) -> Verdict:
 
 def _summary_verdict(body: str) -> Verdict:
     quoted = f"summary line reports `{body}`"
-    if "failed" in body or "error" in body:
+    if _reports_failures(body):
         return Verdict(FAILED, quoted)
     if body == "no tests ran":
         return Verdict(UNKNOWN, f"{quoted}; nothing was verified")
@@ -130,11 +181,12 @@ def _summary_verdict(body: str) -> Verdict:
 
 def classify(log_text: str) -> Verdict:
     """Classify a pytest log, requiring a positive terminator to call it either way."""
+    summaries = _SUMMARY_RE.findall(log_text)
+
     sentinels = _SENTINEL_RE.findall(log_text)
     if sentinels:
-        return _exit_code_verdict(int(sentinels[-1]))
+        return _exit_code_verdict(int(sentinels[-1]), summaries[-1] if summaries else None)
 
-    summaries = _SUMMARY_RE.findall(log_text)
     if summaries:
         return _summary_verdict(summaries[-1])
 

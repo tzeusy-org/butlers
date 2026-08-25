@@ -85,6 +85,18 @@ FAILED tests/core/test_a.py::test_b - assert 1 == 2
 1 failed, 5 passed in 3.21s
 """
 
+#: What `--maxfail=1` actually produces (bu-17myd). The run is *interrupted*
+#: rather than completed, so pytest exits 2 -- but it still printed its counts,
+#: and those counts say a test failed.
+MAXFAIL_INTERRUPTED_LOG = """\
+tests/core/test_a.py .F                                                  [ 33%]
+=========================== short test summary info ============================
+FAILED tests/core/test_a.py::test_b - assert 1 == 2
+!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 6482 passed in 1502.11s (0:25:02)
+## pytest-gate exit=2 at 2026-08-25T00:00:00Z
+"""
+
 
 # ---------------------------------------------------------------------------
 # verdict: the fail-open case
@@ -202,6 +214,100 @@ def test_sentinel_outranks_a_stale_summary_line(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# verdict: exit 2 is interrupted, and --maxfail interrupts on an ordinary failure
+# ---------------------------------------------------------------------------
+
+
+def test_maxfail_interrupted_run_is_failed_not_unknown(tmp_path: Path) -> None:
+    """The bu-17myd defect: the gate's own `--maxfail=1` makes red runs exit 2.
+
+    Labelling an ordinary test failure UNKNOWN teaches readers that UNKNOWN
+    means "probably just a real failure", which is exactly the reflex UNKNOWN
+    exists to prevent. UNKNOWN has to stay rare to stay meaningful.
+    """
+    result = _verdict(tmp_path, MAXFAIL_INTERRUPTED_LOG)
+    assert result.returncode == FAILED, result.stdout + result.stderr
+    assert "FAILED" in result.stdout
+    assert "UNKNOWN" not in result.stdout
+
+
+def test_exit_two_with_an_error_summary_is_failed(tmp_path: Path) -> None:
+    """`-x` on a collection error interrupts too, and errors are failures here."""
+    log = "10 passed, 2 errors in 4.20s\n## pytest-gate exit=2 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == FAILED, result.stdout + result.stderr
+
+
+def test_exit_two_with_no_summary_line_stays_unknown(tmp_path: Path) -> None:
+    """Interrupted before pytest printed its counts: nothing was established."""
+    log = "tests/core/test_a.py ...\n## pytest-gate exit=2 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+    assert "UNKNOWN" in result.stdout
+
+
+def test_exit_two_with_a_green_summary_is_unknown_not_pass(tmp_path: Path) -> None:
+    """A Ctrl-C mid-run prints counts with no failures; exit 2 still means unfinished.
+
+    The summary may only take exit 2 *down* to FAILED. It may never take it up
+    to PASS -- an interrupted run has not verified the tests it never reached.
+    """
+    log = PASSING_LOG + "## pytest-gate exit=2 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+def test_exit_two_reads_the_last_summary_line(tmp_path: Path) -> None:
+    """A rerun appends; the trailing counts describe the run that exited 2."""
+    log = FAILING_LOG + PASSING_LOG + "## pytest-gate exit=2 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# verdict: the other nonzero exits are not softened by a summary line
+# ---------------------------------------------------------------------------
+
+
+def test_sentinel_exit_five_is_unknown_not_pass(tmp_path: Path) -> None:
+    """Exit 5 = nothing collected. A typo'd path verified no code at all."""
+    log = "no tests ran in 0.01s\n## pytest-gate exit=5 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+    assert "PASS" not in result.stdout
+
+
+def test_sentinel_exit_five_with_a_stale_green_summary_is_unknown(tmp_path: Path) -> None:
+    """Only exit 2 consults the summary; a green line cannot rescue exit 5."""
+    log = PASSING_LOG + "## pytest-gate exit=5 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+
+
+def test_sentinel_exit_four_with_a_failure_summary_is_unknown(tmp_path: Path) -> None:
+    """Exit 4 is a usage error: the gate misfired, so no suite verdict exists."""
+    log = FAILING_LOG + "## pytest-gate exit=4 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+
+
+def test_signal_exit_with_a_failure_summary_is_unknown_not_failed(tmp_path: Path) -> None:
+    """Killed, not failed: the counts describe the part of the run that happened."""
+    log = FAILING_LOG + "## pytest-gate exit=143 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == UNKNOWN, result.stdout + result.stderr
+    assert "143" in result.stdout
+
+
+def test_sentinel_exit_zero_with_a_stale_failure_summary_is_pass(tmp_path: Path) -> None:
+    """A rerun that went green exits 0; the earlier red summary does not outvote it."""
+    log = FAILING_LOG + "## pytest-gate exit=0 at 2026-08-25T00:00:00Z\n"
+    result = _verdict(tmp_path, log)
+    assert result.returncode == PASS, result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
 # run: the sentinel is written, and by a process that survives the caller
 # ---------------------------------------------------------------------------
 
@@ -309,6 +415,70 @@ def test_run_child_survives_a_signal_to_the_callers_process_group(tmp_path: Path
             runner.kill()
 
     assert "## pytest-gate exit=0 " in log.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# The premise: a real xdist --maxfail run really does exit 2
+# ---------------------------------------------------------------------------
+
+
+def test_a_real_maxfail_run_exits_two_and_reads_as_failed(tmp_path: Path) -> None:
+    """End-to-end, against real pytest: the exit-2 classification is not theoretical.
+
+    Under xdist the controller answers ``--maxfail`` by raising ``Interrupted``
+    (``xdist/dsession.py``), which pytest reports as exit 2 — where a serial run
+    would raise ``Failed`` and exit 1. Every run in this repo is an xdist run
+    (``addopts`` carries ``-n 3``) and every gate invocation passes
+    ``--maxfail=1``, so this is the shape of an ordinary red gate run.
+
+    Pinning it here means that if pytest or xdist ever changes that status, the
+    premise fails loudly instead of the classification quietly going stale.
+    """
+    (tmp_path / "test_red.py").write_text("def test_red():\n    assert 1 == 2\n", encoding="utf-8")
+    (tmp_path / "test_green.py").write_text(
+        "import pytest\n\n\n@pytest.mark.parametrize('i', range(6))\ndef test_ok(i):\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "run.log"
+    subprocess.run(
+        [
+            sys.executable,
+            str(_GATE),
+            "run",
+            "--log",
+            str(log),
+            "--",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:randomly",
+            "--no-header",
+            "-q",
+            "--maxfail=1",
+            "--tb=no",
+            "-n",
+            "2",
+            "--dist",
+            "loadfile",
+            ".",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    log_text = log.read_text(encoding="utf-8")
+    assert "## pytest-gate exit=2 " in log_text, log_text
+
+    verdict = subprocess.run(
+        [sys.executable, str(_GATE), "verdict", str(log)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verdict.returncode == FAILED, verdict.stdout + verdict.stderr + log_text
+    assert "UNKNOWN" not in verdict.stdout
 
 
 # ---------------------------------------------------------------------------
