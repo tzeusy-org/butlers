@@ -126,6 +126,14 @@ The patches are idempotent -- they check for sentinel attributes to avoid double
 | `--dist loadfile` | File-level distribution | Preserves module-scoped fixtures |
 | `--import-mode=importlib` | Importlib mode | Avoids name collisions across `roster/*/tests/` |
 
+These live in `addopts`, which pytest prepends to **every** invocation in this repo. So an
+omitted `-n` is not "the default" -- it is three workers. Anything that needs a different
+mode has to say so on its own command line: `make test-qg-serial` passes `-n 0` for exactly
+this reason, and ran on three workers until it did (bu-bcujm). `-p no:xdist` is not a
+substitute; it turns the inherited `-n 3` into an unrecognized-argument error.
+`tests/contracts/test_qg_serial_target.py` pins the merged value for both gate targets,
+because a grep of the Makefile cannot see it.
+
 ## Module Discovery
 
 The root conftest triggers roster module discovery at import time:

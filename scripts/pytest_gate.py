@@ -27,8 +27,9 @@ One exit status needs both terminators read together. pytest exits **2** when a
 run is *interrupted*, and under xdist ``--maxfail`` interrupts on an ordinary
 test failure: the controller sets ``shouldstop`` and raises ``Interrupted``
 (``xdist/dsession.py``) where a serial run would raise ``Failed`` and exit 1.
-Every run here is an xdist run -- ``addopts`` carries ``-n 3`` -- and every
-quality-gate invocation passes ``--maxfail``. Reading the code alone would
+Nearly every run here is an xdist run -- ``addopts`` carries ``-n 3``, and only
+``make test-qg-serial`` overrides it with an explicit ``-n 0`` (bu-bcujm) -- and
+every quality-gate invocation passes ``--maxfail``. Reading the code alone would
 label the common red run UNKNOWN, teaching readers that UNKNOWN means "probably
 just a real failure": exactly the reflex this tool exists to prevent. So exit 2
 consults the log's last summary line, which is itself a positive terminator. If
