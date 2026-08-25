@@ -21,9 +21,13 @@ only zeros published with ``aggregates_available: true`` are ones Prometheus
 actually reported — including an empty result set, which is a real observation
 of "no series, therefore no events".
 
-Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
-      connector-state-aggregates/spec.md
-      ingestion-event-registry/spec.md  (Pipeline Stats Endpoint requirement)
+Spec: openspec/changes/restore-ingestion-console-spec-coverage/specs/
+      connector-state-aggregates/spec.md  (the capability; the archived
+      redesign-ingestion-dispatch-console path this used to cite no longer
+      exists)
+      openspec/changes/honest-ingestion-aggregate-availability/specs/
+      connector-state-aggregates/spec.md  (degraded-mode contract, bu-0m31b)
+      openspec/specs/ingestion-event-registry/spec.md  (Pipeline Stats Endpoint)
 """
 
 from __future__ import annotations
