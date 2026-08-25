@@ -1883,6 +1883,13 @@ build if the committed copy differs, so it is always current.
 - Node detail panel
 - Close node details
 
+## `frontend/src/components/education/NodeSourceAnnotations.tsx`
+
+- No registered source named
+- Location not recorded
+- Open registered source
+- Sources
+
 ## `frontend/src/components/education/QuizHistoryList.tsx`
 
 - Answer:
@@ -3443,4 +3450,4 @@ build if the committed copy differs, so it is always current.
 - Preset windows
 
 ---
-*Total strings: 2601*
+*Total strings: 2605*

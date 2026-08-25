@@ -4059,6 +4059,7 @@ import type {
   CurriculumRequestBody,
   CurriculumRequestResponse,
   CurriculumRequestStatusResponse,
+  EducationSourceMaterial,
   MasterySummary,
   MindMap,
   MindMapListParams,
@@ -4087,6 +4088,17 @@ export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
   return apiFetch<MindMap>(
     `/education/mind-maps/${encodeURIComponent(mindMapId)}`,
   );
+}
+
+/**
+ * List every registered source.
+ *
+ * The node detail panel resolves each `metadata.source_refs` entry against
+ * this list: a hit yields the source's title, a miss means the source was
+ * removed and the reference must be shown as unregistered rather than cited.
+ */
+export function getEducationSources(): Promise<EducationSourceMaterial[]> {
+  return apiFetch<EducationSourceMaterial[]>("/education/sources");
 }
 
 /** Get frontier nodes for a mind map. */

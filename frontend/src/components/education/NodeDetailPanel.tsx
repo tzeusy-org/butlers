@@ -3,10 +3,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
 import { X } from "lucide-react";
-import { useMindMap } from "@/hooks/use-education";
+import { useEducationSources, useMindMap } from "@/hooks/use-education";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { masteryStatusBadgeClassName } from "./mastery-status";
+import NodeSourceAnnotations from "./NodeSourceAnnotations";
 import QuizHistoryList from "./QuizHistoryList";
+import { conceptTypeLabel, parseConceptType, type RegistryStatus } from "./source-annotations";
 
 interface NodeDetailPanelProps {
   mindMapId: string | null;
@@ -21,6 +23,22 @@ export default function NodeDetailPanel({
 }: NodeDetailPanelProps) {
   const { data: mindMap } = useMindMap(mindMapId);
   const node = mindMap?.nodes?.find((n) => n.id === nodeId);
+
+  // Source-annotation provenance (bu-istke.5). The registry is fetched
+  // separately from the map, so its three outcomes stay distinct all the way
+  // to the render: a resolved list can prove a source_id dangling, while a
+  // loading or failed fetch proves nothing and must not be reported as one.
+  const {
+    data: sources,
+    isLoading: sourcesLoading,
+    isError: sourcesError,
+  } = useEducationSources();
+  const registryStatus: RegistryStatus = sourcesError
+    ? "unavailable"
+    : sourcesLoading || sources === undefined
+      ? "loading"
+      : "resolved";
+  const conceptType = parseConceptType(node?.metadata);
 
   // Focus choreography (bu-x7syp): on open, focus moves into the panel and
   // an accessible heading announces which node it's showing; on close,
@@ -57,9 +75,22 @@ export default function NodeDetailPanel({
         <CardHeader className="flex flex-row items-start justify-between space-y-0">
           <div className="space-y-1">
             <CardTitle className="text-lg">{node.label}</CardTitle>
-            <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
-              {node.mastery_status}
-            </Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge className={masteryStatusBadgeClassName(node.mastery_status)}>
+                {node.mastery_status}
+              </Badge>
+              {/* Concept type drives which teaching technique the butler
+                  picks. The classifier abstains when unsure, so an absent
+                  type is normal and renders as nothing at all. */}
+              {conceptType && (
+                <Badge
+                  variant="outline"
+                  aria-label={`Concept type: ${conceptTypeLabel(conceptType)}`}
+                >
+                  {conceptTypeLabel(conceptType)}
+                </Badge>
+              )}
+            </div>
           </div>
           <Button
             variant="ghost"
@@ -103,6 +134,12 @@ export default function NodeDetailPanel({
               </div>
             )}
           </div>
+
+          <NodeSourceAnnotations
+            metadata={node.metadata}
+            sources={sources}
+            registryStatus={registryStatus}
+          />
 
           <div className="border-t pt-4">
             <h4 className="mb-2 text-sm font-medium">Quiz History</h4>

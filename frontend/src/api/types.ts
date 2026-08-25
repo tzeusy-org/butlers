@@ -4457,6 +4457,22 @@ export interface MindMap {
   edges: MindMapEdge[];
 }
 
+/**
+ * A registered source-material record.
+ *
+ * The registry stores metadata only — the education butler never fetches or
+ * parses source contents. A `source_id` on a node's `metadata.source_refs`
+ * that is absent from this list is a dangling reference, not a citation.
+ */
+export interface EducationSourceMaterial {
+  source_id: string;
+  title: string;
+  authors: string[];
+  type: string;
+  url: string | null;
+  registered_at: string | null;
+}
+
 /** A recorded quiz response for a concept node. */
 export interface QuizResponse {
   id: string;

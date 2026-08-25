@@ -52,7 +52,7 @@ Acceptance:
 
 ### 5. Dashboard source annotation display
 
-- [ ] 5.1 Extend the mind map node detail view to show source annotations and concept
+- [x] 5.1 Extend the mind map node detail view to show source annotations and concept
       type. Source refs displayed with title (from registry lookup), location, and
       provenance label (referenced vs. model-recalled).
 
@@ -61,3 +61,5 @@ Acceptance:
 - Concept type displayed as a tag on the node
 - Nodes without source refs or concept type display unchanged
 - Dangling source refs (removed source) show "source no longer registered"
+- An unreachable source registry is reported as unchecked, never as unregistered
+- REQ-dashboard-education-ui and the new sources endpoint scenarios pass

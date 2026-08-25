@@ -42,10 +42,22 @@ Scope: v1-mandatory
 Mind map nodes SHALL support a `metadata.source_refs` array. Each entry
 contains a `source_id` (referencing a registered source or `null` for
 model-recalled citations), a `location` (chapter, page range, section — free
-text), and an optional `note`. Citations with a registered `source_id` are
-labeled "referenced"; citations with `source_id: null` are labeled
-"model-recalled" in any user-facing display to signal differing provenance
-confidence.
+text), an optional `provenance` of `"referenced"` or `"model-recalled"`, and an
+optional `note`.
+
+Provenance records whether the location was read out of the source itself
+(`"referenced"`) or produced from the model's own knowledge of it
+(`"model-recalled"`). A writer that knows which it did SHALL record
+`provenance` explicitly, and that value SHALL win in any user-facing display:
+a registered `source_id` establishes that the source exists, not that the
+location was read from it. When `provenance` is absent it is derived from the
+reference itself, a named `source_id` reading as "referenced" and a null
+`source_id` as "model-recalled". An unrecognized `provenance` value SHALL be
+displayed as "model-recalled", never promoted to a citation.
+
+A display SHALL make the weaker provenance unmistakable in words, not by colour
+alone, and SHALL withhold citation affordances (a resolved source title, a link
+to the source) from every state other than "referenced".
 
 ID: REQ-education-source-grounding-002
 Source: Education MANIFESTO.md amendment (source-grounded instruction)
@@ -59,6 +71,16 @@ Scope: v1-mandatory
   the `source_id`, `location`, and optional `note`
 - **AND** the citation is included in the teaching session's conversational
   output as a reading pathway suggestion
+
+#### Scenario: Model-recalled location against a registered source
+
+- **WHEN** a writer records a `source_refs` entry naming a registered
+  `source_id` with `provenance: "model-recalled"` (the curriculum planner's
+  default, since it works from model knowledge of the source rather than from
+  the source itself)
+- **THEN** the entry is labeled "model-recalled" in any display
+- **BECAUSE** the registry confirms the source exists, not that anything read
+  it: presenting the location as referenced would overstate what the butler did
 
 #### Scenario: Model-recalled citation without registered source
 
