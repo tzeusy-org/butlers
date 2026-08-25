@@ -2299,7 +2299,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Next Review
 - Quiz History
 - Node detail panel
+- Concept type: {}
 - Close node details
+
+## `frontend/src/components/education/NodeSourceAnnotations.tsx`
+
+- No registered source named
+- Location not recorded
+- Open registered source
+- Sources
 
 ## `frontend/src/components/education/QuizHistoryList.tsx`
 
@@ -4136,4 +4144,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3238*
+*Total strings: 3243*
