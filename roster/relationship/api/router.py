@@ -45,6 +45,14 @@ from butlers.tools.relationship._ef_channel_helpers import (
 from butlers.tools.relationship._ef_channel_helpers import (
     entity_facts_channels_by_entity as _entity_facts_channels_by_entity_shared,
 )
+from butlers.tools.relationship.entity_merge import (
+    SameEntityError,
+    SourceEntityNotFoundError,
+    SourceEntityTombstonedError,
+    TargetEntityNotFoundError,
+    TargetEntityTombstonedError,
+    merge_entity_pair,
+)
 from butlers.tools.relationship.merge_review import (
     derive_shared_and_divergent_rows as _derive_shared_and_divergent_rows_shared,
 )
@@ -5892,252 +5900,32 @@ async def merge_entities(
         target_id = body.entityB
         source_id = body.entityA
 
-    # Compute the merge-review evidence snapshot BEFORE the transaction mutates
-    # rows — the shared/divergent diff must reflect the pre-merge state. Every
-    # merge through this endpoint leaves a merge_reviews audit row regardless of
-    # entry path (spec: relationship-merge-review "Single-pair review UX").
-    merge_snapshot = await _compute_compare_snapshot(pool, body.entityA, body.entityB)
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # 1. Lock both entities in deterministic UUID order to prevent deadlocks when
-            #    concurrent merge requests target the same pair in opposite directions.
-            lock_rows = await conn.fetch(
-                """
-                SELECT id, metadata
-                FROM public.entities
-                WHERE id = ANY($1::uuid[])
-                ORDER BY id
-                FOR UPDATE
-                """,
-                [source_id, target_id],
-            )
-            lock_map = {row["id"]: row for row in lock_rows}
-
-            src_row = lock_map.get(source_id)
-            if src_row is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Source entity '{source_id}' not found.",
-                )
-            src_meta: dict = src_row["metadata"] or {}
-            if "merged_into" in src_meta:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Source entity '{source_id}' is already tombstoned.",
-                )
-
-            tgt_row = lock_map.get(target_id)
-            if tgt_row is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Target entity '{target_id}' not found.",
-                )
-            tgt_meta: dict = tgt_row["metadata"] or {}
-            if "merged_into" in tgt_meta:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Target entity '{target_id}' is already tombstoned.",
-                )
-
-            # 2. Rewire subject-side facts: source → target.
-            # For rows that would collide at (target, predicate, object) on the
-            # uq_ef_spo_active partial unique index, retract the source row instead.
-
-            # First, retract source subject-rows that conflict with existing target rows.
-            await conn.execute(
-                """
-                UPDATE relationship.entity_facts AS src
-                SET validity = 'superseded',
-                    updated_at = now()
-                WHERE src.subject = $1
-                  AND src.validity = 'active'
-                  AND EXISTS (
-                      SELECT 1 FROM relationship.entity_facts tgt
-                      WHERE tgt.subject = $2
-                        AND tgt.predicate = src.predicate
-                        AND tgt.object = src.object
-                        AND tgt.validity = 'active'
-                  )
-                """,
-                source_id,
-                target_id,
-            )
-
-            # Resolve single-cardinality DIVERGENCE before moving the remainder.
-            # For a predicate registered with cardinality='single', source and
-            # target may each hold an active row with DIFFERENT objects (no exact
-            # (p,o) collision, so the retraction above left both standing). The
-            # merge-review spec calls these "the conflicts a merge must resolve";
-            # the lifecycle spec rationale states merge keeps higher-conf facts.
-            #
-            # Resolution rule (registry-driven; NO hardcoded predicate list):
-            # keep the higher-conf row and supersede the loser. Ties go to the
-            # TARGET (the row whose subject is already the survivor), consistent
-            # with the assert-path supersession semantics. Multi-valued predicates
-            # are absent from this set and union normally (three-emails rule).
-            #
-            # The window orders winners by (conf DESC, target-first, id) so the
-            # top row per predicate is the keeper; every other active row across
-            # the source/target pair for that single-cardinality predicate is
-            # superseded. Multi-row pre-existing duplicates on one side (should not
-            # happen for single-cardinality, but be defensive) collapse to one.
-            await conn.execute(
-                """
-                WITH ranked AS (
-                    SELECT
-                        ef.id,
-                        row_number() OVER (
-                            PARTITION BY ef.predicate
-                            ORDER BY
-                                ef.conf DESC,
-                                (ef.subject = $2) DESC,
-                                ef.id
-                        ) AS rn
-                    FROM relationship.entity_facts ef
-                    JOIN relationship.entity_predicate_registry pr
-                      ON pr.predicate = ef.predicate
-                    WHERE ef.subject IN ($1, $2)
-                      AND ef.validity = 'active'
-                      AND pr.cardinality = 'single'
-                )
-                UPDATE relationship.entity_facts AS ef
-                SET validity = 'superseded',
-                    updated_at = now()
-                FROM ranked
-                WHERE ef.id = ranked.id
-                  AND ranked.rn > 1
-                """,
-                source_id,
-                target_id,
-            )
-
-            # Then move the remaining (non-conflicting) active source subject-rows.
-            subject_result = await conn.fetchval(
-                """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET subject = $2,
-                        updated_at = now()
-                    WHERE subject = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
-                """,
-                source_id,
-                target_id,
-            )
-            subject_facts_rewired = subject_result
-
-            # 3. Rewire object-side facts: source appears as object with object_kind='entity'.
-            source_text = str(source_id)
-            target_text = str(target_id)
-
-            # Retract object-side source rows that conflict with existing target rows.
-            await conn.execute(
-                """
-                UPDATE relationship.entity_facts AS src
-                SET validity = 'superseded',
-                    updated_at = now()
-                WHERE src.object_kind = 'entity'
-                  AND src.object = $1
-                  AND src.validity = 'active'
-                  AND EXISTS (
-                      SELECT 1 FROM relationship.entity_facts tgt
-                      WHERE tgt.subject = src.subject
-                        AND tgt.predicate = src.predicate
-                        AND tgt.object = $2
-                        AND tgt.object_kind = 'entity'
-                        AND tgt.validity = 'active'
-                  )
-                """,
-                source_text,
-                target_text,
-            )
-
-            # Move the remaining active object-side rows.
-            object_result = await conn.fetchval(
-                """
-                WITH updated AS (
-                    UPDATE relationship.entity_facts
-                    SET object = $2,
-                        updated_at = now()
-                    WHERE object_kind = 'entity'
-                      AND object = $1
-                      AND validity = 'active'
-                    RETURNING id
-                )
-                SELECT count(*) FROM updated
-                """,
-                source_text,
-                target_text,
-            )
-            object_facts_rewired = object_result
-
-            # 3b. Re-point the memory-module ``facts`` store (gifts, loans,
-            # interactions, contact-notes, life-events all live here keyed by
-            # ``entity_id``; edge-facts reference the source as
-            # ``object_entity_id``). The dashboard previously only moved
-            # ``relationship.entity_facts``, so these narrative rows orphaned onto
-            # the tombstoned source and vanished from the survivor (bu-j820n.1).
-            # Delegating to the canonical ``_repoint_facts_on_conn`` keeps the
-            # confidence-based supersession semantics identical to the memory
-            # butler's ``entity_merge`` while running inside THIS transaction.
-            from butlers.modules.memory.tools.entities import _repoint_facts_on_conn
-
-            await _repoint_facts_on_conn(conn, source_id, target_id)
-
-            # 3c. Re-point contact_entity_map rows from source → target. A contact
-            # is bound to exactly one entity; on merge every contact that pointed at
-            # the source must follow the survivor or CRM contact lookups will return
-            # stale rows for the tombstoned source. contact_entity_map lives in the
-            # ``relationship`` schema — unqualified for search_path resolution,
-            # consistent with _entity_resolve.py.
-            await conn.execute(
-                """
-                UPDATE contact_entity_map
-                SET entity_id = $2
-                WHERE entity_id = $1
-                """,
-                source_id,
-                target_id,
-            )
-
-            # 4. Tombstone source entity via merged_into metadata key.
-            tombstone_meta = {**src_meta, "merged_into": str(target_id)}
-            await conn.execute(
-                """
-                UPDATE public.entities
-                SET metadata = $1,
-                    updated_at = now()
-                WHERE id = $2
-                """,
-                tombstone_meta,
-                source_id,
-            )
-
-            # 5. Write the merge-review audit row inside the SAME transaction as
-            # the rewire/tombstone (spec: "POST /entities/{id}/merge itself MUST
-            # write a merge_reviews audit row" — regardless of entry path). The
-            # snapshot was computed pre-transaction (see _compute_compare_snapshot)
-            # so the evidence reflects the pre-merge state; writing the audit row
-            # on `conn` (not `pool`) closes the crash window where a committed
-            # merge could leave no audit trail.
-            await _write_merge_review(
-                conn,
-                entity_a=body.entityA,
-                entity_b=body.entityB,
-                shared_facts=merge_snapshot["shared"],
-                divergent_facts=merge_snapshot["divergent"],
-                outcome="merged",
-            )
+    try:
+        result = await merge_entity_pair(
+            pool,
+            source_entity_id=source_id,
+            target_entity_id=target_id,
+            _audit_entity_order=(body.entityA, body.entityB),
+        )
+    except SameEntityError:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "same_entity", "message": "entityA and entityB must be different."},
+        )
+    except SourceEntityNotFoundError:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    except SourceEntityTombstonedError:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    except TargetEntityNotFoundError:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    except TargetEntityTombstonedError:
+        raise HTTPException(status_code=404, detail="Entity not found")
 
     return MergeEntitiesResponse(
-        kept_entity_id=target_id,
-        tombstoned_entity_id=source_id,
-        subject_facts_rewired=subject_facts_rewired,
-        object_facts_rewired=object_facts_rewired,
+        kept_entity_id=result.kept_entity_id,
+        tombstoned_entity_id=result.tombstoned_entity_id,
+        subject_facts_rewired=result.subject_facts_rewired,
+        object_facts_rewired=result.object_facts_rewired,
     )
 
 
@@ -6302,9 +6090,8 @@ async def _compute_compare_snapshot(pool, entity_a: UUID, entity_b: UUID) -> dic
     """Compute the full structural-diff snapshot for a pair of entities.
 
     Returns a dict with ``a`` / ``b`` (CompareEntityBlock), ``shared`` and
-    ``divergent`` (lists of CompareFact). Reused by both the compare endpoint and
-    the merge endpoint's audit-row snapshot (computed server-side at merge time
-    when no compare context exists).
+    ``divergent`` (lists of CompareFact). Reused by the compare and dismiss-pair
+    endpoints; the audited merge service computes its model-free evidence directly.
 
     No scoring, no ranking, no generated text — deterministic structural diff.
     """
@@ -6313,7 +6100,7 @@ async def _compute_compare_snapshot(pool, entity_a: UUID, entity_b: UUID) -> dic
         pool.fetchrow(_COMPARE_SUMMARY_SQL, entity_b),
     )
     # Fail fast on an unknown/tombstoned entity (the summary SQL excludes
-    # tombstoned rows). Raised as 404 to the caller (compare + merge endpoints).
+    # tombstoned rows). Raised as 404 to the compare/dismiss caller.
     if a_summary_row is None or b_summary_row is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 

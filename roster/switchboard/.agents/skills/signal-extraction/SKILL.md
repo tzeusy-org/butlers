@@ -23,8 +23,11 @@ Use this skill when switchboard needs to extract structured signals from an inco
 Each extraction object must include:
 - `type`: signal type (for example `contacts`, `symptoms`)
 - `confidence`: one of `HIGH`, `MEDIUM`, `LOW`
-- `tool_name`: MCP tool to call on target butler
-- `tool_args`: JSON object of tool arguments
+- `tool_name`: `route.execute` for ordinary conceptual messages; the model must
+  not select a direct target tool that bypasses the target's standard runtime
+  session boundary
+- `tool_args`: JSON object of structured signal details carried inside the
+  conceptual runtime context, not direct MCP invocation arguments
 - `target_butler`: destination butler name
 
 ## Schema Source of Truth

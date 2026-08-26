@@ -35,6 +35,7 @@ from butlers.core.route_inbox import (
     route_inbox_processing_lease_heartbeat,
     route_inbox_wait_while_claimed,
 )
+from butlers.core.route_observability import opaque_route_ref, safe_runtime_failure_class
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.spawner import SESSION_CANCELLED_ERROR, Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
@@ -188,6 +189,42 @@ def _build_route_runtime_context(
 def _wrap_routed_message(prompt: str) -> str:
     """Fence routed content as untrusted payload for downstream runtime sessions."""
     return f"<routed_message>\n{prompt}\n</routed_message>"
+
+
+async def _find_successful_route_session(
+    executor: Any,
+    *,
+    request_id: str,
+    subrequest_id: str | None,
+) -> Any:
+    """Find a completed route session at the envelope's dedupe granularity."""
+    if subrequest_id is None:
+        return await executor.fetchval(
+            """
+            SELECT id FROM sessions
+            WHERE request_id = $1
+              AND trigger_source = 'route'
+              AND success = true
+              AND started_at > now() - interval '24 hours'
+            LIMIT 1
+            """,
+            request_id,
+        )
+    return await executor.fetchval(
+        """
+        SELECT s.id
+        FROM sessions s
+        JOIN route_inbox ri ON ri.session_id = s.id
+        WHERE s.request_id = $1
+          AND s.trigger_source = 'route'
+          AND s.success = true
+          AND s.started_at > now() - interval '24 hours'
+          AND ri.route_envelope #>> '{subrequest,subrequest_id}' = $2
+        LIMIT 1
+        """,
+        request_id,
+        subrequest_id,
+    )
 
 
 def _parse_telegram_thread_identity(thread_identity: str | None) -> tuple[str, int] | None:
@@ -645,11 +682,23 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
 
         route_context = parsed_route.request_context.model_dump(mode="json")
         route_request_id = str(parsed_route.request_context.request_id)
+        route_subrequest_id = (
+            parsed_route.subrequest.subrequest_id if parsed_route.subrequest is not None else None
+        )
+        _route_internal_context: dict[str, Any] = {}
+        if isinstance(parsed_route.input.context, dict):
+            _conceptual_message = parsed_route.input.context.get("conceptual_message")
+            if isinstance(_conceptual_message, dict):
+                _route_internal_context["conceptual_message"] = dict(_conceptual_message)
+        _content_blind_route = bool(_route_internal_context)
+        _observability_request_id = (
+            opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
+        )
 
         # Annotate the accept-phase span with request_id for cross-trace correlation.
         _current_accept_span = trace.get_current_span()
         if _current_accept_span.is_recording():
-            _current_accept_span.set_attribute("request_id", route_request_id)
+            _current_accept_span.set_attribute("request_id", _observability_request_id)
 
         # --- Authn/authz: enforce trusted caller identity ---
         caller_identity = parsed_route.request_context.source_endpoint_identity
@@ -709,16 +758,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 target_butler=daemon.config.name,
                             )
                             if control.outcome == "active":
-                                existing_session = await conn.fetchval(
-                                    """
-                                    SELECT id FROM sessions
-                                    WHERE request_id = $1
-                                      AND trigger_source = 'route'
-                                      AND success = true
-                                      AND started_at > now() - interval '24 hours'
-                                    LIMIT 1
-                                    """,
-                                    route_request_id,
+                                existing_session = await _find_successful_route_session(
+                                    conn,
+                                    request_id=route_request_id,
+                                    subrequest_id=route_subrequest_id,
                                 )
                                 if existing_session is not None:
                                     terminal = await mark_terminal(
@@ -753,16 +796,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 if control.outcome == "enqueued":
                                     inbox_id = control.route_inbox_id
                 except Exception as exc:
+                    failure_class = type(exc).__name__
                     logger.warning(
-                        "route.execute: durable dashboard acceptance failed: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                        exc_info=True,
+                        "route.execute: durable dashboard acceptance failed failure_class=%s",
+                        failure_class,
                     )
                     return _route_error_response(
                         context_payload=route_context,
                         error_class="internal_error",
-                        message=f"route.execute: failed durable dashboard acceptance: {exc}",
+                        message=(
+                            f"route.execute: failed durable dashboard acceptance ({failure_class})"
+                        ),
                     )
 
                 if control_outcome == "cancelled":
@@ -800,24 +844,24 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         ),
                     )
             else:
-                # --- Dedup guard: reject if a session already succeeded for this request_id ---
-                existing_session = await pool.fetchval(
-                    """
-                    SELECT id FROM sessions
-                    WHERE request_id = $1
-                      AND trigger_source = 'route'
-                      AND success = true
-                      AND started_at > now() - interval '24 hours'
-                    LIMIT 1
-                    """,
-                    route_request_id,
+                # --- Dedup guard: legacy routes use request_id; fan-out routes
+                # add their target-visible subrequest identity. ---
+                existing_session = await _find_successful_route_session(
+                    pool,
+                    request_id=route_request_id,
+                    subrequest_id=route_subrequest_id,
                 )
                 if existing_session is not None:
+                    observability_session_id = (
+                        opaque_route_ref(existing_session)
+                        if _content_blind_route
+                        else existing_session
+                    )
                     logger.info(
                         "route.execute: dedup — skipping request_id=%s, "
                         "already has successful session %s",
-                        route_request_id,
-                        existing_session,
+                        _observability_request_id,
+                        observability_session_id,
                     )
                     return {
                         "schema_version": "route_response.v1",
@@ -831,16 +875,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 try:
                     inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
                 except Exception as exc:
+                    failure_class = type(exc).__name__
                     logger.warning(
-                        "route.execute: route_inbox_insert failed: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                        exc_info=True,
+                        "route.execute: route_inbox_insert failed failure_class=%s",
+                        failure_class,
                     )
                     return _route_error_response(
                         context_payload=route_context,
                         error_class="internal_error",
-                        message=f"route.execute: failed to persist to route_inbox: {exc}",
+                        message=(
+                            f"route.execute: failed to persist to route_inbox ({failure_class})"
+                        ),
                     )
 
             if inbox_id is None:
@@ -871,7 +916,6 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             _raw_entity_id = parsed_route.request_context.source_sender_entity_id
             if isinstance(_raw_entity_id, str) and _raw_entity_id.strip():
                 _route_sender_entity_id = _raw_entity_id.strip()
-
             # Extract complexity from envelope input; default to WORKHORSE on missing/invalid.
             # Delegate to the shared tier-normalization idiom (coerce_complexity_tier,
             # PR #3000) rather than a raw Complexity() construction: retired vocabulary
@@ -899,6 +943,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 _parent_ctx: OtelContext | None,
                 _accept_span_ctx: trace.SpanContext | None,
                 _sender_entity_id: str | None,
+                _internal_context: dict[str, Any],
                 _complexity: Complexity,
                 _dashboard_turn_id: uuid.UUID | None,
             ) -> None:
@@ -910,12 +955,19 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 route_metrics.record_route_process_latency(process_latency_ms)
 
                 _tracer = trace.get_tracer("butlers")
+                _content_blind_process = bool(_internal_context)
+                _observability_inbox_id = (
+                    opaque_route_ref(_inbox_id) if _content_blind_process else _inbox_id
+                )
+                _observability_process_request_id = (
+                    opaque_route_ref(_request_id) if _content_blind_process else _request_id
+                )
                 _links: list[OtelLink] = []
                 if _accept_span_ctx is not None and _accept_span_ctx.is_valid:
                     _links.append(
                         OtelLink(
                             context=_accept_span_ctx,
-                            attributes={"request_id": _request_id},
+                            attributes={"request_id": _observability_process_request_id},
                         )
                     )
                 with _tracer.start_as_current_span(
@@ -924,7 +976,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     links=_links,
                 ) as _process_span:
                     tag_butler_span(_process_span, butler_name)
-                    _process_span.set_attribute("request_id", _request_id)
+                    _process_span.set_attribute("request_id", _observability_process_request_id)
                     processing_claim_id: uuid.UUID | None = None
                     try:
                         processing_claim_id = await route_inbox_claim_processing(_pool, _inbox_id)
@@ -932,12 +984,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         if processing_claim_id is None:
                             logger.info(
                                 "route_inbox: processing lease already owned id=%s request_id=%s",
-                                _inbox_id,
-                                _request_id,
+                                _observability_inbox_id,
+                                _observability_process_request_id,
                             )
                             return
+                        _routing_context = dict(_internal_context)
                         if _sender_entity_id is not None:
-                            _routing_ctx_var.set({"source_entity_id": _sender_entity_id})
+                            _routing_context["source_entity_id"] = _sender_entity_id
+                        _routing_ctx_var.set(_routing_context or None)
 
                         async with route_inbox_processing_lease_heartbeat(
                             _pool,
@@ -976,15 +1030,13 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                         first_message=parsed_route.input.prompt,
                                     )
                                     _conversation_id = _conversation["id"]
-                                except Exception:
+                                except Exception as exc:
                                     logger.debug(
                                         "conversation anchor lookup/create failed for "
-                                        "butler=%s source_channel=%s "
-                                        "source_thread_identity=%s",
+                                        "butler=%s source_channel=%s failure_class=%s",
                                         butler_name,
                                         source_channel,
-                                        source_thread_identity,
-                                        exc_info=True,
+                                        type(exc).__name__,
                                     )
 
                             result = await route_inbox_wait_while_claimed(
@@ -1023,14 +1075,15 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             if not bool(getattr(result, "success", False)) and (
                                 result_error != SESSION_CANCELLED_ERROR
                             ):
+                                result_failure_class = safe_runtime_failure_class(result_error)
                                 error_msg = (
-                                    "Spawner returned unsuccessful result: "
-                                    f"{result_error or 'unknown error'}"
+                                    "route runtime returned unsuccessful result "
+                                    f"({result_failure_class})"
                                 )
                                 logger.warning(
                                     "route_inbox: runtime failed for id=%s request_id=%s: %s",
-                                    _inbox_id,
-                                    _request_id,
+                                    _observability_inbox_id,
+                                    _observability_process_request_id,
                                     error_msg,
                                 )
                                 _process_span.set_status(trace.StatusCode.ERROR, error_msg)
@@ -1056,16 +1109,19 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         # write; the fenced claim will be reconciled by recovery.
                         logger.warning(
                             "route_inbox: relinquished processing lease id=%s request_id=%s",
-                            _inbox_id,
-                            _request_id,
+                            _observability_inbox_id,
+                            _observability_process_request_id,
                         )
                         return
                     except Exception as exc:
-                        error_msg = f"{type(exc).__name__}: {exc}"
-                        logger.exception(
-                            "route_inbox: background processing failed for id=%s request_id=%s",
-                            _inbox_id,
-                            _request_id,
+                        failure_class = type(exc).__name__
+                        error_msg = f"route runtime failed ({failure_class})"
+                        logger.warning(
+                            "route_inbox: background processing failed for id=%s request_id=%s "
+                            "failure_class=%s",
+                            _observability_inbox_id,
+                            _observability_process_request_id,
+                            failure_class,
                         )
                         _process_span.set_status(trace.StatusCode.ERROR, error_msg)
                         await route_inbox_mark_errored(
@@ -1091,6 +1147,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     parent_ctx,
                     accept_span_ctx,
                     _route_sender_entity_id,
+                    _route_internal_context,
                     _route_complexity,
                     dashboard_message_id,
                 ),

@@ -68,11 +68,21 @@ async def test_resolve_whatsapp_jid():
 
     # Phone fallback: direct miss → phone lookup (has-phone predicate)
     pool3 = _make_pool_with_rows(None, {"entity_id": _ENTITY_ID, "name": "Bob", "roles": []})
+    pool3.fetch = AsyncMock(
+        return_value=[
+            MagicMock(
+                __getitem__=lambda _self, key: {
+                    "entity_id": _ENTITY_ID,
+                    "name": "Bob",
+                    "roles": [],
+                }[key]
+            )
+        ]
+    )
     r3 = await resolve_contact_by_channel(pool3, "whatsapp_jid", "1234567890@s.whatsapp.net")
     assert r3 is not None and r3.name == "Bob"
-    assert pool3.fetchrow.call_count == 2
-    # Second call uses has-phone predicate (phone cross-reference fallback)
-    assert pool3.fetchrow.call_args_list[1][0][1] == "has-phone"
+    assert pool3.fetchrow.call_count == 1
+    pool3.fetch.assert_awaited_once()
 
     # Group JID: no phone fallback
     pool4 = _make_pool_with_rows(None)
@@ -85,14 +95,16 @@ async def test_resolve_whatsapp_jid():
     assert (
         await resolve_contact_by_channel(pool5, "whatsapp_jid", "9999999999@s.whatsapp.net") is None
     )
-    assert pool5.fetchrow.call_count == 2
+    assert pool5.fetchrow.call_count == 1
 
     # DB error on fallback → None
     pool6 = AsyncMock()
-    pool6.fetchrow = AsyncMock(side_effect=[None, Exception("connection refused")])
+    pool6.fetchrow = AsyncMock(return_value=None)
+    pool6.fetch = AsyncMock(side_effect=Exception("connection refused"))
     assert (
         await resolve_contact_by_channel(pool6, "whatsapp_jid", "5555555555@s.whatsapp.net") is None
     )
+    pool6.fetch.assert_awaited_once()
 
     # Non-whatsapp_jid channel: no has-phone fallback on miss. Telegram tries the
     # exact value then the canonical telegram:-prefixed form — both has-handle,
@@ -101,3 +113,29 @@ async def test_resolve_whatsapp_jid():
     assert await resolve_contact_by_channel(pool7, "telegram", "99999") is None
     assert pool7.fetchrow.call_count == 2  # "99999", then "telegram:99999"
     assert all(call[0][1] == "has-handle" for call in pool7.fetchrow.call_args_list)
+
+
+async def test_whatsapp_user_client_uses_jid_phone_fallback():
+    """Spec: REQ-switchboard-identity-001."""
+    pool = _make_pool_with_rows(None, {"entity_id": _ENTITY_ID, "name": "Bob", "roles": []})
+    pool.fetch = AsyncMock(
+        return_value=[
+            MagicMock(
+                __getitem__=lambda _self, key: {
+                    "entity_id": _ENTITY_ID,
+                    "name": "Bob",
+                    "roles": [],
+                }[key]
+            )
+        ]
+    )
+
+    result = await resolve_contact_by_channel(
+        pool, "whatsapp_user_client", "1234567890@s.whatsapp.net"
+    )
+
+    assert result is not None
+    assert result.entity_id == _ENTITY_ID
+    assert pool.fetchrow.call_args_list[0].args[1] == "has-handle"
+    assert pool.fetchrow.call_count == 1
+    pool.fetch.assert_awaited_once()

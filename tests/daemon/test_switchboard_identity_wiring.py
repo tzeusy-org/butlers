@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -87,3 +88,45 @@ async def test_wired_owner_callback_surfaces_failed_delivery_to_identity_helper(
     ):
         with pytest.raises(RuntimeError, match="messenger unavailable"):
             await notify_owner_fn("Review unknown sender")
+
+
+async def test_buffer_pipeline_failure_persists_content_blind_category() -> None:
+    from butlers.core.buffer import _MessageRef
+
+    sentinel = "222222222222222@lid PRIVATE MESSAGE SQL SELECT"
+    request_uuid = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
+    daemon = _switchboard_daemon()
+    pool = MagicMock()
+    pipeline = MagicMock()
+    pipeline.process = AsyncMock(side_effect=RuntimeError(sentinel))
+
+    def _capture_buffer(*, process_fn, **_kwargs):
+        return SimpleNamespace(_process_fn=process_fn)
+
+    with (
+        patch("butlers.modules.pipeline.MessagePipeline", return_value=pipeline),
+        patch("butlers.core.buffer.DurableBuffer", side_effect=_capture_buffer),
+        patch(
+            "butlers.core.ingestion_events.ingestion_event_reconcile_after_processing",
+            new=AsyncMock(),
+        ) as reconcile,
+        patch("butlers.switchboard_wiring.logger.warning") as wiring_warning,
+    ):
+        wire_pipelines(daemon, pool)
+        await daemon._buffer._process_fn(
+            _MessageRef(
+                request_id=request_uuid,
+                message_inbox_id="message-1",
+                message_text="private message",
+                source={"channel": "whatsapp_user_client", "endpoint_identity": "wa:test"},
+                event={"external_event_id": "event-1", "external_thread_id": "chat-1"},
+                sender={"identity": sentinel},
+                enqueued_at=datetime.now(UTC),
+                payload_type="conversation_history",
+            )
+        )
+
+    error_detail = reconcile.await_args.kwargs["error_detail"]
+    assert error_detail == "pipeline_exception:RuntimeError"
+    assert sentinel not in error_detail
+    assert request_uuid not in repr(wiring_warning.call_args_list)

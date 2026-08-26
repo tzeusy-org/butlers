@@ -1332,10 +1332,12 @@ async def assert_sender_channel_fact(
     # keyed identically.
     from butlers.identity import (
         _CHANNEL_TYPE_TO_PREDICATE,
+        canonical_identity_channel_type,
         channel_value_for_storage,
     )
 
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     if predicate is None:
         logger.debug(
             "assert_sender_channel_fact: no predicate mapping for channel_type=%r; "
@@ -1352,7 +1354,7 @@ async def assert_sender_channel_fact(
     # to the read fallback (resolve_contact_by_channel's _telegram_prefixed_value)
     # — keeps recognition, delivery, and ingress dedup on ONE stored format and
     # removes the need for the read-side prefix tolerance bridge (PR #2465).
-    stored_value = channel_value_for_storage(channel_type, channel_value)
+    stored_value = channel_value_for_storage(canonical_channel, channel_value)
 
     try:
         return await relationship_assert_fact(
@@ -1366,14 +1368,7 @@ async def assert_sender_channel_fact(
             conn=conn,
         )
     except Exception:  # noqa: BLE001 — never let a fact write break routing
-        logger.warning(
-            "assert_sender_channel_fact: failed to assert channel triple for entity %s "
-            "(channel_type=%r, value=%r) — sender dedup key not written",
-            entity_id,
-            channel_type,
-            channel_value,
-            exc_info=True,
-        )
+        logger.warning("identity.sender_channel_fact_assertion_failed")
         return None
 
 

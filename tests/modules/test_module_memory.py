@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,6 +55,33 @@ class TestModuleABC:
     def test_migration_revisions_memory_chain(self):
         mod = MemoryModule()
         assert mod.migration_revisions() == "memory"
+
+    def test_import_keeps_memory_tool_graph_deferred(self):
+        """Importing MemoryModule must not load embeddings or memory tools eagerly."""
+        repo_root = Path(__file__).resolve().parents[2]
+        probe = "\n".join(
+            (
+                "import json",
+                "import sys",
+                f"sys.path.insert(0, {str(repo_root / 'src')!r})",
+                "import butlers.modules.memory  # noqa: F401",
+                "loaded = sorted(name for name in sys.modules "
+                "if name.startswith('butlers.modules.memory.tools'))",
+                "print(json.dumps(loaded))",
+                "raise SystemExit(bool(loaded))",
+            )
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", probe],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(result.stdout) == []
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +717,108 @@ class TestRegisterTools:
             )
 
         entities.entity_find_by_canonical.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "transport_identifier",
+        [
+            "15551234567@s.whatsapp.net",
+            "15551234567:12@s.whatsapp.net",
+            "123456789@lid",
+        ],
+    )
+    async def test_memory_entity_create_rejects_fact_storage_whatsapp_transport_person(
+        self, transport_identifier
+    ):
+        """REQ-entity-identity-001: fact storage must not name people from transport IDs."""
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, _fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="person",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {
+            "error": "transport_identifier_not_entity_name",
+            "message": (
+                "Cannot create a person from a WhatsApp transport identifier. "
+                "Use the conceptual excerpt's sender_entity_id; if it is absent, skip the fact."
+            ),
+        }
+        assert transport_identifier not in json.dumps(result)
+        entities.entity_create.assert_not_awaited()
+
+    @pytest.mark.parametrize("canonical_name", ["alice@example.com", "Ava @ Work"])
+    async def test_memory_entity_create_allows_ordinary_at_sign_fact_storage_names(
+        self, canonical_name
+    ):
+        """REQ-entity-identity-001: the guard must not reject ordinary at-sign names."""
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=canonical_name,
+            entity_type="person",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {"entity_id": "created-entity"}
+        entities.entity_create.assert_awaited_once_with(
+            fake_db.pool,
+            canonical_name,
+            "person",
+            aliases=None,
+            metadata={"source": "fact_storage"},
+        )
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [None, {}, {"source": "unknown_sender"}, {"source": "caller_chosen"}],
+    )
+    async def test_memory_entity_create_rejects_transport_person_regardless_of_metadata(
+        self,
+        metadata,
+    ):
+        """REQ-entity-identity-001: caller provenance cannot bypass the runtime guard."""
+        transport_identifier = "15551234567@s.whatsapp.net"
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, _fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="person",
+            metadata=metadata,
+        )
+
+        assert result["error"] == "transport_identifier_not_entity_name"
+        assert transport_identifier not in json.dumps(result)
+        entities.entity_create.assert_not_awaited()
+
+    async def test_memory_entity_create_allows_fact_storage_transport_non_person(self):
+        """REQ-entity-identity-001: the transport-name guard applies only to people."""
+        transport_identifier = "15551234567@s.whatsapp.net"
+        entities = MagicMock()
+        entities.entity_create = AsyncMock(return_value={"entity_id": "created-entity"})
+        registered_tools, fake_db = await self._register_with_mock_entities(entities)
+
+        result = await registered_tools["memory_entity_create"](
+            canonical_name=transport_identifier,
+            entity_type="other",
+            metadata={"source": "fact_storage"},
+        )
+
+        assert result == {"entity_id": "created-entity"}
+        entities.entity_create.assert_awaited_once_with(
+            fake_db.pool,
+            transport_identifier,
+            "other",
+            aliases=None,
+            metadata={"source": "fact_storage"},
+        )
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""

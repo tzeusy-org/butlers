@@ -44,11 +44,14 @@ _REPO_ROOT = _HERE.parents[3]  # repo root (roster/relationship/tests -> repo)
 _ROUTER = _ROSTER_ROOT / "api" / "router.py"
 _ENTITIES_TOOL = _REPO_ROOT / "src" / "butlers" / "modules" / "memory" / "tools" / "entities.py"
 _CONTACTS_TOOL = _ROSTER_ROOT / "tools" / "contacts.py"
+_ENTITY_MERGE_SERVICE = _ROSTER_ROOT / "tools" / "entity_merge.py"
+_WHATSAPP_RECONCILIATION = _ROSTER_ROOT / "tools" / "whatsapp_reconciliation.py"
 # Shared, model-free merge-review evidence + audit-row helpers (bu-csvop). The
 # deterministic structural-diff logic and the audit-row INSERT moved here out of
 # the router so both the API and session-side MCP merge paths share one definition;
 # the no-LLM invariant must follow the code to its new home.
 _MERGE_REVIEW_TOOL = _ROSTER_ROOT / "tools" / "merge_review.py"
+_MODEL_FREE_MODULES = (_WHATSAPP_RECONCILIATION,)
 
 # Tokens that signal a model call: LLM-provider clients, the butler LLM-CLI
 # spawner, embedding services, or generated-prose completion calls. Case-
@@ -86,6 +89,11 @@ _ROUTER_MODEL_FREE_SYMBOLS = (
 # Tool-layer merge implementations the router delegates to. Each lives in its own
 # module; scope the scan to exactly the named symbol in that file.
 _TOOL_MERGE_SYMBOLS: tuple[tuple[Path, str], ...] = (
+    # Shared audited transaction used by the HTTP and reconciliation paths.
+    (_ENTITY_MERGE_SERVICE, "merge_entity_pair"),
+    (_WHATSAPP_RECONCILIATION, "build_whatsapp_reconciliation_plan"),
+    (_WHATSAPP_RECONCILIATION, "apply_whatsapp_reconciliation"),
+    (_WHATSAPP_RECONCILIATION, "validate_empty_shell_locked"),
     (_ENTITIES_TOOL, "entity_merge"),
     (_CONTACTS_TOOL, "contact_merge"),
     # Shared merge-review evidence + audit-row helpers — the deterministic
@@ -151,6 +159,9 @@ def _symbol_sources(path: Path, symbols: set[str]) -> dict[str, str]:
 def _all_model_free_sources() -> dict[str, str]:
     """Collect ``{qualified-symbol: code-only source}`` across every scanned file."""
     sources: dict[str, str] = {}
+    for path in _MODEL_FREE_MODULES:
+        rel = path.relative_to(_REPO_ROOT)
+        sources[f"{rel}::<module>"] = _strip_docstrings_and_comments(_read(path))
     for name, src in _symbol_sources(_ROUTER, set(_ROUTER_MODEL_FREE_SYMBOLS)).items():
         sources[f"router.py::{name}"] = src
     for path, symbol in _TOOL_MERGE_SYMBOLS:

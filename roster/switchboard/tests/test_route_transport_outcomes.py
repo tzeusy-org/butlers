@@ -148,6 +148,116 @@ class TestTransportVocabulary:
 
 
 class TestRouteTransportClassification:
+    async def test_internal_context_folds_into_route_envelope_without_target_keyword(self) -> None:
+        pool = _mock_pool()
+        routed_calls: list[dict[str, Any]] = []
+
+        async def call_fn(_url: str, _tool: str, args: dict[str, Any]) -> Any:
+            routed_calls.append(dict(args))
+            return {"ok": True}
+
+        internal_context = {
+            "conceptual_message": {
+                "excerpts": [{"sender_entity_id": "11111111-1111-1111-1111-111111111111"}]
+            }
+        }
+        with _resolves_target():
+            await route(
+                pool,
+                "finance",
+                "expense_log",
+                {"amount": 42},
+                internal_context=internal_context,
+                call_fn=call_fn,
+            )
+
+        assert routed_calls == [{"amount": 42}]
+
+        with _resolves_target():
+            await route(
+                pool,
+                "finance",
+                "route.execute",
+                {
+                    "schema_version": "route.v1",
+                    "input": {
+                        "prompt": "Store the conceptual fact.",
+                        "context": {"existing": "value"},
+                    },
+                },
+                internal_context=internal_context,
+                call_fn=call_fn,
+            )
+
+        forwarded = routed_calls[1]
+        assert "internal_context" not in forwarded
+        assert "__conceptual_message" not in forwarded
+        assert forwarded["input"]["context"] == {
+            "existing": "value",
+            **internal_context,
+        }
+
+    async def test_internal_context_preserves_existing_string_input_context(self) -> None:
+        pool = _mock_pool()
+        forwarded: dict[str, Any] = {}
+
+        async def call_fn(_url: str, _tool: str, args: dict[str, Any]) -> Any:
+            forwarded.update(args)
+            return {"ok": True}
+
+        internal_context = {"conceptual_message": {"excerpts": []}}
+        with _resolves_target():
+            await route(
+                pool,
+                "finance",
+                "route.execute",
+                {
+                    "schema_version": "route.v1",
+                    "input": {"prompt": "Store a fact.", "context": "existing context"},
+                },
+                internal_context=internal_context,
+                call_fn=call_fn,
+            )
+
+        assert forwarded["input"]["context"] == {
+            "input_context": "existing context",
+            **internal_context,
+        }
+
+    async def test_target_failure_is_content_blind(self, caplog: pytest.LogCaptureFixture) -> None:
+        pool = _mock_pool()
+        sentinel = "15551234567@s.whatsapp.net SQL SELECT secret_message"
+
+        async def call_fn(_url: str, _tool: str, _args: dict[str, Any]) -> Any:
+            raise RuntimeError(sentinel)
+
+        with _resolves_target(), caplog.at_level("DEBUG"):
+            result = await route(
+                pool,
+                "finance",
+                "route.execute",
+                {"input": {"prompt": "Store the fact."}},
+                internal_context={"conceptual_message": {"excerpts": []}},
+                call_fn=call_fn,
+            )
+
+        assert sentinel not in result["error"]
+        assert sentinel not in caplog.text
+        assert all(sentinel not in repr(call) for call in pool.method_calls)
+
+    async def test_unrelated_target_failure_preserves_existing_error_envelope(self) -> None:
+        pool = _mock_pool()
+
+        async def call_fn(_url: str, _tool: str, _args: dict[str, Any]) -> Any:
+            raise RuntimeError("ordinary caller detail")
+
+        with _resolves_target():
+            result = await route(pool, "finance", "expense_log", {}, call_fn=call_fn)
+
+        assert result["error"] == "RuntimeError: ordinary caller detail"
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] == "uncertain"
+
     async def test_success_reports_confirmed(self) -> None:
         pool = _mock_pool()
 

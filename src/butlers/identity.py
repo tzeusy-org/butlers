@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass
 from email.utils import parseaddr
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 
@@ -165,12 +165,46 @@ def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
     channel_value:
         The raw identifier as entered/observed.
     """
+    channel_type = canonical_identity_channel_type(channel_type)
     if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         return _telegram_prefixed_value(channel_value)
     return channel_value
 
 
 logger = logging.getLogger(__name__)
+
+
+class IdentityResolutionQueryError(RuntimeError):
+    """Content-blind strict failure for identity database queries."""
+
+    def __init__(self, failure_class: str) -> None:
+        super().__init__("Identity resolution query failed")
+        self.failure_class = failure_class
+
+
+async def _identity_fetchrow(executor: Any, query: str, *args: Any) -> Any:
+    """Run an identity query without retaining provider exception details."""
+    failure: IdentityResolutionQueryError | None = None
+    try:
+        return await executor.fetchrow(query, *args)
+    except Exception as exc:  # noqa: BLE001
+        failure = IdentityResolutionQueryError(type(exc).__name__)
+    if failure is not None:
+        raise failure
+    raise AssertionError("unreachable")
+
+
+async def _identity_fetch(executor: Any, query: str, *args: Any) -> list[Any]:
+    """Run a multi-row identity query without retaining provider exception details."""
+    failure: IdentityResolutionQueryError | None = None
+    try:
+        return await executor.fetch(query, *args)
+    except Exception as exc:  # noqa: BLE001
+        failure = IdentityResolutionQueryError(type(exc).__name__)
+    if failure is not None:
+        raise failure
+    raise AssertionError("unreachable")
+
 
 # ---------------------------------------------------------------------------
 # Channel-type → relationship.entity_facts predicate mapping (bead 7 cut-over)
@@ -199,6 +233,15 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
     "other": "has-handle",
     "whatsapp_jid": "has-handle",
 }
+
+_IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
+    "whatsapp_user_client": "whatsapp_jid",
+}
+
+
+def canonical_identity_channel_type(channel_type: str) -> str:
+    """Return the shared identity channel type for a transport channel."""
+    return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -300,12 +343,24 @@ class ResolvedContact:
         Sourced from ``public.entities.roles``.
     entity_id:
         UUID of the linked entity in public.entities, or ``None`` if not linked.
+    is_unidentified:
+        ``True`` when ``public.entities.metadata.unidentified`` explicitly marks
+        this as a transitory entity awaiting disambiguation.
     """
 
     contact_id: UUID | None
     name: str | None
     roles: list[str]
     entity_id: UUID | None
+    is_unidentified: bool = False
+
+
+def _row_is_unidentified(row: Any) -> bool:
+    """Read the explicit transitory marker from a resolver query row."""
+    try:
+        return row["is_unidentified"] is True
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 async def _resolve_entity_by_triple(
@@ -315,28 +370,41 @@ async def _resolve_entity_by_triple(
 ) -> asyncpg.Record | None:
     """Query ``relationship.entity_facts`` for an active triple and join entity info.
 
-    Returns a row with ``entity_id``, ``name`` (canonical_name), and ``roles``,
-    or ``None`` when not found or on DB error.
+    Returns a row with ``entity_id``, ``name`` (canonical_name), ``roles``, and
+    the explicit ``is_unidentified`` metadata marker only when exactly one
+    distinct live entity matches. Query failures propagate to the caller so it
+    can preserve the appropriate fail-open or strict behavior.
     """
-    try:
-        return await pool.fetchrow(
-            """
-            SELECT ef.subject                     AS entity_id,
-                   e.canonical_name               AS name,
-                   COALESCE(e.roles, '{}')        AS roles
-            FROM   relationship.entity_facts ef
-            JOIN   public.entities e ON e.id = ef.subject
-            WHERE  ef.predicate    = $1
-              AND  ef.object       = $2
-              AND  ef.object_kind  = 'literal'
-              AND  ef.validity     = 'active'
-            LIMIT  1
-            """,
-            predicate,
-            object_value,
-        )
-    except Exception:  # noqa: BLE001
-        return None
+    return await _identity_fetchrow(
+        pool,
+        """
+            WITH candidates AS MATERIALIZED (
+                SELECT DISTINCT ON (ef.subject)
+                       ef.subject                     AS entity_id,
+                       e.canonical_name               AS name,
+                       COALESCE(e.roles, '{}')        AS roles,
+                       COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                        AS is_unidentified
+                FROM   relationship.entity_facts ef
+                JOIN   public.entities e ON e.id = ef.subject
+                WHERE  ef.predicate    = $1
+                  AND  ef.object       = $2
+                  AND  ef.object_kind  = 'literal'
+                  AND  ef.validity     = 'active'
+                  AND  e.metadata ->> 'merged_into' IS NULL
+                  AND  e.metadata ->> 'deleted_at' IS NULL
+                ORDER BY ef.subject
+            )
+            SELECT ef.entity_id,
+                   ef.name,
+                   ef.roles,
+                   ef.is_unidentified
+            FROM   candidates ef
+            WHERE  (SELECT count(*) FROM candidates) = 1
+        """,
+        predicate,
+        object_value,
+    )
 
 
 async def _resolve_entity_by_phone_digits(
@@ -350,13 +418,14 @@ async def _resolve_entity_by_phone_digits(
     (``"91153887"`` for ``"6591153887"``), hence the suffix match — bounded by
     :data:`_PHONE_SUFFIX_MIN_DIGITS` so short fragments cannot alias two people.
 
-    Returns ``None`` when not found, ambiguous, or on DB error.
+    Returns ``None`` when not found or ambiguous. Query failures propagate to
+    the caller so single and bulk resolution can apply their own error policy.
     """
     if len(digits) < _PHONE_SUFFIX_MIN_DIGITS:
         return None
-    try:
-        rows = await pool.fetch(
-            """
+    rows = await _identity_fetch(
+        pool,
+        """
             WITH stored AS (
                 SELECT ef.subject                              AS entity_id,
                        regexp_replace(ef.object, '\\D', '', 'g') AS digits
@@ -367,23 +436,25 @@ async def _resolve_entity_by_phone_digits(
             )
             SELECT DISTINCT stored.entity_id         AS entity_id,
                    e.canonical_name                  AS name,
-                   COALESCE(e.roles, '{}')           AS roles
+                   COALESCE(e.roles, '{}')           AS roles,
+                   COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                       AS is_unidentified
             FROM   stored
             JOIN   public.entities e ON e.id = stored.entity_id
             WHERE  length(stored.digits) >= $2
+              AND  e.metadata ->> 'merged_into' IS NULL
+              AND  e.metadata ->> 'deleted_at' IS NULL
               AND  abs(length(stored.digits) - length($1)) <= $3
               AND  (
                      stored.digits LIKE '%' || $1
                   OR $1 LIKE '%' || stored.digits
                    )
             LIMIT  2
-            """,
-            digits,
-            _PHONE_SUFFIX_MIN_DIGITS,
-            _PHONE_SUFFIX_MAX_DELTA,
-        )
-    except Exception:  # noqa: BLE001
-        return None
+        """,
+        digits,
+        _PHONE_SUFFIX_MIN_DIGITS,
+        _PHONE_SUFFIX_MAX_DELTA,
+    )
     # An ambiguous match is worse than none: silently attributing an
     # interaction to the wrong person corrupts the Dunbar ranking.
     if len(rows) != 1:
@@ -395,6 +466,8 @@ async def resolve_contact_by_channel(
     pool: asyncpg.Pool,
     channel_type: str,
     channel_value: str,
+    *,
+    raise_on_error: bool = False,
 ) -> ResolvedContact | None:
     """Resolve an entity from a channel identifier via ``relationship.entity_facts``.
 
@@ -415,6 +488,9 @@ async def resolve_contact_by_channel(
         The channel type (e.g., ``"telegram"``, ``"email"``).
     channel_value:
         The channel value (e.g., a Telegram chat ID string or an email address).
+    raise_on_error:
+        Re-raise database query failures. The default preserves the historical
+        single-message fail-open behavior; strict reservation callers opt in.
 
     Returns
     -------
@@ -430,21 +506,26 @@ async def resolve_contact_by_channel(
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     row: asyncpg.Record | None = None
 
     if predicate is not None:
         try:
             row = await _resolve_entity_by_triple(pool, predicate, channel_value)
-        except Exception:  # noqa: BLE001
+        except IdentityResolutionQueryError as exc:
             logger.debug(
-                "resolve_contact_by_channel: DB query failed "
-                "(table may not exist yet); returning None",
-                exc_info=True,
+                "identity.contact_resolution_query_failed",
+                extra={
+                    "channel_type": canonical_channel,
+                    "failure_class": exc.failure_class,
+                },
             )
+            if raise_on_error:
+                raise
             return None
 
-    if row is None and channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if row is None and canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         # Telegram canonical-prefix fallback: handles are stored as telegram:<bare>
         # (rel_019).  Try the prefixed form so a numeric chat id from
         # telegram_send_message or an inbound telegram_bot sender resolves to its
@@ -452,14 +533,19 @@ async def resolve_contact_by_channel(
         telegram_value = _telegram_prefixed_value(channel_value)
         try:
             row = await _resolve_entity_by_triple(pool, "has-handle", telegram_value)
-        except Exception:  # noqa: BLE001
+        except IdentityResolutionQueryError as exc:
             logger.debug(
-                "resolve_contact_by_channel: telegram prefix fallback query failed",
-                exc_info=True,
+                "identity.contact_resolution_telegram_prefix_failed",
+                extra={
+                    "channel_type": canonical_channel,
+                    "failure_class": exc.failure_class,
+                },
             )
+            if raise_on_error:
+                raise
             return None
 
-    if row is None and channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if row is None and canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         # Telegram username normalization fallback (bu-c4f7f).
         # telegram_send_message accepts @Username (user-facing form); the backfill
         # stores the bare username without @ (canonical form). Telegram usernames
@@ -470,13 +556,16 @@ async def resolve_contact_by_channel(
         for candidate in _telegram_username_candidates(channel_value)[1:]:
             try:
                 row = await _resolve_entity_by_triple(pool, "has-handle", candidate)
-            except Exception:  # noqa: BLE001
+            except IdentityResolutionQueryError as exc:
                 logger.debug(
-                    "resolve_contact_by_channel: telegram username variant query failed "
-                    "(candidate=%r); returning None",
-                    candidate,
-                    exc_info=True,
+                    "identity.contact_resolution_telegram_variant_failed",
+                    extra={
+                        "channel_type": canonical_channel,
+                        "failure_class": exc.failure_class,
+                    },
                 )
+                if raise_on_error:
+                    raise
                 return None
             if row is not None:
                 logger.debug(
@@ -491,21 +580,29 @@ async def resolve_contact_by_channel(
         # Extracts the E.164 phone prefix from "<number>@s.whatsapp.net" JIDs and
         # queries has-phone to link against entities from other providers
         # (e.g. Google Contacts) that share the same number.
-        if channel_type == "whatsapp_jid":
+        if canonical_channel == "whatsapp_jid":
             phone = _extract_whatsapp_jid_phone(channel_value)
             if phone is not None:
                 try:
-                    row = await _resolve_entity_by_triple(pool, "has-phone", phone)
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "resolve_contact_by_channel: phone fallback query failed; returning None",
-                        exc_info=True,
+                    row = (
+                        await _resolve_entity_by_phone_digits(pool, phone)
+                        if len(phone) >= _PHONE_SUFFIX_MIN_DIGITS
+                        else await _resolve_entity_by_triple(pool, "has-phone", phone)
                     )
+                except IdentityResolutionQueryError as exc:
+                    logger.debug(
+                        "identity.contact_resolution_phone_fallback_failed",
+                        extra={
+                            "channel_type": canonical_channel,
+                            "failure_class": exc.failure_class,
+                        },
+                    )
+                    if raise_on_error:
+                        raise
                     return None
-                if row is None:
-                    # Exact equality misses the common stored formats
-                    # ("+65 9815 0802"); retry on digits alone.
-                    row = await _resolve_entity_by_phone_digits(pool, phone)
+                # The normalized scan includes exact stored objects and
+                # formatted variants, so normal-length numbers need no
+                # redundant exact round trip.
         if row is None:
             return None
 
@@ -527,6 +624,7 @@ async def resolve_contact_by_channel(
         name=row["name"] or None,
         roles=roles,
         entity_id=entity_id,
+        is_unidentified=_row_is_unidentified(row),
     )
 
 
@@ -539,26 +637,27 @@ def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str
     priority-ordered list so :func:`resolve_contacts_by_channel_bulk` can
     batch every candidate for a whole page into a single query.
     """
+    canonical_channel = canonical_identity_channel_type(channel_type)
     candidates: list[tuple[str, str]] = []
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     if predicate is not None:
         candidates.append((predicate, channel_value))
 
-    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         candidates.append(("has-handle", _telegram_prefixed_value(channel_value)))
 
-    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         # Skip index 0 — it's the exact value already covered by the primary
         # predicate candidate above.
         for variant in _telegram_username_candidates(channel_value)[1:]:
             candidates.append(("has-handle", variant))
 
-    if channel_type == "whatsapp_jid":
+    if canonical_channel == "whatsapp_jid":
         phone = _extract_whatsapp_jid_phone(channel_value)
         if phone is not None:
-            # The regex already yields bare digits, so this doubles as the
-            # digits candidate; the resolver widens it to a format-insensitive
-            # comparison against however has-phone happens to be stored.
+            # Preserve exact lookup for short values below the bounded suffix
+            # threshold. Normal-length numbers use the digits candidate as the
+            # single ambiguity authority across exact objects and variants.
             candidates.append(("has-phone", phone))
             candidates.append((_PHONE_DIGITS_PREDICATE, phone))
 
@@ -568,6 +667,8 @@ def _channel_candidates(channel_type: str, channel_value: str) -> list[tuple[str
 async def resolve_contacts_by_channel_bulk(
     pool: asyncpg.Pool,
     channels: list[tuple[str, str]],
+    *,
+    raise_on_error: bool = False,
 ) -> dict[tuple[str, str], ResolvedContact | None]:
     """Batch variant of :func:`resolve_contact_by_channel` for list views.
 
@@ -584,11 +685,14 @@ async def resolve_contacts_by_channel_bulk(
             :func:`resolve_contact_by_channel` is called with).
         channels: List of ``(channel_type, channel_value)`` pairs to resolve.
             Duplicates are fine — the underlying query is deduplicated.
+        raise_on_error: Re-raise database query failures instead of returning
+            all inputs as unresolved. Batch identity reservation uses this
+            strict mode so an outage cannot mint false unknown entities.
 
     Returns:
         A dict mapping every input pair to its ``ResolvedContact`` (or
         ``None`` when unresolved). Fail-open: on DB error, all pairs map to
-        ``None`` rather than raising.
+        ``None`` rather than raising unless ``raise_on_error`` is true.
     """
     result: dict[tuple[str, str], ResolvedContact | None] = dict.fromkeys(channels)
     if not channels:
@@ -618,39 +722,54 @@ async def resolve_contacts_by_channel_bulk(
         if exact_pairs:
             predicates = [p for p, _ in exact_pairs]
             objects = [o for _, o in exact_pairs]
-            rows = await pool.fetch(
+            rows = await _identity_fetch(
+                pool,
                 """
                 SELECT ef.predicate            AS predicate,
                        ef.object               AS object,
                        ef.subject              AS entity_id,
                        e.canonical_name        AS name,
-                       COALESCE(e.roles, '{}') AS roles
+                       COALESCE(e.roles, '{}') AS roles,
+                       COALESCE((e.metadata ->> 'unidentified') = 'true', false)
+                                                AS is_unidentified
                 FROM   relationship.entity_facts ef
                 JOIN   public.entities e ON e.id = ef.subject
                 JOIN   unnest($1::text[], $2::text[]) AS wanted(predicate, object)
                   ON   ef.predicate = wanted.predicate AND ef.object = wanted.object
                 WHERE  ef.object_kind = 'literal'
                   AND  ef.validity    = 'active'
+                  AND  e.metadata ->> 'merged_into' IS NULL
+                  AND  e.metadata ->> 'deleted_at' IS NULL
                 """,
                 predicates,
                 objects,
             )
-    except Exception:  # noqa: BLE001
+    except IdentityResolutionQueryError as exc:
         logger.debug(
-            "resolve_contacts_by_channel_bulk: DB query failed "
-            "(table may not exist yet); returning all-unresolved",
-            exc_info=True,
+            "identity.contacts_bulk_resolution_query_failed",
+            extra={
+                "failure_class": exc.failure_class,
+            },
         )
+        if raise_on_error:
+            raise
         return result
 
-    match_by_candidate: dict[tuple[str, str], asyncpg.Record] = {}
+    rows_by_candidate: dict[tuple[str, str], dict[Any, asyncpg.Record]] = {}
     for row in rows:
-        match_by_candidate.setdefault((row["predicate"], row["object"]), row)
+        candidate = (row["predicate"], row["object"])
+        rows_by_candidate.setdefault(candidate, {})[row["entity_id"]] = row
+    match_by_candidate = {
+        candidate: next(iter(candidate_rows.values()))
+        for candidate, candidate_rows in rows_by_candidate.items()
+        if len(candidate_rows) == 1
+    }
 
     # Digits-normalised phone matches, one query per distinct number.  The
     # comparison is an unindexable regexp_replace scan, so it runs only for
-    # numbers no exact candidate already covered — a pair that matched on
-    # has-handle or an exactly-stored has-phone never reaches it.
+    # numbers no authoritative non-phone identity candidate already covered.
+    # An exact has-phone row cannot suppress this scan: a differently formatted
+    # row may still make the normalized candidate set ambiguous.
     unresolved_digits = [
         digits
         for digits in digit_values
@@ -659,15 +778,46 @@ async def resolve_contacts_by_channel_bulk(
             for pair_candidates in candidates_by_pair.values()
             if (_PHONE_DIGITS_PREDICATE, digits) in pair_candidates
             for candidate in pair_candidates
+            if candidate[0] not in {"has-phone", _PHONE_DIGITS_PREDICATE}
         )
     ]
     for digits in unresolved_digits:
-        digit_row = await _resolve_entity_by_phone_digits(pool, digits)
+        try:
+            digit_row = await _resolve_entity_by_phone_digits(pool, digits)
+        except IdentityResolutionQueryError as exc:
+            logger.debug(
+                "identity.contacts_bulk_resolution_query_failed",
+                extra={
+                    "channel_type": "whatsapp_jid",
+                    "failure_class": exc.failure_class,
+                },
+            )
+            if raise_on_error:
+                raise
+            continue
         if digit_row is not None:
             match_by_candidate[(_PHONE_DIGITS_PREDICATE, digits)] = digit_row
 
     for pair, pair_candidates in candidates_by_pair.items():
-        for candidate in pair_candidates:
+        canonical_channel = canonical_identity_channel_type(pair[0])
+        phone = (
+            _extract_whatsapp_jid_phone(pair[1]) if canonical_channel == "whatsapp_jid" else None
+        )
+        resolution_candidates = pair_candidates
+        if phone is not None:
+            direct_candidates = [
+                candidate
+                for candidate in pair_candidates
+                if candidate[0] not in {"has-phone", _PHONE_DIGITS_PREDICATE}
+            ]
+            phone_candidate = (
+                (_PHONE_DIGITS_PREDICATE, phone)
+                if len(phone) >= _PHONE_SUFFIX_MIN_DIGITS
+                else ("has-phone", phone)
+            )
+            resolution_candidates = [*direct_candidates, phone_candidate]
+
+        for candidate in resolution_candidates:
             row = match_by_candidate.get(candidate)
             if row is None:
                 continue
@@ -684,6 +834,7 @@ async def resolve_contacts_by_channel_bulk(
                 name=row["name"] or None,
                 roles=roles,
                 entity_id=entity_id,
+                is_unidentified=_row_is_unidentified(row),
             )
             break
 
@@ -714,18 +865,19 @@ async def resolve_owner_channel_via_definer(
     owner's registered handles for *channel_type*, else ``None`` (not an owner
     channel, unknown channel type, or the function is unavailable).
     """
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
     if predicate is None:
         return None
 
     # Candidate object values: verbatim, plus telegram canonical-prefix and
     # username variants — the same normalisation resolve_contact_by_channel applies.
     candidates: list[str] = [channel_value]
-    if channel_type in _TELEGRAM_USERNAME_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
         for variant in _telegram_username_candidates(channel_value):
             if variant not in candidates:
                 candidates.append(variant)
-    if channel_type in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
         for variant in list(candidates):
             prefixed = _telegram_prefixed_value(variant)
             if prefixed not in candidates:
@@ -738,11 +890,7 @@ async def resolve_owner_channel_via_definer(
             candidates,
         )
     except Exception:  # noqa: BLE001
-        logger.debug(
-            "resolve_owner_channel_via_definer: lookup failed "
-            "(function may not exist yet); returning None",
-            exc_info=True,
-        )
+        logger.debug("identity.owner_channel_resolution_failed")
         return None
 
     if row is None:
@@ -772,7 +920,10 @@ async def create_temp_contact(
     channel_value: str,
     display_name: str | None = None,
     *,
+    identity_channel_type: str | None = None,
+    pre_resolved_miss: bool = False,
     reservation_state_key: str | None = None,
+    raise_on_error: bool = False,
 ) -> ResolvedContact | None:
     """Create a temporary entity for an unknown sender.
 
@@ -800,8 +951,9 @@ async def create_temp_contact(
     channel_value:
         Channel value (the raw sender identifier).
     display_name:
-        Optional human-readable name for the contact.  Defaults to a
-        synthesized ``"Unknown ({channel_type} {channel_value})"`` label.
+        Optional human-readable name for the contact. Defaults to the existing
+        channel/value label for ordinary transports and an identifier-blind
+        transport label for WhatsApp.
     reservation_state_key:
         Optional caller-owned ``state`` key used to atomically reserve the
         temporary entity for one sender.  The Switchboard passes this only for
@@ -810,36 +962,46 @@ async def create_temp_contact(
         its normal reverse-lookup key.  The reservation and entity insert share
         one transaction; this helper still never writes
         ``relationship.entity_facts``.
+    identity_channel_type:
+        Optional canonical lookup type. ``channel_type`` remains the persisted
+        source transport in entity metadata.
+    pre_resolved_miss:
+        Skip the caller-owned pre-transaction lookup. The transactional race
+        recheck remains mandatory.
+    raise_on_error:
+        Re-raise reservation/query failures for strict batch callers. The
+        default keeps single-message ingress fail-open.
 
     Returns
     -------
     ResolvedContact | None
         The newly created (or pre-existing) contact, or ``None`` on error.
     """
-    name = display_name or f"Unknown ({channel_type} {channel_value})"
+    lookup_channel_type = identity_channel_type or canonical_identity_channel_type(channel_type)
+    name = display_name or (
+        f"Unknown WhatsApp sender {uuid4()}"
+        if lookup_channel_type == "whatsapp_jid"
+        else f"Unknown ({channel_type} {channel_value})"
+    )
+    strict_failure: IdentityResolutionQueryError | None = None
 
     try:
         # Re-check via the triple store to avoid double-creation: if the channel
         # identifier already resolves to an entity, return that instead of
         # minting a duplicate.  This mirrors resolve_contact_by_channel().
-        existing_resolved = await resolve_contact_by_channel(pool, channel_type, channel_value)
-        if existing_resolved is not None:
-            return existing_resolved
+        if not pre_resolved_miss:
+            existing_resolved = await resolve_contact_by_channel(
+                pool,
+                lookup_channel_type,
+                channel_value,
+                raise_on_error=True,
+            )
+            if existing_resolved is not None:
+                return existing_resolved
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Re-check under the transaction (on the acquired connection) to
-                # close the duplicate-creation race: two concurrent callers can
-                # both pass the pre-transaction lookup above and each mint a
-                # duplicate unidentified entity/contact for the same channel.
-                # Re-resolving here on ``conn`` collapses that window — if the
-                # channel now resolves, return it instead of creating a dup.
-                existing_in_txn = await resolve_contact_by_channel(
-                    conn, channel_type, channel_value
-                )
-                if existing_in_txn is not None:
-                    return existing_in_txn
-
+                raw_reserved_entity_id: Any = None
                 if reservation_state_key is not None:
                     # The relationship-owned post-resolution hook establishes
                     # the normal channel-fact dedup key only after this helper
@@ -874,66 +1036,86 @@ async def create_temp_contact(
                         if isinstance(reservation_value, dict)
                         else None
                     )
-                    if raw_reserved_entity_id is not None:
-                        try:
-                            reserved_entity_id = UUID(str(raw_reserved_entity_id))
-                        except (TypeError, ValueError, AttributeError):
-                            logger.warning(
-                                "create_temp_contact: invalid temporary-entity reservation for %s",
-                                reservation_state_key,
-                            )
-                            reserved_entity_id = None
 
-                        if reserved_entity_id is not None:
-                            reserved_entity = await conn.fetchrow(
-                                """
-                                SELECT canonical_name, roles
-                                FROM public.entities
-                                WHERE id = $1
-                                """,
-                                reserved_entity_id,
-                            )
-                            if reserved_entity is not None:
-                                raw_roles = reserved_entity["roles"]
-                                return ResolvedContact(
-                                    contact_id=None,
-                                    name=reserved_entity["canonical_name"] or None,
-                                    roles=(
-                                        [str(role) for role in raw_roles]
-                                        if isinstance(raw_roles, (list, tuple))
-                                        else []
-                                    ),
-                                    entity_id=reserved_entity_id,
-                                )
+                # Re-check once after acquiring the transaction and, when
+                # present, the sender reservation row lock. A fact can land
+                # between the caller's miss and this lock; this strict query is
+                # the only recheck with a concrete race-closing purpose.
+                existing_in_txn = await resolve_contact_by_channel(
+                    conn,
+                    lookup_channel_type,
+                    channel_value,
+                    raise_on_error=True,
+                )
+                if existing_in_txn is not None:
+                    return existing_in_txn
 
-                            logger.warning(
-                                "create_temp_contact: temporary-entity reservation %s references "
-                                "missing entity %s; replacing it",
-                                reservation_state_key,
-                                reserved_entity_id,
-                            )
+                # Only reuse a populated reservation after the post-lock
+                # canonical lookup misses. This prevents stale transitory state
+                # from winning over a confirmed fact that landed during the
+                # reservation wait.
+                if raw_reserved_entity_id is not None:
+                    try:
+                        reserved_entity_id = UUID(str(raw_reserved_entity_id))
+                    except (TypeError, ValueError, AttributeError):
+                        logger.warning(
+                            "identity.temp_entity_reservation_invalid",
+                            extra={
+                                "channel_type": channel_type,
+                                "failure_class": "invalid_entity_id",
+                            },
+                        )
+                        reserved_entity_id = None
 
-                        # A manually deleted/corrupt reservation must not
-                        # strand this sender. The row lock serializes repair
-                        # with another first-message worker before a replacement
-                        # entity is minted below.
-                        await conn.execute(
+                    if reserved_entity_id is not None:
+                        reserved_entity = await conn.fetchrow(
                             """
-                            UPDATE state
-                            SET value = '{}'::jsonb, updated_at = now(), version = version + 1
-                            WHERE key = $1
+                            SELECT canonical_name,
+                                   roles,
+                                   COALESCE(
+                                       (metadata ->> 'unidentified') = 'true',
+                                       false
+                                   ) AS is_unidentified
+                            FROM public.entities
+                            WHERE id = $1
+                              AND metadata ->> 'merged_into' IS NULL
+                              AND metadata ->> 'deleted_at' IS NULL
                             """,
-                            reservation_state_key,
+                            reserved_entity_id,
+                        )
+                        if reserved_entity is not None:
+                            raw_roles = reserved_entity["roles"]
+                            return ResolvedContact(
+                                contact_id=None,
+                                name=reserved_entity["canonical_name"] or None,
+                                roles=(
+                                    [str(role) for role in raw_roles]
+                                    if isinstance(raw_roles, (list, tuple))
+                                    else []
+                                ),
+                                entity_id=reserved_entity_id,
+                                is_unidentified=_row_is_unidentified(reserved_entity),
+                            )
+
+                        logger.warning(
+                            "identity.temp_entity_reservation_missing_entity",
+                            extra={
+                                "channel_type": channel_type,
+                                "failure_class": "missing_entity",
+                            },
                         )
 
-                    # A fact may have landed while this worker waited on a
-                    # sender reservation. Prefer that canonical resolution over
-                    # minting another transitory entity.
-                    existing_after_reservation = await resolve_contact_by_channel(
-                        conn, channel_type, channel_value
+                    # A deleted, tombstoned, or corrupt reservation must not
+                    # strand this sender. The row lock serializes repair before
+                    # a replacement entity is minted below.
+                    await conn.execute(
+                        """
+                        UPDATE state
+                        SET value = '{}'::jsonb, updated_at = now(), version = version + 1
+                        WHERE key = $1
+                        """,
+                        reservation_state_key,
                     )
-                    if existing_after_reservation is not None:
-                        return existing_after_reservation
 
                 # Create an unidentified entity so facts can be anchored.
                 entity_metadata: dict[str, Any] = {
@@ -982,16 +1164,32 @@ async def create_temp_contact(
             name=name,
             roles=[],
             entity_id=entity_id,
+            is_unidentified=True,
         )
 
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "create_temp_contact: failed to create temporary contact for %s/%s",
-            channel_type,
-            channel_value,
-            exc_info=True,
+    except Exception as exc:  # noqa: BLE001
+        failure_class = (
+            exc.failure_class
+            if isinstance(exc, IdentityResolutionQueryError)
+            else type(exc).__name__
         )
-        return None
+        logger.warning(
+            "identity.temp_entity_creation_failed",
+            extra={
+                "channel_type": channel_type,
+                "failure_class": failure_class,
+            },
+        )
+        if raise_on_error:
+            strict_failure = (
+                exc
+                if isinstance(exc, IdentityResolutionQueryError)
+                else IdentityResolutionQueryError(failure_class)
+            )
+
+    if strict_failure is not None:
+        raise strict_failure
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1193,6 +1391,7 @@ def build_identity_preamble(
 __all__ = [
     "ResolvedContact",
     "build_identity_preamble",
+    "canonical_identity_channel_type",
     "create_temp_contact",
     "normalize_email_sender",
     "parse_email_sender",

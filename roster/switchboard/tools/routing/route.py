@@ -14,6 +14,7 @@ from opentelemetry import trace
 
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
+from butlers.core.route_observability import opaque_route_ref
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
 from butlers.tools.switchboard.registry.registry import (
@@ -38,6 +39,32 @@ from butlers.tools.switchboard.routing.transport import (
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _fold_internal_route_context(
+    route_args: dict[str, Any],
+    internal_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge Switchboard-only context into the standard route envelope."""
+    copied_args = dict(route_args)
+    if not internal_context:
+        return copied_args
+    input_payload = copied_args.get("input")
+    if not isinstance(input_payload, dict):
+        return copied_args
+
+    merged_input = dict(input_payload)
+    existing_context = merged_input.get("context")
+    if isinstance(existing_context, dict):
+        merged_context = dict(existing_context)
+    elif isinstance(existing_context, str):
+        merged_context = {"input_context": existing_context}
+    else:
+        merged_context = {}
+    merged_context.update(internal_context)
+    merged_input["context"] = merged_context
+    copied_args["input"] = merged_input
+    return copied_args
 
 
 def _router_lock(endpoint_url: str) -> asyncio.Lock:
@@ -235,6 +262,7 @@ async def route(
     route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
     required_capability: str | None = None,
     *,
+    internal_context: dict[str, Any] | None = None,
     call_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Route a tool call to a target butler via its MCP endpoint.
@@ -266,11 +294,19 @@ async def route(
         Optional callable for testing; signature
         ``async (endpoint_url, tool_name, args) -> Any``.
         When *None*, the default MCP client is used.
+    internal_context:
+        Switchboard-owned structured context. For ``route.execute`` it is
+        folded into the standard ``input.context`` envelope field; it is never
+        forwarded as a target MCP keyword or to an arbitrary target tool.
     """
     tracer = trace.get_tracer("butlers")
     telemetry = get_switchboard_telemetry()
     route_args, route_context = _extract_route_context(args)
+    content_blind_route = bool(internal_context)
+    if tool_name == "route.execute":
+        route_args = _fold_internal_route_context(route_args, internal_context)
     request_id = str(route_context.get("request_id") or "unknown")
+    observability_request_id = opaque_route_ref(request_id) if content_blind_route else request_id
     fanout_mode = str(route_context.get("fanout_mode") or "ordered")
     segment_id = str(route_context.get("segment_id") or "segment-unknown")
     attempt_raw = route_context.get("attempt", 1)
@@ -296,7 +332,7 @@ async def route(
         with tracer.start_as_current_span("butlers.switchboard.route.dispatch") as span:
             span.set_attribute("target", target_butler)
             span.set_attribute("tool_name", tool_name)
-            span.set_attribute("request.id", request_id)
+            span.set_attribute("request.id", observability_request_id)
             span.set_attribute("routing.destination_butler", target_butler)
             span.set_attribute("routing.segment_id", segment_id)
             span.set_attribute("routing.fanout_mode", fanout_mode)
@@ -393,7 +429,6 @@ async def route(
             trace_context = inject_trace_context()
             if trace_context:
                 route_args = {**route_args, "trace_context": trace_context}
-
             # Only the transport call itself belongs in this try. Everything
             # after it is bookkeeping about a send that already happened, and
             # REQ-core-notify-027 makes external transport truth authoritative:
@@ -409,12 +444,16 @@ async def route(
                 transport = classify_transport_exception(exc)
                 retryable = is_retryable_route_exception(exc)
                 error_class = normalize_error_class(exc)
-                span.set_status(trace.StatusCode.ERROR, str(exc))
+                error_msg = (
+                    f"{error_class}: target tool call failed"
+                    if content_blind_route
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                span.set_status(trace.StatusCode.ERROR, error_msg)
                 span.set_attribute("routing.outcome", "failure")
                 span.set_attribute("error.class", error_class)
-                legacy_span.set_status(trace.StatusCode.ERROR, str(exc))
+                legacy_span.set_status(trace.StatusCode.ERROR, error_msg)
                 duration_ms = int((time.monotonic() - t0) * 1000)
-                error_msg = f"{type(exc).__name__}: {exc}"
                 telemetry.subroute_latency_ms.record(
                     duration_ms,
                     {

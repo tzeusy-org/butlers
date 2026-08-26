@@ -17,9 +17,12 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from opentelemetry import metrics
@@ -38,10 +41,13 @@ from butlers.modules.pipeline import (
     _build_routing_prompt,
     _extract_bug_report_calls,
     _extract_routed_butlers,
+    _format_decomp_conversation_history,
     _infer_fallback_target_from_cc_output,
+    _normalize_decomp_excerpts,
     _normalize_decomp_signal,
     _normalize_decomp_signals,
 )
+from butlers.tools.switchboard.identity import inject as identity_inject
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +68,778 @@ _MOCK_BUTLERS = [
     {"name": "health", "description": "Health tracking"},
     {"name": "finance", "description": "Finance"},
 ]
+
+
+def _decomp_messages(text: str = "hello") -> list[dict[str, Any]]:
+    return [
+        {
+            "message_id": "m1",
+            "sender_identity": "alice-telegram-id",
+            "sender": "Alice",
+            "text": text,
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+
+
+async def test_decomposition_loader_preserves_structured_speaker_messages():
+    """REQ-switchboard-identity-002: identity work receives structured messages."""
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "hello",
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {
+        "raw_payload": {"payload": {"raw": {"conversation_history": messages}}}
+    }
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=conn)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = acquired
+    pipeline = MessagePipeline(pool, AsyncMock(), source_butler="switchboard")
+
+    loaded = await pipeline._load_decomp_conversation_messages("inbox-1")
+
+    assert loaded == messages
+    assert loaded is not messages
+
+
+async def test_decomposition_loader_failure_log_is_content_blind(
+    caplog: pytest.LogCaptureFixture,
+):
+    sentinel = "222222222222222@lid PRIVATE MESSAGE SQL SELECT"
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = RuntimeError(sentinel)
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=conn)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = acquired
+    pipeline = MessagePipeline(pool, AsyncMock(), source_butler="switchboard")
+
+    with caplog.at_level(logging.DEBUG):
+        loaded = await pipeline._load_decomp_conversation_messages("inbox-1")
+
+    assert loaded is None
+    assert "decomposition_history_load_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    failure_record = next(
+        record for record in caplog.records if record.message == "decomposition_history_load_failed"
+    )
+    assert failure_record.failure_class == "RuntimeError"
+
+
+async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels():
+    """REQ-switchboard-identity-002: batch speakers reuse authoritative resolutions."""
+    known_entity = uuid4()
+    unknown_entity = uuid4()
+    known_result = MagicMock(
+        display_name="Chloe Wong",
+        entity_id=known_entity,
+        is_unknown=False,
+        channel_value=None,
+    )
+    unknown_result = MagicMock(
+        display_name=None,
+        entity_id=unknown_entity,
+        is_unknown=True,
+        channel_value="222@lid",
+    )
+    resolver = AsyncMock(
+        return_value={
+            "111@s.whatsapp.net": known_result,
+            "222@lid": unknown_result,
+        }
+    )
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "known",
+        },
+        {
+            "message_id": "m2",
+            "sender_identity": "222@lid",
+            "sender": "Unknown WhatsApp sender",
+            "text": "unknown",
+        },
+        {
+            "message_id": "m3",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Unknown WhatsApp sender",
+            "text": "known again",
+        },
+        {
+            "message_id": "m4",
+            "sender_identity": "222@lid",
+            "sender": "Unknown WhatsApp sender",
+            "text": "unknown again",
+        },
+    ]
+    pipeline = MessagePipeline(MagicMock(), AsyncMock(), source_butler="switchboard")
+    pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
+
+    with patch.object(
+        identity_inject,
+        "resolve_sender_identities",
+        resolver,
+        create=True,
+    ):
+        enriched, resolutions = await pipeline._resolve_decomp_speakers(
+            source_channel="whatsapp_user_client",
+            messages=messages,
+        )
+
+    assert resolutions["111@s.whatsapp.net"] is known_result
+    assert enriched[0]["sender"] == "Chloe Wong"
+    assert enriched[0]["sender_identity"] == "111@s.whatsapp.net"
+    assert enriched[0]["sender_entity_id"] == str(known_entity)
+    assert enriched[1]["sender"] == "Unknown WhatsApp sender"
+    assert enriched[1]["sender_identity"] == "222@lid"
+    assert enriched[1]["sender_entity_id"] == str(unknown_entity)
+    assert enriched[2]["sender_entity_id"] == str(known_entity)
+    assert enriched[3]["sender_entity_id"] == str(unknown_entity)
+    resolver.assert_awaited_once_with(
+        pipeline._pool,
+        "whatsapp_user_client",
+        ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
+        notify_owner_fn=None,
+    )
+    pipeline._assert_sender_channel_fact.assert_awaited_once_with(
+        entity_id=unknown_entity,
+        channel_type="whatsapp_jid",
+        channel_value="222@lid",
+    )
+
+
+async def test_batch_unknown_reservation_failure_preserves_other_speaker_anchor(
+    caplog: pytest.LogCaptureFixture,
+):
+    """REQ-switchboard-identity-002: one reservation failure is speaker-local."""
+    from butlers.identity import IdentityResolutionQueryError
+
+    failed_identity = "15551234567@s.whatsapp.net"
+    successful_identity = "222222222222222@lid"
+    successful_entity_id = uuid4()
+    successful_result = identity_inject.IdentityResolutionResult(
+        entity_id=successful_entity_id,
+        is_unknown=True,
+        channel_value=successful_identity,
+    )
+
+    async def reserve_unknown(
+        _pool: Any,
+        _identity_channel_type: str,
+        channel_value: str,
+        **_kwargs: Any,
+    ) -> identity_inject.IdentityResolutionResult:
+        if channel_value == failed_identity:
+            raise IdentityResolutionQueryError("UniqueViolationError")
+        return successful_result
+
+    with (
+        patch.object(
+            identity_inject,
+            "resolve_contacts_by_channel_bulk",
+            new=AsyncMock(
+                return_value={
+                    ("whatsapp_jid", failed_identity): None,
+                    ("whatsapp_jid", successful_identity): None,
+                }
+            ),
+        ),
+        patch.object(identity_inject, "_inject_unknown_identity", side_effect=reserve_unknown),
+        caplog.at_level(logging.WARNING),
+    ):
+        results = await identity_inject.resolve_sender_identities(
+            MagicMock(),
+            "whatsapp_user_client",
+            [failed_identity, successful_identity],
+        )
+
+    assert results[failed_identity].is_unknown is True
+    assert results[failed_identity].entity_id is None
+    assert results[failed_identity].channel_value == failed_identity
+    assert results[successful_identity] is successful_result
+    assert "identity.batch_unknown_reservation_failed" in caplog.messages
+    assert failed_identity not in caplog.text
+    assert "15551234567" not in caplog.text
+
+
+async def test_decomposition_primary_sender_reuses_batch_resolution():
+    """REQ-switchboard-identity-002: the routing sender is not resolved twice."""
+    primary_entity = uuid4()
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Chloe Wong",
+            "sender_entity_id": str(primary_entity),
+            "text": "hello",
+        }
+    ]
+    primary_result = MagicMock(
+        preamble="[Source: Chloe Wong, via whatsapp_jid]",
+        contact_id=None,
+        entity_id=primary_entity,
+        display_name="Chloe Wong",
+        is_unknown=False,
+        channel_value=None,
+    )
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        enable_identity_resolution=True,
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[attr-defined]
+        return_value=messages
+    )
+    pipeline._resolve_decomp_speakers = AsyncMock(  # type: ignore[attr-defined]
+        return_value=(messages, {"111@s.whatsapp.net": primary_result})
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    single_resolver = AsyncMock(return_value=primary_result)
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(
+            identity_inject,
+            "resolve_and_inject_identity",
+            single_resolver,
+        ),
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": "111@s.whatsapp.net",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+    assert result.target_butler == "decomposed_empty"
+    pipeline._resolve_decomp_speakers.assert_awaited_once_with(
+        source_channel="whatsapp_user_client",
+        messages=messages,
+    )
+    single_resolver.assert_not_awaited()
+    routing_context = pipeline._set_routing_context.call_args.kwargs
+    assert routing_context["identity_preamble"] == primary_result.preamble
+    assert routing_context["source_entity_id"] == str(primary_entity)
+
+
+async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_history(
+    caplog: pytest.LogCaptureFixture,
+):
+    """REQ-switchboard-identity-002: strict batch outages stay neutral and fail-open."""
+    sentinel = "15551234567@s.whatsapp.net"
+    sentinel_error = f"database unavailable for {sentinel}"
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": sentinel,
+            "sender": "Unknown WhatsApp sender",
+            "text": "hello",
+            "timestamp": "2026-08-24T00:00:00Z",
+        }
+    ]
+    captured_messages: list[dict[str, Any]] = []
+    captured_dispatch: dict[str, Any] = {}
+
+    def format_history(enriched: list[dict[str, Any]]) -> str:
+        captured_messages.extend(enriched)
+        return _format_decomp_conversation_history(enriched)
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        captured_dispatch.update(kwargs)
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        enable_identity_resolution=True,
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=messages
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    reserve_unknown = AsyncMock()
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(
+            identity_inject,
+            "resolve_sender_identities",
+            new=AsyncMock(side_effect=RuntimeError(sentinel_error)),
+        ),
+        patch.object(identity_inject, "_inject_unknown_identity", reserve_unknown),
+        patch(
+            "butlers.modules.pipeline._format_decomp_conversation_history",
+            side_effect=format_history,
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": sentinel,
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000098",
+        )
+
+    assert result.target_butler == "decomposed_empty"
+    assert captured_messages[0]["sender"] == "Unknown WhatsApp sender"
+    assert captured_messages[0]["sender_identity"] == sentinel
+    assert captured_messages[0]["sender_entity_id"] is None
+    assert "Unknown WhatsApp sender" in captured_dispatch["prompt"]
+    assert sentinel not in captured_dispatch["prompt"]
+    routing_context = pipeline._set_routing_context.call_args.kwargs
+    assert routing_context["identity_preamble"] is None
+    assert routing_context["source_entity_id"] is None
+    reserve_unknown.assert_not_awaited()
+    assert "pipeline.decomposition_identity_resolution_failed" in caplog.messages
+    assert sentinel not in caplog.text
+    assert "15551234567" not in caplog.text
+    warning_record = next(
+        record
+        for record in caplog.records
+        if record.message == "pipeline.decomposition_identity_resolution_failed"
+    )
+    assert warning_record.failure_class == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    ("source_channel", "sentinel_identity", "sentinel_chat"),
+    [
+        (
+            "whatsapp_user_client",
+            "222222222222222@lid",
+            "12036315551234567@g.us",
+        ),
+        (
+            "telegram_user_client",
+            "telegram:777000111",
+            "-10015551234567",
+        ),
+    ],
+)
+async def test_decomposition_observability_omits_message_and_transport_identifiers(
+    caplog: pytest.LogCaptureFixture,
+    source_channel: str,
+    sentinel_identity: str,
+    sentinel_chat: str,
+):
+    """REQ-switchboard-identity-002: decomposition telemetry is content-blind."""
+    sentinel_message = "PRIVATE MESSAGE SQL SELECT secret"
+    request_uuid = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
+    inbox_uuid = "11111111-1111-4111-8111-111111111111"
+    span_attributes: list[tuple[str, Any]] = []
+
+    class _Span:
+        def set_attribute(self, key: str, value: Any) -> None:
+            span_attributes.append((key, value))
+
+        def set_status(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def is_recording(self) -> bool:
+            return True
+
+    class _SpanContext:
+        def __enter__(self) -> _Span:
+            return _Span()
+
+        def __exit__(self, *_args: Any) -> bool:
+            return False
+
+    class _Tracer:
+        def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> _SpanContext:
+            return _SpanContext()
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    pipeline._load_decomp_conversation_messages = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch("butlers.modules.pipeline.trace.get_tracer", return_value=_Tracer()),
+        caplog.at_level(logging.DEBUG),
+    ):
+        await pipeline.process(
+            sentinel_message,
+            tool_args={
+                "source_channel": source_channel,
+                "source_identity": sentinel_identity,
+                "source_id": sentinel_identity,
+                "chat_id": sentinel_chat,
+                "request_id": request_uuid,
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "source_thread_identity": sentinel_chat,
+                },
+            },
+            message_inbox_id=inbox_uuid,
+        )
+
+    observability = (
+        caplog.text + repr([record.__dict__ for record in caplog.records]) + repr(span_attributes)
+    )
+    assert sentinel_message not in observability
+    assert sentinel_identity not in observability
+    assert sentinel_chat not in observability
+    assert request_uuid not in observability
+    assert inbox_uuid not in observability
+
+
+async def test_decomposition_route_exception_is_content_blind_in_result_and_persistence(
+    caplog: pytest.LogCaptureFixture,
+):
+    sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+    signal = {
+        "signal_type": "finance",
+        "target_butler": "finance",
+        "tool_name": "route.execute",
+        "tool_args": {"schema_version": "route.v1"},
+        "excerpts": [{"message_id": "m1"}],
+        "confidence": "HIGH",
+    }
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output=json.dumps([signal]), success=True, tool_calls=[])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=_decomp_messages("private message")
+    )
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new=AsyncMock(side_effect=RuntimeError(sentinel)),
+        ),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000096",
+        )
+
+    assert result.routing_error == "finance: route_failed:RuntimeError"
+    lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+    assert lifecycle["dispatch_outcomes"]["failed"] == ["finance"]
+    assert sentinel not in repr(lifecycle)
+    assert sentinel not in caplog.text
+
+
+async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_boundary(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Conversation-history dispatch failures expose only stable category/class."""
+    sentinel = (
+        "postgresql://owner:secret@db/private 15551234567@s.whatsapp.net "
+        "222222222222222@lid 11111111-1111-4111-8111-111111111111 "
+        "PRIVATE MESSAGE SELECT * FROM memory.facts"
+    )
+    span_records: list[dict[str, Any]] = []
+
+    class _Span:
+        def __init__(self, record: dict[str, Any]) -> None:
+            self._record = record
+
+        def set_attribute(self, key: str, value: Any) -> None:
+            self._record.setdefault("attributes", {})[key] = value
+
+        def set_status(self, *args: Any, **kwargs: Any) -> None:
+            self._record["status"] = (args, kwargs)
+
+        def is_recording(self) -> bool:
+            return True
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self._record: dict[str, Any] = {"name": name}
+
+        def __enter__(self) -> _Span:
+            span_records.append(self._record)
+            return _Span(self._record)
+
+        def __exit__(self, exc_type: Any, exc: Any, _tb: Any) -> bool:
+            if exc_type is not None:
+                self._record["auto_exception"] = f"{exc_type.__name__}: {exc}"
+            return False
+
+    class _Tracer:
+        def start_as_current_span(self, name: str, **_kwargs: Any) -> _SpanContext:
+            return _SpanContext(name)
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        raise RuntimeError(sentinel)
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        enable_identity_resolution=False,
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=_decomp_messages("private message")
+    )
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch("butlers.modules.pipeline.trace.get_tracer", return_value=_Tracer()),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "PRIVATE MESSAGE",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_identity": "15551234567@s.whatsapp.net",
+                "request_context": {
+                    "payload_type": "conversation_history",
+                    "source_thread_identity": "222222222222222@lid",
+                },
+            },
+            message_inbox_id="11111111-1111-4111-8111-111111111111",
+        )
+
+    lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
+    assert lifecycle["decomposition_output"] == {
+        "error": {
+            "category": "classification_dispatch_failed",
+            "class": "RuntimeError",
+        }
+    }
+    assert result.classification_error == (
+        "classification_failed:classification_dispatch_failed:RuntimeError"
+    )
+    persisted_surface = {
+        "decomposition_output": lifecycle["decomposition_output"],
+        "dispatch_outcomes": lifecycle["dispatch_outcomes"],
+        "response_summary": lifecycle["response_summary"],
+    }
+    observability = "\n".join(
+        (
+            caplog.text,
+            repr([record.__dict__ for record in caplog.records]),
+            repr(span_records),
+            repr(persisted_surface),
+            repr(result),
+        )
+    )
+    assert sentinel not in observability
+    assert "15551234567" not in observability
+    assert "222222222222222" not in observability
+    assert "11111111-1111-4111-8111-111111111111" not in observability
+    assert "SELECT * FROM memory.facts" not in observability
+    decision_span = next(
+        record
+        for record in span_records
+        if record["name"] == "butlers.switchboard.routing.llm_decision"
+    )
+    assert "auto_exception" not in decision_span
+    assert decision_span["attributes"]["error.class"] == "RuntimeError"
+    assert decision_span["attributes"]["error.category"] == "classification_dispatch_failed"
+
+
+async def test_decomposition_ingress_dedupe_failure_is_content_blind(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Conversation-history dedupe failures never expose DB exception details."""
+    sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
+    pool = MagicMock()
+    pool.execute = AsyncMock(side_effect=RuntimeError(sentinel))
+    pipeline = MessagePipeline(
+        pool,
+        AsyncMock(),
+        source_butler="switchboard",
+        enable_ingress_dedupe=True,
+    )
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch("butlers.modules.pipeline.logger.error") as pipeline_error,
+        patch("butlers.modules.pipeline.logger.exception") as pipeline_exception,
+        patch("butlers.modules.pipeline.logger.warning") as pipeline_warning,
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "PRIVATE MESSAGE SQL SELECT",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "source_identity": "telegram:777000111",
+                "source_id": "telegram:777000111",
+                "chat_id": "-10015551234567",
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-777777777777",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+        )
+
+    assert result.target_butler == "decomposed_empty"
+    observability = (
+        caplog.text
+        + repr(pipeline_error.call_args_list)
+        + repr(pipeline_exception.call_args_list)
+        + repr(pipeline_warning.call_args_list)
+    )
+    assert sentinel not in observability
+    assert not pipeline_exception.called
+
+
+async def test_content_blind_structured_classification_failure_has_no_traceback(
+    caplog: pytest.LogCaptureFixture,
+):
+    sentinel = "postgresql://secret-dsn 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        local_tool_server_provider=lambda: object(),
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            new=AsyncMock(side_effect=RuntimeError(sentinel)),
+        ),
+        patch("butlers.modules.pipeline.logger.exception") as pipeline_exception,
+        patch("butlers.modules.pipeline.logger.warning") as pipeline_warning,
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "PRIVATE MESSAGE SQL SELECT",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_identity": "15551234567@s.whatsapp.net",
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-888888888888",
+            },
+        )
+
+    assert result.acked_targets == ["finance"]
+    assert not pipeline_exception.called
+    observability = (
+        caplog.text
+        + repr(pipeline_warning.call_args_list)
+        + repr([record.__dict__ for record in caplog.records])
+    )
+    assert sentinel not in observability
+
+
+async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic() -> None:
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(
+        MagicMock(),
+        dispatch,
+        source_butler="switchboard",
+        local_tool_server_provider=lambda: object(),
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            new=AsyncMock(side_effect=RuntimeError("ordinary diagnostic detail")),
+        ),
+        patch("butlers.modules.pipeline.logger.exception") as pipeline_exception,
+    ):
+        result = await pipeline.process(
+            "ordinary message",
+            tool_args={"source_channel": "telegram_bot", "source_identity": "owner"},
+        )
+
+    assert result.acked_targets == ["finance"]
+    pipeline_exception.assert_called_once()
+
+
+async def test_conversation_history_routed_log_omits_raw_model_output() -> None:
+    sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output=sentinel, tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[method-assign]
+        return_value=_decomp_messages("private message")
+    )
+    with (
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch("butlers.modules.pipeline.logger.info") as pipeline_info,
+    ):
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-999999999999",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="66666666-6666-4666-8666-666666666666",
+        )
+
+    assert result.acked_targets == ["finance"]
+    routed_log = next(
+        call
+        for call in pipeline_info.call_args_list
+        if call.args and call.args[0] == "Pipeline routed message"
+    )
+    assert sentinel not in repr(routed_log)
+    assert "cc_summary" not in routed_log.kwargs["extra"]
 
 
 def _dashboard_tool_args(**overrides: Any) -> dict[str, Any]:
@@ -381,9 +1159,9 @@ class TestMessagePipelineProcess:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -1344,9 +2122,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2015,39 +2793,229 @@ class TestDecompositionSignalSchema:
             "confidence",
         ):
             assert field_name in prompt
+        assert "tool_name: route.execute" in prompt
+        assert "must not select a direct target tool" in prompt
         assert "sender" in prompt and "message_id" in prompt
 
+    def test_signal_extraction_skill_requires_standard_conceptual_route_boundary(self):
+        skill = Path("roster/switchboard/.agents/skills/signal-extraction/SKILL.md").read_text()
+        normalized_skill = " ".join(skill.split())
+
+        assert "`tool_name`: `route.execute`" in skill
+        assert "must not select a direct target tool" in normalized_skill
+        assert "calendar_propose_event" in skill
+
+    def test_decomposition_prompt_exposes_authoritative_message_ids_as_selectors(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        history = _format_decomp_conversation_history(
+            [
+                {
+                    "message_id": "m-authoritative-1",
+                    "sender": "Alice",
+                    "text": "Dinner at seven",
+                    "timestamp": "2026-08-24T10:00:00Z",
+                }
+            ]
+        )
+
+        prompt = _build_decomposition_prompt("hi", _MOCK_BUTLERS, history, None)
+
+        assert "m-authoritative-1" in prompt
+
+    def test_model_cannot_replace_authoritative_excerpt_fields(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_excerpts(
+            [
+                {
+                    "message_id": "m1",
+                    "sender": "Mallory",
+                    "sender_identity": "attacker@lid",
+                    "sender_entity_id": "attacker",
+                    "text": "changed",
+                    "timestamp": "2099-01-01T00:00:00Z",
+                }
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert result == [authoritative["m1"]]
+
+    def test_authoritative_excerpt_join_drops_invalid_and_repeated_selectors(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_excerpts(
+            [
+                {},
+                {"message_id": None},
+                {"message_id": ""},
+                {"message_id": "   "},
+                {"message_id": "unknown"},
+                {"message_id": "m1"},
+                {"message_id": "m1"},
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert result == [authoritative["m1"]]
+
+    def test_excerpt_normalization_without_authoritative_messages_fails_closed(self):
+        """Spec: REQ-conversation-decomposition-001, REQ-entity-identity-001."""
+        assert (
+            _normalize_decomp_excerpts(
+                [
+                    {
+                        "message_id": "m1",
+                        "sender": "forged",
+                        "sender_identity": "15551234567@s.whatsapp.net",
+                        "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                        "text": "forged",
+                    }
+                ]
+            )
+            == []
+        )
+
+    def test_duplicate_concepts_reuse_one_authoritative_speaker_anchor(self):
+        """Spec: REQ-conversation-decomposition-001."""
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Dinner at seven",
+                "timestamp": "2026-08-24T10:00:00Z",
+            }
+        }
+
+        result = _normalize_decomp_signals(
+            [
+                {
+                    "target_butler": "finance",
+                    "excerpts": [{"message_id": "m1", "sender_entity_id": "attacker-1"}],
+                },
+                {
+                    "target_butler": "relationship",
+                    "excerpts": [{"message_id": "m1", "sender_entity_id": "attacker-2"}],
+                },
+            ],
+            authoritative_by_message_id=authoritative,
+        )
+
+        assert [signal["excerpts"] for signal in result] == [
+            [authoritative["m1"]],
+            [authoritative["m1"]],
+        ]
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_messages",
+        new_callable=AsyncMock,
+        return_value=[
+            {
+                "message_id": "m1",
+                "sender": "Alice",
+                "sender_identity": "6591111111@s.whatsapp.net",
+                "text": "first",
+                "timestamp": "2026-08-24T10:00:00Z",
+            },
+            {
+                "message_id": "m1",
+                "sender": "Bob",
+                "sender_identity": "6592222222@s.whatsapp.net",
+                "text": "collision",
+                "timestamp": "2026-08-24T10:01:00Z",
+            },
+        ],
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_colliding_authoritative_message_ids_are_not_selectable(
+        self, mock_route, mock_load, mock_history
+    ):
+        """Spec: REQ-conversation-decomposition-001."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=json.dumps(
+                    [{"target_butler": "finance", "excerpts": [{"message_id": "m1"}]}]
+                ),
+                success=True,
+                tool_calls=[],
+            )
+
+        pipeline = MessagePipeline(MagicMock(), mock_dispatch, source_butler="switchboard")
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000002",
+        )
+
+        conceptual = mock_route.await_args.kwargs["internal_context"]["conceptual_message"]
+        assert conceptual["excerpts"] == []
+
     def test_normalize_signal_enforces_full_schema(self):
+        authoritative = {
+            "m1": {
+                "message_id": "m1",
+                "sender": "alice",
+                "sender_identity": "alice-telegram-id",
+                "sender_entity_id": "11111111-1111-1111-1111-111111111111",
+                "text": "split the bill",
+                "timestamp": "2026-06-27T10:00:00Z",
+            }
+        }
         norm = _normalize_decomp_signal(
             {
                 "signal_type": "finance",
                 "target_butler": "finance",
                 "tool_name": "expense_log",
                 "tool_args": {"amount": 42},
-                "excerpts": [
-                    {
-                        "sender": "alice",
-                        "text": "split the bill",
-                        "timestamp": "2026-06-27T10:00:00Z",
-                        "message_id": "m1",
-                    }
-                ],
+                "excerpts": [{"message_id": "m1"}],
                 "confidence": "high",
-            }
+            },
+            authoritative_by_message_id=authoritative,
         )
         assert norm == {
             "signal_type": "finance",
             "target_butler": "finance",
-            "tool_name": "expense_log",
+            "tool_name": "route.execute",
             "tool_args": {"amount": 42},
-            "excerpts": [
-                {
-                    "sender": "alice",
-                    "text": "split the bill",
-                    "timestamp": "2026-06-27T10:00:00Z",
-                    "message_id": "m1",
-                }
-            ],
+            "excerpts": [authoritative["m1"]],
             "confidence": "HIGH",  # normalized to upper-case
         }
 
@@ -2078,18 +3046,6 @@ class TestDecompositionSignalSchema:
             }
         ]
 
-    def test_normalize_excerpts_drops_non_dict_and_projects_keys(self):
-        norm = _normalize_decomp_signal(
-            {
-                "target_butler": "finance",
-                "excerpts": ["junk", {"text": "hi", "extra": "ignored"}],
-            }
-        )
-        assert norm is not None
-        assert norm["excerpts"] == [
-            {"sender": None, "text": "hi", "timestamp": None, "message_id": None}
-        ]
-
     def test_normalize_signal_parses_stringified_tool_args(self):
         # Models sometimes stringify the nested tool_args object.
         norm = _normalize_decomp_signal({"target_butler": "finance", "tool_args": '{"amount": 42}'})
@@ -2114,9 +3070,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages("Let's split the dinner bill"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2186,17 +3142,95 @@ class TestDecompositionSignalSchema:
         # The route() call carries the conceptual-message metadata to the butler.
         route_kwargs = mock_route.await_args.kwargs
         assert route_kwargs["target_butler"] == "finance"
-        conceptual = route_kwargs["args"]["__conceptual_message"]
+        assert route_kwargs["tool_name"] == "route.execute"
+        assert "__conceptual_message" not in route_kwargs["args"]
+        assert route_kwargs["args"]["schema_version"] == "route.v1"
+        assert route_kwargs["args"]["target"] == {
+            "butler": "finance",
+            "tool": "route.execute",
+        }
+        assert route_kwargs["args"]["input"]["prompt"].startswith("Process the conceptual message")
+        assert "amount" not in route_kwargs["args"]
+        conceptual = route_kwargs["internal_context"]["conceptual_message"]
         assert conceptual["signal_type"] == "finance"
         assert conceptual["confidence"] == "HIGH"
         assert conceptual["excerpts"][0]["text"] == "Let's split the dinner bill"
-        assert route_kwargs["args"]["amount"] == 42
+        assert conceptual["tool_args"] == {"amount": 42}
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("One message, two finance concepts"),
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_same_target_concepts_receive_unique_target_visible_subrequests(
+        self,
+        mock_route,
+        mock_load,
+        mock_history,
+    ):
+        """Each same-target concept has independent route.execute dedupe identity."""
+        signals = [
+            {
+                "signal_type": signal_type,
+                "target_butler": "finance",
+                "tool_name": "expense_log",
+                "tool_args": {"concept": signal_type},
+                "excerpts": [{"message_id": "m1"}],
+                "confidence": "HIGH",
+            }
+            for signal_type in ("expense", "subscription")
+        ]
+
+        async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+            return FakeSpawnerResult(output=json.dumps(signals), success=True, tool_calls=[])
+
+        pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+        assert result.acked_targets == ["finance", "finance"]
+        route_args = [call.kwargs["args"] for call in mock_route.await_args_list]
+        assert len(route_args) == 2
+        assert {args["request_context"]["request_id"] for args in route_args} == {
+            route_args[0]["request_context"]["request_id"]
+        }
+        subrequest_ids = [args["subrequest"]["subrequest_id"] for args in route_args]
+        segment_ids = [args["subrequest"]["segment_id"] for args in route_args]
+        assert len(set(subrequest_ids)) == 2
+        assert len(set(segment_ids)) == 2
+        for args in route_args:
+            assert args["request_context"]["subrequest_id"] == args["subrequest"]["subrequest_id"]
+            assert args["request_context"]["segment_id"] == args["subrequest"]["segment_id"]
+            assert args["subrequest"]["fanout_mode"] == "ordered"
+            assert (
+                args["__switchboard_route_context"]["segment_id"]
+                == args["subrequest"]["segment_id"]
+            )
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_messages",
+        new_callable=AsyncMock,
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2243,13 +3277,14 @@ class TestDecompositionSignalSchema:
             preamble="",
             contact_id=None,
             entity_id=source_entity_id,
+            display_name="Alice",
             is_unknown=False,
             channel_value=None,
         )
         with patch(
-            "butlers.tools.switchboard.identity.inject.resolve_and_inject_identity",
+            "butlers.tools.switchboard.identity.inject.resolve_sender_identities",
             new_callable=AsyncMock,
-            return_value=identity_result,
+            return_value={"alice-telegram-id": identity_result},
         ):
             pipeline = MessagePipeline(
                 switchboard_pool=MagicMock(),
@@ -2281,9 +3316,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2341,9 +3376,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+        return_value=_decomp_messages("flight confirmation"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2397,9 +3432,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nmaybe dinner\n```",
+        return_value=_decomp_messages("maybe dinner"),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2451,9 +3486,9 @@ class TestDecompositionSignalSchema:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2603,9 +3638,9 @@ class TestDecompositionEmptyMetric:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -2659,9 +3694,9 @@ class TestDecompositionEmptyMetric:
 
     @patch.object(
         MessagePipeline,
-        "_load_decomp_conversation_history",
+        "_load_decomp_conversation_messages",
         new_callable=AsyncMock,
-        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+        return_value=_decomp_messages(),
     )
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

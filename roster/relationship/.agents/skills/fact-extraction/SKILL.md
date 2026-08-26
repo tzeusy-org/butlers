@@ -9,6 +9,10 @@ tags: [relationship, memory, extraction, entity-resolution]
 
 When processing messages with a REQUEST CONTEXT present (routed from Switchboard), always follow this extraction pipeline for every person mentioned.
 
+## Sender Entity Anchor
+
+For conceptual excerpts, `sender_entity_id` is authoritative for facts about the sender. `sender_identity` is transport data, not a person name: never resolve or create an entity from a WhatsApp JID or LID. If `sender_entity_id` is absent, skip a fact whose subject would be the sender.
+
 ## Step 1: Identify Person Mentions
 
 Scan the message for people mentioned by name (first name, full name, nickname, or relational label like "Mom", "my boss"). Collect all mentions before proceeding.

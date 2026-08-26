@@ -111,6 +111,43 @@ def _make_connector(
 
 
 class TestConnectorBridgeAndIngest:
+    def test_mixed_lid_batch_keeps_normalized_identities_out_of_speaker_labels(self):
+        """REQ-connector-base-spec-001: mapped and opaque LIDs stay structured."""
+        connector = _make_connector()
+        connector._lid_to_phone["111111111111111"] = "15551112222"
+        events = [
+            _make_bridge_sse_event(
+                message_id="msg-known",
+                chat_jid="120363000000000@g.us",
+                sender_jid="111111111111111:7@lid",
+                text="known speaker",
+            ),
+            _make_bridge_sse_event(
+                message_id="msg-unknown",
+                chat_jid="120363000000000@g.us",
+                sender_jid="222222222222222:9@lid",
+                text="unknown speaker",
+            ),
+        ]
+
+        envelope = connector._build_batch_envelope(
+            "120363000000000@g.us",
+            events,
+            "batch-mixed-lids",
+        )
+
+        history = envelope["payload"]["raw"]["conversation_history"]
+        assert [message["sender_identity"] for message in history] == [
+            "15551112222@s.whatsapp.net",
+            "222222222222222@lid",
+        ]
+        assert [message["sender"] for message in history] == [
+            "Unknown WhatsApp sender 1",
+            "Unknown WhatsApp sender 2",
+        ]
+        assert "111111111111111" not in envelope["payload"]["normalized_text"]
+        assert "222222222222222" not in envelope["payload"]["normalized_text"]
+
     async def test_connector_buffers_and_tracks_events(self):
         """Events buffered per-chat JID; last_event_id tracks latest message_id."""
         connector = _make_connector()
@@ -477,6 +514,7 @@ class TestWhatsAppJIDResolution:
     def _make_pool_with_rows(self, *rows: dict[str, Any] | None) -> Any:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(side_effect=list(rows))
+        pool.fetch = AsyncMock(return_value=[])
         return pool
 
     async def test_jid_resolution_paths(self):
@@ -502,10 +540,19 @@ class TestWhatsAppJIDResolution:
             None,
             {"entity_id": owner_entity_id, "name": "Owner", "roles": ["owner"]},
         )
+        pool2.fetch = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": owner_entity_id,
+                    "name": "Owner",
+                    "roles": ["owner"],
+                }
+            ]
+        )
         result2 = await resolve_contact_by_channel(
             pool2, "whatsapp_jid", "15550001111@s.whatsapp.net"
         )
-        assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 2
+        assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 1
 
         # Group JID → no phone fallback, returns None
         pool3 = self._make_pool_with_rows(None)
@@ -519,7 +566,7 @@ class TestWhatsAppJIDResolution:
         result = await resolve_contact_by_channel(
             pool, "whatsapp_jid", "99999999999@s.whatsapp.net"
         )
-        assert result is None and pool.fetchrow.call_count == 2
+        assert result is None and pool.fetchrow.call_count == 1
 
 
 # ---------------------------------------------------------------------------

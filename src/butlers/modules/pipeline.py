@@ -14,10 +14,10 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from opentelemetry import metrics, trace
@@ -34,9 +34,22 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
 
+if TYPE_CHECKING:
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
+
 logger = logging.getLogger(__name__)
 
 _PIPELINE_METER_NAME = "butlers"
+
+
+class _ContentBlindDispatchFailure(RuntimeError):
+    """Stable replacement for a content-bearing runtime dispatch exception."""
+
+    failure_category = "classification_dispatch_failed"
+
+    def __init__(self, failure_class: str) -> None:
+        super().__init__("Content-blind classification dispatch failed")
+        self.failure_class = failure_class
 
 
 def _decomposition_empty_counter() -> metrics.Counter:
@@ -773,35 +786,63 @@ _CALENDAR_PROPOSAL_TARGET_BUTLER = "general"
 _CALENDAR_PROPOSAL_CONFIDENCE_SCORES = {"HIGH": 0.9, "MEDIUM": 0.5, "LOW": 0.2}
 _CALENDAR_PROPOSAL_CONFIDENCE_FLOOR = 0.7
 _CALENDAR_PROPOSAL_SNIPPET_MAX_CHARS = 500
+_CONCEPTUAL_ROUTE_PROMPT = (
+    "Process the conceptual message in input.context using your normal domain tools."
+)
 
 
-def _normalize_decomp_excerpts(raw: Any) -> list[dict[str, Any]]:
+def _normalize_decomp_excerpts(
+    raw: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Normalize the ``excerpts`` field of a decomposition signal.
 
-    Per the conversation-decomposition spec each excerpt is a
-    ``{sender, text, timestamp, message_id}`` object cherry-picked from the
-    conversation window. Non-dict entries are dropped; each kept entry is
-    projected onto exactly those four keys so downstream consumers see a
-    stable shape.
+    Model-provided message IDs are selectors only: every excerpt field is
+    projected from the matching source message. Invalid, unknown, repeated, or
+    unanchored selectors are dropped.
     """
     if not isinstance(raw, list):
         return []
     excerpts: list[dict[str, Any]] = []
+    selected_message_ids: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
             continue
-        excerpts.append(
-            {
-                "sender": item.get("sender"),
-                "text": item.get("text"),
-                "timestamp": item.get("timestamp"),
-                "message_id": item.get("message_id"),
-            }
-        )
+        if authoritative_by_message_id is not None:
+            message_id = item.get("message_id")
+            if (
+                not isinstance(message_id, str)
+                or not message_id.strip()
+                or message_id in selected_message_ids
+            ):
+                continue
+            selected_message_ids.add(message_id)
+            authoritative = authoritative_by_message_id.get(message_id)
+            if (
+                not isinstance(authoritative, Mapping)
+                or authoritative.get("message_id") != message_id
+            ):
+                continue
+            excerpts.append(
+                {
+                    "message_id": authoritative.get("message_id"),
+                    "sender": authoritative.get("sender"),
+                    "sender_identity": authoritative.get("sender_identity"),
+                    "sender_entity_id": authoritative.get("sender_entity_id"),
+                    "text": authoritative.get("text"),
+                    "timestamp": authoritative.get("timestamp"),
+                }
+            )
+            continue
     return excerpts
 
 
-def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
+def _normalize_decomp_signal(
+    sig: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Normalize one raw decomposition signal into the full conceptual-message schema.
 
     The conversation-decomposition spec requires each conceptual message to carry
@@ -817,7 +858,12 @@ def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
     if not target:
         return None
     signal_type = str(sig.get("signal_type") or sig.get("type") or "").strip()
-    tool_name = str(sig.get("tool_name") or "route.execute").strip()
+    # Model output selects a domain and authoritative message IDs only. Every
+    # ordinary concept enters the target through its standard route.execute
+    # session boundary so Switchboard-owned identity context cannot be bypassed
+    # by selecting a direct MCP tool. Calendar proposals are translated later
+    # by the code-authoritative event branch.
+    tool_name = "route.execute"
     # The model sometimes stringifies nested objects; parse a JSON-string
     # ``tool_args`` so valid arguments are not silently dropped.
     tool_args = sig.get("tool_args")
@@ -835,12 +881,19 @@ def _normalize_decomp_signal(sig: Any) -> dict[str, Any] | None:
         "target_butler": target,
         "tool_name": tool_name,
         "tool_args": tool_args,
-        "excerpts": _normalize_decomp_excerpts(sig.get("excerpts")),
+        "excerpts": _normalize_decomp_excerpts(
+            sig.get("excerpts"),
+            authoritative_by_message_id=authoritative_by_message_id,
+        ),
         "confidence": confidence,
     }
 
 
-def _normalize_decomp_signals(raw: Any) -> list[dict[str, Any]]:
+def _normalize_decomp_signals(
+    raw: Any,
+    *,
+    authoritative_by_message_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Normalize a parsed signal payload into full-schema conceptual messages.
 
     Accepts the shapes LLMs commonly emit even when told to return a bare array:
@@ -857,7 +910,10 @@ def _normalize_decomp_signals(raw: Any) -> list[dict[str, Any]]:
         return []
     normalized: list[dict[str, Any]] = []
     for item in raw:
-        norm = _normalize_decomp_signal(item)
+        norm = _normalize_decomp_signal(
+            item,
+            authoritative_by_message_id=authoritative_by_message_id,
+        )
         if norm is not None:
             normalized.append(norm)
     return normalized
@@ -911,12 +967,16 @@ def _build_decomposition_prompt(
         "these fields:\n"
         '- signal_type: domain type (e.g. "finance", "health", "relationship")\n'
         "- target_butler: destination butler name (must be one listed below)\n"
-        "- tool_name: MCP tool to call on the target butler\n"
-        "- tool_args: JSON object of tool arguments\n"
-        "- excerpts: array of {sender, text, timestamp, message_id} objects, "
-        "cherry-picked from the conversation. Include ONLY the messages relevant to "
-        "this concept; a message relevant to multiple concepts is duplicated into each "
-        "conceptual message.\n"
+        "- tool_name: route.execute for every ordinary conceptual message; the model "
+        "must not select a direct target tool. The pipeline alone may translate an "
+        "events signal into the code-authoritative calendar proposal tool.\n"
+        "- tool_args: JSON object containing structured signal details for the target "
+        "runtime context, not direct MCP invocation arguments\n"
+        '- excerpts: array of {"message_id": "..."} selectors, cherry-picked from the '
+        "conversation. Include ONLY the messages relevant to this concept; a message "
+        "relevant to multiple concepts is duplicated into each conceptual message. "
+        "Do not supply sender, identity, text, or timestamp fields: the pipeline injects "
+        "those fields from the authoritative source after extraction.\n"
         "- confidence: one of HIGH, MEDIUM, LOW\n\n"
         "If no supported signals are present, return [].\n\n"
     ]
@@ -944,7 +1004,7 @@ def _build_decomposition_prompt(
 
 
 def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
-    """Format raw conversation_history from a batch envelope as routing context.
+    """Format identity-enriched conversation history as routing context.
 
     Produces the same untrusted-data-fenced format as ``_format_history_context``
     so the standard routing prompt treats it identically to realtime/email history.
@@ -954,8 +1014,9 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     messages:
         The ``conversation_history`` array from the batch envelope's
         ``payload.raw.conversation_history``.  Each dict has keys like
-        ``sender_id``, ``display_name``, ``text``, ``timestamp``,
-        ``message_id``.
+        ``sender_identity``, canonical-or-neutral ``sender``, ``text``,
+        ``timestamp``, and ``message_id``. ``sender_entity_id`` remains
+        structured authoritative context and is not rendered as a label.
 
     Returns
     -------
@@ -975,9 +1036,12 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     ]
 
     for msg in messages:
-        sender = msg.get("display_name") or msg.get("sender_id") or msg.get("sender", "unknown")
+        sender = msg.get("sender") or "Unknown sender"
         ts = msg.get("timestamp", "")
         text = msg.get("text", "")
+        message_id = msg.get("message_id")
+        if isinstance(message_id, str) and message_id.strip():
+            lines.append(f"Message ID selector: {json.dumps(message_id, ensure_ascii=False)}")
         lines.append(f"**{sender}** ({ts}):")
         lines.append("```")
         lines.append(text)
@@ -1136,21 +1200,22 @@ class MessagePipeline:
             channel_value,
         )
 
-    async def _load_decomp_conversation_history(
+    async def _load_decomp_conversation_messages(
         self,
         message_inbox_id: Any | None,
-    ) -> str | None:
-        """Load and format structured conversation history from a batch envelope.
+    ) -> list[dict[str, Any]] | None:
+        """Load structured conversation messages from a batch envelope.
 
         Reads the raw ``conversation_history`` array from
-        ``message_inbox.raw_payload`` and formats it as untrusted-data-fenced
-        text suitable for the standard routing prompt.
+        ``message_inbox.raw_payload`` while preserving the connector-provided
+        ``sender_identity`` machine key and canonical-or-neutral ``sender``
+        display label for deterministic identity enrichment.
 
         Returns
         -------
-        str | None
-            Formatted history string, or ``None`` if no structured messages
-            could be loaded (caller should short-circuit to decomposed_empty).
+        list[dict[str, Any]] | None
+            Structured message copies, or ``None`` if no messages could be
+            loaded (caller should short-circuit to decomposed_empty).
         """
         if message_inbox_id is None:
             return None
@@ -1168,17 +1233,154 @@ class MessagePipeline:
                         raw_payload = json.loads(raw_payload)
                     payload_section = raw_payload.get("payload", {})
                     raw_inner = payload_section.get("raw") or {}
-                    conversation_messages = raw_inner.get("conversation_history", [])
-        except Exception:
+                    raw_messages = raw_inner.get("conversation_history", [])
+                    if isinstance(raw_messages, list):
+                        conversation_messages = [
+                            dict(message) for message in raw_messages if isinstance(message, dict)
+                        ]
+        except Exception as exc:
             logger.debug(
-                "Failed to load conversation_history from message_inbox; falling back to empty",
-                exc_info=True,
+                "decomposition_history_load_failed",
+                extra={"failure_class": type(exc).__name__},
             )
 
         if not conversation_messages:
             return None
 
-        return _format_decomp_conversation_history(conversation_messages)
+        return conversation_messages
+
+    async def _resolve_decomp_speakers(
+        self,
+        *,
+        source_channel: str,
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, IdentityResolutionResult]]:
+        """Resolve batch speakers and attach authoritative identity fields."""
+        from butlers.identity import canonical_identity_channel_type
+        from butlers.tools.switchboard.identity.inject import resolve_sender_identities
+
+        identity_channel = canonical_identity_channel_type(source_channel)
+        channel_values = [
+            value
+            for message in messages
+            if (value := self._string_or_none(message.get("sender_identity"))) is not None
+        ]
+        resolutions = await resolve_sender_identities(
+            self._pool,
+            source_channel,
+            channel_values,
+            notify_owner_fn=self._notify_owner_fn,
+        )
+
+        for result in resolutions.values():
+            if result.is_unknown and result.entity_id is not None and result.channel_value:
+                await self._assert_sender_channel_fact(
+                    entity_id=result.entity_id,
+                    channel_type=identity_channel,
+                    channel_value=result.channel_value,
+                )
+
+        return self._enrich_decomp_speaker_messages(messages, resolutions), resolutions
+
+    @classmethod
+    def _enrich_decomp_speaker_messages(
+        cls,
+        messages: list[dict[str, Any]],
+        resolutions: dict[str, IdentityResolutionResult],
+    ) -> list[dict[str, Any]]:
+        """Attach canonical-or-neutral speaker fields from authoritative results."""
+        enriched_messages: list[dict[str, Any]] = []
+        for message in messages:
+            sender_identity = cls._string_or_none(message.get("sender_identity"))
+            result = resolutions.get(sender_identity) if sender_identity is not None else None
+            sender = cls._string_or_none(message.get("sender")) or "Unknown sender"
+            if result is not None and result.display_name:
+                sender = result.display_name
+            elif sender_identity is not None and sender == sender_identity:
+                sender = "Unknown sender"
+
+            enriched = dict(message)
+            enriched["sender"] = sender
+            enriched["sender_identity"] = sender_identity
+            enriched["sender_entity_id"] = (
+                str(result.entity_id)
+                if result is not None and result.entity_id is not None
+                else None
+            )
+            enriched_messages.append(enriched)
+
+        return enriched_messages
+
+    @staticmethod
+    def _build_decomp_route_envelope(
+        *,
+        target_butler: str,
+        concept_index: int,
+        request_id: str,
+        received_at: datetime,
+        source: str,
+        source_metadata: Mapping[str, Any],
+        request_context: Mapping[str, Any] | None,
+        conceptual_message: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the standard route.v1 boundary for one conceptual message.
+
+        The top-level sender entity is intentionally omitted: a decomposed
+        concept can contain several speakers, and facts must use the matching
+        authoritative excerpt anchor rather than borrow the routing sender.
+        """
+        subrequest_id = f"decomposition-{concept_index}"
+        segment_id = f"decomp-{concept_index}-{target_butler}"
+        route_request_context: dict[str, Any] = {
+            "request_id": request_id,
+            "received_at": received_at.isoformat(),
+            "source_channel": source,
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": str(
+                source_metadata.get("source_id") or source_metadata.get("identity") or "unknown"
+            ),
+            "subrequest_id": subrequest_id,
+            "segment_id": segment_id,
+            "trace_context": {},
+        }
+        if request_context is not None:
+            source_thread_identity = request_context.get("source_thread_identity")
+            if source_thread_identity not in (None, ""):
+                route_request_context["source_thread_identity"] = str(source_thread_identity)
+            route_request_context["addressed"] = bool(request_context.get("addressed", False))
+
+        route_source_metadata = {
+            "channel": source,
+            "identity": str(source_metadata.get("identity") or "unknown"),
+            "tool_name": str(source_metadata.get("tool_name") or "decomposition"),
+        }
+        if source_metadata.get("source_id") not in (None, ""):
+            route_source_metadata["source_id"] = str(source_metadata["source_id"])
+
+        return {
+            "schema_version": "route.v1",
+            "request_context": route_request_context,
+            "input": {
+                "prompt": _CONCEPTUAL_ROUTE_PROMPT,
+                "context": {"conceptual_message": conceptual_message},
+            },
+            "subrequest": {
+                "subrequest_id": subrequest_id,
+                "segment_id": segment_id,
+                "fanout_mode": "ordered",
+            },
+            "target": {
+                "butler": target_butler,
+                "tool": "route.execute",
+            },
+            "source_metadata": route_source_metadata,
+            "__switchboard_route_context": {
+                "request_id": request_id,
+                "fanout_mode": "decomposition",
+                "segment_id": segment_id,
+                "attempt": 1,
+            },
+        }
 
     async def _load_dashboard_context(
         self,
@@ -1436,22 +1638,42 @@ class MessagePipeline:
         return f"{compact[: max_chars - 3]}..."
 
     @staticmethod
+    def _opaque_observability_ref(value: Any) -> str:
+        normalized = str(value or "unknown").encode("utf-8")
+        return hashlib.sha256(normalized).hexdigest()[:16]
+
+    @staticmethod
+    def _uses_content_blind_observability(source: str, args: dict[str, Any]) -> bool:
+        request_context = args.get("request_context")
+        payload_type = (
+            request_context.get("payload_type") if isinstance(request_context, dict) else None
+        )
+        return source == "whatsapp_user_client" or payload_type == "conversation_history"
+
+    @staticmethod
     def _log_fields(
         *,
         source: str,
         chat_id: str | None,
         target_butler: str | None,
         latency_ms: float | None,
+        content_blind: bool = False,
         **extra: Any,
     ) -> dict[str, Any]:
+        content_blind = content_blind or source == "whatsapp_user_client"
+        safe_chat_id = chat_id
+        if content_blind and chat_id is not None:
+            safe_chat_id = MessagePipeline._opaque_observability_ref(chat_id)
         fields: dict[str, Any] = {
             "source": source,
-            "chat_id": chat_id,
+            "chat_id": safe_chat_id,
             "target_butler": target_butler,
             "destination_butler": target_butler,
             "latency_ms": latency_ms,
         }
         fields.update(extra)
+        if content_blind and fields.get("request_id") not in (None, ""):
+            fields["request_id"] = MessagePipeline._opaque_observability_ref(fields["request_id"])
         return fields
 
     @staticmethod
@@ -1640,6 +1862,7 @@ class MessagePipeline:
         if not self._enable_ingress_dedupe:
             return None
 
+        content_blind_observability = self._uses_content_blind_observability(source, args)
         received_at = datetime.now(UTC)
         dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
             args=args,
@@ -1696,6 +1919,22 @@ class MessagePipeline:
                 received_at,
             )
         except Exception as exc:
+            if content_blind_observability:
+                failure_class = type(exc).__name__
+                logger.error(
+                    "Failed to ensure message_inbox partition failure_class=%s",
+                    failure_class,
+                    extra=self._log_fields(
+                        source=source,
+                        chat_id=chat_id,
+                        target_butler=None,
+                        latency_ms=None,
+                        content_blind=True,
+                    ),
+                )
+                raise RuntimeError(
+                    f"Failed to ensure message_inbox partition ({failure_class})"
+                ) from None
             logger.error(
                 "Failed to ensure message_inbox partition for received_at=%s: %s",
                 received_at,
@@ -1771,6 +2010,7 @@ class MessagePipeline:
                 chat_id=chat_id,
                 target_butler=None,
                 latency_ms=None,
+                content_blind=content_blind_observability,
                 request_id=str(request_id),
                 ingress_decision=decision,
                 dedupe_key=dedupe_key,
@@ -1910,7 +2150,10 @@ class MessagePipeline:
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
         message_length = len(message_text)
-        message_preview = self._message_preview(message_text)
+        content_blind_observability = self._uses_content_blind_observability(source, args)
+        message_preview = (
+            None if content_blind_observability else self._message_preview(message_text)
+        )
         policy_tier = str(args.get("policy_tier") or "default")
         prompt_version = str(args.get("prompt_version") or "switchboard.v2")
         model_family = str(args.get("model_family") or "claude")
@@ -1938,17 +2181,23 @@ class MessagePipeline:
 
         with telemetry.track_inflight_requests():
             with tracer.start_as_current_span("butlers.switchboard.message") as root_span:
-                root_span.set_attribute("request.id", request_id)
+                root_span.set_attribute(
+                    "request.id",
+                    (
+                        self._opaque_observability_ref(request_id)
+                        if content_blind_observability
+                        else request_id
+                    ),
+                )
                 root_span.set_attribute("request.received_at", received_at.isoformat())
                 root_span.set_attribute("request.source_channel", source)
-                root_span.set_attribute(
-                    "request.source_endpoint_identity",
-                    str(source_metadata.get("identity") or "unknown"),
-                )
-                root_span.set_attribute(
-                    "request.source_thread_identity",
-                    str(source_id or chat_id or "none"),
-                )
+                endpoint_trace_value = str(source_metadata.get("identity") or "unknown")
+                thread_trace_value = str(source_id or chat_id or "none")
+                if content_blind_observability:
+                    endpoint_trace_value = self._opaque_observability_ref(endpoint_trace_value)
+                    thread_trace_value = self._opaque_observability_ref(thread_trace_value)
+                root_span.set_attribute("request.source_endpoint_identity", endpoint_trace_value)
+                root_span.set_attribute("request.source_thread_identity", thread_trace_value)
                 root_span.set_attribute("request.schema_version", schema_version)
                 root_span.set_attribute("switchboard.policy_tier", policy_tier)
                 root_span.set_attribute("switchboard.prompt_version", prompt_version)
@@ -1969,16 +2218,26 @@ class MessagePipeline:
                                 source=source,
                                 chat_id=chat_id,
                             )
-                        except Exception:
-                            logger.exception(
-                                "Ingress dedupe persistence failed; proceeding without dedupe",
-                                extra=self._log_fields(
-                                    source=source,
-                                    chat_id=chat_id,
-                                    target_butler=None,
-                                    latency_ms=None,
-                                ),
+                        except Exception as exc:
+                            log_fields = self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler=None,
+                                latency_ms=None,
+                                content_blind=content_blind_observability,
                             )
+                            if content_blind_observability:
+                                logger.warning(
+                                    "Ingress dedupe persistence failed; proceeding without dedupe "
+                                    "failure_class=%s",
+                                    type(exc).__name__,
+                                    extra=log_fields,
+                                )
+                            else:
+                                logger.exception(
+                                    "Ingress dedupe persistence failed; proceeding without dedupe",
+                                    extra=log_fields,
+                                )
                             ingress_record = None
 
                         if ingress_record is not None:
@@ -2014,6 +2273,7 @@ class MessagePipeline:
                         chat_id=chat_id,
                         target_butler=None,
                         latency_ms=0.0,
+                        content_blind=content_blind_observability,
                         request_id=request_id,
                         lifecycle_state="accepted",
                         message_length=message_length,
@@ -2243,6 +2503,7 @@ class MessagePipeline:
                                 chat_id=chat_id,
                                 target_butler=_triage_target,
                                 latency_ms=bypass_latency_ms,
+                                content_blind=content_blind_observability,
                                 request_id=request_id,
                                 lifecycle_state=lifecycle_state,
                                 triage_decision=_triage_decision,
@@ -2303,6 +2564,7 @@ class MessagePipeline:
                             chat_id=chat_id,
                             target_butler="skipped",
                             latency_ms=0.0,
+                            content_blind=content_blind_observability,
                             request_id=request_id,
                             lifecycle_state="skipped",
                         ),
@@ -2345,6 +2607,7 @@ class MessagePipeline:
                             chat_id=chat_id,
                             target_butler="metadata_only",
                             latency_ms=0.0,
+                            content_blind=content_blind_observability,
                             request_id=request_id,
                             lifecycle_state="metadata_only",
                         ),
@@ -2382,11 +2645,11 @@ class MessagePipeline:
                 # --- Conversation decomposition branch ---
                 # When the ingest envelope has control.payload_type ==
                 # "conversation_history", load the structured conversation
-                # messages from the DB and format them as conversation history.
-                # Then fall through to the standard routing path which uses
-                # route_to_butler to dispatch to sub-butlers.
+                # messages from the DB and keep them structured through
+                # per-speaker identity resolution. Then format the enriched
+                # messages and fall through to the standard routing path.
                 _payload_type = request_context.get("payload_type") if request_context else None
-                _decomp_history: str | None = None
+                _decomp_messages: list[dict[str, Any]] | None = None
                 if _payload_type == "conversation_history":
                     logger.info(
                         "Pipeline entering conversation decomposition branch",
@@ -2395,14 +2658,15 @@ class MessagePipeline:
                             chat_id=chat_id,
                             target_butler=None,
                             latency_ms=0.0,
+                            content_blind=content_blind_observability,
                             request_id=request_id,
                             lifecycle_state="decomposing",
                         ),
                     )
-                    _decomp_history = await self._load_decomp_conversation_history(
+                    _decomp_messages = await self._load_decomp_conversation_messages(
                         message_inbox_id,
                     )
-                    if _decomp_history is None:
+                    if _decomp_messages is None:
                         telemetry = get_switchboard_telemetry()
                         logger.info(
                             "Decomposition: no conversation_history found; "
@@ -2412,6 +2676,7 @@ class MessagePipeline:
                                 chat_id=chat_id,
                                 target_butler=None,
                                 latency_ms=0.0,
+                                content_blind=content_blind_observability,
                                 request_id=request_id,
                                 lifecycle_state="decomposed_empty",
                             ),
@@ -2450,26 +2715,13 @@ class MessagePipeline:
                 start = time.perf_counter()
                 spawn_start = time.perf_counter()
                 try:
-                    # Load conversation history — use structured batch data
-                    # from the decomposition branch if available, otherwise
-                    # load from the conversation log.
+                    # Load conversation history from the conversation log for
+                    # ordinary messages. Structured decomposition messages are
+                    # formatted only after per-speaker identity enrichment.
                     conversation_history = ""
                     source_thread_identity = self._source_thread_identity(args)
 
-                    if _decomp_history is not None:
-                        conversation_history = _decomp_history
-                        logger.debug(
-                            "Using decomposition conversation history",
-                            extra=self._log_fields(
-                                source=source,
-                                chat_id=chat_id,
-                                target_butler=None,
-                                latency_ms=0.0,
-                                request_id=request_id,
-                                history_length=len(conversation_history),
-                            ),
-                        )
-                    elif source_thread_identity:
+                    if _decomp_messages is None and source_thread_identity:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.load_history"
                         ):
@@ -2490,6 +2742,7 @@ class MessagePipeline:
                                         chat_id=chat_id,
                                         target_butler=None,
                                         latency_ms=history_latency_ms,
+                                        content_blind=content_blind_observability,
                                         request_id=request_id,
                                         history_length=len(conversation_history),
                                     ),
@@ -2509,21 +2762,36 @@ class MessagePipeline:
                             "butlers.switchboard.routing.identity_resolution"
                         ):
                             try:
-                                from butlers.tools.switchboard.identity.inject import (
-                                    resolve_and_inject_identity,
-                                )
-
-                                sender_value = source_metadata.get(
-                                    "source_id"
-                                ) or source_metadata.get("identity")
-                                if sender_value and source:
-                                    identity_result = await resolve_and_inject_identity(
-                                        self._pool,
-                                        channel_type=source,
-                                        channel_value=sender_value,
-                                        display_name=args.get("sender_name"),
-                                        notify_owner_fn=self._notify_owner_fn,
+                                identity_result: IdentityResolutionResult | None = None
+                                if _decomp_messages is not None:
+                                    (
+                                        _decomp_messages,
+                                        batch_resolutions,
+                                    ) = await self._resolve_decomp_speakers(
+                                        source_channel=source,
+                                        messages=_decomp_messages,
                                     )
+                                    primary_sender = self._string_or_none(args.get("source_id"))
+                                    if primary_sender is not None:
+                                        identity_result = batch_resolutions.get(primary_sender)
+                                else:
+                                    from butlers.tools.switchboard.identity.inject import (
+                                        resolve_and_inject_identity,
+                                    )
+
+                                    sender_value = source_metadata.get(
+                                        "source_id"
+                                    ) or source_metadata.get("identity")
+                                    if sender_value and source:
+                                        identity_result = await resolve_and_inject_identity(
+                                            self._pool,
+                                            channel_type=source,
+                                            channel_value=sender_value,
+                                            display_name=args.get("sender_name"),
+                                            notify_owner_fn=self._notify_owner_fn,
+                                        )
+
+                                if identity_result is not None:
                                     identity_preamble = identity_result.preamble or None
                                     if identity_result.contact_id is not None:
                                         source_contact_id = str(identity_result.contact_id)
@@ -2541,7 +2809,8 @@ class MessagePipeline:
                                     # create_temp_contact) no longer writes it, so the
                                     # switchboard-identity invariant holds.
                                     if (
-                                        identity_result.is_unknown
+                                        _decomp_messages is None
+                                        and identity_result.is_unknown
                                         and identity_result.entity_id is not None
                                         and identity_result.channel_value
                                     ):
@@ -2550,11 +2819,39 @@ class MessagePipeline:
                                             channel_type=source,
                                             channel_value=identity_result.channel_value,
                                         )
-                            except Exception:
-                                logger.debug(
-                                    "Identity resolution failed; proceeding without preamble",
-                                    exc_info=True,
-                                )
+                            except Exception as exc:
+                                if _decomp_messages is not None:
+                                    _decomp_messages = self._enrich_decomp_speaker_messages(
+                                        _decomp_messages,
+                                        {},
+                                    )
+                                    logger.warning(
+                                        "pipeline.decomposition_identity_resolution_failed",
+                                        extra={
+                                            "source_channel": source,
+                                            "failure_class": type(exc).__name__,
+                                        },
+                                    )
+                                else:
+                                    logger.debug(
+                                        "Identity resolution failed; proceeding without preamble",
+                                        exc_info=True,
+                                    )
+
+                    if _decomp_messages is not None:
+                        conversation_history = _format_decomp_conversation_history(_decomp_messages)
+                        logger.debug(
+                            "Using decomposition conversation history",
+                            extra=self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler=None,
+                                latency_ms=0.0,
+                                content_blind=content_blind_observability,
+                                request_id=request_id,
+                                history_length=len(conversation_history),
+                            ),
+                        )
 
                     # Dashboard channel: load conversation_id/page_context (if any) so
                     # the two-lane prompt can surface them and route_to_butler /
@@ -2630,7 +2927,10 @@ class MessagePipeline:
                     if self._classification_timeout_s is not None:
                         dispatch_kwargs["timeout_override"] = self._classification_timeout_s
 
-                    with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
+                    _content_blind_dispatch_failure: _ContentBlindDispatchFailure | None = None
+                    with tracer.start_as_current_span(
+                        "butlers.switchboard.routing.llm_decision"
+                    ) as decision_span:
                         spawn_result = None
                         # Structured tool-use fast lane (bu-qvnce.12 slice 3):
                         # attempt it first when a local FastMCP server is
@@ -2669,22 +2969,51 @@ class MessagePipeline:
                                     butler_name=self._source_butler,
                                     credential_store=self._credential_store,
                                 )
-                            except Exception:
-                                logger.exception(
-                                    "Structured classification fast lane raised "
-                                    "unexpectedly; falling back to CLI classification",
-                                    extra=self._log_fields(
-                                        source=source,
-                                        chat_id=chat_id,
-                                        target_butler=None,
-                                        latency_ms=None,
-                                        request_id=request_id,
-                                    ),
+                            except Exception as exc:
+                                structured_log_fields = self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler=None,
+                                    latency_ms=None,
+                                    content_blind=content_blind_observability,
+                                    request_id=request_id,
                                 )
+                                if content_blind_observability:
+                                    logger.warning(
+                                        "Structured classification fast lane raised; "
+                                        "falling back to CLI classification failure_class=%s",
+                                        type(exc).__name__,
+                                        extra=structured_log_fields,
+                                    )
+                                else:
+                                    logger.exception(
+                                        "Structured classification fast lane raised "
+                                        "unexpectedly; falling back to CLI classification",
+                                        extra=structured_log_fields,
+                                    )
                                 spawn_result = None
 
                         if spawn_result is None:
-                            spawn_result = await self._dispatch_fn(**dispatch_kwargs)
+                            try:
+                                spawn_result = await self._dispatch_fn(**dispatch_kwargs)
+                            except Exception as exc:
+                                if not content_blind_observability:
+                                    raise
+                                _content_blind_dispatch_failure = _ContentBlindDispatchFailure(
+                                    type(exc).__name__
+                                )
+                                decision_span.set_attribute(
+                                    "error.class",
+                                    _content_blind_dispatch_failure.failure_class,
+                                )
+                                decision_span.set_attribute(
+                                    "error.category",
+                                    _content_blind_dispatch_failure.failure_category,
+                                )
+                                decision_span.set_status(trace.StatusCode.ERROR)
+
+                    if _content_blind_dispatch_failure is not None:
+                        raise _content_blind_dispatch_failure from None
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.routing_decision_latency_ms.record(spawn_latency_ms, request_attrs)
@@ -2767,7 +3096,27 @@ class MessagePipeline:
                             # excerpts, confidence). _normalize_decomp_signals
                             # accepts list / single-object / wrapper-object shapes
                             # and drops entries without a routable target.
-                            _decomp_signals = _normalize_decomp_signals(_parsed)
+                            authoritative_by_message_id: dict[str, Mapping[str, Any]] = {}
+                            colliding_message_ids: set[str] = set()
+                            for authoritative_message in _decomp_messages or []:
+                                authoritative_message_id = authoritative_message.get("message_id")
+                                if (
+                                    not isinstance(authoritative_message_id, str)
+                                    or not authoritative_message_id.strip()
+                                    or authoritative_message_id in colliding_message_ids
+                                ):
+                                    continue
+                                if authoritative_message_id in authoritative_by_message_id:
+                                    authoritative_by_message_id.pop(authoritative_message_id)
+                                    colliding_message_ids.add(authoritative_message_id)
+                                    continue
+                                authoritative_by_message_id[authoritative_message_id] = (
+                                    authoritative_message
+                                )
+                            _decomp_signals = _normalize_decomp_signals(
+                                _parsed,
+                                authoritative_by_message_id=authoritative_by_message_id,
+                            )
                         except (json.JSONDecodeError, ValueError):
                             pass
 
@@ -2784,6 +3133,7 @@ class MessagePipeline:
                                 chat_id=chat_id,
                                 target_butler=None,
                                 latency_ms=spawn_latency_ms,
+                                content_blind=content_blind_observability,
                                 request_id=request_id,
                                 lifecycle_state="decomposed_empty",
                             ),
@@ -2840,7 +3190,7 @@ class MessagePipeline:
                         _decomp_failed_details: list[str] = []
                         _decomp_dropped: list[dict[str, str]] = []
 
-                        for _sig in _decomp_signals:
+                        for _concept_index, _sig in enumerate(_decomp_signals, start=1):
                             # Signals are normalized to the full schema upstream, so
                             # target_butler is always present and routable here.
                             _target = _sig["target_butler"]
@@ -2881,25 +3231,24 @@ class MessagePipeline:
                                     )
                                     continue
 
-                            _route_args: dict[str, Any] = {
-                                **_sig["tool_args"],
-                                "__switchboard_route_context": {
-                                    "request_id": request_id,
-                                    "fanout_mode": "decomposition",
-                                    "segment_id": f"decomp-{_target}",
-                                    "attempt": 1,
-                                },
-                                # Carry the cherry-picked conceptual-message
-                                # metadata to the target butler so it receives the
-                                # relevant excerpts and extraction confidence, not
-                                # just the bare tool args.
-                                "__conceptual_message": {
+                            _route_internal_context = {
+                                "conceptual_message": {
                                     "signal_type": _sig["signal_type"],
+                                    "tool_args": _sig["tool_args"],
                                     "excerpts": _sig["excerpts"],
                                     "confidence": _sig["confidence"],
-                                },
+                                }
                             }
                             if _sig["signal_type"] == _CALENDAR_PROPOSAL_SIGNAL_TYPE:
+                                _route_args: dict[str, Any] = {
+                                    **_sig["tool_args"],
+                                    "__switchboard_route_context": {
+                                        "request_id": request_id,
+                                        "fanout_mode": "decomposition",
+                                        "segment_id": f"decomp-{_concept_index}-{_target}",
+                                        "attempt": 1,
+                                    },
+                                }
                                 _route_args.update(
                                     {
                                         "butler_name": _CALENDAR_PROPOSAL_TARGET_BUTLER,
@@ -2915,6 +3264,19 @@ class MessagePipeline:
                                         ),
                                     }
                                 )
+                            else:
+                                _route_args = self._build_decomp_route_envelope(
+                                    target_butler=_target,
+                                    concept_index=_concept_index,
+                                    request_id=request_id,
+                                    received_at=received_at,
+                                    source=source,
+                                    source_metadata=source_metadata,
+                                    request_context=request_context,
+                                    conceptual_message=_route_internal_context[
+                                        "conceptual_message"
+                                    ],
+                                )
 
                             _decomp_routed.append(_target)
 
@@ -2925,18 +3287,17 @@ class MessagePipeline:
                                     tool_name=_sig_tool,
                                     args=_route_args,
                                     source_butler="switchboard",
+                                    internal_context=_route_internal_context,
                                 )
                                 if isinstance(_route_result, dict) and _route_result.get("error"):
                                     _decomp_failed.append(_target)
-                                    _decomp_failed_details.append(
-                                        f"{_target}: {_route_result['error']}"
-                                    )
+                                    _decomp_failed_details.append(f"{_target}: route_error")
                                 else:
                                     _decomp_acked.append(_target)
                             except Exception as _route_exc:
                                 _decomp_failed.append(_target)
                                 _decomp_failed_details.append(
-                                    f"{_target}: {type(_route_exc).__name__}: {_route_exc}"
+                                    f"{_target}: route_failed:{type(_route_exc).__name__}"
                                 )
 
                         if not _decomp_routed:
@@ -3043,6 +3404,7 @@ class MessagePipeline:
                                         chat_id=chat_id,
                                         target_butler="qa",
                                         latency_ms=spawn_latency_ms,
+                                        content_blind=content_blind_observability,
                                         request_id=request_id,
                                         case_reference=bug_case_ref,
                                         **_co_occurrence_metadata,
@@ -3055,6 +3417,7 @@ class MessagePipeline:
                                     chat_id=chat_id,
                                     target_butler="qa",
                                     latency_ms=spawn_latency_ms,
+                                    content_blind=content_blind_observability,
                                     request_id=request_id,
                                     lifecycle_state=bug_lifecycle,
                                     case_reference=bug_case_ref,
@@ -3233,6 +3596,7 @@ class MessagePipeline:
                                 chat_id=chat_id,
                                 target_butler=fallback_target,
                                 latency_ms=spawn_latency_ms,
+                                content_blind=content_blind_observability,
                                 request_id=request_id,
                                 lifecycle_state="fallback",
                             ),
@@ -3319,20 +3683,20 @@ class MessagePipeline:
                         },
                     )
 
-                    logger.info(
-                        "Pipeline routed message",
-                        extra=self._log_fields(
-                            source=source,
-                            chat_id=chat_id,
-                            target_butler=target_butler,
-                            latency_ms=total_latency_ms,
-                            classification_latency_ms=spawn_latency_ms,
-                            routing_latency_ms=spawn_latency_ms,
-                            request_id=request_id,
-                            lifecycle_state=lifecycle_state,
-                            cc_summary=cc_output[:200] if cc_output else "",
-                        ),
+                    routed_log_fields = self._log_fields(
+                        source=source,
+                        chat_id=chat_id,
+                        target_butler=target_butler,
+                        latency_ms=total_latency_ms,
+                        content_blind=content_blind_observability,
+                        classification_latency_ms=spawn_latency_ms,
+                        routing_latency_ms=spawn_latency_ms,
+                        request_id=request_id,
+                        lifecycle_state=lifecycle_state,
                     )
+                    if not content_blind_observability:
+                        routed_log_fields["cc_summary"] = cc_output[:200] if cc_output else ""
+                    logger.info("Pipeline routed message", extra=routed_log_fields)
 
                     if message_inbox_id:
                         completed_at = datetime.now(UTC)
@@ -3365,8 +3729,26 @@ class MessagePipeline:
                     )
 
                 except Exception as exc:
-                    error_msg = f"{type(exc).__name__}: {exc}"
-                    error_class = normalize_error_class(exc)
+                    if content_blind_observability:
+                        failure_class = str(getattr(exc, "failure_class", type(exc).__name__))
+                        failure_category = str(
+                            getattr(exc, "failure_category", "classification_failed")
+                        )
+                        error_class = normalize_error_class(failure_class)
+                        error_msg = f"classification_failed:{failure_category}:{failure_class}"
+                        decomposition_error: dict[str, Any] = {
+                            "error": {
+                                "category": failure_category,
+                                "class": failure_class,
+                            }
+                        }
+                    else:
+                        error_msg = f"{type(exc).__name__}: {exc}"
+                        error_class = normalize_error_class(exc)
+                        decomposition_error = {
+                            "request_id": request_id,
+                            "error": error_msg,
+                        }
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.fallback_to_general.add(
                         1,
@@ -3393,6 +3775,7 @@ class MessagePipeline:
                             chat_id=chat_id,
                             target_butler="general",
                             latency_ms=spawn_latency_ms,
+                            content_blind=content_blind_observability,
                             request_id=request_id,
                             lifecycle_state="errored",
                             error_class=error_class,
@@ -3404,10 +3787,7 @@ class MessagePipeline:
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
                             await self._update_message_inbox_lifecycle(
                                 message_inbox_id=message_inbox_id,
-                                decomposition_output={
-                                    "request_id": request_id,
-                                    "error": error_msg,
-                                },
+                                decomposition_output=decomposition_error,
                                 dispatch_outcomes=None,
                                 response_summary="Classification failed",
                                 lifecycle_state="errored",

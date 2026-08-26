@@ -50,6 +50,7 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -88,6 +89,13 @@ from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 logger = logging.getLogger(__name__)
+
+
+def _opaque_transport_ref(value: Any) -> str:
+    """Return a stable non-reversible reference for privacy-sensitive transport IDs."""
+    normalized = str(value or "unknown").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()[:12]
+
 
 # ---------------------------------------------------------------------------
 # Addressed-mention detection for passive connectors
@@ -144,6 +152,7 @@ _CONNECTOR_TYPE = "whatsapp_user_client"
 # LLM cannot render a verdict, while a genuine LLM IGNORE still drops (fail-open
 # only affects the error path). Reversible: restore the shared 0.5 default.
 _WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN = 0.3
+_WHATSAPP_UNKNOWN_SENDER_LABEL = "Unknown WhatsApp sender"
 
 # ---------------------------------------------------------------------------
 # Backfill acknowledgement framing
@@ -729,13 +738,19 @@ class WhatsAppUserClientConnector:
                 bridge_phone = f"+{bridge_phone}"
             self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
             logger.info(
-                "Resolved endpoint_identity from bridge: %s",
-                self._config.endpoint_identity,
+                "WhatsApp endpoint identity resolved",
+                extra={
+                    "endpoint_resolved": True,
+                    "resolution_source": "bridge",
+                },
             )
         elif status.get("state") == "connected":
             logger.warning(
-                "Bridge connected but did not report phone number — using endpoint_identity=%s",
-                self._config.endpoint_identity,
+                "WhatsApp bridge connected without endpoint identity",
+                extra={
+                    "bridge_connected": True,
+                    "endpoint_resolved": False,
+                },
             )
 
     async def start(self) -> None:
@@ -792,9 +807,9 @@ class WhatsAppUserClientConnector:
         logger.info(
             "Starting WhatsApp user-client connector",
             extra={
-                "endpoint_identity": self._config.endpoint_identity,
-                "last_event_id": self._last_event_id,
-                "backfill_window_h": self._config.backfill_window_h,
+                "endpoint_resolved": self._config.endpoint_identity != "whatsapp:pending",
+                "checkpoint_present": self._last_event_id is not None,
+                "backfill_enabled": self._config.backfill_window_h is not None,
             },
         )
 
@@ -907,9 +922,9 @@ class WhatsAppUserClientConnector:
                 raise
             except Exception as exc:
                 logger.warning(
-                    "Bridge SSE stream error (attempt %d): %s — reconnecting with backoff",
+                    "Bridge SSE stream error (attempt %d, failure_class=%s); reconnecting",
                     backoff_attempt + 1,
-                    exc,
+                    type(exc).__name__,
                 )
 
             if not self._running:
@@ -947,10 +962,7 @@ class WhatsAppUserClientConnector:
 
         # Session invalidated: the WhatsApp session was logged out.
         if bridge_type == "session_invalidated":
-            logger.warning(
-                "WhatsApp session invalidated (logged out): %s",
-                str(event.get("content", ""))[:200],
-            )
+            logger.warning("WhatsApp session invalidated (logged out)")
             return
 
         # Legacy filter: some callers may set event_type to distinguish
@@ -964,7 +976,7 @@ class WhatsAppUserClientConnector:
         chat_jid = event.get("chat_jid") or event.get("chat_id")
 
         if not chat_jid:
-            logger.warning("Bridge event missing chat_jid, skipping: %r", str(event)[:200])
+            logger.warning("Bridge event missing chat_jid, skipping")
             return
 
         if msg_id:
@@ -1019,13 +1031,14 @@ class WhatsAppUserClientConnector:
             buf.messages.append(event)
             msg_count = len(buf.messages)
 
-        logger.debug("Buffered message for chat %s (buffer size: %d)", chat_jid, msg_count)
+        chat_ref = _opaque_transport_ref(chat_jid)
+        logger.debug("Buffered message for chat_ref=%s (buffer size: %d)", chat_ref, msg_count)
 
         # Force-flush if buffer cap reached
         if msg_count >= self._config.buffer_max_messages:
             logger.info(
-                "Chat %s buffer reached cap (%d messages), force-flushing",
-                chat_jid,
+                "Chat buffer reached cap (chat_ref=%s, messages=%d), force-flushing",
+                chat_ref,
                 msg_count,
             )
             await self._flush_chat_buffer(chat_jid)
@@ -1058,7 +1071,10 @@ class WhatsAppUserClientConnector:
                 return None
             return int(raw)
         except Exception as exc:
-            logger.debug("WA: Failed to read flush_interval_s from DB (non-fatal): %s", exc)
+            logger.debug(
+                "WA: failed to read flush interval from DB (failure_class=%s, non-fatal)",
+                type(exc).__name__,
+            )
             return None
 
     async def _flush_scanner_loop(self) -> None:
@@ -1413,8 +1429,8 @@ class WhatsAppUserClientConnector:
             elapsed = now - buf.last_flush_ts
             if elapsed >= flush_interval_s:
                 logger.info(
-                    "Flush interval elapsed for chat %s (elapsed=%.1fs), flushing",
-                    jid,
+                    "Flush interval elapsed (chat_ref=%s, elapsed=%.1fs), flushing",
+                    _opaque_transport_ref(jid),
                     elapsed,
                 )
                 await self._flush_chat_buffer(jid)
@@ -1432,11 +1448,11 @@ class WhatsAppUserClientConnector:
         )
         for jid, result in zip(chat_jids, results):
             if isinstance(result, Exception):
-                logger.exception(
-                    "Error flushing chat buffer %s during %s: %s",
-                    jid,
+                logger.warning(
+                    "Error flushing chat buffer (chat_ref=%s, reason=%s, failure_class=%s)",
+                    _opaque_transport_ref(jid),
                     reason,
-                    result,
+                    type(result).__name__,
                 )
 
     async def _flush_chat_buffer(self, chat_jid: str) -> None:
@@ -1462,7 +1478,8 @@ class WhatsAppUserClientConnector:
             buf.messages = []
             buf.last_flush_ts = time.monotonic()
 
-        logger.info("Flushing %d messages for chat %s", len(buffered_events), chat_jid)
+        chat_ref = _opaque_transport_ref(chat_jid)
+        logger.info("Flushing messages (chat_ref=%s, count=%d)", chat_ref, len(buffered_events))
 
         # Build batch event ID
         event_ids = [e.get("message_id") or e.get("id") or "" for e in buffered_events]
@@ -1488,8 +1505,8 @@ class WhatsAppUserClientConnector:
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
             if not _ip_decision.allowed:
                 logger.debug(
-                    "Ingestion policy blocked batch for chat %s: action=%s reason=%s",
-                    chat_jid,
+                    "Ingestion policy blocked batch (chat_ref=%s, action=%s, reason=%s)",
+                    chat_ref,
                     _ip_decision.action,
                     _ip_decision.reason,
                 )
@@ -1509,8 +1526,8 @@ class WhatsAppUserClientConnector:
             _gp_decision = self._global_ingestion_policy.evaluate(_ip_envelope)
             if _gp_decision.action == "skip":
                 logger.debug(
-                    "Global ingestion policy skipped batch for chat %s: reason=%s",
-                    chat_jid,
+                    "Global ingestion policy skipped batch (chat_ref=%s, reason=%s)",
+                    chat_ref,
                     _gp_decision.reason,
                 )
                 self._record_batch_filtered_event(
@@ -1554,7 +1571,7 @@ class WhatsAppUserClientConnector:
                 if d_result.verdict == "IGNORE":
                     ignore_kind = classify_ignore_kind(d_result)
                     logger.debug(
-                        "Discretion IGNORE (%s) for batch in chat %s", ignore_kind, chat_jid
+                        "Discretion IGNORE (%s) for batch (chat_ref=%s)", ignore_kind, chat_ref
                     )
                     # Per-channel drop-rate visibility (bu-cicgb): low-cardinality
                     # channel × kind counter so over-filtering (and the genuine
@@ -1585,17 +1602,18 @@ class WhatsAppUserClientConnector:
                 await self._save_checkpoint()
 
         except Exception as exc:
-            logger.exception(
-                "Failed to flush chat buffer for chat %s",
-                chat_jid,
-                extra={"endpoint_identity": self._config.endpoint_identity},
+            failure_class = type(exc).__name__
+            logger.warning(
+                "Failed to flush chat buffer (chat_ref=%s, failure_class=%s)",
+                chat_ref,
+                failure_class,
             )
             self._record_batch_filtered_event(
                 chat_jid=chat_jid,
                 batch_event_id=batch_event_id,
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
-                error_detail=str(exc),
+                error_detail=failure_class,
             )
             await self._flush_and_drain()
 
@@ -1660,8 +1678,9 @@ class WhatsAppUserClientConnector:
         (``"6598150802@s.whatsapp.net"``) or as an opaque linked identifier
         (``"164772343488740@lid"``).  Only the phone form carries anything a
         contact can be matched on, so ``@lid`` values are translated through
-        ``whatsmeow_lid_map``.  Returns ``None`` when a ``@lid`` has no known
-        mapping — an untranslatable identity would only resolve to nobody.
+        ``whatsmeow_lid_map``.  An unmapped LID remains device-free and opaque:
+        it cannot resolve to a contact yet, but it must retain a stable identity
+        so a batch can assign it a neutral speaker label consistently.
         """
         split = self._split_jid(sender_jid)
         if split is None:
@@ -1669,8 +1688,30 @@ class WhatsAppUserClientConnector:
         user, server = split
         if server == "lid":
             phone = self._lid_to_phone.get(user)
-            return f"{phone}@s.whatsapp.net" if phone else None
+            return f"{phone}@s.whatsapp.net" if phone else f"{user}@lid"
         return f"{user}@{server}"
+
+    def _project_batch_senders(
+        self,
+        buffered_events: list[dict[str, Any]],
+    ) -> dict[str, tuple[str, str]]:
+        """Return normalized identities and neutral labels for a batch's messages."""
+        identities: list[str] = []
+        event_identities: list[tuple[str, str]] = []
+        for event in buffered_events:
+            raw_jid = str(event.get("sender_jid") or event.get("from_jid") or "")
+            identity = self._participant_identity(raw_jid) or "unknown"
+            event_identities.append((str(event.get("message_id") or event.get("id")), identity))
+            if identity not in identities:
+                identities.append(identity)
+        labels = {
+            identity: f"{_WHATSAPP_UNKNOWN_SENDER_LABEL} {index}"
+            for index, identity in enumerate(identities, start=1)
+        }
+        return {
+            message_id: (identity, labels.get(identity, _WHATSAPP_UNKNOWN_SENDER_LABEL))
+            for message_id, identity in event_identities
+        }
 
     async def _refresh_lid_map(self, sender_jids: set[str]) -> None:
         """Load ``lid → phone`` rows for the LIDs about to be flushed.
@@ -1691,16 +1732,16 @@ class WhatsAppUserClientConnector:
                 "SELECT lid, pn FROM public.whatsmeow_lid_map WHERE lid = ANY($1::text[])",
                 missing,
             )
-        except Exception:
+        except Exception as exc:
             # The table is owned by the Go bridge, not a Butlers migration, so
             # schema drift there would otherwise silently zero out participant
             # recovery for every LID sender — the exact failure this connector
             # change exists to fix.  Warn rather than debug so it is visible.
             logger.warning(
                 "Could not read whatsmeow_lid_map; %d LID sender(s) will not "
-                "resolve to contacts this flush",
+                "resolve to contacts this flush (failure_class=%s)",
                 len(missing),
-                exc_info=True,
+                type(exc).__name__,
             )
             return
         for row in rows:
@@ -1756,11 +1797,12 @@ class WhatsAppUserClientConnector:
     ) -> tuple[dict[str, str], str | None]:
         """Return ``(participants, owner_sender_id)`` for a batch.
 
-        ``participants`` maps each resolvable sender identity to a display
-        name.  The owner is identified by the bridge's ``raw.is_from_me`` flag
+        ``participants`` maps each normalized sender identity to a neutral
+        label. The owner is identified by the bridge's ``raw.is_from_me`` flag
         rather than a phone comparison, matching how
         ``_record_owner_outbound_if_applicable`` already reads ownership.
         """
+        sender_projection = self._project_batch_senders(buffered_events)
         participants: dict[str, str] = {}
         owner_sender_id: str | None = None
         for event in buffered_events:
@@ -1773,12 +1815,10 @@ class WhatsAppUserClientConnector:
                 # untranslatable co-sender cannot cost the batch its
                 # owner-direction signal.
                 owner_sender_id = identity
-            if identity is None:
-                continue
-            if identity not in participants:
-                participants[identity] = str(
-                    event.get("sender_name") or event.get("push_name") or identity
-                )
+            message_id = str(event.get("message_id") or event.get("id"))
+            projected_identity, label = sender_projection[message_id]
+            if projected_identity not in participants:
+                participants[projected_identity] = label
         return participants, owner_sender_id
 
     # -------------------------------------------------------------------------
@@ -1818,8 +1858,8 @@ class WhatsAppUserClientConnector:
             interaction_eligible = False
             self._metrics.record_interaction_gated(chat_type, participant_count)
             logger.debug(
-                "Interaction gated for batch in chat %s (participant_count=%d, chat_type=%s)",
-                chat_jid,
+                "Interaction gated for batch (chat_ref=%s, participant_count=%d, chat_type=%s)",
+                _opaque_transport_ref(chat_jid),
                 participant_count,
                 chat_type,
             )
@@ -1869,8 +1909,8 @@ class WhatsAppUserClientConnector:
         oldest_ts = timestamps[0] if timestamps else None
         newest_ts = timestamps[-1] if timestamps else None
 
-        # Build header
-        header_lines: list[str] = [f"=== Chat JID: {chat_jid} ==="]
+        # Build header. Chat and sender transport identifiers remain in raw.events.
+        header_lines: list[str] = ["=== WhatsApp conversation ==="]
         if oldest_ts and newest_ts and oldest_ts != newest_ts:
             header_lines.append(f"Window: {oldest_ts} → {newest_ts}")
         elif oldest_ts:
@@ -1878,11 +1918,13 @@ class WhatsAppUserClientConnector:
         header_lines.append("---")
 
         # Build message lines
+        sender_projection = self._project_batch_senders(buffered_events)
         text_parts: list[str] = []
         for event in buffered_events:
-            sender_jid = event.get("sender_jid") or event.get("from_jid") or "unknown"
+            message_id = str(event.get("message_id") or event.get("id"))
+            _, sender_label = sender_projection[message_id]
             msg_text = normalize_message_text(event)
-            text_parts.append(f"[{sender_jid}]: {msg_text}")
+            text_parts.append(f"[{sender_label}]: {msg_text}")
 
         footer_lines = ["---", f"Messages: {len(buffered_events)} new"]
 
@@ -1894,7 +1936,7 @@ class WhatsAppUserClientConnector:
         conversation_history: list[dict[str, Any]] = []
         for event in buffered_events:
             msg_id = event.get("message_id") or event.get("id")
-            sender_id = event.get("sender_jid") or event.get("from_jid")
+            sender_identity, sender_label = sender_projection[str(msg_id)]
             text = normalize_message_text(event)
             ts = event.get("timestamp") or event.get("observed_at")
             if ts is not None:
@@ -1908,7 +1950,8 @@ class WhatsAppUserClientConnector:
             conversation_history.append(
                 {
                     "message_id": msg_id,
-                    "sender_id": sender_id,
+                    "sender_identity": sender_identity,
+                    "sender": sender_label,
                     "text": text,
                     "timestamp": timestamp,
                     "is_new": True,
@@ -1919,7 +1962,6 @@ class WhatsAppUserClientConnector:
         # Build raw payload from all events
         raw_payload = {
             "events": buffered_events,
-            "chat_jid": chat_jid,
             "batch_size": len(buffered_events),
             "conversation_history": conversation_history,
         }
@@ -2007,8 +2049,8 @@ class WhatsAppUserClientConnector:
             interaction_eligible = False
             self._metrics.record_interaction_gated(chat_type, participant_count)
             logger.debug(
-                "Interaction gated for chat %s (participant_count=%d, chat_type=%s)",
-                chat_jid,
+                "Interaction gated (chat_ref=%s, participant_count=%d, chat_type=%s)",
+                _opaque_transport_ref(chat_jid),
                 participant_count,
                 chat_type,
             )
@@ -2050,33 +2092,30 @@ class WhatsAppUserClientConnector:
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
+        failure_class: str | None = None
         try:
             result = await self._mcp_client.call_tool("ingest", envelope)
-
             if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
-
-            logger.info(
-                "Submitted to Switchboard ingest",
-                extra={
-                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
-                    "duplicate": (
-                        result.get("duplicate", False) if isinstance(result, dict) else False
-                    ),
-                    "endpoint_identity": self._config.endpoint_identity,
-                    "external_event_id": envelope["event"]["external_event_id"],
-                },
-            )
+                failure_class = "ingest_error_response"
         except Exception as exc:
+            failure_class = type(exc).__name__
+
+        event_ref = _opaque_transport_ref(envelope.get("event", {}).get("external_event_id"))
+        if failure_class is not None:
             logger.error(
                 "Failed to submit to Switchboard ingest",
-                extra={
-                    "error": str(exc),
-                    "endpoint_identity": self._config.endpoint_identity,
-                },
+                extra={"failure_class": failure_class, "event_ref": event_ref},
             )
-            raise
+            raise RuntimeError("WhatsApp ingest submission failed") from None
+
+        logger.info(
+            "Submitted to Switchboard ingest",
+            extra={
+                "outcome": "accepted",
+                "duplicate": result.get("duplicate", False) if isinstance(result, dict) else False,
+                "event_ref": event_ref,
+            },
+        )
 
     # -------------------------------------------------------------------------
     # Internal: Flush and drain
@@ -2163,12 +2202,21 @@ class WhatsAppUserClientConnector:
                 self._last_event_id = data.get("last_event_id")
                 logger.info(
                     "Loaded checkpoint from DB",
-                    extra={"last_event_id": self._last_event_id},
+                    extra={"checkpoint_present": self._last_event_id is not None},
                 )
             else:
-                logger.info("No checkpoint in DB, starting from scratch")
-        except Exception:
-            logger.exception("Failed to load checkpoint from DB, starting from scratch")
+                logger.info(
+                    "No checkpoint in DB, starting from scratch",
+                    extra={"checkpoint_present": False},
+                )
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp checkpoint load failed",
+                extra={
+                    "checkpoint_present": False,
+                    "failure_class": type(exc).__name__,
+                },
+            )
 
     async def _save_checkpoint(self) -> None:
         """Persist checkpoint to DB."""
@@ -2189,10 +2237,13 @@ class WhatsAppUserClientConnector:
             self._last_checkpoint_save = time.time()
             logger.debug(
                 "Saved checkpoint to DB",
-                extra={"last_event_id": self._last_event_id},
+                extra={"checkpoint_present": self._last_event_id is not None},
             )
-        except Exception:
-            logger.exception("Failed to save checkpoint to DB")
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp checkpoint save failed",
+                extra={"failure_class": type(exc).__name__},
+            )
 
     # -------------------------------------------------------------------------
     # Internal: Backfill
@@ -2212,7 +2263,7 @@ class WhatsAppUserClientConnector:
             "Requesting backfill from bridge",
             extra={
                 "window_hours": self._config.backfill_window_h,
-                "endpoint_identity": self._config.endpoint_identity,
+                "backfill_enabled": True,
             },
         )
 
@@ -2258,7 +2309,10 @@ class WhatsAppUserClientConnector:
             )
         except Exception as exc:
             # Non-fatal: replay supplements the normal live stream.
-            logger.warning("Failed to request backfill from bridge: %s", exc)
+            logger.warning(
+                "WhatsApp backfill request failed",
+                extra={"failure_class": type(exc).__name__},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2406,21 +2460,28 @@ async def _resolve_whatsapp_phone_from_db() -> str | None:
                 phone = await resolve_owner_entity_info(pool, "whatsapp_phone")
                 if phone:
                     logger.info(
-                        "WhatsApp user-client: resolved whatsapp_phone from owner entity_info "
-                        "(db=%s)",
-                        db_name,
+                        "WhatsApp owner credential resolved",
+                        extra={
+                            "credential_present": True,
+                            "resolution_source": "owner_entity_info",
+                        },
                     )
                     return phone
             finally:
                 await pool.close()
         except Exception as exc:
             logger.warning(
-                "DB connection failed during WhatsApp credential resolution (db=%s): %s",
-                db_name,
-                exc,
+                "WhatsApp credential resolution candidate unavailable",
+                extra={"failure_class": type(exc).__name__},
             )
 
-    logger.warning("WhatsApp user-client: could not resolve whatsapp_phone from owner entity_info")
+    logger.warning(
+        "WhatsApp owner credential unavailable",
+        extra={
+            "credential_present": False,
+            "candidate_count": len(candidate_db_names),
+        },
+    )
     return None
 
 
@@ -2450,15 +2511,18 @@ async def run_whatsapp_user_client_connector() -> None:
         endpoint_identity = f"whatsapp:{phone}"
         config = replace(config, endpoint_identity=endpoint_identity)
         logger.info(
-            "WhatsApp user-client connector: endpoint_identity=%s (from DB)",
-            endpoint_identity,
+            "WhatsApp endpoint identity resolved",
+            extra={
+                "endpoint_resolved": True,
+                "resolution_source": "owner_entity_info",
+            },
         )
     else:
         # Use a placeholder — will be resolved from bridge after pairing.
         config = replace(config, endpoint_identity="whatsapp:pending")
         logger.info(
-            "WhatsApp user-client connector: whatsapp_phone not in DB, "
-            "will resolve from bridge after pairing"
+            "WhatsApp endpoint identity pending bridge pairing",
+            extra={"endpoint_resolved": False},
         )
 
     # Step 3: Create DB pools for cursor and filtered events
