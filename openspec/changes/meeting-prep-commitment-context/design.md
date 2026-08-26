@@ -16,7 +16,7 @@ existing job — no new job, migration, or cross-schema view.
 - Surface active commitment-class owner conditions per attendee in the prep
   envelope, ordered by escalation severity.
 - Maintain the prep rail's deterministic, zero-LLM, fail-open contract.
-- Render commitment chips in the frontend prep rail component.
+- Render rule-separated commitment rows in the frontend prep rail component.
 
 **Non-Goals:**
 
@@ -40,7 +40,7 @@ statement filtered by `metadata->>'class' = 'commitment'` and
 
 The prep envelope carries `kind`, `direction`, `summary`, `deadline`,
 `escalation_level`, and `fingerprint` per commitment — enough for the frontend
-to render a chip without a follow-up API call. `fingerprint` is included so a
+to render a row without a follow-up API call. `fingerprint` is included so a
 future iteration could link to a commitment detail view.
 
 ### Fail-open on commitment query failure
@@ -77,5 +77,6 @@ first — the prep rail is a glance surface, not a comprehensive list.
 - Backward compatibility: pre-commitment envelopes without a `commitments` field
   normalize to `[]` in the API response.
 - Fail-open: commitment query failure does not affect existing prep context.
-- Frontend: commitment chips render with kind icon, direction indicator, summary,
-  and deadline.
+- Frontend: rule-separated commitment rows render with kind icon, direction
+  indicator, summary, deadline when present, and the established `L0` through
+  `L3` escalation label; `L2` and `L3` rows are visually emphasized.

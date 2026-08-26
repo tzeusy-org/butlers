@@ -2,7 +2,7 @@
 
 ### 1. Extend prep job with commitment query
 
-- [ ] 1.1 Add commitment-class `owner_conditions` query to
+- [x] 1.1 Add commitment-class `owner_conditions` query to
       `run_relationship_calendar_prep_contribution()` in
       `src/butlers/jobs/calendar_prep.py`. For each resolved attendee, query
       `public.owner_conditions` filtered by `metadata->>'class' = 'commitment'` and
@@ -20,7 +20,7 @@ Acceptance:
 
 ### 2. Extend API response models
 
-- [ ] 2.1 Add `commitments` array to `CalendarPrepAttendee` (or equivalent) response model
+- [x] 2.1 Add `commitments` array to `CalendarPrepAttendee` (or equivalent) response model
       in `src/butlers/api/models/calendar_workspace.py`. Normalize absent field to
       empty list for backward compatibility with pre-commitment envelopes. Pass through
       in `query_calendar_prep` read model.
@@ -32,12 +32,14 @@ Acceptance:
 
 ### 3. Frontend prep rail commitment rendering
 
-- [ ] 3.1 Extend the prep rail component to render commitment chips per attendee. Each chip
-      shows kind icon, direction indicator, summary text, and deadline when present.
-      Visually emphasize commitments at escalation level >= 2.
+- [x] 3.1 Extend the prep rail component to render rule-separated commitment rows per
+      attendee. Each row shows kind icon, direction indicator, summary text, deadline
+      when present, and the established `L0` through `L3` escalation label. Visually
+      emphasize commitments at `L2` or `L3`.
 
 Acceptance:
-- Commitment chips render for attendees with active commitments
+- Commitment rows render for attendees with active commitments
 - Empty state: no commitment section shown when list is empty
-- High-escalation commitments visually distinct
-- Responsive layout (chips wrap correctly on narrow viewports)
+- Established `L0` through `L3` labels render; `L2` and `L3` are visually distinct
+- Responsive layout: grid rows remain readable on narrow viewports; the commitment list
+  does not use a flex-wrap chip layout

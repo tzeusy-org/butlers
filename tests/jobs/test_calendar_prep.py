@@ -173,7 +173,7 @@ async def test_populated_writes_attendee_context():
 
 
 async def test_commitments_are_escalation_sorted_and_capped_per_attendee():
-    """The query selects a deterministic escalation-first capped commitment set."""
+    """REQ-calendar-overlay-aggregation-005: select a capped L3-to-L0 commitment set."""
     event_id = uuid4()
     alice = uuid4()
     rows = [
@@ -253,7 +253,7 @@ async def test_commitments_are_escalation_sorted_and_capped_per_attendee():
 
 
 async def test_commitment_query_failure_keeps_existing_context_and_logs_warning(caplog):
-    """A commitment read failure leaves other prep context intact and fail-opens."""
+    """REQ-calendar-overlay-aggregation-005: commitment failure preserves prep context."""
     event_id = uuid4()
     alice = uuid4()
     pool = _FakePool(

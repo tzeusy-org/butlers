@@ -212,7 +212,7 @@ async def test_prep_rail_returns_precomputed_context(app):
 
 
 async def test_prep_rail_projects_commitments_from_cached_envelope(app):
-    """Commitments survive the cached read and are returned per attendee."""
+    """REQ-dashboard-api-054: cached commitments are returned per attendee."""
     event_id = str(uuid4())
     commitment = _commitment()
     row = _prep_row(
@@ -236,7 +236,7 @@ async def test_prep_rail_projects_commitments_from_cached_envelope(app):
 
 
 def test_calendar_prep_attendee_validates_commitment_kind_and_direction():
-    """Commitment kind and direction are constrained by the API contract."""
+    """REQ-dashboard-api-054: commitment kind and direction follow the API contract."""
     base = {
         "entity_id": str(uuid4()),
         "name": "Alice Tan",

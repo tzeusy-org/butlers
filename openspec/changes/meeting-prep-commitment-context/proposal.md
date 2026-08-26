@@ -31,8 +31,9 @@ integration (separate change — consumes commitment query surface)."
 - Query `public.owner_conditions` for commitment-class conditions per attendee
   entity in the existing `calendar_prep_contribution` job
 - Extend `CalendarPrep*` API response models with commitment data
-- Surface commitment kind, direction, summary, deadline, and escalation level
-- Frontend prep rail rendering of commitment chips per attendee
+- Surface commitment kind, direction, summary, deadline, and the established
+  `L0` through `L3` escalation label
+- Frontend prep rail rendering of rule-separated commitment rows per attendee
 
 ## Out of Scope
 

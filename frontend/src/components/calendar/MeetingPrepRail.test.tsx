@@ -154,6 +154,7 @@ describe("MeetingPrepRail", () => {
     expect(within(card).getByTestId("prep-tier-mark")).toBeTruthy();
   });
 
+  // REQ-dashboard-api-054: render every commitment field from the cached API payload.
   it("renders commitment rows with kind, direction, summary, deadline, and escalation", () => {
     render(
       <MeetingPrepRail
