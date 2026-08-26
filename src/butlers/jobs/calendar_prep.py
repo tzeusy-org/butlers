@@ -34,6 +34,17 @@ entity-linked upcoming event under the key ``calendar/prep/<event_id>``:
                 "last_met":       "ISO-8601|null",   # most recent prior co-attended event
                 "last_met_event": "...|null",
                 "message_context": [],          # populated by email-owning butlers (future)
+                "commitments": [                # active owner commitments with this attendee
+                    {
+                        "kind": "promise|waiting_for|follow_up|obligation|decision",
+                        "direction": "owner_to_other|other_to_owner|self",
+                        "summary": "...",
+                        "deadline": "ISO-8601|null",
+                        "escalation_level": "L0|L1|L2|L3",
+                        "fingerprint": "...",
+                    },
+                    ...,
+                ],
             },
             ...
         ],
@@ -90,6 +101,9 @@ MAX_THREADS_PER_ATTENDEE = 3
 #: Max characters of a message body surfaced as a thread snippet.
 SNIPPET_MAX_LEN = 200
 
+#: Cap on active commitments surfaced per attendee (highest escalation first).
+MAX_COMMITMENTS_PER_ATTENDEE = 10
+
 
 # ---------------------------------------------------------------------------
 # Envelope schema
@@ -101,6 +115,15 @@ class PrepNote(TypedDict):
     text: str
 
 
+class PrepCommitment(TypedDict):
+    kind: str
+    direction: str
+    summary: str
+    deadline: str | None
+    escalation_level: str
+    fingerprint: str
+
+
 class PrepAttendee(TypedDict):
     entity_id: str
     name: str
@@ -109,6 +132,7 @@ class PrepAttendee(TypedDict):
     last_met: str | None
     last_met_event: str | None
     message_context: list[dict[str, Any]]
+    commitments: list[PrepCommitment]
 
 
 class PrepContribution(TypedDict):
@@ -341,15 +365,59 @@ async def run_relationship_calendar_prep_contribution(
                 # a nameless attendee.
                 continue
             last_met = last_met_by_id.get(eid)
+            attendee_entity_id = str(eid)
+            commitments: list[PrepCommitment] = []
+            try:
+                commitment_rows = await pool.fetch(
+                    """
+                    SELECT metadata->>'kind' AS kind,
+                           metadata->>'direction' AS direction,
+                           summary,
+                           metadata->>'deadline' AS deadline,
+                           escalation_level,
+                           fingerprint
+                    FROM public.owner_conditions
+                    WHERE state IN ('open', 'aging')
+                      AND metadata->>'class' = 'commitment'
+                      AND metadata->>'counterparty_entity_id' = $1
+                    ORDER BY escalation_level DESC,
+                             last_confirmed_at DESC,
+                             fingerprint ASC,
+                             id ASC
+                    LIMIT $2
+                    """,
+                    attendee_entity_id,
+                    MAX_COMMITMENTS_PER_ATTENDEE,
+                )
+                for commitment_row in commitment_rows[:MAX_COMMITMENTS_PER_ATTENDEE]:
+                    deadline = commitment_row["deadline"]
+                    commitments.append(
+                        {
+                            "kind": str(commitment_row["kind"] or ""),
+                            "direction": str(commitment_row["direction"] or ""),
+                            "summary": str(commitment_row["summary"] or ""),
+                            "deadline": str(deadline) if deadline is not None else None,
+                            "escalation_level": str(commitment_row["escalation_level"] or ""),
+                            "fingerprint": str(commitment_row["fingerprint"] or ""),
+                        }
+                    )
+            except Exception:
+                logger.warning(
+                    "calendar prep commitment query failed: event_id=%s attendee_entity_id=%s",
+                    event_id,
+                    attendee_entity_id,
+                    exc_info=True,
+                )
             attendees.append(
                 {
-                    "entity_id": str(eid),
+                    "entity_id": attendee_entity_id,
                     "name": name,
                     "dunbar_tier": tier_by_id.get(eid),
                     "notes": notes_by_id.get(eid, []),
                     "last_met": last_met[0].isoformat() if last_met else None,
                     "last_met_event": last_met[1] if last_met else None,
                     "message_context": [],
+                    "commitments": commitments,
                 }
             )
 
@@ -597,6 +665,7 @@ async def run_email_calendar_prep_contribution(
                     "last_met": None,
                     "last_met_event": None,
                     "message_context": threads,
+                    "commitments": [],
                 }
             )
             threads_total += len(threads)
