@@ -152,6 +152,27 @@ Contacts sync contract: contacts incremental sync is a module-internal poller
 inside `uv run butlers up`. `dev.sh` does not launch a standalone contacts
 connector process.
 
+### Tailscale Serve data-plane probe
+
+`tailscale_serve_probe.py` performs one read-only HTTPS GET against the
+configured health route.  It uses strict certificate-chain, hostname, and
+expiry validation, requires HTTP 200 with top-level JSON `{"status":"ok"}`,
+and retries timeouts and other transient transport failures with fixed bounds.
+Its transport is intentionally injectable for tests.
+
+The Compose launcher validates Serve mappings before lifecycle startup.  After
+the stack and egress firewall are up, it runs the data-plane probe only when
+`TAILSCALE_SERVE_PROBE_COMMAND` is set and
+`TAILSCALE_SERVE_PROBE_CONTEXT=off-host`.  The command is split into argv (no
+shell evaluation) and receives `--url`, `--timeout`, `--retries`, and
+`--retry-delay` arguments.  An operator-supplied executor can therefore run
+`python3 scripts/tailscale_serve_probe.py` from an independent tailnet client.
+When an executor is configured, an on-host or unspecified context is rejected;
+without a configured executor, the launcher reports `control-plane mappings
+only` instead of claiming data-plane readiness.  Probe failures classify as
+`cert-invalid`, `route-404`, or `timeout` with sanitized, actionable guidance
+and never alter Serve state.
+
 ### Usage
 
 ```bash

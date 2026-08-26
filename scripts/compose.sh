@@ -39,6 +39,17 @@ SKIP_TAILSCALE=false
 OBSERVABILITY=false
 BUTLERS_MODE=dev
 RESTORE_DRILL_ENABLED=false
+# A data-plane probe must run from an independent tailnet client.  An on-host
+# request to this machine's own tailnet name can be intercepted by another
+# listener (for example Docker/Traefik) before it reaches Tailscale Serve.
+# Keep the executor opt-in so a launcher never presents an on-host result as
+# off-host evidence.  The command is split into argv without eval when used.
+TAILSCALE_SERVE_PROBE_CONTEXT="${TAILSCALE_SERVE_PROBE_CONTEXT:-}"
+TAILSCALE_SERVE_PROBE_COMMAND="${TAILSCALE_SERVE_PROBE_COMMAND:-}"
+TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-10}"
+TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
+TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
+TAILSCALE_SERVE_HEALTH_URL=""
 # Hotreload defaults to on for dev, off for prod; resolved after arg parsing.
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
@@ -364,6 +375,18 @@ raise SystemExit(1)
 PY
   }
 
+  # ── Validate data-plane probe context before any lifecycle mutation ────
+  # The command is normally an SSH wrapper (or another operator-supplied
+  # executor) that runs scripts/tailscale_serve_probe.py from a different
+  # tailnet client.  Refuse an explicitly on-host context: a local self-
+  # request is not evidence of the public Serve route.
+  if [ -n "$TAILSCALE_SERVE_PROBE_COMMAND" ] \
+    && [ "$TAILSCALE_SERVE_PROBE_CONTEXT" != "off-host" ]; then
+    echo "ERROR: Tailscale Serve data-plane probe requires TAILSCALE_SERVE_PROBE_CONTEXT=off-host; refusing an on-host or unspecified probe context." >&2
+    echo "  Set TAILSCALE_SERVE_PROBE_COMMAND to an approved off-host, read-only probe executor." >&2
+    exit 1
+  fi
+
   # ── Apply mappings ─────────────────────────────────────────────────
   echo "Tailscale serve: configuring HTTPS mappings (port ${TAILSCALE_HTTPS_PORT})..."
   serve_status=$(tailscale serve status --json 2>/dev/null || echo "{}")
@@ -389,6 +412,24 @@ PY
     exit 1
   fi
 
+  # A successful `tailscale serve` invocation is not proof that the requested
+  # handler was retained.  Re-read the control-plane state and fail with a
+  # route-specific class before the data-plane probe or Compose lifecycle.
+  serve_status=$(tailscale serve status --json 2>/dev/null || echo "{}")
+  ts_mapping_missing=false
+  for mapping in "${SERVE_MAPPINGS[@]}"; do
+    IFS='|' read -r path_prefix target <<< "$mapping"
+    if ! _ts_check_mapping "$target" "$path_prefix" "$serve_status" 2>/dev/null; then
+      echo "  ERROR: Tailscale Serve mapping-missing after configuration: ${path_prefix} -> ${target} (HTTPS port ${TAILSCALE_HTTPS_PORT})." >&2
+      echo "    Recheck the read-only 'tailscale serve status --json' result and the exact path/target; no further Serve mutation was attempted." >&2
+      ts_mapping_missing=true
+    fi
+  done
+  if [ "$ts_mapping_missing" = "true" ]; then
+    echo "ERROR: Tailscale Serve control-plane validation failed (mapping-missing)." >&2
+    exit 1
+  fi
+
   # ── Export computed URLs for docker-compose interpolation ───────────
   TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" \
@@ -404,9 +445,10 @@ PY
     export SPOTIFY_OAUTH_REDIRECT_URI="${TS_BASE}/${API_PREFIX}/api/connectors/spotify/oauth/callback"
     export OWNTRACKS_CONNECTOR_HOST="${TS_HOSTNAME}"
     export OWNTRACKS_CONNECTOR_PORT="${TAILSCALE_HTTPS_PORT}"
+    TAILSCALE_SERVE_HEALTH_URL="${TS_BASE}/${API_PREFIX}/api/health"
 
     echo ""
-    echo "Tailscale serve: ready (${TS_HOSTNAME})"
+    echo "Tailscale serve: mappings ready (${TS_HOSTNAME})"
     echo "  Dashboard:      ${TS_BASE}/${URL_PREFIX}/"
     echo "  API:            ${TS_BASE}/${API_PREFIX}/api"
     echo "  OwnTracks:      ${TS_BASE}/${OWNTRACKS_PREFIX}/webhook"
@@ -415,6 +457,52 @@ PY
   else
     echo "Tailscale serve: mappings applied (could not resolve hostname)"
   fi
+
+  _ts_run_data_plane_probe() {
+    local health_url="$1"
+    if [ -z "$TAILSCALE_SERVE_PROBE_COMMAND" ]; then
+      echo "Tailscale serve: data-plane probe deferred for ${health_url} (set TAILSCALE_SERVE_PROBE_COMMAND to an approved off-host executor; control-plane mappings only)"
+      return 0
+    fi
+
+    local -a probe_command=()
+    # Deliberately avoid eval: the operator-supplied command is only split into
+    # argv, then receives the fixed URL and bounded probe settings below.
+    read -r -a probe_command <<< "$TAILSCALE_SERVE_PROBE_COMMAND"
+    if [ "${#probe_command[@]}" -eq 0 ]; then
+      echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is empty after parsing; configure an approved off-host executor." >&2
+      return 2
+    fi
+
+    local probe_rc=0
+    if "${probe_command[@]}" \
+      --url "$health_url" \
+      --timeout "$TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS" \
+      --retries "$TAILSCALE_SERVE_PROBE_RETRIES" \
+      --retry-delay "$TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS"; then
+      return 0
+    else
+      probe_rc=$?
+    fi
+
+    # scripts/tailscale_serve_probe.py uses stable exit classes.  Keep a
+    # shell-side summary too so custom approved executors remain actionable.
+    case "$probe_rc" in
+      20)
+        echo "ERROR: Tailscale Serve mapping-ok-but-cert-invalid for ${health_url}; strict TLS rejected the public certificate (hostname, trust chain, or expiry). Verify from an off-host tailnet client; no Serve mutation was attempted." >&2
+        ;;
+      21)
+        echo "ERROR: Tailscale Serve mapping-ok-but-route-404 for ${health_url}; the HTTPS listener returned 404. Recheck the exact path mapping and proxy target; no Serve mutation was attempted." >&2
+        ;;
+      22)
+        echo "ERROR: Tailscale Serve mapping-ok-but-timeout for ${health_url}; the off-host probe exhausted its bounded retries. Check tailnet reachability and API startup; no Serve mutation was attempted." >&2
+        ;;
+      *)
+        echo "ERROR: Tailscale Serve data-plane probe failed for ${health_url} (exit ${probe_rc}); inspect the off-host probe result. No Serve mutation was attempted." >&2
+        ;;
+    esac
+    return "$probe_rc"
+  }
   echo ""
 fi
 
@@ -677,4 +765,16 @@ else
   echo "NOTE: Run 'sudo ALLOWED_TAILNET_HOSTS=\"${ALLOWED_TAILNET_HOSTS:-}\" ./scripts/egress-firewall.sh'"
   echo "  to block container access to LAN/Tailscale (sudo requires a password)."
   echo ""
+fi
+
+# Mapping validation runs before lifecycle startup; the HTTPS health probe runs
+# after the API containers are started so it checks the actual data plane.  The
+# executor is explicitly off-host to avoid the host's own :443 listener
+# intercepting a self-request before Tailscale Serve sees it.  Keep the probe
+# after the firewall step so a failed readiness check cannot bypass that guard.
+if [ -n "$TAILSCALE_SERVE_HEALTH_URL" ]; then
+  if ! _ts_run_data_plane_probe "$TAILSCALE_SERVE_HEALTH_URL"; then
+    echo "ERROR: Tailscale Serve readiness is not proven; Compose is running but the public HTTPS data plane is degraded." >&2
+    exit 1
+  fi
 fi
