@@ -22,9 +22,11 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.models.calendar_workspace import CalendarPrepAttendee
 from butlers.api.routers.calendar_workspace import _get_db_manager
 
 pytestmark = pytest.mark.unit
@@ -78,6 +80,25 @@ def _attendee(
         "last_met": last_met,
         "last_met_event": last_met_event,
         "message_context": message_context or [],
+    }
+
+
+def _commitment(
+    *,
+    kind: str = "promise",
+    direction: str = "owner_to_other",
+    summary: str = "Send the book",
+    deadline: str | None = "2026-08-25T00:00:00+00:00",
+    escalation_level: str = "L2",
+    fingerprint: str = "commitment-fingerprint",
+) -> dict:
+    return {
+        "kind": kind,
+        "direction": direction,
+        "summary": summary,
+        "deadline": deadline,
+        "escalation_level": escalation_level,
+        "fingerprint": fingerprint,
     }
 
 
@@ -174,6 +195,11 @@ async def test_prep_rail_returns_precomputed_context(app):
     assert alice["last_met"] == "2026-01-10T12:00:00+00:00"
     assert alice["last_met_event"] == "Quarterly sync"
 
+    # Legacy attendees without the additive commitment field normalize to []
+    # through the response model's default factory.
+    assert alice["commitments"] == []
+    assert body["attendees"][1]["commitments"] == []
+
     # NO LLM/MCP session at request time.
     mock_mgr.get_client.assert_not_called()
     # NO direct cross-schema read: every query touched ONLY the prep view, never
@@ -183,6 +209,51 @@ async def test_prep_rail_returns_precomputed_context(app):
         assert "calendar.v_prep_contributions" in q
         assert "relationship." not in q
         assert "health." not in q
+
+
+async def test_prep_rail_projects_commitments_from_cached_envelope(app):
+    """Commitments survive the cached read and are returned per attendee."""
+    event_id = str(uuid4())
+    commitment = _commitment()
+    row = _prep_row(
+        butler="relationship",
+        event_id=event_id,
+        attendees=[
+            {
+                **_attendee(entity_id=str(uuid4()), name="Alice Tan"),
+                "commitments": [commitment],
+            }
+        ],
+    )
+    app, _, _ = _build_prep_app(
+        app, prep_rows={"relationship": [row]}, calendar_butlers=["relationship"]
+    )
+
+    resp = await _get_prep(app, event_id)
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["attendees"][0]["commitments"] == [commitment]
+
+
+def test_calendar_prep_attendee_validates_commitment_kind_and_direction():
+    """Commitment kind and direction are constrained by the API contract."""
+    base = {
+        "entity_id": str(uuid4()),
+        "name": "Alice Tan",
+        "commitments": [_commitment()],
+    }
+    attendee = CalendarPrepAttendee.model_validate(base)
+    assert attendee.commitments[0].kind == "promise"
+    assert attendee.commitments[0].direction == "owner_to_other"
+
+    with pytest.raises(ValidationError):
+        CalendarPrepAttendee.model_validate(
+            {**base, "commitments": [_commitment(kind="invalid_kind")]}
+        )
+    with pytest.raises(ValidationError):
+        CalendarPrepAttendee.model_validate(
+            {**base, "commitments": [_commitment(direction="invalid_direction")]}
+        )
 
 
 # ---------------------------------------------------------------------------

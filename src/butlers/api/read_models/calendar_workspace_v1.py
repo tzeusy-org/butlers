@@ -622,12 +622,14 @@ class CalendarPrepRow:
     **hardcoded** source-schema literal (RFC 0010 Guardrail #2), ``key`` is the
     ``calendar/prep/<event_id>`` state key, and ``value`` is the raw envelope
     JSONB (``{butler, event_id, event_title, event_starts_at, has_context,
-    attendees:[...]}``).
+    attendees:[{..., commitments:[...]}]``).  The envelope is deliberately
+    retained as raw JSONB here so the API projection can apply the attendee
+    response model's backward-compatible defaults and enum validation.
     """
 
     butler: str | None
     key: str | None
-    value: Any  # raw asyncpg value (dict or None)
+    value: Any  # raw asyncpg value (dict or None), including attendee commitments
 
 
 # ---------------------------------------------------------------------------

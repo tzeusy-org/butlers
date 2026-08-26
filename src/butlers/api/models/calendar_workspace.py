@@ -261,6 +261,28 @@ class CalendarPrepNote(BaseModel):
     text: str
 
 
+CalendarPrepCommitmentKind = Literal[
+    "promise",
+    "waiting_for",
+    "follow_up",
+    "obligation",
+    "decision",
+]
+CalendarPrepCommitmentDirection = Literal["owner_to_other", "other_to_owner", "self"]
+
+
+class CalendarPrepCommitment(BaseModel):
+    """An active owner commitment surfaced for a meeting attendee."""
+
+    kind: CalendarPrepCommitmentKind
+    direction: CalendarPrepCommitmentDirection
+    summary: str
+    deadline: str | None = None
+    # The condition ledger's escalation levels are serialized as L0-L3 labels.
+    escalation_level: str
+    fingerprint: str
+
+
 class CalendarPrepAttendee(BaseModel):
     """Precomputed prep context for one resolved attendee of a selected event.
 
@@ -269,7 +291,9 @@ class CalendarPrepAttendee(BaseModel):
     letter-mark source (the FE maps the integer tier to its letter); ``notes``
     are durable CRM notes; ``last_met`` / ``last_met_event`` come from the most
     recent prior co-attended event; ``message_context`` is reserved for the
-    email/message-owning butlers' contribution (empty until that lands).
+    email/message-owning butlers' contribution (empty until that lands);
+    ``commitments`` are active owner-condition commitments from the precomputed
+    relationship contribution (empty for legacy envelopes).
     """
 
     entity_id: str
@@ -279,6 +303,7 @@ class CalendarPrepAttendee(BaseModel):
     last_met: str | None = None
     last_met_event: str | None = None
     message_context: list[dict[str, Any]] = Field(default_factory=list)
+    commitments: list[CalendarPrepCommitment] = Field(default_factory=list)
 
 
 class CalendarPrepResponse(BaseModel):

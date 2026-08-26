@@ -49,6 +49,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarKeepSeparateResponse,
     CalendarLinkedPerson,
     CalendarPrepAttendee,
+    CalendarPrepCommitment,
     CalendarPrepNote,
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
@@ -1073,6 +1074,11 @@ def _parse_prep_attendee(raw: Mapping[str, Any]) -> CalendarPrepAttendee | None:
             notes.append(CalendarPrepNote(kind=str(kind), text=str(text)))
 
     message_context = [m for m in (raw.get("message_context") or []) if isinstance(m, Mapping)]
+    commitments = [
+        CalendarPrepCommitment.model_validate(raw_commitment)
+        for raw_commitment in (raw.get("commitments") or [])
+        if isinstance(raw_commitment, Mapping)
+    ]
 
     tier = raw.get("dunbar_tier")
     return CalendarPrepAttendee(
@@ -1083,6 +1089,7 @@ def _parse_prep_attendee(raw: Mapping[str, Any]) -> CalendarPrepAttendee | None:
         last_met=str(raw["last_met"]) if raw.get("last_met") else None,
         last_met_event=str(raw["last_met_event"]) if raw.get("last_met_event") else None,
         message_context=[dict(m) for m in message_context],
+        commitments=commitments,
     )
 
 
@@ -1100,6 +1107,7 @@ def _merge_prep_attendee(into: CalendarPrepAttendee, extra: CalendarPrepAttendee
         into.last_met_event = extra.last_met_event
     into.notes.extend(extra.notes)
     into.message_context.extend(extra.message_context)
+    into.commitments.extend(extra.commitments)
 
 
 def _project_prep_contributions(

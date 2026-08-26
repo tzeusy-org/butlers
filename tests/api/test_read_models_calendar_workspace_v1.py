@@ -28,10 +28,12 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     SOURCE_COLUMNS,
     WORKSPACE_COLUMNS,
     CalendarOverlayRow,
+    CalendarPrepRow,
     CalendarProposalRow,
     CalendarSourceRow,
     CalendarWorkspaceRow,
     query_calendar_overlays,
+    query_calendar_prep,
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
@@ -788,6 +790,37 @@ async def test_query_calendar_overlays_empty_when_no_calendar_butlers():
     db.butlers_with_module = MagicMock(return_value=None)
     db.butler_names = []
     assert await query_calendar_overlays(db) == []
+
+
+async def test_query_calendar_prep_preserves_commitments_in_cached_envelope():
+    """The prep read-model passes the additive attendee payload through unchanged."""
+    commitments = [
+        {
+            "kind": "promise",
+            "direction": "owner_to_other",
+            "summary": "Send the book",
+            "deadline": "2026-08-25T00:00:00+00:00",
+            "escalation_level": "L2",
+            "fingerprint": "commitment-fingerprint",
+        }
+    ]
+    row = {
+        "butler": "relationship",
+        "key": f"calendar/prep/{_EVENT_ID}",
+        "value": {
+            "butler": "relationship",
+            "attendees": [{"entity_id": "entity-1", "commitments": commitments}],
+        },
+    }
+    db = _make_db({"relationship": [row]})
+
+    rows = await query_calendar_prep(db, event_id=_EVENT_ID, butlers=["relationship"])
+
+    assert len(rows) == 1
+    assert isinstance(rows[0], CalendarPrepRow)
+    assert rows[0].value["attendees"][0]["commitments"] == commitments
+    assert db.fan_out_with_status.call_args.kwargs["butler_names"] == ["relationship"]
+    assert db.fan_out_with_status.call_args.args[1] == (f"calendar/prep/{_EVENT_ID}",)
 
 
 # ---------------------------------------------------------------------------
