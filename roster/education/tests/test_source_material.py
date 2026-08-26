@@ -1,4 +1,7 @@
-"""Unit tests for the Education source-material registry."""
+"""Unit tests for the Education source-material registry.
+
+Requirement: REQ-education-source-grounding-001.
+"""
 
 from __future__ import annotations
 

@@ -2490,7 +2490,8 @@ class TestGetStrugglingNodes:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/education/sources — source-material registry (bu-istke.5)
+# GET /api/education/sources — source-material registry
+# Requirement: REQ-dashboard-education-api-001
 # ---------------------------------------------------------------------------
 
 

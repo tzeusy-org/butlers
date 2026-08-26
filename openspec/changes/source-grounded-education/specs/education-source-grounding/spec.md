@@ -44,7 +44,6 @@ contains a `source_id` (referencing a registered source or `null` for
 model-recalled citations), a `location` (chapter, page range, section — free
 text), an optional `provenance` of `"referenced"` or `"model-recalled"`, and an
 optional `note`.
-
 Provenance records whether the location was read out of the source itself
 (`"referenced"`) or produced from the model's own knowledge of it
 (`"model-recalled"`). A writer that knows which it did SHALL record
@@ -54,7 +53,6 @@ location was read from it. When `provenance` is absent it is derived from the
 reference itself, a named `source_id` reading as "referenced" and a null
 `source_id` as "model-recalled". An unrecognized `provenance` value SHALL be
 displayed as "model-recalled", never promoted to a citation.
-
 A display SHALL make the weaker provenance unmistakable in words, not by colour
 alone, and SHALL withhold citation affordances (a resolved source title, a link
 to the source) from every state other than "referenced".

@@ -15,6 +15,9 @@ Coverage:
 - teaching_reading_pathways:
     - one pathway per ref whose source still resolves
     - nothing suggested when no registered source covers the concept
+
+Requirements: REQ-education-source-grounding-002 and
+REQ-education-source-grounding-003.
 """
 
 from __future__ import annotations

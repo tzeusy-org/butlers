@@ -6,14 +6,16 @@ The dashboard API SHALL expose `GET /api/education/sources`, returning every rec
 education butler's source-material registry (`state` keys under `education/source/`) as a JSON
 array of `{source_id, title, authors, type, url, registered_at}`. `url` and `registered_at` are
 null when the record does not carry them; no field is inferred or defaulted to a plausible value.
-
 The endpoint SHALL return `503` when the education butler's database pool is unavailable, rather
 than an empty array: a caller resolving node `source_refs` against this list must be able to tell
 "this source is not registered" from "the registry could not be read", and an empty array on
 failure would silently convert every reference into a dangling one.
-
 Because the registry holds metadata only, the endpoint SHALL NOT fetch, parse, or return source
 contents.
+
+ID: REQ-dashboard-education-api-001
+Source: source-grounded-education design.md; REQ-education-source-grounding-002
+Scope: v1-mandatory
 
 #### Scenario: Listing registered sources
 

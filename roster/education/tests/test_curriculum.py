@@ -10,6 +10,7 @@ Coverage:
 - curriculum_replan: happy path, abandoned rejection, completed rejection, skippable marking
 - curriculum_next_node: returns lowest-sequence frontier node, non-frontier skipped, None cases
 - Integration: topological order respects prerequisites, mastery state influences tie-breaking
+- REQ-module-education-curriculum-001: concept typing and source mapping during generation
 """
 
 from __future__ import annotations

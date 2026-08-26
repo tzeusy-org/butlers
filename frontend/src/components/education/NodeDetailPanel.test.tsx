@@ -135,6 +135,7 @@ describe("NodeDetailPanel focus choreography (bu-x7syp)", () => {
   });
 });
 
+// Requirement: REQ-dashboard-education-ui-001
 describe("NodeDetailPanel source annotations and concept type (bu-istke.5)", () => {
   const SOURCE = {
     source_id: "src-1",
