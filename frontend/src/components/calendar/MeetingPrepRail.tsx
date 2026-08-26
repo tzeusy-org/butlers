@@ -20,10 +20,29 @@
  *   attendees; still rendered honestly as the empty-state.
  */
 
-import type { CalendarPrepAttendee, CalendarPrepMessageContext } from "@/api/types.ts";
+import type {
+  CalendarPrepAttendee,
+  CalendarPrepCommitment,
+  CalendarPrepCommitmentDirection,
+  CalendarPrepCommitmentKind,
+  CalendarPrepMessageContext,
+} from "@/api/types.ts";
 import { TierBadge, tierLabel } from "@/components/ui/TierBadge.tsx";
 import { FetchingDim } from "@/components/ui/fetching-dim";
+import { Time } from "@/components/ui/time";
+import { cn } from "@/lib/utils.ts";
 import { useCalendarMeetingPrep } from "@/hooks/use-calendar-workspace.ts";
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  ClipboardCheck,
+  Handshake,
+  Hourglass,
+  ListChecks,
+  RotateCcw,
+  Scale,
+  type LucideIcon,
+} from "lucide-react";
 
 /** Title-case a `source_butler` identifier for the contributor footnote. */
 function titleizeToken(value: string): string {
@@ -70,7 +89,128 @@ function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
   );
 }
 
-/** One attendee card: name + tier letter-mark, last-met, notes, message context. */
+const COMMITMENT_KIND_META: Record<
+  CalendarPrepCommitmentKind,
+  { label: string; Icon: LucideIcon }
+> = {
+  promise: { label: "PROMISE", Icon: Handshake },
+  waiting_for: { label: "WAITING FOR", Icon: Hourglass },
+  follow_up: { label: "FOLLOW UP", Icon: ListChecks },
+  obligation: { label: "OBLIGATION", Icon: ClipboardCheck },
+  decision: { label: "DECISION", Icon: Scale },
+};
+
+const COMMITMENT_DIRECTION_META: Record<
+  CalendarPrepCommitmentDirection,
+  { label: string; Icon: LucideIcon }
+> = {
+  owner_to_other: { label: "Owner owes", Icon: ArrowUpRight },
+  other_to_owner: { label: "Counterparty owes owner", Icon: ArrowDownLeft },
+  self: { label: "Owner commitment", Icon: RotateCcw },
+};
+
+/** The API uses labels such as L0 through L3; tolerate numeric labels too. */
+function commitmentEscalationLevel(level: string): number {
+  const match = /^L?([0-9]+)$/i.exec(level.trim());
+  return match ? Number.parseInt(match[1], 10) : -1;
+}
+
+function CommitmentRow({ commitment }: { commitment: CalendarPrepCommitment }) {
+  const kind = COMMITMENT_KIND_META[commitment.kind];
+  const direction = COMMITMENT_DIRECTION_META[commitment.direction];
+  const isEscalated = commitmentEscalationLevel(commitment.escalation_level) >= 2;
+  const accessibleDeadline = commitment.deadline ? `; deadline ${commitment.deadline}` : "";
+  const accessibleEscalation = commitment.escalation_level.trim()
+    ? `; escalation ${commitment.escalation_level}`
+    : "";
+  const accessibleLabel = `${direction.label}; ${kind.label.toLowerCase()}; ${commitment.summary}${accessibleDeadline}${accessibleEscalation}`;
+
+  return (
+    <li
+      data-testid="prep-commitment"
+      data-kind={commitment.kind}
+      data-direction={commitment.direction}
+      data-escalation-level={commitment.escalation_level}
+      data-escalated={isEscalated}
+      aria-label={accessibleLabel}
+      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 border-b border-[var(--border)] py-2 last:border-b-0 font-mono text-[10px] leading-snug"
+    >
+      <kind.Icon
+        data-testid="prep-commitment-kind-icon"
+        aria-hidden="true"
+        className="mt-0.5 size-3 shrink-0 text-[var(--dim)]"
+        strokeWidth={1.5}
+      />
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <span
+            data-testid="prep-commitment-kind"
+            className="shrink-0 uppercase tracking-[0.08em] text-[var(--dim)]"
+          >
+            {kind.label}
+          </span>
+          <span className="inline-flex min-w-0 items-center gap-1 text-[var(--mfg)]">
+            <direction.Icon
+              data-testid="prep-commitment-direction-icon"
+              aria-hidden="true"
+              className="size-3 shrink-0"
+              strokeWidth={1.5}
+            />
+            <span>{direction.label}</span>
+          </span>
+        </div>
+        <p className="mt-1 min-w-0 break-words text-[11px] leading-snug text-fg">
+          {commitment.summary}
+        </p>
+        {commitment.deadline ? (
+          <span
+            data-testid="prep-commitment-deadline"
+            className="mt-1 inline-flex shrink-0 items-center gap-1 text-[var(--dim)]"
+          >
+            <span className="sr-only">Deadline </span>
+            <Time value={commitment.deadline} mode="absolute" precision="day" compact />
+          </span>
+        ) : null}
+      </div>
+      <span
+        data-testid="prep-commitment-escalation"
+        aria-hidden="true"
+        title={`Escalation ${commitment.escalation_level}`}
+        className={cn(
+          "shrink-0 tabular-nums",
+          isEscalated ? "font-medium text-[var(--amber-text)]" : "text-[var(--dim)]",
+        )}
+      >
+        {commitment.escalation_level}
+      </span>
+    </li>
+  );
+}
+
+function CommitmentSection({ attendee }: { attendee: CalendarPrepAttendee }) {
+  // The API normalizes legacy envelopes to [], but keep this projection
+  // tolerant of retained pre-normalization data while a query refreshes.
+  const commitments = attendee.commitments ?? [];
+  if (commitments.length === 0) return null;
+
+  return (
+    <div data-testid="prep-commitments" className="flex min-w-0 flex-col gap-1">
+      <h3 className="font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--mfg)]">
+        Commitments
+      </h3>
+      <ul
+        aria-label={`Commitments for ${attendee.name}`}
+        className="min-w-0 list-none p-0"
+      >
+        {commitments.map((item, index) => (
+          <CommitmentRow key={`${item.fingerprint}-${index}`} commitment={item} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** One attendee card: name + tier letter-mark, commitments, last-met, notes, message context. */
 function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
   const hasTier = attendee.dunbar_tier != null;
   return (
@@ -97,6 +237,8 @@ function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
           </span>
         )}
       </div>
+
+      <CommitmentSection attendee={attendee} />
 
       {attendee.last_met ? (
         <div data-testid="prep-last-met" className="font-mono text-[10px] text-[var(--mfg)]">

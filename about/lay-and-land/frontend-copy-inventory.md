@@ -1948,10 +1948,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/calendar/MeetingPrepRail.tsx`
 
+- Deadline
+- Commitments
 - Last met
 - Recent messages
 - Meeting prep
 - Loading…
+- Escalation {}
+- Commitments for {}
 - Dunbar tier {}
 - No relationship tier
 
@@ -4147,4 +4151,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3246*
+*Total strings: 3250*

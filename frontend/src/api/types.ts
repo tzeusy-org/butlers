@@ -1397,6 +1397,30 @@ export interface CalendarPrepNote {
   text: string;
 }
 
+/** Kind of an active owner commitment surfaced on the meeting-prep rail. */
+export type CalendarPrepCommitmentKind =
+  | "promise"
+  | "waiting_for"
+  | "follow_up"
+  | "obligation"
+  | "decision";
+
+/** Direction of the obligation represented by a prep-rail commitment. */
+export type CalendarPrepCommitmentDirection = "owner_to_other" | "other_to_owner" | "self";
+
+/** An active owner commitment contributed to a meeting-prep attendee. */
+export interface CalendarPrepCommitment {
+  kind: CalendarPrepCommitmentKind;
+  direction: CalendarPrepCommitmentDirection;
+  summary: string;
+  /** ISO-8601 deadline, or `null` when this commitment has no deadline. */
+  deadline: string | null;
+  /** Condition-ledger escalation label, currently `L0` through `L3`. */
+  escalation_level: string;
+  /** Stable commitment identity, useful to future interactive surfaces. */
+  fingerprint: string;
+}
+
 /**
  * Precomputed prep context for one resolved attendee of a selected event.
  *
@@ -1407,6 +1431,8 @@ export interface CalendarPrepNote {
  * `last_met_event` come from the most recent prior co-attended event;
  * `message_context` is the email/message-owning butlers' per-attendee
  * contribution (empty until a message-context job — bu-tmtpb — has run).
+ * `commitments` are active owner-condition commitments contributed by the
+ * relationship butler (empty for legacy envelopes).
  */
 export interface CalendarPrepAttendee {
   entity_id: string;
@@ -1418,6 +1444,8 @@ export interface CalendarPrepAttendee {
   /** Recent message/email threads each attendee wrote, contributed by the
    * email-owning butlers' deterministic prep job (gracefully empty if absent). */
   message_context: CalendarPrepMessageContext[];
+  /** Active owner commitments for this attendee (empty for legacy envelopes). */
+  commitments: CalendarPrepCommitment[];
 }
 
 /**

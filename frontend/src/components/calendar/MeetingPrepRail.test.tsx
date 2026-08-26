@@ -14,7 +14,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 
-import type { CalendarPrepAttendee } from "@/api/types.ts";
+import type { CalendarPrepAttendee, CalendarPrepCommitment } from "@/api/types.ts";
 
 import { MeetingPrepRail } from "./MeetingPrepRail.tsx";
 
@@ -38,6 +38,19 @@ function attendee(overrides: Partial<CalendarPrepAttendee> = {}): CalendarPrepAt
         message_count: 3,
       },
     ],
+    commitments: [],
+    ...overrides,
+  };
+}
+
+function commitment(overrides: Partial<CalendarPrepCommitment> = {}): CalendarPrepCommitment {
+  return {
+    kind: "promise",
+    direction: "owner_to_other",
+    summary: "Send the book",
+    deadline: "2026-08-30T09:00:00Z",
+    escalation_level: "L2",
+    fingerprint: "commitment-1",
     ...overrides,
   };
 }
@@ -139,6 +152,85 @@ describe("MeetingPrepRail", () => {
     // Attendee + tier mark still render.
     expect(within(card).getByText("Ada Lovelace")).toBeTruthy();
     expect(within(card).getByTestId("prep-tier-mark")).toBeTruthy();
+  });
+
+  it("renders commitment rows with kind, direction, summary, deadline, and escalation", () => {
+    render(
+      <MeetingPrepRail
+        hasPrepContext
+        attendees={[
+          attendee({
+            commitments: [
+              commitment(),
+              commitment({
+                kind: "waiting_for",
+                direction: "other_to_owner",
+                summary: "Confirm the venue",
+                deadline: null,
+                escalation_level: "L1",
+                fingerprint: "commitment-2",
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const section = screen.getByTestId("prep-commitments");
+    expect(within(section).getByRole("heading", { name: "Commitments" })).toBeTruthy();
+    const list = within(section).getByRole("list", { name: "Commitments for Ada Lovelace" });
+    expect(list.className).not.toContain("flex-wrap");
+
+    const rows = within(section).getAllByTestId("prep-commitment");
+    expect(rows).toHaveLength(2);
+
+    expect(rows[0].textContent).toContain("PROMISE");
+    expect(rows[0].textContent).toContain("Owner owes");
+    expect(rows[0].textContent).toContain("Send the book");
+    expect(within(rows[0]).getByTestId("prep-commitment-deadline")).toBeTruthy();
+    expect(within(rows[0]).getByTestId("prep-commitment-kind-icon")).toBeTruthy();
+    expect(within(rows[0]).getByTestId("prep-commitment-direction-icon")).toBeTruthy();
+    const kindTag = within(rows[0]).getByTestId("prep-commitment-kind");
+    expect(kindTag.className).toContain("text-[var(--dim)]");
+    expect(kindTag.className).toContain("uppercase");
+    expect(kindTag.className).not.toContain("border");
+    expect(kindTag.className).not.toContain("bg-");
+    const escalatedSignal = within(rows[0]).getByTestId("prep-commitment-escalation");
+    expect(escalatedSignal.textContent).toBe("L2");
+    expect(escalatedSignal.getAttribute("title")).toBe("Escalation L2");
+    expect(rows[0].getAttribute("aria-label")).toMatch(/Owner owes/);
+    expect(rows[0].getAttribute("aria-label")).toMatch(/deadline 2026-08-30T09:00:00Z/);
+    expect(rows[0].getAttribute("aria-label")).toMatch(/escalation L2/);
+    expect(rows[0].className).toContain("grid");
+    expect(rows[0].className).toContain("border-b");
+    expect(rows[0].className).not.toContain("rounded");
+    expect(rows[0].className).not.toContain("bg-");
+    expect(within(rows[0]).getByTestId("prep-commitment-escalation").className).toContain(
+      "text-[var(--amber-text)]",
+    );
+    expect(rows[0].getAttribute("data-escalated")).toBe("true");
+
+    expect(rows[1].textContent).toContain("WAITING FOR");
+    expect(rows[1].textContent).toContain("Counterparty owes owner");
+    expect(rows[1].textContent).toContain("Confirm the venue");
+    expect(within(rows[1]).queryByTestId("prep-commitment-deadline")).toBeNull();
+    const standardSignal = within(rows[1]).getByTestId("prep-commitment-escalation");
+    expect(standardSignal.textContent).toBe("L1");
+    expect(standardSignal.getAttribute("title")).toBe("Escalation L1");
+    expect(standardSignal.className).not.toContain(
+      "text-[var(--amber-text)]",
+    );
+    expect(rows[1].className).not.toContain("border-[var(--amber)]");
+    expect(rows[1].className).not.toContain("bg-");
+    expect(rows[1].getAttribute("aria-label")).toMatch(/Counterparty owes owner/);
+    expect(rows[1].getAttribute("data-escalated")).toBe("false");
+  });
+
+  it("does not render a commitment section for attendees without commitments", () => {
+    render(<MeetingPrepRail hasPrepContext attendees={[attendee()]} />);
+
+    expect(screen.queryByTestId("prep-commitments")).toBeNull();
+    expect(screen.queryByTestId("prep-commitment")).toBeNull();
   });
 
   it("falls back to an em-dash tier mark when the attendee has no tier", () => {
