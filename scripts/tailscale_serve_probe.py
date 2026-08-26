@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import socket
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -30,6 +32,10 @@ _MAX_RESPONSE_BYTES = 64 * 1024
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RETRIES = 2
 _DEFAULT_RETRY_DELAY_SECONDS = 1.0
+_MAX_TIMEOUT_SECONDS = 30.0
+_MAX_ATTEMPTS = 4
+_MAX_RETRY_DELAY_SECONDS = 5.0
+_IDENTITY_TIMEOUT_SECONDS = 5.0
 
 
 class ProbeOutcome(StrEnum):
@@ -152,6 +158,46 @@ def _validated_url(url: str) -> bool:
     )
 
 
+def _validate_probe_settings(timeout: float, attempts: int, retry_delay: float) -> None:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or isinstance(attempts, bool)
+        or not isinstance(attempts, int)
+        or isinstance(retry_delay, bool)
+        or not isinstance(retry_delay, (int, float))
+        or not math.isfinite(timeout)
+        or not math.isfinite(retry_delay)
+        or not 0 < timeout <= _MAX_TIMEOUT_SECONDS
+        or not 1 <= attempts <= _MAX_ATTEMPTS
+        or not 0 <= retry_delay <= _MAX_RETRY_DELAY_SECONDS
+    ):
+        raise ValueError(
+            "bounded probe policy requires timeout in (0, 30], attempts in [1, 4], "
+            "and retry_delay in [0, 5]"
+        )
+
+
+def _tailscale_self_dns_name() -> str | None:
+    """Return this executor's Tailscale DNS identity without exposing status data."""
+
+    try:
+        completed = subprocess.run(
+            ["tailscale", "status", "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_IDENTITY_TIMEOUT_SECONDS,
+        )
+        payload = json.loads(completed.stdout)
+        dns_name = payload.get("Self", {}).get("DNSName")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AttributeError):
+        return None
+    if not isinstance(dns_name, str) or not dns_name.strip():
+        return None
+    return dns_name.strip().rstrip(".").lower()
+
+
 def _retryable(outcome: ProbeOutcome, status_code: int | None) -> bool:
     return outcome in {
         ProbeOutcome.TIMEOUT,
@@ -186,10 +232,7 @@ def probe_url(
 
     if not _validated_url(url):
         return ProbeResult(ProbeOutcome.INVALID_URL, attempts=0)
-    if timeout <= 0 or attempts < 1 or retry_delay < 0:
-        raise ValueError(
-            "timeout must be positive, attempts must be >= 1, retry_delay must be >= 0"
-        )
+    _validate_probe_settings(timeout, attempts, retry_delay)
 
     request = transport or _strict_https_get
     for attempt in range(1, attempts + 1):
@@ -300,15 +343,42 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        result = probe_url(
-            args.url,
-            timeout=args.timeout,
-            attempts=args.retries + 1,
-            retry_delay=args.retry_delay,
-        )
+        _validate_probe_settings(args.timeout, args.retries + 1, args.retry_delay)
     except ValueError as error:
         print(f"ERROR: invalid Tailscale Serve probe settings: {error}", file=sys.stderr)
         return 2
+
+    if not _validated_url(args.url):
+        result = ProbeResult(ProbeOutcome.INVALID_URL, attempts=0)
+    else:
+        target_hostname = urlsplit(args.url).hostname
+        source_hostname = _tailscale_self_dns_name()
+        if not source_hostname:
+            print(
+                "ERROR: Tailscale Serve probe identity-unavailable: the executor could not "
+                "derive its own Tailscale DNS identity; refusing unverified probe evidence.",
+                file=sys.stderr,
+            )
+            return 27
+        if source_hostname == (target_hostname or "").rstrip(".").lower():
+            print(
+                "ERROR: Tailscale Serve probe identity-same-host: the executor is the target "
+                "host, so this request cannot prove the external Serve route.",
+                file=sys.stderr,
+            )
+            return 27
+        print("TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct")
+        print("Tailscale Serve probe executor identity: verified distinct from target")
+        try:
+            result = probe_url(
+                args.url,
+                timeout=args.timeout,
+                attempts=args.retries + 1,
+                retry_delay=args.retry_delay,
+            )
+        except ValueError as error:
+            print(f"ERROR: invalid Tailscale Serve probe settings: {error}", file=sys.stderr)
+            return 2
 
     if result.outcome is ProbeOutcome.OK:
         print(f"Tailscale Serve data-plane: ready (https://{_safe_target(args.url)})")

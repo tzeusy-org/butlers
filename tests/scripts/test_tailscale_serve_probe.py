@@ -203,6 +203,77 @@ def test_probe_reports_timeout_after_bounded_attempts() -> None:
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize(
+    ("timeout", "attempts", "retry_delay"),
+    [
+        (float("nan"), 1, 0),
+        (float("inf"), 1, 0),
+        (31, 1, 0),
+        (1, 5, 0),
+        (1, 1, 6),
+    ],
+)
+def test_probe_rejects_non_finite_or_out_of_policy_retry_settings(
+    timeout: float,
+    attempts: int,
+    retry_delay: float,
+) -> None:
+    module = _probe_module()
+
+    with pytest.raises(ValueError, match="bounded probe policy"):
+        module.probe_url(
+            "https://device.example.ts.net/butlers-dev-api/api/health",
+            timeout=timeout,
+            attempts=attempts,
+            retry_delay=retry_delay,
+        )
+
+
+def test_probe_rejects_target_hosts_own_tailscale_identity(monkeypatch, capsys) -> None:
+    module = _probe_module()
+    monkeypatch.setattr(module, "_tailscale_self_dns_name", lambda: "device.example.ts.net")
+    transport_called = False
+
+    def forbidden_transport(_url: str, _timeout: float):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("same-host identity must fail before HTTPS")
+
+    monkeypatch.setattr(module, "_strict_https_get", forbidden_transport)
+
+    result = module.main(["--url", "https://device.example.ts.net/butlers-dev-api/api/health"])
+
+    assert result == 27
+    assert "identity-same-host" in capsys.readouterr().err
+    assert transport_called is False
+
+
+@pytest.mark.parametrize("identity", [None, ""])
+def test_probe_requires_readable_executor_tailscale_identity(monkeypatch, capsys, identity) -> None:
+    module = _probe_module()
+    monkeypatch.setattr(module, "_tailscale_self_dns_name", lambda: identity)
+
+    result = module.main(["--url", "https://device.example.ts.net/butlers-dev-api/api/health"])
+
+    assert result == 27
+    assert "identity-unavailable" in capsys.readouterr().err
+
+
+def test_probe_attests_distinct_executor_identity_before_success(monkeypatch, capsys) -> None:
+    module = _probe_module()
+    monkeypatch.setattr(module, "_tailscale_self_dns_name", lambda: "verifier.example.ts.net")
+    monkeypatch.setattr(
+        module,
+        "_strict_https_get",
+        lambda _url, _timeout: module.ProbeResponse(200, b'{"status":"ok"}'),
+    )
+
+    result = module.main(["--url", "https://device.example.ts.net/butlers-dev-api/api/health"])
+
+    assert result == 0
+    assert "TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct" in capsys.readouterr().out
+
+
 def test_failure_message_is_actionable_without_echoing_response_body() -> None:
     module = _probe_module()
     result = module.ProbeResult(
@@ -234,6 +305,11 @@ def _launcher_harness(
     probe_exit: int = 0,
     omit_api_mapping: bool = False,
     probe_command: bool = True,
+    actual_probe: bool = False,
+    probe_attests: bool = True,
+    probe_hangs: bool = False,
+    serve_status_mode: str = "valid",
+    extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run compose.sh against fake commands; never contacts Docker or Tailscale."""
 
@@ -243,6 +319,10 @@ def _launcher_harness(
     compose = Path("scripts/compose.sh")
     scripts.joinpath("compose.sh").write_text(compose.read_text(encoding="utf-8"), encoding="utf-8")
     scripts.joinpath("compose.sh").chmod(0o755)
+    probe_script = Path("scripts/tailscale_serve_probe.py")
+    scripts.joinpath("tailscale_serve_probe.py").write_text(
+        probe_script.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     base_fingerprint = Path("scripts/base-image-input-fingerprint.sh")
     scripts.joinpath("base-image-input-fingerprint.sh").write_text(
         base_fingerprint.read_text(encoding="utf-8"), encoding="utf-8"
@@ -269,6 +349,10 @@ def _launcher_harness(
         # real tailscale binary.
         if [[ "$*" == "status --json" ]]; then
           printf '%s\\n' '{json.dumps({"BackendState": "Running", "Self": {"DNSName": "device.example.ts.net"}})}'
+        elif [[ "$*" == "serve status --json" && "{serve_status_mode}" == "failure" ]]; then
+          exit 7
+        elif [[ "$*" == "serve status --json" && "{serve_status_mode}" == "malformed" ]]; then
+          printf '%s\\n' 'not-json'
         elif [[ "$*" == "serve status --json" ]]; then
           cat <<'JSON'
         {{
@@ -321,6 +405,8 @@ def _launcher_harness(
         probe,
         f"""
         printf 'probe %s\\n' "$*" >> "$LAUNCHER_CALLS"
+        {"printf '%s\\n' 'TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct'" if probe_attests else ":"}
+        {"sleep 30" if probe_hangs else ":"}
         exit {probe_exit}
         """,
     )
@@ -331,11 +417,17 @@ def _launcher_harness(
         "LAUNCHER_CALLS": str(calls),
     }
     if probe_command:
-        environment["TAILSCALE_SERVE_PROBE_COMMAND"] = str(probe)
+        environment["TAILSCALE_SERVE_PROBE_COMMAND"] = (
+            f"{sys.executable} {scripts / 'tailscale_serve_probe.py'}"
+            if actual_probe
+            else str(probe)
+        )
     else:
         environment.pop("TAILSCALE_SERVE_PROBE_COMMAND", None)
     if probe_context is not None:
         environment["TAILSCALE_SERVE_PROBE_CONTEXT"] = probe_context
+    if extra_environment:
+        environment.update(extra_environment)
     completed = subprocess.run(
         ["bash", str(scripts / "compose.sh"), "--skip-oauth-check"],
         cwd=repo,
@@ -369,6 +461,67 @@ def test_launcher_refuses_on_host_probe_context(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "off-host" in completed.stderr.lower()
     assert not any(call.startswith("probe ") for call in calls)
+
+
+def test_caller_asserted_off_host_context_cannot_bless_same_host_executor(tmp_path: Path) -> None:
+    completed, calls = _launcher_harness(
+        tmp_path,
+        probe_context="off-host",
+        probe_attests=False,
+    )
+
+    assert completed.returncode != 0
+    assert "identity-unverified" in completed.stderr
+    assert any("compose" in call and " up -d" in call for call in calls)
+
+
+def test_actual_probe_rejects_same_host_executor_despite_context_label(tmp_path: Path) -> None:
+    completed, calls = _launcher_harness(tmp_path, probe_context="off-host", actual_probe=True)
+
+    assert completed.returncode != 0
+    assert "identity-same-host" in completed.stderr
+    assert any("compose" in call and " up -d" in call for call in calls)
+
+
+def test_launcher_bounds_hung_executor_with_outer_deadline(tmp_path: Path) -> None:
+    completed, calls = _launcher_harness(
+        tmp_path,
+        probe_hangs=True,
+        extra_environment={
+            "TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS": "0.1",
+            "TAILSCALE_SERVE_PROBE_RETRIES": "0",
+            "TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS": "0",
+        },
+    )
+
+    assert completed.returncode != 0
+    assert "executor-timeout" in completed.stderr
+    assert any(call.startswith("probe ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS", "NaN"),
+        ("TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS", "31"),
+        ("TAILSCALE_SERVE_PROBE_RETRIES", "999999"),
+        ("TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS", "inf"),
+    ],
+)
+def test_launcher_rejects_invalid_probe_settings_before_mutation(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    completed, calls = _launcher_harness(
+        tmp_path,
+        extra_environment={variable: value},
+    )
+
+    assert completed.returncode != 0
+    assert "invalid Tailscale Serve probe settings" in completed.stderr
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+    assert not any("compose" in call for call in calls)
 
 
 def test_launcher_makes_missing_data_plane_probe_explicit(tmp_path: Path) -> None:
@@ -406,4 +559,22 @@ def test_launcher_distinguishes_mapping_missing_after_apply(tmp_path: Path) -> N
     assert completed.returncode != 0
     assert "mapping-missing" in completed.stderr
     assert "butlers-dev-api" in completed.stderr
+    assert not any(call.startswith("probe ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("serve_status_mode", "failure_class"),
+    [("failure", "status-unreadable"), ("malformed", "status-malformed")],
+)
+def test_launcher_distinguishes_unreadable_and_malformed_serve_status(
+    tmp_path: Path,
+    serve_status_mode: str,
+    failure_class: str,
+) -> None:
+    completed, calls = _launcher_harness(tmp_path, serve_status_mode=serve_status_mode)
+
+    assert completed.returncode != 0
+    assert failure_class in completed.stderr
+    assert "mapping-missing" not in completed.stderr
+    assert not any(call.startswith("fake tailscale ") for call in calls)
     assert not any(call.startswith("probe ") for call in calls)
