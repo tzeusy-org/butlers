@@ -197,15 +197,13 @@ Tests SHALL be organized into subdirectories by concern, with standalone test fi
 - **THEN** they live under `roster/{butler-name}/tests/` and are auto-marked with the integration marker via `roster/conftest.py`
 
 ### Requirement: Conftest Fixture Hierarchy
-Fixtures SHALL be layered across three conftest files with clear scoping and re-export rules.
+Shared fixture definitions SHALL have one canonical module and one project-wide pytest registration layer. Nested and test-tree conftest files SHALL NOT re-register those project-wide shared fixtures; they MAY own fixtures, hooks, and helpers scoped to their tree.
 
 #### Scenario: Root conftest (conftest.py)
 - **WHEN** any test in the project runs
-- **THEN** it has access to fixtures from the root `conftest.py` which provides: `docker_available` flag (checks `shutil.which("docker")`), `SpawnerResult` dataclass (mock spawner output), `MockSpawner` class (configurable mock with invocation recording and result queuing), `mock_spawner` fixture (provides a MockSpawner instance), `postgres_container` session-scoped fixture (`pgvector/pgvector:pg17` testcontainer), and `provisioned_postgres_pool` fixture (creates a fresh database with unique name per test invocation)
-
-#### Scenario: Tests conftest (tests/conftest.py)
-- **WHEN** tests under `tests/` run
-- **THEN** `tests/conftest.py` re-exports `SpawnerResult`, `MockSpawner`, and `mock_spawner` from the root conftest to make them directly importable from the tests namespace
+- **THEN** `SpawnerResult`, `MockSpawner`, and `mock_spawner` are defined canonically in `src/butlers/testing/shared_fixtures.py` and imported and exported exactly once by the root `conftest.py`
+- **AND** pytest makes `mock_spawner` available to both configured test trees, `tests/` and `roster/`, through that root registration
+- **AND** root `conftest.py` provides the `docker_available` flag (checks `shutil.which("docker")`), `postgres_container` session-scoped fixture (`pgvector/pgvector:pg17` testcontainer), and `provisioned_postgres_pool` fixture (creates a fresh database with unique name per test invocation)
 
 #### Scenario: Roster conftest (roster/conftest.py)
 - **WHEN** tests under `roster/` run
