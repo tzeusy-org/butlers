@@ -4332,7 +4332,7 @@ interface _BackendStatsRow {
 /**
  * Derive liveness string from last heartbeat timestamp.
  *
- * Mirrors butlers.api.models.connector.derive_liveness (Python) exactly so
+ * Mirrors butlers.core.liveness.derive_liveness (Python) exactly so
  * the same connector never disagrees between this switchboard-routed card
  * and any other reader (bu-27dxl.6.6) -- this was previously a 30-minute
  * stale cutoff, a full 15 minutes later than the backend's, which could

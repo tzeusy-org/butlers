@@ -570,7 +570,6 @@ from butlers.api.models.connector import (  # noqa: E402
     ConnectorStatsBucket,
     ConnectorStatsSummary,
     ConnectorSummary,
-    derive_liveness,
 )
 from butlers.api.models.conversation import (  # noqa: E402
     ConversationCreateRequest,
@@ -656,7 +655,6 @@ __all__ = [
     "DailyActivity",
     "DailyActivityBucket",
     "DailySpend",
-    "derive_liveness",
     "Episode",
     "Fact",
     "GraphHealthCoverage",

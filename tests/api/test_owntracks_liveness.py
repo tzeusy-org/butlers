@@ -3,7 +3,7 @@
 ``_derive_connection_state`` used to reimplement its own binary 300s-only
 liveness cutoff (no distinct stale bucket, no clock-skew handling) instead
 of routing through the canonical ``derive_liveness`` helper
-(``butlers.api.models.connector``) used by the sibling connectors,
+(``butlers.core.liveness``) used by the sibling connectors,
 Google Health, and calendar-workspace routers. These tests pin the
 three-state (live/stale/offline) behavior, including the clock-skew
 tolerance, now that it delegates to the canonical helper.

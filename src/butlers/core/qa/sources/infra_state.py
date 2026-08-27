@@ -25,7 +25,7 @@ Four checks, one discovery source
 1. **connector-offline** — reads ``public.v_qa_connector_state`` (Switchboard
    migrations ``sw_024`` / ``sw_028``, a sanctioned RFC 0010 view over
    ``switchboard.connector_registry``). Reuses
-   ``butlers.api.models.connector.derive_liveness`` — the SAME
+   ``butlers.core.liveness.derive_liveness`` — the SAME
    online/stale/offline definition the dashboard's own connector list already
    uses — rather than inventing a second threshold that could quietly
    disagree with it. A ``state='paused'`` connector (a deliberate operator
@@ -127,7 +127,7 @@ import asyncpg
 
 from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
 from butlers.core.infra_conditions import Observation, reconcile_snapshot
-from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, is_liveness_stale
+from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, derive_liveness, is_liveness_stale
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
@@ -351,8 +351,6 @@ class InfraStateSource:
     # ------------------------------------------------------------------
 
     async def _check_connectors(self, now: datetime) -> list[QaFinding]:
-        from butlers.api.models.connector import derive_liveness
-
         rows = await self._pool.fetch(f"SELECT * FROM {_CONNECTOR_VIEW}")
 
         findings: list[QaFinding] = []

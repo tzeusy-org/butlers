@@ -62,13 +62,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from butlers.api.models.connector import derive_liveness
 from butlers.api.models.google_health import (
     AccountStatus,
     GoogleHealthConnectorState,
     GoogleHealthDisconnectResponse,
     GoogleHealthStatusResponse,
 )
+from butlers.core.liveness import derive_liveness
 from butlers.google_account_registry import (
     google_health_scope_family,
     has_all_health_scope_families,
@@ -98,7 +98,7 @@ GOOGLE_HEALTH_SCOPE_URLS: frozenset[str] = frozenset(
 _CONNECTOR_TYPE = "google_health"
 
 # Liveness (online/stale/offline) is derived via
-# butlers.api.models.connector.derive_liveness — the SAME thresholds the
+# butlers.core.liveness.derive_liveness — the SAME thresholds the
 # dashboard's connector list and InfraStateSource already use — rather than
 # a second, locally-defined cutoff that could quietly disagree with it
 # (bu-27dxl.6.6).

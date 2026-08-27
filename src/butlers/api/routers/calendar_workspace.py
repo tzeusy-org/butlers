@@ -83,7 +83,6 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
-from butlers.api.models.connector import derive_liveness
 from butlers.api.read_models.calendar_workspace_v1 import (
     DEDUP_STRATEGIES,
     CalendarDedupRules,
@@ -113,6 +112,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
 from butlers.api.routers.audit import log_audit_entry
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.config import list_butlers
+from butlers.core.liveness import derive_liveness
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (

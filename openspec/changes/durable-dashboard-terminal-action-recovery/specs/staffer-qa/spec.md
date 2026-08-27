@@ -103,44 +103,31 @@ Scope: v1-mandatory
 #### Scenario: Log scanner source
 
 - **WHEN** the `log_scanner` source is enabled
-- **THEN** it reads structured JSON log files from `logs/butlers/`,
-  `logs/connectors/`, and `logs/uvicorn/` for ERROR/WARNING entries within the
-  lookback window
-- **AND** all filtering is tool-based through JSON parsing, regex, and severity
-  checks; no LLM invocation occurs
+- **THEN** it reads structured JSON log files from `logs/butlers/`, `logs/connectors/`, `logs/uvicorn/` for ERROR/WARNING entries within the lookback window
+- **AND** all filtering is tool-based (JSON parsing, regex, severity checks) — no LLM invocation
 
 #### Scenario: Session record source
 
 - **WHEN** the `session_records` source is enabled
-- **THEN** it queries the read-only SQL view `public.v_qa_recent_failures`
-  (sanctioned cross-schema exception per RFC 0010) for recent failures within
-  the lookback window
+- **THEN** it queries a read-only SQL view `public.v_qa_recent_failures` (sanctioned cross-schema exception per RFC 0010 pattern) for recent session failures within the lookback window
 - **AND** the view is a UNION across butler `sessions` tables filtered to
   error/timeout/crash statuses
-- **AND** the view is structurally read-only, date-filtered, and created by an
-  auditable migration with explicit per-schema GRANT
-- **AND** it extracts exception type, traceback, call site, and butler name from
-  the session record
-- **AND** it anonymizes event summaries before storage and computes fingerprints
-  with the same algorithm as log-scanner findings
-- **AND** it excludes expected/controlled rows: short (`<= 60s`) Switchboard
-  classification timeouts (`trigger_source = "classification"` or historical
-  `"tick"`), synthetic `orphaned: daemon restart` rows, and intentional
-  spawner-guardrail stops whose error contains `token_budget_exceeded`,
-  `tool_call_budget_exceeded`, or `degenerate_tool_loop`; longer/non-
-  classification timeouts and other failures remain actionable
+- **AND** the view is read-only (structurally enforced — no INSERT/UPDATE/DELETE), date-filtered, and created via auditable migration with explicit per-schema GRANT
+- **AND** extracts exception type, traceback, call site, and butler name from the session record
+- **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session error messages may contain user data)
+- **AND** computes fingerprints using the same algorithm as log scanner findings
+- **AND** excludes rows that represent expected or controlled outcomes rather than product/runtime failures:
+  - short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = "classification"` (or the historical `"tick"`, renamed in bu-qvnce.12) as expected routing fallback telemetry; longer or non-classification Switchboard timeouts remain actionable
+  - synthetic startup-recovery rows (`orphaned: daemon restart`)
+  - spawner guardrail terminations whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool_call_budget_exceeded`, `degenerate_tool_loop`) — the same markers the failover classifier treats as failover-ineligible; these remain visible in session history and the token ledger but do not spawn autonomous code-fix investigations
 
 #### Scenario: Butler report source (reactive relay via Switchboard)
 
 - **WHEN** the `butler_reports` source is enabled
-- **THEN** ordinary butlers relay `report_error` findings to QA via
-  Switchboard's `route()` MCP tool, calling QA's `report_finding` directly
-  rather than session-spawning `route.execute`, preserving MCP-only
-  inter-butler communication
-- **AND** the QA `report_finding` handler queues ordinary reports in an
-  in-memory buffer and the patrol drains that buffer alongside batch sources
-- **AND** if the ordinary buffer exceeds `max_reactive_buffer` (default 50),
-  oldest entries are dropped with a WARNING
+- **THEN** butlers relay `report_error` findings to the QA staffer via Switchboard's `route()` MCP tool, calling the QA staffer's `report_finding` tool directly (tool-to-tool routing, not session-spawning `route.execute`) — preserving MCP-only inter-butler communication (non-negotiable rule #3)
+- **AND** the QA staffer's `report_finding` MCP tool handler queues received findings in an in-memory buffer
+- **AND** the patrol cycle drains the buffer and includes those findings alongside batch sources
+- **AND** if the buffer exceeds `max_reactive_buffer` (default: 50), oldest entries are dropped with a WARNING
 - **AND** dashboard-mode reports use the durable inbox lifecycle rather than the
   ordinary volatile buffer and are claimed by patrol only under its fenced
   lifecycle
@@ -148,37 +135,20 @@ Scope: v1-mandatory
 #### Scenario: Tool-call failure source
 
 - **WHEN** the `tool_call_failures` source is enabled
-- **THEN** it queries recent failed MCP tool calls within the lookback window and
-  produces findings with fingerprints derived from tool name and call site
-- **AND** all filtering is tool-based SQL; no LLM invocation occurs
+- **THEN** it queries recent failed MCP tool calls within the lookback window and produces `QaFinding` objects with fingerprints derived from the tool name and call site
+- **AND** all filtering is tool-based (SQL queries); no LLM invocation
 
 #### Scenario: Infra state source
 
 - **WHEN** the `infra_state` source is enabled
-- **THEN** it checks four infra health signals every patrol tick, ignoring
-  `lookback_minutes` because each check is point-in-time liveness/staleness:
-  - **connector-offline**: query `public.v_qa_connector_state` over
-    `switchboard.connector_registry` and flag derived liveness `offline`, while
-    excluding `paused` connectors, the first 15 minutes after registration, and
-    storage-only rows with a checkpoint but no process instance or heartbeat
-  - **heartbeat-stale**: query `public.v_qa_butler_heartbeat` over
-    `switchboard.butler_registry` and flag elapsed `last_seen_at` plus its own
-    `liveness_ttl_seconds` or `quarantined_at IS NOT NULL`, recomputing rather
-    than trusting lazy `eligibility_state`; a timestamp more than five minutes
-    in the future is untrustworthy and stale
-  - **backup-stale**: read `BUTLERS_BACKUP_DIR`; an unset value is legitimate,
-    while an unreachable configured directory, no backup, or a most-recent
-    backup older than 36 hours is a finding
-  - **external-deadman-stale**: read the last successful external-deadman ping
-    in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is legitimate,
-    while no successful ping or one older than three configured intervals is a
-    finding
-- **AND** each finding fingerprint derives from stable connector/butler identity
-  or fixed backup/deadman call site through the same sanitize-then-hash pattern
-- **AND** all filtering is tool-based SQL/environment/filesystem work; no LLM
-  invocation occurs
-- **AND** a health-check query against both views runs before row processing and
-  a failure is raised/logged rather than silently returned as clean
+- **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-in-time liveness/staleness comparison against a fixed cadence, not a rolling scan window):
+  - **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `switchboard.connector_registry`) and flags a connector whose derived liveness (`butlers.core.liveness.derive_liveness`) is `"offline"` — excluding a `state = 'paused'` connector (a deliberate operator action), excluding a connector within a 15-minute grace window of its first registration, and excluding a storage-only row that has a checkpoint cursor but has never acquired either a process instance or a heartbeat
+  - **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) and flags a butler whose `last_seen_at` plus its own `liveness_ttl_seconds` has elapsed, or that is quarantined (`quarantined_at IS NOT NULL`) — recomputed independently of the stored `eligibility_state` column, which is only reconciled lazily on routing calls and can go stale forever for a butler nobody routes to; the TTL-liveness window is bounded against clock skew — a `last_seen_at` reported further than a 5-minute tolerance into the future is untrustworthy (clock skew / bad writer) and is treated as stale rather than allowed to keep liveness asserted indefinitely
+  - **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
+  - **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_deadman` in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is a legitimate absence (no finding); a last-success timestamp older than 3x the configured ping interval (or no successful ping ever) produces a finding
+- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries the live timestamp/age
+- **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation
+- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is raised and logged rather than silently returning an empty (falsely clean) result
 
 ## ADDED Requirements
 

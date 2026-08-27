@@ -1,27 +1,17 @@
-"""Shared last_seen_at + liveness_ttl_seconds staleness formula.
+"""Shared heartbeat liveness policies.
 
-Two call sites independently need the identical "is this agent's heartbeat
-stale" verdict:
+Connector surfaces and QA discovery share :func:`derive_liveness` for the
+canonical ``online``/``stale``/``offline`` verdict. Butler routing eligibility
+and QA discovery share :func:`is_liveness_stale` for the configurable
+``last_seen_at + liveness_ttl_seconds`` verdict.
 
-- ``roster/switchboard/tools/registry/registry.py::_derive_eligibility_state``
-  — governs butler routing eligibility (``active``/``stale``/``quarantined``).
-- ``src/butlers/core/qa/sources/infra_state.py``'s heartbeat-stale QA check
-  — flags a butler QA should investigate.
+These policies live under ``src/butlers/core`` so API and roster callers depend
+on a stable lower layer. Core code must not import dashboard DTOs or dynamically
+loaded roster modules merely to reuse heartbeat policy.
 
-Before this module existed, ``infra_state.py`` re-implemented the formula by
-hand rather than importing ``registry.py`` directly, because
-``src/butlers/core`` cannot import ``roster/`` code (roster is loaded
-dynamically at runtime; the reverse dependency would invert that layering).
-This module is the single canonical implementation, placed under
-``src/butlers/core`` (mirroring the existing shared-helper convention, e.g.
-``core/mcp_urls.py``) so both sides can import it directly: core code needs
-no roster import, and roster already imports freely from ``butlers.core``
-(e.g. ``registry.py`` imports ``core.mcp_urls``).
-
-Callers that need more than the staleness boolean (e.g. ``registry.py``
-additionally maps quarantine state onto an eligibility enum) layer that
-policy on top of :func:`is_liveness_stale` rather than this module growing
-enum/vocabulary concerns that not every caller needs.
+Callers that need richer states, such as quarantine or connector-specific
+presentation, layer those concerns on top of these functions rather than this
+module growing vocabulary that not every caller needs.
 """
 
 from __future__ import annotations
@@ -37,6 +27,42 @@ DEFAULT_LIVENESS_TTL_SECONDS = 300
 #: this the timestamp is untrustworthy rather than confidently recent, so it
 #: must not keep an unbounded TTL window "fresh" forever.
 CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+
+
+def derive_liveness(last_heartbeat_at: datetime | None) -> str:
+    """Derive liveness status from last heartbeat timestamp.
+
+    Liveness thresholds (from docs/connectors/heartbeat.md):
+    - online: heartbeat within last 5 minutes
+    - stale: heartbeat between 5-15 minutes ago
+    - offline: no heartbeat for 15+ minutes or never seen
+
+    A future-dated heartbeat (more than 5 minutes ahead of server clock) is
+    treated as offline rather than online to avoid false-healthy reports under
+    clock skew.
+
+    Args:
+        last_heartbeat_at: Timestamp of the last received heartbeat, or None if never seen
+
+    Returns:
+        One of: "online", "stale", "offline"
+    """
+    if last_heartbeat_at is None:
+        return "offline"
+
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+    age = (now - last_heartbeat_at).total_seconds()
+
+    if age < -300:  # more than 5 minutes in the future — clock skew
+        return "offline"
+    elif age <= 300:  # 5 minutes
+        return "online"
+    elif age <= 900:  # 15 minutes
+        return "stale"
+    else:
+        return "offline"
 
 
 def normalize_liveness_ttl_seconds(
