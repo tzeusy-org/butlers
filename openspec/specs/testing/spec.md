@@ -197,7 +197,7 @@ Tests SHALL be organized into subdirectories by concern, with standalone test fi
 - **THEN** they live under `roster/{butler-name}/tests/` and are auto-marked with the integration marker via `roster/conftest.py`
 
 ### Requirement: Conftest Fixture Hierarchy
-Shared fixture definitions SHALL have one canonical module and one project-wide pytest registration layer, while test-tree conftest files SHALL own only fixtures and collection behavior scoped to their tree.
+Shared fixture definitions SHALL have one canonical module and one project-wide pytest registration layer. Nested and test-tree conftest files SHALL NOT re-register those project-wide shared fixtures; they MAY own fixtures, hooks, and helpers scoped to their tree.
 
 #### Scenario: Root conftest (conftest.py)
 - **WHEN** any test in the project runs

@@ -100,14 +100,14 @@ Delete `#### Scenario: Tests conftest (tests/conftest.py)` and its two lines. Re
 
 - [ ] **Step 3: Update the exact repository note**
 
-Replace the `AGENTS.md` note claiming both conftest files re-export the shared fixtures with a note that definitions live in `src/butlers/testing/shared_fixtures.py`, root `conftest.py` is their sole global pytest registration layer, and tier-specific conftests should contain only fixtures scoped to that tier.
+Replace the `AGENTS.md` note claiming both conftest files re-export the shared fixtures with a note that definitions live in `src/butlers/testing/shared_fixtures.py`, root `conftest.py` is their sole global pytest registration layer, and nested or tier-specific conftests must not re-register those shared fixtures but may define fixtures, hooks, and helpers scoped to their tree.
 
 - [ ] **Step 4: Validate the normative contract**
 
 Run:
 
 ```bash
-openspec validate --strict
+openspec validate testing --type spec --strict
 make check-spec-overwrites
 ```
 
