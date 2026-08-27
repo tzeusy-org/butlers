@@ -686,6 +686,7 @@ class TestCooldownEnforcement:
             dedup_key=dedup_key,
             message="No BP logged in 12 days",
             expires_at=t0 + timedelta(days=7),
+            now=t0,
         )
         r1 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=t0)
         assert len(r1["delivered"]) == 1
@@ -707,6 +708,7 @@ class TestCooldownEnforcement:
             dedup_key=dedup_key,
             message="No BP logged in 12 days (again)",
             expires_at=t1 + timedelta(days=7),
+            now=t1,
         )
         r2 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=t1)
 
