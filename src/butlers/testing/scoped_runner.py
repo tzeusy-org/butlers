@@ -42,7 +42,6 @@ DEFAULT_EXTRA_ARGS: list[str] = ["-n", "auto"]
 
 FULL_SUITE_FALLBACK_ALLOWLIST: tuple[str, ...] = (
     "conftest.py",
-    "tests/conftest.py",
     "src/butlers/core/",
     "src/butlers/modules/base.py",
     "src/butlers/modules/registry.py",

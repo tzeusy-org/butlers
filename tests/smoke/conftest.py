@@ -45,16 +45,6 @@ import pytest
 
 from butlers.testing.migration import create_migration_db, migration_db_name
 
-# Re-export so ``from tests.smoke.conftest import mock_spawner`` keeps working
-# in smoke test files that prefer a direct import.
-from butlers.testing.shared_fixtures import (  # noqa: F401
-    MockSpawner,
-    SpawnerResult,
-    mock_spawner,
-)
-
-__all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
-
 _docker_available = shutil.which("docker") is not None
 
 

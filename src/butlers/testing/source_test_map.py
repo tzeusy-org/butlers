@@ -21,7 +21,6 @@ from __future__ import annotations
 FULL_SUITE_TRIGGERS: frozenset[str] = frozenset(
     {
         "conftest.py",
-        "tests/conftest.py",
         "pyproject.toml",
         "src/butlers/__init__.py",
         "src/butlers/modules/base.py",
