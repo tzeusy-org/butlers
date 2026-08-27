@@ -342,6 +342,22 @@ def _launcher_harness(
     calls = tmp_path / "calls.log"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    handlers: object = {
+        "/butlers-dev": {"Proxy": "http://localhost:42173/butlers-dev"},
+        "/owntracks-dev": {"Proxy": "http://localhost:42086/owntracks"},
+    }
+    if not omit_api_mapping:
+        handlers["/butlers-dev-api"] = {"Proxy": "http://localhost:42200"}
+    host_config: object = {"Handlers": handlers}
+    if serve_status_mode == "host-array":
+        host_config = []
+    elif serve_status_mode == "host-scalar":
+        host_config = "invalid"
+    elif serve_status_mode == "handlers-array":
+        host_config = {"Handlers": []}
+    elif serve_status_mode == "handlers-scalar":
+        host_config = {"Handlers": "invalid"}
+    serve_status = {"Web": {"device.example.ts.net:443": host_config}}
     _write_executable(
         fake_bin / "tailscale",
         f"""
@@ -354,19 +370,7 @@ def _launcher_harness(
         elif [[ "$*" == "serve status --json" && "{serve_status_mode}" == "malformed" ]]; then
           printf '%s\\n' 'not-json'
         elif [[ "$*" == "serve status --json" ]]; then
-          cat <<'JSON'
-        {{
-          "Web": {{
-            "device.example.ts.net:443": {{
-              "Handlers": {{
-                "/butlers-dev": {{"Proxy": "http://localhost:42173/butlers-dev"}},
-                {"" if omit_api_mapping else '"/butlers-dev-api": {"Proxy": "http://localhost:42200"},'}
-                "/owntracks-dev": {{"Proxy": "http://localhost:42086/owntracks"}}
-              }}
-            }}
-          }}
-        }}
-        JSON
+          printf '%s\\n' '{json.dumps(serve_status)}'
         else
           printf 'fake tailscale command: %s\\n' "$*" >> "$LAUNCHER_CALLS"
         fi
@@ -575,6 +579,23 @@ def test_launcher_distinguishes_unreadable_and_malformed_serve_status(
 
     assert completed.returncode != 0
     assert failure_class in completed.stderr
+    assert "mapping-missing" not in completed.stderr
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "serve_status_mode",
+    ["host-array", "host-scalar", "handlers-array", "handlers-scalar"],
+)
+def test_launcher_rejects_malformed_nested_serve_status_as_unreadable(
+    tmp_path: Path,
+    serve_status_mode: str,
+) -> None:
+    completed, calls = _launcher_harness(tmp_path, serve_status_mode=serve_status_mode)
+
+    assert completed.returncode != 0
+    assert "status-malformed" in completed.stderr
     assert "mapping-missing" not in completed.stderr
     assert not any(call.startswith("fake tailscale ") for call in calls)
     assert not any(call.startswith("probe ") for call in calls)

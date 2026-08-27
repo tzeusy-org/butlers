@@ -387,6 +387,12 @@ if not isinstance(data, dict):
 web = data.get("Web")
 if web is not None and not isinstance(web, dict):
     raise SystemExit(1)
+for host_config in (web or {}).values():
+    if not isinstance(host_config, dict):
+        raise SystemExit(1)
+    handlers = host_config.get("Handlers")
+    if handlers is not None and not isinstance(handlers, dict):
+        raise SystemExit(1)
 PY
   }
 
