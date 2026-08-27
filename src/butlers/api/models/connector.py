@@ -12,42 +12,6 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-def derive_liveness(last_heartbeat_at: datetime | None) -> str:
-    """Derive liveness status from last heartbeat timestamp.
-
-    Liveness thresholds (from docs/connectors/heartbeat.md):
-    - online: heartbeat within last 5 minutes
-    - stale: heartbeat between 5-15 minutes ago
-    - offline: no heartbeat for 15+ minutes or never seen
-
-    A future-dated heartbeat (more than 5 minutes ahead of server clock) is
-    treated as offline rather than online to avoid false-healthy reports under
-    clock skew.
-
-    Args:
-        last_heartbeat_at: Timestamp of the last received heartbeat, or None if never seen
-
-    Returns:
-        One of: "online", "stale", "offline"
-    """
-    if last_heartbeat_at is None:
-        return "offline"
-
-    import datetime as dt
-
-    now = dt.datetime.now(dt.UTC)
-    age = (now - last_heartbeat_at).total_seconds()
-
-    if age < -300:  # more than 5 minutes in the future — clock skew
-        return "offline"
-    elif age <= 300:  # 5 minutes
-        return "online"
-    elif age <= 900:  # 15 minutes
-        return "stale"
-    else:
-        return "offline"
-
-
 class ConnectorDaySummary(BaseModel):
     """Today's aggregated metrics for a connector."""
 

@@ -43,7 +43,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from butlers.api.models.connector import derive_liveness
 from butlers.api.models.owntracks import (
     OwnTracksConfigResponse,
     OwnTracksConnectionState,
@@ -51,6 +50,7 @@ from butlers.api.models.owntracks import (
     OwnTracksStatusResponse,
     OwnTracksTokenResponse,
 )
+from butlers.core.liveness import derive_liveness
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,7 @@ def _derive_connection_state(
     """Derive connection state from token and heartbeat data.
 
     Liveness (online/stale/offline) is derived via the canonical
-    ``derive_liveness`` helper (``butlers.api.models.connector``) — the same
+    ``derive_liveness`` helper (``butlers.core.liveness``) — the same
     heartbeat-liveness formula used by the connectors, Google Health, and
     calendar-workspace routers, including its 5-minute clock-skew tolerance
     for a future-dated heartbeat. This avoids reimplementing a bespoke

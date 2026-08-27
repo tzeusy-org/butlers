@@ -48,7 +48,6 @@ from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
-from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
 from butlers.connectors.registry_roles import (
@@ -66,6 +65,7 @@ from butlers.connectors.registry_roles import (
 from butlers.connectors.registry_roles import (
     normalize_operational_role as _normalize_role,
 )
+from butlers.core.liveness import derive_liveness as _liveness
 from butlers.modules.approvals.command_contracts import (
     CONNECTOR_DISCONNECT_COMMAND,
     CONNECTOR_ROTATE_TOKEN_PRODUCER,

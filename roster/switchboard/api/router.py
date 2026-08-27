@@ -34,7 +34,6 @@ from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
     compute_auth_status,
@@ -47,6 +46,7 @@ from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
 from butlers.connectors.registry_roles import (
     normalize_operational_role as _normalize_role,
 )
+from butlers.core.liveness import derive_liveness as _liveness
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query
 from butlers.tools.switchboard.registry.registry import (
