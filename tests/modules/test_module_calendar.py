@@ -65,7 +65,6 @@ from butlers.modules.calendar import (
     CalendarTokenRefreshError,
     _build_google_event_body,
     _build_google_event_patch_body,
-    _coerce_expires_in_seconds,
     _compute_free_slots,
     _extract_google_credential_value,
     _extract_google_private_metadata,
@@ -2058,17 +2057,6 @@ class TestGoogleHelpers:
     )
     def test_extract_google_credential_value(self, payload, key, expected):
         assert _extract_google_credential_value(payload, key) == expected
-
-    @pytest.mark.parametrize(
-        "value,expected",
-        [
-            (3600, 3600),
-            (0, 3600),
-            (None, 3600),
-        ],
-    )
-    def test_coerce_expires_in(self, value, expected):
-        assert _coerce_expires_in_seconds(value) == expected
 
     def test_safe_google_error_message_truncates_at_200(self):
         long_message = "Error: " + "x" * 300
