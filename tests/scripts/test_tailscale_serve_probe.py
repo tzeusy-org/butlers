@@ -309,6 +309,7 @@ def _launcher_harness(
     probe_attests: bool = True,
     probe_hangs: bool = False,
     serve_status_mode: str = "valid",
+    tailscale_dns_name: object = "device.example.ts.net",
     extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run compose.sh against fake commands; never contacts Docker or Tailscale."""
@@ -358,13 +359,14 @@ def _launcher_harness(
     elif serve_status_mode == "handlers-scalar":
         host_config = {"Handlers": "invalid"}
     serve_status = {"Web": {"device.example.ts.net:443": host_config}}
+    tailscale_status = {"BackendState": "Running", "Self": {"DNSName": tailscale_dns_name}}
     _write_executable(
         fake_bin / "tailscale",
         f"""
         # This fixture provides only read-only status output and never invokes a
         # real tailscale binary.
         if [[ "$*" == "status --json" ]]; then
-          printf '%s\\n' '{json.dumps({"BackendState": "Running", "Self": {"DNSName": "device.example.ts.net"}})}'
+          printf '%s\\n' '{json.dumps(tailscale_status)}'
         elif [[ "$*" == "serve status --json" && "{serve_status_mode}" == "failure" ]]; then
           exit 7
         elif [[ "$*" == "serve status --json" && "{serve_status_mode}" == "malformed" ]]; then
@@ -465,6 +467,21 @@ def test_launcher_refuses_on_host_probe_context(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "off-host" in completed.stderr.lower()
     assert not any(call.startswith("probe ") for call in calls)
+
+
+@pytest.mark.parametrize("tailscale_dns_name", [None, "", "not a usable hostname"])
+def test_launcher_refuses_configured_probe_without_usable_data_plane_target(
+    tmp_path: Path,
+    tailscale_dns_name: object,
+) -> None:
+    completed, calls = _launcher_harness(tmp_path, tailscale_dns_name=tailscale_dns_name)
+
+    assert completed.returncode != 0
+    assert "data-plane target-unavailable" in completed.stderr
+    assert "Self.DNSName" in completed.stderr
+    assert not any("compose" in call and " up -d" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
 
 
 def test_caller_asserted_off_host_context_cannot_bless_same_host_executor(tmp_path: Path) -> None:

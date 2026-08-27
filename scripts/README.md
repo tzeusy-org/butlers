@@ -176,7 +176,10 @@ whole executor (including DNS, SSH, and authentication setup) in a derived outer
 deadline.  An operator-supplied executor can therefore run `python3
 scripts/tailscale_serve_probe.py` from an independent tailnet client.  Without a
 configured executor, the launcher reports `control-plane mappings only` instead
-of claiming data-plane readiness.  Probe failures classify as `cert-invalid`,
+of claiming data-plane readiness.  With an explicitly configured executor, a
+usable `Self.DNSName` is required before any Serve or Compose lifecycle mutation;
+an absent or malformed target fails as `data-plane target-unavailable` rather
+than silently skipping the HTTPS check.  Probe failures classify as `cert-invalid`,
 `route-404`, `timeout`, or `executor-timeout` with sanitized, actionable guidance
 and never alter Serve state.
 

@@ -424,6 +424,35 @@ PY
     return 0
   }
 
+  _ts_read_usable_hostname() {
+    tailscale status --json 2>/dev/null | python3 -c '
+import json
+import re
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+
+if not isinstance(data, dict) or not isinstance(data.get("Self"), dict):
+    raise SystemExit(1)
+hostname = data["Self"].get("DNSName")
+if not isinstance(hostname, str):
+    raise SystemExit(1)
+if hostname.endswith("."):
+    hostname = hostname[:-1]
+if not hostname or len(hostname) > 253:
+    raise SystemExit(1)
+
+label_pattern = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+if any(not label_pattern.fullmatch(label) for label in hostname.split(".")):
+    raise SystemExit(1)
+
+print(hostname)
+'
+  }
+
   # ── Validate data-plane probe context before any lifecycle mutation ────
   # The command is normally an SSH wrapper (or another operator-supplied
   # executor) that runs scripts/tailscale_serve_probe.py from a different
@@ -478,6 +507,16 @@ PY
       TAILSCALE_SERVE_PROBE_RETRIES \
       TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS \
       TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS <<< "$normalized_probe_settings"
+
+    # An explicit executor promises data-plane evidence.  Derive and validate
+    # its target before any Serve or Compose lifecycle mutation so a missing or
+    # malformed Self.DNSName cannot silently turn that promise into a no-op.
+    TS_HOSTNAME=""
+    if ! TS_HOSTNAME=$(_ts_read_usable_hostname); then
+      echo "ERROR: Tailscale Serve data-plane target-unavailable: an explicit off-host probe is configured but 'tailscale status --json' did not provide a usable Self.DNSName; no Serve or Compose lifecycle mutation was attempted." >&2
+      echo "  Restore a valid Tailscale DNS name or unset TAILSCALE_SERVE_PROBE_COMMAND to retain control-plane-only mapping validation." >&2
+      exit 1
+    fi
   fi
 
   # ── Apply mappings ─────────────────────────────────────────────────
@@ -538,9 +577,9 @@ PY
   fi
 
   # ── Export computed URLs for docker-compose interpolation ───────────
-  TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" \
-    2>/dev/null || echo "")
+  if [ -z "${TS_HOSTNAME:-}" ]; then
+    TS_HOSTNAME=$(_ts_read_usable_hostname 2>/dev/null || true)
+  fi
 
   if [ -n "$TS_HOSTNAME" ]; then
     if [ "$TAILSCALE_HTTPS_PORT" = "443" ]; then
