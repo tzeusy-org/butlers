@@ -398,14 +398,17 @@ browser's local timezone.
 used while the API call is in-flight or returns an error.
 
 **Implementation:**
-- `ChroniclesPage` fetches the timezone via `useGeneralSettings()` and passes
-  `ownerTz` to `useTimeWindow(ownerTz)` (day-boundary computations) and
-  `<ChroniclesTimezoneProvider timezone={ownerTz}>` (display formatting).
-- Child components read the tz from context via `useChroniclesTimezone()`.
+- `App.tsx` fetches the timezone via `useGeneralSettings()` and mounts one
+  `<AppTimezoneProvider timezone={ownerTz}>` around all routes.
+- `ChroniclesPage` reads `ownerTz` via `useTimezone()` and passes it to
+  `useTimeWindow(ownerTz)` for day-boundary computations; it does not fetch the
+  setting or mount another provider.
+- Child components read the timezone directly via `useTimezone()` from
+  `frontend/src/components/ui/timezone-context.tsx`.
 - All formatting uses `date-fns-tz` (`formatInTimeZone`, `fromZonedTime`); never
   `Date.toLocaleString` or `Date.toLocaleTimeString`.
 - Day boundaries (start-of-day / end-of-day) use `startOfDayInTz` / `endOfDayInTz`
-  from `frontend/src/components/chronicles/tz-format.ts`.
+  from `frontend/src/lib/tz-format.ts`.
 
 ## Heartbeat tombstone migration verification (chronicler_007 / bu-6t63s)
 

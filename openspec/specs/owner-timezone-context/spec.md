@@ -118,37 +118,34 @@ tied to a specific timezone other than the owner's, or when rendering in isolati
 - **WHEN** the component renders
 - **THEN** the time value is formatted in `"Europe/London"` (explicit prop wins)
 
-### Requirement: Chronicles timezone consumers read the shared context via aliases
+### Requirement: Chronicles timezone consumers use the shared context directly
 
 The Chronicles workspace SHALL read the owner timezone from the same shared
-`AppTimezoneContext` as the rest of the dashboard. The legacy
-`ChroniclesTimezoneProvider` and `useChroniclesTimezone()` names are retained as thin
-backward-compatibility re-export aliases so existing Chronicles components and tests
-continue to compile:
+`AppTimezoneContext` as the rest of the dashboard. Production Chronicles components SHALL
+import and call `useTimezone()` directly from
+`frontend/src/components/ui/timezone-context.tsx`. Isolated Chronicles tests that need an
+explicit timezone SHALL import and mount `AppTimezoneProvider` directly from that canonical
+module.
 
-- `frontend/src/components/chronicles/timezone-context.tsx` re-exports
-  `AppTimezoneProvider as ChroniclesTimezoneProvider`.
-- `frontend/src/components/chronicles/use-chronicles-timezone.ts` re-exports
-  `useTimezone as useChroniclesTimezone`.
-
-Because both names alias the canonical provider and hook, Chronicles and all other
-components share one timezone context — there is no separate Chronicles context. New code
-SHALL use `useTimezone()` directly; the aliases exist only for transitional compatibility
-and are candidates for later cleanup.
+`AppTimezoneProvider` remains mounted once at App level around all routes. `ChroniclesPage`
+SHALL consume that shared context rather than fetching general settings or mounting a
+page-specific provider, and SHALL pass the resulting timezone to day-boundary helpers that
+need it. There is no separate Chronicles context and no Chronicles-specific provider or hook
+alias.
 
 #### Scenario: Chronicles consumers see the shell timezone
 
 - **GIVEN** the App-level `AppTimezoneProvider` is mounted with `"Asia/Singapore"`
-- **WHEN** a Chronicles child calls `useChroniclesTimezone()`
+- **WHEN** a Chronicles child calls `useTimezone()`
 - **THEN** it receives `"Asia/Singapore"` from the shared `AppTimezoneContext`
-- **AND** the value is identical to what `useTimezone()` returns
+- **AND** the child does not require a Chronicles-specific provider or hook
 
-#### Scenario: ChroniclesTimezoneProvider is an alias
+#### Scenario: Chronicles page uses the shared timezone for day boundaries
 
-- **GIVEN** a test or component wraps children in `ChroniclesTimezoneProvider`
-- **WHEN** the children call `useTimezone()` or `useChroniclesTimezone()`
-- **THEN** both return the timezone passed to the provider, because it is the same
-  `AppTimezoneProvider`
+- **GIVEN** the App-level `AppTimezoneProvider` is mounted with `"Europe/London"`
+- **WHEN** `ChroniclesPage` reads the timezone and computes its selected-day boundaries
+- **THEN** it passes `"Europe/London"` to the day-boundary helpers
+- **AND** it does not fetch the timezone or mount another provider within the page
 
 ## Source References
 
