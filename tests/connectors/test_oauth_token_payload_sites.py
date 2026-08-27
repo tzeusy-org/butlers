@@ -1,13 +1,21 @@
-"""Every OAuth token-payload extraction site validates before mutating state.
+"""State-mutating OAuth token-payload extraction sites validate before mutation.
 
-One parametrized test per site (four Google connector/module refresh paths;
-the generic provider callback is covered in
-``tests/api/test_oauth_provider.py``) asserting the same three properties:
+This file covers seven Google connector/module refresh paths with one
+parametrized test per site. Three persistence-capable callback paths are covered
+separately: ``oauth_google_callback`` and ``_google_callback_from_state`` in
+``tests/api/test_google_callback_token_payload.py``, and
+``oauth_provider_callback`` in ``tests/api/test_oauth_provider.py``. Together,
+the tests assert the same three properties:
 
 * a valid payload is accepted and lands in runtime state,
 * a malformed payload is rejected, and
 * rejection leaves **no** partial mutation — the pre-existing token and expiry
   are byte-for-byte what they were before the refresh attempt.
+
+This inventory is deliberately limited to consumers that cache or persist
+token-endpoint values. Read-only live probes in ``secrets_v2.py`` and Gmail's
+endpoint-identity resolver use an access token transiently and are outside this
+no-partial-mutation matrix.
 
 All token material here is synthetic and generated in-test.
 
@@ -37,6 +45,8 @@ from butlers.connectors.google_health import (
     ResourceState,
     _endpoint_identity_for_user,
 )
+from butlers.modules import calendar as calendar_module
+from butlers.modules.contacts import sync as contacts_sync
 from butlers.modules.google_drive import _DriveTokenCache
 from butlers.oauth_token_payload import OAuthTokenValidationError
 
@@ -279,7 +289,11 @@ async def test_drive_module_rejects_without_partial_mutation(payload: dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Site 6 (found while auditing, same shape): connectors/gmail.py
+# Persistence-capable callback coverage lives in:
+# - oauth_google_callback and _google_callback_from_state:
+#   tests/api/test_google_callback_token_payload.py
+# - oauth_provider_callback: tests/api/test_oauth_provider.py
+# Site 5: connectors/gmail.py — GmailConnectorRuntime._get_access_token
 # ---------------------------------------------------------------------------
 
 
@@ -317,3 +331,99 @@ async def test_gmail_connector_rejects_without_partial_mutation(payload: dict[st
 
     assert runtime._access_token == _STALE_ACCESS_TOKEN
     assert runtime._token_expires_at == stale_expiry
+
+
+# ---------------------------------------------------------------------------
+# Site 6: modules/calendar.py — _GoogleOAuthClient._refresh_access_token
+# ---------------------------------------------------------------------------
+
+
+def _calendar_module_oauth(
+    payload: dict[str, Any],
+    *,
+    on_token_refreshed: AsyncMock | None = None,
+) -> calendar_module._GoogleOAuthClient:
+    oauth = calendar_module._GoogleOAuthClient(
+        calendar_module._GoogleOAuthCredentials(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="synthetic-refresh-token-not-real",
+        ),
+        _token_client(payload),
+        on_token_refreshed=on_token_refreshed,
+    )
+    oauth._access_token = _STALE_ACCESS_TOKEN
+    oauth._access_token_expires_at = datetime.now(UTC) - timedelta(hours=1)
+    return oauth
+
+
+async def test_calendar_module_accepts_a_valid_token_payload() -> None:
+    on_token_refreshed = AsyncMock()
+    oauth = _calendar_module_oauth(
+        _VALID_PAYLOAD,
+        on_token_refreshed=on_token_refreshed,
+    )
+
+    assert await oauth.get_access_token(force_refresh=True) == _FRESH_ACCESS_TOKEN
+    assert oauth._access_token_expires_at is not None
+    assert oauth._access_token_expires_at > datetime.now(UTC)
+    on_token_refreshed.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("payload", _REJECTED_ONLY, ids=_REJECTED_IDS)
+async def test_calendar_module_rejects_without_partial_mutation(
+    payload: dict[str, Any],
+) -> None:
+    on_token_refreshed = AsyncMock()
+    oauth = _calendar_module_oauth(payload, on_token_refreshed=on_token_refreshed)
+    stale_expiry = oauth._access_token_expires_at
+
+    with pytest.raises(calendar_module.CalendarTokenRefreshError) as exc_info:
+        await oauth.get_access_token(force_refresh=True)
+
+    assert str(exc_info.value) == "Google OAuth token endpoint returned an invalid token payload"
+    assert oauth._access_token == _STALE_ACCESS_TOKEN
+    assert oauth._access_token_expires_at == stale_expiry
+    on_token_refreshed.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Site 7: modules/contacts/sync.py — _GoogleOAuthClient._refresh_access_token
+# ---------------------------------------------------------------------------
+
+
+def _contacts_module_oauth(payload: dict[str, Any]) -> contacts_sync._GoogleOAuthClient:
+    oauth = contacts_sync._GoogleOAuthClient(
+        contacts_sync._GoogleOAuthCredentials(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="synthetic-refresh-token-not-real",
+        ),
+        _token_client(payload),
+    )
+    oauth._access_token = _STALE_ACCESS_TOKEN
+    oauth._access_token_expires_at = datetime.now(UTC) - timedelta(hours=1)
+    return oauth
+
+
+async def test_contacts_module_accepts_a_valid_token_payload() -> None:
+    oauth = _contacts_module_oauth(_VALID_PAYLOAD)
+
+    assert await oauth.get_access_token(force_refresh=True) == _FRESH_ACCESS_TOKEN
+    assert oauth._access_token_expires_at is not None
+    assert oauth._access_token_expires_at > datetime.now(UTC)
+
+
+@pytest.mark.parametrize("payload", _REJECTED_ONLY, ids=_REJECTED_IDS)
+async def test_contacts_module_rejects_without_partial_mutation(
+    payload: dict[str, Any],
+) -> None:
+    oauth = _contacts_module_oauth(payload)
+    stale_expiry = oauth._access_token_expires_at
+
+    with pytest.raises(contacts_sync.ContactsTokenRefreshError) as exc_info:
+        await oauth.get_access_token(force_refresh=True)
+
+    assert str(exc_info.value) == "Google OAuth token endpoint returned an invalid token payload"
+    assert oauth._access_token == _STALE_ACCESS_TOKEN
+    assert oauth._access_token_expires_at == stale_expiry

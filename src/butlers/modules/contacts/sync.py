@@ -20,6 +20,8 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from butlers.oauth_token_payload import OAuthTokenValidationError, validate_oauth_token_payload
+
 logger = logging.getLogger(__name__)
 
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -425,17 +427,16 @@ class _GoogleOAuthClient:
                 "Google OAuth token endpoint returned invalid JSON"
             ) from exc
 
-        access_token = payload.get("access_token") if isinstance(payload, dict) else None
-        if not isinstance(access_token, str) or not access_token.strip():
+        try:
+            token = validate_oauth_token_payload(payload)
+        except OAuthTokenValidationError as exc:
             raise ContactsTokenRefreshError(
-                "Google OAuth token response is missing a non-empty access_token"
-            )
+                "Google OAuth token endpoint returned an invalid token payload"
+            ) from exc
 
-        expires_in_raw = payload.get("expires_in") if isinstance(payload, dict) else None
-        expires_in_seconds = _coerce_expires_in_seconds(expires_in_raw)
-        refresh_ttl_seconds = max(expires_in_seconds - 60, 30)
+        refresh_ttl_seconds = max(token.expires_in - 60, 30)
 
-        self._access_token = access_token.strip()
+        self._access_token = token.access_token
         self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds)
 
 
@@ -676,14 +677,6 @@ def _safe_google_error_message(response: httpx.Response) -> str:
     if text:
         return " ".join(text.split())[:200]
     return "unknown error"
-
-
-def _coerce_expires_in_seconds(value: Any) -> int:
-    if isinstance(value, bool):
-        return 3600
-    if isinstance(value, int | float):
-        return int(value) if value > 0 else 3600
-    return 3600
 
 
 def _as_non_empty_string(value: Any) -> str | None:

@@ -42,6 +42,7 @@ from butlers.core.temporal.scheduling import (
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.fleet_events import publish_fleet_event
 from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.oauth_token_payload import OAuthTokenValidationError, validate_oauth_token_payload
 
 logger = logging.getLogger(__name__)
 
@@ -397,18 +398,17 @@ class _GoogleOAuthClient:
                 "Google OAuth token endpoint returned invalid JSON"
             ) from exc
 
-        access_token = payload.get("access_token") if isinstance(payload, dict) else None
-        if not isinstance(access_token, str) or not access_token.strip():
+        try:
+            token = validate_oauth_token_payload(payload)
+        except OAuthTokenValidationError as exc:
             raise CalendarTokenRefreshError(
-                "Google OAuth token response is missing a non-empty access_token"
-            )
+                "Google OAuth token endpoint returned an invalid token payload"
+            ) from exc
 
-        expires_in_raw = payload.get("expires_in") if isinstance(payload, dict) else None
-        expires_in_seconds = _coerce_expires_in_seconds(expires_in_raw)
         # Refresh early to avoid edge-of-expiration failures.
-        refresh_ttl_seconds = max(expires_in_seconds - 60, 30)
+        refresh_ttl_seconds = max(token.expires_in - 60, 30)
 
-        self._access_token = access_token.strip()
+        self._access_token = token.access_token
         self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds)
 
         # Notify caller (e.g. to update last_token_refresh_at in google_accounts).
@@ -576,14 +576,6 @@ def _extract_google_credential_value(payload: dict[str, Any], key: str) -> Any:
         if isinstance(nested, dict) and key in nested:
             return nested[key]
     return None
-
-
-def _coerce_expires_in_seconds(value: Any) -> int:
-    if isinstance(value, bool):
-        return 3600
-    if isinstance(value, int | float):
-        return int(value) if value > 0 else 3600
-    return 3600
 
 
 def _safe_google_error_message(response: httpx.Response) -> str:
