@@ -463,7 +463,9 @@ BEGIN
     --   connectors.owntracks_points
     --   connectors.home_assistant_history
     --
-    -- Adding a new evidence surface requires an explicit grant here plus a
+    -- Adding a new evidence surface requires an explicit, migration-tracked
+    -- grant: here when the relation exists at bootstrap time, or in its owning
+    -- post-creation migration when the table is created later. Also add a
     -- compatibility declaration in src/butlers/chronicler/contracts.py.
     -- Do NOT restore GRANT SELECT ON ALL TABLES — that violates RFC 0014 §D1.
     FOR _idx IN 1 .. array_length(_butler_schemas, 1) LOOP
