@@ -1,8 +1,11 @@
-"""Every OAuth token-payload extraction site validates before mutating state.
+"""State-mutating OAuth token-payload extraction sites validate before mutation.
 
-One parametrized test per site (seven Google connector/module refresh paths;
-the generic provider callback is covered in
-``tests/api/test_oauth_provider.py``) asserting the same three properties:
+This file covers seven Google connector/module refresh paths with one
+parametrized test per site. Three persistence-capable callback paths are covered
+separately: ``oauth_google_callback`` and ``_google_callback_from_state`` in
+``tests/api/test_google_callback_token_payload.py``, and
+``oauth_provider_callback`` in ``tests/api/test_oauth_provider.py``. Together,
+the tests assert the same three properties:
 
 * a valid payload is accepted and lands in runtime state,
 * a malformed payload is rejected, and
@@ -286,8 +289,11 @@ async def test_drive_module_rejects_without_partial_mutation(payload: dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# Site 5: generic provider callback — covered in tests/api/test_oauth_provider.py
-# Site 6: connectors/gmail.py — GmailConnectorRuntime._get_access_token
+# Persistence-capable callback coverage lives in:
+# - oauth_google_callback and _google_callback_from_state:
+#   tests/api/test_google_callback_token_payload.py
+# - oauth_provider_callback: tests/api/test_oauth_provider.py
+# Site 5: connectors/gmail.py — GmailConnectorRuntime._get_access_token
 # ---------------------------------------------------------------------------
 
 
@@ -328,7 +334,7 @@ async def test_gmail_connector_rejects_without_partial_mutation(payload: dict[st
 
 
 # ---------------------------------------------------------------------------
-# Site 7: modules/calendar.py — _GoogleOAuthClient._refresh_access_token
+# Site 6: modules/calendar.py — _GoogleOAuthClient._refresh_access_token
 # ---------------------------------------------------------------------------
 
 
@@ -382,7 +388,7 @@ async def test_calendar_module_rejects_without_partial_mutation(
 
 
 # ---------------------------------------------------------------------------
-# Site 8: modules/contacts/sync.py — _GoogleOAuthClient._refresh_access_token
+# Site 7: modules/contacts/sync.py — _GoogleOAuthClient._refresh_access_token
 # ---------------------------------------------------------------------------
 
 

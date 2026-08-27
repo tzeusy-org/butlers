@@ -214,4 +214,3 @@ git add src/butlers/modules/calendar.py \
   tests/modules/test_module_calendar.py
 git commit -m "fix(oauth): validate module token responses"
 ```
-
