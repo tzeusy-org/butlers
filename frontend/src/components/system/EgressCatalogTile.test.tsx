@@ -35,7 +35,7 @@ vi.mock("@/hooks/use-system", () => ({
 }))
 
 // ---------------------------------------------------------------------------
-// Mock <Time> to sidestep date-fns-tz / ChroniclesTimezoneProvider
+// Mock <Time> to sidestep date-fns-tz / timezone-context setup
 // ---------------------------------------------------------------------------
 
 vi.mock("@/components/ui/time", () => ({

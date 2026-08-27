@@ -9,7 +9,7 @@
 //        America/Los_Angeles browser where the local time would be "17:00" (PDT).
 //
 // Strategy:
-//   - Wrap components with a ChroniclesTimezoneProvider that injects a
+//   - Wrap components with an AppTimezoneProvider that injects a
 //     specific tz (simulating owner config) so tests are deterministic.
 //   - The browser "timezone" is irrelevant because our formatters use
 //     date-fns-tz which is IANA-aware and bypasses Intl defaults.
@@ -20,7 +20,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 
 import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
 import { Scrubber } from "@/components/workspace/Scrubber"
-import { ChroniclesTimezoneProvider } from "./timezone-context"
+import { AppTimezoneProvider } from "@/components/ui/timezone-context"
 import type { ChroniclerEpisode } from "@/api/types"
 
 // ---------------------------------------------------------------------------
@@ -71,13 +71,13 @@ describe("GanttSwimlane timezone rendering (bu-k18cm)", () => {
     })
 
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone="Asia/Singapore">
+      <AppTimezoneProvider timezone="Asia/Singapore">
         <GanttSwimlaneInner
           episodes={[ep]}
           windowStart={WINDOW_START}
           windowEnd={WINDOW_END}
         />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
 
     // 2026-04-30T00:00:00Z is 08:00 SGT (UTC+8)
@@ -99,13 +99,13 @@ describe("GanttSwimlane timezone rendering (bu-k18cm)", () => {
     })
 
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone="America/Los_Angeles">
+      <AppTimezoneProvider timezone="America/Los_Angeles">
         <GanttSwimlaneInner
           episodes={[ep]}
           windowStart={WINDOW_START}
           windowEnd={WINDOW_END}
         />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
 
     // 2026-04-30T00:00:00Z is 17:00 PDT (UTC-7) on 2026-04-29
@@ -121,13 +121,13 @@ describe("GanttSwimlane timezone rendering (bu-k18cm)", () => {
     const ep = makeEpisode({ id: "ep-axis-tz" })
 
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone="Asia/Singapore">
+      <AppTimezoneProvider timezone="Asia/Singapore">
         <GanttSwimlaneInner
           episodes={[ep]}
           windowStart={WINDOW_START}
           windowEnd={WINDOW_END}
         />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
 
     // The first tick is at windowStart = 2026-04-30T00:00:00Z = 08:00 SGT.

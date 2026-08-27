@@ -20,8 +20,8 @@ import type { ChroniclerCorrectionPrompts } from "@/api/types";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { LANE_TAXONOMY, type Category } from "./lane-taxonomy";
-import { useChroniclesTimezone } from "./use-chronicles-timezone";
 import { formatTimeInTz } from "@/lib/tz-format";
 
 export interface CorrectionPromptsPanelProps {
@@ -45,7 +45,7 @@ export function CorrectionPromptsPanel({
   onRetry,
   onSelectEpisode,
 }: CorrectionPromptsPanelProps) {
-  const tz = useChroniclesTimezone();
+  const tz = useTimezone();
 
   if (isLoading) {
     return (

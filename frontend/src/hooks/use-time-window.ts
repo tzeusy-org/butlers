@@ -83,7 +83,7 @@ const PARAM_TO = "to"
 /**
  * @param tz - IANA timezone for day-boundary computations. Defaults to
  *   OWNER_TZ_DEFAULT ("Asia/Singapore"). Pass the value from
- *   useChroniclesTimezone() if available.
+ *   useTimezone() if available.
  */
 export function useTimeWindow(tz: string = OWNER_TZ_DEFAULT): UseTimeWindowResult {
   const [searchParams, setSearchParams] = useSearchParams()

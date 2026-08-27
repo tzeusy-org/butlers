@@ -43,7 +43,7 @@ import type { Category } from "./lane-taxonomy"
 import { categoryForSource, LANE_TAXONOMY } from "./lane-taxonomy"
 import { parseLatLng } from "./location-utils"
 import { useMapPanTo } from "@/components/workspace/map-pan-store"
-import { useChroniclesTimezone } from "./use-chronicles-timezone"
+import { useTimezone } from "@/components/ui/timezone-context"
 import { formatTimeInTz, formatGanttTickLabel } from "@/lib/tz-format"
 import { formatDurationCompact } from "@/lib/format-duration"
 
@@ -250,7 +250,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const isSensitive = episode.canonical_privacy === "sensitive"
 
   // Owner timezone from context (default: Asia/Singapore).
-  const tz = useChroniclesTimezone()
+  const tz = useTimezone()
 
   // ---------------------------------------------------------------------------
   // Location pan (calendar episodes only) — bu-ig72b.24
@@ -437,7 +437,7 @@ export function GanttSwimlaneInner({
   const windowDuration = windowEndMs - windowStartMs
 
   // Owner timezone from context (default: Asia/Singapore).
-  const tz = useChroniclesTimezone()
+  const tz = useTimezone()
 
   // Categories that have at least one episode in the current window. Derived
   // from the raw `episodes` prop (NOT from `lanes`) so the chip row stays

@@ -398,14 +398,19 @@ browser's local timezone.
 used while the API call is in-flight or returns an error.
 
 **Implementation:**
-- `ChroniclesPage` fetches the timezone via `useGeneralSettings()` and passes
-  `ownerTz` to `useTimeWindow(ownerTz)` (day-boundary computations) and
-  `<ChroniclesTimezoneProvider timezone={ownerTz}>` (display formatting).
-- Child components read the tz from context via `useChroniclesTimezone()`.
+- `App.tsx` fetches the timezone via `useGeneralSettings()` and mounts one
+  `<AppTimezoneProvider timezone={ownerTz}>` around all routes.
+- `ChroniclesPage` reads `ownerTz` via `useTimezone()`, derives the latest
+  settled owner-local day with `dayKeyInTimeZone()` / `shiftDayKey()`, includes
+  `tz: ownerTz` in briefing and day-close refresh requests, and passes
+  `{date, tz}` to `ChroniclesDrilldownPanel`; it does not fetch the setting or
+  mount another provider.
+- `ChroniclesDrilldownPanel` derives the selected day's `[from, to)` UTC window
+  with `dayWindowInTz(date, tz)` from `frontend/src/lib/tz-format.ts`.
+- Child components read the timezone directly via `useTimezone()` from
+  `frontend/src/components/ui/timezone-context.tsx`.
 - All formatting uses `date-fns-tz` (`formatInTimeZone`, `fromZonedTime`); never
   `Date.toLocaleString` or `Date.toLocaleTimeString`.
-- Day boundaries (start-of-day / end-of-day) use `startOfDayInTz` / `endOfDayInTz`
-  from `frontend/src/components/chronicles/tz-format.ts`.
 
 ## Heartbeat tombstone migration verification (chronicler_007 / bu-6t63s)
 

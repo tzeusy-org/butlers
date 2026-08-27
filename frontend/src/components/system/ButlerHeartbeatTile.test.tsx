@@ -48,7 +48,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock <Time> to avoid ChroniclesTimezoneProvider / date-fns-tz in tests.
+// Mock <Time> to avoid timezone-context / date-fns-tz setup in tests.
 // Renders the ISO value so assertions on rendered heartbeat timestamps work.
 // ---------------------------------------------------------------------------
 

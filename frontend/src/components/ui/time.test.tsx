@@ -18,7 +18,7 @@
 //     runtime DOM + act needed; same pattern as timezone-rendering.test.tsx).
 //   - vi.useFakeTimers / vi.setSystemTime for deterministic "now" in relative
 //     and smart tests.
-//   - Wrap in ChroniclesTimezoneProvider to supply the context timezone; use
+//   - Wrap in AppTimezoneProvider to supply the context timezone; use
 //     the `timezone` prop to override in override-specific tests.
 //   - @testing-library/react for clock-24h-mono live-ticking tests that
 //     exercise useEffect (renderToStaticMarkup skips effects).
@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { render as rtlRender, act, cleanup } from "@testing-library/react"
 
-import { ChroniclesTimezoneProvider } from "@/components/chronicles/timezone-context"
+import { AppTimezoneProvider } from "@/components/ui/timezone-context"
 import { Time } from "./time"
 
 // ---------------------------------------------------------------------------
@@ -41,9 +41,9 @@ function render(
   providerTz = "Asia/Singapore",
 ): string {
   return renderToStaticMarkup(
-    <ChroniclesTimezoneProvider timezone={providerTz}>
+    <AppTimezoneProvider timezone={providerTz}>
       <Time {...props} />
-    </ChroniclesTimezoneProvider>,
+    </AppTimezoneProvider>,
   )
 }
 
@@ -924,9 +924,9 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
 
   it("applies font-mono and tabular-nums CSS classes", () => {
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     const div = document.createElement("div")
     div.innerHTML = html
@@ -937,9 +937,9 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
 
   it("merges caller className with the monospace classes", () => {
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" className="text-4xl" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     const div = document.createElement("div")
     div.innerHTML = html
@@ -969,9 +969,9 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
     // Text is derived from tz at render time via formatClock24h(tz).
     // System time is 2026-05-03T06:00:00Z = 14:00 SGT (set in beforeEach).
     const { getByRole } = rtlRender(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
     expect(getByRole("time").textContent).toBe("14:00")
@@ -980,9 +980,9 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
   it("live: updates display after 60 seconds via the interval", async () => {
     // Start at 2026-05-03T06:00:00Z = 14:00 SGT (set in beforeEach).
     const { getByRole } = rtlRender(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
     expect(getByRole("time").textContent).toBe("14:00")
@@ -1023,9 +1023,9 @@ describe("mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)", () => {
     vi.setSystemTime(new Date("2026-05-03T06:00:59Z"))
 
     const { getByRole } = rtlRender(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
     expect(getByRole("time").textContent).toBe("14:00")
@@ -1042,9 +1042,9 @@ describe("mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)", () => {
     vi.setSystemTime(new Date("2026-05-03T06:00:59Z"))
 
     const { getByRole } = rtlRender(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
 
@@ -1066,9 +1066,9 @@ describe("mode=clock-24h-mono — minute-boundary alignment (bu-n38t8)", () => {
     vi.setSystemTime(new Date("2026-05-03T06:00:30Z"))
 
     const { getByRole, unmount } = rtlRender(
-      <ChroniclesTimezoneProvider timezone={SGT}>
+      <AppTimezoneProvider timezone={SGT}>
         <Time value={FIXED_ISO} mode="clock-24h-mono" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
     expect(getByRole("time").textContent).toBe("14:00")
@@ -1107,9 +1107,9 @@ describe("mode=relative-compact live tick (bu-3dvwb)", () => {
     vi.setSystemTime(new Date(FIXED_DATE.getTime() + 59 * 60_000))
 
     const { getByRole } = rtlRender(
-      <ChroniclesTimezoneProvider timezone="UTC">
+      <AppTimezoneProvider timezone="UTC">
         <Time value={FIXED_ISO} mode="relative-compact" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
     expect(getByRole("time").textContent).toBe("59m ago")
@@ -1126,9 +1126,9 @@ describe("mode=relative-compact live tick (bu-3dvwb)", () => {
     vi.setSystemTime(new Date(FIXED_DATE.getTime() + 10 * 60_000))
 
     const { unmount } = rtlRender(
-      <ChroniclesTimezoneProvider timezone="UTC">
+      <AppTimezoneProvider timezone="UTC">
         <Time value={FIXED_ISO} mode="relative-compact" />
-      </ChroniclesTimezoneProvider>,
+      </AppTimezoneProvider>,
     )
     await act(async () => {})
 
