@@ -2,8 +2,8 @@
 // ---------------------------------------------------------------------------
 // <Time> — app-level timezone provider tests (bu-ldj6y)
 //
-// Verifies that <Time> resolves to the owner timezone when wrapped only by
-// AppTimezoneProvider (not ChroniclesTimezoneProvider). This proves the
+// Verifies that <Time> resolves to the owner timezone when wrapped by the
+// app-level AppTimezoneProvider. This proves the
 // provider works for non-chronicles pages — e.g. SettingsPage, ButlersPage.
 //
 // AC: When AppTimezoneProvider supplies "Europe/London" (owner tz), <Time>

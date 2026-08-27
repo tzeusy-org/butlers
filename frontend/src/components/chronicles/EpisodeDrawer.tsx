@@ -62,7 +62,7 @@ import {
   useChroniclerExplain,
   useSubmitEpisodeCorrection,
 } from "@/hooks/use-chronicles"
-import { useChroniclesTimezone } from "./use-chronicles-timezone"
+import { useTimezone } from "@/components/ui/timezone-context"
 import { formatDateTimeInTz } from "@/lib/tz-format"
 import { extractRoutineProvenance } from "./episode-routine-evidence"
 import { formatDurationCompact } from "@/lib/format-duration"
@@ -306,7 +306,7 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
   const events = useChroniclerEpisodeEvents(episodeId)
   const corrections = useChroniclerEpisodeCorrections(episodeId)
   const evidenceChain = useChroniclerEvidenceChain(episodeId)
-  const tz = useChroniclesTimezone()
+  const tz = useTimezone()
   const formatDateTime = (iso: string | null | undefined) => formatDateTimeInTz(iso, tz)
 
   const ep = episode.data
