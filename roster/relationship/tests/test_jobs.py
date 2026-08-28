@@ -593,6 +593,7 @@ async def test_insight_scan_birthday_message_includes_contact_name(provisioned_p
         assert "Isabella" in rows[0]["message"]
 
 
+@pytest.mark.pg_clock
 async def test_insight_scan_contact_candidates_include_entity_and_event_metadata(
     provisioned_postgres_pool,
 ):

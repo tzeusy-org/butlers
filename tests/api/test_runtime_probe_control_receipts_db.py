@@ -294,6 +294,7 @@ async def test_cleanup_refuses_to_delete_a_receipt_inside_the_replay_window(pool
     assert await receipts.is_consumed(nonce=nonce)
 
 
+@pytest.mark.pg_clock
 async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
     """Criterion 2: retained through ``exp + 5s``, deletable only after.
 
@@ -323,6 +324,7 @@ async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
     assert await receipts.is_consumed(nonce=inside)
 
 
+@pytest.mark.pg_clock
 async def test_purging_an_expired_receipt_does_not_free_a_live_one(pool):
     receipts = RuntimeProbeControlReceipts(pool)
     # live-clock: the retention trigger refuses a DELETE before capability_exp

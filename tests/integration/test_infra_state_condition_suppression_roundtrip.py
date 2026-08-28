@@ -301,6 +301,7 @@ class TestReopenCreatesNewEpisodeAndSuppressesAgain:
 
 
 class TestPausedConnectorNeverEntersLedger:
+    @pytest.mark.pg_clock
     async def test_paused_connector_creates_no_condition(
         self, pool: asyncpg.Pool, monkeypatch
     ) -> None:

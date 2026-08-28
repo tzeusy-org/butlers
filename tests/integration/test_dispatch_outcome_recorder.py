@@ -215,6 +215,7 @@ async def _record_failure(
     )
 
 
+@pytest.mark.pg_clock
 async def test_fifth_failure_opens_once_and_success_closes(
     migrated_core_postgres_pool,
 ) -> None:
@@ -258,6 +259,7 @@ async def test_fifth_failure_opens_once_and_success_closes(
         assert (await get_breaker_state(admin_pool, entry_id)).open is False
 
 
+@pytest.mark.pg_clock
 async def test_equal_timestamp_concurrent_failures_have_one_deterministic_edge(
     migrated_core_postgres_pool,
 ) -> None:
@@ -341,6 +343,7 @@ async def test_outcome_order_is_assigned_after_lock_not_transaction_start(
         ]
 
 
+@pytest.mark.pg_clock
 async def test_concurrent_failed_half_open_probes_create_one_reopening_episode(
     migrated_core_postgres_pool,
 ) -> None:

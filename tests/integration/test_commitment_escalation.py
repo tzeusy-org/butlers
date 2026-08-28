@@ -374,6 +374,7 @@ class TestConfidenceBand:
 
 
 class TestDeadlineShortensGrace:
+    @pytest.mark.pg_clock
     async def test_req_commitment_lifecycle_005_deadline_inside_grace_surfaces_before_it(
         self, pool: asyncpg.Pool, source: str
     ) -> None:

@@ -292,6 +292,7 @@ async def test_a_live_receipt_cannot_be_deleted(core_db_url: str) -> None:
 
 @_integration
 @_asyncio_session
+@pytest.mark.pg_clock
 async def test_a_receipt_past_its_retention_bound_is_removable(core_db_url: str) -> None:
     connection = await _connect(core_db_url, role=_SWITCHBOARD)
     expired = datetime.now(UTC) - RECEIPT_RETENTION_SKEW - timedelta(seconds=1)

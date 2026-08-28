@@ -103,6 +103,7 @@ def _run(
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     env["BACKUP_DIR"] = str(backup_dir)
+    env["BACKUP_RETAIN_DAYS"] = "10000"
     env.update(env_overrides)
     return subprocess.run(
         [_SHELL, str(_SCRIPT)], env=env, capture_output=True, text=True, timeout=60

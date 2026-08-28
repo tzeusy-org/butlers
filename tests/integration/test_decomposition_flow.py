@@ -881,6 +881,7 @@ async def test_two_unknown_whatsapp_speakers_get_distinct_reused_neutral_entitie
 
 
 @pytest.mark.integration
+@pytest.mark.pg_clock
 async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_anchor(
     identity_pools,
 ):

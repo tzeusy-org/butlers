@@ -466,6 +466,7 @@ async def test_settle_without_notice_evidence_leaves_the_columns_untouched(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_sweep_settles_abandoned_receipt_and_releases_guard(pool: asyncpg.Pool) -> None:
     """An API restart kills the owning task; the sweep must free the owner."""
     row = await edu._create_receipt(pool, "Python", None)
@@ -499,6 +500,7 @@ async def test_sweep_leaves_fresh_receipts_alone(pool: asyncpg.Pool) -> None:
     assert after["status"] == "accepted"
 
 
+@pytest.mark.pg_clock
 async def test_sweep_is_idempotent(pool: asyncpg.Pool) -> None:
     """Running the sweep twice must not re-settle or double-count."""
     row = await edu._create_receipt(pool, "Python", None)
@@ -517,6 +519,7 @@ async def test_sweep_is_idempotent(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_correlate_finds_map_created_after_trigger(pool: asyncpg.Pool) -> None:
     """The curriculum door is correlated by the trigger's creation window."""
     triggered_at = datetime.now(UTC)
@@ -540,6 +543,7 @@ async def test_correlate_ignores_maps_predating_the_trigger(pool: asyncpg.Pool) 
     assert calibration_ready is False
 
 
+@pytest.mark.pg_clock
 async def test_correlate_reports_calibration_ready_from_flow_state(pool: asyncpg.Pool) -> None:
     """Calibration counts as ready only once the teaching flow is diagnosing."""
     from butlers.core.state import state_set
