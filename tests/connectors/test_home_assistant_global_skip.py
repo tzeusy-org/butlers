@@ -66,6 +66,8 @@ def _build_connector() -> HAConnector:
 def _wire(
     connector: HAConnector,
     global_ingestion_policy: Any | None,
+    *,
+    dispatcher_db_pool: Any | None = None,
 ) -> tuple[Any, HAFilterPersistence]:
     pipeline = HAFilterPipeline(
         config=HAFilterPipelineConfig(domain_allowlist=connector._config.domain_allowlist),
@@ -80,7 +82,7 @@ def _wire(
     dispatch = _make_event_dispatcher(
         connector=connector,
         config=connector._config,
-        db_pool=None,
+        db_pool=dispatcher_db_pool,
         pipeline=pipeline,
         wellness_classifier=WellnessClassifier(),
         endpoint_identity=connector._endpoint_identity,
@@ -133,6 +135,34 @@ def _make_person_event(
     }
 
 
+def _make_weight_event(
+    *,
+    entity_id: str = "sensor.body_weight",
+    old_state: str = "72.0",
+    new_state: str = "72.0",
+    time_fired: str = _TIME_FIRED,
+) -> dict[str, Any]:
+    return {
+        "event_type": "state_changed",
+        "time_fired": time_fired,
+        "data": {
+            "entity_id": entity_id,
+            "old_state": {
+                "state": old_state,
+                "attributes": {"device_class": "weight", "unit_of_measurement": "kg"},
+            },
+            "new_state": {
+                "state": new_state,
+                "attributes": {
+                    "device_class": "weight",
+                    "unit_of_measurement": "kg",
+                    "friendly_name": "Body Weight",
+                },
+            },
+        },
+    }
+
+
 def _ingest_calls(connector: HAConnector) -> list[Any]:
     return [
         c
@@ -162,6 +192,56 @@ async def test_global_skip_persists_binary_sensor_and_does_not_ingest() -> None:
     assert filter_reason == "global_rule:skip:source_channel"
     assert source_channel == "home_assistant"
     assert status == "filtered"
+
+
+@pytest.mark.asyncio
+async def test_global_skip_promotes_weight_only_and_advances_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary HA skip must not suppress deterministic wellness ingress."""
+    from butlers.connectors import home_assistant_checkpoint
+
+    connector = _build_connector()
+    policy = _FakeGlobalPolicy(PolicyDecision(action="skip", matched_rule_type="source_channel"))
+    db_pool = object()
+    saved_checkpoints: list[tuple[Any, ...]] = []
+
+    async def _save_checkpoint(*args: Any) -> None:
+        saved_checkpoints.append(args)
+
+    monkeypatch.setattr(home_assistant_checkpoint, "save_ha_checkpoint", _save_checkpoint)
+    dispatch, persistence = _wire(
+        connector,
+        policy,
+        dispatcher_db_pool=db_pool,
+    )
+
+    await dispatch("state_changed", _make_weight_event())
+
+    ingest_calls = _ingest_calls(connector)
+    assert len(ingest_calls) == 1
+    assert ingest_calls[0].args[1]["source"]["channel"] == "wellness"
+    assert policy.calls == [
+        IngestionEnvelope(source_channel="home_assistant", raw_key="sensor.body_weight")
+    ]
+    assert len(persistence) == 1
+    assert persistence._buffer._rows[0][7] == "global_rule:skip:source_channel"
+    assert len(saved_checkpoints) == 1
+    assert saved_checkpoints[0][0] is db_pool
+    assert saved_checkpoints[0][3] == "sensor.body_weight"
+
+
+@pytest.mark.asyncio
+async def test_global_skip_non_health_event_remains_fully_suppressed() -> None:
+    connector = _build_connector()
+    policy = _FakeGlobalPolicy(PolicyDecision(action="skip", matched_rule_type="source_channel"))
+    dispatch, persistence = _wire(connector, policy)
+
+    await dispatch("state_changed", _make_binary_sensor_event())
+
+    assert _ingest_calls(connector) == []
+    assert len(policy.calls) == 1
+    assert len(persistence) == 1
 
 
 @pytest.mark.asyncio

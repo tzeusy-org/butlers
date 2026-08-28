@@ -200,6 +200,12 @@ The connector reports health based on HA connection and service availability.
 - **AND** `degraded` when the WebSocket connection is down but REST polling is active, or when the discretion LLM is unreachable
 - **AND** `healthy` when the WebSocket connection is active and all pipeline services are responsive
 
+#### Scenario: Authenticated socket without event subscriptions
+- **WHEN** WebSocket authentication succeeds but any required `subscribe_events` acknowledgement times out or fails
+- **THEN** the connector SHALL remain `degraded` with `ws_subscriptions_ready = false`
+- **AND** it SHALL NOT report the WebSocket transport as connected to the connector health callback until all required subscriptions acknowledge
+- **AND** REST fallback SHALL remain active or be activated by the existing reconnect-failure threshold while WebSocket recovery continues
+
 #### Scenario: Transport mode in heartbeat
 - **WHEN** a heartbeat is assembled
 - **THEN** `status.error_message` SHALL include the current transport mode (e.g., `"transport=websocket"` or `"transport=rest_fallback, ws_reconnect_attempts=5"`)
@@ -219,6 +225,13 @@ The connector exports HA-specific metrics in addition to the standard `Connector
 - **WHEN** the connector processes events through the pipeline
 - **THEN** it SHALL export: `connector_ha_event_latency_seconds` (Histogram — time from `time_fired` to Switchboard submission), `connector_ha_filter_pipeline_seconds` (Histogram — time spent in the three-layer filter pipeline)
 
+#### Scenario: Measurement-history recovery metrics
+- **WHEN** recorder-backed measurement-history recovery runs
+- **THEN** it SHALL export `connector_ha_measurement_history_polls_total{endpoint_identity,status}` with bounded `status = success | error`
+- **AND** SHALL export `connector_ha_measurement_history_emitted_total{endpoint_identity}` for emitted wellness measurements
+- **AND** SHALL export `connector_ha_measurement_history_cursor_age_seconds{endpoint_identity}` for the oldest current per-entity high-water mark
+- **AND** SHALL NOT label these metrics with entity IDs, measurement values, units, payload data, or exception text
+
 ### Requirement: Environment Variables
 Configuration via environment variables extending the base connector variables.
 
@@ -233,7 +246,7 @@ Configuration via environment variables extending the base connector variables.
 - **AND** the wellness-promotion knobs SHALL be optionally configurable: `HA_WELLNESS_PROMOTION_ENABLED` (default: `true`), `HA_WELLNESS_RULES_EXTRA` (JSON list of `{device_class?, unit?, entity_token?, metric}` rules appended to the default table; malformed JSON fails connector startup with a clear error), `HA_WELLNESS_ENTITY_DENYLIST` (comma-separated entity_ids never promoted)
 
 ### Requirement: Wellness channel promotion for health-shaped sensor events
-The connector SHALL classify each `state_changed` event that survives the three-layer filter pipeline against a deterministic, metadata-driven wellness rule table (matching on `device_class`, `unit_of_measurement`, and optional entity-id tokens — never vendor or integration names). Events matching a rule SHALL be emitted on the `wellness` channel with `source.provider = "home_assistant"` IN ADDITION TO the unchanged `home_assistant` channel emission. Classification SHALL involve no LLM call.
+The connector SHALL classify each `state_changed` event that survives the three-layer filter pipeline against a deterministic, metadata-driven wellness rule table (matching on `device_class`, `unit_of_measurement`, and optional entity-id tokens — never vendor or integration names). Events matching a rule SHALL be emitted on the `wellness` channel with `source.provider = "home_assistant"` independently of the ordinary `home_assistant` channel's global ingestion-policy decision. When the ordinary channel is eligible, wellness emission is IN ADDITION TO the unchanged `home_assistant` channel emission. Classification SHALL involve no LLM call.
 
 #### Scenario: Blood-pressure reading promoted
 - **WHEN** a `state_changed` event for an entity with `unit_of_measurement = "mmHg"` and entity_id containing the token `systolic` survives the filter pipeline
@@ -245,6 +258,13 @@ The connector SHALL classify each `state_changed` event that survives the three-
 - **WHEN** a `state_changed` event matches no wellness rule (e.g. a `device_class = "temperature"` room sensor, which is deliberately absent from the default rule table)
 - **THEN** the connector SHALL emit only the `home_assistant`-channel envelope
 - **AND** SHALL NOT emit on the `wellness` channel
+
+#### Scenario: Ordinary channel skip preserves wellness promotion
+- **WHEN** a numeric weight event with `device_class = "weight"` and `unit_of_measurement = "kg"` or `"lb"` survives the three local filter layers
+- **AND** the global ingestion policy resolves `source_channel = "home_assistant"` to `skip`
+- **THEN** the connector SHALL persist the ordinary event as globally skipped and SHALL NOT emit a `home_assistant`-channel envelope
+- **AND** SHALL emit exactly one `wellness`-channel envelope without LLM classification
+- **AND** SHALL advance the connector checkpoint exactly once only after the wellness submission succeeds
 
 #### Scenario: Non-numeric state not promoted
 - **WHEN** an entity matches a wellness rule but its new state is non-numeric (`unknown`, `unavailable`, or unparseable)
@@ -287,6 +307,34 @@ The connector checkpoint SHALL remain keyed by `(provider, endpoint_identity)` o
 - **THEN** re-submissions SHALL be deduplicated by the Switchboard per-channel dedup key
 - **AND** no duplicate ingestion events SHALL be recorded on either channel
 
+### Requirement: Durable measurement-history recovery
+The connector SHALL recover recorder-backed weight measurements independently of the live WebSocket and REST-fallback transports. Recovery SHALL use the existing deterministic `wellness/home_assistant` envelope and Health fact path, with a durable high-water mark for each eligible HA entity.
+
+#### Scenario: Equal value on a later day remains a distinct measurement
+- **WHEN** recorder history contains equal numeric weight values for one eligible entity at two different `last_updated` timestamps
+- **THEN** the connector SHALL emit one wellness measurement for each timestamp
+- **AND** each envelope's `wellness_measurement.valid_at` SHALL be the corresponding HA `last_updated` timestamp rather than connector observation time
+
+#### Scenario: Duplicate entity timestamp is a no-op
+- **WHEN** recorder history contains multiple rows for the same entity with the same measurement timestamp, whether in one response or a later replay
+- **THEN** the connector SHALL emit and checkpoint that entity/timestamp at most once
+
+#### Scenario: Recovery failure does not advance the cursor
+- **WHEN** history retrieval, wellness submission, the submission callback, or cursor persistence fails for a measurement
+- **THEN** the connector SHALL report the recovery poll as failed and log the failure without credential or measurement-value disclosure
+- **AND** SHALL NOT advance that entity's high-water mark past the failed measurement so a later poll can retry it
+
+#### Scenario: Durable cursor is isolated per entity
+- **WHEN** measurement-history recovery succeeds for an eligible weight entity
+- **THEN** the connector SHALL persist a high-water mark keyed by the connector endpoint and that entity ID
+- **AND** advancement for one entity SHALL NOT advance or suppress recovery for another entity
+
+#### Scenario: Recovery is transport-independent and wellness-only
+- **WHEN** recorder-backed recovery finds an eligible weight measurement while WebSocket is healthy, degraded, disconnected, or REST fallback is active
+- **THEN** recovery SHALL remain eligible independently of live transport state and the ordinary `home_assistant` global ingestion-policy decision
+- **AND** SHALL emit only the deterministic `wellness/home_assistant` envelope
+- **AND** SHALL NOT emit an ordinary `home_assistant` envelope or mutate the shared WebSocket/REST checkpoint
+
 ### Requirement: Idempotency and Safety
 The connector guarantees at-least-once delivery with HA-derived event identifiers.
 
@@ -311,6 +359,7 @@ The connector persists filtered events per the base connector contract.
 #### Scenario: Global ingestion policy pre-check for non-person domains
 - **WHEN** a non-`person` domain event passes all three local filter layers
 - **THEN** the connector SHALL evaluate the shared `global`-scope `IngestionPolicyEvaluator` locally, before calling Switchboard `ingest()`
-- **AND** if the resolved action is `skip`, the connector SHALL self-persist the event to `connectors.filtered_events` with `filter_reason` `"global_rule:skip:<rule_type>"` (per `connector-filtered-events`) and SHALL NOT call `ingest()`
+- **AND** if the resolved action is `skip`, the connector SHALL self-persist the ordinary event to `connectors.filtered_events` with `filter_reason` `"global_rule:skip:<rule_type>"` (per `connector-filtered-events`) and SHALL NOT call `ingest()` for the `home_assistant` channel
+- **AND** that ordinary-channel skip SHALL NOT suppress an independently eligible deterministic `wellness` promotion
 - **AND** any other resolved action (e.g. `pass_through`) SHALL proceed to `ingest()` unchanged
 - **AND** `person` domain events SHALL always proceed to `ingest()` regardless of the global policy, since they feed the presence/history evidence table

@@ -167,6 +167,31 @@ class WellnessClassifier:
             state=state,
         ).metric
 
+    def match_metric(
+        self,
+        *,
+        entity_id: str,
+        device_class: str | None,
+        unit_of_measurement: str | None,
+    ) -> str | None:
+        """Return the metadata-matched metric without inspecting state value.
+
+        History recovery uses this to discover eligible entities even when the
+        current HA state is temporarily unavailable. The denylist and strict
+        metadata rules remain identical to ordinary event classification.
+        """
+        if entity_id in self._denylist:
+            return None
+
+        for rule in self._rules:
+            if rule.matches(
+                entity_id=entity_id,
+                device_class=device_class,
+                unit_of_measurement=unit_of_measurement,
+            ):
+                return rule.metric
+        return None
+
     def classify_detailed(
         self,
         *,
@@ -180,24 +205,19 @@ class WellnessClassifier:
         if entity_id in self._denylist:
             return ClassifyResult(metric=None, outcome="denylisted")
 
-        matched: WellnessRule | None = None
-        for rule in self._rules:
-            if rule.matches(
-                entity_id=entity_id,
-                device_class=device_class,
-                unit_of_measurement=unit_of_measurement,
-            ):
-                matched = rule
-                break
-
-        if matched is None:
+        metric = self.match_metric(
+            entity_id=entity_id,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+        )
+        if metric is None:
             return ClassifyResult(metric=None, outcome="no_match")
 
         value = _parse_numeric(state)
         if value is None:
             return ClassifyResult(metric=None, outcome="skipped_non_numeric")
 
-        return ClassifyResult(metric=matched.metric, outcome="promoted", value=value)
+        return ClassifyResult(metric=metric, outcome="promoted", value=value)
 
 
 # ---------------------------------------------------------------------------

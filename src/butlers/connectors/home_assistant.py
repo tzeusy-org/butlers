@@ -77,6 +77,7 @@ from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
 from butlers.connectors.home_assistant_wellness import (
+    ClassifyResult,
     WellnessClassifier,
     WellnessRule,
     parse_rules_extra,
@@ -243,6 +244,7 @@ class HAWebSocketClient:
         # Internal state
         self._shutdown: bool = False
         self._connected: bool = False
+        self._subscriptions_ready: bool = False
         self._ws_connection: Any | None = None  # aiohttp.ClientWebSocketResponse
         self._ws_session: Any | None = None  # aiohttp.ClientSession
         self._ws_cmd_id: int = 0
@@ -252,6 +254,7 @@ class HAWebSocketClient:
         # Background tasks
         self._loop_task: asyncio.Task[None] | None = None
         self._ping_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
 
         self._stop_event: asyncio.Event | None = None
 
@@ -294,6 +297,7 @@ class HAWebSocketClient:
 
         ws_url = self._ws_url()
         logger.debug("HAWebSocketClient: connecting to %s", ws_url)
+        self._subscriptions_ready = False
 
         if self._ws_session is None or self._ws_session.closed:
             ssl_ctx: bool = self._verify_ssl
@@ -353,6 +357,7 @@ class HAWebSocketClient:
 
     async def _close_connection(self) -> None:
         """Close the current WebSocket connection gracefully."""
+        self._subscriptions_ready = False
         if self._ws_connection is not None and not self._ws_connection.closed:
             try:
                 await self._ws_connection.close()
@@ -365,15 +370,17 @@ class HAWebSocketClient:
     # Task 3.3 — Event subscription
     # ------------------------------------------------------------------
 
-    async def _subscribe_events(self) -> None:
+    async def _subscribe_events(self) -> bool:
         """Subscribe to HA event types defined in ``_WS_EVENT_SUBSCRIPTIONS`` (task 3.3).
 
         Sends a ``subscribe_events`` WS command for each event type.
-        No-op when not connected.
+        Returns ``True`` only when every required subscription acknowledges.
         """
+        self._subscriptions_ready = False
         if not self._connected:
-            return
+            return False
 
+        all_ready = True
         for event_type in _WS_EVENT_SUBSCRIPTIONS:
             try:
                 await self._ws_command(
@@ -382,7 +389,40 @@ class HAWebSocketClient:
                 )
                 logger.debug("HAWebSocketClient: subscribed to %s", event_type)
             except Exception as exc:
+                all_ready = False
                 logger.warning("HAWebSocketClient: failed to subscribe to %s: %r", event_type, exc)
+
+        self._subscriptions_ready = all_ready
+        return all_ready
+
+    async def _discard_failed_connection(self) -> None:
+        """Tear down an authenticated socket whose event subscriptions failed.
+
+        Authentication alone is not a usable ingestion transport. Cancel the
+        reader and keepalive tasks before closing the socket so they cannot race
+        the caller's explicit disconnect notification.
+        """
+        self._subscriptions_ready = False
+        for task in (self._loop_task, self._ping_task):
+            if task is not None and not task.done():
+                task.cancel()
+        pending = [task for task in (self._loop_task, self._ping_task) if task is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._loop_task = None
+        self._ping_task = None
+
+        for future in self._ws_pending.values():
+            if not future.done():
+                future.cancel()
+        self._ws_pending.clear()
+        await self._close_connection()
+
+    def _start_reconnect_loop(self) -> None:
+        """Start at most one reconnect loop for this WebSocket client."""
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     # ------------------------------------------------------------------
     # Task 3.4 — Ping/pong keepalive
@@ -628,7 +668,7 @@ class HAWebSocketClient:
             )
             await asyncio.sleep(sleep_time)
 
-            if self._shutdown:
+            if self._shutdown or self._connected:
                 break
 
             try:
@@ -656,18 +696,36 @@ class HAWebSocketClient:
                 attempt += 1
                 continue
 
-            # Reconnected — restart background tasks and re-subscribe
-            logger.info("HAWebSocketClient: reconnected after %d attempt(s)", attempt + 1)
+            # Reconnected — restart background tasks and re-subscribe. The
+            # connector is not considered connected until every subscription
+            # acknowledges; this keeps REST fallback active during a partial
+            # or timed-out re-subscription.
             self._start_message_loop()
             self._start_ping_task()
 
             try:
-                await self._subscribe_events()
+                subscriptions_ready = await self._subscribe_events()
             except Exception as exc:
                 logger.warning(
                     "HAWebSocketClient: error subscribing events after reconnect: %s", exc
                 )
+                subscriptions_ready = False
 
+            if not subscriptions_ready:
+                logger.warning(
+                    "HAWebSocketClient: reconnect authenticated but event subscriptions are "
+                    "not ready; treating attempt as failed"
+                )
+                await self._discard_failed_connection()
+                if self._on_disconnected is not None:
+                    self._on_disconnected()
+                if self._on_reconnect_failed is not None:
+                    self._on_reconnect_failed()
+                delay = min(delay * 2, self._reconnect_max_s)
+                attempt += 1
+                continue
+
+            logger.info("HAWebSocketClient: event stream ready after %d attempt(s)", attempt + 1)
             if self._on_connected is not None:
                 self._on_connected()
 
@@ -687,22 +745,26 @@ class HAWebSocketClient:
         self._shutdown = False
         self._stop_event = asyncio.Event()
 
-        # Initial connection attempt
+        # Initial connection and subscription attempt
+        authenticated = False
         try:
             await self._connect()
-        except Exception as exc:
-            logger.warning("HAWebSocketClient: initial connect failed (%s); will retry.", exc)
-            if self._on_disconnected is not None:
-                self._on_disconnected()
-            # Start reconnect loop in background; don't block run()
-            asyncio.create_task(self._reconnect_loop())
-        else:
+            authenticated = True
             self._start_message_loop()
             self._start_ping_task()
-            try:
-                await self._subscribe_events()
-            except Exception as exc:
-                logger.warning("HAWebSocketClient: event subscription error: %s", exc)
+            subscriptions_ready = await self._subscribe_events()
+            if not subscriptions_ready:
+                raise RuntimeError("event subscriptions are not ready")
+        except Exception as exc:
+            await self._discard_failed_connection()
+            logger.warning("HAWebSocketClient: initial stream setup failed (%s); will retry.", exc)
+            if self._on_disconnected is not None:
+                self._on_disconnected()
+            if authenticated and self._on_reconnect_failed is not None:
+                self._on_reconnect_failed()
+            # Start reconnect loop in background; don't block run()
+            self._start_reconnect_loop()
+        else:
             if self._on_connected is not None:
                 self._on_connected()
 
@@ -713,11 +775,7 @@ class HAWebSocketClient:
                 if self._shutdown:
                     break
                 if not self._connected:
-                    # Spawn reconnect loop if not already running
-                    if not any(
-                        t is not None and not t.done() for t in (self._loop_task, self._ping_task)
-                    ):
-                        asyncio.create_task(self._reconnect_loop())
+                    self._start_reconnect_loop()
         except asyncio.CancelledError:
             pass
         finally:
@@ -730,16 +788,26 @@ class HAWebSocketClient:
         closes the aiohttp session.
         """
         self._shutdown = True
+        self._subscriptions_ready = False
 
         # Cancel background tasks
         for task in (self._loop_task, self._ping_task):
             if task is not None and not task.done():
                 task.cancel()
-        pending = [t for t in (self._loop_task, self._ping_task) if t is not None]
+        reconnect_task = self._reconnect_task
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            if not reconnect_task.done():
+                reconnect_task.cancel()
+        pending = [
+            task
+            for task in (self._loop_task, self._ping_task, reconnect_task)
+            if task is not None and task is not asyncio.current_task()
+        ]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._loop_task = None
         self._ping_task = None
+        self._reconnect_task = None
 
         # Fail pending WS commands
         for fut in self._ws_pending.values():
@@ -1275,6 +1343,7 @@ class HAConnector:
 
         # Transport state (task 8.1)
         self._ws_connected: bool = False
+        self._subscriptions_ready: bool = False
         self._rest_fallback_active: bool = False
         self._ws_reconnect_attempts: int = 0
         self._rest_poll_failing: bool = False  # True when last REST poll failed
@@ -1372,7 +1441,7 @@ class HAConnector:
 
         Returns:
             ``(state, error_message)`` where state is one of:
-            - ``"healthy"``  — WebSocket connected, discretion available
+            - ``"healthy"``  — WebSocket connected, subscriptions ready, discretion available
             - ``"degraded"`` — Startup, WS down with REST active, or discretion unavailable
             - ``"error"``    — HA unreachable and REST also failing
         """
@@ -1393,6 +1462,15 @@ class HAConnector:
         # Degraded: WS down but REST polling active
         if not self._ws_connected and self._rest_fallback_active:
             return ("degraded", f"WebSocket disconnected, using REST fallback — {transport_msg}")
+
+        # Degraded: authenticated WebSocket has not completed the event
+        # subscription handshake. A connected socket without subscriptions
+        # cannot receive state changes and is not an ingestion transport.
+        if self._ws_connected and not self._subscriptions_ready:
+            return (
+                "degraded",
+                f"WebSocket connected but event subscriptions are not ready — {transport_msg}",
+            )
 
         # Degraded: discretion LLM unavailable
         if self._ws_connected and not self._discretion_available:
@@ -1426,8 +1504,9 @@ class HAConnector:
     # ------------------------------------------------------------------
 
     def on_ws_connected(self) -> None:
-        """Called when WebSocket authentication succeeds."""
+        """Called when WebSocket authentication and subscriptions succeed."""
         self._ws_connected = True
+        self._subscriptions_ready = True
         self._rest_fallback_active = False
         self._starting = False
         if self._ha_metrics is not None:
@@ -1436,6 +1515,7 @@ class HAConnector:
     def on_ws_disconnected(self) -> None:
         """Called when a WebSocket connection drops or an initial attempt fails."""
         self._ws_connected = False
+        self._subscriptions_ready = False
         self._starting = False
         self._ws_reconnect_attempts += 1
         if self._ha_metrics is not None:
@@ -1529,6 +1609,7 @@ class HAConnector:
                 "endpoint_identity": connector._endpoint_identity,
                 "uptime_seconds": uptime_s,
                 "ws_connected": connector._ws_connected,
+                "ws_subscriptions_ready": connector._subscriptions_ready,
                 "rest_fallback_active": connector._rest_fallback_active,
                 "ws_reconnect_attempts": connector._ws_reconnect_attempts,
                 "error": error,
@@ -1648,7 +1729,7 @@ async def persist_ha_history(
 async def emit_with_wellness_promotion(
     *,
     mcp_client: Any,
-    ha_envelope: dict[str, Any],
+    ha_envelope: dict[str, Any] | None,
     classifier: WellnessClassifier,
     endpoint_identity: str,
     entity_id: str,
@@ -1661,15 +1742,20 @@ async def emit_with_wellness_promotion(
     friendly_name: str | None,
     metrics: HAConnectorMetrics | None,
     promotion_enabled: bool,
+    emit_home_assistant: bool = True,
+    classification_result: ClassifyResult | None = None,
+    content_blind_errors: bool = False,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
 
-    The ``home_assistant`` emission is unconditional and goes first; the
-    ``wellness`` emission is additive and only happens when promotion is enabled
-    and the classifier promotes the reading. Both emissions reuse the same
-    ``external_event_id`` — the Switchboard's channel-inclusive dedup key keeps
-    them independent on replay.
+    The ``home_assistant`` emission normally goes first. A caller that has
+    already policy-skipped that ordinary channel may set
+    ``emit_home_assistant=False`` while retaining deterministic wellness
+    promotion. History recovery additionally sets ``content_blind_errors`` so
+    provider exception text and tracebacks cannot escape through connector
+    logs. Both emissions reuse the same ``external_event_id`` — the Switchboard's
+    channel-inclusive dedup key keeps them independent on replay.
 
     Returns:
         ``True`` if every attempted submission succeeded (caller may advance the
@@ -1678,35 +1764,48 @@ async def emit_with_wellness_promotion(
     """
     from butlers.connectors.home_assistant_envelope import build_wellness_envelope
 
-    # Primary (home_assistant) — unchanged behavior, always emitted.
-    try:
-        await mcp_client.call_tool("ingest", ha_envelope)
-        if metrics is not None:
-            metrics.inc_submission("home_assistant", "success")
-    except Exception:
-        logger.warning(
-            "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
-            entity_id,
-            exc_info=True,
-        )
-        if metrics is not None:
-            metrics.inc_submission("home_assistant", "error")
-        # Primary failed: do not attempt the secondary channel, do not advance.
-        return False
+    if emit_home_assistant:
+        if ha_envelope is None:
+            raise ValueError("ha_envelope is required when emit_home_assistant=True")
+        try:
+            await mcp_client.call_tool("ingest", ha_envelope)
+            if metrics is not None:
+                metrics.inc_submission("home_assistant", "success")
+        except Exception as exc:
+            if content_blind_errors:
+                logger.warning(
+                    "ha-connector: failed to submit home_assistant envelope "
+                    "for entity_id=%s measurement_at=%s exception_class=%s",
+                    entity_id,
+                    time_fired,
+                    type(exc).__name__,
+                )
+            else:
+                logger.warning(
+                    "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
+                    entity_id,
+                    exc_info=True,
+                )
+            if metrics is not None:
+                metrics.inc_submission("home_assistant", "error")
+            # Primary failed: do not attempt the secondary channel, do not advance.
+            return False
 
     if not promotion_enabled:
         return True
 
     # Classify for the secondary (wellness) channel.
-    result = classifier.classify_detailed(
-        entity_id=entity_id,
-        device_class=device_class,
-        unit_of_measurement=unit_of_measurement,
-        attributes=attributes,
-        state=(new_state or {}).get("state"),
-    )
-    if metrics is not None:
-        metrics.inc_wellness_classify(result.outcome, result.metric)
+    result = classification_result
+    if result is None:
+        result = classifier.classify_detailed(
+            entity_id=entity_id,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            attributes=attributes,
+            state=(new_state or {}).get("state"),
+        )
+        if metrics is not None:
+            metrics.inc_wellness_classify(result.outcome, result.metric)
 
     if result.outcome != "promoted" or result.metric is None or result.value is None:
         return True
@@ -1728,13 +1827,22 @@ async def emit_with_wellness_promotion(
         await mcp_client.call_tool("ingest", wellness_envelope)
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
-    except Exception:
-        logger.warning(
-            "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
-            entity_id,
-            result.metric,
-            exc_info=True,
-        )
+    except Exception as exc:
+        if content_blind_errors:
+            logger.warning(
+                "ha-connector: failed to submit wellness envelope "
+                "for entity_id=%s measurement_at=%s exception_class=%s",
+                entity_id,
+                time_fired,
+                type(exc).__name__,
+            )
+        else:
+            logger.warning(
+                "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
+                entity_id,
+                result.metric,
+                exc_info=True,
+            )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
         # Secondary failed transiently: leave the checkpoint un-advanced so the
@@ -1742,6 +1850,50 @@ async def emit_with_wellness_promotion(
         return False
 
     return True
+
+
+async def _emit_history_wellness_measurement(
+    *,
+    mcp_client: Any,
+    classifier: WellnessClassifier,
+    endpoint_identity: str,
+    event: dict[str, Any],
+    metrics: HAConnectorMetrics | None,
+) -> bool:
+    """Submit one recorder-history event through the wellness envelope path.
+
+    History recovery owns its per-entity cursor, so this seam deliberately
+    emits no ordinary ``home_assistant`` envelope and does not touch the shared
+    WebSocket/REST checkpoint. ``time_fired`` is the HA ``last_updated``
+    measurement timestamp supplied by the history reader.
+    """
+    event_data = event.get("data") or {}
+    new_state = event_data.get("new_state") or {}
+    attributes = new_state.get("attributes") or {}
+    entity_id = event_data.get("entity_id") or ""
+    time_fired = event.get("time_fired") or ""
+    if not entity_id or not time_fired:
+        logger.warning("HA measurement history event missing identity or timestamp")
+        return False
+
+    return await emit_with_wellness_promotion(
+        mcp_client=mcp_client,
+        ha_envelope=None,
+        classifier=classifier,
+        endpoint_identity=endpoint_identity,
+        entity_id=entity_id,
+        time_fired=time_fired,
+        ha_event=event,
+        device_class=attributes.get("device_class"),
+        unit_of_measurement=attributes.get("unit_of_measurement"),
+        attributes=attributes,
+        new_state=new_state,
+        friendly_name=attributes.get("friendly_name"),
+        metrics=metrics,
+        promotion_enabled=True,
+        emit_home_assistant=False,
+        content_blind_errors=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1910,6 +2062,31 @@ async def _main() -> None:
         global_ingestion_policy=global_ingestion_policy,
     )
 
+    # Recorder-backed measurement catch-up is independent of transport
+    # fallback. It emits only deterministic wellness envelopes and owns a
+    # durable per-entity cursor, leaving the shared WS/REST checkpoint intact.
+    measurement_history_recovery = None
+    if db_pool is not None and config.wellness_promotion_enabled:
+        from butlers.connectors.home_assistant_rest import HAMeasurementHistoryRecovery
+
+        async def _on_history_measurement(event: dict[str, Any]) -> bool:
+            return await _emit_history_wellness_measurement(
+                mcp_client=connector._mcp_client,
+                classifier=wellness_classifier,
+                endpoint_identity=endpoint_identity,
+                event=event,
+                metrics=connector._ha_metrics,
+            )
+
+        measurement_history_recovery = HAMeasurementHistoryRecovery(
+            base_url=ha_base_url,
+            access_token=ha_access_token,
+            endpoint_identity=endpoint_identity,
+            db_pool=db_pool,
+            on_measurement=_on_history_measurement,
+            wellness_classifier=wellness_classifier,
+        )
+
     # Reorder buffer: HA can deliver events slightly out of time_fired order
     # during internal batching. Buffer briefly, submit in time_fired order, and
     # bound the buffer at HA_EVENT_QUEUE_MAX (spec "Event ordering"). Both the WS
@@ -1976,12 +2153,16 @@ async def _main() -> None:
         logger.warning("HAConnector: Switchboard readiness probe timed out; proceeding anyway")
 
     # Run the WS client; stop when a signal arrives
+    if measurement_history_recovery is not None:
+        measurement_history_recovery.start()
     ws_task = asyncio.create_task(ws_client.run())
     flush_task = asyncio.create_task(_reorder_flush_loop())
     await stop_event.wait()
 
     logger.info("HAConnector: shutting down")
     # Stop ingress first so no new events arrive while the buffer drains.
+    if measurement_history_recovery is not None:
+        await measurement_history_recovery.stop()
     rest_poller.stop()
     ws_task.cancel()
     try:
@@ -2229,6 +2410,25 @@ def _make_event_dispatcher(
             await ha_filter_persistence.flush()
             return
 
+        # Wellness eligibility is independent of the ordinary HA channel's
+        # global ingestion policy. Classify once after the local filter pipeline
+        # but before that policy can return, then reuse the verdict for either
+        # wellness-only or dual emission.
+        wellness_result: ClassifyResult | None = None
+        if config.wellness_promotion_enabled:
+            wellness_result = wellness_classifier.classify_detailed(
+                entity_id=entity_id,
+                device_class=device_class,
+                unit_of_measurement=unit_of_measurement,
+                attributes=new_attrs,
+                state=new_state_str,
+            )
+            if connector._ha_metrics is not None:
+                connector._ha_metrics.inc_wellness_classify(
+                    wellness_result.outcome,
+                    wellness_result.metric,
+                )
+
         # Non-person domains: pre-check the global ingestion policy locally so
         # a "skip" decision is self-persisted to connectors.filtered_events
         # instead of silently reaching Switchboard ingest() and landing
@@ -2268,6 +2468,37 @@ def _make_event_dispatcher(
                     device_class=device_class,
                 )
                 await ha_filter_persistence.flush()
+
+                if wellness_result is not None and wellness_result.outcome == "promoted":
+                    ingest_start = time.monotonic()
+                    wellness_submitted = await emit_with_wellness_promotion(
+                        mcp_client=connector._mcp_client,
+                        ha_envelope=None,
+                        classifier=wellness_classifier,
+                        endpoint_identity=endpoint_identity,
+                        entity_id=entity_id,
+                        time_fired=time_fired,
+                        ha_event=event,
+                        device_class=device_class,
+                        unit_of_measurement=unit_of_measurement,
+                        attributes=new_attrs,
+                        new_state=new_state_data or None,
+                        friendly_name=friendly_name,
+                        metrics=connector._ha_metrics,
+                        promotion_enabled=True,
+                        emit_home_assistant=False,
+                        classification_result=wellness_result,
+                    )
+                    if connector._ha_metrics is not None:
+                        connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
+                    if wellness_submitted and db_pool is not None:
+                        await save_ha_checkpoint(
+                            db_pool,
+                            endpoint_identity,
+                            event_ts,
+                            entity_id,
+                            active_transport,
+                        )
                 return
 
         # Event passed all filters — build envelope and submit to Switchboard
@@ -2308,6 +2539,7 @@ def _make_event_dispatcher(
             friendly_name=friendly_name,
             metrics=connector._ha_metrics,
             promotion_enabled=config.wellness_promotion_enabled,
+            classification_result=wellness_result,
         )
         if connector._ha_metrics is not None:
             connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
