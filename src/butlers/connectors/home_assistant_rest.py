@@ -698,6 +698,8 @@ class HAMeasurementHistoryRecovery:
 
             previous: EntityStateSnapshot | None = None
             for measurement_at, row in ordered_rows:
+                if high_water is not None and measurement_at <= high_water:
+                    continue
                 measurement_iso = measurement_at.isoformat()
                 current = EntityStateSnapshot(
                     entity_id=entity.entity_id,
@@ -707,7 +709,19 @@ class HAMeasurementHistoryRecovery:
                     last_updated=measurement_iso,
                 )
                 event = build_rest_state_changed_event(previous, current, measurement_iso)
-                if not await self._on_measurement(event):
+                try:
+                    submitted = await self._on_measurement(event)
+                except Exception:
+                    logger.warning(
+                        "HA measurement history submission callback failed "
+                        "entity_id=%s measurement_at=%s",
+                        entity.entity_id,
+                        measurement_iso,
+                        exc_info=True,
+                    )
+                    success = False
+                    break
+                if not submitted:
                     success = False
                     break
 

@@ -294,6 +294,34 @@ The connector checkpoint SHALL remain keyed by `(provider, endpoint_identity)` o
 - **THEN** re-submissions SHALL be deduplicated by the Switchboard per-channel dedup key
 - **AND** no duplicate ingestion events SHALL be recorded on either channel
 
+### Requirement: Durable measurement-history recovery
+The connector SHALL recover recorder-backed weight measurements independently of the live WebSocket and REST-fallback transports. Recovery SHALL use the existing deterministic `wellness/home_assistant` envelope and Health fact path, with a durable high-water mark for each eligible HA entity.
+
+#### Scenario: Equal value on a later day remains a distinct measurement
+- **WHEN** recorder history contains equal numeric weight values for one eligible entity at two different `last_updated` timestamps
+- **THEN** the connector SHALL emit one wellness measurement for each timestamp
+- **AND** each envelope's `wellness_measurement.valid_at` SHALL be the corresponding HA `last_updated` timestamp rather than connector observation time
+
+#### Scenario: Duplicate entity timestamp is a no-op
+- **WHEN** recorder history contains multiple rows for the same entity with the same measurement timestamp, whether in one response or a later replay
+- **THEN** the connector SHALL emit and checkpoint that entity/timestamp at most once
+
+#### Scenario: Recovery failure does not advance the cursor
+- **WHEN** history retrieval, wellness submission, the submission callback, or cursor persistence fails for a measurement
+- **THEN** the connector SHALL report the recovery poll as failed and log the failure without credential or measurement-value disclosure
+- **AND** SHALL NOT advance that entity's high-water mark past the failed measurement so a later poll can retry it
+
+#### Scenario: Durable cursor is isolated per entity
+- **WHEN** measurement-history recovery succeeds for an eligible weight entity
+- **THEN** the connector SHALL persist a high-water mark keyed by the connector endpoint and that entity ID
+- **AND** advancement for one entity SHALL NOT advance or suppress recovery for another entity
+
+#### Scenario: Recovery is transport-independent and wellness-only
+- **WHEN** recorder-backed recovery finds an eligible weight measurement while WebSocket is healthy, degraded, disconnected, or REST fallback is active
+- **THEN** recovery SHALL remain eligible independently of live transport state and the ordinary `home_assistant` global ingestion-policy decision
+- **AND** SHALL emit only the deterministic `wellness/home_assistant` envelope
+- **AND** SHALL NOT emit an ordinary `home_assistant` envelope or mutate the shared WebSocket/REST checkpoint
+
 ### Requirement: Idempotency and Safety
 The connector guarantees at-least-once delivery with HA-derived event identifiers.
 

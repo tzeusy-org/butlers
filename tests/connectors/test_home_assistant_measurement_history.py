@@ -199,6 +199,40 @@ async def test_duplicate_entity_timestamp_replay_is_a_noop(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_timestamp_rows_in_one_response_emit_and_checkpoint_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    on_measurement = AsyncMock(return_value=True)
+    recovery = _build_recovery(on_measurement)
+    duplicate_timestamp = "2026-08-27T07:00:00+00:00"
+    monkeypatch.setattr(
+        recovery,
+        "_fetch_weight_entities",
+        AsyncMock(return_value=[_weight_snapshot()]),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_fetch_entity_history",
+        AsyncMock(
+            return_value=[
+                _history_state(duplicate_timestamp),
+                _history_state(duplicate_timestamp),
+            ]
+        ),
+    )
+    monkeypatch.setattr(ha_rest, "load_cursor", AsyncMock(return_value=None))
+    save_cursor = AsyncMock()
+    monkeypatch.setattr(ha_rest, "save_cursor", save_cursor)
+
+    result = await recovery.recover_once()
+
+    assert result.success is True
+    assert result.emitted == 1
+    on_measurement.assert_awaited_once()
+    save_cursor.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_failed_history_fetch_does_not_advance_entity_cursor(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -229,6 +263,47 @@ async def test_failed_history_fetch_does_not_advance_entity_cursor(
     assert result.emitted == 0
     save_cursor.assert_not_awaited()
     assert "measurement history fetch failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_measurement_callback_exception_is_retryable_without_cursor_advance(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    measurement_at = "2026-08-27T07:00:00+00:00"
+    recovery = _build_recovery(AsyncMock(side_effect=RuntimeError("callback exploded")))
+    monkeypatch.setattr(
+        recovery,
+        "_fetch_weight_entities",
+        AsyncMock(return_value=[_weight_snapshot()]),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_fetch_entity_history",
+        AsyncMock(return_value=[_history_state(measurement_at)]),
+    )
+    monkeypatch.setattr(ha_rest, "load_cursor", AsyncMock(return_value=None))
+    save_cursor = AsyncMock()
+    monkeypatch.setattr(ha_rest, "save_cursor", save_cursor)
+
+    with caplog.at_level("WARNING"):
+        result = await recovery.recover_once()
+
+    assert result == ha_rest.HAMeasurementHistoryResult(success=False, emitted=0)
+    save_cursor.assert_not_awaited()
+    assert "measurement history submission callback failed" in caplog.text
+    assert _ENTITY_ID in caplog.text
+    assert measurement_at in caplog.text
+    callback_record = next(
+        record
+        for record in caplog.records
+        if "measurement history submission callback failed" in record.getMessage()
+    )
+    assert callback_record.getMessage() == (
+        "HA measurement history submission callback failed "
+        f"entity_id={_ENTITY_ID} measurement_at={measurement_at}"
+    )
+    assert callback_record.exc_info is not None
 
 
 @pytest.mark.asyncio
