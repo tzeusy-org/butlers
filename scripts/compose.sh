@@ -52,6 +52,7 @@ TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-
 TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
 TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
 TAILSCALE_SERVE_HEALTH_URL=""
+TAILSCALE_SERVE_PROBE_ARGV=()
 # Hotreload defaults to on for dev, off for prod; resolved after arg parsing.
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
@@ -152,6 +153,7 @@ TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-
 TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
 TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
 TAILSCALE_SERVE_HEALTH_URL=""
+TAILSCALE_SERVE_PROBE_ARGV=()
 if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
   echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
   exit 1
@@ -458,11 +460,16 @@ if not isinstance(hostname, str):
     raise SystemExit(1)
 if hostname.endswith("."):
     hostname = hostname[:-1]
-if not hostname or len(hostname) > 253:
-    raise SystemExit(1)
-
+hostname = hostname.lower()
+labels = hostname.split(".")
 label_pattern = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
-if any(not label_pattern.fullmatch(label) for label in hostname.split(".")):
+if (
+    not hostname
+    or len(hostname) > 253
+    or len(labels) < 3
+    or labels[-2:] != ["ts", "net"]
+    or any(not label_pattern.fullmatch(label) for label in labels)
+):
     raise SystemExit(1)
 
 print(hostname)
@@ -483,6 +490,20 @@ print(hostname)
 
   TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS=""
   if [ -n "$TAILSCALE_SERVE_PROBE_COMMAND" ]; then
+    # Split only once, before lifecycle work, so a missing local executable
+    # cannot surface as a post-start probe failure.  This intentionally does
+    # not validate remote argv: an SSH wrapper may be locally resolvable while
+    # its remote command can only fail after the service is running.
+    IFS=$' \t\n' read -r -a TAILSCALE_SERVE_PROBE_ARGV <<< "$TAILSCALE_SERVE_PROBE_COMMAND"
+    probe_executor_path=""
+    if [ "${#TAILSCALE_SERVE_PROBE_ARGV[@]}" -eq 0 ] \
+      || ! probe_executor_path=$(type -P "${TAILSCALE_SERVE_PROBE_ARGV[0]}" 2>/dev/null) \
+      || [ -z "$probe_executor_path" ] \
+      || [ ! -x "$probe_executor_path" ]; then
+      echo "ERROR: Tailscale Serve data-plane executor-unavailable: the configured off-host executor is not locally resolvable; no Serve or Compose lifecycle mutation was attempted." >&2
+      exit 1
+    fi
+    TAILSCALE_SERVE_PROBE_ARGV[0]="$probe_executor_path"
     if ! command -v timeout &>/dev/null; then
       echo "ERROR: Tailscale Serve probe requires the 'timeout' command to bound the executor; no mapping or lifecycle mutation was attempted." >&2
       exit 1
@@ -627,34 +648,40 @@ PY
       return 0
     fi
 
-    local -a probe_command=()
-    # Deliberately avoid eval: the operator-supplied command is only split into
-    # argv, then receives the fixed URL and bounded probe settings below.
-    read -r -a probe_command <<< "$TAILSCALE_SERVE_PROBE_COMMAND"
-    if [ "${#probe_command[@]}" -eq 0 ]; then
-      echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is empty after parsing; configure an approved off-host executor." >&2
+    if [ "${#TAILSCALE_SERVE_PROBE_ARGV[@]}" -eq 0 ]; then
+      echo "ERROR: Tailscale Serve data-plane executor-unavailable: no locally resolved executor is available." >&2
       return 2
     fi
 
     local probe_rc=0
-    local probe_output=""
-    if probe_output=$(timeout --kill-after=1 \
+    local probe_attestation_rc=0
+    local -a probe_status=()
+    # The executor is operator-configured but untrusted for diagnostics. Keep
+    # its stdout streaming through the exact attestation matcher and discard
+    # stderr, so command arguments or remote error text cannot escape through
+    # launcher output.  Stable exit classes below remain actionable.
+    if timeout --kill-after=1 \
       "${TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS}s" \
-      "${probe_command[@]}" \
+      "${TAILSCALE_SERVE_PROBE_ARGV[@]}" \
       --url "$health_url" \
       --timeout "$TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS" \
       --retries "$TAILSCALE_SERVE_PROBE_RETRIES" \
-      --retry-delay "$TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS"); then
-      if ! grep -Fxq 'TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct' <<< "$probe_output"; then
+      --retry-delay "$TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS" 2>/dev/null \
+      | grep -Fx 'TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct' >/dev/null; then
+      probe_status=("${PIPESTATUS[@]}")
+    else
+      probe_status=("${PIPESTATUS[@]}")
+    fi
+    probe_rc="${probe_status[0]}"
+    probe_attestation_rc="${probe_status[1]}"
+    if [ "$probe_rc" -eq 0 ]; then
+      if [ "$probe_attestation_rc" -ne 0 ]; then
         echo "ERROR: Tailscale Serve probe identity-unverified: the executor returned success without attesting an actual Tailscale identity distinct from the target." >&2
         return 27
       fi
-      [ -n "$probe_output" ] && printf '%s\n' "$probe_output"
+      echo "Tailscale Serve data-plane: ready (off-host executor identity attested)."
       return 0
-    else
-      probe_rc=$?
     fi
-    [ -n "$probe_output" ] && printf '%s\n' "$probe_output"
 
     # scripts/tailscale_serve_probe.py uses stable exit classes.  Keep a
     # shell-side summary too so custom approved executors remain actionable.

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import socket
 import ssl
 import subprocess
@@ -36,6 +37,7 @@ _MAX_TIMEOUT_SECONDS = 30.0
 _MAX_ATTEMPTS = 4
 _MAX_RETRY_DELAY_SECONDS = 5.0
 _IDENTITY_TIMEOUT_SECONDS = 5.0
+_TAILSCALE_DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
 class ProbeOutcome(StrEnum):
@@ -133,8 +135,33 @@ def _is_certificate_error(error: BaseException) -> bool:
     return False
 
 
+def _normalized_tailscale_dns_name(value: object) -> str | None:
+    """Return a canonical qualified Tailscale DNS name, or ``None``.
+
+    A single-label value (including ``localhost``) can resolve on the probe
+    executor itself, which would turn an alleged off-host check into a local
+    request.  Tailscale's ``Self.DNSName`` is a qualified ``.ts.net`` name;
+    reject every other spelling instead of normalizing it into evidence.
+    """
+
+    if not isinstance(value, str):
+        return None
+    hostname = value[:-1] if value.endswith(".") else value
+    hostname = hostname.lower()
+    labels = hostname.split(".")
+    if (
+        not hostname
+        or len(hostname) > 253
+        or len(labels) < 3
+        or labels[-2:] != ["ts", "net"]
+        or any(not _TAILSCALE_DNS_LABEL.fullmatch(label) for label in labels)
+    ):
+        return None
+    return hostname
+
+
 def _validated_url(url: str) -> bool:
-    """Accept only an HTTPS URL with a DNS host and a path.
+    """Accept only an HTTPS URL with a qualified Tailscale DNS host and a path.
 
     The health URL is assembled from trusted launcher values.  Keeping this
     validation in the probe prevents an accidentally malformed or credentialed
@@ -149,7 +176,7 @@ def _validated_url(url: str) -> bool:
         return False
     return bool(
         parsed.scheme == "https"
-        and hostname
+        and _normalized_tailscale_dns_name(hostname)
         and not parsed.username
         and not parsed.password
         and not parsed.query
@@ -191,11 +218,15 @@ def _tailscale_self_dns_name() -> str | None:
         )
         payload = json.loads(completed.stdout)
         dns_name = payload.get("Self", {}).get("DNSName")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AttributeError):
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        AttributeError,
+    ):
         return None
-    if not isinstance(dns_name, str) or not dns_name.strip():
-        return None
-    return dns_name.strip().rstrip(".").lower()
+    return _normalized_tailscale_dns_name(dns_name)
 
 
 def _retryable(outcome: ProbeOutcome, status_code: int | None) -> bool:
@@ -351,8 +382,9 @@ def main(argv: list[str] | None = None) -> int:
     if not _validated_url(args.url):
         result = ProbeResult(ProbeOutcome.INVALID_URL, attempts=0)
     else:
-        target_hostname = urlsplit(args.url).hostname
-        source_hostname = _tailscale_self_dns_name()
+        target_hostname = _normalized_tailscale_dns_name(urlsplit(args.url).hostname)
+        assert target_hostname is not None  # checked by _validated_url above
+        source_hostname = _normalized_tailscale_dns_name(_tailscale_self_dns_name())
         if not source_hostname:
             print(
                 "ERROR: Tailscale Serve probe identity-unavailable: the executor could not "

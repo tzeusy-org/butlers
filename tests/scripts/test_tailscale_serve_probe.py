@@ -249,7 +249,10 @@ def test_probe_rejects_target_hosts_own_tailscale_identity(monkeypatch, capsys) 
     assert transport_called is False
 
 
-@pytest.mark.parametrize("identity", [None, ""])
+@pytest.mark.parametrize(
+    "identity",
+    [None, "", "localhost", "executor", "executor.example.invalid"],
+)
 def test_probe_requires_readable_executor_tailscale_identity(monkeypatch, capsys, identity) -> None:
     module = _probe_module()
     monkeypatch.setattr(module, "_tailscale_self_dns_name", lambda: identity)
@@ -258,6 +261,39 @@ def test_probe_requires_readable_executor_tailscale_identity(monkeypatch, capsys
 
     assert result == 27
     assert "identity-unavailable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://localhost/butlers-dev-api/api/health",
+        "https://device/butlers-dev-api/api/health",
+        "https://device.example.invalid/butlers-dev-api/api/health",
+    ],
+)
+def test_probe_rejects_non_tailnet_target_before_identity_or_https(monkeypatch, url: str) -> None:
+    module = _probe_module()
+    identity_called = False
+    transport_called = False
+
+    def forbidden_identity() -> str:
+        nonlocal identity_called
+        identity_called = True
+        raise AssertionError("invalid target must fail before executor identity")
+
+    def forbidden_transport(_url: str, _timeout: float):
+        nonlocal transport_called
+        transport_called = True
+        raise AssertionError("invalid target must fail before HTTPS")
+
+    monkeypatch.setattr(module, "_tailscale_self_dns_name", forbidden_identity)
+    monkeypatch.setattr(module, "_strict_https_get", forbidden_transport)
+
+    result = module.main(["--url", url])
+
+    assert result == 26
+    assert identity_called is False
+    assert transport_called is False
 
 
 def test_probe_attests_distinct_executor_identity_before_success(monkeypatch, capsys) -> None:
@@ -308,10 +344,12 @@ def _launcher_harness(
     probe_command: bool = True,
     actual_probe: bool = False,
     probe_attests: bool = True,
+    probe_echo_arguments: bool = False,
     probe_hangs: bool = False,
     serve_status_mode: str = "valid",
     tailscale_dns_name: object = "device.example.ts.net",
     env_file_overrides: dict[str, str | None] | None = None,
+    env_file_statements: tuple[str, ...] = (),
     compose_args: tuple[str, ...] = (),
     extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
@@ -344,6 +382,7 @@ def _launcher_harness(
         f"unset {name}" if value is None else f"{name}={shlex.quote(value)}"
         for name, value in (env_file_overrides or {}).items()
     )
+    env_lines.extend(env_file_statements)
     (repo / ".env.dev").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
 
     calls = tmp_path / "calls.log"
@@ -418,6 +457,8 @@ def _launcher_harness(
         f"""
         printf 'probe %s\\n' "$*" >> "$LAUNCHER_CALLS"
         {"printf '%s\\n' 'TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct'" if probe_attests else ":"}
+        {"printf '%s\\n' \"$*\"" if probe_echo_arguments else ":"}
+        {"printf '%s\\n' \"$*\" >&2" if probe_echo_arguments else ":"}
         {"sleep 30" if probe_hangs else ":"}
         exit {probe_exit}
         """,
@@ -475,12 +516,30 @@ def test_launcher_refuses_on_host_probe_context(tmp_path: Path) -> None:
     assert not any(call.startswith("probe ") for call in calls)
 
 
-@pytest.mark.parametrize("tailscale_dns_name", [None, "", "not a usable hostname"])
+@pytest.mark.parametrize(
+    "tailscale_dns_name",
+    [None, "", "not a usable hostname", "localhost", "device", "device.example.invalid"],
+)
+@pytest.mark.parametrize(
+    ("env_file_overrides", "extra_environment"),
+    [
+        (None, {"TAILSCALE_SERVE_PROBE_COMMAND": "probe"}),
+        ({"TAILSCALE_SERVE_PROBE_COMMAND": "probe"}, None),
+    ],
+    ids=["process-command", "sourced-command"],
+)
 def test_launcher_refuses_configured_probe_without_usable_data_plane_target(
     tmp_path: Path,
     tailscale_dns_name: object,
+    env_file_overrides: dict[str, str] | None,
+    extra_environment: dict[str, str] | None,
 ) -> None:
-    completed, calls = _launcher_harness(tmp_path, tailscale_dns_name=tailscale_dns_name)
+    completed, calls = _launcher_harness(
+        tmp_path,
+        tailscale_dns_name=tailscale_dns_name,
+        env_file_overrides=env_file_overrides,
+        extra_environment=extra_environment,
+    )
 
     assert completed.returncode != 0
     assert "data-plane target-unavailable" in completed.stderr
@@ -488,6 +547,81 @@ def test_launcher_refuses_configured_probe_without_usable_data_plane_target(
     assert not any("compose" in call and " up -d" in call for call in calls)
     assert not any(call.startswith("probe ") for call in calls)
     assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("env_file_overrides", "extra_environment"),
+    [
+        (None, {"TAILSCALE_SERVE_PROBE_COMMAND": "absent-executor config-sentinel"}),
+        ({"TAILSCALE_SERVE_PROBE_COMMAND": "absent-executor config-sentinel"}, None),
+    ],
+    ids=["process-command", "sourced-command"],
+)
+def test_launcher_rejects_unresolvable_executor_before_mutation_without_disclosure(
+    tmp_path: Path,
+    env_file_overrides: dict[str, str] | None,
+    extra_environment: dict[str, str] | None,
+) -> None:
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides=env_file_overrides,
+        extra_environment=extra_environment,
+    )
+
+    diagnostics = completed.stdout + completed.stderr
+    assert completed.returncode != 0
+    assert "executor-unavailable" in diagnostics
+    assert "config-sentinel" not in diagnostics
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+def test_launcher_rejects_sourced_function_executor_before_mutation(tmp_path: Path) -> None:
+    """A shell function is resolvable to Bash but not executable by ``timeout``."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_statements=(
+            "function_only_executor() { return 0; }",
+            "TAILSCALE_SERVE_PROBE_COMMAND=function_only_executor",
+        ),
+    )
+
+    assert completed.returncode != 0
+    assert "executor-unavailable" in completed.stderr
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("env_file_overrides", "extra_environment"),
+    [
+        (None, {"TAILSCALE_SERVE_PROBE_COMMAND": "probe stream-sentinel"}),
+        ({"TAILSCALE_SERVE_PROBE_COMMAND": "probe stream-sentinel"}, None),
+    ],
+    ids=["process-command", "sourced-command"],
+)
+@pytest.mark.parametrize("probe_exit", [0, 25], ids=["success", "runtime-failure"])
+def test_launcher_keeps_untrusted_executor_streams_content_blind(
+    tmp_path: Path,
+    env_file_overrides: dict[str, str] | None,
+    extra_environment: dict[str, str] | None,
+    probe_exit: int,
+) -> None:
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides=env_file_overrides,
+        extra_environment=extra_environment,
+        probe_exit=probe_exit,
+        probe_echo_arguments=True,
+    )
+
+    diagnostics = completed.stdout + completed.stderr
+    assert (completed.returncode == 0) is (probe_exit == 0)
+    assert "stream-sentinel" not in diagnostics
+    assert any("compose" in call and " up -d" in call for call in calls)
+    assert any(call.startswith("probe ") for call in calls)
 
 
 def test_launcher_rejects_whitespace_only_probe_command_before_mutation(tmp_path: Path) -> None:
@@ -616,7 +750,9 @@ def test_actual_probe_rejects_same_host_executor_despite_context_label(tmp_path:
     completed, calls = _launcher_harness(tmp_path, probe_context="off-host", actual_probe=True)
 
     assert completed.returncode != 0
-    assert "identity-same-host" in completed.stderr
+    assert "data-plane probe failed" in completed.stderr
+    assert "exit 27" in completed.stderr
+    assert "identity-same-host" not in completed.stdout + completed.stderr
     assert any("compose" in call and " up -d" in call for call in calls)
 
 
