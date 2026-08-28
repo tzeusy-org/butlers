@@ -141,10 +141,17 @@ set -a
 source "$ENV_FILE"
 set +a
 
-# ``.env`` can override a process-supplied executor. Validate after sourcing
-# and before any Serve or Compose lifecycle work, rather than letting the
-# later argv splitter fail after the stack has started.
+# ``.env`` can override or unset process-supplied probe settings. Normalize
+# every external input after sourcing and before any Serve or Compose lifecycle
+# work, rather than letting a later policy check or argv splitter fail after
+# the stack has started. The health URL is internal launcher output, never an
+# environment input.
+TAILSCALE_SERVE_PROBE_CONTEXT="${TAILSCALE_SERVE_PROBE_CONTEXT:-}"
 TAILSCALE_SERVE_PROBE_COMMAND="${TAILSCALE_SERVE_PROBE_COMMAND:-}"
+TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-10}"
+TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
+TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
+TAILSCALE_SERVE_HEALTH_URL=""
 if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
   echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
   exit 1
@@ -941,7 +948,7 @@ fi
 # the caller-provided context label alone is never accepted as evidence.
 # Keep the probe after the firewall step so a failed readiness check cannot
 # bypass that guard.
-if [ -n "$TAILSCALE_SERVE_HEALTH_URL" ]; then
+if [ -n "${TAILSCALE_SERVE_HEALTH_URL:-}" ]; then
   if ! _ts_run_data_plane_probe "$TAILSCALE_SERVE_HEALTH_URL"; then
     echo "ERROR: Tailscale Serve readiness is not proven; Compose is running but the public HTTPS data plane is degraded." >&2
     exit 1

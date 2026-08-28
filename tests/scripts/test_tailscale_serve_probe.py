@@ -540,6 +540,66 @@ def test_launcher_defaults_unset_sourced_probe_command_before_restore_drill_pref
     assert not any(call.startswith("fake tailscale ") for call in calls)
 
 
+def test_launcher_rejects_sourced_unset_probe_context_before_mutation(tmp_path: Path) -> None:
+    """An env-file unset must not trip nounset or silently bless an executor."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides={"TAILSCALE_SERVE_PROBE_CONTEXT": None},
+    )
+
+    assert completed.returncode != 0
+    assert "off-host" in completed.stderr
+    assert "unbound variable" not in completed.stderr
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "setting",
+    (
+        "TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS",
+        "TAILSCALE_SERVE_PROBE_RETRIES",
+        "TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS",
+    ),
+)
+def test_launcher_defaults_sourced_unset_probe_settings(
+    tmp_path: Path,
+    setting: str,
+) -> None:
+    """Sourced unsets retain the bounded launcher defaults rather than nounset."""
+    completed, calls = _launcher_harness(tmp_path, env_file_overrides={setting: None})
+
+    assert completed.returncode == 0, completed.stderr
+    assert "unbound variable" not in completed.stderr
+    assert any("compose" in call and " up -d" in call for call in calls)
+    probe_call = next(call for call in calls if call.startswith("probe "))
+    assert "--timeout 10" in probe_call
+    assert "--retries 2" in probe_call
+    assert "--retry-delay 1" in probe_call
+
+
+@pytest.mark.parametrize(
+    "health_override",
+    (None, "https://source.example.ts.net/untrusted"),
+)
+def test_launcher_keeps_final_health_url_internal_after_sourcing(
+    tmp_path: Path,
+    health_override: str | None,
+) -> None:
+    """Skipped Tailscale setup cannot use or nounset a sourced probe target."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides={"TAILSCALE_SERVE_HEALTH_URL": health_override},
+        compose_args=("--skip-tailscale-check",),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "unbound variable" not in completed.stderr
+    assert any("compose" in call and " up -d" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+
+
 def test_caller_asserted_off_host_context_cannot_bless_same_host_executor(tmp_path: Path) -> None:
     completed, calls = _launcher_harness(
         tmp_path,
