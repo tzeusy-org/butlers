@@ -244,6 +244,7 @@ class HAWebSocketClient:
         # Internal state
         self._shutdown: bool = False
         self._connected: bool = False
+        self._subscriptions_ready: bool = False
         self._ws_connection: Any | None = None  # aiohttp.ClientWebSocketResponse
         self._ws_session: Any | None = None  # aiohttp.ClientSession
         self._ws_cmd_id: int = 0
@@ -295,6 +296,7 @@ class HAWebSocketClient:
 
         ws_url = self._ws_url()
         logger.debug("HAWebSocketClient: connecting to %s", ws_url)
+        self._subscriptions_ready = False
 
         if self._ws_session is None or self._ws_session.closed:
             ssl_ctx: bool = self._verify_ssl
@@ -354,6 +356,7 @@ class HAWebSocketClient:
 
     async def _close_connection(self) -> None:
         """Close the current WebSocket connection gracefully."""
+        self._subscriptions_ready = False
         if self._ws_connection is not None and not self._ws_connection.closed:
             try:
                 await self._ws_connection.close()
@@ -366,15 +369,17 @@ class HAWebSocketClient:
     # Task 3.3 — Event subscription
     # ------------------------------------------------------------------
 
-    async def _subscribe_events(self) -> None:
+    async def _subscribe_events(self) -> bool:
         """Subscribe to HA event types defined in ``_WS_EVENT_SUBSCRIPTIONS`` (task 3.3).
 
         Sends a ``subscribe_events`` WS command for each event type.
-        No-op when not connected.
+        Returns ``True`` only when every required subscription acknowledges.
         """
+        self._subscriptions_ready = False
         if not self._connected:
-            return
+            return False
 
+        all_ready = True
         for event_type in _WS_EVENT_SUBSCRIPTIONS:
             try:
                 await self._ws_command(
@@ -383,7 +388,34 @@ class HAWebSocketClient:
                 )
                 logger.debug("HAWebSocketClient: subscribed to %s", event_type)
             except Exception as exc:
+                all_ready = False
                 logger.warning("HAWebSocketClient: failed to subscribe to %s: %r", event_type, exc)
+
+        self._subscriptions_ready = all_ready
+        return all_ready
+
+    async def _discard_failed_connection(self) -> None:
+        """Tear down an authenticated socket whose event subscriptions failed.
+
+        Authentication alone is not a usable ingestion transport. Cancel the
+        reader and keepalive tasks before closing the socket so they cannot race
+        the caller's explicit disconnect notification.
+        """
+        self._subscriptions_ready = False
+        for task in (self._loop_task, self._ping_task):
+            if task is not None and not task.done():
+                task.cancel()
+        pending = [task for task in (self._loop_task, self._ping_task) if task is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._loop_task = None
+        self._ping_task = None
+
+        for future in self._ws_pending.values():
+            if not future.done():
+                future.cancel()
+        self._ws_pending.clear()
+        await self._close_connection()
 
     # ------------------------------------------------------------------
     # Task 3.4 — Ping/pong keepalive
@@ -657,18 +689,36 @@ class HAWebSocketClient:
                 attempt += 1
                 continue
 
-            # Reconnected — restart background tasks and re-subscribe
-            logger.info("HAWebSocketClient: reconnected after %d attempt(s)", attempt + 1)
+            # Reconnected — restart background tasks and re-subscribe. The
+            # connector is not considered connected until every subscription
+            # acknowledges; this keeps REST fallback active during a partial
+            # or timed-out re-subscription.
             self._start_message_loop()
             self._start_ping_task()
 
             try:
-                await self._subscribe_events()
+                subscriptions_ready = await self._subscribe_events()
             except Exception as exc:
                 logger.warning(
                     "HAWebSocketClient: error subscribing events after reconnect: %s", exc
                 )
+                subscriptions_ready = False
 
+            if not subscriptions_ready:
+                logger.warning(
+                    "HAWebSocketClient: reconnect authenticated but event subscriptions are "
+                    "not ready; treating attempt as failed"
+                )
+                await self._discard_failed_connection()
+                if self._on_disconnected is not None:
+                    self._on_disconnected()
+                if self._on_reconnect_failed is not None:
+                    self._on_reconnect_failed()
+                delay = min(delay * 2, self._reconnect_max_s)
+                attempt += 1
+                continue
+
+            logger.info("HAWebSocketClient: event stream ready after %d attempt(s)", attempt + 1)
             if self._on_connected is not None:
                 self._on_connected()
 
@@ -688,22 +738,26 @@ class HAWebSocketClient:
         self._shutdown = False
         self._stop_event = asyncio.Event()
 
-        # Initial connection attempt
+        # Initial connection and subscription attempt
+        authenticated = False
         try:
             await self._connect()
+            authenticated = True
+            self._start_message_loop()
+            self._start_ping_task()
+            subscriptions_ready = await self._subscribe_events()
+            if not subscriptions_ready:
+                raise RuntimeError("event subscriptions are not ready")
         except Exception as exc:
-            logger.warning("HAWebSocketClient: initial connect failed (%s); will retry.", exc)
+            await self._discard_failed_connection()
+            logger.warning("HAWebSocketClient: initial stream setup failed (%s); will retry.", exc)
             if self._on_disconnected is not None:
                 self._on_disconnected()
+            if authenticated and self._on_reconnect_failed is not None:
+                self._on_reconnect_failed()
             # Start reconnect loop in background; don't block run()
             asyncio.create_task(self._reconnect_loop())
         else:
-            self._start_message_loop()
-            self._start_ping_task()
-            try:
-                await self._subscribe_events()
-            except Exception as exc:
-                logger.warning("HAWebSocketClient: event subscription error: %s", exc)
             if self._on_connected is not None:
                 self._on_connected()
 
@@ -731,6 +785,7 @@ class HAWebSocketClient:
         closes the aiohttp session.
         """
         self._shutdown = True
+        self._subscriptions_ready = False
 
         # Cancel background tasks
         for task in (self._loop_task, self._ping_task):
@@ -1276,6 +1331,7 @@ class HAConnector:
 
         # Transport state (task 8.1)
         self._ws_connected: bool = False
+        self._subscriptions_ready: bool = False
         self._rest_fallback_active: bool = False
         self._ws_reconnect_attempts: int = 0
         self._rest_poll_failing: bool = False  # True when last REST poll failed
@@ -1373,7 +1429,7 @@ class HAConnector:
 
         Returns:
             ``(state, error_message)`` where state is one of:
-            - ``"healthy"``  — WebSocket connected, discretion available
+            - ``"healthy"``  — WebSocket connected, subscriptions ready, discretion available
             - ``"degraded"`` — Startup, WS down with REST active, or discretion unavailable
             - ``"error"``    — HA unreachable and REST also failing
         """
@@ -1394,6 +1450,15 @@ class HAConnector:
         # Degraded: WS down but REST polling active
         if not self._ws_connected and self._rest_fallback_active:
             return ("degraded", f"WebSocket disconnected, using REST fallback — {transport_msg}")
+
+        # Degraded: authenticated WebSocket has not completed the event
+        # subscription handshake. A connected socket without subscriptions
+        # cannot receive state changes and is not an ingestion transport.
+        if self._ws_connected and not self._subscriptions_ready:
+            return (
+                "degraded",
+                f"WebSocket connected but event subscriptions are not ready — {transport_msg}",
+            )
 
         # Degraded: discretion LLM unavailable
         if self._ws_connected and not self._discretion_available:
@@ -1427,8 +1492,9 @@ class HAConnector:
     # ------------------------------------------------------------------
 
     def on_ws_connected(self) -> None:
-        """Called when WebSocket authentication succeeds."""
+        """Called when WebSocket authentication and subscriptions succeed."""
         self._ws_connected = True
+        self._subscriptions_ready = True
         self._rest_fallback_active = False
         self._starting = False
         if self._ha_metrics is not None:
@@ -1437,6 +1503,7 @@ class HAConnector:
     def on_ws_disconnected(self) -> None:
         """Called when a WebSocket connection drops or an initial attempt fails."""
         self._ws_connected = False
+        self._subscriptions_ready = False
         self._starting = False
         self._ws_reconnect_attempts += 1
         if self._ha_metrics is not None:
@@ -1530,6 +1597,7 @@ class HAConnector:
                 "endpoint_identity": connector._endpoint_identity,
                 "uptime_seconds": uptime_s,
                 "ws_connected": connector._ws_connected,
+                "ws_subscriptions_ready": connector._subscriptions_ready,
                 "rest_fallback_active": connector._rest_fallback_active,
                 "ws_reconnect_attempts": connector._ws_reconnect_attempts,
                 "error": error,

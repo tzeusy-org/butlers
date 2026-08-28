@@ -200,6 +200,12 @@ The connector reports health based on HA connection and service availability.
 - **AND** `degraded` when the WebSocket connection is down but REST polling is active, or when the discretion LLM is unreachable
 - **AND** `healthy` when the WebSocket connection is active and all pipeline services are responsive
 
+#### Scenario: Authenticated socket without event subscriptions
+- **WHEN** WebSocket authentication succeeds but any required `subscribe_events` acknowledgement times out or fails
+- **THEN** the connector SHALL remain `degraded` with `ws_subscriptions_ready = false`
+- **AND** it SHALL NOT report the WebSocket transport as connected to the connector health callback until all required subscriptions acknowledge
+- **AND** REST fallback SHALL remain active or be activated by the existing reconnect-failure threshold while WebSocket recovery continues
+
 #### Scenario: Transport mode in heartbeat
 - **WHEN** a heartbeat is assembled
 - **THEN** `status.error_message` SHALL include the current transport mode (e.g., `"transport=websocket"` or `"transport=rest_fallback, ws_reconnect_attempts=5"`)
