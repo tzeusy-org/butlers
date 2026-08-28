@@ -22,6 +22,7 @@ Issue: bu-e38f
 from __future__ import annotations
 
 import shutil
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -70,19 +71,42 @@ _DEFAULT_QUIET_END_HOUR = 8
 _DEFAULT_QUIET_TIMEZONE = "Asia/Singapore"
 
 
-# ``_future``/``_past`` stay on the wall clock on purpose: they feed
-# ``expires_at``, whose freshness ``propose_insight_candidate`` validates
-# against the real clock unless a caller pins that too. ``_PINNED_NOW`` is a
-# past instant on every real run, so a ``_future()`` expiry is still in the
-# future when a cycle is evaluated at ``_PINNED_NOW`` — but a ``_past()`` expiry
-# is *not* yet past at it, so a test that wants an already-expired candidate
-# must anchor the expiry to ``_PINNED_NOW`` rather than to the wall clock.
+# Candidate expiry fixtures are relative to the same instant as their delivery
+# cycles. The proposal calls that feed those cycles pass ``now=_PINNED_NOW``
+# too, so freshness and delivery never diverge with the wall clock. Tests that
+# intentionally exercise the broker's default-clock behavior construct their
+# own expiry values rather than using these helpers.
 def _future(days: int = 7) -> datetime:
-    return datetime.now(UTC) + timedelta(days=days)
+    return _PINNED_NOW + timedelta(days=days)
 
 
 def _past(days: int = 1) -> datetime:
-    return datetime.now(UTC) - timedelta(days=days)
+    return _PINNED_NOW - timedelta(days=days)
+
+
+class TestInsightExpiryHelpers:
+    """Keep test candidate expiry relative to the cycle's reference instant."""
+
+    @pytest.mark.parametrize(
+        ("helper", "expected"),
+        [
+            (_future, _PINNED_NOW + timedelta(days=7)),
+            (_past, _PINNED_NOW - timedelta(days=1)),
+        ],
+        ids=["future", "past"],
+    )
+    async def test_expiry_helpers_ignore_far_wall_clock(self, monkeypatch, helper, expected):
+        """Expiry fixtures must remain relative to the delivery-cycle instant."""
+        real_datetime = datetime
+
+        class FarWallClockDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime(2040, 1, 1, tzinfo=tz or UTC)
+
+        monkeypatch.setattr(sys.modules[__name__], "datetime", FarWallClockDatetime)
+
+        assert helper() == expected
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +327,7 @@ class TestEndToEndInsightFlow:
             dedup_key="birthday:entity-123:2026",
             message="Alice's birthday is in 3 days",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
 
@@ -362,6 +387,7 @@ class TestEndToEndInsightFlow:
             dedup_key="health:bp:user-1:2026",
             message="No BP logged in 12 days",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
@@ -388,8 +414,7 @@ class TestEndToEndInsightFlow:
 
         # Insert an already-expired candidate manually. "Already expired" is a
         # claim about the instant the cycle is evaluated at, so the expiry is
-        # anchored to that instant rather than to the wall clock — ``_past(2)``
-        # is two days before *today*, which is still ahead of ``_PINNED_NOW``.
+        # anchored explicitly to that instant.
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -447,6 +472,7 @@ class TestCrossButlerDeduplication:
             dedup_key="birthday:entity-123:2026",
             message="Alice's birthday is soon (relationship)",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
         assert r1["status"] == "accepted"
 
@@ -459,6 +485,7 @@ class TestCrossButlerDeduplication:
             dedup_key="birthday:entity-123:2026",
             message="Alice's birthday is soon (calendar)",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
         assert r2["status"] == "accepted"
 
@@ -607,7 +634,7 @@ class TestCooldownEnforcement:
             _future(),
         )
 
-        eligible = await filter_by_cooldown(insight_pool, [cid])
+        eligible = await filter_by_cooldown(insight_pool, [cid], now=_PINNED_NOW)
         assert cid not in eligible
 
         # Status is filtered
@@ -642,7 +669,7 @@ class TestCooldownEnforcement:
             _future(),
         )
 
-        eligible = await filter_by_cooldown(insight_pool, [cid])
+        eligible = await filter_by_cooldown(insight_pool, [cid], now=_PINNED_NOW)
         assert cid in eligible
 
     async def test_redelivery_across_expired_cooldown_upserts_not_crashes(self, insight_pool):
@@ -1032,6 +1059,7 @@ class TestDigestFormatting:
                 dedup_key=dedup,
                 message=msg,
                 expires_at=_future(),
+                now=_PINNED_NOW,
             )
             assert r["status"] == "accepted"
 
@@ -1095,6 +1123,7 @@ class TestDigestFormatting:
                 message=msg,
                 expires_at=_future(),
                 channel=channel,
+                now=_PINNED_NOW,
             )
             assert r["status"] == "accepted"
 
@@ -1147,6 +1176,7 @@ class TestDigestFormatting:
                 message=msg,
                 expires_at=_future(),
                 channel=channel,
+                now=_PINNED_NOW,
             )
             assert r["status"] == "accepted"
 
@@ -1510,6 +1540,7 @@ class TestBudgetEnforcement:
                 dedup_key=f"health:metric-{i}:user:2026",
                 message=f"Insight {i}",
                 expires_at=_future(),
+                now=_PINNED_NOW,
             )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
@@ -1548,6 +1579,7 @@ class TestBudgetEnforcement:
             dedup_key="health:low:user:2026",
             message="Low priority insight",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
         # High priority
         await propose_insight_candidate(
@@ -1558,6 +1590,7 @@ class TestBudgetEnforcement:
             dedup_key="birthday:alice:2026",
             message="Critical birthday insight",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
@@ -2357,10 +2390,11 @@ class TestProposeInsightCandidateUnit:
             category="spending",
             dedup_key="finance:spending:overage:2026-w13",
             message="Over budget this week",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
+            expires_at=_future(),
             cooldown_days=3,
             channel="telegram",
             metadata={"amount_over": 150},
+            now=_PINNED_NOW,
         )
         assert result["status"] == "accepted"
         pool.execute.assert_called_once()
@@ -2377,7 +2411,8 @@ class TestProposeInsightCandidateUnit:
             category="birthday",
             dedup_key="birthday:entity-123:2026",
             message="Alice's birthday",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
+            expires_at=_future(),
+            now=_PINNED_NOW,
         )
         assert r2["status"] == "accepted"
 
@@ -2407,6 +2442,7 @@ class TestProposeInsightCandidatePersistence:
             message="Weight is overdue.",
             expires_at=_future(),
             metadata=metadata,
+            now=_PINNED_NOW,
         )
 
         assert result["status"] == "accepted"
@@ -2562,6 +2598,7 @@ class TestInsightDeliveryPathsSpec:
             dedup_key="health:delivery-fail:user:2026",
             message="Blood pressure reminder",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
 
         async def _failing_notify(message, metadata):
@@ -2699,6 +2736,7 @@ class TestInsightDeliveryPathsSpec:
             dedup_key="birthday:spec-path:2026",
             message="Alice's birthday is in 3 days",
             expires_at=_future(),
+            now=_PINNED_NOW,
         )
         assert propose_result["status"] == "accepted", (
             "candidate must be accepted before it can enter the delivery queue"
