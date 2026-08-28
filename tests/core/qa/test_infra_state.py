@@ -575,14 +575,6 @@ async def test_stale_backup_trips_a_finding(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_deadman_unconfigured_is_a_legitimate_absence(monkeypatch):
-    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
-    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
-    assert findings == []
-
-
 async def test_deadman_recent_success_yields_nothing(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")

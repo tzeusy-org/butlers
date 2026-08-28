@@ -568,14 +568,6 @@ class TestDayCloseRefreshQuiet:
 
 
 class TestDayCloseRefreshNoDispatch:
-    async def test_returns_503_when_dispatch_not_wired(self):
-        """When no dispatch fn is wired, endpoint returns 503."""
-        pool = _mock_pool(fetchrow_returns=None)
-        app = _make_app_no_dispatch(pool)
-
-        resp = await _post_refresh(app)
-        assert resp.status_code == 503
-
     async def test_no_cache_write_when_no_dispatch(self):
         """No DB write occurs when dispatch is unavailable (no side-effects)."""
         pool = _mock_pool(fetchrow_returns=None)

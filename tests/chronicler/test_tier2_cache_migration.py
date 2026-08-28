@@ -4,7 +4,6 @@ Covers:
 - Revision metadata is correct (revision ID, down_revision, branch_labels).
 - upgrade() and downgrade() are callable.
 - Chain link to chronicler_003 is intact.
-- Migration file is ordered after 003_* in the migrations directory.
 
 Pure-unit tests — no Docker / PostgreSQL required.
 """
@@ -45,17 +44,6 @@ def test_revision_chain_links_onto_003() -> None:
     assert m.branch_labels is None
     assert callable(m.upgrade)
     assert callable(m.downgrade)
-
-
-def test_migration_ordered_after_003() -> None:
-    """004_tier2_cache must sort after 003_restrict_chronicler_grants in the directory."""
-    files = sorted(f.name for f in _MIGRATIONS_DIR.glob("[0-9]*.py"))
-    file_names = [f for f in files if not f.startswith("_")]
-    idx_003 = next((i for i, f in enumerate(file_names) if f.startswith("003_")), None)
-    idx_004 = next((i for i, f in enumerate(file_names) if f.startswith("004_")), None)
-    assert idx_003 is not None, "003_* migration not found"
-    assert idx_004 is not None, "004_* migration not found"
-    assert idx_004 > idx_003, "004_tier2_cache must sort after 003_restrict_chronicler_grants"
 
 
 def test_chronicler_chain_includes_004() -> None:

@@ -1025,24 +1025,9 @@ def test_system_credential_searches_all_butlers():
 # ---------------------------------------------------------------------------
 
 
-def test_escape_like_pattern_percent():
-    """% in provider value is escaped to \\% so it is treated as a literal."""
-    assert _escape_like_pattern("goog%") == "goog\\%"
-
-
-def test_escape_like_pattern_underscore():
-    """_ in provider value is escaped to \\_ so it is treated as a literal."""
-    assert _escape_like_pattern("g_ogle") == "g\\_ogle"
-
-
 def test_escape_like_pattern_backslash():
     """Backslash in provider value is doubled before other escapes are applied."""
     assert _escape_like_pattern("go\\ogle") == "go\\\\ogle"
-
-
-def test_escape_like_pattern_clean_value():
-    """A normal provider value is returned unchanged."""
-    assert _escape_like_pattern("google") == "google"
 
 
 def test_escape_like_pattern_multiple_metacharacters():

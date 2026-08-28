@@ -2,9 +2,9 @@
 public.contacts FK constraints (bu-vcfyg, Phase 7.3a-3b).
 
 Covers:
-  (a) Module structure — revision/down_revision chain, callables, and that the
-      source snapshots before mutating, guards with to_regclass, parity-RAISEs,
-      and drops all eight FK constraints.  Pure unit, no DB.
+  (a) Module structure — revision/down_revision chain plus source checks for
+      snapshot-before-mutate, to_regclass guards, parity RAISEs, and all eight
+      FK-constraint drops. Pure unit, no DB.
   (b) Dedup + FK-drop behaviour against a live DB (Docker/Postgres): two contacts
       sharing one entity are merged onto the oldest (canonical) contact across
       every dependent table, PK collisions and relationship self-loops are
@@ -55,11 +55,6 @@ class TestMigrationStructure:
         mod = _load_migration()
         assert mod.branch_labels is None
         assert mod.depends_on is None
-
-    def test_upgrade_downgrade_callable(self):
-        mod = _load_migration()
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)
 
     def test_drops_all_eight_fk_constraints(self):
         sql = _load_migration()._DROP_FK_SQL

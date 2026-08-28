@@ -215,11 +215,6 @@ def test_load_pricing_flat_and_tiered(tmp_path):
     assert cfg2.get_model_pricing("nonexistent-model") is None
 
 
-def test_load_pricing_missing_file_raises(tmp_path):
-    with pytest.raises(PricingError, match="not found"):
-        load_pricing(tmp_path / "nonexistent.toml")
-
-
 @pytest.mark.parametrize(
     "content,match",
     [

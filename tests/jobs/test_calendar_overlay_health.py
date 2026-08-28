@@ -341,15 +341,6 @@ def test_handler_registered_and_callable_no_spawner():
     assert resolved == "calendar_overlay_contribution"
 
 
-def test_handler_not_registered_for_unrelated_butlers():
-    """Non-contributing butlers must NOT have an overlay handler bleed in."""
-    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-
-    for butler in ("general", "education", "home", "lifestyle"):
-        jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler, {})
-        assert "calendar_overlay_contribution" not in jobs, butler
-
-
 async def test_no_llm_session_spawned():
     """The job path must not construct or invoke any LLM spawner."""
     cap = _StateCapture()

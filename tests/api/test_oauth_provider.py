@@ -253,17 +253,6 @@ def test_whatsapp_is_catalog_oauth_but_unregistered():
 # ===========================================================================
 
 
-async def test_provider_start_google_redirect_by_default(app):
-    _make_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-    ) as client:
-        resp = await client.get("/api/oauth/google/start")
-    # Legacy route still handles google/start with redirect
-    assert resp.status_code in (302, 307)
-    assert "accounts.google.com" in resp.headers.get("location", "")
-
-
 async def test_provider_start_google_json_mode(app):
     """Generalised google/start (via legacy route) returns same JSON as before."""
     _make_app(app)

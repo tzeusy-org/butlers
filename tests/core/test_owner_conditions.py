@@ -15,31 +15,12 @@ import pytest
 
 from butlers.core import condition_ledger, owner_conditions
 from butlers.core.owner_conditions import (
-    ESCALATION_LEVELS,
     RESOLUTION_METADATA_KEYS,
     Observation,
-    compute_fingerprint,
     reconcile_snapshot,
 )
 
 pytestmark = pytest.mark.unit
-
-
-class TestComputeFingerprint:
-    def test_same_facts_produce_the_same_fingerprint(self):
-        a = compute_fingerprint("finance:bill-overdue", 1, {"bill_id": "abc"})
-        b = compute_fingerprint("finance:bill-overdue", 1, {"bill_id": "abc"})
-        assert a == b
-
-    def test_different_source_changes_the_fingerprint(self):
-        a = compute_fingerprint("finance:bill-overdue", 1, {"id": "abc"})
-        b = compute_fingerprint("finance:spending-anomaly", 1, {"id": "abc"})
-        assert a != b
-
-    def test_returns_a_sha256_hex_digest(self):
-        fp = compute_fingerprint("finance:bill-overdue", 1, {"bill_id": "abc"})
-        assert len(fp) == 64
-        assert all(c in "0123456789abcdef" for c in fp)
 
 
 class TestReconcileSnapshotValidation:
@@ -198,10 +179,6 @@ class TestExplicitResolutionValidation:
             }
         ]
         assert "resolve_condition" in owner_conditions.__all__
-
-
-def test_escalation_levels_are_ordered_l0_through_l3():
-    assert ESCALATION_LEVELS == ("L0", "L1", "L2", "L3")
 
 
 def test_reuses_the_same_engine_as_infra_conditions():

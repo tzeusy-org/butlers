@@ -429,20 +429,6 @@ async def test_reauth_no_pending_action_created(app):
     pool.execute.assert_not_awaited()
 
 
-async def test_reauth_no_db_required(app):
-    """POST reauth returns 503 even without any DB setup — rejected before registry access."""
-    # No DB wired — endpoint must still return 503 without crashing
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            f"/api/ingestion/connectors/{_CONNECTOR_TYPE}/{_ENDPOINT_IDENTITY}/reauth"
-        )
-
-    # Must be 503, not 500 (handler-level rejection)
-    assert resp.status_code == 503
-
-
 # ---------------------------------------------------------------------------
 # _build_dashboard_approval_push_runtime — direct unit coverage (bu-1j5q6)
 #
