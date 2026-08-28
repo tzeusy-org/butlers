@@ -20,7 +20,7 @@ Test matrix
   (distinct message wording).
 - Non-Google providers (GitHub PAT here) still get a 'connectivity'
   capability-qualified secret_probe_log row alongside the aggregate row.
-- `_capability_for_scopes` classifies catalogue rows into calendar/gmail/
+- `_catalogue_row_capability_or_none` classifies catalogue rows into calendar/gmail/
   drive/health for Google, None for scope-less Google rows, 'connectivity'
   for every other provider.
 - `_fetch_capability_probe_logs_bulk` groups rows by base key and splits the
@@ -45,7 +45,8 @@ from fastapi.testclient import TestClient
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
-    _capability_for_scopes,
+    _capability_for_scope,
+    _catalogue_row_capability_or_none,
     _fetch_capability_probe_logs_bulk,
     _get_db_manager,
 )
@@ -528,14 +529,31 @@ def test_github_pat_probe_writes_connectivity_capability_row(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _capability_for_scopes classification
+# _catalogue_row_capability_or_none classification
 # ---------------------------------------------------------------------------
 
 
-class TestCapabilityForScopes:
+class TestCatalogueRowCapabilityOrNone:
+    @pytest.mark.parametrize(
+        ("required_scopes", "singular_scope"),
+        [
+            ([], "https://www.googleapis.com/auth/unmapped.catalogue.scope"),
+            (
+                ["https://www.googleapis.com/auth/unmapped.catalogue.scope"],
+                "https://www.googleapis.com/auth/unmapped.catalogue.scope",
+            ),
+        ],
+    )
+    def test_catalogue_row_capability_keeps_empty_and_unknown_google_scopes_optional(
+        self, required_scopes: list[str], singular_scope: str
+    ) -> None:
+        """Catalogue rows preserve missing live capability evidence as None."""
+        assert _catalogue_row_capability_or_none("google", required_scopes) is None
+        assert _capability_for_scope("google", singular_scope) == "other"
+
     def test_google_health_scope_maps_to_health(self):
         assert (
-            _capability_for_scopes(
+            _catalogue_row_capability_or_none(
                 "google", ["https://www.googleapis.com/auth/googlehealth.sleep.readonly"]
             )
             == "health"
@@ -543,27 +561,31 @@ class TestCapabilityForScopes:
 
     def test_google_calendar_scope_maps_to_calendar(self):
         assert (
-            _capability_for_scopes("google", ["https://www.googleapis.com/auth/calendar"])
+            _catalogue_row_capability_or_none(
+                "google", ["https://www.googleapis.com/auth/calendar"]
+            )
             == "calendar"
         )
 
     def test_google_gmail_scope_maps_to_gmail(self):
         assert (
-            _capability_for_scopes("google", ["https://www.googleapis.com/auth/gmail.modify"])
+            _catalogue_row_capability_or_none(
+                "google", ["https://www.googleapis.com/auth/gmail.modify"]
+            )
             == "gmail"
         )
 
     def test_google_drive_scope_maps_to_drive(self):
-        assert _capability_for_scopes("google", ["https://www.googleapis.com/auth/drive"]) == (
-            "drive"
-        )
+        assert _catalogue_row_capability_or_none(
+            "google", ["https://www.googleapis.com/auth/drive"]
+        ) == ("drive")
 
     def test_google_no_scopes_maps_to_none(self):
-        assert _capability_for_scopes("google", []) is None
+        assert _catalogue_row_capability_or_none("google", []) is None
 
     def test_non_google_provider_maps_to_connectivity(self):
-        assert _capability_for_scopes("telegram", []) == "connectivity"
-        assert _capability_for_scopes("home_assistant", []) == "connectivity"
+        assert _catalogue_row_capability_or_none("telegram", []) == "connectivity"
+        assert _catalogue_row_capability_or_none("home_assistant", []) == "connectivity"
 
 
 # ---------------------------------------------------------------------------

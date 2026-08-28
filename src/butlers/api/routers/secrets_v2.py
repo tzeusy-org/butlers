@@ -305,6 +305,9 @@ def _capability_for_scope(provider: str, scope: str) -> str:
     """Map one raw OAuth scope onto the fixed capability vocabulary.
 
     Google scopes are classified by marker; an unrecognised one is 'other'.
+    Unlike ``_catalogue_row_capability_or_none``, which accepts a catalogue
+    row's scope list and returns None for no Google match, this singular helper
+    maps one scope and uses 'other' as its Google fallback.
     Every other provider has a single generic live check, so all of its scopes
     map to 'connectivity' — the same capability name probe_user_credential
     records for non-Google providers.
@@ -3697,7 +3700,7 @@ class BreakEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _capability_for_scopes(provider: str, required_scopes: list[str]) -> str | None:
+def _catalogue_row_capability_or_none(provider: str, required_scopes: list[str]) -> str | None:
     """Return the capability family a catalogue row's scopes map to.
 
     Google rows are classified by scanning ``required_scopes`` for a known
@@ -3705,6 +3708,9 @@ def _capability_for_scopes(provider: str, required_scopes: list[str]) -> str | N
     scope (e.g. the ecosystem-wide 'Google account connection' row, which has
     no required_scopes at all) returns None — there is no live per-capability
     signal for it, so the frontend keeps the static severity pip.
+    Unlike ``_capability_for_scope``, which maps one scope and falls back to
+    'other', this catalogue-row helper accepts a scope list and preserves no
+    Google match as None.
 
     Every non-Google provider's existing single live-verify call becomes one
     capability named 'connectivity' (bu-4v5es) — every feature row for that
@@ -3836,7 +3842,7 @@ async def get_breaks_catalogue(
             feature=row["feature"],
             severity=row["severity"],
             required_scopes=scopes,
-            capability=_capability_for_scopes(row_provider, scopes),
+            capability=_catalogue_row_capability_or_none(row_provider, scopes),
         )
         entries.append(entry)
         if provider is None:
