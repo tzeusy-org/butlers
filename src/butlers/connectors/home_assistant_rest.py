@@ -575,11 +575,17 @@ class HAMeasurementHistoryRecovery:
             self._poll_interval_s,
         )
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
+        """Cancel and await the recovery poll task before releasing resources."""
         self._shutdown = True
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-        self._task = None
+        task = self._task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if self._task is task:
+            self._task = None
 
     async def _fetch_weight_entities(self) -> list[EntityStateSnapshot]:
         raw_states = await self._get_json(f"{self._base_url}/api/states")
@@ -607,15 +613,16 @@ class HAMeasurementHistoryRecovery:
         start: datetime,
         end: datetime,
     ) -> list[dict[str, Any]]:
-        # Deliberately omit ``significant_changes_only``: repeated equal-valued
-        # daily measurements must remain visible. ``last_updated`` supplies the
-        # measurement identity when ``last_changed`` did not move.
+        # HA defaults to significant changes and includes a pre-window seed
+        # state. Explicitly request every recorder update while excluding that
+        # seed so equal-valued daily readings are visible but not backdated.
         payload = await self._get_json(
             f"{self._base_url}/api/history/period/{start.isoformat()}",
             params={
                 "filter_entity_id": entity_id,
                 "end_time": end.isoformat(),
-                "no_attributes": "",
+                "significant_changes_only": "0",
+                "skip_initial_state": "1",
             },
         )
         if not isinstance(payload, list):
@@ -648,12 +655,15 @@ class HAMeasurementHistoryRecovery:
         now = self._now().astimezone(UTC)
         emitted = 0
         success = True
-        cursor_timestamps: list[datetime] = []
+        current_high_waters: dict[str, datetime] = {}
 
         try:
             entities = await self._fetch_weight_entities()
         except Exception as exc:
-            logger.warning("HA measurement history discovery failed: %s", exc)
+            logger.warning(
+                "HA measurement history discovery failed exception_class=%s",
+                type(exc).__name__,
+            )
             self._metrics.record_poll("error")
             return HAMeasurementHistoryResult(success=False, emitted=0)
 
@@ -669,18 +679,26 @@ class HAMeasurementHistoryRecovery:
                     cursor_identity,
                 )
             except Exception as exc:
-                logger.warning("HA measurement history cursor load failed: %s", exc)
+                logger.warning(
+                    "HA measurement history cursor load failed entity_id=%s exception_class=%s",
+                    entity.entity_id,
+                    type(exc).__name__,
+                )
                 success = False
                 continue
 
             high_water = _decode_history_cursor(raw_cursor)
             if high_water is not None:
-                cursor_timestamps.append(high_water)
+                current_high_waters[entity.entity_id] = high_water
             start = high_water or now - self._lookback
             try:
                 rows = await self._fetch_entity_history(entity.entity_id, start, now)
             except Exception as exc:
-                logger.warning("HA measurement history fetch failed: %s", exc)
+                logger.warning(
+                    "HA measurement history fetch failed entity_id=%s exception_class=%s",
+                    entity.entity_id,
+                    type(exc).__name__,
+                )
                 success = False
                 continue
 
@@ -704,26 +722,39 @@ class HAMeasurementHistoryRecovery:
                 current = EntityStateSnapshot(
                     entity_id=entity.entity_id,
                     state=str(row.get("state", "")),
-                    attributes=entity.attributes,
+                    attributes=(
+                        row["attributes"] if isinstance(row.get("attributes"), dict) else {}
+                    ),
                     last_changed=str(row.get("last_changed") or measurement_iso),
                     last_updated=measurement_iso,
                 )
                 event = build_rest_state_changed_event(previous, current, measurement_iso)
-                try:
-                    submitted = await self._on_measurement(event)
-                except Exception as exc:
-                    logger.warning(
-                        "HA measurement history submission callback failed "
-                        "entity_id=%s measurement_at=%s exception_class=%s",
-                        entity.entity_id,
-                        measurement_iso,
-                        type(exc).__name__,
-                    )
-                    success = False
-                    break
-                if not submitted:
-                    success = False
-                    break
+                classification = self._wellness_classifier.classify_detailed(
+                    entity_id=entity.entity_id,
+                    device_class=current.attributes.get("device_class"),
+                    unit_of_measurement=current.attributes.get("unit_of_measurement"),
+                    attributes=current.attributes,
+                    state=current.state,
+                )
+                eligible = (
+                    classification.outcome == "promoted" and classification.metric == "weight"
+                )
+                if eligible:
+                    try:
+                        submitted = await self._on_measurement(event)
+                    except Exception as exc:
+                        logger.warning(
+                            "HA measurement history submission callback failed "
+                            "entity_id=%s measurement_at=%s exception_class=%s",
+                            entity.entity_id,
+                            measurement_iso,
+                            type(exc).__name__,
+                        )
+                        success = False
+                        break
+                    if not submitted:
+                        success = False
+                        break
 
                 try:
                     await save_cursor(
@@ -734,20 +765,27 @@ class HAMeasurementHistoryRecovery:
                         parent_endpoint_identity=self._endpoint_identity,
                     )
                 except Exception as exc:
-                    logger.warning("HA measurement history cursor save failed: %s", exc)
+                    logger.warning(
+                        "HA measurement history cursor save failed "
+                        "entity_id=%s measurement_at=%s exception_class=%s",
+                        entity.entity_id,
+                        measurement_iso,
+                        type(exc).__name__,
+                    )
                     success = False
                     break
 
                 high_water = measurement_at
                 previous = current
-                cursor_timestamps.append(measurement_at)
-                emitted += 1
+                current_high_waters[entity.entity_id] = measurement_at
+                if eligible:
+                    emitted += 1
 
         self._metrics.record_poll("success" if success else "error")
         self._metrics.record_emitted(emitted)
-        if cursor_timestamps:
+        if current_high_waters:
             self._metrics.set_cursor_age(
-                max((now - timestamp).total_seconds() for timestamp in cursor_timestamps)
+                max((now - timestamp).total_seconds() for timestamp in current_high_waters.values())
             )
         logger.info(
             "HA measurement history recovery completed success=%s entities=%d emitted=%d",

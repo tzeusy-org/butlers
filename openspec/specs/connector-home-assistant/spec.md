@@ -225,6 +225,13 @@ The connector exports HA-specific metrics in addition to the standard `Connector
 - **WHEN** the connector processes events through the pipeline
 - **THEN** it SHALL export: `connector_ha_event_latency_seconds` (Histogram — time from `time_fired` to Switchboard submission), `connector_ha_filter_pipeline_seconds` (Histogram — time spent in the three-layer filter pipeline)
 
+#### Scenario: Measurement-history recovery metrics
+- **WHEN** recorder-backed measurement-history recovery runs
+- **THEN** it SHALL export `connector_ha_measurement_history_polls_total{endpoint_identity,status}` with bounded `status = success | error`
+- **AND** SHALL export `connector_ha_measurement_history_emitted_total{endpoint_identity}` for emitted wellness measurements
+- **AND** SHALL export `connector_ha_measurement_history_cursor_age_seconds{endpoint_identity}` for the oldest current per-entity high-water mark
+- **AND** SHALL NOT label these metrics with entity IDs, measurement values, units, payload data, or exception text
+
 ### Requirement: Environment Variables
 Configuration via environment variables extending the base connector variables.
 

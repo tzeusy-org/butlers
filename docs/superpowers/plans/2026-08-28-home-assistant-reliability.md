@@ -121,7 +121,7 @@ The subagent must not modify the WebSocket readiness/fallback lifecycle owned by
 
 - [ ] Rebase or cherry-pick the Sol High policy/history commit(s) onto the transport branch and resolve only the documented dispatcher overlap.
 - [ ] Review the combined diff for scope, contract, and secret-handling hygiene.
-- [ ] Run: `uv run pytest tests/connectors/test_home_assistant_transport_contract.py tests/connectors/test_home_assistant_rest_fallback.py tests/connectors/test_home_assistant_connector.py tests/connectors/test_home_assistant_global_skip.py tests/connectors/test_home_assistant_reorder_buffer.py -q --tb=short`
+- [ ] Run: `uv run pytest tests/connectors/test_home_assistant_transport_contract.py tests/connectors/test_home_assistant_rest_fallback.py tests/connectors/test_home_assistant_connector.py tests/connectors/test_home_assistant_global_skip.py tests/connectors/test_home_assistant_measurement_history.py tests/connectors/test_home_assistant_reorder_buffer.py -q --tb=short`
 - [ ] Run: `uv run ruff check src/butlers/connectors/home_assistant.py src/butlers/connectors/home_assistant_rest.py src/butlers/connectors/home_assistant_wellness.py roster/health/tools/wellness_ingest.py tests/connectors/`
 - [ ] Run: `uv run ruff format --check src/butlers/connectors/home_assistant.py src/butlers/connectors/home_assistant_rest.py src/butlers/connectors/home_assistant_wellness.py roster/health/tools/wellness_ingest.py tests/connectors/`
 - [ ] Verify no live runtime, credential, or `.env.dev` files changed.

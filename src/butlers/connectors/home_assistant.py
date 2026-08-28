@@ -1732,6 +1732,7 @@ async def emit_with_wellness_promotion(
     promotion_enabled: bool,
     emit_home_assistant: bool = True,
     classification_result: ClassifyResult | None = None,
+    content_blind_errors: bool = False,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
@@ -1739,8 +1740,10 @@ async def emit_with_wellness_promotion(
     The ``home_assistant`` emission normally goes first. A caller that has
     already policy-skipped that ordinary channel may set
     ``emit_home_assistant=False`` while retaining deterministic wellness
-    promotion. Both emissions reuse the same ``external_event_id`` — the
-    Switchboard's channel-inclusive dedup key keeps them independent on replay.
+    promotion. History recovery additionally sets ``content_blind_errors`` so
+    provider exception text and tracebacks cannot escape through connector
+    logs. Both emissions reuse the same ``external_event_id`` — the Switchboard's
+    channel-inclusive dedup key keeps them independent on replay.
 
     Returns:
         ``True`` if every attempted submission succeeded (caller may advance the
@@ -1756,12 +1759,21 @@ async def emit_with_wellness_promotion(
             await mcp_client.call_tool("ingest", ha_envelope)
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
-        except Exception:
-            logger.warning(
-                "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
-                entity_id,
-                exc_info=True,
-            )
+        except Exception as exc:
+            if content_blind_errors:
+                logger.warning(
+                    "ha-connector: failed to submit home_assistant envelope "
+                    "for entity_id=%s measurement_at=%s exception_class=%s",
+                    entity_id,
+                    time_fired,
+                    type(exc).__name__,
+                )
+            else:
+                logger.warning(
+                    "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
+                    entity_id,
+                    exc_info=True,
+                )
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "error")
             # Primary failed: do not attempt the secondary channel, do not advance.
@@ -1803,13 +1815,22 @@ async def emit_with_wellness_promotion(
         await mcp_client.call_tool("ingest", wellness_envelope)
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
-    except Exception:
-        logger.warning(
-            "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
-            entity_id,
-            result.metric,
-            exc_info=True,
-        )
+    except Exception as exc:
+        if content_blind_errors:
+            logger.warning(
+                "ha-connector: failed to submit wellness envelope "
+                "for entity_id=%s measurement_at=%s exception_class=%s",
+                entity_id,
+                time_fired,
+                type(exc).__name__,
+            )
+        else:
+            logger.warning(
+                "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
+                entity_id,
+                result.metric,
+                exc_info=True,
+            )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
         # Secondary failed transiently: leave the checkpoint un-advanced so the
@@ -1859,6 +1880,7 @@ async def _emit_history_wellness_measurement(
         metrics=metrics,
         promotion_enabled=True,
         emit_home_assistant=False,
+        content_blind_errors=True,
     )
 
 
@@ -2128,7 +2150,7 @@ async def _main() -> None:
     logger.info("HAConnector: shutting down")
     # Stop ingress first so no new events arrive while the buffer drains.
     if measurement_history_recovery is not None:
-        measurement_history_recovery.stop()
+        await measurement_history_recovery.stop()
     rest_poller.stop()
     ws_task.cancel()
     try:
