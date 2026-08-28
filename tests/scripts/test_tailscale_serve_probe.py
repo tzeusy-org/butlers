@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import ssl
 import subprocess
 import sys
@@ -310,6 +311,7 @@ def _launcher_harness(
     probe_hangs: bool = False,
     serve_status_mode: str = "valid",
     tailscale_dns_name: object = "device.example.ts.net",
+    env_file_overrides: dict[str, str] | None = None,
     extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run compose.sh against fake commands; never contacts Docker or Tailscale."""
@@ -336,9 +338,11 @@ def _launcher_harness(
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("test-only input\n", encoding="utf-8")
-    (repo / ".env.dev").write_text(
-        "POSTGRES_HOST=127.0.0.1\nPOSTGRES_PASSWORD=test-only\n", encoding="utf-8"
+    env_lines = ["POSTGRES_HOST=127.0.0.1", "POSTGRES_PASSWORD=test-only"]
+    env_lines.extend(
+        f"{name}={shlex.quote(value)}" for name, value in (env_file_overrides or {}).items()
     )
+    (repo / ".env.dev").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
 
     calls = tmp_path / "calls.log"
     fake_bin = tmp_path / "bin"
@@ -489,6 +493,23 @@ def test_launcher_rejects_whitespace_only_probe_command_before_mutation(tmp_path
     completed, calls = _launcher_harness(
         tmp_path,
         extra_environment={"TAILSCALE_SERVE_PROBE_COMMAND": " \t  "},
+    )
+
+    assert completed.returncode != 0
+    assert "whitespace-only" in completed.stderr
+    assert "no Serve or Compose lifecycle mutation was attempted" in completed.stderr
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+def test_launcher_rejects_env_file_whitespace_only_probe_command_before_mutation(
+    tmp_path: Path,
+) -> None:
+    """The sourced environment must not bypass the pre-lifecycle command guard."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides={"TAILSCALE_SERVE_PROBE_COMMAND": " \t  "},
     )
 
     assert completed.returncode != 0

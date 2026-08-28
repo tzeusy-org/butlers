@@ -76,14 +76,6 @@ for arg in "$@"; do
   esac
 done
 
-# An explicit executor must survive argv parsing. Treat whitespace-only input
-# as invalid before any Serve or Compose lifecycle work, rather than letting
-# the later argv splitter fail after the stack has started.
-if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
-  echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
-  exit 1
-fi
-
 # Production always includes the protected executor. Dev must opt in with the
 # explicit flag rather than enabling a privileged service merely because a
 # secret happens to be configured in its environment file.
@@ -148,6 +140,14 @@ set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
+
+# ``.env`` can override a process-supplied executor. Validate after sourcing
+# and before any Serve or Compose lifecycle work, rather than letting the
+# later argv splitter fail after the stack has started.
+if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
+  echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
+  exit 1
+fi
 
 # Restore-drill executor password-file preflight: when the protected fragment
 # is selected, Compose interpolates this secret even for lifecycle commands, so
