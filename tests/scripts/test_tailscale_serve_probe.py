@@ -311,7 +311,8 @@ def _launcher_harness(
     probe_hangs: bool = False,
     serve_status_mode: str = "valid",
     tailscale_dns_name: object = "device.example.ts.net",
-    env_file_overrides: dict[str, str] | None = None,
+    env_file_overrides: dict[str, str | None] | None = None,
+    compose_args: tuple[str, ...] = (),
     extra_environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run compose.sh against fake commands; never contacts Docker or Tailscale."""
@@ -340,7 +341,8 @@ def _launcher_harness(
         target.write_text("test-only input\n", encoding="utf-8")
     env_lines = ["POSTGRES_HOST=127.0.0.1", "POSTGRES_PASSWORD=test-only"]
     env_lines.extend(
-        f"{name}={shlex.quote(value)}" for name, value in (env_file_overrides or {}).items()
+        f"unset {name}" if value is None else f"{name}={shlex.quote(value)}"
+        for name, value in (env_file_overrides or {}).items()
     )
     (repo / ".env.dev").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
 
@@ -439,7 +441,7 @@ def _launcher_harness(
     if extra_environment:
         environment.update(extra_environment)
     completed = subprocess.run(
-        ["bash", str(scripts / "compose.sh"), "--skip-oauth-check"],
+        ["bash", str(scripts / "compose.sh"), "--skip-oauth-check", *compose_args],
         cwd=repo,
         env=environment,
         text=True,
@@ -515,6 +517,24 @@ def test_launcher_rejects_env_file_whitespace_only_probe_command_before_mutation
     assert completed.returncode != 0
     assert "whitespace-only" in completed.stderr
     assert "no Serve or Compose lifecycle mutation was attempted" in completed.stderr
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
+def test_launcher_defaults_unset_sourced_probe_command_before_restore_drill_preflight(
+    tmp_path: Path,
+) -> None:
+    """An env-file unset cannot trip nounset ahead of the password-file guard."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        env_file_overrides={"TAILSCALE_SERVE_PROBE_COMMAND": None},
+        compose_args=("--with-restore-drill",),
+    )
+
+    assert completed.returncode != 0
+    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in completed.stderr
+    assert "unbound variable" not in completed.stderr
     assert not any("compose" in call for call in calls)
     assert not any(call.startswith("probe ") for call in calls)
     assert not any(call.startswith("fake tailscale ") for call in calls)

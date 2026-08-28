@@ -144,6 +144,7 @@ set +a
 # ``.env`` can override a process-supplied executor. Validate after sourcing
 # and before any Serve or Compose lifecycle work, rather than letting the
 # later argv splitter fail after the stack has started.
+TAILSCALE_SERVE_PROBE_COMMAND="${TAILSCALE_SERVE_PROBE_COMMAND:-}"
 if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
   echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
   exit 1
