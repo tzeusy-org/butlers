@@ -1751,6 +1751,49 @@ async def emit_with_wellness_promotion(
     return True
 
 
+async def _emit_history_wellness_measurement(
+    *,
+    mcp_client: Any,
+    classifier: WellnessClassifier,
+    endpoint_identity: str,
+    event: dict[str, Any],
+    metrics: HAConnectorMetrics | None,
+) -> bool:
+    """Submit one recorder-history event through the wellness envelope path.
+
+    History recovery owns its per-entity cursor, so this seam deliberately
+    emits no ordinary ``home_assistant`` envelope and does not touch the shared
+    WebSocket/REST checkpoint. ``time_fired`` is the HA ``last_updated``
+    measurement timestamp supplied by the history reader.
+    """
+    event_data = event.get("data") or {}
+    new_state = event_data.get("new_state") or {}
+    attributes = new_state.get("attributes") or {}
+    entity_id = event_data.get("entity_id") or ""
+    time_fired = event.get("time_fired") or ""
+    if not entity_id or not time_fired:
+        logger.warning("HA measurement history event missing identity or timestamp")
+        return False
+
+    return await emit_with_wellness_promotion(
+        mcp_client=mcp_client,
+        ha_envelope=None,
+        classifier=classifier,
+        endpoint_identity=endpoint_identity,
+        entity_id=entity_id,
+        time_fired=time_fired,
+        ha_event=event,
+        device_class=attributes.get("device_class"),
+        unit_of_measurement=attributes.get("unit_of_measurement"),
+        attributes=attributes,
+        new_state=new_state,
+        friendly_name=attributes.get("friendly_name"),
+        metrics=metrics,
+        promotion_enabled=True,
+        emit_home_assistant=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Process entrypoint
 # ---------------------------------------------------------------------------
@@ -1917,6 +1960,31 @@ async def _main() -> None:
         global_ingestion_policy=global_ingestion_policy,
     )
 
+    # Recorder-backed measurement catch-up is independent of transport
+    # fallback. It emits only deterministic wellness envelopes and owns a
+    # durable per-entity cursor, leaving the shared WS/REST checkpoint intact.
+    measurement_history_recovery = None
+    if db_pool is not None and config.wellness_promotion_enabled:
+        from butlers.connectors.home_assistant_rest import HAMeasurementHistoryRecovery
+
+        async def _on_history_measurement(event: dict[str, Any]) -> bool:
+            return await _emit_history_wellness_measurement(
+                mcp_client=connector._mcp_client,
+                classifier=wellness_classifier,
+                endpoint_identity=endpoint_identity,
+                event=event,
+                metrics=connector._ha_metrics,
+            )
+
+        measurement_history_recovery = HAMeasurementHistoryRecovery(
+            base_url=ha_base_url,
+            access_token=ha_access_token,
+            endpoint_identity=endpoint_identity,
+            db_pool=db_pool,
+            on_measurement=_on_history_measurement,
+            wellness_classifier=wellness_classifier,
+        )
+
     # Reorder buffer: HA can deliver events slightly out of time_fired order
     # during internal batching. Buffer briefly, submit in time_fired order, and
     # bound the buffer at HA_EVENT_QUEUE_MAX (spec "Event ordering"). Both the WS
@@ -1983,12 +2051,16 @@ async def _main() -> None:
         logger.warning("HAConnector: Switchboard readiness probe timed out; proceeding anyway")
 
     # Run the WS client; stop when a signal arrives
+    if measurement_history_recovery is not None:
+        measurement_history_recovery.start()
     ws_task = asyncio.create_task(ws_client.run())
     flush_task = asyncio.create_task(_reorder_flush_loop())
     await stop_event.wait()
 
     logger.info("HAConnector: shutting down")
     # Stop ingress first so no new events arrive while the buffer drains.
+    if measurement_history_recovery is not None:
+        measurement_history_recovery.stop()
     rest_poller.stop()
     ws_task.cancel()
     try:
