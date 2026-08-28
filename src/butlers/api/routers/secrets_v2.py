@@ -179,12 +179,10 @@ Design decisions (system mutations)
 
 Spec anchor
 -----------
-openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-§Inventory endpoint shape
-§Per-credential read endpoints
-§Probe-log LRU integration
-§Audit history endpoint
-§System credential mutations
+openspec/specs/dashboard-api/spec.md
+§Secrets Inventory and Per-Credential Read Endpoints
+§Secrets Audit-History and Breaks-Catalogue Endpoints
+§Secrets Mutation Endpoints
 """
 
 from __future__ import annotations
@@ -3598,7 +3596,8 @@ async def get_audit_history(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Audit-History and Breaks-Catalogue Endpoints
     §Audit history endpoint
     """
     if scope not in _VALID_SCOPES:
@@ -3759,10 +3758,11 @@ async def get_breaks_catalogue(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Audit-History and Breaks-Catalogue Endpoints
     §Breaks-catalogue endpoint
-    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
-    §public.provider_feature_catalogue WhatBreaks Source-of-Truth Table
+    openspec/specs/core-credentials/spec.md
+    §`public.provider_feature_catalogue` WhatBreaks Source-of-Truth Table
     """
     try:
         pool = db.credential_shared_pool()
@@ -5100,8 +5100,9 @@ async def rotate_user_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §User credential mutations — ``rotated`` audit action
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §User credential mutations
     """
     if provider.casefold() == "spotify":
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5228,8 +5229,9 @@ async def disconnect_user_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §User credential mutations — ``disconnected`` audit action
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §User credential mutations
     """
     if provider.casefold() == "spotify":
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5432,10 +5434,12 @@ async def probe_user_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §User credential mutations — probe writes probe_log + audit
-    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
-    §Cache write on probe (same-transaction invariant)
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §User credential mutations
+    openspec/specs/core-credentials/spec.md
+    §Test-State Columns on Credential Tables
+    §Cache write on probe
     """
     if provider.casefold() == "spotify":
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5763,9 +5767,10 @@ async def reauthorize_user_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §User credential mutations — reauthorize returns redirect_url
-    openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §User credential mutations
+    openspec/specs/butler-secrets/spec.md
     §Cross-Page Reauth Bookkeeping
     """
     if provider.casefold() == "spotify":
@@ -6035,7 +6040,8 @@ async def set_system_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
     §System credential mutations
     """
     _reject_reserved_system_key(key)
@@ -6319,10 +6325,12 @@ async def probe_system_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §System credential mutations — probe writes probe_log + audit
-    openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
-    §Cache write on probe (same-transaction invariant)
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §System credential mutations
+    openspec/specs/core-credentials/spec.md
+    §Test-State Columns on Credential Tables
+    §Cache write on probe
     """
     _reject_reserved_system_key(key)
 
@@ -6585,8 +6593,9 @@ async def delete_system_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §System credential mutations — DELETE
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §System credential mutations
     """
     _reject_reserved_system_key(key)
 
@@ -6886,8 +6895,9 @@ async def rotate_cli_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §CLI runtime mutations — rotate returns value exactly once
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §CLI runtime mutations
     """
     shared_pool: Any = None
     try:
@@ -7061,8 +7071,9 @@ async def revoke_cli_credential(
 
     Spec anchor
     -----------
-    openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
-    §CLI runtime mutations — revoke writes 'disconnected' audit
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+    §CLI runtime mutations
     """
     shared_pool: Any = None
     try:
@@ -7208,7 +7219,11 @@ async def reauthorize_cli_credential(
 
     Spec anchor
     -----------
-    bu-ayp6v.10: Add backend reauthorize bridge for CLI runtime credentials.
+    openspec/specs/dashboard-api/spec.md
+    §Secrets Mutation Endpoints
+
+    Implementation provenance: bu-ayp6v.10 (backend reauthorize bridge for
+    CLI runtime credentials).
     """
     # CLI tokens are persisted under the `cli-auth/<provider>` key convention
     # (butlers.cli_auth.persistence), so the inventory — and therefore the
