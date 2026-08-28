@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -30,7 +31,8 @@ from butlers.modules.memory.consolidation_parser import (
     ConsolidationResult,
     parse_consolidation_output,
 )
-from conftest import docker_available
+
+docker_available = shutil.which("docker") is not None
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
@@ -303,6 +305,7 @@ async def _episode_lifecycle(pool, episode_id: uuid.UUID):
     )
 
 
+@pytest.mark.pg_clock
 async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episodes(
     provisioned_postgres_pool,
 ) -> None:
@@ -391,6 +394,7 @@ async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episo
         assert stats["episodes_processed"] == 2
 
 
+@pytest.mark.pg_clock
 async def test_private_memory_claim_path_does_not_retry_failed_episodes(
     provisioned_postgres_pool,
     monkeypatch,
@@ -459,6 +463,7 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
             await module.on_shutdown()
 
 
+@pytest.mark.pg_clock
 async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for_scheduler(
     provisioned_postgres_pool,
 ) -> None:
@@ -542,6 +547,7 @@ async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for
         assert scheduled_stats["episodes_processed"] == 1
 
 
+@pytest.mark.pg_clock
 async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
     provisioned_postgres_pool,
 ) -> None:
@@ -581,6 +587,7 @@ async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
         assert first["episodes_processed"] == 1
 
 
+@pytest.mark.pg_clock
 async def test_failure_transition_is_fenced_sanitized_and_retryable(
     provisioned_postgres_pool,
 ) -> None:
@@ -656,6 +663,7 @@ async def test_failure_transition_fails_closed_when_its_event_cannot_persist(
         assert row["leased_by"] == "claim-a"
 
 
+@pytest.mark.pg_clock
 async def test_expired_claim_cannot_persist_a_stale_failure(
     provisioned_postgres_pool,
 ) -> None:
@@ -883,6 +891,7 @@ async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmati
         assert row["leased_until"] == original_lease
 
 
+@pytest.mark.pg_clock
 async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
     provisioned_postgres_pool,
 ) -> None:

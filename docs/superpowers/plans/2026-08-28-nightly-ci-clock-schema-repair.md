@@ -33,7 +33,7 @@
   Expected: `restore-drill bootstrap installer is missing or untrusted`.
 - [ ] Import `create_migration_db` and `migration_db_name`.
 - [ ] Replace the call to `_create_db(postgres_container, _unique_db_name())` with `create_migration_db(postgres_container, migration_db_name())`.
-- [ ] Delete `_unique_db_name`, `_create_db`, and now-unused `uuid`, `create_engine`, and `text` imports. Do not alter `core_196`.
+- [ ] Delete `_unique_db_name`, `_create_db`, and the now-unused `uuid` import. Retain `create_engine` and `text`, which `_fetch_tables_by_schema` still uses. Do not alter `core_196`.
 - [ ] Re-run the exact focused command and expect PASS.
 
 ### Task 2: Make filesystem fixtures use the shifted process clock
@@ -91,6 +91,7 @@
 
 ### Task 4: Consolidated verification and publication
 
+- [ ] Remove the sole direct `from conftest import` consumer exposed by the merged fixture-topology cleanup: define `docker_available` locally in `tests/modules/memory/test_consolidation_lifecycle.py` using the repository's standard `shutil.which("docker")` pattern. Verify the file collects without `PYTHONPATH`.
 - [ ] Run the merged insight test under both offsets; it must pass and remain selected.
 - [ ] Run the exact Nightly schema command.
 - [ ] Run the exact faketime workflow command at `+45d` and `+120d` when practical; otherwise dispatch the Nightly workflow on the pushed exact head and wait for both legs.

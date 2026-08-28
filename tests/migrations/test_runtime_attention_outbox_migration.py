@@ -1162,6 +1162,7 @@ async def test_switchboard_cannot_skip_claim_fencing_or_regress_delivery_lease_e
 
 
 @pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.pg_clock
 async def test_concurrent_half_open_failures_emit_one_deterministic_edge(
     upgraded_pool: asyncpg.Pool,
     upgraded_admin_pool: asyncpg.Pool,

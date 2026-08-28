@@ -102,6 +102,7 @@ async def _unused_dispatch(*_args: Any, **_kwargs: Any) -> None:  # pragma: no c
     raise AssertionError("dispatch_fn must not be called by _accept_ingress")
 
 
+@pytest.mark.pg_clock
 async def test_ensure_partition_survives_dedupe_transaction_rollback(switchboard_dsn):
     """A rollback of the dedupe transaction must not destroy the new partition."""
     pool = await asyncpg.create_pool(switchboard_dsn)

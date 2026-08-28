@@ -996,6 +996,8 @@ def _write_fresh_dump(tmp_path: Path) -> Path:
     dump = tmp_path / "butlers_2026-05-03T02-00-00.sql.gz"
     with gzip_mod.open(dump, "wb") as f:
         f.write(os.urandom(1024))
+    shifted_now = time.time()
+    os.utime(dump, (shifted_now, shifted_now))
     return dump
 
 

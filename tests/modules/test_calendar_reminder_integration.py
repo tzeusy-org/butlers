@@ -497,6 +497,7 @@ async def test_native_recurring_reminder_refreshes_rolling_window(reminder_pool)
     assert refreshed_count >= 10
 
 
+@pytest.mark.pg_clock
 async def test_native_refresh_retains_and_dispatches_overdue_unnotified_instance(
     reminder_pool,
 ):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import uuid
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from sqlalchemy import create_engine, text
 
 from butlers.config import ButlerConfig, load_config
 from butlers.migrations import ROSTER_DIR, has_butler_chain, run_migrations
+from butlers.testing.migration import create_migration_db, migration_db_name
 
 # Skip all tests if Docker is not available.
 docker_available = shutil.which("docker") is not None
@@ -134,26 +134,6 @@ CHAIN_TABLES: dict[str, set[str]] = {
 }
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-def _create_db(postgres_container, db_name: str) -> str:
-    """Create a fresh database and return its SQLAlchemy URL."""
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
-
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-
-
 def _load_one_db_roster_configs() -> list[ButlerConfig]:
     configs: list[ButlerConfig] = []
     for entry in sorted(Path(ROSTER_DIR).iterdir()):
@@ -248,7 +228,7 @@ def _fetch_tables_by_schema(db_url: str, schemas: set[str]) -> dict[str, set[str
 
 def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_container):
     """Enabled module + core table sets should exist in every configured one-db schema."""
-    db_url = _create_db(postgres_container, _unique_db_name())
+    db_url = create_migration_db(postgres_container, migration_db_name())
     configs = _load_one_db_roster_configs()
 
     for config in configs:
