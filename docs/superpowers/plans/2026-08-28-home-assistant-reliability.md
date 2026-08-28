@@ -34,6 +34,7 @@
 - `_subscribe_events()` returns a readiness boolean and records which required subscriptions acknowledged.
 - The existing `on_connected` callback fires only after authentication, message-loop startup, and all required subscription acknowledgements succeed.
 - Failed subscription setup is treated as a failed transport attempt, so the existing reconnect counter and REST fallback controller receive the failure signal.
+- Reconnect supervision owns one task, rechecks readiness after backoff, and awaits that task during shutdown so concurrent loops cannot replace the active socket.
 - `HAConnector._get_health_state()` reports degraded until the connector has received the complete-ready callback; the health JSON exposes the readiness bit without exposing credentials or payloads.
 
 - [ ] **Step 1: Add a failing test for incomplete subscription readiness.**
@@ -46,11 +47,11 @@
 
 - [ ] **Step 3: Implement the smallest lifecycle change.**
 
-  Track subscription readiness separately from authentication, clear it when the socket closes, make subscription failure tear down the unusable stream and feed the existing reconnect/fallback signals, and move the connected callback behind the successful subscription result. Keep message-loop correlation alive while subscription commands await their results.
+  Track subscription readiness separately from authentication, clear it when the socket closes, make subscription failure tear down the unusable stream and feed the existing reconnect/fallback signals, and move the connected callback behind the successful subscription result. Keep message-loop correlation alive while subscription commands await their results. Own the reconnect task, make its starter idempotent, recheck connection state after backoff, and cancel/await it during shutdown.
 
 - [ ] **Step 4: Add the recovery and health regression tests.**
 
-  Cover successful all-subscription readiness, failed reconnect subscription setup, fallback remaining active until readiness, readiness clearing on disconnect, and the health endpoint’s degraded result before readiness.
+  Cover successful all-subscription readiness, failed reconnect subscription setup, fallback remaining active until readiness, readiness clearing on disconnect, the health endpoint’s degraded result before readiness, and singleton reconnect-task ownership through shutdown.
 
 - [ ] **Step 5: Run the focused transport and existing HA tests.**
 

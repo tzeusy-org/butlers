@@ -7,6 +7,7 @@ out and the connector still announced the transport as healthy.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -102,6 +103,30 @@ async def test_reconnect_subscription_failure_does_not_report_connected(
 
     assert connected_callbacks == []
     assert reconnect_failures == [True]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_task_is_singleton_and_awaited_during_shutdown() -> None:
+    client = _client()
+    started = asyncio.Event()
+
+    async def blocked_reconnect() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    client._reconnect_loop = blocked_reconnect
+    client._start_reconnect_loop()
+    await started.wait()
+    first_task = client._reconnect_task
+
+    client._start_reconnect_loop()
+
+    assert client._reconnect_task is first_task
+    await client.stop()
+
+    assert first_task is not None
+    assert first_task.done()
+    assert client._reconnect_task is None
 
 
 def test_health_requires_subscription_readiness_after_websocket_auth() -> None:

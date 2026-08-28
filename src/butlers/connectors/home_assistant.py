@@ -254,6 +254,7 @@ class HAWebSocketClient:
         # Background tasks
         self._loop_task: asyncio.Task[None] | None = None
         self._ping_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
 
         self._stop_event: asyncio.Event | None = None
 
@@ -416,6 +417,12 @@ class HAWebSocketClient:
                 future.cancel()
         self._ws_pending.clear()
         await self._close_connection()
+
+    def _start_reconnect_loop(self) -> None:
+        """Start at most one reconnect loop for this WebSocket client."""
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
     # ------------------------------------------------------------------
     # Task 3.4 — Ping/pong keepalive
@@ -661,7 +668,7 @@ class HAWebSocketClient:
             )
             await asyncio.sleep(sleep_time)
 
-            if self._shutdown:
+            if self._shutdown or self._connected:
                 break
 
             try:
@@ -756,7 +763,7 @@ class HAWebSocketClient:
             if authenticated and self._on_reconnect_failed is not None:
                 self._on_reconnect_failed()
             # Start reconnect loop in background; don't block run()
-            asyncio.create_task(self._reconnect_loop())
+            self._start_reconnect_loop()
         else:
             if self._on_connected is not None:
                 self._on_connected()
@@ -768,11 +775,7 @@ class HAWebSocketClient:
                 if self._shutdown:
                     break
                 if not self._connected:
-                    # Spawn reconnect loop if not already running
-                    if not any(
-                        t is not None and not t.done() for t in (self._loop_task, self._ping_task)
-                    ):
-                        asyncio.create_task(self._reconnect_loop())
+                    self._start_reconnect_loop()
         except asyncio.CancelledError:
             pass
         finally:
@@ -791,11 +794,20 @@ class HAWebSocketClient:
         for task in (self._loop_task, self._ping_task):
             if task is not None and not task.done():
                 task.cancel()
-        pending = [t for t in (self._loop_task, self._ping_task) if t is not None]
+        reconnect_task = self._reconnect_task
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            if not reconnect_task.done():
+                reconnect_task.cancel()
+        pending = [
+            task
+            for task in (self._loop_task, self._ping_task, reconnect_task)
+            if task is not None and task is not asyncio.current_task()
+        ]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._loop_task = None
         self._ping_task = None
+        self._reconnect_task = None
 
         # Fail pending WS commands
         for fut in self._ws_pending.values():
