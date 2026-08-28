@@ -233,7 +233,7 @@ Configuration via environment variables extending the base connector variables.
 - **AND** the wellness-promotion knobs SHALL be optionally configurable: `HA_WELLNESS_PROMOTION_ENABLED` (default: `true`), `HA_WELLNESS_RULES_EXTRA` (JSON list of `{device_class?, unit?, entity_token?, metric}` rules appended to the default table; malformed JSON fails connector startup with a clear error), `HA_WELLNESS_ENTITY_DENYLIST` (comma-separated entity_ids never promoted)
 
 ### Requirement: Wellness channel promotion for health-shaped sensor events
-The connector SHALL classify each `state_changed` event that survives the three-layer filter pipeline against a deterministic, metadata-driven wellness rule table (matching on `device_class`, `unit_of_measurement`, and optional entity-id tokens — never vendor or integration names). Events matching a rule SHALL be emitted on the `wellness` channel with `source.provider = "home_assistant"` IN ADDITION TO the unchanged `home_assistant` channel emission. Classification SHALL involve no LLM call.
+The connector SHALL classify each `state_changed` event that survives the three-layer filter pipeline against a deterministic, metadata-driven wellness rule table (matching on `device_class`, `unit_of_measurement`, and optional entity-id tokens — never vendor or integration names). Events matching a rule SHALL be emitted on the `wellness` channel with `source.provider = "home_assistant"` independently of the ordinary `home_assistant` channel's global ingestion-policy decision. When the ordinary channel is eligible, wellness emission is IN ADDITION TO the unchanged `home_assistant` channel emission. Classification SHALL involve no LLM call.
 
 #### Scenario: Blood-pressure reading promoted
 - **WHEN** a `state_changed` event for an entity with `unit_of_measurement = "mmHg"` and entity_id containing the token `systolic` survives the filter pipeline
@@ -245,6 +245,13 @@ The connector SHALL classify each `state_changed` event that survives the three-
 - **WHEN** a `state_changed` event matches no wellness rule (e.g. a `device_class = "temperature"` room sensor, which is deliberately absent from the default rule table)
 - **THEN** the connector SHALL emit only the `home_assistant`-channel envelope
 - **AND** SHALL NOT emit on the `wellness` channel
+
+#### Scenario: Ordinary channel skip preserves wellness promotion
+- **WHEN** a numeric weight event with `device_class = "weight"` and `unit_of_measurement = "kg"` or `"lb"` survives the three local filter layers
+- **AND** the global ingestion policy resolves `source_channel = "home_assistant"` to `skip`
+- **THEN** the connector SHALL persist the ordinary event as globally skipped and SHALL NOT emit a `home_assistant`-channel envelope
+- **AND** SHALL emit exactly one `wellness`-channel envelope without LLM classification
+- **AND** SHALL advance the connector checkpoint exactly once only after the wellness submission succeeds
 
 #### Scenario: Non-numeric state not promoted
 - **WHEN** an entity matches a wellness rule but its new state is non-numeric (`unknown`, `unavailable`, or unparseable)
@@ -311,6 +318,7 @@ The connector persists filtered events per the base connector contract.
 #### Scenario: Global ingestion policy pre-check for non-person domains
 - **WHEN** a non-`person` domain event passes all three local filter layers
 - **THEN** the connector SHALL evaluate the shared `global`-scope `IngestionPolicyEvaluator` locally, before calling Switchboard `ingest()`
-- **AND** if the resolved action is `skip`, the connector SHALL self-persist the event to `connectors.filtered_events` with `filter_reason` `"global_rule:skip:<rule_type>"` (per `connector-filtered-events`) and SHALL NOT call `ingest()`
+- **AND** if the resolved action is `skip`, the connector SHALL self-persist the ordinary event to `connectors.filtered_events` with `filter_reason` `"global_rule:skip:<rule_type>"` (per `connector-filtered-events`) and SHALL NOT call `ingest()` for the `home_assistant` channel
+- **AND** that ordinary-channel skip SHALL NOT suppress an independently eligible deterministic `wellness` promotion
 - **AND** any other resolved action (e.g. `pass_through`) SHALL proceed to `ingest()` unchanged
 - **AND** `person` domain events SHALL always proceed to `ingest()` regardless of the global policy, since they feed the presence/history evidence table

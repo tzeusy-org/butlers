@@ -77,6 +77,7 @@ from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
 from butlers.connectors.home_assistant_wellness import (
+    ClassifyResult,
     WellnessClassifier,
     WellnessRule,
     parse_rules_extra,
@@ -1648,7 +1649,7 @@ async def persist_ha_history(
 async def emit_with_wellness_promotion(
     *,
     mcp_client: Any,
-    ha_envelope: dict[str, Any],
+    ha_envelope: dict[str, Any] | None,
     classifier: WellnessClassifier,
     endpoint_identity: str,
     entity_id: str,
@@ -1661,15 +1662,17 @@ async def emit_with_wellness_promotion(
     friendly_name: str | None,
     metrics: HAConnectorMetrics | None,
     promotion_enabled: bool,
+    emit_home_assistant: bool = True,
+    classification_result: ClassifyResult | None = None,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
 
-    The ``home_assistant`` emission is unconditional and goes first; the
-    ``wellness`` emission is additive and only happens when promotion is enabled
-    and the classifier promotes the reading. Both emissions reuse the same
-    ``external_event_id`` — the Switchboard's channel-inclusive dedup key keeps
-    them independent on replay.
+    The ``home_assistant`` emission normally goes first. A caller that has
+    already policy-skipped that ordinary channel may set
+    ``emit_home_assistant=False`` while retaining deterministic wellness
+    promotion. Both emissions reuse the same ``external_event_id`` — the
+    Switchboard's channel-inclusive dedup key keeps them independent on replay.
 
     Returns:
         ``True`` if every attempted submission succeeded (caller may advance the
@@ -1678,35 +1681,39 @@ async def emit_with_wellness_promotion(
     """
     from butlers.connectors.home_assistant_envelope import build_wellness_envelope
 
-    # Primary (home_assistant) — unchanged behavior, always emitted.
-    try:
-        await mcp_client.call_tool("ingest", ha_envelope)
-        if metrics is not None:
-            metrics.inc_submission("home_assistant", "success")
-    except Exception:
-        logger.warning(
-            "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
-            entity_id,
-            exc_info=True,
-        )
-        if metrics is not None:
-            metrics.inc_submission("home_assistant", "error")
-        # Primary failed: do not attempt the secondary channel, do not advance.
-        return False
+    if emit_home_assistant:
+        if ha_envelope is None:
+            raise ValueError("ha_envelope is required when emit_home_assistant=True")
+        try:
+            await mcp_client.call_tool("ingest", ha_envelope)
+            if metrics is not None:
+                metrics.inc_submission("home_assistant", "success")
+        except Exception:
+            logger.warning(
+                "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
+                entity_id,
+                exc_info=True,
+            )
+            if metrics is not None:
+                metrics.inc_submission("home_assistant", "error")
+            # Primary failed: do not attempt the secondary channel, do not advance.
+            return False
 
     if not promotion_enabled:
         return True
 
     # Classify for the secondary (wellness) channel.
-    result = classifier.classify_detailed(
-        entity_id=entity_id,
-        device_class=device_class,
-        unit_of_measurement=unit_of_measurement,
-        attributes=attributes,
-        state=(new_state or {}).get("state"),
-    )
-    if metrics is not None:
-        metrics.inc_wellness_classify(result.outcome, result.metric)
+    result = classification_result
+    if result is None:
+        result = classifier.classify_detailed(
+            entity_id=entity_id,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            attributes=attributes,
+            state=(new_state or {}).get("state"),
+        )
+        if metrics is not None:
+            metrics.inc_wellness_classify(result.outcome, result.metric)
 
     if result.outcome != "promoted" or result.metric is None or result.value is None:
         return True
@@ -2229,6 +2236,25 @@ def _make_event_dispatcher(
             await ha_filter_persistence.flush()
             return
 
+        # Wellness eligibility is independent of the ordinary HA channel's
+        # global ingestion policy. Classify once after the local filter pipeline
+        # but before that policy can return, then reuse the verdict for either
+        # wellness-only or dual emission.
+        wellness_result: ClassifyResult | None = None
+        if config.wellness_promotion_enabled:
+            wellness_result = wellness_classifier.classify_detailed(
+                entity_id=entity_id,
+                device_class=device_class,
+                unit_of_measurement=unit_of_measurement,
+                attributes=new_attrs,
+                state=new_state_str,
+            )
+            if connector._ha_metrics is not None:
+                connector._ha_metrics.inc_wellness_classify(
+                    wellness_result.outcome,
+                    wellness_result.metric,
+                )
+
         # Non-person domains: pre-check the global ingestion policy locally so
         # a "skip" decision is self-persisted to connectors.filtered_events
         # instead of silently reaching Switchboard ingest() and landing
@@ -2268,6 +2294,37 @@ def _make_event_dispatcher(
                     device_class=device_class,
                 )
                 await ha_filter_persistence.flush()
+
+                if wellness_result is not None and wellness_result.outcome == "promoted":
+                    ingest_start = time.monotonic()
+                    wellness_submitted = await emit_with_wellness_promotion(
+                        mcp_client=connector._mcp_client,
+                        ha_envelope=None,
+                        classifier=wellness_classifier,
+                        endpoint_identity=endpoint_identity,
+                        entity_id=entity_id,
+                        time_fired=time_fired,
+                        ha_event=event,
+                        device_class=device_class,
+                        unit_of_measurement=unit_of_measurement,
+                        attributes=new_attrs,
+                        new_state=new_state_data or None,
+                        friendly_name=friendly_name,
+                        metrics=connector._ha_metrics,
+                        promotion_enabled=True,
+                        emit_home_assistant=False,
+                        classification_result=wellness_result,
+                    )
+                    if connector._ha_metrics is not None:
+                        connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
+                    if wellness_submitted and db_pool is not None:
+                        await save_ha_checkpoint(
+                            db_pool,
+                            endpoint_identity,
+                            event_ts,
+                            entity_id,
+                            active_transport,
+                        )
                 return
 
         # Event passed all filters — build envelope and submit to Switchboard
@@ -2308,6 +2365,7 @@ def _make_event_dispatcher(
             friendly_name=friendly_name,
             metrics=connector._ha_metrics,
             promotion_enabled=config.wellness_promotion_enabled,
+            classification_result=wellness_result,
         )
         if connector._ha_metrics is not None:
             connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
