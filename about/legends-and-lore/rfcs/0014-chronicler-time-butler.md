@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-04-24
+**Amended:** 2026-08-28 — Health-fact projection source contract reconciled;
+see Amendment 1.
 
 ## Summary
 
@@ -114,7 +116,7 @@ includes:
 - `optional_schema` — if the source's schema is optional (module not
   installed on this deployment), the adapter MUST degrade gracefully.
 
-Initial declarations (v1 of Chronicler):
+Source declarations (v1, as amended):
 
 | Source | Status | Read surface |
 |---|---|---|
@@ -124,8 +126,15 @@ Initial declarations (v1 of Chronicler):
 | `steam.play_history` | planned | — |
 | `owntracks.points` | planned | — |
 | `home_assistant.history` | planned | — |
-| `google_health.*` | deferred | — |
+| `google_health.measurements` | supported for Health fact projections | `health.facts` (`sleep_session`; conditionally present `workout_session`) |
+| `health.steps` | supported | `health.facts` (`measurement_steps` or `daily_steps`) |
+| `health.heart_rate` | supported | `health.facts` (`measurement_resting_hr`, `heart_rate_summary`, or `measurement_heart_rate`) |
 | TTL diagnostic process logs | not_time_bearing | — |
+
+The three Health declarations are supported only after the Health memory chain
+has applied `mem_011`, which grants `butler_chronicler_rw` only `SELECT` on
+`health.facts`. Without that optional read surface, their adapters report an
+inactive source state rather than taking a direct connector path.
 
 A lint/check MUST ensure any new OpenSpec source spec with timestamp fields
 declares either `chronicler_compatibility` or `not_time_bearing=true`.
@@ -224,6 +233,40 @@ ninth domain butler. The vision update is minimal: "Chronicler reconstructs
 lived past time from other butlers' timestamped evidence; it does not plan,
 ingest, or notify."
 
+## Amendment 1: Health Fact Projection Sources
+
+**Date:** 2026-08-28
+**Status:** Accepted
+**Authority:** The owner-scoped Chronicles decision recorded health projection
+as part of the reviewed delivery; PR #1216 introduced the sleep projection and
+PR #1489 added the Health fact adapters.
+
+The original `google_health.*` deferral described the pre-adapter, pre-grant
+source set. It does not describe the shipped boundary: after the Health memory
+chain applies `mem_011`, Chronicler reads durable, Health-owned `health.facts`
+through the migration-tracked `SELECT` grant for `butler_chronicler_rw` on
+scheduled, deterministic adapter paths. It does not receive raw Google Health
+connector events, call the Google Health API, or own the connector.
+
+The source declarations in D2 are updated accordingly. Sleep facts project to
+`sleep_episode`; step and heart-rate facts project to their documented point
+events. The scheduled workout adapter can project a conformant
+`workout_session` fact when one is separately present, but the current Google
+Health connector does not poll a workout resource, emit a workout envelope, or
+write that predicate. Adapter capability is not a claim of connector workout
+ingestion.
+
+When a Health fact is later absent, inactive, or purged, the adapter does not
+delete, tombstone, or reduce the precision of an already-projected record solely
+because of that source absence. Normal Chronicler retention and explicit
+corrections remain separate lifecycle controls.
+
+This amendment changes no ACL, migration, credential, connector, deployment,
+or runtime behavior. It records the existing `mem_011` least-privilege grant;
+availability still depends on that approved read-only Health fact surface, and
+a missing optional surface remains an inactive source state rather than a
+direct-ingestion fallback.
+
 ## Non-Goals
 
 - Chronicler does NOT ingest raw external data. Adapters read from
@@ -235,9 +278,9 @@ ingest, or notify."
   source refs.
 - Chronicler does NOT replace `/api/timeline` — it adds a separate
   namespace.
-- Chronicler does NOT project every time-bearing source in v1. The initial
-  set is intentionally small (sessions + completed calendar); further
-  sources are declared as `planned` or `deferred`.
+- Chronicler does NOT project every time-bearing source in v1. Supported,
+  planned, and deferred source declarations remain explicit; Amendment 1 adds
+  only the already-shipped Health fact projections.
 
 ## Migration and Rollout
 

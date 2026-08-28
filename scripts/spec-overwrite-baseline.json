@@ -1973,6 +1973,28 @@
       "excerpt": "- **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliRuntime>` with `id`, `label`, `fingerprint`, `state`, `..."
     }
   ],
+  "reconcile-chronicler-google-health-source-contract/butler-chronicler/Source Compatibility Declarations": [
+    {
+      "kind": "clause",
+      "scenario": "Initial supported sources",
+      "digest": "980f4be7e73e",
+      "excerpt": "- **AND** `google_health.*` SHALL be declared `deferred`"
+    }
+  ],
+  "reconcile-chronicler-google-health-source-contract/connector-google-health/Chronicler Compatibility Deferred": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "abf4c527b5fc",
+      "excerpt": "The connector SHALL explicitly defer Chronicler compatibility until the Chronicler Time Butler proposal is accepted a..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Google Health not projected by Chronicler initially",
+      "digest": "afedf491aa81",
+      "excerpt": "- **THEN** Chronicler SHALL NOT claim deterministic projection support for those records in its initial source set"
+    }
+  ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
     {
       "kind": "clause",

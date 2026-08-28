@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-28
+goal: "Document the supported health.facts projection boundary without changing
+  runtime, ACLs, connector ingestion, credentials, deployment, or PR #3897."
