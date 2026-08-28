@@ -48,14 +48,14 @@ Four checks, one discovery source
    nobody routes to anymore — exactly the "dead and nobody noticed" failure
    mode this bead exists to close.
 3. **backup-stale / backup-run-failed** — reuses
-   ``butlers.api.routers.system.read_backup_facts_from_dir`` (the same
+   ``butlers.core.backup_facts.read_backup_facts_from_dir`` (the same
    recency/reachability facts ``GET /api/system/backups`` surfaces) against
    the ``BUTLERS_BACKUP_DIR`` env var. An unset env var is a legitimate
    absence (not every deployment enables backups) and is silently skipped,
    matching that endpoint's own documented contract. A *configured* but
    unreachable directory, or one with no dump ever recorded, or a most-recent
    dump the endpoint itself already flagged ``backup_stale`` (against
-   :data:`butlers.api.routers.system.BACKUP_STALE_THRESHOLD_HOURS`), is a
+   :data:`butlers.core.backup_facts.BACKUP_STALE_THRESHOLD_HOURS`), is a
    genuine failure. A *failed run* is checked first and separately
    (bu-xrqyu): ``deploy/backup/pg_dump.sh`` refuses to publish a bad dump, so
    a failure leaves the previous good artifact in place and the staleness
@@ -125,6 +125,11 @@ from typing import Final
 
 import asyncpg
 
+from butlers.core.backup_facts import (
+    BACKUP_DIR_ENV,
+    BACKUP_STALE_THRESHOLD_HOURS,
+    read_backup_facts_from_dir,
+)
 from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
 from butlers.core.infra_conditions import Observation, reconcile_snapshot
 from butlers.core.liveness import CLOCK_SKEW_TOLERANCE, derive_liveness, is_liveness_stale
@@ -146,14 +151,8 @@ _HEALTH_CHECK_SQL = (
     f"SELECT 1 FROM {_CONNECTOR_VIEW} LIMIT 0; SELECT 1 FROM {_HEARTBEAT_VIEW} LIMIT 0"
 )
 
-#: Env var read by butlers.api.routers.system (kept in sync here rather than
-#: imported, to avoid a hard import-time dependency on the api.routers module
-#: for a single string constant).
-_BACKUP_DIR_ENV = "BUTLERS_BACKUP_DIR"
-
-#: Env var read by butlers.jobs.external_deadman (kept in sync here rather
-#: than imported, mirroring _BACKUP_DIR_ENV above -- a single string constant
-#: does not justify a hard import-time dependency on that module).
+#: Env var read by butlers.jobs.external_deadman. Kept local because a single
+#: string constant does not justify a hard import-time dependency on that module.
 _DEADMAN_URL_ENV = "EXTERNAL_DEADMAN_URL"
 
 #: infra_conditions ledger identity for this DiscoverySource (bu-27dxl.6.4).
@@ -243,7 +242,7 @@ class InfraStateSource:
         self,
         pool: asyncpg.Pool,
         *,
-        backup_dir_env: str = _BACKUP_DIR_ENV,
+        backup_dir_env: str = BACKUP_DIR_ENV,
         deadman_ping_interval_s: float | None = None,
     ) -> None:
         self._pool = pool
@@ -472,11 +471,6 @@ class InfraStateSource:
             # documented contract ("expected state for unconfigured
             # deployments") -- a legitimate absence, not a finding.
             return []
-
-        from butlers.api.routers.system import (
-            BACKUP_STALE_THRESHOLD_HOURS,
-            read_backup_facts_from_dir,
-        )
 
         facts = read_backup_facts_from_dir(Path(backup_dir_raw))
 

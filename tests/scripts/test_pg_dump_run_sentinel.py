@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.api.routers.system import _read_backup_run_facts
+from butlers.core.backup_facts import _read_backup_run_facts
 
 pytestmark = pytest.mark.unit
 

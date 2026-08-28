@@ -38,14 +38,21 @@ from butlers.api.routers import system as system_router
 from butlers.api.routers.system import (
     _commits_behind_main,
     _get_db_manager,
-    read_backup_facts_from_dir,
     system_egress_reads_total,
     system_instance_reads_total,
 )
+from butlers.core.backup_facts import read_backup_facts_from_dir
 
 pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 5, 3, 10, 0, 0, tzinfo=UTC)
+
+
+def test_system_router_does_not_duplicate_the_restore_drill_backup_selector() -> None:
+    """The executor-owned selector lives only in jobs.backup_health."""
+    source = Path(system_router.__file__).read_text(encoding="utf-8")
+
+    assert "def latest_backup_path(" not in source
 
 
 @pytest.fixture(autouse=True)

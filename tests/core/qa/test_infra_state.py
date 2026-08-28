@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -32,6 +33,18 @@ from butlers.core.qa.sources.infra_state import (
 from butlers.core.qa.sources.protocol import DiscoverySource
 
 pytestmark = pytest.mark.unit
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_backup_fact_reader_is_not_imported_from_the_api_router() -> None:
+    """QA consumes DB-free backup facts below the API boundary."""
+    source = (
+        _REPO_ROOT / "src" / "butlers" / "core" / "qa" / "sources" / "infra_state.py"
+    ).read_text(encoding="utf-8")
+
+    assert "butlers.api.routers.system" not in source
+    assert "butlers.core.backup_facts" in source
 
 
 # ---------------------------------------------------------------------------
