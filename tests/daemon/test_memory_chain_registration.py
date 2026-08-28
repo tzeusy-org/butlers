@@ -6,6 +6,7 @@ Covers memory module chain and relationship butler migration chain integrity.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,13 +21,22 @@ _MIGRATIONS_PATH = (
 )
 
 ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
+_MISSING_MODULE = object()
 
 
 def _load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    previous_module = sys.modules.get(name, _MISSING_MODULE)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        if previous_module is _MISSING_MODULE:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous_module
     return mod
 
 
@@ -46,6 +56,33 @@ has_butler_chain = _mod.has_butler_chain
 MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "modules"
 MEMORY_MIGRATIONS_DIR = MODULES_DIR / "memory" / "migrations"
 RELATIONSHIP_MIGRATIONS_DIR = ROSTER_DIR / "relationship" / "migrations"
+
+
+class TestMigrationsModuleLoader:
+    """The isolated migration loader must not alter the process import cache."""
+
+    def test_loader_restores_existing_module_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A temporary dynamic load must not replace an already-imported module."""
+        existing_module = object()
+        monkeypatch.setitem(sys.modules, "butlers.migrations", existing_module)
+
+        loaded_module = _load_migrations_module()
+
+        assert loaded_module is not existing_module
+        assert sys.modules["butlers.migrations"] is existing_module
+
+    def test_loader_removes_temporary_module_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dynamic load must not leave ``butlers.migrations`` in ``sys.modules``."""
+        monkeypatch.delitem(sys.modules, "butlers.migrations", raising=False)
+
+        loaded_module = _load_migrations_module()
+
+        assert loaded_module._ChainRootFamily.__module__ == "butlers.migrations"
+        assert "butlers.migrations" not in sys.modules
 
 
 class TestMemoryChainRegistration:
