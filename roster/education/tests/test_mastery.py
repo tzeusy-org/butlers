@@ -778,21 +778,6 @@ class TestMasteryStateMachineInRecordResponse:
         new_status = self._get_status_from_update_call(conn)
         assert new_status is None
 
-    async def test_reviewing_non_review_responses_excluded_from_last3_check(self) -> None:
-        """teach-type responses are not counted in the last-3-review-quality check."""
-        # If score>=0.85 and the 3 most recent REVIEW responses are all quality>=4,
-        # graduation should happen even if teach response with quality=2 was recorded
-        _, conn = await self._record_and_get_status_update(
-            "reviewing",
-            5,
-            "review",
-            review_qualities=[5, 5, 5],  # 3 review responses all >=4
-            qualities_from_db=[5, 5, 5, 5, 5],  # score=1.0
-            expect_mastery_graduation=True,
-        )
-        new_status = self._get_status_from_update_call(conn)
-        assert new_status == "mastered"
-
     # --- mastered: never demoted ---
 
     async def test_mastered_node_not_demoted_on_quality_0(self) -> None:

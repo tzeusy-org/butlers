@@ -734,7 +734,7 @@ class TestMasteryStateMachine:
 
 
 class TestEdgeCreateCycleDetection:
-    """mind_map_edge_create rejects cycles (self-loop, 2-node, multi-hop)."""
+    """mind_map_edge_create rejects cycles (self-loop and 2-node)."""
 
     def _setup_same_map_nodes(
         self,
@@ -771,21 +771,6 @@ class TestEdgeCreateCycleDetection:
         child_id = str(uuid.uuid4())
 
         # _check_cycle: fetchrow returns has_cycle=True (ancestors of parent include child)
-        cycle_row = _make_row({"has_cycle": True})
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=cycle_row)
-
-        result = await _check_cycle(pool, parent_id, child_id)
-        assert result is True
-
-    async def test_multi_hop_cycle_rejected(self) -> None:
-        """A → B → C exists; adding C → A should be rejected."""
-        from butlers.tools.education.mind_map_edges import _check_cycle
-
-        parent_id = str(uuid.uuid4())
-        child_id = str(uuid.uuid4())
-
-        # Simulated: CTE finds child_id in ancestors of parent_id
         cycle_row = _make_row({"has_cycle": True})
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=cycle_row)

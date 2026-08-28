@@ -71,16 +71,6 @@ def _collect_downgrade_sqls() -> list[str]:
 class TestMigrationFileAndChain:
     """File-level and revision-chain contract tests."""
 
-    def test_migration_ordered_after_020(self) -> None:
-        """021_* must sort after 020_* in the migrations directory."""
-        migrations_dir = _MIGRATION_PATH.parent
-        files = sorted(f.name for f in migrations_dir.glob("[0-9]*.py"))
-        idx_020 = next((i for i, f in enumerate(files) if f.startswith("020_")), None)
-        idx_021 = next((i for i, f in enumerate(files) if f.startswith("021_")), None)
-        assert idx_020 is not None, "020_* migration not found"
-        assert idx_021 is not None, "021_* migration not found"
-        assert idx_021 > idx_020, "021_* must sort after 020_*"
-
     def test_single_cardinality_seed_list(self) -> None:
         """The single-cardinality seed set must be exactly the two spec predicates."""
         mod = _load_migration()

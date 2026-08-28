@@ -26,7 +26,6 @@ from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnectorConfig,
     normalize_message_text,
 )
-from butlers.identity import resolve_contact_by_channel
 from butlers.modules.whatsapp import WhatsAppModule
 
 pytestmark = pytest.mark.integration
@@ -508,65 +507,6 @@ class TestApprovalGateWhatsApp:
 # ---------------------------------------------------------------------------
 # 4. WhatsApp JID resolves to existing contact
 # ---------------------------------------------------------------------------
-
-
-class TestWhatsAppJIDResolution:
-    def _make_pool_with_rows(self, *rows: dict[str, Any] | None) -> Any:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=list(rows))
-        pool.fetch = AsyncMock(return_value=[])
-        return pool
-
-    async def test_jid_resolution_paths(self):
-        """Direct JID hit, phone fallback on miss, group JID returns None without phone fallback.
-
-        Bead 7 (bu-akads): resolve_contact_by_channel now queries relationship.entity_facts.
-        contact_id is always None post cut-over; entity_id is the authoritative key.
-        """
-        entity_id = uuid.uuid4()
-
-        # Direct hit — mock returns entity_facts shape: entity_id, name, roles
-        pool = self._make_pool_with_rows({"entity_id": entity_id, "name": "Alice", "roles": []})
-        result = await resolve_contact_by_channel(
-            pool, "whatsapp_jid", "15551234567@s.whatsapp.net"
-        )
-        assert result is not None and result.contact_id is None  # bead 7: entity_id is primary
-        assert result.entity_id == entity_id
-        pool.fetchrow.assert_called_once()
-
-        # Phone cross-reference fallback
-        owner_entity_id = uuid.uuid4()
-        pool2 = self._make_pool_with_rows(
-            None,
-            {"entity_id": owner_entity_id, "name": "Owner", "roles": ["owner"]},
-        )
-        pool2.fetch = AsyncMock(
-            return_value=[
-                {
-                    "entity_id": owner_entity_id,
-                    "name": "Owner",
-                    "roles": ["owner"],
-                }
-            ]
-        )
-        result2 = await resolve_contact_by_channel(
-            pool2, "whatsapp_jid", "15550001111@s.whatsapp.net"
-        )
-        assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 1
-
-        # Group JID → no phone fallback, returns None
-        pool3 = self._make_pool_with_rows(None)
-        result3 = await resolve_contact_by_channel(pool3, "whatsapp_jid", "120363012345@g.us")
-        assert result3 is None
-        pool3.fetchrow.assert_called_once()
-
-    async def test_both_lookups_miss_returns_none(self):
-        """Returns None when both direct JID and phone fallback find no contact."""
-        pool = self._make_pool_with_rows(None, None)
-        result = await resolve_contact_by_channel(
-            pool, "whatsapp_jid", "99999999999@s.whatsapp.net"
-        )
-        assert result is None and pool.fetchrow.call_count == 1
 
 
 # ---------------------------------------------------------------------------

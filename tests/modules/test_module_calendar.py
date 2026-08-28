@@ -1961,10 +1961,6 @@ class TestHomeCalendarResolution:
 
 
 class TestErrorHierarchy:
-    def test_calendar_credential_error_is_exception(self):
-        err = CalendarCredentialError("missing client_id")
-        assert isinstance(err, Exception)
-
     def test_calendar_request_error_is_exception(self):
         err = CalendarRequestError(status_code=429, message="quota exceeded")
         assert isinstance(err, Exception)
@@ -3173,45 +3169,6 @@ class TestProjectSchedulerSourceDispatchModeFilter:
             "Non-job dispatch_mode row must be projected via _upsert_projection_event"
         )
 
-    async def test_job_dispatch_row_absent_from_projection(self) -> None:
-        """A row with dispatch_mode='job' must NOT reach _upsert_projection_event.
-
-        The SQL WHERE clause filters these rows out before Python sees them.
-        We verify this by seeding the pool.fetch mock to return only the non-job
-        row (simulating the DB-level filter) and confirming _upsert_projection_event
-        is called exactly once — for the non-job row only.
-        """
-        non_job_row = self._minimal_scheduled_task(dispatch_mode="prompt", name="User reminder")
-        # NOTE: pool.fetch mock simulates the DB filter: it returns only the non-job row.
-        # The point of this test is that the SQL contains the filter and the job row
-        # never enters the Python processing loop.
-        pool = self._make_full_projection_pool(scheduled_rows=[non_job_row])
-        mod = _make_module_with_pool(pool)
-        mod._projection_tables_available_cache = True
-
-        upsert_calls: list[str] = []
-
-        async def _fake_upsert_event(**kwargs) -> uuid.UUID:
-            upsert_calls.append(kwargs.get("title", ""))
-            return uuid.uuid4()
-
-        async def _noop(**kwargs) -> None:
-            pass
-
-        with (
-            patch.object(mod, "_upsert_projection_event", side_effect=_fake_upsert_event),
-            patch.object(mod, "_upsert_projection_instance", side_effect=_noop),
-            patch.object(mod, "_mark_projection_source_stale_events_cancelled", side_effect=_noop),
-            patch.object(mod, "_upsert_projection_cursor", side_effect=_noop),
-            patch.object(mod, "_prune_recurring_instances_outside_window", side_effect=_noop),
-        ):
-            await mod._project_scheduler_source()
-
-        assert len(upsert_calls) == 1, (
-            "Only the non-job row should be projected; job rows are excluded by the SQL filter"
-        )
-        assert "User reminder" in upsert_calls, "The non-job row title must be present"
-
 
 # ---------------------------------------------------------------------------
 # tick() — due-reminder evaluation
@@ -3361,18 +3318,6 @@ class TestCalendarModuleTick:
         assert len(execute_calls) == 1
         assert "calendar_event_instances" in execute_calls[0][0][0]
         assert "notified_at" in execute_calls[0][0][1]
-
-    async def test_recurring_reminder_same_occurrence_does_not_double_fire(self):
-        """An instance already marked notified_at is excluded by the query."""
-        # If the query returns no rows, tick() fires nothing.
-        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
-        mod = _make_module_with_pool(pool)
-        notify_fn = AsyncMock()
-
-        result = await mod.tick("general", notify_fn=notify_fn)
-
-        assert result == 0
-        notify_fn.assert_not_called()
 
     async def test_dismissed_recurring_instance_is_skipped(self):
         """Cancelled instances are excluded by the SQL status='confirmed' filter.

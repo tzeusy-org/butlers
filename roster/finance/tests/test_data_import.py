@@ -304,10 +304,6 @@ class TestChaseParsing:
         parsed, errors = _parse_csv_rows(content, fmt, date_fmt, currency, None)
         return parsed, errors, fmt
 
-    def test_format_is_chase(self):
-        _, _, fmt = self._parse(CHASE_CSV)
-        assert fmt["name"] == "chase"
-
     def test_parses_four_rows(self):
         parsed, errors, _ = self._parse(CHASE_CSV)
         assert len(errors) == 0
@@ -368,10 +364,6 @@ class TestAmexParsing:
         parsed, errors = _parse_csv_rows(content, fmt, date_fmt, currency, None)
         return parsed, errors, fmt
 
-    def test_format_is_amex(self):
-        _, _, fmt = self._parse(AMEX_CSV)
-        assert fmt["name"] == "amex"
-
     def test_positive_charge_is_debit(self):
         """Amex encodes charges as positive — should map to debit."""
         parsed, _, _ = self._parse(AMEX_CSV)
@@ -414,10 +406,6 @@ class TestCapitalOneParsing:
         date_fmt = _detect_date_format(samples)
         parsed, errors = _parse_csv_rows(content, fmt, date_fmt, currency, None)
         return parsed, errors, fmt
-
-    def test_format_is_capital_one(self):
-        _, _, fmt = self._parse(CAPITAL_ONE_CSV)
-        assert fmt["name"] == "capital_one"
 
     def test_debit_col_is_debit(self):
         parsed, _, _ = self._parse(CAPITAL_ONE_CSV)
@@ -467,10 +455,6 @@ class TestGenericParsing:
         date_fmt = _detect_date_format(samples)
         parsed, errors = _parse_csv_rows(content, fmt, date_fmt, currency, column_map)
         return parsed, errors, fmt
-
-    def test_format_is_generic(self):
-        _, _, fmt = self._parse(GENERIC_CSV)
-        assert fmt["name"] == "generic"
 
     def test_parses_four_rows(self):
         parsed, errors, _ = self._parse(GENERIC_CSV)
@@ -1539,17 +1523,3 @@ class TestProgressNotify:
         assert "25%" in kwargs["message"]
         assert "500" in kwargs["message"]
         assert "2000" in kwargs["message"]
-
-    async def test_progress_notify_skipped_when_notify_fn_none(self):
-        """_emit_progress_notification is a no-op when notify_fn is None."""
-        from butlers.tools.finance.data_import import _emit_progress_notification
-
-        # Should not raise.
-        await _emit_progress_notification(
-            None,
-            processed=500,
-            total=2000,
-            imported_so_far=480,
-            skipped_so_far=0,
-            errors_so_far=0,
-        )

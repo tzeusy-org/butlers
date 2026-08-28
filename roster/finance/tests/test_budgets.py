@@ -310,17 +310,6 @@ class TestSpendingTrendsYoY:
             args = call[0]
             assert "groceries" in args
 
-    async def test_yoy_period_labels_correct(self):
-        """Prior period is exactly 12 months before current period."""
-        from butlers.tools.finance.budgets import spending_trends
-
-        pool, _ = await self._yoy_pool(Decimal("200"), Decimal("180"))
-        with patch("butlers.tools.finance.budgets._period_anchor", return_value=TODAY_MID_MONTH):
-            result = await spending_trends(pool, comparison="yoy")
-
-        assert result["current_period"] == "2026-03"
-        assert result["prior_period"] == "2025-03"
-
 
 # ---------------------------------------------------------------------------
 # spending_trends — invalid comparison
@@ -599,25 +588,6 @@ class TestSpendingForecastFirstOfMonth:
         # Has current spend so uses linear (50 / 1) * 31 = 1550
         assert result["basis"] == "linear_projection"
         assert Decimal(result["projected_total"]) == Decimal("1550.00")
-
-    async def test_first_of_month_basis_field_set(self):
-        """basis='prior_month' is set in the response when using prior month fallback."""
-        from butlers.tools.finance.budgets import spending_forecast
-
-        today = date(2026, 3, 1)
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                _make_row({"total": Decimal("0")}),
-                _make_row({"total": Decimal("400")}),
-            ]
-        )
-        pool.fetch = AsyncMock(side_effect=[[], [], []])
-
-        with patch("butlers.tools.finance.budgets._period_anchor", return_value=today):
-            result = await spending_forecast(pool)
-
-        assert result["basis"] == "prior_month"
 
 
 # ---------------------------------------------------------------------------

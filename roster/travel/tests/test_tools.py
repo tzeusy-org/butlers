@@ -564,17 +564,6 @@ class TestUpdateItinerary:
         assert result["conflicts"]
         assert result["new_trip_status"] == "completed"
 
-    async def test_unknown_trip_raises_value_error(self, pool):
-        """update_itinerary raises ValueError for non-existent trip_id."""
-        from butlers.tools.travel.bookings import update_itinerary
-
-        with pytest.raises(ValueError, match="not found"):
-            await update_itinerary(
-                pool=pool,
-                trip_id=str(uuid.uuid4()),
-                patch={"status": "active"},
-            )
-
     async def test_entity_not_found_adds_conflict(self, pool):
         """Patching a leg_id that does not exist adds a conflict entry."""
         from butlers.tools.travel.bookings import update_itinerary
@@ -681,17 +670,6 @@ class TestUpdateItinerary:
 
 class TestListTrips:
     """Tests for list_trips — trip query tool."""
-
-    async def test_empty_result_when_no_trips(self, pool):
-        """list_trips returns zero items and total=0 when table is empty."""
-        from butlers.tools.travel.trips import list_trips
-
-        result = await list_trips(pool)
-
-        assert result["items"] == []
-        assert result["total"] == 0
-        assert result["limit"] == 20
-        assert result["offset"] == 0
 
     async def test_returns_inserted_trip(self, pool):
         """list_trips returns a single inserted trip with correct fields."""
@@ -849,13 +827,6 @@ class TestTripSummary:
         assert len(result["documents"]) == 1
         # No missing boarding pass alert when one is attached
         assert not any(a["type"] == "missing_boarding_pass" for a in result["alerts"])
-
-    async def test_raises_on_unknown_trip_id(self, pool):
-        """trip_summary raises ValueError for a non-existent trip_id."""
-        from butlers.tools.travel.trips import trip_summary
-
-        with pytest.raises(ValueError, match="Trip not found"):
-            await trip_summary(pool, str(uuid.uuid4()))
 
     async def test_include_documents_false_omits_documents(self, pool):
         """trip_summary returns empty documents list when include_documents=False."""

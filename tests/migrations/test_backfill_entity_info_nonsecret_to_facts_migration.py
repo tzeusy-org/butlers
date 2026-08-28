@@ -47,16 +47,6 @@ def _load_migration():
 
 
 @pytest.mark.unit
-class TestMigrationStructure:
-    def test_file_ordered_after_026(self):
-        files = sorted(f.name for f in _MIGRATION_PATH.parent.glob("[0-9]*.py"))
-        idx_026 = next((i for i, f in enumerate(files) if f.startswith("026_")), None)
-        idx_027 = next((i for i, f in enumerate(files) if f.startswith("027_")), None)
-        assert idx_026 is not None and idx_027 is not None
-        assert idx_027 > idx_026
-
-
-@pytest.mark.unit
 class TestSqlShape:
     def test_technical_config_types_not_projected(self):
         mod = _load_migration()

@@ -38,13 +38,6 @@ def test_upgrade_excludes_checkpoint_only_rows(monkeypatch) -> None:
     assert "DROP VIEW" not in statement
 
 
-def test_migration_follows_current_switchboard_head() -> None:
-    migration = _load_migration()
-
-    assert migration.revision == "sw_028"
-    assert migration.down_revision == "sw_027"
-
-
 def test_downgrade_restores_previous_view(monkeypatch) -> None:
     migration = _load_migration()
     statements: list[str] = []

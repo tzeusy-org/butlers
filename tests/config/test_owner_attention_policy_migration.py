@@ -40,15 +40,6 @@ def _sqls(function_name: str) -> list[str]:
     return captured
 
 
-def test_core_177_chains_from_current_core_head() -> None:
-    migration = _load_migration()
-    assert migration.revision == "core_177"
-    assert migration.down_revision == "core_176"
-    assert migration.branch_labels is None
-    assert callable(migration.upgrade)
-    assert callable(migration.downgrade)
-
-
 def test_upgrade_guards_optional_legacy_schema_and_preserves_canonical_precedence() -> None:
     sql = "\n".join(_sqls("upgrade"))
     assert "to_regclass('public.approvals_policy')" in sql

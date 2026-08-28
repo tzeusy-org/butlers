@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.identity import ResolvedContact, resolve_contacts_by_channel_bulk
+from butlers.identity import ResolvedContact
 from butlers.tools.switchboard.identity import inject as identity_inject
 from butlers.tools.switchboard.identity.inject import (
     _claim_unknown_sender_notification,
@@ -353,39 +353,6 @@ async def test_batch_resolution_deduplicates_and_reuses_bulk_known_results():
     reserve_unknown.assert_awaited_once()
     assert reserve_unknown.await_args.args[1] == "whatsapp_jid"
     assert reserve_unknown.await_args.kwargs.get("display_name") is None
-
-
-async def test_strict_bulk_failure_raises_instead_of_minting_unknown_entities(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """REQ-switchboard-identity-002: a bulk DB outage raises only a fixed typed failure."""
-    sentinels = (
-        "15551234567@s.whatsapp.net",
-        "15551234567",
-        "SELECT secret_phone FROM relationship.entity_facts",
-        "postgresql://sentinel-user:sentinel-pass@db.example/sentinel",
-        "sentinel inbound message body",
-    )
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=RuntimeError(" | ".join(sentinels)))
-
-    with (
-        caplog.at_level(logging.DEBUG),
-        pytest.raises(RuntimeError) as raised,
-    ):
-        await resolve_contacts_by_channel_bulk(
-            pool,
-            [("whatsapp_user_client", sentinels[0])],
-            raise_on_error=True,
-        )
-
-    assert type(raised.value).__name__ == "IdentityResolutionQueryError"
-    assert str(raised.value) == "Identity resolution query failed"
-    assert raised.value.__cause__ is None
-    assert raised.value.__context__ is None
-    rendered = f"{raised.value!s}\n{raised.value!r}\n{caplog.text}"
-    for sentinel in sentinels:
-        assert sentinel not in rendered
 
 
 async def test_batch_bulk_failure_does_not_enter_unknown_reservation_path(

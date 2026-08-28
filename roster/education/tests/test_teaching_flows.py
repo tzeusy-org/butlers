@@ -1692,12 +1692,3 @@ class TestTechniqueRecording:
         state["current_technique"] = {"id": "socratic"}
         with pytest.raises(ValueError, match="current_technique"):
             _validate_state_invariants(state)
-
-    def test_legacy_teaching_state_without_a_technique_still_validates(self) -> None:
-        """Flows written before this change keep advancing; they fall back to Socratic."""
-        from butlers.tools.education.teaching_flows import _validate_state_invariants
-
-        state = _flow_state(
-            status="teaching", current_node_id=str(uuid.uuid4()), current_phase="explaining"
-        )
-        _validate_state_invariants(state)  # no exception

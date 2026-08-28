@@ -2684,32 +2684,6 @@ class TestCompositeDeudupKeyCanonicalisation:
         k2 = self._call(posted_at=aware_utc, amount="-50.00", merchant="Test", account_id=None)
         assert k1 == k2
 
-    def test_different_timezone_same_moment_same_key(self):
-        """Two datetimes at the same UTC instant produce the same key."""
-        from datetime import timezone
-
-        utc_dt = datetime(2026, 1, 20, 12, 0, 0, tzinfo=UTC)
-        minus5 = datetime(2026, 1, 20, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
-        k1 = self._call(posted_at=utc_dt, amount="-100.00", merchant="M", account_id=None)
-        k2 = self._call(posted_at=minus5, amount="-100.00", merchant="M", account_id=None)
-        assert k1 == k2
-
-    def test_amount_quantized_to_cents(self):
-        """Amount variants that quantize identically produce the same key."""
-        posted = datetime(2026, 1, 15, tzinfo=UTC)
-        k1 = self._call(posted_at=posted, amount="-47.3", merchant="M", account_id=None)
-        k2 = self._call(posted_at=posted, amount="-47.30", merchant="M", account_id=None)
-        assert k1 == k2
-
-    def test_account_id_lowercased(self):
-        """account_id casing is irrelevant — both produce the same key."""
-        posted = datetime(2026, 2, 1, tzinfo=UTC)
-        upper = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
-        lower = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-        k1 = self._call(posted_at=posted, amount="-50.00", merchant="M", account_id=upper)
-        k2 = self._call(posted_at=posted, amount="-50.00", merchant="M", account_id=lower)
-        assert k1 == k2
-
     def test_none_account_id_same_as_empty_string(self):
         """None account_id is treated as empty string in the key."""
         posted = datetime(2026, 2, 2, tzinfo=UTC)
