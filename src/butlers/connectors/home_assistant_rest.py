@@ -711,13 +711,13 @@ class HAMeasurementHistoryRecovery:
                 event = build_rest_state_changed_event(previous, current, measurement_iso)
                 try:
                     submitted = await self._on_measurement(event)
-                except Exception:
+                except Exception as exc:
                     logger.warning(
                         "HA measurement history submission callback failed "
-                        "entity_id=%s measurement_at=%s",
+                        "entity_id=%s measurement_at=%s exception_class=%s",
                         entity.entity_id,
                         measurement_iso,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
                     success = False
                     break

@@ -266,12 +266,13 @@ async def test_failed_history_fetch_does_not_advance_entity_cursor(
 
 
 @pytest.mark.asyncio
-async def test_measurement_callback_exception_is_retryable_without_cursor_advance(
+async def test_measurement_callback_exception_is_content_blind_and_retryable(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     measurement_at = "2026-08-27T07:00:00+00:00"
-    recovery = _build_recovery(AsyncMock(side_effect=RuntimeError("callback exploded")))
+    sentinel = "SENTINEL_SECRET_RAW_PAYLOAD_WEIGHT_72_0"
+    recovery = _build_recovery(AsyncMock(side_effect=RuntimeError(sentinel)))
     monkeypatch.setattr(
         recovery,
         "_fetch_weight_entities",
@@ -301,9 +302,13 @@ async def test_measurement_callback_exception_is_retryable_without_cursor_advanc
     )
     assert callback_record.getMessage() == (
         "HA measurement history submission callback failed "
-        f"entity_id={_ENTITY_ID} measurement_at={measurement_at}"
+        f"entity_id={_ENTITY_ID} measurement_at={measurement_at} "
+        "exception_class=RuntimeError"
     )
-    assert callback_record.exc_info is not None
+    assert callback_record.exc_info is None
+    assert sentinel not in caplog.text
+    assert "Traceback" not in caplog.text
+    assert f"RuntimeError: {sentinel}" not in caplog.text
 
 
 @pytest.mark.asyncio
