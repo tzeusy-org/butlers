@@ -484,6 +484,21 @@ def test_launcher_refuses_configured_probe_without_usable_data_plane_target(
     assert not any(call.startswith("fake tailscale ") for call in calls)
 
 
+def test_launcher_rejects_whitespace_only_probe_command_before_mutation(tmp_path: Path) -> None:
+    """Whitespace cannot defer an explicit executor failure until after Compose starts."""
+    completed, calls = _launcher_harness(
+        tmp_path,
+        extra_environment={"TAILSCALE_SERVE_PROBE_COMMAND": " \t  "},
+    )
+
+    assert completed.returncode != 0
+    assert "whitespace-only" in completed.stderr
+    assert "no Serve or Compose lifecycle mutation was attempted" in completed.stderr
+    assert not any("compose" in call for call in calls)
+    assert not any(call.startswith("probe ") for call in calls)
+    assert not any(call.startswith("fake tailscale ") for call in calls)
+
+
 def test_caller_asserted_off_host_context_cannot_bless_same_host_executor(tmp_path: Path) -> None:
     completed, calls = _launcher_harness(
         tmp_path,
