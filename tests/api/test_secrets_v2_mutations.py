@@ -1374,7 +1374,7 @@ def test_rotate_github_revoke_network_error_does_not_fail_rotation(monkeypatch):
 # `/rotate`.  Every other user-credential mutation read discarded the two
 # queries behind those fields, so they no longer run there.
 #
-# These tests spy on the SQL actually issued (`pool.fetch`) rather than on the
+# These tests spy on the SQL actually issued (`pool.fetch*`) rather than on the
 # response shape: the responses were already correct before the skip, so only
 # the issued-SQL set can show the work stopped.
 # ---------------------------------------------------------------------------
@@ -1386,15 +1386,33 @@ _GRANTED_SCOPES_SQL = "granted_scopes"
 #: `_fetch_google_test_mode_expiry` — same table, different column; NOT skipped,
 #: because `state` is derived from the expiry it returns.
 _TEST_MODE_EXPIRY_SQL = "last_token_refresh_at"
+#: `_fetch_probe_log` — the aggregate, bare-key probe result used by detail reads.
+_AGGREGATE_PROBE_LOG_SQL = "AND credential_key = $2"
 
 
 def _issued_sql(shared_pool: AsyncMock) -> list[str]:
-    """Every SQL string the route issued through ``pool.fetch``."""
-    return [call.args[0] for call in shared_pool.fetch.await_args_list if call.args]
+    """Every SQL string the route issued through ``pool.fetch*``."""
+    return [
+        call.args[0]
+        for fetch_method in (shared_pool.fetchrow, shared_pool.fetch)
+        for call in fetch_method.await_args_list
+        if call.args
+    ]
 
 
 def _matching(shared_pool: AsyncMock, marker: str) -> list[str]:
     return [sql for sql in _issued_sql(shared_pool) if marker in sql]
+
+
+def _capability_probe_log_sql(shared_pool: AsyncMock) -> list[str]:
+    """SQL fetches whose issued key list targets capability-qualified probes."""
+    return [
+        call.args[0]
+        for call in shared_pool.fetch.await_args_list
+        if len(call.args) >= 3
+        and "FROM public.secret_probe_log" in call.args[0]
+        and any(isinstance(key, str) and ":" in key for key in call.args[2])
+    ]
 
 
 def _stub_revoke(monkeypatch) -> None:
@@ -1486,6 +1504,142 @@ def test_reauthorize_issues_no_scope_evidence_queries():
     assert _matching(shared_pool, _GRANTED_SCOPES_SQL) == []
 
 
+@pytest.mark.parametrize(
+    ("path", "json_body", "oauth_app_configured", "expected_evidence_reads"),
+    [
+        pytest.param(
+            "/api/secrets/user/google/rotate",
+            {"value": "new-tok"},
+            False,
+            1,
+            id="rotate-keeps-only-published-reread",
+        ),
+        pytest.param(
+            "/api/secrets/user/google/disconnect",
+            None,
+            False,
+            0,
+            id="disconnect-skips-discarded-evidence",
+        ),
+        pytest.param(
+            "/api/secrets/user/google/probe",
+            None,
+            False,
+            0,
+            id="probe-skips-discarded-evidence",
+        ),
+        pytest.param(
+            "/api/secrets/user/google/reauthorize",
+            None,
+            True,
+            0,
+            id="reauthorize-skips-discarded-evidence",
+        ),
+    ],
+)
+def test_mutation_reads_skip_discarded_probe_and_capability_evidence(
+    monkeypatch,
+    path: str,
+    json_body: dict[str, str] | None,
+    oauth_app_configured: bool,
+    expected_evidence_reads: int,
+):
+    """Mutation pre-reads fetch only evidence their response can publish.
+
+    ``rotate`` re-reads after its update and publishes the content-blind detail,
+    so that second read still needs aggregate and capability probe evidence.
+    The initial lookup — and every read for the other three mutations —
+    discards both fields and must issue neither SQL query.
+    """
+    if path.endswith(("/rotate", "/disconnect")):
+        _stub_revoke(monkeypatch)
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="old-tok")
+    mock_db = _make_db(user_row=row, oauth_app_configured=oauth_app_configured)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    response = client.post(path, json=json_body)
+
+    assert response.status_code == 200, response.text
+    assert {
+        "aggregate": len(_matching(shared_pool, _AGGREGATE_PROBE_LOG_SQL)),
+        "capability": len(_capability_probe_log_sql(shared_pool)),
+    } == {"aggregate": expected_evidence_reads, "capability": expected_evidence_reads}
+
+
+@pytest.mark.asyncio
+async def test_single_user_secret_loads_probe_evidence_by_default():
+    """Read callers retain truthful detail evidence unless they opt out."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="tok")
+    shared_pool = _make_shared_pool(user_row=row)
+
+    record = await _secrets_v2._fetch_single_user_secret(
+        shared_pool,
+        provider="google",
+        identity=None,
+    )
+
+    assert record is not None
+    assert record.probe_log_loaded is True
+    assert record.capabilities_loaded is True
+    assert len(_matching(shared_pool, _AGGREGATE_PROBE_LOG_SQL)) == 1
+    assert len(_capability_probe_log_sql(shared_pool)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "skipped_option",
+        "loaded_field",
+        "required_flag",
+        "expected_aggregate_reads",
+        "expected_capability_reads",
+    ),
+    [
+        pytest.param(
+            "include_probe_log",
+            "probe_log_loaded",
+            "include_probe_log=True",
+            0,
+            1,
+            id="probe-log",
+        ),
+        pytest.param(
+            "include_capabilities",
+            "capabilities_loaded",
+            "include_capabilities=True",
+            1,
+            0,
+            id="capabilities",
+        ),
+    ],
+)
+async def test_single_user_secret_marks_skipped_evidence_unprojectable(
+    skipped_option: str,
+    loaded_field: str,
+    required_flag: str,
+    expected_aggregate_reads: int,
+    expected_capability_reads: int,
+):
+    """Helper skip flags must carry through to the content-blind boundary."""
+    row = _make_entity_info_row(info_type="google_oauth_refresh", value="tok")
+    shared_pool = _make_shared_pool(user_row=row)
+
+    record = await _secrets_v2._fetch_single_user_secret(
+        shared_pool,
+        provider="google",
+        identity=None,
+        **{skipped_option: False},
+    )
+
+    assert record is not None
+    assert getattr(record, loaded_field) is False
+    assert len(_matching(shared_pool, _AGGREGATE_PROBE_LOG_SQL)) == expected_aggregate_reads
+    assert len(_capability_probe_log_sql(shared_pool)) == expected_capability_reads
+    with pytest.raises(ValueError, match=required_flag):
+        _secrets_v2._content_blind_detail(record)
+
+
 def test_content_blind_detail_refuses_a_record_whose_scopes_were_skipped():
     """The skip must never be projected as honest-empty capability evidence.
 
@@ -1503,4 +1657,29 @@ def test_content_blind_detail_refuses_a_record_whose_scopes_were_skipped():
     )
 
     with pytest.raises(ValueError, match="include_scopes=True"):
+        _secrets_v2._content_blind_detail(skipped)
+
+
+@pytest.mark.parametrize(
+    ("skipped_field", "required_flag"),
+    [
+        pytest.param("probe_log_loaded", "include_probe_log=True", id="probe-log"),
+        pytest.param("capabilities_loaded", "include_capabilities=True", id="capabilities"),
+    ],
+)
+def test_content_blind_detail_refuses_a_record_with_skipped_evidence_read(
+    skipped_field: str,
+    required_flag: str,
+):
+    """A skipped read must never become an honest-empty evidence payload."""
+    skipped = _secrets_v2._UserCredentialRecord(
+        id=str(uuid4()),
+        entity_id=str(uuid4()),
+        type="google_oauth_refresh",
+        provider="google",
+        state="ok",
+        **{skipped_field: False},
+    )
+
+    with pytest.raises(ValueError, match=required_flag):
         _secrets_v2._content_blind_detail(skipped)

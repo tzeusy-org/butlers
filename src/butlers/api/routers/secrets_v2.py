@@ -627,8 +627,22 @@ class _UserCredentialRecord(BaseModel):
     """
     failure_tail: str | None = None
     test: TestResult | None = None
+    probe_log_loaded: bool = True
+    """Whether the aggregate probe-log read behind ``test`` ran.
+
+    False on mutation pre-reads that do not publish probe evidence. ``None``
+    then means "not fetched", not "no probe has been recorded" — a
+    distinction ``_content_blind_detail`` enforces before serialisation.
+    """
     audit: list[dict] = Field(default_factory=list)
     capabilities: list[CapabilityStatus] = Field(default_factory=list)
+    capabilities_loaded: bool = True
+    """Whether the capability-qualified probe-log read ran.
+
+    False on mutation pre-reads that do not publish per-capability evidence.
+    An empty list then means "not fetched", not "no capability probe data";
+    ``_content_blind_detail`` refuses to project that ambiguity.
+    """
 
 
 def _test_outcome(test: TestResult | None) -> CredentialTestOutcome | None:
@@ -650,15 +664,25 @@ def _content_blind_detail(record: _UserCredentialRecord) -> UserSecretDetail:
     the internal record must be consciously allowed through here before it can
     reach a client.
 
-    Raises ``ValueError`` when handed a record read with ``include_scopes=False``:
-    that record's empty scope lists would project onto empty
-    ``capabilities_required`` / ``capabilities_granted``, which this payload
-    documents as "no capability is recorded", never "not looked up".
+    Raises ``ValueError`` when handed a record whose scopes, aggregate probe
+    result, or capability probe evidence was skipped. Those records contain
+    empty/``None`` evidence placeholders that this payload documents as
+    authoritative absence, never "not looked up".
     """
     if not record.scopes_loaded:
         raise ValueError(
             "_content_blind_detail requires a record fetched with include_scopes=True; "
             "capability evidence cannot be derived from a skipped scope read"
+        )
+    if not record.probe_log_loaded:
+        raise ValueError(
+            "_content_blind_detail requires a record fetched with include_probe_log=True; "
+            "probe evidence cannot be derived from a skipped probe-log read"
+        )
+    if not record.capabilities_loaded:
+        raise ValueError(
+            "_content_blind_detail requires a record fetched with include_capabilities=True; "
+            "capability probe evidence cannot be derived from a skipped read"
         )
     return UserSecretDetail(
         id=record.id,
@@ -2986,6 +3010,8 @@ async def _fetch_single_user_secret(
     identity: UUID | None,
     include_audit: bool = False,
     include_scopes: bool = True,
+    include_probe_log: bool = True,
+    include_capabilities: bool = True,
 ) -> _UserCredentialRecord | None:
     """Fetch a single entity_info row matching the given provider.
 
@@ -3000,14 +3026,14 @@ async def _fetch_single_user_secret(
     source failure can be reported explicitly without changing mutation
     semantics.
 
-    ``include_scopes`` defaults to True — unlike ``include_audit`` — because
-    ``scopes_required`` / ``scopes_granted`` are what
-    ``_capability_categories`` turns into published capability evidence, so a
-    caller that forgets to ask would publish an empty list that reads as
-    "nothing granted".  The mutation routes pass False: none of them reads
-    either field, and none of their responses carries capability evidence
-    (bu-psw7o).  The record then carries ``scopes_loaded=False`` so
-    ``_content_blind_detail`` refuses it rather than projecting the gap.
+    ``include_scopes``, ``include_probe_log``, and
+    ``include_capabilities`` default to True because their respective result
+    fields are published as credential evidence. A caller that forgets to ask
+    would otherwise project an empty list or ``None`` as an honest absence.
+    Mutation pre-reads pass all three as False: they do not publish that
+    evidence. The record carries matching ``*_loaded=False`` sentinels so
+    ``_content_blind_detail`` refuses it rather than projecting the gap. The
+    rotate route's post-update response re-read leaves the defaults intact.
 
     The result is an internal record, not a response payload — route it
     through ``_content_blind_detail`` before returning it to a client.
@@ -3094,8 +3120,13 @@ async def _fetch_single_user_secret(
         last_verified=row["last_verified"],
     )
     fp = _fingerprint(value)
-    test = await _fetch_probe_log(pool, "user", row["type"])
-    capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
+    test: TestResult | None = None
+    if include_probe_log:
+        test = await _fetch_probe_log(pool, "user", row["type"])
+
+    capability_map: dict[str, list[CapabilityStatus]] = {}
+    if include_capabilities:
+        capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
     scopes_required: list[str] = []
     scopes_granted: list[str] = []
     if include_scopes:
@@ -3136,8 +3167,10 @@ async def _fetch_single_user_secret(
         scopes_loaded=include_scopes,
         failure_tail=row["last_test_message"],
         test=test,
+        probe_log_loaded=include_probe_log,
         audit=audit,
         capabilities=capability_map.get(row["type"], []),
+        capabilities_loaded=include_capabilities,
     )
 
 
@@ -5122,10 +5155,15 @@ async def rotate_user_credential(
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
     # Locate the existing row so we can confirm it exists and capture the old token value.
-    # Scopes are skipped: this read only supplies `id` and `type`, and the response is
-    # built from the post-update re-read below, which does load them (bu-psw7o).
+    # Evidence reads are skipped: this read only supplies `id` and `type`, and the response is
+    # built from the post-update re-read below, which does load them (bu-psw7o, bu-mxfjt).
     detail = await _fetch_single_user_secret(
-        shared_pool, provider=provider, identity=identity, include_scopes=False
+        shared_pool,
+        provider=provider,
+        identity=identity,
+        include_scopes=False,
+        include_probe_log=False,
+        include_capabilities=False,
     )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5250,10 +5288,15 @@ async def disconnect_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Confirm the credential exists before deleting.  Scopes are skipped: only `id`
-    # and `type` are read here and the response is a bare status (bu-psw7o).
+    # Confirm the credential exists before deleting. Evidence reads are skipped: only `id`
+    # and `type` are read here and the response is a bare status (bu-psw7o, bu-mxfjt).
     detail = await _fetch_single_user_secret(
-        shared_pool, provider=provider, identity=identity, include_scopes=False
+        shared_pool,
+        provider=provider,
+        identity=identity,
+        include_scopes=False,
+        include_probe_log=False,
+        include_capabilities=False,
     )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5458,12 +5501,17 @@ async def probe_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Fetch the credential to derive current state.  Scopes are skipped: the probe reads
+    # Fetch the credential to derive current state. Evidence reads are skipped: the probe reads
     # `id`, `entity_id`, `type`, `state` and `failure_tail`, and publishes a TestResult
-    # that carries no capability evidence (bu-psw7o).  The Google test-mode expiry read
+    # that carries no read-side evidence (bu-psw7o, bu-mxfjt). The Google test-mode expiry read
     # stays — `state` is derived from it.
     detail = await _fetch_single_user_secret(
-        shared_pool, provider=provider, identity=identity, include_scopes=False
+        shared_pool,
+        provider=provider,
+        identity=identity,
+        include_scopes=False,
+        include_probe_log=False,
+        include_capabilities=False,
     )
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -5791,11 +5839,16 @@ async def reauthorize_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Look up the credential to decide whether an account reference applies.  Scopes are
+    # Look up the credential to decide whether an account reference applies. Evidence reads are
     # skipped: only the presence of the row, its `label`, and its `entity_id` matter here,
-    # and the response is a redirect URL (bu-psw7o).
+    # and the response is a redirect URL (bu-psw7o, bu-mxfjt).
     detail = await _fetch_single_user_secret(
-        shared_pool, provider=provider, identity=identity, include_scopes=False
+        shared_pool,
+        provider=provider,
+        identity=identity,
+        include_scopes=False,
+        include_probe_log=False,
+        include_capabilities=False,
     )
 
     if detail is None:
