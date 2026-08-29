@@ -14,13 +14,13 @@ under xdist `--maxfail=1` interrupts on the first ordinary test failure: the
 controller sets `shouldstop` and raises `Interrupted`
 (`xdist/dsession.py`), where a serial run would raise `Failed` and exit `1`.
 
-Both halves of that hold unconditionally here. `pyproject.toml`'s `addopts`
-carries `-n 3 --dist loadfile`, so every pytest invocation in this repository is
-an xdist run whether or not it says so, and every quality-gate invocation passes
-`--maxfail=1`: `QG_PYTEST_ARGS` in the `Makefile`, and the low-context snippet in
-`CLAUDE.md`. So the moment `bu-ecizp` wired the gate into `make test-qg`, every
-genuine red run started reporting UNKNOWN. Observed on that bead's first full
-run:
+Both halves hold on the normal parallel path. `pyproject.toml`'s `addopts`
+carries `-n 3 --dist loadfile`, so nearly every pytest invocation runs under
+xdist by default; `make test-qg-serial` deliberately overrides that with `-n 0`.
+Every quality-gate invocation passes `--maxfail=1`: `QG_PYTEST_ARGS` in the
+`Makefile`, and the low-context snippet in `CLAUDE.md`. So the moment
+`bu-ecizp` wired the gate into the default `make test-qg`, genuine red parallel
+runs started reporting UNKNOWN. Observed on that bead's first full run:
 
     1 failed, 6482 passed ... ## pytest-gate exit=2
 
@@ -30,6 +30,22 @@ product. A gate that cries UNKNOWN on the most ordinary failure there is teaches
 its readers that UNKNOWN means "probably just a real failure". That is precisely
 the reflex `bu-5hp74` exists to prevent, and it only works while UNKNOWN is
 rare.
+
+## Baseline provenance
+
+`bu-5hp74` / PR #3861 added this requirement directly to
+`openspec/specs/testing/spec.md`, with its four positive-terminator scenarios.
+Its dependent `bu-ecizp` / PR #3869 then added the
+`Quality-gate make targets produce a receipt and a verdict` scenario directly
+to that same baseline requirement. Neither merge had a change-local delta.
+
+This is the sole active `## MODIFIED Requirements` block for the shared
+requirement. The four baseline scenarios unrelated to the exit-`2` refinement
+(including the quality-gate receipt) remain verbatim; the existing Sentinel
+scenario's exit-`2` clause is intentionally refined below. A second retroactive
+same-name block would collide at archive, so recording the earlier direct edits
+here preserves their provenance without introducing another future baseline
+rewrite. This maintenance leaves the canonical baseline untouched.
 
 ## The decision
 
@@ -86,5 +102,6 @@ verdict exists, and a counts line cannot contradict them.
   regression cover pinning exits `0`, `1`, `4`, `5`, and `128+signal` as
   unaffected by any summary line in the log.
 - No caller changes. `make test-qg`, `make test-qg-serial`, and the `CLAUDE.md`
-  snippet keep their arguments and their exit statuses; only the printed verdict
-  on a red run changes, from `UNKNOWN` to `FAILED`.
+  snippet keep their arguments and their exit statuses; only an exit-`2` red run
+  on the default parallel path changes its printed verdict, from `UNKNOWN` to
+  `FAILED`.

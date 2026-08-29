@@ -1,13 +1,18 @@
 # Tasks
 
 ## 1. Contract
+- [x] 1.0 Record the direct baseline provenance of `bu-5hp74` / PR #3861 and
+      `bu-ecizp` / PR #3869 in this sole active same-name change. The four
+      baseline scenarios unrelated to exit-`2` (including the quality-gate
+      receipt) remain verbatim; the existing Sentinel scenario's exit-`2`
+      clause is intentionally refined.
 - [x] 1.1 MODIFY the `testing` requirement **Pytest Run Verdicts Require a
       Positive Terminator**, rebuilt on the live baseline so archiving it drops
       no clause.
 - [x] 1.2 Narrow the sentinel scenario's UNKNOWN list to `3`, `4`, `5`, and
       `128+signal`, keeping its name (OpenSpec's strict validator rejects a
-      scenario rename inside a MODIFIED block) and freezing the one replaced
-      clause in `scripts/spec-overwrite-baseline.json` as intended.
+      scenario rename inside a MODIFIED block), while the live-baseline rebuild
+      preserves the replaced clause without a frozen ratchet exception.
 - [x] 1.3 Add the interrupted-run scenario: exit `2` plus counts reporting
       failures is FAILED; exit `2` with no such counts stays UNKNOWN; the
       summary may never promote exit `2` to PASS.

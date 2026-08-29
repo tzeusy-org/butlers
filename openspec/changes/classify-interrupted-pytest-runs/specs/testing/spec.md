@@ -3,7 +3,7 @@
 ### Requirement: Pytest Run Verdicts Require a Positive Terminator
 A pytest run's outcome SHALL be established by positive evidence that the run finished — a summary line, or the process exit status — never by the absence of a failure line. A run that produced neither is UNKNOWN, and UNKNOWN SHALL NOT be treated as a pass.
 
-Where both terminators are present and the exit status alone cannot distinguish a failed run from an unfinished one, the verdict SHALL read them together. That is exactly one status: pytest's `2`, the *interrupted* run, which `--maxfail` produces on an ordinary test failure under xdist (the only mode this repository runs, since `addopts` carries `-n 3`). Reading it as UNKNOWN would make UNKNOWN the label on the most common red run there is, and UNKNOWN only carries weight while it stays rare.
+Where both terminators are present and the exit status alone cannot distinguish a failed run from an unfinished one, the verdict SHALL read them together. That is exactly one status: pytest's `2`, the *interrupted* run, which `--maxfail` produces on an ordinary test failure under xdist (the default parallel mode, since `addopts` carries `-n 3`; `make test-qg-serial` explicitly overrides it with `-n 0`). Reading it as UNKNOWN would make UNKNOWN the label on the most common red run there is, and UNKNOWN only carries weight while it stays rare.
 
 #### Scenario: Truncated log has no verdict
 - **WHEN** `scripts/pytest_gate.py verdict LOG` reads a log carrying neither a gate sentinel nor a pytest summary line, including the xdist truncation whose workers report `OSError: cannot send (already closed?)` after their controller is signal-killed
@@ -43,4 +43,3 @@ Where both terminators are present and the exit status alone cannot distinguish 
 - **THEN** pytest is launched through `scripts/pytest_gate.py run` on the project interpreter (`uv run python`, never a bare `python3`, which resolves outside the venv and turns every run into `ModuleNotFoundError` -> exit 4 -> UNKNOWN), writing its log under `.tmp/test-logs/`
 - **AND** the target ends with `scripts/pytest_gate.py verdict`, whose exit status is the target's, so an UNKNOWN run fails the gate instead of passing silently
 - **AND** the run is mirrored to the terminal as it goes, so routing through the gate costs no interactivity
-

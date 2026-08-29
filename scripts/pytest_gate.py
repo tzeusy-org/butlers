@@ -117,11 +117,13 @@ def _reports_failures(body: str) -> bool:
 def _interrupted_verdict(summary: str | None) -> Verdict:
     """Classify pytest's exit 2, the *interrupted* run, against its own counts.
 
-    Under xdist -- which ``addopts`` makes unconditional here -- ``--maxfail``
-    stops the session by raising ``Interrupted``, so the gate's own arguments
-    turn every ordinary red run into exit 2. But pytest still printed its counts
-    on the way out, and those counts are a positive terminator. When they report
-    failures, the run is FAILED and calling it UNKNOWN would only blunt the word.
+    The default ``make test-qg`` path runs xdist with ``-n auto``. There,
+    ``--maxfail`` stops the session by raising ``Interrupted``, so an ordinary
+    red parallel gate exits 2. ``make test-qg-serial`` deliberately passes
+    ``-n 0`` for order-dependent debugging, and its ordinary red run exits 1
+    instead. Pytest still printed its counts on the way out, and those counts are
+    a positive terminator. When they report failures, the run is FAILED and
+    calling it UNKNOWN would only blunt the word.
 
     The counts cannot rescue the run, only convict it. A Ctrl-C partway through
     a green run prints a summary with no failures in it, and that run still

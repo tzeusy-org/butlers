@@ -427,9 +427,10 @@ def test_a_real_maxfail_run_exits_two_and_reads_as_failed(tmp_path: Path) -> Non
 
     Under xdist the controller answers ``--maxfail`` by raising ``Interrupted``
     (``xdist/dsession.py``), which pytest reports as exit 2 — where a serial run
-    would raise ``Failed`` and exit 1. Every run in this repo is an xdist run
-    (``addopts`` carries ``-n 3``) and every gate invocation passes
-    ``--maxfail=1``, so this is the shape of an ordinary red gate run.
+    would raise ``Failed`` and exit 1. The default ``make test-qg`` path is
+    xdist (it passes ``-n auto``), while ``make test-qg-serial`` explicitly uses
+    ``-n 0``. Every quality-gate invocation passes ``--maxfail=1``, so this is
+    the shape of an ordinary red parallel gate run.
 
     Pinning it here means that if pytest or xdist ever changes that status, the
     premise fails loudly instead of the classification quietly going stale.
