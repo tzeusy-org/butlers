@@ -51,9 +51,7 @@ _SOURCE_DIRS = [
 ]
 
 # Pattern that would violate the append-only contract.
-# Detects SQL DELETE targeting audit_log on non-comment lines.
-# Requires the keyword to appear at the start of meaningful SQL (not inside
-# a Python comment starting with '#').
+# Detects SQL DELETE targeting audit_log in Python string literals.
 _DELETE_PATTERN = re.compile(
     r"DELETE\s+FROM\s+(?:public\.)?audit_log\b",
     re.IGNORECASE,
@@ -77,10 +75,57 @@ def _iter_python_files():
                     yield path
 
 
-def _is_comment_or_docstring_line(line: str) -> bool:
-    """Heuristic: skip lines that are pure Python comments."""
-    stripped = line.strip()
-    return stripped.startswith("#")
+_INTERPOLATION = "_expr_"
+
+
+def _docstring_node_ids(tree: ast.AST) -> set[int]:
+    """Return ids of Constant nodes that occupy Python docstring positions."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            ids.add(id(first.value))
+    return ids
+
+
+def _string_literals(source: str, *, filename: str) -> list[tuple[int, str]]:
+    """Return non-docstring string literals with f-strings reassembled."""
+    tree = ast.parse(source, filename=filename)
+    skip = _docstring_node_ids(tree)
+    literals: list[tuple[int, str]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                skip.add(id(value))
+                parts.append(value.value)
+            else:
+                parts.append(_INTERPOLATION)
+        literals.append((node.lineno, "".join(parts)))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in skip:
+            literals.append((node.lineno, node.value))
+
+    return literals
+
+
+def _audit_log_delete_violations(source: str, path: Path) -> list[str]:
+    """Return real audit_log DELETE literals while ignoring Python prose."""
+    return [
+        f"{path}:{lineno}: {literal.strip()}"
+        for lineno, literal in _string_literals(source, filename=str(path))
+        if _DELETE_PATTERN.search(literal)
+    ]
 
 
 def _direct_audit_result_omissions(source: str, path: Path) -> list[str]:
@@ -124,10 +169,71 @@ def _direct_audit_result_omissions_in_roots(
     return omissions
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            'sql = "DELETE FROM audit_log WHERE id = $1"\n',
+            ["literal.py:1: DELETE FROM audit_log WHERE id = $1"],
+        ),
+        (
+            'sql = f"DELETE FROM public.audit_log WHERE id = {audit_id}"\n',
+            ["literal.py:1: DELETE FROM public.audit_log WHERE id = _expr_"],
+        ),
+    ],
+)
+def test_audit_log_delete_guard_reports_sql_literals(source: str, expected: list[str]):
+    assert _audit_log_delete_violations(source, Path("literal.py")) == expected
+
+
+def test_audit_log_delete_guard_ignores_comments_and_docstrings():
+    source = '''\
+# DELETE FROM audit_log is forbidden.
+"""Documentation may mention DELETE FROM audit_log."""
+
+class Guidance:
+    """Never issue DELETE FROM public.audit_log."""
+
+
+def describe_guard():
+    """Explain why DELETE FROM audit_log is forbidden."""
+
+
+async def describe_async_guard():
+    """The same DELETE FROM audit_log prose is safe here."""
+'''
+
+    assert _audit_log_delete_violations(source, Path("prose.py")) == []
+
+
+def test_no_delete_from_audit_log_rejects_injected_repo_file(tmp_path, monkeypatch):
+    """The repository traversal, not only the literal helper, must stay causal."""
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    (source_root / "prose.py").write_text(
+        '# DELETE FROM audit_log is forbidden.\n"""Documentation may mention DELETE FROM audit_log."""\n',
+        encoding="utf-8",
+    )
+    (source_root / "violating_audit_log_delete.py").write_text(
+        'sql = f"DELETE FROM public.audit_log WHERE id = {audit_id}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "_REPO_ROOT", tmp_path)
+    monkeypatch.setitem(globals(), "_SOURCE_DIRS", [source_root])
+
+    with pytest.raises(AssertionError) as exc_info:
+        test_no_delete_from_audit_log_in_repo()
+
+    message = str(exc_info.value)
+    assert "src/violating_audit_log_delete.py:1: DELETE FROM public.audit_log" in message
+    assert "src/prose.py" not in message
+
+
 def test_no_delete_from_audit_log_in_repo():
-    """Fail CI if any .py file in src/, tests/, or roster/ contains a
-    destructive SQL statement targeting audit_log.  The table is append-only
-    by design (spec §2.4, core_092).
+    """Fail CI if a Python SQL literal deletes from the append-only audit_log.
+
+    Comments never appear in the AST and docstrings are excluded structurally;
+    every other literal is scanned, including reconstructed f-strings.
     """
     violations: list[str] = []
     for path in _iter_python_files():
@@ -135,11 +241,7 @@ def test_no_delete_from_audit_log_in_repo():
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if _is_comment_or_docstring_line(line):
-                continue
-            if _DELETE_PATTERN.search(line):
-                violations.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}: {line.strip()}")
+        violations.extend(_audit_log_delete_violations(text, path.relative_to(_REPO_ROOT)))
 
     assert not violations, (
         "Found destructive statement(s) targeting public.audit_log — "
