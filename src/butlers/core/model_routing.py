@@ -83,7 +83,7 @@ from butlers.core.model_capabilities import (
 )
 
 if TYPE_CHECKING:
-    from butlers.api.pricing import PricingConfig
+    from butlers.core.pricing import PricingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1389,7 +1389,7 @@ def _get_cached_pricing() -> PricingConfig | None:
     global _cached_pricing
     if _cached_pricing is None:
         try:
-            from butlers.api.pricing import load_pricing
+            from butlers.core.pricing import load_pricing
 
             _cached_pricing = load_pricing()
         except Exception:
@@ -2593,10 +2593,10 @@ def price_ledger_usage_rows(
     ceiling and dashboard aggregates: every consumer gets the same priced
     subtotal and the same omission envelope.
     """
-    # Lazy import avoids turning the core routing module into an API import at
-    # module load time. It also mirrors the existing pricing path used by the
+    # Lazy import keeps optional pricing policy out of routing module
+    # initialization. It also mirrors the existing pricing path used by the
     # spawner's live event emission.
-    from butlers.api.pricing import estimate_session_cost, load_pricing
+    from butlers.core.pricing import estimate_session_cost, load_pricing
 
     effective_pricing = pricing or load_pricing()
     cost_usd = 0.0
@@ -2654,9 +2654,9 @@ async def price_mtd_from_ledger(
 
     Aggregates the current-month ledger rows by ``model_id`` (joined to
     ``public.model_catalog``) and prices each bucket via
-    ``butlers.api.pricing.estimate_session_cost`` — the same pathway the
+    ``butlers.core.pricing.estimate_session_cost`` — the same pathway the
     spawner uses when emitting per-call spend events — through a lazy import
-    to avoid a core→api import cycle.
+    to keep optional pricing policy out of module initialization.
 
     This is the single source of truth for "how much has been spent this
     month", shared by :func:`check_monthly_ceiling` (the spawn-deny gate) and

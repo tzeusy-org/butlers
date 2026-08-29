@@ -80,8 +80,8 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ApiResponse
-from butlers.api.pricing import PricingConfig
 from butlers.core.general_settings import load_general_settings
+from butlers.core.pricing import PricingConfig
 from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.credential_store import CredentialStore
 from butlers.metrics_registry import get_or_create_counter

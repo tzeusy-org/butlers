@@ -314,7 +314,7 @@ def _estimate_worst_case_call_cost(
     if not model or max_token_budget is None or max_token_budget <= 0:
         return None
     try:
-        from butlers.api.pricing import load_pricing
+        from butlers.core.pricing import load_pricing
 
         global _cached_pricing
         if _cached_pricing is None:
@@ -3260,11 +3260,11 @@ class Spawner:
             # Emit per-call cost event onto the multiplexed fleet event bus via
             # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same
             # token counts as the DB ledger (best-effort early capture). Lazy
-            # import avoids a circular dependency: core → api.
+            # import keeps optional pricing policy off the no-usage path.
             if _ledger_input_tokens is not None:
                 _spend_event: dict[str, Any] | None = None
                 try:
-                    from butlers.api.pricing import estimate_session_cost, load_pricing
+                    from butlers.core.pricing import estimate_session_cost, load_pricing
 
                     # Cache pricing config at module level so pricing.toml is not
                     # read from disk on every session close (hot path).

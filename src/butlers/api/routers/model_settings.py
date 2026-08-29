@@ -29,13 +29,13 @@ import butlers.api.routers.audit as audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.model_routing import (
     RoutingScore,
     get_breaker_states,
     get_routing_scores,
     resolve_model,
 )
+from butlers.core.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.runtime_probe_control.activation import probe_client
 from butlers.core.runtime_probe_control.coordinator import HTTP_STATUS, ProbeResult, ProbeStatus
 

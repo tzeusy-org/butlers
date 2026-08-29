@@ -14,8 +14,8 @@ import httpx
 import pytest
 
 from butlers.api.deps import ButlerConnectionInfo, get_pricing
-from butlers.api.pricing import ModelPricing, PricingConfig
 from butlers.api.routers.butlers import _cadence_label, _get_db_manager
+from butlers.core.pricing import ModelPricing, PricingConfig
 
 from .conftest import make_mock_mcp_manager, make_test_app
 

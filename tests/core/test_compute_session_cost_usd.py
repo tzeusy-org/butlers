@@ -7,7 +7,7 @@ Pricing path:
 - pricing + model, zero tokens     → falls through to JSONB fallback (0 is falsy)
 - pricing + tokens, no/empty model → falls through to JSONB fallback
 - pricing available, JSONB present → pricing wins (not JSONB)
-- pricing + unknown model          → estimate returns 0.0, falls through (not 0.0 directly)
+- pricing + unknown model          → estimate returns None (unpriced), falls through
 
 JSONB fallback:
 - float / string / int / zero total_usd → coerced/returned
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.unit
 
 def _make_pricing(model_id: str = "claude-test", price_per_token: float = 1e-6):
     """Build a minimal PricingConfig with a single model entry."""
-    from butlers.api.pricing import ModelPricing, PricingConfig
+    from butlers.core.pricing import ModelPricing, PricingConfig
 
     return PricingConfig({model_id: ModelPricing(price_per_token, price_per_token * 2)})
 
@@ -93,7 +93,7 @@ def test_pricing_path_wins_over_jsonb() -> None:
 @pytest.mark.parametrize(
     ("model", "input_tokens", "output_tokens", "jsonb_value", "expected"),
     [
-        # estimate_session_cost yields 0.0 for unknown model → falls through to JSONB
+        # estimate_session_cost yields None for an unpriced model → JSONB fallback
         ("unknown-model-xyz", 1000, 500, 0.0314, 0.0314),
         # (0 or 0) token count is falsy → falls through to JSONB
         ("claude-test", 0, 0, 0.042, 0.042),
@@ -122,12 +122,12 @@ def test_pricing_path_falls_through_to_jsonb_value(
 @pytest.mark.parametrize(
     "model",
     [
-        "unknown-model-xyz",  # estimate returns 0.0 → falls through → no JSONB → None
+        "unknown-model-xyz",  # estimate returns None → falls through → no JSONB → None
         None,  # no model → falls through → no JSONB → None
     ],
 )
 def test_pricing_path_falls_through_to_none(model) -> None:
-    """pricing path unusable + no JSONB cost → None (estimate's 0.0 is never returned)."""
+    """Pricing path unusable + no JSONB cost leaves unknown pricing unpriced."""
     pricing = _make_pricing("known-model", price_per_token=1e-6)
     session = _session(model=model, input_tokens=1000, output_tokens=500, cost=None)
     result = _compute_session_cost_usd(session, pricing)

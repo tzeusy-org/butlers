@@ -57,7 +57,6 @@ from butlers.api.models.session import (
     SessionKindItem,
 )
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
-from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.read_models.sessions_v1 import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
@@ -69,6 +68,7 @@ from butlers.api.read_models.sessions_v1 import (
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
 )
+from butlers.core.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)
 

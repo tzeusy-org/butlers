@@ -339,7 +339,7 @@ class TestDepsModuleGlobalIsolation:
         # may be a leaked mock — catching that is the point of this check.
         from butlers.api.db import DatabaseManager
         from butlers.api.deps import MCPClientManager
-        from butlers.api.pricing import PricingConfig
+        from butlers.core.pricing import PricingConfig
 
         expected_types = {
             "_db_manager": DatabaseManager,

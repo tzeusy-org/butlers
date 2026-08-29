@@ -636,8 +636,8 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
     from unittest.mock import MagicMock
 
     from butlers.api.deps import ButlerConnectionInfo
-    from butlers.api.pricing import ModelPricing, PricingConfig
     from butlers.api.routers.spend import _get_butler_top_sessions_from_db
+    from butlers.core.pricing import ModelPricing, PricingConfig
     from butlers.core.sessions import session_complete, session_create
 
     pricing = PricingConfig(
@@ -693,8 +693,8 @@ async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
     from unittest.mock import MagicMock
 
     from butlers.api.deps import ButlerConnectionInfo
-    from butlers.api.pricing import ModelPricing, PricingConfig
     from butlers.api.routers.spend import _get_butler_schedule_costs_from_db
+    from butlers.core.pricing import ModelPricing, PricingConfig
     from butlers.core.scheduler import schedule_create
     from butlers.core.sessions import session_complete, session_create
 

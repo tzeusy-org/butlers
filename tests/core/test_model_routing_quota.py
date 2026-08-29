@@ -68,7 +68,7 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     pool_under = MagicMock()
     pool_under.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
     pool_under.fetch = AsyncMock(return_value=usage_rows)
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         under = await check_monthly_ceiling(pool_under)
     assert under.allowed is True and under.mtd_usd == 42.0 and under.ceiling_usd == 100.0
 
@@ -76,7 +76,7 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     pool_over = MagicMock()
     pool_over.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
     pool_over.fetch = AsyncMock(return_value=usage_rows)
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=150.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=150.0):
         over = await check_monthly_ceiling(pool_over)
     assert over.allowed is False and over.mtd_usd == 150.0 and over.ceiling_usd == 100.0
 
@@ -111,7 +111,7 @@ async def test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source() 
     pool.fetch = AsyncMock(return_value=usage_rows)
     pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         direct_mtd = await price_mtd_from_ledger(pool)
         ceiling = await check_monthly_ceiling(pool)
 
@@ -137,7 +137,7 @@ async def test_price_mtd_from_ledger_preserves_unpriced_usage_for_the_ceiling() 
     pool.fetch = AsyncMock(return_value=usage_rows)
     pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=None):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=None):
         priced = await price_mtd_from_ledger(pool)
         ceiling = await check_monthly_ceiling(pool)
 

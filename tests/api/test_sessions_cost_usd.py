@@ -26,9 +26,9 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.pricing import ModelPricing, PricingConfig
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
 from butlers.api.routers.sessions import _get_pricing_optional as _sessions_get_pricing
+from butlers.core.pricing import ModelPricing, PricingConfig
 
 pytestmark = pytest.mark.unit
 

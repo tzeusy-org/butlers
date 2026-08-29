@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.api.pricing import ModelPricing, PricingConfig
+from butlers.core.pricing import ModelPricing, PricingConfig
 from butlers.jobs.spend import (
     _cheapest_workhorse_from_pricing,
     _discover_session_schemas,

@@ -30,8 +30,8 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.pricing import ModelPricing, PricingConfig
 from butlers.core.model_routing import check_monthly_ceiling
+from butlers.core.pricing import ModelPricing, PricingConfig
 
 pytestmark = pytest.mark.unit
 
@@ -237,7 +237,7 @@ async def test_get_spend_mtd_prices_from_ledger_not_fan_out():
     pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
     db = _mock_db({"switchboard": pool})
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         mtd, ceiling, err = await console_mod._get_spend_mtd(db)
 
     assert mtd == pytest.approx(42.0)
@@ -253,7 +253,7 @@ async def test_get_spend_mtd_matches_check_monthly_ceiling_same_fixture():
     pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
     db = _mock_db({"switchboard": pool})
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         gate_status = await check_monthly_ceiling(pool)
         mtd, ceiling, err = await console_mod._get_spend_mtd(db)
 
@@ -304,7 +304,7 @@ async def test_console_endpoint_spend_mtd_uses_ledger_helper_end_to_end():
     app = _make_app(db=db)
 
     with (
-        patch("butlers.api.pricing.estimate_session_cost", return_value=42.0),
+        patch("butlers.core.pricing.estimate_session_cost", return_value=42.0),
         patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
         patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
         patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(1, 1, None))),
@@ -334,7 +334,7 @@ async def test_console_endpoint_ceiling_alarm_fires_only_on_true_mtd_breach():
     app = _make_app(db=db)
 
     with (
-        patch("butlers.api.pricing.estimate_session_cost", return_value=95.0),
+        patch("butlers.core.pricing.estimate_session_cost", return_value=95.0),
         patch(
             "butlers.api.routers.spend.projection_confidence_for",
             new=lambda days_elapsed: "normal",

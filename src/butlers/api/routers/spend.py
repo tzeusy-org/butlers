@@ -67,13 +67,13 @@ from butlers.api.models import (
     TopSession,
     UnpricedModelUsage,
 )
-from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
 from butlers.core.model_routing import (
     LedgerSpend,
     price_ledger_usage_rows,
     price_mtd_from_ledger,
 )
+from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import (
     CADENCE_BASIS_DESCRIPTION,
     schedule_costs,

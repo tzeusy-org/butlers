@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from butlers.api.pricing import (
+from butlers.core.pricing import (
     ModelPricing,
     PricingConfig,
     PricingError,

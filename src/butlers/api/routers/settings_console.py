@@ -48,9 +48,9 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ApiResponse
-from butlers.api.pricing import PricingConfig
 from butlers.api.routers.events import emit_event
 from butlers.core.model_routing import price_mtd_from_ledger
+from butlers.core.pricing import PricingConfig
 
 logger = logging.getLogger(__name__)
 

@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
+from butlers.core.pricing import PricingConfig, load_pricing
 from butlers.credential_store import (
     ensure_secrets_schema,
     shared_db_name_from_env,

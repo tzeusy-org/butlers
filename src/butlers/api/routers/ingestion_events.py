@@ -47,7 +47,6 @@ from butlers.api.models.ingestion_event import (
     ReplayHistoryEntry,
     SenderContactResolution,
 )
-from butlers.api.pricing import PricingConfig
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
     ingestion_event_get,
@@ -67,6 +66,7 @@ from butlers.core.ingestion_events import (
     ingestion_events_sessions_for_ids,
     ingestion_window_rollup,
 )
+from butlers.core.pricing import PricingConfig
 from butlers.identity import (
     ResolvedContact,
     resolve_contact_by_channel,

@@ -20,8 +20,8 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
-from butlers.api.pricing import PricingConfig
 from butlers.api.routers.ingestion_events import _get_db_manager, _get_rollup_db_manager
+from butlers.core.pricing import PricingConfig
 
 pytestmark = pytest.mark.unit
 

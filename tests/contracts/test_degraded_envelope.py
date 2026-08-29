@@ -57,11 +57,11 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.pricing import ModelPricing, PricingConfig
 from butlers.api.routers.memory import _get_db_manager as _memory_get_db
 from butlers.api.routers.notifications import _get_db_manager as _notifications_get_db
 from butlers.api.routers.search import _get_db_manager as _search_get_db
 from butlers.api.routers.secrets_v2 import _get_db_manager as _secrets_get_db
+from butlers.core.pricing import ModelPricing, PricingConfig
 from tests.api.test_api_approvals import (
     _app_with_one_healthy_one_raising_butler,
 )

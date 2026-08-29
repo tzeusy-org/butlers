@@ -49,7 +49,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.api.db import DatabaseManager
-from butlers.api.pricing import PricingConfig, estimate_session_cost
+from butlers.core.pricing import PricingConfig, estimate_session_cost
 
 logger = logging.getLogger(__name__)
 

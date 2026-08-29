@@ -48,10 +48,10 @@ from butlers.api.models import (
     TriggerRequest,
     TriggerResponse,
 )
-from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.read_models.butlers_v1 import query_sessions_24h
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import ConfigError, load_config
+from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.core.sessions import sessions_summary
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state,

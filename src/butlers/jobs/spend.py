@@ -36,7 +36,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.api.pricing import PricingConfig, estimate_session_cost, load_pricing
+from butlers.core.pricing import PricingConfig, estimate_session_cost, load_pricing
 
 logger = logging.getLogger(__name__)
 

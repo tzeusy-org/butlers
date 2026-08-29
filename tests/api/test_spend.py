@@ -25,7 +25,10 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ScheduleCost, SpendSummary
-from butlers.api.pricing import (
+from butlers.api.routers.spend import _get_db_manager as _costs_get_db
+from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
+from butlers.core.model_routing import check_monthly_ceiling
+from butlers.core.pricing import (
     ModelPricing,
     PricingConfig,
     PricingError,
@@ -33,9 +36,6 @@ from butlers.api.pricing import (
     TieredModelPricing,
     load_pricing,
 )
-from butlers.api.routers.spend import _get_db_manager as _costs_get_db
-from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
-from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.sessions import CADENCE_BASIS_DESCRIPTION, _estimate_monthly_runs
 
 pytestmark = pytest.mark.unit
@@ -1954,7 +1954,7 @@ async def test_forecast_mtd_priced_from_ledger_not_fan_out(app):
     _wire_db(app, db)
     _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1978,7 +1978,7 @@ async def test_forecast_mtd_matches_check_monthly_ceiling_same_fixture(app):
     _wire_db(app, db)
     _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
 
-    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+    with patch("butlers.core.pricing.estimate_session_cost", return_value=42.0):
         gate_status = await check_monthly_ceiling(pool)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
