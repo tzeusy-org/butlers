@@ -18,12 +18,15 @@ resolve_owner_entity_info() are all mocked.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+_PINNED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -596,7 +599,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             mock_pool.executemany = AsyncMock()
             mock_pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
 
-            await delivery_cycle(mock_pool, notify_fn=_capture_notify)
+            await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
 
         assert len(captured_metadata) >= 1, "notify_fn should have been called"
         meta = captured_metadata[0]

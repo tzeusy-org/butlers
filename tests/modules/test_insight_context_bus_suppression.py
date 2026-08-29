@@ -184,4 +184,6 @@ class TestFailOpen:
             "butlers.context_bus.get_active_context",
             new=AsyncMock(return_value=[_signal("dnd", set_at=recent)]),
         ):
+            # live-clock: this verifies the documented default-time path against a
+            # context signal anchored to the same live clock.
             assert await get_suppressing_context_signal(object()) == "dnd"

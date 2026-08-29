@@ -1051,6 +1051,15 @@ async def _format_digest(
 # Context-bus suppression (bu-ep4ks.9 slice 2 — presence-aware delivery)
 # ---------------------------------------------------------------------------
 
+# Test-source guard registry. These optional-``now`` entry points select
+# externally observable delivery/suppression branches from the instant. Keep
+# this explicit rather than inferring from every ``now`` signature: lower-level
+# helpers can have benign defaults, while these three are the test-facing gates
+# where omitting ``now=`` can make an asserted branch depend on CI wall time.
+CLOCK_GATED_CALLEES: frozenset[str] = frozenset(
+    {"delivery_cycle", "expire_candidates", "get_suppressing_context_signal"}
+)
+
 # Precedence when more than one signal is active: dnd (owner's explicit hard
 # stop) wins, then meeting, sleeping, traveling in that order. This is a
 # broker-local extension of the dnd/sleeping-only suppression set in

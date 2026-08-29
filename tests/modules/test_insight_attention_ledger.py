@@ -441,7 +441,9 @@ class TestUrgentOnlySubCycle:
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u1:2026", priority=95)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+        )
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
@@ -481,7 +483,9 @@ class TestUrgentOnlySubCycle:
                 new=AsyncMock(side_effect=AssertionError("context bus must not be queried")),
             ),
         ):
-            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+            result = await delivery_cycle(
+                insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+            )
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
@@ -507,7 +511,9 @@ class TestUrgentOnlySubCycle:
             )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+        )
 
         assert result["skipped"] is False
         assert len(result["delivered"]) == 3
@@ -528,7 +534,9 @@ class TestUrgentOnlySubCycle:
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u4:2026", priority=95)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+        )
 
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
@@ -553,7 +561,9 @@ class TestUrgentOnlySubCycle:
         await _insert_candidate(insight_pool, dedup_key="health:routine:u4b:2026", priority=70)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+        )
 
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
@@ -579,7 +589,9 @@ class TestUrgentOnlySubCycle:
         await _insert_candidate(insight_pool, dedup_key="health:routine:u5:2026", priority=70)
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(insight_pool, notify_fn=notify_mock, urgent_only=True)
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+        )
 
         assert result["delivered"] == []
         notify_mock.assert_not_awaited()
@@ -603,7 +615,7 @@ class TestUrgentOnlySubCycle:
 
         urgent_notify = AsyncMock(return_value={"status": "ok"})
         urgent_result = await delivery_cycle(
-            insight_pool, notify_fn=urgent_notify, urgent_only=True
+            insight_pool, notify_fn=urgent_notify, urgent_only=True, now=_PINNED_NOW
         )
         assert len(urgent_result["delivered"]) == 1
 
