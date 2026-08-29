@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, time
 from typing import Any
 
@@ -22,11 +23,19 @@ async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
     return await _fetch_owner_entity_id(pool)
 
 
-def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
-    """Convert an asyncpg Record to a dict, parsing JSONB strings."""
+def _row_to_dict(row: Mapping[str, Any] | asyncpg.Record) -> dict[str, Any]:
+    """Convert a Health row to a dict, parsing JSONB strings.
+
+    Health fact metadata treats a falsey stored value as an empty object while
+    nonempty JSON strings remain strict: malformed data raises on read.
+    """
     d = dict(row)
-    for key in ("value", "nutrition", "tags", "schedule"):
-        if key in d and isinstance(d[key], str):
+    for key in ("value", "nutrition", "tags", "schedule", "metadata"):
+        if key not in d:
+            continue
+        if key == "metadata" and not d[key]:
+            d[key] = {}
+        elif isinstance(d[key], str):
             d[key] = json.loads(d[key])
     return d
 

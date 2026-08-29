@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
+
+from butlers.tools.health._helpers import _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,8 @@ async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
             predicate,
         )
         if row is not None:
-            meta = row["metadata"] or {}
-            if isinstance(meta, str):
-                meta = json.loads(meta)
+            row = _row_to_dict(row)
+            meta = row.get("metadata", {})
             recent_measurements.append(
                 {
                     "id": str(row["id"]),
@@ -54,9 +54,8 @@ async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
     )
     active_medications: list[dict[str, Any]] = []
     for row in med_rows:
-        meta = row["metadata"] or {}
-        if isinstance(meta, str):
-            meta = json.loads(meta)
+        row = _row_to_dict(row)
+        meta = row.get("metadata", {})
         active_medications.append(
             {
                 "id": str(row["id"]),
@@ -80,9 +79,8 @@ async def health_summary(pool: asyncpg.Pool) -> dict[str, Any]:
     )
     active_conditions: list[dict[str, Any]] = []
     for row in cond_rows:
-        meta = row["metadata"] or {}
-        if isinstance(meta, str):
-            meta = json.loads(meta)
+        row = _row_to_dict(row)
+        meta = row.get("metadata", {})
         active_conditions.append(
             {
                 "id": str(row["id"]),
@@ -137,9 +135,8 @@ async def trend_report(
 
         entries = []
         for row in meas_rows:
-            meta = row["metadata"] or {}
-            if isinstance(meta, str):
-                meta = json.loads(meta)
+            row = _row_to_dict(row)
+            meta = row.get("metadata", {})
             entry = {
                 "id": str(row["id"]),
                 "type": mtype,
@@ -164,9 +161,8 @@ async def trend_report(
     )
     medication_adherence: list[dict[str, Any]] = []
     for med in med_rows:
-        meta = med["metadata"] or {}
-        if isinstance(meta, str):
-            meta = json.loads(meta)
+        med = _row_to_dict(med)
+        meta = med.get("metadata", {})
         med_id_str = str(med["id"])
         med_name = meta.get("name", med_id_str)
 

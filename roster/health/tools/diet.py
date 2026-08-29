@@ -26,7 +26,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id
+from butlers.tools.health._helpers import _get_owner_entity_id, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +108,8 @@ def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the meal API shape."""
     predicate = row.get("predicate", "")
     meal_type = predicate.removeprefix("meal_")
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     if not isinstance(meta, dict):
         meta = {}
 
@@ -306,9 +305,8 @@ async def meal_update(
     if row is None:
         raise ValueError(f"Meal {meal_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
     new_meta = dict(existing_meta)
 
     if "nutrition" in updates:
@@ -452,6 +450,8 @@ async def nutrition_summary(
     meal_count = 0
 
     for row in rows:
+        # This aggregation skips non-object metadata before counting a meal;
+        # _row_to_dict normalizes falsey metadata for fact-response callers.
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta)
@@ -461,6 +461,7 @@ async def nutrition_summary(
         if estimated_calories is None:
             continue
         macros = meta.get("macros") or {}
+        # ``macros`` is nested JSON, not the top-level fact metadata contract.
         if isinstance(macros, str):
             macros = json.loads(macros)
         meal_count += 1

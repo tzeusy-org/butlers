@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date
+from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +28,8 @@ def _get_embedding_engine() -> Any:
 
 def _fact_to_medication(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the medication API shape."""
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     return {
         "id": row["id"],  # UUID — matches old DB row behaviour
         "name": meta.get("name", ""),
@@ -47,9 +45,8 @@ def _fact_to_medication(row: dict[str, Any]) -> dict[str, Any]:
 
 def _fact_to_dose(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the dose API shape."""
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     med_id = meta.get("medication_id")
     med_uuid = uuid.UUID(med_id) if med_id else None
     return {
@@ -156,9 +153,8 @@ async def medication_update(
     if row is None:
         raise ValueError(f"Medication {medication_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
     existing_subject = row["subject"] or f"medication:{existing_meta.get('name', medication_id)}"
 
     # Merge updates into existing metadata.
@@ -327,9 +323,8 @@ async def medication_log_dose(
     if med_row is None:
         raise ValueError(f"Medication {medication_id} not found")
 
-    med_meta = med_row["metadata"] or {}
-    if isinstance(med_meta, str):
-        med_meta = json.loads(med_meta)
+    med_row = _row_to_dict(med_row)
+    med_meta = med_row.get("metadata", {})
     med_name = med_meta.get("name", str(medication_id))
 
     owner_entity_id = await _get_owner_entity_id(pool)

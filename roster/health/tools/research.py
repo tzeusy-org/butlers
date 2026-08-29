@@ -10,6 +10,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.health._helpers import _row_to_dict
+
 logger = logging.getLogger(__name__)
 
 _embedding_engine: Any = None
@@ -38,9 +40,8 @@ async def _validate_condition_fact(pool: asyncpg.Pool, condition_id: str) -> Non
 
 def _fact_to_research(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the research API shape."""
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     cond_id = meta.get("condition_id")
     cond_uuid = uuid.UUID(cond_id) if cond_id else None
     return {
@@ -155,9 +156,8 @@ async def research_update(
     if row is None:
         raise ValueError(f"Research {research_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
 
     new_meta = dict(existing_meta)
     if "title" in updates:
@@ -330,6 +330,7 @@ async def research_summarize(
         if title:
             titles.append(title)
         row_tags = row["tags"]
+        # ``tags`` is a separate JSON array column, not fact metadata.
         if isinstance(row_tags, str):
             row_tags = json.loads(row_tags)
         if isinstance(row_tags, list):

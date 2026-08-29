@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date
+from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +30,8 @@ def _get_embedding_engine() -> Any:
 
 def _fact_to_condition(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the condition API shape."""
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     return {
         "id": row["id"],  # UUID — matches old DB row behaviour
         "name": meta.get("name", row.get("content", "")),
@@ -47,9 +45,8 @@ def _fact_to_condition(row: dict[str, Any]) -> dict[str, Any]:
 
 def _fact_to_symptom(row: dict[str, Any]) -> dict[str, Any]:
     """Convert a facts row to the symptom API shape."""
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     cond_id = meta.get("condition_id")
     cond_uuid = uuid.UUID(cond_id) if cond_id else None
     return {
@@ -185,9 +182,8 @@ async def condition_update(
     if row is None:
         raise ValueError(f"Condition {condition_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
     existing_subject = row["subject"] or f"condition:{existing_meta.get('name', condition_id)}"
 
     # Merge updates into existing metadata
@@ -373,9 +369,8 @@ async def symptom_update(
     if row is None:
         raise ValueError(f"Symptom {symptom_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
 
     new_meta = dict(existing_meta)
     if "severity" in updates:

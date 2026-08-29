@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date
+from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +69,8 @@ def _fact_to_measurement(row: dict[str, Any]) -> dict[str, Any]:
     predicate = row.get("predicate", "")
     # e.g. "measurement_blood_pressure" -> "blood_pressure"
     mtype = predicate.removeprefix("measurement_")
-    meta = row.get("metadata") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    row = _row_to_dict(row)
+    meta = row.get("metadata", {})
     value = meta.get("value") if isinstance(meta, dict) else None
     notes = meta.get("notes") if isinstance(meta, dict) else None
     return {
@@ -199,9 +197,8 @@ async def measurement_update(
     if row is None:
         raise ValueError(f"Measurement {measurement_id} not found")
 
-    existing_meta = row["metadata"] or {}
-    if isinstance(existing_meta, str):
-        existing_meta = json.loads(existing_meta)
+    row = _row_to_dict(row)
+    existing_meta = row.get("metadata", {})
     new_meta = dict(existing_meta)
 
     if "value" in updates:
