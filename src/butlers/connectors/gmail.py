@@ -321,6 +321,25 @@ def _header_str_value(header: dict[str, Any], default: str = "") -> str:
     return value if isinstance(value, str) else default
 
 
+def _message_header_entries(message_data: Any) -> list[dict[str, Any]]:
+    """Return well-formed Gmail header entries from an untrusted message body.
+
+    Gmail's JSON response can contain a present ``payload`` or ``headers`` key
+    with the wrong shape.  ``dict.get(..., {})`` / ``dict.get(..., [])`` only
+    supplies the default for an absent key, so validate each container before
+    iterating or making a second mapping lookup.
+    """
+    if not isinstance(message_data, dict):
+        return []
+    payload = message_data.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    headers = payload.get("headers")
+    if not isinstance(headers, list):
+        return []
+    return [header for header in headers if isinstance(header, dict)]
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -810,7 +829,7 @@ class GmailConnectorRuntime:
                 logger.debug("Failed to fetch sent Message-ID for %s: %s", message_id, exc)
                 continue
 
-            headers = response.json().get("payload", {}).get("headers", [])
+            headers = _message_header_entries(response.json())
             for h in headers:
                 if _header_name_is(h, "message-id"):
                     raw = _header_str_value(h).strip()
@@ -2348,7 +2367,7 @@ class GmailConnectorRuntime:
     @staticmethod
     def _get_from_header(message_data: dict[str, Any]) -> str:
         """Extract the raw From header value from a Gmail message payload."""
-        headers = message_data.get("payload", {}).get("headers", [])
+        headers = _message_header_entries(message_data)
         for header in headers:
             if _header_name_is(header, "from"):
                 return _header_str_value(header)
@@ -2357,7 +2376,7 @@ class GmailConnectorRuntime:
     @staticmethod
     def _get_subject(message_data: dict[str, Any]) -> str:
         """Extract the Subject header value from a Gmail message payload."""
-        headers = message_data.get("payload", {}).get("headers", [])
+        headers = _message_header_entries(message_data)
         for header in headers:
             if _header_name_is(header, "subject"):
                 return _header_str_value(header, "(no subject)")
@@ -2400,16 +2419,17 @@ class GmailConnectorRuntime:
         labels (Gmail labelIds, for label_match rules), and raw_key (raw From
         header value) for policy evaluation.
         """
-        raw_headers = message_data.get("payload", {}).get("headers", [])
+        raw_headers = _message_header_entries(message_data)
         headers_dict: dict[str, str] = {}
         from_value = ""
         for h in raw_headers:
-            if isinstance(h, dict):
-                name = h.get("name", "")
-                value = h.get("value", "")
-                headers_dict[name] = value
-                if name.lower() == "from":
-                    from_value = value
+            name = h.get("name")
+            value = h.get("value")
+            if not isinstance(name, str) or not isinstance(value, str):
+                continue
+            headers_dict[name] = value
+            if name.lower() == "from":
+                from_value = value
 
         # Normalize sender address: strip display name, lowercase
         sender = from_value.strip().lower()
@@ -2479,7 +2499,9 @@ class GmailConnectorRuntime:
 
         # Parse headers
         headers = {
-            h["name"]: h["value"] for h in message_data.get("payload", {}).get("headers", [])
+            name: value
+            for h in _message_header_entries(message_data)
+            if isinstance(name := h.get("name"), str) and isinstance(value := h.get("value"), str)
         }
         subject = headers.get("Subject", "(no subject)")
         from_address = headers.get("From", "unknown")
@@ -2551,7 +2573,12 @@ class GmailConnectorRuntime:
         # >25KB), storing only an attachmentId that must be fetched separately.
         # Without this step, HTML-only bank alerts and similar emails produce
         # "(no body)" because the extraction sees empty data fields.
-        payload = message_data.get("payload", {})
+        raw_payload = message_data.get("payload")
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        if not isinstance(payload.get("body"), dict):
+            # Preserve the raw provider response in ``message_data`` while
+            # giving the body-processing helpers their required mapping shape.
+            payload = {**payload, "body": {}}
         await self._resolve_body_attachment_refs(message_id, payload)
 
         # Extract body
@@ -2561,7 +2588,7 @@ class GmailConnectorRuntime:
         normalized_text = f"Subject: {html.escape(subject)}\n\n{html.escape(body)}"
 
         # Process attachments
-        attachments = await self._process_attachments(message_id, message_data.get("payload", {}))
+        attachments = await self._process_attachments(message_id, payload)
 
         # Stable idempotency key for Tier 1, matching the Tier 2 pattern.
         # Without this, dedup relies solely on external_event_id (Priority 2
@@ -2672,7 +2699,8 @@ class GmailConnectorRuntime:
         Falls back to UTF-8 with replacement characters when the declared
         charset is absent or not recognised by :mod:`codecs`.
         """
-        charset = self._charset_from_headers(payload.get("headers", []))
+        headers = payload.get("headers")
+        charset = self._charset_from_headers(headers if isinstance(headers, list) else [])
         return raw_bytes.decode(charset, errors="replace")
 
     _BODY_TEXT_MIME_TYPES = frozenset({"text/plain", "text/html"})
@@ -2698,7 +2726,9 @@ class GmailConnectorRuntime:
             return
 
         mime_type = payload.get("mimeType", "")
-        body = payload.get("body", {})
+        body = payload.get("body")
+        if not isinstance(body, dict):
+            body = {}
 
         # Leaf text part with attachmentId but no inline data
         if (
@@ -2724,9 +2754,13 @@ class GmailConnectorRuntime:
                     exc_info=True,
                 )
 
-        # Recurse into multipart children
-        for part in payload.get("parts", []):
-            await self._resolve_body_attachment_refs(message_id, part, depth + 1)
+        # Recurse only through provider-supplied MIME child mappings.
+        parts = payload.get("parts")
+        if not isinstance(parts, list):
+            return
+        for part in parts:
+            if isinstance(part, dict):
+                await self._resolve_body_attachment_refs(message_id, part, depth + 1)
 
     def _extract_body_from_payload(self, payload: dict[str, Any], depth: int = 0) -> str:
         """Recursively extract body text from Gmail message payload.
@@ -2757,15 +2791,17 @@ class GmailConnectorRuntime:
 
         # Leaf node: text/plain — return immediately (highest priority)
         if mime_type == "text/plain":
-            body_data = payload.get("body", {}).get("data", "")
-            if body_data:
+            body = payload.get("body")
+            body_data = body.get("data") if isinstance(body, dict) else ""
+            if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
                 return self._decode_part_bytes(raw_bytes, payload)
 
         # Leaf node: text/html — decode and strip tags (fallback candidate)
         if mime_type == "text/html":
-            body_data = payload.get("body", {}).get("data", "")
-            if body_data:
+            body = payload.get("body")
+            body_data = body.get("data") if isinstance(body, dict) else ""
+            if isinstance(body_data, str) and body_data:
                 raw_bytes = base64.urlsafe_b64decode(body_data)
                 raw_html = self._decode_part_bytes(raw_bytes, payload)
                 return self._strip_html(raw_html)
@@ -2774,11 +2810,13 @@ class GmailConnectorRuntime:
         # prefer plain regardless of part ordering in the MIME tree.
         # For multipart/signed emails, skip detached-signature parts so only the
         # content part(s) contribute to the extracted body.
-        parts = payload.get("parts", [])
-        if parts:
+        parts = payload.get("parts")
+        if isinstance(parts, list):
             plain_candidate: str | None = None
             html_candidate: str | None = None
             for part in parts:
+                if not isinstance(part, dict):
+                    continue
                 child_mime = part.get("mimeType", "")
                 # Skip cryptographic signature parts — they carry no readable body.
                 if child_mime in self._SIGNATURE_MIME_TYPES:
@@ -2860,7 +2898,9 @@ class GmailConnectorRuntime:
         mime_type = payload.get("mimeType", "")
 
         # Check if this part is an attachment
-        body = payload.get("body", {})
+        body = payload.get("body")
+        if not isinstance(body, dict):
+            body = {}
         attachment_id = body.get("attachmentId")
         size = body.get("size", 0)
 
@@ -2886,9 +2926,12 @@ class GmailConnectorRuntime:
             )
 
         # Recurse into multipart
-        parts = payload.get("parts", [])
+        parts = payload.get("parts")
+        if not isinstance(parts, list):
+            return attachments
         for part in parts:
-            attachments.extend(self._extract_attachments(part, depth + 1))
+            if isinstance(part, dict):
+                attachments.extend(self._extract_attachments(part, depth + 1))
 
         return attachments
 

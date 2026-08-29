@@ -956,3 +956,219 @@ async def test_fetch_sent_message_ids_skips_malformed_headers(
     sent = await runtime._fetch_sent_message_ids()
 
     assert sent == frozenset({"<sent-4@example.com>"})
+
+
+# ---------------------------------------------------------------------------
+# Provider-supplied payload/header containers (bu-49dm3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [None, [], {"headers": None}, {"headers": {}}],
+)
+def test_header_extractors_treat_malformed_payload_containers_as_absent(payload: Any) -> None:
+    """A present non-mapping payload or non-list headers must not crash lookup."""
+    message_data = {"payload": payload}
+
+    assert GmailConnectorRuntime._get_from_header(message_data) == ""
+    assert GmailConnectorRuntime._get_subject(message_data) == "(no subject)"
+
+
+def test_build_ingestion_envelope_skips_malformed_header_entries() -> None:
+    """Policy input only retains headers whose provider name and value are strings."""
+    envelope = GmailConnectorRuntime._build_ingestion_envelope(
+        {
+            "payload": {
+                "headers": [
+                    {"name": None, "value": "ignored"},
+                    {"name": "From", "value": None},
+                    {"name": "Subject", "value": "Valid subject"},
+                ]
+            }
+        }
+    )
+
+    assert envelope.sender_address == ""
+    assert envelope.headers == {"Subject": "Valid subject"}
+
+
+async def test_build_ingest_envelope_treats_bad_header_container_as_empty(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """Malformed headers retain the email with documented subject/sender fallbacks."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    message = _make_message()
+    message["payload"] = None
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert envelope["sender"]["identity"] == "unknown"
+    assert "(no subject)" in envelope["payload"]["normalized_text"]
+    parse_ingest_envelope(envelope)
+
+
+async def test_build_ingest_envelope_treats_non_mapping_body_as_empty(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A present null body does not prevent the message from reaching ingest."""
+    message = _make_message()
+    message["payload"] = {"mimeType": "text/plain", "headers": [], "body": None}
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert "(no body)" in envelope["payload"]["normalized_text"]
+
+
+async def test_build_ingest_envelope_skips_nested_multipart_parts_none(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A null nested MIME parts collection does not drop the email."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    message = _make_message()
+    message["payload"] = {
+        "headers": message["payload"]["headers"],
+        "mimeType": "multipart/mixed",
+        "body": {},
+        "parts": [
+            {
+                "mimeType": "multipart/alternative",
+                "body": {},
+                "parts": None,
+            }
+        ],
+    }
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert "(no body)" in envelope["payload"]["normalized_text"]
+    assert envelope["payload"]["attachments"] is None
+    parse_ingest_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    "malformed_parts",
+    ["not-a-parts-list", {"not": "a-parts-list"}, [None]],
+)
+async def test_build_ingest_envelope_skips_nested_multipart_malformed_parts(
+    gmail_runtime: GmailConnectorRuntime,
+    malformed_parts: Any,
+) -> None:
+    """Malformed nested MIME parts do not prevent the email from reaching ingest."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    message = _make_message()
+    message["payload"] = {
+        "headers": message["payload"]["headers"],
+        "mimeType": "multipart/mixed",
+        "body": {},
+        "parts": [
+            {
+                "mimeType": "multipart/alternative",
+                "body": {},
+                "parts": malformed_parts,
+            }
+        ],
+    }
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert "(no body)" in envelope["payload"]["normalized_text"]
+    assert envelope["payload"]["attachments"] is None
+    parse_ingest_envelope(envelope)
+
+
+async def test_build_ingest_envelope_skips_nested_attachment_body_none(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A null nested attachment body does not drop the email."""
+    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+
+    message = _make_message()
+    message["payload"] = {
+        "headers": message["payload"]["headers"],
+        "mimeType": "multipart/mixed",
+        "body": {},
+        "parts": [
+            {
+                "mimeType": "application/pdf",
+                "filename": "receipt.pdf",
+                "body": None,
+            }
+        ],
+    }
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert "(no body)" in envelope["payload"]["normalized_text"]
+    assert envelope["payload"]["attachments"] is None
+    parse_ingest_envelope(envelope)
+
+
+def test_extract_body_treats_non_mapping_body_as_no_body(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A present null MIME body falls back instead of failing the entire email."""
+    assert (
+        gmail_runtime._extract_body_from_payload({"mimeType": "text/plain", "body": None})
+        == "(no body)"
+    )
+
+
+def test_decode_part_bytes_treats_non_list_headers_as_absent(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """Malformed MIME headers use the established UTF-8 fallback."""
+    assert gmail_runtime._decode_part_bytes(b"plain text", {"headers": None}) == "plain text"
+
+
+def _fake_http_for_sent_message_body(message_body: Any) -> MagicMock:
+    """Fake one SENT listing plus a deliberately arbitrary message response."""
+
+    def _make_resp(payload: Any) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value=payload)
+        return resp
+
+    async def fake_get(url: str, **kwargs: Any) -> MagicMock:
+        if url.endswith("/messages"):
+            return _make_resp({"messages": [{"id": "s1"}], "nextPageToken": None})
+        return _make_resp(message_body)
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=fake_get)
+    return client
+
+
+@pytest.mark.parametrize("message_body", [{"payload": None}, {"payload": {"headers": None}}, []])
+async def test_fetch_sent_message_ids_treats_bad_header_container_as_empty(
+    gmail_config: GmailConnectorConfig,
+    message_body: Any,
+) -> None:
+    """Malformed SENT metadata does not falsely mark source API health degraded."""
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._get_access_token = AsyncMock(return_value="tok")  # type: ignore[method-assign]
+    runtime._http_client = _fake_http_for_sent_message_body(message_body)  # type: ignore[assignment]
+
+    assert await runtime._fetch_sent_message_ids() == frozenset()
+
+
+def test_policy_evaluation_treats_bad_header_container_as_empty(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Malformed provider headers keep the default pass-through policy rather than erroring."""
+    from butlers.connectors.gmail_policy import POLICY_TIER_DEFAULT, evaluate_message_policy
+
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+
+    result = evaluate_message_policy(
+        {"labelIds": ["INBOX"], "payload": None},
+        label_filter=runtime._label_filter,
+        tier_assigner=runtime._policy_tier_assigner,
+    )
+
+    assert result.should_ingest is True
+    assert result.policy_tier == POLICY_TIER_DEFAULT

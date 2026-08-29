@@ -403,11 +403,17 @@ def evaluate_message_policy(
     ingestion_tier = classify_ingestion_tier(triage_action)
 
     # --- Step 3: Policy tier assignment ---
-    headers_raw = message_data.get("payload", {}).get("headers", [])
+    payload = message_data.get("payload")
+    headers_raw = payload.get("headers") if isinstance(payload, dict) else []
+    if not isinstance(headers_raw, list):
+        headers_raw = []
     headers_dict: dict[str, str] = {}
     for h in headers_raw:
         if isinstance(h, dict):
-            headers_dict[h.get("name", "")] = h.get("value", "")
+            name = h.get("name")
+            value = h.get("value")
+            if isinstance(name, str) and isinstance(value, str):
+                headers_dict[name] = value
 
     from_header = headers_dict.get("From") or headers_dict.get("from") or ""
     policy_tier, assignment_rule = tier_assigner.assign(from_header, headers_dict)
