@@ -36,7 +36,13 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.testing.schema_standins import PENDING_ACTIONS, STANDINS, TableStandin
+from butlers.testing.schema_standins import (
+    AUTONOMY_APPROVAL_HISTORY,
+    AUTONOMY_SUGGESTIONS,
+    PENDING_ACTIONS,
+    STANDINS,
+    TableStandin,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PARITY_SCHEMA = "standin_parity"
@@ -163,6 +169,22 @@ def test_standin_matches_the_real_migration_chain(parity_db_url: str, standin: T
         "fail here in CI -- it fails as a DEGRADED envelope and a downstream KeyError "
         "in whichever integration test uses it (PR #3853)."
     )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.parametrize(
+    "standin",
+    (AUTONOMY_APPROVAL_HISTORY, AUTONOMY_SUGGESTIONS),
+    ids=("autonomy_approval_history", "autonomy_suggestions"),
+)
+async def test_autonomy_standin_ddl_is_independently_creatable(
+    provisioned_postgres_pool, standin: TableStandin
+) -> None:
+    """A stand-in must not rely on sibling tables absent from its fresh test DB."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(standin.ddl())
 
 
 @pytest.mark.integration

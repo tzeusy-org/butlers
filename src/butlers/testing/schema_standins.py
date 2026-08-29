@@ -161,9 +161,10 @@ CONNECTOR_REGISTRY = TableStandin(
 
 # The approvals tables come from a MODULE chain
 # (src/butlers/modules/approvals/migrations/), not a roster one: approvals_001
-# creates all three, 005 adds blast_radius/reversibility and their CHECKs, 012
-# adds the 'abandoned' status and 'action_abandoned' event type, 013 adds
-# deduplication_key.
+# creates all five, 003 adds fingerprint versions and their CHECKs/indexes, 005
+# adds pending-action blast_radius/reversibility and their CHECKs, 007 adds the
+# suggestion source-action link, 012 adds the 'abandoned' status and
+# 'action_abandoned' event type, and 013 adds deduplication_key.
 PENDING_ACTIONS = TableStandin(
     table="pending_actions",
     chains=("core", "approvals"),
@@ -216,6 +217,89 @@ PENDING_ACTIONS = TableStandin(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_actions_active_deduplication_key "
         "ON {table} (deduplication_key) WHERE deduplication_key IS NOT NULL "
         "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
+    ),
+)
+
+
+AUTONOMY_APPROVAL_HISTORY = TableStandin(
+    table="autonomy_approval_history",
+    chains=("core", "approvals"),
+    real_schema="public",
+    constant_path="src/butlers/testing/schema_standins.py::AUTONOMY_APPROVAL_HISTORY",
+    # approvals_001 base table, then approvals_003 fingerprint version.
+    columns=(
+        ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+        ("pattern_fingerprint", "VARCHAR(64) NOT NULL"),
+        ("tool_name", "TEXT NOT NULL"),
+        ("tool_args", "JSONB NOT NULL"),
+        ("action_id", "UUID"),
+        ("approved_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ("time_to_decision_seconds", "DOUBLE PRECISION"),
+        ("fingerprint_version", "SMALLINT NOT NULL DEFAULT 1"),
+    ),
+    table_constraints=(
+        (
+            "CONSTRAINT autonomy_approval_history_fingerprint_version_check "
+            "CHECK (fingerprint_version IN (1, 2))"
+        ),
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_history_fingerprint "
+        "ON {table} (pattern_fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_history_fingerprint_approved_at "
+        "ON {table} (pattern_fingerprint, approved_at)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_history_fingerprint_version "
+        "ON {table} (pattern_fingerprint, fingerprint_version)",
+    ),
+)
+
+
+AUTONOMY_SUGGESTIONS = TableStandin(
+    table="autonomy_suggestions",
+    chains=("core", "approvals"),
+    real_schema="public",
+    constant_path="src/butlers/testing/schema_standins.py::AUTONOMY_SUGGESTIONS",
+    # approvals_001 base table, approvals_003 fingerprint version, then the
+    # approvals_007 source-action link in migration order.
+    columns=(
+        ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+        ("suggestion_type", "VARCHAR NOT NULL DEFAULT 'promotion'"),
+        ("pattern_fingerprint", "VARCHAR(64) NOT NULL"),
+        ("tool_name", "TEXT NOT NULL"),
+        ("representative_args", "JSONB NOT NULL"),
+        ("status", "VARCHAR NOT NULL DEFAULT 'pending'"),
+        ("approval_count_at_creation", "INTEGER NOT NULL DEFAULT 0"),
+        ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ("decided_at", "TIMESTAMPTZ"),
+        ("decided_by", "TEXT"),
+        ("resulting_rule_id", "UUID"),
+        ("cooldown_until", "TIMESTAMPTZ"),
+        ("dismissal_reason", "TEXT"),
+        ("fingerprint_version", "SMALLINT NOT NULL DEFAULT 1"),
+        ("action_id", "UUID"),
+    ),
+    table_constraints=(
+        (
+            "CONSTRAINT autonomy_suggestions_type_check CHECK (suggestion_type IN "
+            "('promotion', 'demotion'))"
+        ),
+        (
+            "CONSTRAINT autonomy_suggestions_status_check CHECK (status IN "
+            "('pending', 'confirmed', 'dismissed', 'superseded'))"
+        ),
+        (
+            "CONSTRAINT autonomy_suggestions_fingerprint_version_check "
+            "CHECK (fingerprint_version IN (1, 2))"
+        ),
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_suggestions_fingerprint "
+        "ON {table} (pattern_fingerprint)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_suggestions_status_created "
+        "ON {table} (status, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_suggestions_fingerprint_version "
+        "ON {table} (pattern_fingerprint, fingerprint_version)",
+        "CREATE INDEX IF NOT EXISTS idx_autonomy_suggestions_action_id ON {table} (action_id)",
     ),
 )
 
@@ -288,7 +372,14 @@ APPROVAL_EVENTS = TableStandin(
 
 STANDINS: dict[str, TableStandin] = {
     standin.table: standin
-    for standin in (CONNECTOR_REGISTRY, PENDING_ACTIONS, APPROVAL_RULES, APPROVAL_EVENTS)
+    for standin in (
+        CONNECTOR_REGISTRY,
+        PENDING_ACTIONS,
+        AUTONOMY_APPROVAL_HISTORY,
+        AUTONOMY_SUGGESTIONS,
+        APPROVAL_RULES,
+        APPROVAL_EVENTS,
+    )
 }
 """Every declared stand-in, keyed by table name. Both guards iterate this."""
 
@@ -296,6 +387,8 @@ STANDINS: dict[str, TableStandin] = {
 __all__ = [
     "APPROVAL_EVENTS",
     "APPROVAL_RULES",
+    "AUTONOMY_APPROVAL_HISTORY",
+    "AUTONOMY_SUGGESTIONS",
     "CONNECTOR_REGISTRY",
     "PENDING_ACTIONS",
     "STANDINS",

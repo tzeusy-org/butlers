@@ -61,7 +61,13 @@ from butlers.modules.approvals.autonomy_suggestions import (
 from butlers.modules.approvals.autonomy_tracker import record_approval
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.schema_standins import APPROVAL_EVENTS, APPROVAL_RULES, PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    APPROVAL_EVENTS,
+    APPROVAL_RULES,
+    AUTONOMY_APPROVAL_HISTORY,
+    AUTONOMY_SUGGESTIONS,
+    PENDING_ACTIONS,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -75,50 +81,16 @@ pytestmark = [
 async def approvals_full_pool(provisioned_postgres_pool):
     """Provision a fresh database with the full approvals + autonomy schema.
 
-    The three approvals tables come from :mod:`butlers.testing.schema_standins`,
-    so the parity guard keeps them honest against the approvals chain.  The
-    autonomy tables below are still local: nothing else provisions them, so
-    there is no second copy to drift from (bu-3sve7).
+    The approvals tables come from :mod:`butlers.testing.schema_standins`, so
+    the parity guard keeps every fixture table honest against the approvals
+    chain.
     """
     async with provisioned_postgres_pool() as pool:
         await pool.execute(PENDING_ACTIONS.ddl())
         await pool.execute(APPROVAL_RULES.ddl())
         await pool.execute(APPROVAL_EVENTS.ddl())
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS autonomy_approval_history (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                pattern_fingerprint VARCHAR(64) NOT NULL,
-                tool_name TEXT NOT NULL,
-                tool_args JSONB NOT NULL,
-                action_id UUID REFERENCES pending_actions(id) ON DELETE SET NULL,
-                approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                time_to_decision_seconds DOUBLE PRECISION,
-                fingerprint_version SMALLINT NOT NULL DEFAULT 1
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS autonomy_suggestions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                action_id UUID REFERENCES pending_actions(id) ON DELETE SET NULL,
-                suggestion_type VARCHAR NOT NULL DEFAULT 'promotion',
-                pattern_fingerprint VARCHAR(64) NOT NULL,
-                tool_name TEXT NOT NULL,
-                representative_args JSONB NOT NULL,
-                status VARCHAR NOT NULL DEFAULT 'pending',
-                approval_count_at_creation INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                decided_at TIMESTAMPTZ,
-                decided_by TEXT,
-                resulting_rule_id UUID REFERENCES approval_rules(id) ON DELETE SET NULL,
-                cooldown_until TIMESTAMPTZ,
-                dismissal_reason TEXT,
-                fingerprint_version SMALLINT NOT NULL DEFAULT 1,
-                CONSTRAINT autonomy_suggestions_type_check
-                    CHECK (suggestion_type IN ('promotion', 'demotion')),
-                CONSTRAINT autonomy_suggestions_status_check
-                    CHECK (status IN ('pending', 'confirmed', 'dismissed', 'superseded'))
-            )
-        """)
+        await pool.execute(AUTONOMY_APPROVAL_HISTORY.ddl())
+        await pool.execute(AUTONOMY_SUGGESTIONS.ddl())
         yield pool
 
 
