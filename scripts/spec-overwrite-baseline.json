@@ -481,30 +481,6 @@
       "excerpt": "- `escalated: boolean` -- whether a QA case has already been opened for the current drift composition"
     }
   ],
-  "define-infrastructure-reliability-lifecycle/deployment-and-drift/Hourly Sentinel Cadence": [
-    {
-      "kind": "scenario",
-      "scenario": "The sentinel loop's job is the escalation side effect, not serving reads",
-      "digest": "e1eea92b7932",
-      "excerpt": "\"The sentinel loop's job is the escalation side effect, not serving reads\" is not in the block"
-    }
-  ],
-  "define-infrastructure-reliability-lifecycle/deployment-and-drift/Three-Way Migration Drift Comparison": [
-    {
-      "kind": "scenario",
-      "scenario": "A check failure is a degraded result, never a false all-clear or a crash",
-      "digest": "5c3e869cdd3d",
-      "excerpt": "\"A check failure is a degraded result, never a false all-clear or a crash\" is not in the block"
-    }
-  ],
-  "define-infrastructure-reliability-lifecycle/qa-investigation-dispatch/Gate Rejections Do Not Count as Execution Failures": [
-    {
-      "kind": "scenario",
-      "scenario": "Infra-condition suppression links back to the suppressing condition (bu-ep4ks.3)",
-      "digest": "450ca3648180",
-      "excerpt": "\"Infra-condition suppression links back to the suppressing condition (bu-ep4ks.3)\" is not in the block"
-    }
-  ],
   "define-infrastructure-reliability-lifecycle/qa-investigation-dispatch/Gate Sequence Preservation": [
     {
       "kind": "prose",
