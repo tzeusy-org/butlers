@@ -89,7 +89,7 @@ from butlers.core.condition_ledger import (
     # rather than restated: a local copy would let this job's cadence and the
     # ledger's disagree silently, and the disagreement would show up as
     # commitments escalating on a different clock than every other condition.
-    _ESCALATION_ADVANCE,
+    ESCALATION_ADVANCE,
     ConditionTransition,
 )
 
@@ -154,14 +154,14 @@ _ARCHIVAL_PRIORITY = 40
 
 #: How long the ledger leaves a commitment at each level before the next due
 #: transition, derived from the ledger's own schedule rather than restated:
-#: ``_ESCALATION_ADVANCE`` is keyed by the level a condition is AT and yields
+#: ``ESCALATION_ADVANCE`` is keyed by the level a condition is AT and yields
 #: (level it moves to, interval until the FOLLOWING due date), so inverting it
 #: gives the dwell time of the level being entered — L1 one day, L2 three,
 #: L3 seven and repeating. Used as each candidate's cooldown so one level
 #: surfaces once; the level change is what lets the next one through, because
 #: it changes the dedup key.
 _DWELL_DAYS_BY_LEVEL: dict[str, int] = {
-    entered: interval.days for entered, interval in _ESCALATION_ADVANCE.values()
+    entered: interval.days for entered, interval in ESCALATION_ADVANCE.values()
 }
 
 
@@ -422,7 +422,7 @@ async def _tick_escalation(pool: asyncpg.Pool, rows: list[dict[str, Any]], *, no
         if next_due is None or next_due > now:
             continue
         current_level = row["escalation_level"]
-        advance = _ESCALATION_ADVANCE.get(current_level)
+        advance = ESCALATION_ADVANCE.get(current_level)
         if advance is None:
             logger.warning(
                 "commitment_escalation: unknown escalation level %r on %s/%s — skipping",

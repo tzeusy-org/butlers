@@ -133,7 +133,11 @@ TransitionKind = Literal[
 # due date). L1 due after producer grace (handled at open time, not here),
 # L2 one day after L1, L3 three additional days after L2, then L3 repeats
 # every seven days.
-_ESCALATION_ADVANCE: dict[str, tuple[str, timedelta]] = {
+# Deliberately no ``__all__``: this engine has always exposed its public
+# surface implicitly, and a new one-name list would silently hide its other
+# public ledger APIs. This name is public because the commitment job must share
+# this exact cadence object rather than maintain a second schedule.
+ESCALATION_ADVANCE: dict[str, tuple[str, timedelta]] = {
     "L0": ("L1", timedelta(days=1)),
     "L1": ("L2", timedelta(days=3)),
     "L2": ("L3", timedelta(days=7)),
@@ -611,7 +615,7 @@ async def _confirm_episode(
     due = existing["next_reescalate_at"] is not None and existing["next_reescalate_at"] <= now
 
     if due:
-        new_level, interval_to_next = _ESCALATION_ADVANCE[existing["escalation_level"]]
+        new_level, interval_to_next = ESCALATION_ADVANCE[existing["escalation_level"]]
         new_state = "aging"
         transition: TransitionKind = "escalation_due"
     else:

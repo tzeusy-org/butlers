@@ -22,7 +22,7 @@ from butlers.core.commitments import (
     COMMITMENT_METADATA_CLASS,
     SURFACING_CONFIDENCE_THRESHOLD,
 )
-from butlers.core.condition_ledger import _ESCALATION_ADVANCE
+from butlers.core.condition_ledger import ESCALATION_ADVANCE
 from butlers.jobs import commitment_escalation as job
 from butlers.tools.switchboard.insight.broker import _DEDUP_KEY_PATTERN
 
@@ -190,17 +190,25 @@ class TestSurfacingShape:
 
 
 class TestCadence:
+    def test_commitment_job_borrows_the_one_public_ledger_schedule(self) -> None:
+        """A copied cadence could agree today and silently diverge tomorrow."""
+        from butlers.core import condition_ledger
+
+        assert hasattr(condition_ledger, "ESCALATION_ADVANCE")
+        assert not hasattr(condition_ledger, "_ESCALATION_ADVANCE")
+        assert job.ESCALATION_ADVANCE is condition_ledger.ESCALATION_ADVANCE
+
     def test_req_commitment_lifecycle_005_dwell_times_match_the_ledger_schedule(self) -> None:
         """The job's cooldowns are the ledger's schedule, not a second copy of it.
 
-        ``_ESCALATION_ADVANCE`` is keyed by the level a condition is AT and
+        ``ESCALATION_ADVANCE`` is keyed by the level a condition is AT and
         yields (level it moves to, interval until the FOLLOWING due date), so
         inverting it gives the dwell time of the level being entered. If that
         inversion is ever wrong, a commitment's cooldown and its escalation
         cadence disagree and one level surfaces twice or not at all.
         """
         assert job._DWELL_DAYS_BY_LEVEL == {"L1": 1, "L2": 3, "L3": 7}
-        for at_level, (entered, interval) in _ESCALATION_ADVANCE.items():
+        for at_level, (entered, interval) in ESCALATION_ADVANCE.items():
             assert job._DWELL_DAYS_BY_LEVEL[entered] == interval.days, at_level
 
     def test_req_commitment_lifecycle_005_surfacing_starts_above_the_grace_level(self) -> None:

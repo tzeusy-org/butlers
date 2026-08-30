@@ -363,7 +363,7 @@ class TestEscalationProgression:
 
     async def test_l1_l2_l3_and_l3_repeat_intervals(self, pool: asyncpg.Pool) -> None:
         """Directly forces each level's next_reescalate_at into the past (rather
-        than waiting real days) to exercise _ESCALATION_ADVANCE's full mapping:
+        than waiting real days) to exercise ESCALATION_ADVANCE's full mapping:
         L1->L2 (+1d), L2->L3 (+3d), and L3->L3 repeating (+7d) -- spec.md's
         "Bounded lifecycle escalation and recurrence"."""
         fp = _fp("escalation-full-mapping")
