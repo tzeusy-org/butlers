@@ -50,10 +50,11 @@ class _DeviceAuthStageTreePolicy:
     scratch_roots: tuple[Path, ...] = ()
 
 
-# Neither currently registered device-auth CLI requires a persistent scratch
-# root during its device-code flow.  Keep that empty policy explicit: a new
-# provider (or a verified CLI requirement) must declare its exact disposable
-# roots here before child-created files can cross the parent trust boundary.
+# Codex's device-code flow writes its private `log/codex-login.log` alongside
+# the auth artifact. The log root stays disposable: validation never reads or
+# persists its child-created bytes. A new provider (or verified CLI requirement)
+# must declare its exact disposable roots here before they can coexist with the
+# credential artifact in a staged HOME.
 _DEVICE_AUTH_STAGE_TREE_POLICIES = (
     _DeviceAuthStageTreePolicy(
         provider_name="opencode-openai",
@@ -62,6 +63,7 @@ _DEVICE_AUTH_STAGE_TREE_POLICIES = (
     _DeviceAuthStageTreePolicy(
         provider_name="codex",
         credential_artifact=Path(".codex") / "auth.json",
+        scratch_roots=(Path(".codex") / "log",),
     ),
 )
 
@@ -335,10 +337,10 @@ def _validate_device_auth_stage_tree(
     """Reject peer artifacts and undeclared writes before consuming device output.
 
     Every directory is reached through the trusted staged-HOME descriptor with
-    ``O_NOFOLLOW``.  The registered policies currently permit only the output
-    artifact and its parent directories; the generic tree form makes a future
-    provider declare an exact disposable scratch root rather than inherit an
-    implicit broad HOME allowlist.
+    ``O_NOFOLLOW``.  The registered policies require the output artifact and
+    parent directories while allowing only explicitly declared disposable
+    scratch roots; the generic tree form prevents a provider from inheriting
+    an implicit broad HOME allowlist.
     """
     policy = _stage_tree_policy(relative_output_path)
     artifact_parts = _validated_relative_parts(policy.credential_artifact)
@@ -363,12 +365,21 @@ def _validate_device_auth_stage_tree(
             allowed_children.setdefault(parent, set()).add(part)
             parent = (*parent, part)
 
+    required_children: dict[tuple[str, ...], set[str]] = {}
+    parent = ()
+    for part in artifact_parts:
+        required_children.setdefault(parent, set()).add(part)
+        parent = (*parent, part)
+
     def _validate_directory(directory_fd: int, prefix: tuple[str, ...]) -> None:
         _require_private_directory(directory_fd, expected_uid=expected_uid)
-        if set(os.listdir(directory_fd)) != allowed_children.get(prefix, set()):
+        children = set(os.listdir(directory_fd))
+        if not (
+            required_children.get(prefix, set()) <= children <= allowed_children.get(prefix, set())
+        ):
             raise StagedOutputValidationError("staged HOME contains an undeclared artifact")
 
-        for child in allowed_children.get(prefix, set()):
+        for child in sorted(children):
             child_prefix = (*prefix, child)
             if child_prefix == artifact_parts:
                 # The same descriptor-constrained reader below validates this

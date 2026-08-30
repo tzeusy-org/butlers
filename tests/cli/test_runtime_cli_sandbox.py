@@ -336,7 +336,7 @@ async def test_device_auth_rejects_unprojectable_openai_output_before_persistenc
 async def test_codex_device_auth_persists_only_strict_projected_authority(
     tmp_path: Path,
 ) -> None:
-    """REQ-core-credentials-002: Codex device auth persists its exact OAuth shape."""
+    """REQ-core-credentials-002: Codex persists auth while discarding its login log."""
     from butlers.cli_auth.sandbox import persist_staged_device_auth_output
 
     stage_home = tmp_path / "stage-home"
@@ -363,6 +363,10 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     )
     output.write_text(staged_content, encoding="utf-8")
     os.chmod(output, 0o600)
+    login_log = output.parent / "log" / "codex-login.log"
+    login_log.parent.mkdir(mode=0o700)
+    login_log.write_text("opaque disposable login trace", encoding="utf-8")
+    os.chmod(login_log, 0o600)
 
     provider = replace(PROVIDERS["codex"], token_path=tmp_path / "canonical" / "auth.json")
     authority = MagicMock()
@@ -391,6 +395,96 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     )
     assert provider.token_path is not None
     assert provider.token_path.read_text(encoding="utf-8") == expected_content
+
+
+async def test_codex_device_auth_rejects_undeclared_stage_child_before_persistence(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: the login-log exception cannot widen the Codex HOME."""
+    from butlers.cli_auth.sandbox import persist_staged_device_auth_output
+
+    stage_home = tmp_path / "stage-home"
+    stage_home.mkdir(mode=0o700)
+    codex_home = stage_home / ".codex"
+    codex_home.mkdir(mode=0o700)
+    output = codex_home / "auth.json"
+    output.write_bytes(
+        b'{"auth_mode":"chatgpt","OPENAI_API_KEY":null,'
+        b'"tokens":{"id_token":"synthetic-id","access_token":"synthetic-access",'
+        b'"refresh_token":"synthetic-refresh","account_id":null},'
+        b'"last_refresh":"2026-08-12T00:00:00Z"}'
+    )
+    os.chmod(output, 0o600)
+    log_dir = codex_home / "log"
+    log_dir.mkdir(mode=0o700)
+    login_log = log_dir / "codex-login.log"
+    login_log.write_text("allowed log cannot mask a peer", encoding="utf-8")
+    os.chmod(login_log, 0o600)
+    peer_artifact = codex_home / "peer-artifact"
+    peer_artifact.write_text("must not cross the stage boundary", encoding="utf-8")
+    os.chmod(peer_artifact, 0o600)
+
+    provider = replace(PROVIDERS["codex"], token_path=tmp_path / "canonical" / "auth.json")
+    authority = MagicMock()
+    authority.require_system_global_pool = MagicMock()
+    authority.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
+    stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        persisted = await persist_staged_device_auth_output(
+            provider,
+            authority,
+            stage_home_fd=stage_home_fd,
+            relative_output_path=output.relative_to(stage_home),
+            expected_uid=os.geteuid(),
+            pid1_terminated=True,
+            payload_fds_closed=True,
+            codex_authority=authority,
+            expected_authority_value=None,
+        )
+    finally:
+        os.close(stage_home_fd)
+
+    assert persisted is False
+    authority.store_codex_cli_auth_if_unchanged.assert_not_awaited()
+
+
+async def test_codex_device_auth_rejects_login_log_without_auth_before_persistence(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: disposable Codex logs never substitute for auth output."""
+    from butlers.cli_auth.sandbox import persist_staged_device_auth_output
+
+    stage_home = tmp_path / "stage-home"
+    stage_home.mkdir(mode=0o700)
+    codex_home = stage_home / ".codex"
+    codex_home.mkdir(mode=0o700)
+    login_log = codex_home / "log" / "codex-login.log"
+    login_log.parent.mkdir(mode=0o700)
+    login_log.write_text("no credential artifact", encoding="utf-8")
+    os.chmod(login_log, 0o600)
+
+    provider = replace(PROVIDERS["codex"], token_path=tmp_path / "canonical" / "auth.json")
+    authority = MagicMock()
+    authority.require_system_global_pool = MagicMock()
+    authority.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
+    stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        persisted = await persist_staged_device_auth_output(
+            provider,
+            authority,
+            stage_home_fd=stage_home_fd,
+            relative_output_path=Path(".codex") / "auth.json",
+            expected_uid=os.geteuid(),
+            pid1_terminated=True,
+            payload_fds_closed=True,
+            codex_authority=authority,
+            expected_authority_value=None,
+        )
+    finally:
+        os.close(stage_home_fd)
+
+    assert persisted is False
+    authority.store_codex_cli_auth_if_unchanged.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
