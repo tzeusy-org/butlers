@@ -313,15 +313,20 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
 
     After the email-prefix migration (core_109), keys follow the 4-segment shape:
     - Sleep sessions:   ``google_health:<email>:sleep_session:<id>``
-      matched by segment 3 = 'sleep_session' AND exactly 4 segments
+      matched by segment 3 = 'sleep_session'. The ``<id>`` is itself an ISO-8601
+      timestamp (e.g. ``2026-08-29T12:03:00Z``), which contains its own colons —
+      so, unlike daily summaries, a trailing "exactly 4 segments" guard on this
+      branch would undercount every sleep row past its first colon-bearing id.
+      Segment 3 alone already disambiguates from the legacy 3-segment shape
+      (there, segment 2 — not 3 — carries the resource name).
     - Daily summaries:  ``google_health:<email>:<resource>:<date>``
       matched by exactly 4 segments AND segment 3 != 'sleep_session'
 
-    The predicates use ``split_part`` with a 4-segment guard to match ONLY the
-    new email-prefixed shape and exclude any legacy 3-segment rows still present
-    before the migration runs.  The Alembic backfill (core_109) rewrites the 3
-    historical rows, so both the migration window and the steady-state case are
-    handled correctly.
+    The daily-summary predicate uses ``split_part`` with a 4-segment guard to
+    match ONLY the new email-prefixed shape and exclude any legacy 3-segment
+    rows still present before the migration runs.  The Alembic backfill
+    (core_109) rewrites the 3 historical rows, so both the migration window and
+    the steady-state case are handled correctly.
     """
     default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
     if shared_pool is None:
@@ -334,7 +339,6 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
                     count(*) FILTER (
                         WHERE external_event_id LIKE 'google_health:%:sleep_session:%'
                           AND split_part(external_event_id, ':', 3) = 'sleep_session'
-                          AND split_part(external_event_id, ':', 5) = ''
                     ) AS sleep_sessions_7d,
                     count(*) FILTER (
                         WHERE external_event_id LIKE 'google_health:%:%:%'
@@ -590,7 +594,10 @@ async def _fetch_per_account_ingest_counts(
 
     Uses the email-prefixed ``external_event_id`` key shape introduced in
     the multi-account migration:
-    - Sleep sessions:  ``google_health:<email>:sleep_session:<id>``
+    - Sleep sessions:  ``google_health:<email>:sleep_session:<id>``, where
+      ``<id>`` is itself an ISO-8601 timestamp (e.g. ``2026-08-29T12:03:00Z``)
+      containing its own colons — segment 3 alone (``'sleep_session'``)
+      disambiguates it, so no trailing-segment guard is applied here.
     - Daily summaries: ``google_health:<email>:<resource>:<date>``
     """
     default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
@@ -605,7 +612,6 @@ async def _fetch_per_account_ingest_counts(
                     count(*) FILTER (
                         WHERE external_event_id LIKE $2
                           AND split_part(external_event_id, ':', 3) = 'sleep_session'
-                          AND split_part(external_event_id, ':', 5) = ''
                     ) AS sleep_sessions_7d,
                     count(*) FILTER (
                         WHERE external_event_id LIKE $3
