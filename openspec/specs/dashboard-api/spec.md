@@ -400,10 +400,19 @@ was removed (no compat shim).
 #### Ingestion Events
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/ingestion/events` | Paginated ingestion event list (limit, offset, source_channel filter) |
+| GET | `/api/ingestion/events` | Cursor-paginated ingestion event list (`limit`, `cursor`, and primary `channels` filter; deprecated server-only `source_channel` compatibility) |
 | GET | `/api/ingestion/events/{requestId}` | Single ingestion event detail |
 | GET | `/api/ingestion/events/{requestId}/sessions` | All sessions attributed to this request ID across all butlers |
 | GET | `/api/ingestion/events/{requestId}/rollup` | Token/cost/butler topology rollup for this request ID |
+
+The ingestion-events list accepts an opaque `cursor` from the preceding response
+alongside `limit`; its response uses the cursor envelope
+`{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }`
+and does not return `total` or `offset`. `channels` is the primary
+comma-separated source-channel filter. The server accepts the deprecated,
+single-value `source_channel` query parameter only as server-side compatibility;
+it is not exposed by the private frontend client. When both parameters are
+present, `channels` takes precedence over `source_channel`.
 
 #### Timeline
 | Method | Path | Purpose |

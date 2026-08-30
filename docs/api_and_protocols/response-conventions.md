@@ -16,19 +16,26 @@ Frontend requests use `apiFetch`; browser navigation or download links returned 
 
 ## Cursor pagination
 
-`GET /api/ingestion/events` uses **keyset (cursor) pagination** — the `page` param is gone (use
-`limit` and `cursor` instead). This was a breaking change in Phase 2b, PR #1755.
+`GET /api/ingestion/events` uses **cursor pagination** — the `page` and `offset` params are gone
+(use `limit` and the opaque `cursor` from the preceding response instead). For the default
+recent sort, the cursor is a keyset position ordered by `received_at DESC, id DESC`.
 
 Response envelope:
 
 ```json
-{"events": [...], "next_cursor": "<opaque>", "has_more": true}
+{"data": [...], "meta": {"next_cursor": "<opaque>", "has_more": true}}
 ```
 
-- Pass `cursor=<next_cursor>` to fetch the next page.
+- Pass `cursor=<next_cursor>` to fetch the next page; `next_cursor` is `null` on the last page.
 - `has_more: false` means you are at the last page.
-- No `total` field is returned.
-- Keyset order: `received_at DESC, id DESC`.
+- No `total` or `offset` field is returned.
+- The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
+  a page offset; do not mix cursors between sort modes.
+
+Channel filtering uses `channels` as the primary comma-separated source-channel filter. The server
+still accepts the deprecated single-value `source_channel` query parameter for compatibility, but
+it is server-only and is not exposed by the private frontend client. When both parameters are
+present, `channels` takes precedence over `source_channel`.
 
 ## Degraded-mode response envelope
 
