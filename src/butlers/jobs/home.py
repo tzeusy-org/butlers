@@ -432,6 +432,14 @@ _DEFAULT_OFFLINE_HOURS_THRESHOLDS: dict[str, int] = {
     "warning": 1,
 }
 
+_DEFAULT_REALERT_HOURS_THRESHOLD: dict[str, int] = {
+    "hours": 24,
+}
+
+# State-store key for the device-health-check re-alert dedup map
+# (issue_key -> ISO timestamp of the last notification that included it).
+_HEALTH_CHECK_ALERT_STATE_KEY = "home:health_check:last_alerted"
+
 # Severity → memory importance mapping (device health check)
 _SEVERITY_IMPORTANCE: dict[str, float] = {
     "critical": 8.0,
@@ -554,6 +562,80 @@ def classify_offline(last_changed: datetime | None, thresholds: dict[str, int]) 
     if hours_offline > thresholds["warning"]:
         return "warning"
     return None
+
+
+# HA domains whose entities have no persistent value between interactions —
+# "unavailable"/"unknown" is their normal resting state, not a fault:
+# buttons (Identify, Restart/Shutdown, Zigbee2MQTT bridge restart), the Assist
+# conversation agent, Broadlink IR/RF blasters (fire-and-forget), and TTS
+# engines.
+_STEADY_STATE_UNKNOWN_DOMAINS = frozenset(
+    {"button", "conversation", "infrared", "radio_frequency", "tts"}
+)
+
+# Zigbee2MQTT per-gesture dimmer "action" sensors (e.g.
+# sensor.bedroom_knob_action_brightness_delta) only hold a value during an
+# active gesture; "unknown" between gestures is their normal resting state.
+_ACTION_SENSOR_SUFFIX_RE = re.compile(
+    r"_action_(brightness_delta|color_temperature_delta|rate|step_size|transition_time)$"
+)
+
+
+def is_steady_state_unknown(entity_id: str) -> bool:
+    """True if *entity_id*'s HA domain/pattern normally rests at "unknown".
+
+    Such entities must be excluded from offline classification — flagging
+    them as "offline" is a false positive by construction, not a real
+    connectivity or device fault.
+    """
+    domain = entity_id.split(".", 1)[0]
+    if domain in _STEADY_STATE_UNKNOWN_DOMAINS:
+        return True
+    return domain == "sensor" and bool(_ACTION_SENSOR_SUFFIX_RE.search(entity_id))
+
+
+def select_due_issues(
+    issues: list[dict[str, Any]],
+    alert_state: dict[str, Any],
+    *,
+    now: datetime,
+    realert_hours: float,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Partition *issues* into those due for a fresh alert, and the next alert state.
+
+    An issue is due if it has never been alerted, or its last alert is older
+    than *realert_hours* — this throttles repeat notifications for an issue
+    that hasn't changed since the last run, without ever silencing a newly
+    appeared one. *alert_state* maps ``"{issue_type}:{entity_id}"`` to the
+    ISO timestamp it was last included in a notification.
+
+    Returns:
+        ``(due_issues, next_alert_state)``. *next_alert_state* only retains
+        keys for issues present in *issues* this run, so a resolved issue's
+        timer is dropped and it alerts immediately if it recurs.
+    """
+    due: list[dict[str, Any]] = []
+    next_alert_state: dict[str, str] = {}
+    for issue in issues:
+        key = f"{issue['issue_type']}:{issue['entity_id']}"
+        last_alerted_raw = alert_state.get(key)
+        last_alerted_dt: datetime | None = None
+        if isinstance(last_alerted_raw, str):
+            try:
+                last_alerted_dt = datetime.fromisoformat(last_alerted_raw)
+            except ValueError:
+                last_alerted_dt = None
+
+        is_due = (
+            last_alerted_dt is None
+            or (now - last_alerted_dt).total_seconds() / 3600.0 >= realert_hours
+        )
+        if is_due:
+            due.append(issue)
+            next_alert_state[key] = now.isoformat()
+        else:
+            next_alert_state[key] = last_alerted_dt.isoformat()  # type: ignore[union-attr]
+    return due, next_alert_state
 
 
 # ---------------------------------------------------------------------------
@@ -1897,9 +1979,12 @@ async def run_device_health_check(
     1. Load battery and offline thresholds from state store.
     2. Query ha_entity_snapshot for all entities.
     3. Classify battery issues (entity_id/friendly_name contains "battery").
-    4. Classify offline devices (state "unavailable" or "unknown").
-    5. Store memory facts for each issue found.
-    6. Send a Telegram notification with the summary.
+    4. Classify offline devices (state "unavailable" or "unknown"), excluding
+       domains whose steady state is normally "unknown" (see
+       ``is_steady_state_unknown``).
+    5. Store memory facts and send a Telegram notification, throttled by
+       ``select_due_issues`` so an already-known, unresolved issue only
+       re-notifies after the configured re-alert window instead of every run.
 
     Args:
         pool: asyncpg connection pool for the home butler's database.
@@ -1987,7 +2072,7 @@ async def run_device_health_check(
                     )
 
         # ---- Offline classification -----------------------------------------
-        if state in ("unavailable", "unknown"):
+        if state in ("unavailable", "unknown") and not is_steady_state_unknown(entity_id):
             # Parse last_updated to datetime
             last_changed_dt: datetime | None = None
             if last_updated is not None:
@@ -2017,11 +2102,26 @@ async def run_device_health_check(
     # ------------------------------------------------------------------
     critical_count = sum(1 for i in issues if i["severity"] == "critical")
     warning_count = sum(1 for i in issues if i["severity"] == "warning")
-    info_count = sum(1 for i in issues if i["severity"] == "info")
     issues_found = len(issues)
 
-    if issues:
-        for issue in issues:
+    # ------------------------------------------------------------------
+    # 5b. Suppress repeat alerts for already-known, unresolved issues
+    # ------------------------------------------------------------------
+    # `issues`/`critical_count`/etc. above reflect the true current state and
+    # are returned as-is. Only the notification and memory-fact writes below
+    # are throttled, so a stuck issue doesn't re-page the owner every run.
+    realert_hours = (await _load_thresholds(pool, "realert", _DEFAULT_REALERT_HOURS_THRESHOLD))[
+        "hours"
+    ]
+    raw_alert_state = await state_get(pool, _HEALTH_CHECK_ALERT_STATE_KEY)
+    alert_state = raw_alert_state if isinstance(raw_alert_state, dict) else {}
+    due_issues, next_alert_state = select_due_issues(
+        issues, alert_state, now=datetime.now(UTC), realert_hours=realert_hours
+    )
+    await state_set(pool, _HEALTH_CHECK_ALERT_STATE_KEY, next_alert_state)
+
+    if due_issues:
+        for issue in due_issues:
             subject = _entity_subject(issue["entity_id"])
             content = (
                 f"{issue['friendly_name']}: {issue['description']}"
@@ -2036,7 +2136,7 @@ async def run_device_health_check(
                 importance=importance,
                 tags=tags,
             )
-    else:
+    elif not issues:
         # All-clear: store a healthy-fleet fact
         await _store_device_fact(
             pool,
@@ -2047,18 +2147,31 @@ async def run_device_health_check(
             importance=3.0,
             tags=["maintenance"],
         )
+    # else: every current issue was already alerted within the re-alert
+    # window \u2014 nothing new to record this run.
 
     # ------------------------------------------------------------------
     # 6. Send notification
     # ------------------------------------------------------------------
-    notification = _build_health_check_notification(
-        issues=issues,
-        devices_checked=devices_checked,
-        critical_count=critical_count,
-        warning_count=warning_count,
-        info_count=info_count,
-    )
-    await _send_notify(pool, notification)
+    if due_issues or not issues:
+        due_critical = sum(1 for i in due_issues if i["severity"] == "critical")
+        due_warning = sum(1 for i in due_issues if i["severity"] == "warning")
+        due_info = sum(1 for i in due_issues if i["severity"] == "info")
+        notification = _build_health_check_notification(
+            issues=due_issues,
+            devices_checked=devices_checked,
+            critical_count=due_critical,
+            warning_count=due_warning,
+            info_count=due_info,
+        )
+        await _send_notify(pool, notification)
+    else:
+        logger.info(
+            "device_health_check: %d issue(s) all already alerted within %s hour(s); "
+            "skipping notification",
+            issues_found,
+            realert_hours,
+        )
 
     logger.info(
         "device_health_check: devices_checked=%d issues_found=%d critical=%d warning=%d",

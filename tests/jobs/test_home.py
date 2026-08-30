@@ -29,8 +29,10 @@ from butlers.jobs.home import (
     classify_battery,
     classify_item,
     classify_offline,
+    is_steady_state_unknown,
     run_device_health_check,
     run_maintenance_schedule_check,
+    select_due_issues,
 )
 
 pytestmark = pytest.mark.unit
@@ -323,6 +325,82 @@ def test_classify_offline(hours_ago, expected):
 
 
 # ---------------------------------------------------------------------------
+# is_steady_state_unknown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entity_id, expected",
+    [
+        ("button.zigbee2mqtt_bridge_restart", True),
+        ("button.tzehouse_restart", True),
+        ("conversation.home_assistant", True),
+        ("infrared.livingroom_broadlink_rm4_pro_ir_emitter", True),
+        ("radio_frequency.livingroom_broadlink_rm4_pro", True),
+        ("tts.google_translate_en_com", True),
+        ("sensor.bedroom_knob_action_brightness_delta", True),
+        ("sensor.living_room_knob_action_transition_time", True),
+        ("sensor.basement_battery", False),
+        ("automation.bedroom_styrbar_controls", False),
+        ("humidifier.sterra_sun", False),
+        ("select.sterra_sun_fan_speed", False),
+        ("sensor.bedroom_knob_action_unrecognized_suffix", False),
+    ],
+)
+def test_is_steady_state_unknown(entity_id, expected):
+    """Buttons, the Assist/TTS/IR/RF entities, and Zigbee2MQTT dimmer "action"
+    sensors normally rest at "unknown" between interactions and must not be
+    treated as offline; ordinary sensors/automations/devices are not exempt."""
+    assert is_steady_state_unknown(entity_id) == expected
+
+
+# ---------------------------------------------------------------------------
+# select_due_issues
+# ---------------------------------------------------------------------------
+
+
+def test_select_due_issues_new_issue_is_due():
+    """An issue with no prior alert state is always due, and gets stamped now."""
+    issue = _issue("basement_sensor", "offline", "critical", "offline")
+    due, next_state = select_due_issues([issue], {}, now=_NOW, realert_hours=24)
+    assert due == [issue]
+    assert next_state == {"offline:sensor.basement_sensor": _NOW.isoformat()}
+
+
+def test_select_due_issues_recent_alert_is_suppressed():
+    """An issue alerted within the re-alert window is dropped from the due
+    list, and its stored timestamp is left unchanged (not reset to now)."""
+    issue = _issue("basement_sensor", "offline", "critical", "offline")
+    last_alerted = (_NOW - timedelta(hours=1)).isoformat()
+    due, next_state = select_due_issues(
+        [issue], {"offline:sensor.basement_sensor": last_alerted}, now=_NOW, realert_hours=24
+    )
+    assert due == []
+    assert next_state == {"offline:sensor.basement_sensor": last_alerted}
+
+
+def test_select_due_issues_stale_alert_is_due_again():
+    """An issue last alerted at or beyond the re-alert window fires again."""
+    issue = _issue("basement_sensor", "offline", "critical", "offline")
+    last_alerted = (_NOW - timedelta(hours=24)).isoformat()
+    due, next_state = select_due_issues(
+        [issue], {"offline:sensor.basement_sensor": last_alerted}, now=_NOW, realert_hours=24
+    )
+    assert due == [issue]
+    assert next_state["offline:sensor.basement_sensor"] == _NOW.isoformat()
+
+
+def test_select_due_issues_drops_resolved_issue_keys():
+    """A key no longer present in the current issues list is dropped from
+    next_alert_state, so a recurring issue alerts immediately rather than
+    staying suppressed forever by a stale timer."""
+    stale_state = {"offline:sensor.long_gone": _NOW.isoformat()}
+    due, next_state = select_due_issues([], stale_state, now=_NOW, realert_hours=24)
+    assert due == []
+    assert next_state == {}
+
+
+# ---------------------------------------------------------------------------
 # _load_battery_thresholds / _load_offline_hours_thresholds
 # ---------------------------------------------------------------------------
 
@@ -437,6 +515,94 @@ async def test_run_device_health_check_battery_and_non_battery():
     ):
         result_nb = await run_device_health_check(pool_nb, None)
     assert result_nb["issues_found"] == 0
+
+
+async def test_run_device_health_check_excludes_steady_state_unknown_domains():
+    """Button/conversation/tts/IR-RF entities and a Zigbee2MQTT action sensor in
+    "unknown" state are not flagged offline; a genuinely stuck automation is."""
+    stale = datetime.now(UTC) - timedelta(hours=25)
+    rows = [
+        _make_entity_row("button.zigbee2mqtt_bridge_restart", state="unknown"),
+        _make_entity_row("conversation.home_assistant", state="unknown"),
+        _make_entity_row("tts.google_translate_en_com", state="unknown"),
+        _make_entity_row("sensor.bedroom_knob_action_rate", state="unknown"),
+        _make_entity_row(
+            "automation.living_room_styrbar_controls", state="unavailable", last_updated=stale
+        ),
+    ]
+    pool = _make_health_pool(entity_rows=rows)
+    with (
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
+    ):
+        result = await run_device_health_check(pool, None)
+    assert result["issues_found"] == 1
+    assert result["critical_count"] == 1
+
+
+async def test_run_device_health_check_suppresses_repeat_alert_within_window():
+    """An unresolved issue already alerted within the re-alert window does not
+    re-trigger a notification or a duplicate memory fact, though the returned
+    counts still reflect the true current state."""
+    rows = [
+        _make_entity_row(
+            "automation.stuck_thing",
+            state="unavailable",
+            last_updated=datetime.now(UTC) - timedelta(hours=48),
+        )
+    ]
+    pool = _make_health_pool(entity_rows=rows)
+    last_alerted = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    pool.fetchval = AsyncMock(
+        side_effect=[
+            None,  # battery thresholds -> defaults
+            None,  # offline thresholds -> defaults
+            None,  # realert threshold -> default 24h
+            {"offline:automation.stuck_thing": last_alerted},  # prior alert state
+            1,  # state_set's RETURNING version
+        ]
+    )
+    with (
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_fact,
+    ):
+        result = await run_device_health_check(pool, None)
+
+    assert result["critical_count"] == 1
+    mock_notify.assert_not_called()
+    mock_fact.assert_not_called()
+
+
+async def test_run_device_health_check_realerts_after_window_elapses():
+    """The same unresolved issue re-triggers a notification once the re-alert
+    window has passed since it was last reported."""
+    rows = [
+        _make_entity_row(
+            "automation.stuck_thing",
+            state="unavailable",
+            last_updated=datetime.now(UTC) - timedelta(hours=48),
+        )
+    ]
+    pool = _make_health_pool(entity_rows=rows)
+    last_alerted = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+    pool.fetchval = AsyncMock(
+        side_effect=[
+            None,
+            None,
+            None,
+            {"offline:automation.stuck_thing": last_alerted},
+            1,
+        ]
+    )
+    with (
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify,
+        patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock) as mock_fact,
+    ):
+        result = await run_device_health_check(pool, None)
+
+    assert result["critical_count"] == 1
+    mock_notify.assert_called_once()
+    mock_fact.assert_called_once()
 
 
 async def test_store_device_fact_sets_home_source_butler():

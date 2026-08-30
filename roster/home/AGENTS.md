@@ -81,7 +81,7 @@ The following scheduled tasks each have a dedicated skill defining their step-by
 
 - **`weekly-energy-digest`** (Sun 9am): see `.agents/skills/weekly-energy-digest/SKILL.md`
 - **`environment-report`** (Daily 8am): see `.agents/skills/environment-report/SKILL.md`
-- **`device-health-check`** (Nightly 4am): see `.agents/skills/device-health-check/SKILL.md`
+- **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`
 
 ## HA Event Response Patterns
 

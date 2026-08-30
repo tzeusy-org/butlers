@@ -51,7 +51,7 @@ job_name = "environment_report"
 
 [[butler.schedule]]
 name = "device-health-check"
-cron = "0 4 * * *"
+cron = "0 */4 * * *"
 dispatch_mode = "job"
 job_name = "device_health_check"
 

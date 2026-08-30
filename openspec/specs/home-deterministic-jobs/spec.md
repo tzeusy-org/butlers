@@ -56,6 +56,7 @@ All monitoring thresholds are loaded from the state store at job invocation time
 - **THEN** the job SHALL fall back to hardcoded default values identical to the seeded defaults:
   - Battery: `{"critical": 10, "warning": 20, "info": 30}`
   - Offline hours: `{"critical": 24, "warning": 1}`
+  - Re-alert: `{"hours": 24}`
   - Comfort defaults: `{"temp_min_c": 20, "temp_max_c": 27.5, "humidity_min": 30, "humidity_max": 78, "co2_max_ppm": 1000}`
   - Comfort deviation: `{"minor_temp_c": 1, "moderate_temp_c": 3, "minor_humidity": 10, "moderate_humidity": 20, "critical_temp_low_c": 15.5, "critical_temp_high_c": 32, "critical_co2_ppm": 1500, "critical_humidity_low": 15, "critical_humidity_high": 88}`
   - Energy: `{"anomaly_pct": 20, "high_severity_pct": 100}`
@@ -75,7 +76,7 @@ The `device_health_check` job reads all HA entity states, classifies battery and
 
 - **WHEN** the `device_health_check` job runs
 - **THEN** it SHALL query the `ha_entity_snapshot` table to retrieve all current entity states
-- **AND** it SHALL identify entities with state `"unavailable"` or `"unknown"` as offline
+- **AND** it SHALL identify entities with state `"unavailable"` or `"unknown"` as offline, EXCLUDING entities whose HA domain (`button`, `conversation`, `infrared`, `radio_frequency`, `tts`) or entity_id pattern (a Zigbee2MQTT dimmer "action" sensor, e.g. `sensor.*_action_brightness_delta`) normally rests at `"unknown"` between interactions and so is never a real fault
 - **AND** it SHALL identify entities whose `entity_id` or `friendly_name` contains `battery` and whose numeric state value is at or below the configured `info` threshold (default 30%) as battery-related
 
 #### Scenario: Battery severity classification
@@ -94,6 +95,15 @@ The `device_health_check` job reads all HA entity states, classifies battery and
 - **AND** it SHALL be classified as:
   - `critical` if `last_changed` is more than the `critical` threshold hours ago (default 24)
   - `warning` if `last_changed` is more than the `warning` threshold hours ago but less than `critical` (default 1-24h)
+
+#### Scenario: Repeat-alert suppression for unresolved issues
+
+- **WHEN** the job classifies the current set of battery/offline issues
+- **THEN** it SHALL load a per-issue last-alerted map from state store key `home:health_check:last_alerted` and a re-alert window from `home:thresholds:realert` (default 24 hours)
+- **AND** an issue (keyed by `"{issue_type}:{entity_id}"`) SHALL be included in this run's memory-fact writes and notification only if it has never been alerted, or its last alert is at least the re-alert window ago
+- **AND** issues suppressed this way SHALL still count toward the job's returned `issues_found`/`critical_count`/`warning_count`, which always reflect the true current state
+- **AND** after the run, the state store key SHALL be updated to retain only issues present in the current run — a resolved issue's timer is dropped so it alerts immediately if it recurs
+- **AND** if every current issue is suppressed this run (nothing new to report), the job SHALL skip sending a notification and skip writing memory facts for that run
 
 #### Scenario: Memory fact storage for issues
 

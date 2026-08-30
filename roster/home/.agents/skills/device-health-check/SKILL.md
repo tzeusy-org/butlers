@@ -1,21 +1,28 @@
 ---
 name: device-health-check
-description: Nightly Home Assistant device survey for offline devices, low batteries, and firmware issues.
+description: Home Assistant device survey for offline devices, low batteries, and firmware issues.
 ---
 
 # Skill: Device Health Check
 
 ## Purpose
 
-Perform a nightly device health survey at 4am. Query all connected Home Assistant entities for
+Perform a device health survey every 4 hours. Query all connected Home Assistant entities for
 online status, battery levels, and last communication time. Flag offline devices, critically low
 batteries, and devices due for firmware updates. Store findings in memory and send an alert via
 `notify(channel="telegram", intent="send")` — alert if issues found, all-clear summary otherwise.
 
+Devices whose HA domain has no persistent value (buttons, the Assist conversation agent,
+Broadlink IR/RF blasters, TTS engines) or that are Zigbee2MQTT dimmer "action" sensors normally
+rest at `unknown` between interactions — do not flag these as offline. Also, do not re-alert on an
+issue that was already reported within the last 24h (state store key
+`home:health_check:last_alerted`); only surface it again once resolved-and-recurred or once the
+re-alert window has passed.
+
 ## When to Use
 
 Use this skill when:
-- The `device-health-check` scheduled task fires (cron: `0 4 * * *`, nightly at 04:00)
+- The `device-health-check` scheduled task fires (cron: `0 */4 * * *`, every 4 hours)
 - User requests "run the device health check" or "check device status"
 
 ## Workflow
