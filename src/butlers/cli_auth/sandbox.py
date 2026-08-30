@@ -337,10 +337,10 @@ def _validate_device_auth_stage_tree(
     """Reject peer artifacts and undeclared writes before consuming device output.
 
     Every directory is reached through the trusted staged-HOME descriptor with
-    ``O_NOFOLLOW``.  The registered policies currently permit only the output
-    artifact and its parent directories; the generic tree form makes a future
-    provider declare an exact disposable scratch root rather than inherit an
-    implicit broad HOME allowlist.
+    ``O_NOFOLLOW``.  The registered policies require the output artifact and
+    parent directories while allowing only explicitly declared disposable
+    scratch roots; the generic tree form prevents a provider from inheriting
+    an implicit broad HOME allowlist.
     """
     policy = _stage_tree_policy(relative_output_path)
     artifact_parts = _validated_relative_parts(policy.credential_artifact)
