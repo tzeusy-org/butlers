@@ -113,7 +113,7 @@ trackers. Not task lists in comments.
 - Agent-optimized: JSON output, ready work detection, discovered-from links.
 
 **Backend (how the data actually lives):** `bd` v1.0.x is backed by the shared
-Dolt server on `127.0.0.1:3307` (database `butlers`), discovered via
+Dolt server on `dolt.parrot-hen.ts.net:3307` (database `butlers`), discovered via
 `.beads/metadata.json` (`dolt_mode: server`). Writes auto-commit to Dolt
 history; there is no `bd sync` step (that subcommand does not exist in this bd
 version). To refresh the git-tracked JSONL mirror, run

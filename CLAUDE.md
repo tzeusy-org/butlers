@@ -99,7 +99,7 @@ bd ready          # Available work        bd update <id> --claim   # Claim
 bd show <id>      # Issue details         bd close <id>            # Complete
 ```
 
-Backend is the **shared Dolt server** (`127.0.0.1:3307`, database `butlers`), discovered via
+Backend is the **shared Dolt server** (`dolt.parrot-hen.ts.net:3307`, database `butlers`), discovered via
 `.beads/metadata.json` (`dolt_mode: server`). Dolt is the source of truth and `bd create/update/close`
 commit to it directly — **there is no `bd sync` in this version.**
 

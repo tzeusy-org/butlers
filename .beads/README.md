@@ -28,7 +28,7 @@ bd update <issue-id> --status done
 ```
 
 > **This repo's setup:** `bd` v1.0.x runs against the shared **Dolt server**
-> (`127.0.0.1:3307`, db `butlers`). Mutations auto-commit to Dolt — there is **no
+> (`dolt.parrot-hen.ts.net:3307`, db `butlers`). Mutations auto-commit to Dolt — there is **no
 > `bd sync` command** and no SQLite. The git-tracked mirror is
 > `.beads/issues.export.jsonl` (refresh with `bd export`); never create
 > `.beads/issues.jsonl`. See the repo `AGENTS.md` / `CLAUDE.md` for details.

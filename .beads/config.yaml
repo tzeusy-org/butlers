@@ -9,7 +9,7 @@
 # issue-prefix: ""
 
 # NOTE: This repo runs bd v1.0.x in Dolt-native mode (see sync.mode / dolt.*
-# below). The shared Dolt server (localhost:3307, db `butlers`) is the source of
+# below). The shared Dolt server (dolt.parrot-hen.ts.net:3307, db `butlers`) is the source of
 # truth — there is NO SQLite database and NO `bd sync` command. The legacy
 # SQLite/JSONL settings below (no-db, sync-branch) are inert in this mode and
 # kept only as documented defaults.
@@ -70,7 +70,7 @@ no-auto-import: true
 # Active backend: Dolt-native. Mutations write directly to the shared Dolt
 # server and auto-commit to its history (durable without any sync/flush step).
 sync.mode: "dolt-native"
-dolt.host: localhost
+dolt.host: dolt.parrot-hen.ts.net
 dolt.port: 3307
 
 # Git-tracked JSONL mirror. NEVER point this at issues.jsonl — on bd 1.0.4 that

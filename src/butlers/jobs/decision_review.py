@@ -17,15 +17,14 @@ Two deterministic Switchboard schedule jobs:
 
 Why Switchboard, and why a file, not a live query
 ---------------------------------------------------
-Beads (``bd``) issue data lives in a Dolt server bound to the *host's*
-loopback interface (``127.0.0.1:3307``, see ``.beads/config.yaml``), reached
-today only by the ``bd`` CLI running directly on the host. No butler daemon
-or dashboard-api process can reach it: ``docker-compose.yml``'s ``egress``
+Beads (``bd``) issue data lives in the shared Dolt server at
+``dolt.parrot-hen.ts.net:3307`` (see ``.beads/config.yaml``), reached today
+only by the ``bd`` CLI running directly on the host. No butler daemon or
+dashboard-api process can reach it: ``docker-compose.yml``'s ``egress``
 network explicitly DROPs all RFC1918/loopback/CGNAT traffic
-(``scripts/egress-firewall.sh``) by design, and even without that firewall,
-``127.0.0.1`` inside a container's network namespace is the container itself,
-never the host. There is no bd MCP tool, no bd-to-Postgres bridge, and no
-existing precedent for a butler reaching beads data live (verified by
+(``scripts/egress-firewall.sh``) by design, including the tracker endpoint's
+Tailscale CGNAT address. There is no bd MCP tool, no bd-to-Postgres bridge,
+and no existing precedent for a butler reaching beads data live (verified by
 grepping the whole tree for a bd client/HTTP surface — none exists).
 
 Building a live bridge (a new egress allowlist exception, a Dolt bind-address

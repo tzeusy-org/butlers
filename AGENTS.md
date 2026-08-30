@@ -11,7 +11,7 @@ bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
 ```
 
-Mutations auto-commit to the shared Dolt server (`127.0.0.1:3307`, db `butlers`);
+Mutations auto-commit to the shared Dolt server (`dolt.parrot-hen.ts.net:3307`, db `butlers`);
 there is no `bd sync` and no SQLite. See "Beads DB Mode" below.
 
 ## Landing the Plane (Session Completion)
@@ -197,7 +197,7 @@ This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_view
 ### Beads DB Mode (Dolt server)
 
 This repo uses `bd` v1.0.x backed by the **shared Dolt server** on
-`127.0.0.1:3307` (database `butlers`), discovered via `.beads/metadata.json`
+`dolt.parrot-hen.ts.net:3307` (database `butlers`), discovered via `.beads/metadata.json`
 (`dolt_mode: server`). There is no SQLite database and no `beads-sync` branch.
 
 **Data flow:**
@@ -1100,7 +1100,7 @@ command's name is not a claim about scope.
 - Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
 
 ### Beads backend contract (Dolt server)
-- `bd` v1.0.x is backed by the shared Dolt server (`127.0.0.1:3307`, db `butlers`, `.beads/metadata.json` `dolt_mode: server`). No SQLite DB, no `.beads/beads.db`, no `beads-sync` branch, no `bd sync` subcommand.
+- `bd` v1.0.x is backed by the shared Dolt server (`dolt.parrot-hen.ts.net:3307`, db `butlers`, `.beads/metadata.json` `dolt_mode: server`). No SQLite DB, no `.beads/beads.db`, no `beads-sync` branch, no `bd sync` subcommand.
 - Mutations (`bd create/update/close`) write directly to Dolt and auto-commit to its history immediately — durable without any export/sync step.
 - The local gitignored JSONL mirror is `.beads/issues.export.jsonl` (`export.path` in `.beads/config.yaml`); refresh it with `bd export -o .beads/issues.export.jsonl`. Dolt is the source of truth; never commit the mirror. NEVER create `.beads/issues.jsonl` (it triggers a wedging full-reimport loop on writes; see the bd 1.0.4 note below).
 - All worktrees share the one Dolt server, so a bead created anywhere is visible everywhere immediately — no hydration/import step needed.
@@ -1620,7 +1620,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - `src/butlers/core/runtimes/codex.py` should stage isolated per-invocation `HOME` roots under `~/.codex/.tmp` when a real home directory exists; current `codex-cli` warns and can fail when `codex_home` is placed under `/tmp`.
 - `src/butlers/core/qa/dispatch.py::_create_qa_pr` also depends on the GitHub CLI after a successful agent session; `Dockerfile.base` must continue to ship `gh` alongside `git` and `uv` or QA investigations can finish cleanly but fail before raising a PR with `FileNotFoundError: 'gh'`.
 - This repo's local beads database currently has no Dolt remote named `origin`; `bd dolt push` fails with `remote 'origin' not found`, but local `bd create/update/dep add` writes still persist in `.beads/` via Dolt.
-- The `butlers` Dolt database lives on the shared GT/Gastown Dolt server exposed locally at `127.0.0.1:3307`. The literal hostname `gastown` may not resolve from agent shells; use the local forwarded endpoint in `.beads/config.yaml`/metadata (`dolt.host: 127.0.0.1`, `dolt.port: 3307`) and verify with `bd dolt show`. If `bd` reports `database "butlers" not found`, it is pointed at an auto-started local Dolt; fix by killing the PID in `.beads/dolt-server.pid` and writing `3307` to `.beads/dolt-server.port`. Do NOT run `bd doctor --fix --yes` for this — it overwrites the port file with a fresh local server and starts from an empty DB.
+- The `butlers` Dolt database lives on the shared GT/Gastown Dolt server at `dolt.parrot-hen.ts.net:3307`. The literal hostname `gastown` may not resolve from agent shells; use the verified remote endpoint in `.beads/config.yaml`/metadata (`dolt.host: dolt.parrot-hen.ts.net`, `dolt.port: 3307`) and verify with `bd dolt show`. If `bd` reports `database "butlers" not found`, it is pointed at an auto-started local Dolt; fix by killing the PID in `.beads/dolt-server.pid` and writing `3307` to `.beads/dolt-server.port`. Do NOT run `bd doctor --fix --yes` for this — it overwrites the port file with a fresh local server and starts from an empty DB.
 - `src/butlers/modules/qa/__init__.py::_handle_report_finding` currently trusts caller-supplied `fingerprint` and `severity`; QA dedup and dispatch autonomy depend on canonicalizing or validating those fields at the QA boundary rather than treating report payloads as authoritative.
 - `src/butlers/core/qa/sources/log_scanner.py` currently spends `max_entries_per_scan` budget before `_should_include_entry(...)` filtering and scans oldest-first across deterministically ordered files, so noisy benign logs can starve real error discovery unless the scanner budget/traversal logic is hardened.
 - QA investigation PR pushes cannot rely on an SSH `origin` inside the sandbox: use `GH_TOKEN` with `gh auth setup-git` and push over `https://github.com/<owner>/<repo>.git` so PR creation/follow-up works without SSH agent state.

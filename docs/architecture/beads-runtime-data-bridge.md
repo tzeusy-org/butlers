@@ -76,10 +76,10 @@ the projection is a cache with explicit freshness and failure semantics.
 
 The current design is intentionally narrow:
 
-- `bd` talks to the shared Dolt server on the tracker host's `127.0.0.1:3307`.
-  A container's loopback is not the host loopback, and the egress firewall
-  blocks RFC1918, Tailscale CGNAT, link-local, and other private ranges except
-  explicitly allowed hosts.
+- `bd` runs on the tracker host and talks to the shared Dolt server at
+  `dolt.parrot-hen.ts.net:3307`. The egress firewall keeps that tracker
+  endpoint out of runtime containers by blocking RFC1918, Tailscale CGNAT,
+  link-local, and other private ranges except explicitly allowed hosts.
 - `src/butlers/jobs/decision_review.py` reads the exported JSONL file and
   returns `available=False` for a missing, unreadable, or over-age source. It
   uses the same deterministic digest for Switchboard delivery and
