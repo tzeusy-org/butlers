@@ -3593,7 +3593,7 @@ async def _fetch_calendar_heartbeats_by_email(
     try:
         rows = await switchboard_pool.fetch(
             "SELECT cr.state, cr.last_heartbeat_at, cr.endpoint_identity,"
-            " cr.metadata, cr.error_message"
+            " cr.error_message"
             " FROM connector_registry cr"
             " WHERE cr.connector_type = $1"
             " ORDER BY cr.last_heartbeat_at DESC NULLS LAST",
