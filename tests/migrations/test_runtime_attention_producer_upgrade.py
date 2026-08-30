@@ -562,3 +562,55 @@ def test_upgrade_refuses_a_non_superuser_that_is_not_the_migration_role(
         )
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("function_name", "expected_message"),
+    [
+        (
+            "deactivate_producers_v2",
+            "core_199 downgrade requires the managed privileged bootstrap owner",
+        ),
+        (
+            "rollback_interface",
+            "core_198 downgrade requires the managed privileged bootstrap owner",
+        ),
+    ],
+    ids=("core-199-deactivate-producers-v2", "core-198-runtime-attention-rollback"),
+)
+def test_runtime_attention_downgrade_functions_refuse_an_executable_nonsuperuser(
+    postgres_container,
+    function_name: str,
+    expected_message: str,
+) -> None:
+    """The rolsuper guard, not missing ACL, refuses both rollback functions."""
+    db_name, bootstrap_url = _database_at_finalized_v1(postgres_container)
+    probe_role = f"runtime_attention_rollback_probe_{db_name}"
+    function_ref = f"runtime_attention_admin.{function_name}()"
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with _transient_role(engine, probe_role, "NOLOGIN NOSUPERUSER"):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'GRANT USAGE ON SCHEMA runtime_attention_admin TO "{probe_role}"')
+                )
+                connection.execute(
+                    text(f'GRANT EXECUTE ON FUNCTION {function_ref} TO "{probe_role}"')
+                )
+
+            with engine.connect() as connection:
+                connection.execute(text(f'SET SESSION AUTHORIZATION "{probe_role}"'))
+                assert not connection.execute(
+                    text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")
+                ).scalar_one()
+                assert connection.execute(
+                    text(
+                        f"SELECT has_function_privilege(session_user, '{function_ref}', 'EXECUTE')"
+                    )
+                ).scalar_one()
+                with pytest.raises(DBAPIError) as refusal:
+                    connection.execute(text(f"SELECT {function_ref}"))
+                assert str(refusal.value.orig).splitlines()[0] == expected_message
+    finally:
+        engine.dispose()
