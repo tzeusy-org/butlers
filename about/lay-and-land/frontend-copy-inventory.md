@@ -2152,9 +2152,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/chronicles/MapWidgetInner.tsx`
 
-- OpenStreetMap
-- contributors &copy;
-- CARTO
 - No activity recorded for this window.
 - Location points appear when the chronicler detects travel or place events.
 - Location map
@@ -4151,4 +4148,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3250*
+*Total strings: 3247*

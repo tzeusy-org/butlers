@@ -134,6 +134,27 @@ This starts:
 PostgreSQL remains external — configure `POSTGRES_HOST` in your environment
 file before starting the compose stack.
 
+### Chronicles map basemap
+
+The Chronicles location map uses CARTO raster basemaps. CARTO requires a
+basemap API key for these tiles; the key must be present when the Vite frontend
+starts so it can append the `key` query parameter to tile requests.
+
+Inject the dev project through Bitwarden Secrets Manager when starting the
+Compose stack:
+
+```bash
+set -a
+source /secrets/.env
+set +a
+bws run --project-id "${BWS_TZEHOUSE_ID_DEV}" -- ./scripts/compose.sh
+```
+
+The secret is named `CARTO_BASEMAP_API_KEY`. Compose passes it to the frontend
+as `VITE_CARTO_BASEMAP_API_KEY`; do not put the value in a tracked `.env` file.
+Because the browser receives the key, restrict it to the dev dashboard domain
+in CARTO rather than treating it as a backend-only secret.
+
 You would still need to start butler daemons separately via `butlers up`.
 
 ## Service Ports
