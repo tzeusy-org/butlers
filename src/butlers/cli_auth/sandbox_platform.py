@@ -195,8 +195,10 @@ def _mount_parent_directories(paths: tuple[SandboxReadonlyInput, ...]) -> tuple[
     return tuple(args)
 
 
-def validate_handshake_fds(*, info_fd: int, block_fd: int) -> tuple[int, int]:
-    """Accept only CLOEXEC FIFO write-info/read-block endpoints from the launcher."""
+def validate_handshake_fds(
+    *, info_fd: int, block_fd: int, shim_gate_fd: int
+) -> tuple[int, int, int]:
+    """Accept only typed CLOEXEC FIFO endpoints from the trusted launcher."""
 
     def _validate(fd: int, *, label: str, access: int) -> None:
         try:
@@ -214,9 +216,10 @@ def validate_handshake_fds(*, info_fd: int, block_fd: int) -> tuple[int, int]:
 
     _validate(info_fd, label="info", access=os.O_WRONLY)
     _validate(block_fd, label="block", access=os.O_RDONLY)
-    if info_fd == block_fd:
+    _validate(shim_gate_fd, label="shim gate", access=os.O_RDONLY)
+    if len({info_fd, block_fd, shim_gate_fd}) != 3:
         raise SandboxLaunchValidationError("handshake pipe descriptors must be distinct")
-    return info_fd, block_fd
+    return info_fd, block_fd, shim_gate_fd
 
 
 def build_bubblewrap_launch_plan(
@@ -229,6 +232,7 @@ def build_bubblewrap_launch_plan(
     readonly_inputs: tuple[SandboxReadonlyInput, ...],
     info_fd: int,
     block_fd: int,
+    shim_gate_fd: int,
 ) -> BubblewrapLaunchPlan:
     """Build the empty-root Bubblewrap command for one trusted invocation.
 
@@ -237,7 +241,7 @@ def build_bubblewrap_launch_plan(
     host root, canonical credential path, Dashboard application tree, or
     parent procfs into the child namespace.
     """
-    validate_handshake_fds(info_fd=info_fd, block_fd=block_fd)
+    validate_handshake_fds(info_fd=info_fd, block_fd=block_fd, shim_gate_fd=shim_gate_fd)
     if not command or not Path(command[0]).is_absolute() or any("\0" in item for item in command):
         raise SandboxLaunchValidationError("sandbox command must start with an absolute executable")
     if identity.uid != identity.gid or not 61000 <= identity.uid <= 61999:
@@ -288,6 +292,8 @@ def build_bubblewrap_launch_plan(
             _RUNTIME_HOME,
             "--",
             str(shim_path),
+            "--shim-gate-fd",
+            str(shim_gate_fd),
             "--",
             *command,
         )
@@ -295,7 +301,7 @@ def build_bubblewrap_launch_plan(
     return BubblewrapLaunchPlan(
         argv=tuple(argv),
         environment=dict(_RUNTIME_ENVIRONMENT),
-        pass_fds=(info_fd, block_fd),
+        pass_fds=(info_fd, block_fd, shim_gate_fd),
     )
 
 
@@ -593,21 +599,89 @@ def _outer_identity_preexec(identity: SandboxIdentity) -> Callable[[], None]:
     return _drop_privileges_and_lock
 
 
-def _read_bubblewrap_info(fd: int) -> int:
-    """Read one bounded Bubblewrap info record and return namespace PID 1."""
-    payload = os.read(fd, _MAX_BWRAP_INFO_BYTES)
-    if not payload or len(payload) >= _MAX_BWRAP_INFO_BYTES:
+def _parse_bubblewrap_info(payload: bytes) -> int | None:
+    """Return a PID for one complete Bubblewrap receipt, else wait for more bytes."""
+    if len(payload) > _MAX_BWRAP_INFO_BYTES:
         raise SandboxLaunchValidationError("Bubblewrap did not provide a bounded PID1 receipt")
     try:
-        decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SandboxLaunchValidationError("Bubblewrap PID1 receipt is invalid") from exc
+        text = payload.decode("utf-8")
+        leading = len(text) - len(text.lstrip())
+        decoded, end = json.JSONDecoder().raw_decode(text, leading)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if text[end:].strip():
+        raise SandboxLaunchValidationError("Bubblewrap PID1 receipt is invalid")
     if not isinstance(decoded, dict):
         raise SandboxLaunchValidationError("Bubblewrap PID1 receipt must be an object")
     child_pid = decoded.get("child-pid")
     if type(child_pid) is not int or child_pid <= 0:
         raise SandboxLaunchValidationError("Bubblewrap PID1 receipt has no valid child PID")
     return child_pid
+
+
+async def _read_bubblewrap_info(fd: int) -> int:
+    """Read Bubblewrap's fragmented bounded info object without a blocking thread."""
+    payload = bytearray()
+    loop = asyncio.get_running_loop()
+    receipt: asyncio.Future[int] = loop.create_future()
+    original_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+
+    def _finish_eof() -> None:
+        if not receipt.done():
+            if payload:
+                receipt.set_exception(
+                    SandboxLaunchValidationError("Bubblewrap PID1 receipt is invalid")
+                )
+            else:
+                receipt.set_exception(
+                    SandboxLaunchValidationError(
+                        "Bubblewrap did not provide a bounded PID1 receipt"
+                    )
+                )
+
+    def _consume_available_info() -> None:
+        while not receipt.done():
+            try:
+                chunk = os.read(fd, min(4096, _MAX_BWRAP_INFO_BYTES + 1 - len(payload)))
+            except BlockingIOError:
+                return
+            except OSError:
+                receipt.set_exception(
+                    SandboxLaunchValidationError("Bubblewrap PID1 receipt is unavailable")
+                )
+                return
+            if not chunk:
+                _finish_eof()
+                return
+            payload.extend(chunk)
+            try:
+                child_pid = _parse_bubblewrap_info(bytes(payload))
+            except SandboxLaunchValidationError as exc:
+                receipt.set_exception(exc)
+                return
+            if child_pid is not None:
+                receipt.set_result(child_pid)
+                return
+
+    loop.add_reader(fd, _consume_available_info)
+    _consume_available_info()
+    try:
+        return await receipt
+    finally:
+        loop.remove_reader(fd)
+        try:
+            fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
+        except OSError:
+            pass
+
+
+@dataclass(frozen=True)
+class _QuarantinedStartupGate:
+    """Keep the pre-PID1 Bubblewrap gate closed for this Dashboard lifetime."""
+
+    process: SandboxedChildProcess
+    block_write_fd: int
 
 
 def _default_pidfd_is_dead(pidfd: int, timeout_s: float) -> bool:
@@ -833,6 +907,7 @@ class BubblewrapDashboardCLIAuthSandbox:
         )
         self._pidfd_is_dead = pidfd_is_dead
         self._release_payload = release_payload or self._write_payload_release
+        self._quarantined_startup_gates: list[_QuarantinedStartupGate] = []
 
     @staticmethod
     def _missing_pidfd_open(_pid: int, _flags: int = 0) -> int:
@@ -890,7 +965,7 @@ class BubblewrapDashboardCLIAuthSandbox:
     async def _read_info_pid(self, info_fd: int) -> int:
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(_read_bubblewrap_info, info_fd),
+                _read_bubblewrap_info(info_fd),
                 timeout=_HANDSHAKE_TIMEOUT_S,
             )
         except TimeoutError as exc:
@@ -924,7 +999,16 @@ class BubblewrapDashboardCLIAuthSandbox:
         pidfd: int | None,
         stage: SandboxStage | None,
         identity: SandboxIdentity,
-    ) -> None:
+        block_write: int | None,
+        phase: str,
+    ) -> bool:
+        """Abort only a proven domain; otherwise retain its execution gate closed.
+
+        Bubblewrap's ``--block-fd`` treats EOF as a release, so the writer must
+        outlive an unproven startup domain.  The separately gated namespace PID1
+        rejects that EOF before provider execution, but keeping this writer open
+        is defence in depth until the Dashboard itself exits.
+        """
         if process is not None and pidfd is not None:
             handle = _BubblewrapDeviceAuthHandle(
                 process=process,
@@ -938,21 +1022,27 @@ class BubblewrapDashboardCLIAuthSandbox:
                 pidfd_is_dead=self._pidfd_is_dead,
             )
             await handle.terminate()
-            return
+            return False
 
         if process is not None:
-            with contextlib.suppress(Exception):
-                process.kill()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(process.wait(), timeout=_OUTER_CHILD_WAIT_S)
-            # The direct Bubblewrap child can exit while namespace PID1 still
-            # owns the stage bind.  Without a pidfd there is no independent
-            # death receipt, so retain both the stage directory and its UID
-            # lease rather than mistaking the outer-child wait for containment.
             if stage is not None:
                 _close_fd(stage.root_fd)
-            logger.warning("Dashboard CLI-auth sandbox retained a startup stage without PID1 proof")
-            return
+            if block_write is not None:
+                self._quarantined_startup_gates.append(
+                    _QuarantinedStartupGate(process=process, block_write_fd=block_write)
+                )
+                logger.warning(
+                    "Dashboard CLI-auth sandbox retained a startup stage without PID1 proof "
+                    "phase=%s cleanup_outcome=quarantined",
+                    phase,
+                )
+                return True
+            logger.warning(
+                "Dashboard CLI-auth sandbox retained a startup stage without PID1 proof "
+                "phase=%s cleanup_outcome=quarantined_without_gate",
+                phase,
+            )
+            return False
 
         if stage is not None:
             _close_fd(stage.root_fd)
@@ -960,6 +1050,7 @@ class BubblewrapDashboardCLIAuthSandbox:
                 await asyncio.to_thread(__import__("shutil").rmtree, stage.path)
         # No child domain started, so returning this identity is safe.
         await self._identity_pool.release(identity)
+        return False
 
     async def _launch_invocation(
         self,
@@ -978,12 +1069,19 @@ class BubblewrapDashboardCLIAuthSandbox:
         info_write: int | None = None
         block_read: int | None = None
         block_write: int | None = None
+        shim_gate_read: int | None = None
+        shim_gate_write: int | None = None
+        phase = "stage_create"
         try:
             stage = self._stage_factory(identity)
+            phase = "authority_stage"
             if authority is not None:
                 _stage_readonly_authority(stage, identity, authority)
+            phase = "pipe_create"
             info_read, info_write = os.pipe2(os.O_CLOEXEC)
             block_read, block_write = os.pipe2(os.O_CLOEXEC)
+            shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
+            phase = "launch_plan"
             plan = build_bubblewrap_launch_plan(
                 bwrap_path=self._bwrap_path,
                 shim_path=self._shim_path,
@@ -993,7 +1091,9 @@ class BubblewrapDashboardCLIAuthSandbox:
                 readonly_inputs=readonly_inputs,
                 info_fd=info_write,
                 block_fd=block_read,
+                shim_gate_fd=shim_gate_read,
             )
+            phase = "spawn"
             process = await self._spawn(
                 *plan.argv,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -1008,12 +1108,22 @@ class BubblewrapDashboardCLIAuthSandbox:
             info_write = None
             _close_fd(block_read)
             block_read = None
+            _close_fd(shim_gate_read)
+            shim_gate_read = None
 
+            phase = "pid1_receipt"
             child_pid = await self._read_info_pid(info_read)
+            phase = "pidfd_open"
             pidfd = self._pidfd_open(child_pid, 0)
+            phase = "bwrap_gate_release"
             self._release_payload(block_write)
             _close_fd(block_write)
             block_write = None
+            phase = "shim_gate_release"
+            self._release_payload(shim_gate_write)
+            _close_fd(shim_gate_write)
+            shim_gate_write = None
+            phase = "shim_ready"
             await self._verify_shim_ready(process)
 
             return _BubblewrapDeviceAuthHandle(
@@ -1038,10 +1148,14 @@ class BubblewrapDashboardCLIAuthSandbox:
                     pidfd=pidfd,
                     stage=stage,
                     identity=identity,
+                    block_write=block_write,
+                    phase=phase,
                 )
             )
             try:
-                await asyncio.shield(cleanup_task)
+                gate_quarantined = await asyncio.shield(cleanup_task)
+                if gate_quarantined:
+                    block_write = None
             except Exception:
                 # The original cancellation remains authoritative.  A failed
                 # cleanup deliberately retains the UID lease rather than
@@ -1049,11 +1163,20 @@ class BubblewrapDashboardCLIAuthSandbox:
                 logger.warning("Dashboard CLI-auth sandbox cancellation cleanup failed safely")
             raise
         except (OSError, SandboxLaunchValidationError, SandboxUnavailableError) as exc:
-            await self._abort_startup(
+            gate_quarantined = await self._abort_startup(
                 process=process,
                 pidfd=pidfd,
                 stage=stage,
                 identity=identity,
+                block_write=block_write,
+                phase=phase,
+            )
+            if gate_quarantined:
+                block_write = None
+            logger.warning(
+                "Dashboard CLI-auth sandbox startup failed safely phase=%s error_class=%s",
+                phase,
+                type(exc).__name__,
             )
             raise SandboxUnavailableError(
                 "Dashboard CLI-auth sandbox startup failed safely"
@@ -1063,6 +1186,8 @@ class BubblewrapDashboardCLIAuthSandbox:
             _close_fd(info_write)
             _close_fd(block_read)
             _close_fd(block_write)
+            _close_fd(shim_gate_read)
+            _close_fd(shim_gate_write)
 
     async def launch_device_auth(self, provider: CLIAuthProviderDef) -> DeviceAuthSandboxHandle:
         """Launch one device-auth payload only after a PID1 containment receipt."""
