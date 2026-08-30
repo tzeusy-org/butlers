@@ -21,6 +21,7 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
 )
+from tests.connectors.cursor_store_fakes import RecordingSaveCursor
 
 pytestmark = pytest.mark.integration
 
@@ -210,25 +211,12 @@ class TestTelegramConnectorConformance:
         mock_cursor_pool: MagicMock,
     ) -> None:
         """Test that Telegram connector can recover from checkpoint after crash."""
-        saved_value: str | None = None
-
-        async def fake_save(
-            _pool: object,
-            _prov: str,
-            _eid: str,
-            val: str,
-            *,
-            parent_endpoint_identity: str | None,
-        ) -> None:
-            # bu-ogs8x: the ownership declaration is required at the call
-            # boundary, so the double has to accept it. This connector keys its
-            # cursor by its own runtime identity, hence no parent.
-            assert parent_endpoint_identity is None
-            nonlocal saved_value
-            saved_value = val
+        fake_save = RecordingSaveCursor()
 
         async def fake_load(_pool: object, _prov: str, _eid: str) -> str | None:
-            return saved_value
+            if not fake_save.calls:
+                return None
+            return fake_save.calls[-1]["cursor_value"]
 
         # Simulate processing some updates
         telegram_connector._last_update_id = 50000
@@ -236,9 +224,10 @@ class TestTelegramConnectorConformance:
         # Save checkpoint
         with patch(
             "butlers.connectors.cursor_store.save_cursor",
-            new=AsyncMock(side_effect=fake_save),
+            new=fake_save,
         ):
             await telegram_connector._save_checkpoint()
+        assert fake_save.calls[-1]["parent_endpoint_identity"] is None
 
         # Create new connector instance (simulates restart)
         new_connector = TelegramBotConnector(telegram_config, cursor_pool=mock_cursor_pool)
@@ -395,32 +384,20 @@ class TestGmailConnectorConformance:
             last_updated_at=datetime.now(UTC).isoformat(),
         )
 
-        # Save checkpoint and simulate recovery via DB mocks
-        saved_value: str | None = None
-
-        async def fake_save(
-            _pool: object,
-            _prov: str,
-            _eid: str,
-            val: str,
-            *,
-            parent_endpoint_identity: str | None,
-        ) -> None:
-            # bu-ogs8x: the ownership declaration is required at the call
-            # boundary, so the double has to accept it. This connector keys its
-            # cursor by its own runtime identity, hence no parent.
-            assert parent_endpoint_identity is None
-            nonlocal saved_value
-            saved_value = val
+        # Save checkpoint and simulate recovery via DB mocks.
+        fake_save = RecordingSaveCursor()
 
         async def fake_load(_pool: object, _prov: str, _eid: str) -> str | None:
-            return saved_value
+            if not fake_save.calls:
+                return None
+            return fake_save.calls[-1]["cursor_value"]
 
         with patch(
             "butlers.connectors.cursor_store.save_cursor",
-            new=AsyncMock(side_effect=fake_save),
+            new=fake_save,
         ):
             await gmail_connector._save_cursor(cursor)
+        assert fake_save.calls[-1]["parent_endpoint_identity"] is None
 
         # Create new connector instance (simulates restart)
         new_connector = GmailConnectorRuntime(gmail_config, cursor_pool=mock_cursor_pool)
