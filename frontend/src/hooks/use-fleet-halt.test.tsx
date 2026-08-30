@@ -21,7 +21,12 @@ vi.mock("@/api/client", () => ({
 // context -- stub it rather than wrapping every renderHook call in a real
 // provider; these tests only care about the derived halt state, not cadence.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 import { useFleetHaltStatus, CEILING_DENIAL_REASON_PREFIX } from "./use-fleet-halt";

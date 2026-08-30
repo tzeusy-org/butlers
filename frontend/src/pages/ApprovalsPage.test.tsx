@@ -63,11 +63,16 @@ vi.mock("react-router", async (importOriginal) => {
 // useApprovalMetrics (bu-p5sg6, callback-secret degraded banner) calls
 // useBusAwarePollInterval, which reads the real EventBusProvider context via
 // useContext -- invalid without a provider in this render tree. Stub the bus
-// as always "open" (same pattern as SpendPage.test.tsx / SessionStripeChart
-// .test.tsx), giving this page's other bus-aware hooks the reconciliation
-// cadence too.
+// health as always "healthy" (same pattern as SpendPage.test.tsx /
+// SessionStripeChart.test.tsx), giving this page's other bus-aware hooks the
+// reconciliation cadence too.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +

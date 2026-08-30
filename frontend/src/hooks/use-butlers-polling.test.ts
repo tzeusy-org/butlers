@@ -44,10 +44,15 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 // useApprovalMetrics now calls useBusAwarePollInterval (bu-01r64.3), which
 // reads the real EventBusProvider context via useContext -- invalid outside a
 // React render. These tests call the hook directly (no renderHook), so mock
-// the bus status as always "open" (the same reconciliation cadence the prior
-// static POLL_BUS_RECONCILE_MS gave this test).
+// the bus health as always "healthy" (the same reconciliation cadence the
+// prior static POLL_BUS_RECONCILE_MS gave this test).
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 import { useQuery } from "@tanstack/react-query";

@@ -54,12 +54,13 @@ vi.mock("@/hooks/use-fleet-halt", () => ({
 // BreakdownSection/SpendRulesSection/the posture forecast query now call
 // useBusAwarePollInterval directly (bu-01r64.4), which reads the real
 // EventBusProvider context via useContext -- invalid without a provider in
-// the render tree. Stub the bus as always "open" (same pattern as
+// the render tree. Stub the bus health as always "healthy" (same pattern as
 // use-issues.test.ts / SessionStripeChart.test.tsx), giving every test here
-// the reconciliation cadence.
+// the healthy-bus reconciliation cadence.
 vi.mock("@/lib/event-bus", () => ({
   useEventBus: () => ({
     status: "open",
+    health: "healthy",
     lastEventAt: null,
     subscribe: vi.fn(),
   }),

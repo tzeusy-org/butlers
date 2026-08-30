@@ -8,7 +8,7 @@
  * useQuery.
  *
  * Strategy: mock @tanstack/react-query's useQuery (capture the options
- * object) and @/lib/event-bus's useEventBus (control connection status)
+ * object) and @/lib/event-bus's useEventBus (control bus health)
  * so the hooks can be called directly without a full React render tree --
  * same pattern as use-issues.test.ts / use-butlers-polling.test.ts.
  */
@@ -25,8 +25,14 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 
 let mockStatus: "connecting" | "open" | "reconnecting" | "closed" = "open";
+let mockHealth: "healthy" | "late" | "down" = "healthy";
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: mockStatus, lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: mockStatus,
+    health: mockHealth,
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 vi.mock("@/api/index.ts", () => ({
@@ -54,6 +60,7 @@ function lastRefetchInterval(): unknown {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStatus = "open";
+  mockHealth = "healthy";
 });
 
 describe("useNotifications", () => {
@@ -64,12 +71,14 @@ describe("useNotifications", () => {
 
   it("polls at POLL_BUS_RECONCILE_MS while the bus is connected", () => {
     mockStatus = "open";
+    mockHealth = "healthy";
     useNotifications();
     expect(lastRefetchInterval()).toBe(POLL_BUS_RECONCILE_MS);
   });
 
   it("tightens to POLL_BUS_DOWN_FALLBACK_MS while the bus is down", () => {
     mockStatus = "reconnecting";
+    mockHealth = "late";
     useNotifications();
     expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
   });
@@ -83,6 +92,7 @@ describe("useNotificationStats", () => {
 
   it("tightens to POLL_BUS_DOWN_FALLBACK_MS while the bus is down", () => {
     mockStatus = "closed";
+    mockHealth = "down";
     useNotificationStats();
     expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
   });
@@ -96,6 +106,7 @@ describe("useButlerNotifications", () => {
 
   it("tightens to POLL_BUS_DOWN_FALLBACK_MS while the bus is down", () => {
     mockStatus = "connecting";
+    mockHealth = "late";
     useButlerNotifications("general");
     expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
   });

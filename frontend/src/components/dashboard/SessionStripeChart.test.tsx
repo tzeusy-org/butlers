@@ -33,11 +33,16 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 
 // useSessionStripeData now calls useBusAwarePollInterval (bu-01r64.4), which
 // reads the real EventBusProvider context via useContext -- invalid outside
-// a React render tree that provides it. Stub the bus as always "open" (same
-// pattern as use-issues.test.ts / use-sessions.aggregate.test.tsx), giving
-// every test here the reconciliation cadence.
+// a React render tree that provides it. Stub the bus health as always "healthy"
+// (same pattern as use-issues.test.ts / use-sessions.aggregate.test.tsx), giving
+// every test here the healthy-bus reconciliation cadence.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }))
 
 // ---------------------------------------------------------------------------

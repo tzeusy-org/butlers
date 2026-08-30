@@ -45,7 +45,12 @@ vi.mock("../hooks/use-keyboard-shortcuts", () => ({ useKeyboardShortcuts: () => 
 vi.mock("../components/ui/shortcut-hints", () => ({ ShortcutHints: () => null }))
 vi.mock("../lib/event-bus", () => ({
   EventBusProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
-  useEventBus: () => ({ status: "open", health: mockHealth }),
+  useEventBus: () => ({
+    status: "open",
+    health: mockHealth,
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }))
 vi.mock("../components/chat/FloatingChatWidget", () => ({ FloatingChatWidget: () => null }))
 vi.mock("../lib/shell-announcer", () => ({

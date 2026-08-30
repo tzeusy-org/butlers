@@ -29,7 +29,12 @@ vi.mock("@/api/index.ts", () => ({
 // rather than wrapping every renderHook call here in a real provider; these
 // tests only care about pagination/live-tail state, not bus-driven cadence.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 import { useTimelineLedger } from "./use-timeline-ledger";

@@ -16,8 +16,14 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 
 let status: "connecting" | "open" | "reconnecting" | "closed" = "open";
+let health: "healthy" | "late" | "down" = "healthy";
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status, lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status,
+    health,
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 vi.mock("@/api/index.ts", async (importOriginal) => {
@@ -52,9 +58,10 @@ describe("calendar workspace bus-aware polling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     status = "open";
+    health = "healthy";
   });
 
-  it("uses the five-minute reconciliation sweep while the bus is open", () => {
+  it("uses the five-minute reconciliation sweep while bus health is healthy", () => {
     useCalendarWorkspace({
       view: "user",
       start: "2026-07-01T00:00:00Z",
@@ -64,8 +71,9 @@ describe("calendar workspace bus-aware polling", () => {
     expect(lastRefetchInterval()).toBe(POLL_BUS_RECONCILE_MS);
   });
 
-  it("falls back to 30-second polling while the bus reconnects", () => {
+  it("falls back to 30-second polling while bus health is late", () => {
     status = "reconnecting";
+    health = "late";
     useCalendarDayBriefing({ date: "2026-07-02" });
 
     expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
@@ -125,7 +133,7 @@ describe("calendar workspace bus-aware polling", () => {
   ];
 
   it.each(calendarBusCoveredViews)(
-    "uses the five-minute reconciliation sweep for bus-covered $name while connected",
+    "uses the five-minute reconciliation sweep for bus-covered $name while health is healthy",
     ({ useHook }) => {
       useHook();
 
@@ -134,9 +142,10 @@ describe("calendar workspace bus-aware polling", () => {
   );
 
   it.each(calendarBusCoveredViews)(
-    "uses the 30-second fallback for bus-covered $name while disconnected",
+    "uses the 30-second fallback for bus-covered $name while health is down",
     ({ useHook }) => {
       status = "closed";
+      health = "down";
       useHook();
 
       expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);

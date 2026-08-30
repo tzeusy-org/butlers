@@ -23,10 +23,15 @@ vi.mock("@/api/index.ts", () => ({
 // useSessionStripeData now calls useBusAwarePollInterval (bu-01r64.4), which
 // reads the real EventBusProvider context via useContext -- invalid outside
 // a React render. This file calls the hook directly (no renderHook), so stub
-// the bus status the same way use-issues.test.ts / session-stripe-utils
+// the bus health the same way use-issues.test.ts / session-stripe-utils
 // callers elsewhere do.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }))
 
 // Must import after mock registration

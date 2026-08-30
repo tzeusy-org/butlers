@@ -25,7 +25,12 @@ vi.mock("@/api/index.ts", () => ({
 // call here in a real provider; these tests only care about query-key/fetch
 // wiring, not bus-driven polling cadence.
 vi.mock("@/lib/event-bus", () => ({
-  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+  useEventBus: () => ({
+    status: "open",
+    health: "healthy",
+    lastEventAt: null,
+    subscribe: vi.fn(),
+  }),
 }));
 
 import { useSessionAggregate } from "./use-sessions";

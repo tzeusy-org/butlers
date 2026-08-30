@@ -3,9 +3,8 @@
  * Tests for useBusAwarePollInterval (bu-01r64.3).
  *
  * Strategy: mirrors lib/event-bus.test.tsx -- mock useEventStream (the real
- * WebSocket hook underlying EventBusProvider) so tests can control the
- * connection status directly, then render useBusAwarePollInterval under a
- * real EventBusProvider.
+ * WebSocket hook underlying EventBusProvider) so tests can control bus health
+ * directly, then render useBusAwarePollInterval under a real EventBusProvider.
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
