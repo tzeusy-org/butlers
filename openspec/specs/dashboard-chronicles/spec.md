@@ -526,23 +526,16 @@ provide a manual refresh control for the selected day's drilldown.
 ### Requirement: MapLibre Dependency Justification
 
 The page SHALL use `maplibre-gl` (BSD-3 license) for the map widget,
-with CARTO raster basemaps as the tile source. The light theme SHALL use
-CARTO's label-free light tiles and the dark theme SHALL use its label-free dark
-tiles. Dependency rationale SHALL be documented in this spec and in the
-change's design.md.
+with OpenStreetMap as the tile source. Dependency rationale SHALL be
+documented in this spec and in the change's design.md.
 
 #### Scenario: License and tile source
 
 - **WHEN** `maplibre-gl` is added to `frontend/package.json`
 - **THEN** the dependency SHALL be the BSD-3-licensed open-source
   fork
-- **AND** the tile source SHALL be CARTO raster basemaps with visible
-  OpenStreetMap and CARTO attribution
-- **AND** when a non-blank browser-visible CARTO basemap API key is configured,
-  every raster tile URL SHALL include that URL-encoded value as the `key` query
-  parameter
-- **AND** when the key is absent or blank, raster tile URLs SHALL remain
-  unchanged
+- **AND** the tile source SHALL be OpenStreetMap (no API token, no
+  third-party hosted-tile commercial dependency)
 
 #### Scenario: Bundle measurement
 
@@ -567,7 +560,7 @@ map. Try again` fallback even when valid trail or point data exists.
 - **WHEN** the Chronicles page mounts the map widget for the first
   time with `points = []` and `trailPoints` containing two or more
   coordinate pairs
-- **THEN** the map canvas SHALL render the CARTO raster tile layer plus the
+- **THEN** the map canvas SHALL render the OSM tile layer plus the
   trail line layer
 - **AND** the widget SHALL NOT fall through to the
   `MapErrorBoundary` fallback
