@@ -262,7 +262,8 @@ const DEFAULT_STATUSES = ALL_STATUSES.filter((s) => s !== "filtered" && s !== "s
 //   - `statuses` is the authoritative status selection. Absent means "the
 //     app default set", so an untouched toolbar still produces a clean link.
 //     An explicit empty value ("statuses=") means "nothing enabled" and is a
-//     different thing from absent.
+//     different thing from absent. Unknown names are dropped without a default
+//     fallback and acknowledged as link-state feedback.
 //   - `view` carries the active view's ID only, never its contents. A view's
 //     *effect* (statuses / range / q / channels) is already fully described
 //     by the other params, so embedding filter_spec would just add a second,
@@ -284,11 +285,23 @@ function serializeStatuses(statuses: Set<IngestionEventStatus>): string {
 /** The one value of `statuses` that is omitted from the URL entirely. */
 const DEFAULT_STATUSES_PARAM_VALUE = DEFAULT_STATUSES.join(",");
 
-/** Null when the param is absent, i.e. "use the active view's own default". */
-function parseStatusesParam(raw: string | null): Set<IngestionEventStatus> | null {
-  if (raw === null) return null;
-  const wanted = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
-  return new Set(ALL_STATUSES.filter((s) => wanted.has(s)));
+interface ParsedStatusesParam {
+  statuses: Set<IngestionEventStatus> | null;
+  unknown: string[];
+}
+
+/** Null statuses means the param is absent; unknown names are retained for feedback only. */
+function parseStatusesParam(raw: string | null): ParsedStatusesParam {
+  if (raw === null) return { statuses: null, unknown: [] };
+
+  const values = raw.split(",").map((status) => status.trim()).filter(Boolean);
+  const wanted = new Set(values);
+  const known = new Set<string>(ALL_STATUSES);
+
+  return {
+    statuses: new Set(ALL_STATUSES.filter((status) => wanted.has(status))),
+    unknown: [...new Set(values.filter((status) => !known.has(status)))],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,10 +1600,14 @@ export function TimelineTab({
   // Shared-link state, captured once at mount (bu-vgoh3). Read once on
   // purpose: these params seed initial state, after which the live component
   // state is authoritative and mirrors itself back out to the URL.
-  const [mountLink] = useState(() => ({
-    view: searchParams.get(VIEW_PARAM),
-    statuses: parseStatusesParam(searchParams.get(STATUSES_PARAM)),
-  }));
+  const [mountLink] = useState(() => {
+    const parsedStatuses = parseStatusesParam(searchParams.get(STATUSES_PARAM));
+    return {
+      view: searchParams.get(VIEW_PARAM),
+      statuses: parsedStatuses.statuses,
+      unknownStatuses: parsedStatuses.unknown,
+    };
+  });
 
   // Saved views. Precedence: a link's `view` beats this browser's remembered
   // view. localStorage is the *persistence* mechanism (which view I had open
@@ -2505,6 +2522,23 @@ export function TimelineTab({
             <X className="size-3 mr-1" />
             Clear
           </Button>
+        </div>
+      )}
+
+      {mountLink.unknownStatuses.length > 0 && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 border border-[var(--amber)]/40 rounded bg-[var(--amber)]/5 font-mono text-[11px] text-muted-foreground"
+          data-testid="link-statuses-unrecognized-banner"
+          role="status"
+        >
+          <AlertTriangle className="size-3 text-[var(--amber-text)] shrink-0" aria-hidden />
+          <span className="truncate">
+            {mountLink.unknownStatuses.length === 1
+              ? "Ignored unknown status: "
+              : "Ignored unknown statuses: "}
+            <span className="text-foreground">{mountLink.unknownStatuses.join(", ")}</span>
+            {". Remaining link filters apply."}
+          </span>
         </div>
       )}
 

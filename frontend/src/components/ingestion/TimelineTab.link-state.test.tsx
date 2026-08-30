@@ -336,6 +336,7 @@ describe("TimelineTab link state — serialization into the URL", () => {
     expect(calls[calls.length - 1][0]).toMatchObject({
       statuses: "ingested,error,failed,replay_pending,replay_complete,replay_failed",
     });
+    expect(container.querySelector("[data-testid='link-statuses-unrecognized-banner']")).toBeNull();
   });
 
   it("serializes an all-chips-off selection as an explicit empty value, not an absent key", () => {
@@ -410,6 +411,7 @@ describe("TimelineTab link state — read on mount into rendered state", () => {
     // Positive control: the toolbar rendered, so the falses above are real
     // chips rather than a blank page.
     expect(viewPressed("all")).toBe("true");
+    expect(container.querySelector("[data-testid='link-statuses-unrecognized-banner']")).toBeNull();
   });
 
   it("lets a link's ?view= win over this browser's remembered view, without overwriting it", () => {
@@ -448,6 +450,43 @@ describe("TimelineTab link state — read on mount into rendered state", () => {
     // Positive control: the view really did resolve, so this is a statement
     // about precedence and not about a missing view.
     expect(container.querySelector(`[data-testid='custom-view-${CUSTOM_VIEW_ID}']`)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unknown URL statuses are dropped strictly, then explained
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab link state — unrecognized statuses", () => {
+  it("keeps an unknown-only selection empty and names every dropped value", () => {
+    renderAt("/?q=receipt&statuses=retired,removed");
+
+    const note = container.querySelector("[data-testid='link-statuses-unrecognized-banner']");
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("status");
+    expect(note!.textContent).toContain("retired");
+    expect(note!.textContent).toContain("removed");
+    expect(note!.textContent).toContain("Remaining link filters apply.");
+    expect(note!.textContent).not.toContain("Saved views");
+
+    expect(chipPressed("ingested")).toBe("false");
+    expect(chipPressed("error")).toBe("false");
+    expect(currentParams().get("q")).toBe("receipt");
+    expect(currentParams().get("statuses")).toBe("");
+  });
+
+  it("keeps known statuses from a mixed selection while naming the unknown value", () => {
+    renderAt("/?channels=email&statuses=error,retired");
+
+    const note = container.querySelector("[data-testid='link-statuses-unrecognized-banner']");
+    expect(note).not.toBeNull();
+    expect(note!.textContent).toContain("retired");
+    expect(note!.textContent).toContain("Remaining link filters apply.");
+
+    expect(chipPressed("error")).toBe("true");
+    expect(chipPressed("ingested")).toBe("false");
+    expect(currentParams().get("channels")).toBe("email");
+    expect(currentParams().get("statuses")).toBe("error");
   });
 });
 
