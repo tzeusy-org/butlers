@@ -4805,7 +4805,6 @@ export async function listIngestionEvents(
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
   if (params?.cursor) sp.set("cursor", params.cursor);
   if (params?.channels) sp.set("channels", params.channels);
-  if (params?.source_channel) sp.set("source_channel", params.source_channel);
   if (params?.status) sp.set("status", params.status);
   if (params?.statuses) sp.set("statuses", params.statuses);
   if (params?.q) sp.set("q", params.q);

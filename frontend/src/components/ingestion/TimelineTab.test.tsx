@@ -282,7 +282,6 @@ import { TimelineTab } from "./TimelineTab";
 //   - single channel  → channels="email"
 //   - multi channel   → channels="email,telegram"
 //   - no channels     → no channels param
-//   - source_channel is NOT sent (old code path removed)
 // ---------------------------------------------------------------------------
 
 describe("TimelineTab — channel chip filter passes channels= CSV to useIngestionEvents", () => {
@@ -326,7 +325,6 @@ describe("TimelineTab — channel chip filter passes channels= CSV to useIngesti
     const calls = vi.mocked(useIngestionEvents).mock.calls;
     const lastFilters = calls[calls.length - 1][0];
     expect(lastFilters).toMatchObject({ channels: "email" });
-    expect(lastFilters).not.toHaveProperty("source_channel");
   });
 
   it("passes channels=email,telegram when two channel chips are active", () => {
@@ -334,7 +332,6 @@ describe("TimelineTab — channel chip filter passes channels= CSV to useIngesti
     const calls = vi.mocked(useIngestionEvents).mock.calls;
     const lastFilters = calls[calls.length - 1][0];
     expect(lastFilters).toMatchObject({ channels: "email,telegram" });
-    expect(lastFilters).not.toHaveProperty("source_channel");
   });
 
   it("omits channels param when no channel chips are active", () => {
@@ -342,15 +339,6 @@ describe("TimelineTab — channel chip filter passes channels= CSV to useIngesti
     const calls = vi.mocked(useIngestionEvents).mock.calls;
     const lastFilters = calls[calls.length - 1][0];
     expect(lastFilters).not.toHaveProperty("channels");
-    expect(lastFilters).not.toHaveProperty("source_channel");
-  });
-
-  it("never sends source_channel even for a single channel (old code path removed)", () => {
-    renderWithChannels("email");
-    const calls = vi.mocked(useIngestionEvents).mock.calls;
-    for (const [filters] of calls) {
-      expect(filters).not.toHaveProperty("source_channel");
-    }
   });
 });
 
