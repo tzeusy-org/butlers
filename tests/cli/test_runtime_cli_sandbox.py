@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +21,12 @@ import pytest
 from butlers.cli_auth.registry import PROVIDERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_EXACT_IMAGE_HARNESS = _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_exact_image_harness.py"
+_BASE_IMAGE_BUILD_INPUTS = (
+    "Dockerfile.base",
+    "scripts/runtime_cli_sandbox_init.c",
+    "scripts/generate_runtime_cli_sandbox_manifest.py",
+)
 
 
 def _make_stage_output(stage_home: Path) -> tuple[Path, Path]:
@@ -31,6 +40,27 @@ def _make_stage_output(stage_home: Path) -> tuple[Path, Path]:
     output.write_text('{"openai":{"type":"oauth"}}', encoding="utf-8")
     os.chmod(output, 0o600)
     return stage_home, output
+
+
+def _base_input_fingerprint() -> str:
+    """Match compose.sh's receipt for base-image inputs without reading dotenv state."""
+    payload = bytearray()
+    for relative_path in _BASE_IMAGE_BUILD_INPUTS:
+        digest = hashlib.sha256((_REPO_ROOT / relative_path).read_bytes()).hexdigest()
+        payload.extend(relative_path.encode())
+        payload.extend(b"\0")
+        payload.extend(digest.encode())
+        payload.extend(b"\0")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _is_explicit_exact_image_reference(image: str) -> bool:
+    """Reject Docker's implicit or explicit mutable latest tag."""
+    named_reference = image.split("@", 1)[0]
+    terminal_component = named_reference.rsplit("/", 1)[-1]
+    if terminal_component.endswith(":latest"):
+        return False
+    return "@sha256:" in image or ":" in terminal_component
 
 
 @pytest.mark.parametrize(
@@ -1326,6 +1356,7 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
 
     info_read, info_write = os.pipe2(os.O_CLOEXEC)
     block_read, block_write = os.pipe2(os.O_CLOEXEC)
+    shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
     try:
         plan = build_bubblewrap_launch_plan(
             bwrap_path=Path("/usr/bin/bwrap"),
@@ -1336,9 +1367,17 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
             readonly_inputs=readonly.readonly_inputs,
             info_fd=info_write,
             block_fd=block_read,
+            shim_gate_fd=shim_gate_read,
         )
     finally:
-        for fd in (info_read, info_write, block_read, block_write):
+        for fd in (
+            info_read,
+            info_write,
+            block_read,
+            block_write,
+            shim_gate_read,
+            shim_gate_write,
+        ):
             os.close(fd)
 
     rendered = tuple(plan.argv)
@@ -1384,6 +1423,7 @@ def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
 
     info_read, info_write = os.pipe2(os.O_CLOEXEC)
     block_read, block_write = os.pipe2(os.O_CLOEXEC)
+    shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
     try:
         plan = build_bubblewrap_launch_plan(
             bwrap_path=Path("/usr/bin/bwrap"),
@@ -1400,11 +1440,19 @@ def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
             ),
             info_fd=info_write,
             block_fd=block_read,
+            shim_gate_fd=shim_gate_read,
         )
 
-        assert plan.pass_fds == (info_write, block_read)
+        assert plan.pass_fds == (info_write, block_read, shim_gate_read)
     finally:
-        for fd in (info_read, info_write, block_read, block_write):
+        for fd in (
+            info_read,
+            info_write,
+            block_read,
+            block_write,
+            shim_gate_read,
+            shim_gate_write,
+        ):
             os.close(fd)
 
     assert plan.close_fds is True
@@ -1429,6 +1477,7 @@ def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
         "--tmpfs",
         "--info-fd",
         "--block-fd",
+        "--shim-gate-fd",
     ):
         assert required in plan.argv
 
@@ -1454,17 +1503,44 @@ def test_bubblewrap_handshake_rejects_untyped_or_wrong_direction_fds() -> None:
 
     info_read, info_write = os.pipe2(os.O_CLOEXEC)
     block_read, block_write = os.pipe2(os.O_CLOEXEC)
+    shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
     try:
-        assert validate_handshake_fds(info_fd=info_write, block_fd=block_read) == (
+        assert validate_handshake_fds(
+            info_fd=info_write,
+            block_fd=block_read,
+            shim_gate_fd=shim_gate_read,
+        ) == (
             info_write,
             block_read,
+            shim_gate_read,
         )
         with pytest.raises(SandboxLaunchValidationError, match="info pipe"):
-            validate_handshake_fds(info_fd=info_read, block_fd=block_read)
+            validate_handshake_fds(
+                info_fd=info_read,
+                block_fd=block_read,
+                shim_gate_fd=shim_gate_read,
+            )
         with pytest.raises(SandboxLaunchValidationError, match="block pipe"):
-            validate_handshake_fds(info_fd=info_write, block_fd=block_write)
+            validate_handshake_fds(
+                info_fd=info_write,
+                block_fd=block_write,
+                shim_gate_fd=shim_gate_read,
+            )
+        with pytest.raises(SandboxLaunchValidationError, match="shim gate pipe"):
+            validate_handshake_fds(
+                info_fd=info_write,
+                block_fd=block_read,
+                shim_gate_fd=shim_gate_write,
+            )
     finally:
-        for fd in (info_read, info_write, block_read, block_write):
+        for fd in (
+            info_read,
+            info_write,
+            block_read,
+            block_write,
+            shim_gate_read,
+            shim_gate_write,
+        ):
             os.close(fd)
 
 
@@ -1512,6 +1588,32 @@ class _BlockingHandshakeProcess(_HandshakeProcess):
         self._events = events
 
 
+async def test_bubblewrap_info_reader_accepts_a_fragmented_receipt() -> None:
+    """REQ-core-credentials-002: Bubblewrap's multi-write receipt is one record."""
+    from butlers.cli_auth.sandbox_platform import _read_bubblewrap_info
+
+    info_read, info_write = os.pipe()
+    first_fragment_written = threading.Event()
+
+    def _write_fragments() -> None:
+        try:
+            os.write(info_write, b'{"child-pid":')
+            first_fragment_written.set()
+            time.sleep(0.05)
+            os.write(info_write, b" 7123}\n")
+        finally:
+            os.close(info_write)
+
+    writer = threading.Thread(target=_write_fragments)
+    writer.start()
+    assert first_fragment_written.wait(timeout=1)
+    try:
+        assert await _read_bubblewrap_info(info_read) == 7123
+    finally:
+        writer.join(timeout=1)
+        os.close(info_read)
+
+
 async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_reading_shim(
     tmp_path: Path,
 ) -> None:
@@ -1526,6 +1628,7 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
     events: list[str] = []
     process = _HandshakeProcess(events)
     captured_block_fd: list[int] = []
+    captured_shim_gate_fd: list[int] = []
 
     async def _spawn(*argv: str, **kwargs: object) -> _HandshakeProcess:
         events.append("spawn")
@@ -1535,9 +1638,11 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
         assert kwargs["pass_fds"] == (
             int(argv[argv.index("--info-fd") + 1]),
             int(argv[argv.index("--block-fd") + 1]),
+            int(argv[argv.index("--shim-gate-fd") + 1]),
         )
         info_fd = int(argv[argv.index("--info-fd") + 1])
         captured_block_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        captured_shim_gate_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -1547,7 +1652,7 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
         return os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
 
     def _release_payload(block_fd: int) -> None:
-        events.append("block_release")
+        events.append("bwrap_release" if len(events) == 2 else "shim_release")
         os.write(block_fd, b"1")
 
     stage_home = tmp_path / "stage-home"
@@ -1578,11 +1683,12 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
 
     handle = await sandbox.launch_device_auth(PROVIDERS["codex"])
     try:
-        assert events == ["spawn", "pidfd_open", "block_release", "shim_ready"]
+        assert events == ["spawn", "pidfd_open", "bwrap_release", "shim_release", "shim_ready"]
         assert os.read(captured_block_fd[0], 1) == b"1"
+        assert os.read(captured_shim_gate_fd[0], 1) == b"1"
         assert await handle.process.stdout.readline() == b"provider output\n"
     finally:
-        for fd in captured_block_fd:
+        for fd in [*captured_block_fd, *captured_shim_gate_fd]:
             os.close(fd)
         await handle.terminate()
 
@@ -1606,10 +1712,12 @@ async def test_pidfd_open_failure_after_pid1_receipt_retains_stage_and_identity(
     stage_home.mkdir(mode=0o700)
     stage_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     block_observer_fd: list[int] = []
+    shim_gate_observer_fd: list[int] = []
 
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        shim_gate_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -1639,13 +1747,95 @@ async def test_pidfd_open_failure_after_pid1_receipt_retains_stage_and_identity(
 
         assert events == ["pidfd_open"]
         assert block_observer_fd
-        assert os.read(block_observer_fd[0], 1) == b""
-        assert process.wait_calls == 1
+        assert shim_gate_observer_fd
+        os.set_blocking(block_observer_fd[0], False)
+        with pytest.raises(BlockingIOError):
+            os.read(block_observer_fd[0], 1)
+        assert os.read(shim_gate_observer_fd[0], 1) == b""
+        assert process.wait_calls == 0
+        assert len(sandbox._quarantined_startup_gates) == 1
         assert stage_home.exists(), "a PID1 without a pidfd can retain the stage bind"
         with pytest.raises(SandboxUnavailableError, match="identity pool exhausted"):
             await pool.acquire()
     finally:
-        for fd in block_observer_fd:
+        for retained in sandbox._quarantined_startup_gates:
+            os.close(retained.block_write_fd)
+        for fd in [*block_observer_fd, *shim_gate_observer_fd]:
+            os.close(fd)
+        try:
+            os.close(stage_fd)
+        except OSError:
+            pass
+        shutil.rmtree(stage_home, ignore_errors=True)
+
+
+async def test_pid1_receipt_eof_quarantines_the_bwrap_gate_before_provider_execution(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-core-credentials-002: receipt EOF cannot release an unproven domain."""
+    from butlers.cli_auth.sandbox import SandboxUnavailableError
+    from butlers.cli_auth.sandbox_platform import (
+        BubblewrapDashboardCLIAuthSandbox,
+        DeviceAuthSandboxInvocation,
+        InvocationIdentityPool,
+        SandboxStage,
+    )
+
+    events: list[str] = []
+    process = _HandshakeProcess(events)
+    pool = InvocationIdentityPool(first_id=61000, last_id=61000)
+    stage_home = tmp_path / "stage-home"
+    stage_home.mkdir(mode=0o700)
+    stage_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    block_observer_fd: list[int] = []
+    shim_gate_observer_fd: list[int] = []
+
+    async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
+        info_fd = int(argv[argv.index("--info-fd") + 1])
+        info_fd_copy = os.dup(info_fd)
+        os.close(info_fd_copy)
+        block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        shim_gate_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
+        return process
+
+    sandbox = BubblewrapDashboardCLIAuthSandbox(
+        bwrap_path=tmp_path / "bwrap",
+        shim_path=tmp_path / "runtime-cli-sandbox-init",
+        identity_pool=pool,
+        exact_image_preflight=lambda: None,
+        invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
+            command=("/usr/bin/true",),
+            readonly_inputs=(Path("/usr/bin/true"),),
+            relative_output_path=Path(".codex") / "auth.json",
+        ),
+        stage_factory=lambda _identity: SandboxStage(path=stage_home, root_fd=stage_fd),
+        spawn=_spawn,
+        release_payload=lambda _fd: events.append("payload_release"),
+    )
+
+    try:
+        with caplog.at_level("WARNING", logger="butlers.cli_auth.sandbox_platform"):
+            with pytest.raises(SandboxUnavailableError, match="startup failed safely"):
+                await sandbox.launch_device_auth(PROVIDERS["codex"])
+
+        assert events == []
+        os.set_blocking(block_observer_fd[0], False)
+        with pytest.raises(BlockingIOError):
+            os.read(block_observer_fd[0], 1)
+        assert os.read(shim_gate_observer_fd[0], 1) == b""
+        assert process.wait_calls == 0
+        assert len(sandbox._quarantined_startup_gates) == 1
+        assert stage_home.exists()
+        assert "phase=pid1_receipt cleanup_outcome=quarantined" in caplog.text
+        assert "phase=pid1_receipt error_class=SandboxLaunchValidationError" in caplog.text
+        assert "/usr/bin/true" not in caplog.text
+        with pytest.raises(SandboxUnavailableError, match="identity pool exhausted"):
+            await pool.acquire()
+    finally:
+        for retained in sandbox._quarantined_startup_gates:
+            os.close(retained.block_write_fd)
+        for fd in [*block_observer_fd, *shim_gate_observer_fd]:
             os.close(fd)
         try:
             os.close(stage_fd)
@@ -1694,6 +1884,7 @@ async def test_bubblewrap_launcher_oversized_shim_ready_line_aborts_the_started_
     async def _spawn(*argv: str, **_kwargs: object) -> _OversizedReadyProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -1772,6 +1963,7 @@ async def test_readonly_command_stages_authority_before_launch_and_discards_chil
         staged_authority.write_text('{"child":"discarded"}', encoding="utf-8")
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -1896,6 +2088,7 @@ async def test_readonly_command_rejects_oversized_stdout_before_materializing_it
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -1967,6 +2160,7 @@ async def test_readonly_command_waits_for_eof_after_a_partial_first_stdout_chunk
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2040,6 +2234,7 @@ async def test_readonly_command_times_out_after_partial_stdout_and_cleans_the_do
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2121,6 +2316,7 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2216,6 +2412,7 @@ async def test_readonly_command_cancellation_waiting_for_next_chunk_cleans_the_d
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_readers.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_readers.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2275,6 +2472,15 @@ async def test_bubblewrap_startup_cancellation_after_release_terminates_pid1_and
 
     events: list[str] = []
     process = _BlockingHandshakeProcess(events)
+    cleanup_waited = asyncio.Event()
+
+    async def _wait() -> int:
+        process.wait_calls += 1
+        process.returncode = 0
+        cleanup_waited.set()
+        return 0
+
+    process.wait = _wait  # type: ignore[method-assign]
     pool = InvocationIdentityPool(first_id=61000, last_id=61000)
     released = asyncio.Event()
     stage_home = tmp_path / "stage-home"
@@ -2285,13 +2491,15 @@ async def test_bubblewrap_startup_cancellation_after_release_terminates_pid1_and
     async def _spawn(*argv: str, **_kwargs: object) -> _BlockingHandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
     def _release_payload(block_fd: int) -> None:
         events.append("block_release")
         os.write(block_fd, b"1")
-        released.set()
+        if events.count("block_release") == 2:
+            released.set()
 
     sandbox = BubblewrapDashboardCLIAuthSandbox(
         bwrap_path=tmp_path / "bwrap",
@@ -2321,12 +2529,97 @@ async def test_bubblewrap_startup_cancellation_after_release_terminates_pid1_and
         for fd in block_observer_fd:
             os.close(fd)
 
-    assert events == ["block_release", "pidfd_signal"]
+    await asyncio.wait_for(cleanup_waited.wait(), timeout=1.0)
+    assert events == ["block_release", "block_release", "pidfd_signal"]
     assert process.wait_calls == 1
     assert not stage_home.exists()
     reused_identity = await pool.acquire()
     assert reused_identity.uid == 61000
     await pool.release(reused_identity)
+
+
+@pytest.mark.integration
+def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() -> None:
+    """REQ-core-credentials-002: the real image forwards the shim gate before exec."""
+    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
+        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.fail("Docker is required when the exact-image sandbox handshake test is enabled")
+
+    image = os.environ.get("BUTLERS_RUNTIME_SANDBOX_IMAGE")
+    if not image or not _is_explicit_exact_image_reference(image):
+        pytest.fail(
+            "BUTLERS_RUNTIME_SANDBOX_IMAGE must name the explicitly rebuilt, non-latest app image"
+        )
+    inspect = subprocess.run(
+        [docker, "image", "inspect", "--format", "{{json .Config}}", image],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if inspect.returncode != 0:
+        pytest.fail(f"exact sandbox image is unavailable: {image}")
+    image_config = json.loads(inspect.stdout)
+    image_labels = image_config.get("Labels") or {}
+    assert image_labels.get("butlers.base.input_sha") == _base_input_fingerprint()
+    expected_git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        cwd=_REPO_ROOT,
+        text=True,
+    ).stdout.strip()
+    image_environment = {
+        item.split("=", 1)[0]: item.split("=", 1)[1]
+        for item in image_config.get("Env", [])
+        if "=" in item
+    }
+    assert image_environment.get("GIT_SHA") == expected_git_sha
+
+    seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
+    completed = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--security-opt",
+            "systempaths=unconfined",
+            "--security-opt",
+            f"seccomp={seccomp_profile}",
+            "--volume",
+            f"{_EXACT_IMAGE_HARNESS}:/tmp/runtime-cli-sandbox-exact-image.py:ro",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-c",
+            "PYTHONPATH=/app/src exec python /tmp/runtime-cli-sandbox-exact-image.py",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"launch": "ok", "termination": "proven"}
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("butlers-app", False),
+        ("butlers-app:latest", False),
+        ("butlers-app:latest@sha256:abc", False),
+        ("registry.test:5000/butlers-app", False),
+        ("butlers-app:bu-0uqgo.15", True),
+        ("butlers-app@sha256:abc", True),
+    ],
+)
+def test_exact_image_reference_rejects_mutable_latest_forms(image: str, expected: bool) -> None:
+    """REQ-core-credentials-002: exact-image evidence cannot use a mutable tag."""
+    assert _is_explicit_exact_image_reference(image) is expected
 
 
 async def test_bubblewrap_handle_retains_the_identity_when_pid1_death_is_not_proven(
@@ -2352,6 +2645,7 @@ async def test_bubblewrap_handle_retains_the_identity_when_pid1_death_is_not_pro
     async def _spawn(*argv: str, **_kwargs: object) -> _HandshakeProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2424,6 +2718,7 @@ async def test_pidfd_signal_error_kills_the_direct_child_and_retains_stage_until
     async def _spawn(*argv: str, **_kwargs: object) -> _PidfdSignalErrorProcess:
         info_fd = int(argv[argv.index("--info-fd") + 1])
         block_observer_fd.append(os.dup(int(argv[argv.index("--block-fd") + 1])))
+        block_observer_fd.append(os.dup(int(argv[argv.index("--shim-gate-fd") + 1])))
         os.write(info_fd, b'{"child-pid": 7123}\n')
         return process
 
@@ -2473,6 +2768,60 @@ async def test_pidfd_signal_error_kills_the_direct_child_and_retains_stage_until
 
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="C compiler is required for shim contract")
+@pytest.mark.parametrize(
+    ("release", "expected_returncode", "expected_stdout"),
+    [
+        (b"1", 0, "BUTLERS_RUNTIME_CLI_SANDBOX_READY\nprovider-ran"),
+        (None, 125, ""),
+        (b"x", 125, ""),
+    ],
+)
+def test_runtime_cli_sandbox_init_requires_an_explicit_shim_gate_release(
+    tmp_path: Path,
+    release: bytes | None,
+    expected_returncode: int,
+    expected_stdout: str,
+) -> None:
+    """REQ-core-credentials-002: EOF cannot release provider execution."""
+    source = _REPO_ROOT / "scripts" / "runtime_cli_sandbox_init.c"
+    shim = tmp_path / "runtime-cli-sandbox-init"
+    subprocess.run(
+        ["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(shim), str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gate_read, gate_write = os.pipe()
+    os.set_inheritable(gate_read, True)
+    process = subprocess.Popen(
+        [
+            str(shim),
+            "--shim-gate-fd",
+            str(gate_read),
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf provider-ran",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+        pass_fds=(gate_read,),
+        text=True,
+    )
+    os.close(gate_read)
+    if release is not None:
+        os.write(gate_write, release)
+    os.close(gate_write)
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == expected_returncode, stderr
+    assert stdout == expected_stdout
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="C compiler is required for shim contract")
 def test_runtime_cli_sandbox_init_closes_inherited_descriptors_before_provider_exec(
     tmp_path: Path,
 ) -> None:
@@ -2492,10 +2841,16 @@ def test_runtime_cli_sandbox_init_closes_inherited_descriptors_before_provider_e
     inherited_fd = os.dup2(initial_fd, 200)
     os.close(initial_fd)
     os.set_inheritable(inherited_fd, True)
+    gate_read, gate_write = os.pipe()
+    os.set_inheritable(gate_read, True)
+    os.write(gate_write, b"1")
+    os.close(gate_write)
     try:
         result = subprocess.run(
             [
                 str(shim),
+                "--shim-gate-fd",
+                str(gate_read),
                 "--",
                 "/bin/sh",
                 "-c",
@@ -2505,13 +2860,14 @@ def test_runtime_cli_sandbox_init_closes_inherited_descriptors_before_provider_e
             ],
             check=False,
             close_fds=True,
-            pass_fds=(inherited_fd,),
+            pass_fds=(inherited_fd, gate_read),
             capture_output=True,
             text=True,
             timeout=5,
         )
     finally:
         os.close(inherited_fd)
+        os.close(gate_read)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "BUTLERS_RUNTIME_CLI_SANDBOX_READY\nprovider-ran"

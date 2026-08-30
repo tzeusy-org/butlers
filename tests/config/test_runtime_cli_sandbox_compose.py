@@ -164,6 +164,8 @@ def test_dashboard_variants_render_the_same_namespace_capable_security_policy(
         "clone",
         "close_range",
         "mount",
+        "pidfd_open",
+        "pidfd_send_signal",
         "pivot_root",
         "umount2",
     } <= unconditional_allowed_syscalls
