@@ -1521,7 +1521,7 @@ class TestLlmHappyPath:
         )
 
     async def test_missing_shared_pool_is_never_treated_as_codex_authority(self):
-        """REQ-cli-runtime-auth-003: switchboard state reads are not Codex authority."""
+        """REQ-core-credentials-001: missing authority never falls back to state reads."""
         sw_pool = _make_owner_pool()
         db = MagicMock(spec=DatabaseManager)
         db.pool.return_value = sw_pool
