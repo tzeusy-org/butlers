@@ -4067,6 +4067,8 @@ export interface ConnectorCrossSummaryResponse {
   connectors_online: number;
   connectors_stale: number;
   connectors_offline: number;
+  /** Runtime-role-unknown rows, counted apart from fleet liveness. */
+  connectors_unclassified: number;
   total_messages_ingested: number;
   total_messages_failed: number;
   overall_error_rate_pct: number;

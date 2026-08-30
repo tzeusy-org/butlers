@@ -79,6 +79,7 @@ therefore enforces ZERO drift with no allowlist.
 
 from __future__ import annotations
 
+import ast
 import re
 import warnings
 from pathlib import Path
@@ -90,6 +91,13 @@ pytestmark = pytest.mark.contract
 # tests/contracts/test_client_openapi_contract.py -> tests/ -> repo root
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CLIENT_TS = _REPO_ROOT / "frontend" / "src" / "api" / "client.ts"
+_TYPES_TS = _REPO_ROOT / "frontend" / "src" / "api" / "types.ts"
+_INGESTION_CONNECTORS = (
+    _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "ingestion_connectors.py"
+)
+
+_CROSS_SUMMARY_HANDLER = "get_cross_connector_summary_with_aggregates"
+_CROSS_SUMMARY_INTERFACE = "ConnectorCrossSummaryResponse"
 
 # Wildcard marker substituted for each `${...}` template interpolation.
 _WILDCARD = "\x00"
@@ -199,6 +207,78 @@ def _find_matching(text: str, open_idx: int, open_ch: str, close_ch: str) -> int
         else:
             i += 1
     raise ValueError(f"unbalanced {open_ch}{close_ch} starting at {open_idx}")
+
+
+def _cross_summary_payload_shapes() -> list[set[str]]:
+    """The two literal data shapes returned by the cross-summary handler.
+
+    This is deliberately not a general Python response-schema extractor.  The
+    endpoint is typed as ``ApiResponse[dict]``, so OpenAPI cannot name its
+    fields; these two literals are the source of truth for this one interface.
+    """
+    tree = ast.parse(
+        _INGESTION_CONNECTORS.read_text(encoding="utf-8"), filename=str(_INGESTION_CONNECTORS)
+    )
+    handlers = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == _CROSS_SUMMARY_HANDLER
+    ]
+    assert len(handlers) == 1, f"expected one {_CROSS_SUMMARY_HANDLER} handler"
+    handler = handlers[0]
+
+    bindings = {
+        target.id: assignment.value
+        for assignment in handler.body
+        if isinstance(assignment, ast.Assign) and isinstance(assignment.value, ast.Dict)
+        for target in assignment.targets
+        if isinstance(target, ast.Name)
+    }
+    shapes: dict[str, set[str]] = {}
+    for node in ast.walk(handler):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        if not (
+            isinstance(call.func, ast.Subscript)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "ApiResponse"
+        ):
+            continue
+        data = next((keyword.value for keyword in call.keywords if keyword.arg == "data"), None)
+        if isinstance(data, ast.Name):
+            data = bindings.get(data.id)
+        assert isinstance(data, ast.Dict), (
+            f"{_CROSS_SUMMARY_HANDLER} must return a literal data dictionary "
+            "or a local name bound to one"
+        )
+        assert all(
+            isinstance(key, ast.Constant) and isinstance(key.value, str) for key in data.keys
+        )
+        shapes.setdefault(ast.dump(data), {key.value for key in data.keys})
+    return list(shapes.values())
+
+
+def _typescript_interface_fields(interface: str) -> dict[str, tuple[bool, str]]:
+    """Map one flat exported TypeScript interface to ``{field: (optional, type)}``."""
+    text = _TYPES_TS.read_text(encoding="utf-8")
+    start = re.search(rf"export interface {re.escape(interface)}\s*{{", text)
+    assert start is not None, f"{interface} not found in {_TYPES_TS}"
+    brace = text.index("{", start.start())
+    body = text[brace + 1 : _find_matching(text, brace, "{", "}")]
+    matches = list(
+        re.finditer(
+            r"^\s*(?P<name>[A-Za-z_]\w*)(?P<optional>\?)?:\s*(?P<type>[^;]+);",
+            body,
+            re.MULTILINE,
+        )
+    )
+    fields = {
+        match.group("name"): (match.group("optional") == "?", match.group("type").strip())
+        for match in matches
+    }
+    assert len(fields) == len(matches), f"{interface} declares a duplicate field"
+    return fields
 
 
 _FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*\(")
@@ -802,6 +882,41 @@ def test_frontend_limit_literal_within_backend_ceiling(
         f"its declared ceiling ({maximum}) — every real load will 422 (the bu-hmdqz.5 / "
         "PR #3173 CirclesPage regression class). Lower the frontend literal or raise the "
         "backend `le`."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check D: cross-summary response shape parity.
+#
+# ``ApiResponse[dict]`` deliberately leaves the response fields out of
+# OpenAPI, so the route/path checks above cannot catch a backend field that
+# the corresponding TypeScript interface omits. This one endpoint-local guard
+# compares both literal backend payload shapes with its frontend response type.
+# ---------------------------------------------------------------------------
+
+
+def test_cross_summary_backend_fields_match_frontend_response_type() -> None:
+    """A backend field cannot silently become invisible to the TS contract."""
+    payload_shapes = _cross_summary_payload_shapes()
+    assert len(payload_shapes) == 2, (
+        f"{_CROSS_SUMMARY_HANDLER} no longer has its two literal payload shapes; "
+        "re-audit this guard against the handler before trusting it"
+    )
+    assert len({frozenset(fields) for fields in payload_shapes}) == 1, (
+        f"{_CROSS_SUMMARY_HANDLER} success and zero/degraded payload fields diverged: "
+        f"{payload_shapes}"
+    )
+
+    backend_fields = payload_shapes[0]
+    frontend_fields = _typescript_interface_fields(_CROSS_SUMMARY_INTERFACE)
+    assert backend_fields == set(frontend_fields), (
+        f"{_CROSS_SUMMARY_INTERFACE} drifted from {_CROSS_SUMMARY_HANDLER}: "
+        f"missing={sorted(backend_fields - set(frontend_fields))}; "
+        f"stale={sorted(set(frontend_fields) - backend_fields)}"
+    )
+    assert frontend_fields["connectors_unclassified"] == (False, "number"), (
+        "connectors_unclassified is always an integer (including the zero/degraded payload), "
+        "so ConnectorCrossSummaryResponse must declare required, non-null number semantics"
     )
 
 
