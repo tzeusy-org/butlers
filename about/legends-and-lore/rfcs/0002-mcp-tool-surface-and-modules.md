@@ -306,3 +306,34 @@ applied once per process from `ButlerDaemon._build_mcp_http_app`.
 **Peer-to-peer MCP between butlers.** Rejected in favor of Switchboard-mediated routing. Direct connections would create O(n^2) configuration complexity and eliminate the central audit/routing/identity resolution point.
 
 **Dynamic tool registration after server start.** Rejected because FastMCP does not support hot-adding tools to a running SSE server. All tools MUST be registered before the server begins accepting connections.
+
+## Accepted Amendment 1 (2026-08-30) — LLM Presentation and Native Deferred Discovery
+
+**Status:** Owner-approved on 2026-08-30 with RFC 0027; effective in the
+canonical contract when the paired OpenSpec/RFC change is merged.
+
+RFC 0027 changes only how registered tools are presented to LLM
+runtimes:
+
+- The registered/callable set remains governed by core groups, module groups,
+  type/name gates, module state, and startup success.
+- A deterministic LLM-presentable projection may omit infrastructure-only
+  definitions without removing their canonical handlers from the complete MCP
+  endpoint. The omission is not a server authorization boundary.
+- The 30-50 target becomes an initially loaded working-set target rather than
+  a hard ceiling on registered handlers. Manifesto and group pruning remain
+  mandatory because they encode ownership, not just token cost.
+- Verified runtime tuples may use native deferred search; all others receive
+  the eager LLM-presentable projection with unchanged typed MCP calls.
+- Tool descriptors are finalized only after approval wrapping, and invocation
+  always returns to the final wrapped FastMCP registry.
+- Skills remain guidance-only and cannot register or present tools.
+
+The earlier Codex retry description is also stale relative to observed code.
+Zero MCP calls alone no longer proves discovery failure: the adapter retries
+only when an explicit closed MCP transport/connection or native discovery
+protocol failure is present and complete merged evidence proves zero MCP and
+zero non-MCP effect-capable actions. Plain-text and successful shell-only
+completions without such failure evidence are valid; a failed attempt that ran
+shell/command execution is not replayable. RFC 0027 defines the shared trigger
+vocabulary and effect predicate for every presentation mode.

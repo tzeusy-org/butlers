@@ -8,11 +8,12 @@ For a new reader, the recommended order follows data flow from startup through r
 
 1. **RFC 0001** -- Daemon startup, trigger dispatch, and session lifecycle
 2. **RFC 0002** -- MCP tool surface, module system, and skills infrastructure
-3. **RFC 0003** -- Switchboard ingestion, triage, classification, and routing
-4. **RFC 0004** -- Identity resolution and contact model
-5. **RFC 0005** -- Observability, tracing, and metrics
-6. **RFC 0006** -- Database schema isolation and migration machinery
-7. **RFC 0007** -- Dashboard API and frontend architecture
+3. **RFC 0027** -- LLM tool presentation, portable eager filtering, and verified native deferred discovery
+4. **RFC 0003** -- Switchboard ingestion, triage, classification, and routing
+5. **RFC 0004** -- Identity resolution and contact model
+6. **RFC 0005** -- Observability, tracing, and metrics
+7. **RFC 0006** -- Database schema isolation and migration machinery
+8. **RFC 0007** -- Dashboard API and frontend architecture
 
 ## Index
 
@@ -44,6 +45,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0024](rfcs/0024-messenger-private-email-correspondence-ledger.md) | Messenger-Private Email Correspondence Ledger | **Proposed — planning only.** Defines a privacy-minimized Messenger-owned outbound evidence ledger and bounded, aggregate-only Relationship enrichment path; exact provider-Sent proof, same-account/peer inbound correlation, and 180-day coverage are required before a bidirectional result. |
 | [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | **Draft.** A deterministic tracker-host exporter publishes a minimal active Beads projection to PostgreSQL; bounded runtime readers receive atomic snapshots, fixed freshness/retention, and explicit JSONL rollback without tracker access. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | **Draft.** Extends the owner-condition ledger with explicit resolution, commitment metadata, closure receipts, escalation, and owner-confirmed lifecycle evidence. |
+| [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | **Accepted.** Adds a runtime-neutral LLM tool-list projection, verified native deferred discovery, eager cross-CLI fallback, content-blind receipts, and measured rollout gates without changing MCP handler authority. |
 
 ## Related
 
