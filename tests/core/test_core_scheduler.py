@@ -40,8 +40,8 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
-    pytest.mark.asyncio(loop_scope="session"),
 ]
+_asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +138,7 @@ class _NoopButlerDBLogHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_sync_inserts_and_sets_next_run_at(pool):
     """sync_schedules inserts toml tasks with source=toml and non-null next_run_at."""
     from butlers.core.scheduler import sync_schedules
@@ -157,6 +158,7 @@ async def test_sync_inserts_and_sets_next_run_at(pool):
     assert all(r["next_run_at"] is not None for r in rows)
 
 
+@_asyncio_session
 async def test_sync_updates_changed_fields_and_disables_removed(pool):
     """sync_schedules updates changed cron/prompt, disables removed tasks, re-enables restored."""
     from butlers.core.scheduler import sync_schedules
@@ -188,6 +190,7 @@ async def test_sync_updates_changed_fields_and_disables_removed(pool):
     assert rows2["drop-me"]["enabled"] is True
 
 
+@_asyncio_session
 async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default(pool):
     """A stale TOML-removal snapshot cannot undo an atomic module-default recovery."""
     from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
@@ -261,6 +264,7 @@ async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default
     )
 
 
+@_asyncio_session
 async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     pool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -410,6 +414,7 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     }
 
 
+@_asyncio_session
 async def test_module_default_recovery_reclaims_only_disabled_toml_orphans_and_audits(pool):
     """A post-sync TOML orphan is recovered once without rewriting its runtime payload."""
     from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
@@ -504,6 +509,7 @@ async def test_module_default_recovery_reclaims_only_disabled_toml_orphans_and_a
     )
 
 
+@_asyncio_session
 async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, monkeypatch):
     """A recovery has no observable state transition when its canonical audit cannot commit."""
     from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
@@ -552,6 +558,7 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(pool, 
     )
 
 
+@_asyncio_session
 async def test_module_default_recovery_concurrently_commits_one_transition_and_audit(pool):
     """The returned conditional transition is the sole authority for the recovery audit."""
     import asyncio
@@ -602,6 +609,7 @@ async def test_module_default_recovery_concurrently_commits_one_transition_and_a
     )
 
 
+@_asyncio_session
 async def test_module_default_recovery_attributes_same_name_across_butler_schemas(
     migrated_db_url: str,
 ):
@@ -689,6 +697,7 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
         await admin.close()
 
 
+@_asyncio_session
 async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ownership(pool):
     """A disabled TOML orphan is recovered — including ``memory_episode_cleanup``,
     now that ``run_episode_cleanup`` is bounded + consolidation-aware and can no
@@ -796,6 +805,7 @@ async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ow
     assert [r["target"] for r in audited] == [f"schedule:{cleanup_name}"]
 
 
+@_asyncio_session
 async def test_sync_default_timezone_pins_cron_to_local(pool):
     """sync_schedules computes next_run_at by evaluating cron in default_timezone."""
     from butlers.core.scheduler import sync_schedules
@@ -812,6 +822,7 @@ async def test_sync_default_timezone_pins_cron_to_local(pool):
     assert next_run_at.astimezone(UTC).minute == 5
 
 
+@_asyncio_session
 async def test_tick_advance_honors_row_timezone(pool):
     """tick() advances next_run_at using the per-row timezone column."""
     from butlers.core.scheduler import sync_schedules, tick
@@ -838,6 +849,7 @@ async def test_tick_advance_honors_row_timezone(pool):
     assert next_run_at.astimezone(UTC).minute == 5
 
 
+@_asyncio_session
 async def test_tick_advance_follows_owner_default_for_utc_rows(pool):
     """A default ('UTC') timezone column follows tick's default_timezone (the owner tz).
 
@@ -875,6 +887,7 @@ async def test_tick_advance_follows_owner_default_for_utc_rows(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_tick_dispatch_prompt_and_job(pool):
     """tick() dispatches prompt tasks with trigger_source; job tasks via job_name/job_args without prompt/complexity."""
     from butlers.core.scheduler import schedule_create, tick
@@ -919,6 +932,7 @@ async def test_tick_dispatch_prompt_and_job(pool):
         ("bogus-tier", Complexity.WORKHORSE),  # junk fails open
     ],
 )
+@_asyncio_session
 async def test_tick_dispatches_legacy_complexity_at_canonical_tier(pool, stored, expected):
     """The REAL cron dispatch loop hands the canonical Complexity to dispatch_fn (which
     feeds resolve_model). bu-lq7m4: a schedule row stored with the retired 'high'/'extra_high'
@@ -942,6 +956,7 @@ async def test_tick_dispatches_legacy_complexity_at_canonical_tier(pool, stored,
     assert dispatch.calls[0]["complexity"] == expected
 
 
+@_asyncio_session
 async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
     """tick() skips disabled tasks; continues when dispatch raises; sets last_run_at; advances next_run_at; disables when until_at exceeded."""
     from butlers.core.scheduler import schedule_create, tick
@@ -978,6 +993,7 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
     assert row2["enabled"] is False
 
 
+@_asyncio_session
 async def test_tick_tolerates_legacy_schema_without_until_at(pool):
     """tick() does not crash on long-lived scheduled_tasks tables missing until_at."""
     from butlers.core.scheduler import tick
@@ -1042,6 +1058,7 @@ class _FakeEligibilityPool:
         }
 
 
+@_asyncio_session
 async def test_tick_skips_dispatch_when_butler_quarantined(pool):
     """A paused/quarantined butler must NOT dispatch its due cron tick."""
     from butlers.core.scheduler import schedule_create, tick
@@ -1070,6 +1087,7 @@ async def test_tick_skips_dispatch_when_butler_quarantined(pool):
     assert row["last_run_at"] is None  # never ran
 
 
+@_asyncio_session
 async def test_tick_dispatches_when_butler_active(pool):
     """An eligible (active) butler dispatches its due cron tick normally."""
     from butlers.core.scheduler import schedule_create, tick
@@ -1091,6 +1109,7 @@ async def test_tick_dispatches_when_butler_active(pool):
     assert dispatch.calls[0]["trigger_source"] == "schedule:active-task"
 
 
+@_asyncio_session
 async def test_tick_dispatches_when_no_eligibility_pool(pool):
     """Without an eligibility_pool, ticks dispatch as before (backward compatible)."""
     from butlers.core.scheduler import schedule_create, tick
@@ -1110,6 +1129,7 @@ async def test_tick_dispatches_when_no_eligibility_pool(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_schedule_create_and_list(pool):
     """schedule_create persists prompt and job tasks; schedule_list returns fields; invalid cron and dup name raise."""
     from butlers.core.scheduler import schedule_create, schedule_list
@@ -1173,6 +1193,7 @@ async def test_schedule_create_and_list(pool):
         ("bogus-tier", "workhorse"),  # unknown junk fails open to workhorse
     ],
 )
+@_asyncio_session
 async def test_schedule_list_coerces_null_and_legacy_complexity(pool, stored, expected):
     """schedule_list normalizes null/legacy stored complexity to a canonical tier for MCP
     callers; valid tiers pass through unchanged. Guards bu-e0d9x (schedule_list previously
@@ -1191,6 +1212,7 @@ async def test_schedule_list_coerces_null_and_legacy_complexity(pool, stored, ex
     assert by_name["coerce-task"]["complexity"] == expected
 
 
+@_asyncio_session
 async def test_schedule_update_and_delete(pool):
     """schedule_update changes fields; schedule_delete removes runtime tasks."""
     from butlers.core.scheduler import schedule_create, schedule_delete, schedule_update
@@ -1206,6 +1228,7 @@ async def test_schedule_update_and_delete(pool):
     assert await pool.fetchrow("SELECT id FROM scheduled_tasks WHERE id = $1", task_id) is None
 
 
+@_asyncio_session
 async def test_schedule_validation(pool):
     """schedule_update raises for invalid cron and nonexistent ID; complexity enforced on create and update."""
     from butlers.core.scheduler import schedule_create, schedule_update
@@ -1238,6 +1261,7 @@ async def test_schedule_validation(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_deadline_task_create(pool):
     """schedule_create with task_type=deadline requires target_date and alert_thresholds."""
     import datetime as _dt
@@ -1410,6 +1434,7 @@ def test_check_notify_reference(tmp_path, caplog) -> None:
     assert "does not reference notify" in caplog.text
 
 
+@_asyncio_session
 async def test_sync_schedules_notify_validation(pool, caplog) -> None:
     """sync_schedules warns only for prompt tasks missing notify(); job tasks and notify-present tasks silenced."""
     import logging

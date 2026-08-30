@@ -15,8 +15,8 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
-    pytest.mark.asyncio(loop_scope="session"),
 ]
+_asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
 @pytest.fixture(scope="module")
@@ -52,6 +52,7 @@ async def pool(migrated_db_url: str):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_state_get_set_delete(pool):
     """state_get returns stored value; missing returns None; delete removes key."""
     from butlers.core.state import state_delete, state_get, state_set
@@ -73,6 +74,7 @@ async def test_state_get_set_delete(pool):
     await state_delete(pool, "key1")  # should not raise
 
 
+@_asyncio_session
 async def test_state_set_version_tracking(pool):
     """state_set increments version on update; first insert is version 1."""
     from butlers.core.state import state_set
@@ -87,6 +89,7 @@ async def test_state_set_version_tracking(pool):
     assert v3 == 3
 
 
+@_asyncio_session
 async def test_state_list(pool):
     """state_list returns all entries; prefix filter works."""
     from butlers.core.state import state_list, state_set
@@ -104,6 +107,7 @@ async def test_state_list(pool):
     assert len(app_entries) == 2
 
 
+@_asyncio_session
 async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
     """A prefix containing % is treated as a literal, not a LIKE wildcard.
 
@@ -130,6 +134,7 @@ async def test_state_list_prefix_with_wildcard_is_not_widened(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_state_cas_success_and_failure(pool):
     """CAS succeeds on matching version; fails on mismatch; no-op on missing key."""
     from butlers.core.state import state_compare_and_set, state_set
@@ -147,6 +152,7 @@ async def test_state_cas_success_and_failure(pool):
         await state_compare_and_set(pool, "no-such-key", 1, "val")
 
 
+@_asyncio_session
 async def test_state_cas_concurrent_exactly_one_wins(pool):
     """Concurrent CAS on same key: exactly one succeeds."""
     from butlers.core.state import state_compare_and_set, state_set
@@ -170,6 +176,7 @@ async def test_state_cas_concurrent_exactly_one_wins(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_state_claim_if_changed_wins_on_absent_key(pool):
     """Claiming a key that doesn't exist yet wins."""
     from butlers.core.state import state_claim_if_changed, state_get
@@ -179,6 +186,7 @@ async def test_state_claim_if_changed_wins_on_absent_key(pool):
     assert await state_get(pool, "claim-key") == "value-a"
 
 
+@_asyncio_session
 async def test_state_claim_if_changed_loses_on_same_value(pool):
     """Re-claiming the same value that's already stored loses (no-op)."""
     from butlers.core.state import state_claim_if_changed
@@ -187,6 +195,7 @@ async def test_state_claim_if_changed_loses_on_same_value(pool):
     assert await state_claim_if_changed(pool, "claim-key", "value-a") is False
 
 
+@_asyncio_session
 async def test_state_claim_if_changed_wins_on_different_value(pool):
     """Claiming a new, different value wins even though the key already exists."""
     from butlers.core.state import state_claim_if_changed, state_get
@@ -197,6 +206,7 @@ async def test_state_claim_if_changed_wins_on_different_value(pool):
     assert await state_get(pool, "claim-key") == "value-b"
 
 
+@_asyncio_session
 async def test_state_claim_if_changed_concurrent_same_value_exactly_one_wins(pool):
     """Two overlapping claims for the same (key, value) pair: exactly one wins.
 

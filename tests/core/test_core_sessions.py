@@ -17,8 +17,8 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
-    pytest.mark.asyncio(loop_scope="session"),
 ]
+_asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
 @pytest.fixture(scope="module")
@@ -47,6 +47,7 @@ async def pool(migrated_db_url: str):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_session_create_and_get(pool):
     """session_create returns UUID; fields are persisted; request_id=None raises."""
     from butlers.core.sessions import session_create, sessions_get
@@ -83,6 +84,7 @@ async def test_session_create_and_get(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_session_complete_success_and_failure(pool):
     """session_complete sets success/error/result/duration; nonexistent raises."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
@@ -135,6 +137,7 @@ async def test_session_complete_success_and_failure(pool):
         )
 
 
+@_asyncio_session
 async def test_session_fields_sanitize_untranslatable_unicode(pool):
     """Bad Unicode in TEXT/JSONB payloads should be stripped before persistence."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
@@ -187,6 +190,7 @@ async def test_session_fields_sanitize_untranslatable_unicode(pool):
 
 
 @pytest.mark.pg_clock
+@_asyncio_session
 async def test_sessions_list_and_summary(pool):
     """sessions_list returns sessions in order; sessions_summary aggregates correctly."""
     from butlers.core.sessions import (
@@ -236,6 +240,7 @@ async def test_sessions_list_and_summary(pool):
 
 
 @pytest.mark.pg_clock
+@_asyncio_session
 async def test_recover_orphaned_sessions_closes_open_rows(pool):
     """Open sessions are closed and marked failed; completed rows untouched."""
     from datetime import UTC, datetime, timedelta
@@ -289,6 +294,7 @@ async def test_recover_orphaned_sessions_closes_open_rows(pool):
 
 
 @pytest.mark.pg_clock
+@_asyncio_session
 async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(pool):
     """30-day-old orphans must not overflow the INTEGER duration_ms column."""
     from datetime import UTC, datetime, timedelta
@@ -309,6 +315,7 @@ async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(pool)
     assert row["duration_ms"] == 2147483647
 
 
+@_asyncio_session
 async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
     """Returns 0 when no open rows; second call after recovery also returns 0."""
     from butlers.core.sessions import (
@@ -333,6 +340,7 @@ async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
     assert await recover_orphaned_sessions(pool) == 0
 
 
+@_asyncio_session
 async def test_recover_orphaned_sessions_preserves_existing_error(pool):
     """If error is already set (e.g. budget overrun), do not overwrite it."""
     from butlers.core.sessions import recover_orphaned_sessions, session_create, sessions_get
@@ -354,6 +362,7 @@ async def test_recover_orphaned_sessions_preserves_existing_error(pool):
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_top_sessions_date_range_filters_by_started_at(pool):
     """from_date/to_date scope results to sessions started within the inclusive range."""
     from datetime import UTC, datetime
@@ -414,6 +423,7 @@ async def test_top_sessions_date_range_filters_by_started_at(pool):
         await top_sessions(pool, from_date="2026-05-01")
 
 
+@_asyncio_session
 async def test_schedule_costs_date_range_filters_runs(pool):
     """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
     from datetime import UTC, datetime
@@ -631,6 +641,7 @@ def test_no_delete_or_truncate_in_sessions_module():
 # ---------------------------------------------------------------------------
 
 
+@_asyncio_session
 async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
     """_get_butler_top_sessions_from_db ranks by token volume and prices per model."""
     from unittest.mock import MagicMock
@@ -687,6 +698,7 @@ async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
     assert result[0].cost_usd > result[1].cost_usd
 
 
+@_asyncio_session
 async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
     """_get_butler_schedule_costs_from_db merges a multi-model schedule into one
     priced (butler, schedule) entry (the core merge that fixes duplicate keys)."""
