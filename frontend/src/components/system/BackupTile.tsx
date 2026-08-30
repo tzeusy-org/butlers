@@ -143,7 +143,7 @@ function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
 }
 
 // Human wording for the fixed reason vocabulary the backup script emits
-// (mirrored from _BACKUP_RUN_REASONS in api/routers/system.py). Reasons
+// (mirrored from _BACKUP_RUN_REASONS in core/backup_facts.py). Reasons
 // outside this map -- including the backend's own "unrecognized reason"
 // placeholder -- render no detail at all, the same guard RestoreDrillRow
 // applies: this string arrives off a mounted volume and must not become

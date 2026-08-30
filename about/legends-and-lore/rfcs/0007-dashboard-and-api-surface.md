@@ -308,7 +308,7 @@ All routes render inside a common shell with:
 
 **Date:** 2026-05-03
 **Status:** Accepted
-**Implementing change:** `openspec/changes/system-page-capability/` (bu-ngfzz.*)
+**Implementing change:** `openspec/changes/archive/2026-06-13-system-page-capability/` (bu-ngfzz.*)
 
 Vertical E shipped the `/system` dashboard route and the `/api/system/*` API namespace. This amendment registers both in RFC 0007.
 
@@ -334,9 +334,9 @@ Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint
 | `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
 | `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler liveness snapshot from the switchboard registry (`butlers: ButlerHeartbeat[]`). Each entry carries `last_heartbeat_at`, `heartbeat_age_seconds`, `last_session_at`, and `active_session_count`. Reads from the registry; does not issue live MCP calls. Degrades gracefully per butler when a schema is unreachable (`error: "schema_unreachable"`). |
 
-System-specific Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The DB-free backup models and artifact/run-receipt reader (`BackupFacts`, `BackupEvent`, `BackupRunFacts`, `RestoreDrillFacts`) live in `src/butlers/core/backup_facts.py` so the system route and QA infrastructure checks share one lower-layer fact source; the route retains API composition and its DB-backed restore-drill overlay. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
+System-specific Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The DB-free backup models and artifact/run-receipt reader (`BackupFacts`, `BackupEvent`, `BackupRunFacts`, `RestoreDrillFacts`) are owned by `src/butlers/core/backup_facts.py`; both the system route and QA infrastructure checks consume that lower-layer reader. The system router owns API composition and overlays the DB-backed restore-drill result. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
 
-For the complete data-model and privacy-contract specification, see `openspec/changes/system-page-capability/design.md`.
+For the complete data-model and privacy-contract specification, see `openspec/changes/archive/2026-06-13-system-page-capability/design.md`.
 
 ### Egress Catalog Data Source
 

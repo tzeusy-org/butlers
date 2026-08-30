@@ -110,7 +110,7 @@ BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context publi
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
-# src/butlers/api/routers/system.py, which renders the same verdict on read.
+# src/butlers/core/backup_facts.py, which renders the same verdict on read.
 BACKUP_MIN_SIZE_BYTES=256
 
 mkdir -p "${BACKUP_DIR}"
@@ -132,7 +132,7 @@ RUN_SENTINEL="${BACKUP_DIR}/last_run.json"
 FAILURE_REASON=""
 
 # Fixed reason vocabulary, mirrored by _BACKUP_RUN_REASONS in
-# src/butlers/api/routers/system.py: ok, pg_dump_failed, artifact_undersize,
+# src/butlers/core/backup_facts.py: ok, pg_dump_failed, artifact_undersize,
 # artifact_corrupt, unexpected_error. Keep the two lists in step.
 write_run_sentinel() {
   sentinel_exit="$1"

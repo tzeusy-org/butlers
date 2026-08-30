@@ -1661,7 +1661,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - Strategy chosen: filesystem pg_dump cron. Simplest defensible approach for an owner-sovereign, single-instance system. No new external dependencies (no Minio/S3, no WAL archiving).
 - Implementation: `deploy/backup/pg_dump.sh` runs `pg_dump | gzip` to a timestamped `.sql.gz` file in `$BACKUP_DIR` (default `/backups`). Prunes files older than `$BACKUP_RETAIN_DAYS` (default 14 days).
 - Docker integration: `backup-cron` sidecar (postgres:17-alpine, crond) in `docker-compose.yml` writes to the `butlers_backups` named volume. Default schedule: 02:00 UTC daily (`BACKUP_CRON=0 2 * * *`). `dashboard-api` mounts the same volume read-only at `/backups` and reads it via `BUTLERS_BACKUP_DIR=/backups`.
-- API: `GET /api/system/backups` (`get_backup_facts()` in `src/butlers/api/routers/system.py`) scans `BUTLERS_BACKUP_DIR` for `butlers_*.sql.gz` files sorted by mtime, returns the most recent file's mtime + size as `last_backup_at` / `last_backup_size_bytes`. Returns `backup_source_reachable=false` when `BUTLERS_BACKUP_DIR` is unset or the directory does not exist (unconfigured deployment, not an error).
+- API: `GET /api/system/backups` delegates DB-free artifact and run-receipt scanning to `read_backup_facts_from_dir()` in `src/butlers/core/backup_facts.py`. The system router composes the API payload and overlays the DB-backed restore-drill result. The reader scans `BUTLERS_BACKUP_DIR` for `butlers_*.sql.gz` files sorted by mtime and returns the most recent file's mtime + size as `last_backup_at` / `last_backup_size_bytes`. It returns `backup_source_reachable=false` when `BUTLERS_BACKUP_DIR` is unset or the directory does not exist (unconfigured deployment, not an error).
 - The `BackupTile` frontend component already handles all three states: loading, unreachable/unconfigured, and reachable with history. No frontend changes were needed.
 - Manual test: after `docker compose up`, wait for first cron fire (or run `docker compose exec backup-cron /backup/pg_dump.sh` directly), then `GET /api/system/backups` should return `backup_source_reachable=true` with a non-null `last_backup_at`.
 - `SpotifySessionAdapter._project_row` falls through to `track_names` when both `context_name` and `context_uri` are NULL — the underlying `connectors.spotify_listening_sessions.track_names` JSONB column is already populated; do not skip it just because no playlist/album context was attached.
@@ -2294,7 +2294,7 @@ its own outcome, and read that instead of inferring it from the artifact.
   cannot report a database failure.
 - Anything reading such a receipt back is a boundary: the `reason` field is a
   fixed vocabulary in both the script and
-  `src/butlers/api/routers/system.py` (`_BACKUP_RUN_REASONS`), and an
+  `src/butlers/core/backup_facts.py` (`_BACKUP_RUN_REASONS`), and an
   unrecognized value is reported as unrecognized rather than rendered verbatim
   off a mounted volume. `tests/scripts/test_pg_dump_run_sentinel.py` pins the
   two ends together by parsing the real script's output with the real reader.
