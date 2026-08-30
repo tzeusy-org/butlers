@@ -2386,6 +2386,10 @@ def _normalize_sleep_record(record: dict[str, Any]) -> dict[str, Any]:
     normalized["durationMillis"] = duration_ms
     if efficiency is not None:
         normalized["efficiency"] = efficiency
+    if minutes_asleep is not None:
+        normalized["minutes_asleep"] = minutes_asleep
+    if minutes_period is not None and minutes_asleep is not None:
+        normalized["minutes_awake"] = max(0, minutes_period - minutes_asleep)
 
     stages = _stage_summary(summary.get("stagesSummary"))
     if stages:

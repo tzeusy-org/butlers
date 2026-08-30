@@ -703,6 +703,8 @@ async def test_poll_resource_emits_envelope_for_new_record(
     assert sleep_envelope["control"]["ingestion_tier"] == "full"
     assert sleep_envelope["payload"]["normalized_text"] == "Slept 8h 30m (88% efficiency)"
     assert sleep_envelope["payload"]["raw"]["stages"]["deep"] == 90
+    assert sleep_envelope["payload"]["raw"]["minutes_asleep"] == 450
+    assert sleep_envelope["payload"]["raw"]["minutes_awake"] == 60
 
     assert daily_envelope["event"]["external_event_id"] == (
         f"google_health:{_OWNER_EMAIL}:resting_hr:2026-04-24"
