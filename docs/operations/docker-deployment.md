@@ -231,6 +231,11 @@ POSTGRES_PASSWORD: <from .env.dev | .env.prod>   # required
 POSTGRES_SSLMODE: <optional>
 ```
 
+The optional Tailscale Serve data-plane probe is configured through the five
+`TAILSCALE_SERVE_PROBE_*` variables documented in
+[Environment Config](environment-config.md#tailscale-serve-probe-variables).
+It is read-only and runs only with an explicitly approved off-host executor.
+
 Per-mode host ports and project names (both can run at once):
 
 | | prod (`--prod`) | dev (default) |

@@ -104,6 +104,25 @@ roster/{butler}/
 | `DASHBOARD_API_KEY` | -- | API key for dashboard auth (unset = no auth) |
 | `DASHBOARD_STATIC_DIR` | -- | Path to built frontend for SPA serving |
 
+### Tailscale Serve probe variables
+
+These optional variables configure the read-only data-plane probe used by
+`scripts/compose.sh`. The launcher derives the health URL from the selected
+mode and Tailscale identity; it is not an environment input.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TAILSCALE_SERVE_PROBE_COMMAND` | unset | Locally resolvable command or wrapper that runs the probe from an approved off-host executor |
+| `TAILSCALE_SERVE_PROBE_CONTEXT` | unset | Must be `off-host` when a probe command is configured |
+| `TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS` | `10` | Per-request timeout, finite and limited to 30 seconds |
+| `TAILSCALE_SERVE_PROBE_RETRIES` | `2` | Number of retries after the first request, limited to three |
+| `TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS` | `1` | Fixed delay between retries, finite and limited to five seconds |
+
+The command and its arguments are sourced from `.env.<mode>` and belong to the
+trusted deployment configuration. The `off-host` label is a policy gate, not
+independent proof of executor identity; use only an approved read-only
+executor that runs `scripts/tailscale_serve_probe.py`.
+
 ## Connector Variables
 
 | Variable | Used By | Description |

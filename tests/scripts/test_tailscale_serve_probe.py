@@ -823,6 +823,7 @@ def test_launcher_surfaces_data_plane_failure_class(
 
     assert completed.returncode != 0
     assert failure_class in completed.stderr
+    assert "no further Serve mutation was attempted" in completed.stderr
     assert any(call.startswith("probe ") for call in calls)
 
 

@@ -687,20 +687,20 @@ PY
     # shell-side summary too so custom approved executors remain actionable.
     case "$probe_rc" in
       124|137)
-        echo "ERROR: Tailscale Serve data-plane executor-timeout for ${health_url}; the approved executor exceeded its validated outer deadline. Check executor DNS, SSH, and authentication reachability; no Serve mutation was attempted." >&2
+        echo "ERROR: Tailscale Serve data-plane executor-timeout for ${health_url}; the approved executor exceeded its validated outer deadline. Check executor DNS, SSH, and authentication reachability; no further Serve mutation was attempted." >&2
         return 28
         ;;
       20)
-        echo "ERROR: Tailscale Serve mapping-ok-but-cert-invalid for ${health_url}; strict TLS rejected the public certificate (hostname, trust chain, or expiry). Verify from an off-host tailnet client; no Serve mutation was attempted." >&2
+        echo "ERROR: Tailscale Serve mapping-ok-but-cert-invalid for ${health_url}; strict TLS rejected the public certificate (hostname, trust chain, or expiry). Verify from an off-host tailnet client; no further Serve mutation was attempted." >&2
         ;;
       21)
-        echo "ERROR: Tailscale Serve mapping-ok-but-route-404 for ${health_url}; the HTTPS listener returned 404. Recheck the exact path mapping and proxy target; no Serve mutation was attempted." >&2
+        echo "ERROR: Tailscale Serve mapping-ok-but-route-404 for ${health_url}; the HTTPS listener returned 404. Recheck the exact path mapping and proxy target; no further Serve mutation was attempted." >&2
         ;;
       22)
-        echo "ERROR: Tailscale Serve mapping-ok-but-timeout for ${health_url}; the off-host probe exhausted its bounded retries. Check tailnet reachability and API startup; no Serve mutation was attempted." >&2
+        echo "ERROR: Tailscale Serve mapping-ok-but-timeout for ${health_url}; the off-host probe exhausted its bounded retries. Check tailnet reachability and API startup; no further Serve mutation was attempted." >&2
         ;;
       *)
-        echo "ERROR: Tailscale Serve data-plane probe failed for ${health_url} (exit ${probe_rc}); inspect the off-host probe result. No Serve mutation was attempted." >&2
+        echo "ERROR: Tailscale Serve data-plane probe failed for ${health_url} (exit ${probe_rc}); inspect the off-host probe result. No further Serve mutation was attempted." >&2
         ;;
     esac
     return "$probe_rc"

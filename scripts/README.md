@@ -152,6 +152,20 @@ Contacts sync contract: contacts incremental sync is a module-internal poller
 inside `uv run butlers up`. `dev.sh` does not launch a standalone contacts
 connector process.
 
+### Usage
+
+```bash
+# Preferred compatibility entrypoint
+./dev.sh
+
+# Direct script path
+./scripts/dev.sh
+```
+
+## compose.sh
+
+Launches the Docker Compose stack and configures its Tailscale Serve mappings.
+
 ### Tailscale Serve data-plane probe
 
 `tailscale_serve_probe.py` performs one read-only HTTPS GET against the
@@ -188,16 +202,6 @@ an absent or malformed target fails as `data-plane target-unavailable` rather
 than silently skipping the HTTPS check.  Probe failures classify as `cert-invalid`,
 `route-404`, `timeout`, or `executor-timeout` with sanitized, actionable guidance
 and never alter Serve state.
-
-### Usage
-
-```bash
-# Preferred compatibility entrypoint
-./dev.sh
-
-# Direct script path
-./scripts/dev.sh
-```
 
 ## clear-processes.sh
 
