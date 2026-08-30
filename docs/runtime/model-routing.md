@@ -289,19 +289,22 @@ breaks in the meantime — no code in this repository reads either literal.
 
 **The gap between a committed body and a deployed one is reported, not silent**
 (bu-bi5an). `butlers.core.stored_function_drift` parses every
-`CREATE [OR REPLACE] FUNCTION` in `scripts/init-db.sql` — including the ones
-nested inside an installer — and compares each committed body against the body
-in `pg_proc.prosrc`. It runs once at dashboard-api startup, and
+`CREATE [OR REPLACE] FUNCTION` in the configured bootstrap source. The source
+defaults to `scripts/init-db.sql`; `STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH` may
+select a source mounted elsewhere. This includes the ones nested inside an
+installer and compares each committed body against the body in `pg_proc.prosrc`.
+It runs once at dashboard-api startup, and
 `GET /api/system/stored-functions` serves the same comparison live. A mismatch
 is *reported*, never fatal: one WARNING line naming the function, plus a
 `drifted` entry in the envelope. It never converges anything — re-running
-`scripts/init-db.sql` remains the operator action — but the state is now
-visible instead of indefinite. The comparison ignores whitespace only, so a
-reindented or differently line-ended body does not cry wolf, and it carries
-short digests rather than bodies, because a stored body can hold
-operator-supplied literals. A function `init-db.sql` defines that the database
-does not have yet is reported as `not_deployed`, separately from drift: that is
-the ordinary state before the chain has invoked its bootstrap installer.
+the configured bootstrap source remains the operator action — not part of an
+Alembic deploy — but the state is now visible instead of indefinite. The
+comparison ignores whitespace only, so a reindented or differently line-ended
+body does not cry wolf, and it carries short digests rather than bodies, because
+a stored body can hold operator-supplied literals. A function defined by the
+configured bootstrap source that the database does not have yet is reported as
+`not_deployed`, separately from drift: that is the ordinary state before the
+chain has invoked its bootstrap installer.
 
 Producer rollback disables new episodes while retaining attempts, the outbox,
 evidence, and this trigger.

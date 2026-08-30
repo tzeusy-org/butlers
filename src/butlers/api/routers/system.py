@@ -11,7 +11,7 @@ Surfaces seven ownership-fact domains:
     GET /api/system/deployments    -- current + recent deployment ledger entries
     GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
     GET /api/system/stored-functions -- deployed stored-function bodies vs
-                                       scripts/init-db.sql (bu-bi5an)
+                                       the configured bootstrap source (bu-bi5an)
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -33,9 +33,10 @@ cannot be computed from local state. Never raises; a failed/unreachable
 comparison surfaces as commits_behind_available=False, never a fabricated
 "0 behind".
 /api/system/stored-functions is likewise read-only and computed live: it parses
-scripts/init-db.sql and compares each committed function body against the body
-deployed in pg_proc. Bodies can carry operator-supplied literals, so the
-envelope carries function names and short digests only -- never a body.
+the configured bootstrap source (``scripts/init-db.sql`` by default) and
+compares each committed function body against the body deployed in pg_proc.
+Bodies can carry operator-supplied literals, so the envelope carries function
+names and short digests only -- never a body.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -241,13 +242,14 @@ class StoredFunctionEntry(BaseModel):
 
 
 class StoredFunctionFacts(BaseModel):
-    """Deployed stored-function bodies vs ``scripts/init-db.sql`` (bu-bi5an).
+    """Deployed stored-function bodies vs the configured bootstrap source (bu-bi5an).
 
-    ``scripts/init-db.sql`` is the committed authority for every managed stored
-    function body, and nothing in ``deploy/`` re-runs it -- so an installed
-    database can keep executing an older body indefinitely. This is the report
-    that makes that state visible; converging it is still the operator action
-    of re-running that script.
+    ``scripts/init-db.sql`` is the default committed authority for every managed
+    stored function body; ``STORED_FUNCTION_DRIFT_INIT_DB_SQL_PATH`` can select
+    the source mounted in another installation. Nothing in ``deploy/`` re-runs
+    it -- so an installed database can keep executing an older body
+    indefinitely. This is the report that makes that state visible; converging
+    it is still the operator action of re-running that source.
 
     ``not_deployed`` is a legitimate state, not drift: a function only exists
     once the migration chain has invoked its bootstrap installer, so it is
@@ -670,9 +672,10 @@ async def get_stored_function_facts(
 ) -> ApiResponse[StoredFunctionFacts]:
     """Return the stored-function body comparison (bu-bi5an).
 
-    Computed live per request: ``scripts/init-db.sql`` is parsed for every
-    committed function body and compared against ``pg_proc.prosrc``. Reporting
-    is the whole contract -- nothing here rewrites a body.
+    Computed live per request: the configured bootstrap source (default
+    ``scripts/init-db.sql``) is parsed for every committed function body and
+    compared against ``pg_proc.prosrc``. Reporting is the whole contract --
+    nothing here rewrites a body.
 
     Always returns HTTP 200, per the fleet-wide degraded-envelope convention:
     a failed comparison sets stored_function_check_available=False with every

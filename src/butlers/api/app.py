@@ -433,8 +433,9 @@ async def lifespan(app: FastAPI):
             )
 
         # Stored-function body drift (bu-bi5an): one-shot comparison of every
-        # function body committed in scripts/init-db.sql against the body this
-        # database actually has. Nothing in deploy/ re-runs that script, so a
+        # function body committed in the configured bootstrap source (by
+        # default scripts/init-db.sql) against the body this database actually
+        # has. Nothing in deploy/ re-runs that source, so a
         # body change reaches an installed database only when an operator runs
         # it by hand -- and before this probe, nothing anywhere said so.
         #
@@ -451,7 +452,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning(
                 "Stored-function body drift check failed; deployed function bodies were "
-                "NOT compared against scripts/init-db.sql",
+                "NOT compared against the configured stored-function source",
                 exc_info=True,
             )
 
