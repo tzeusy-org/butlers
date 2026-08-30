@@ -40,7 +40,13 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
     SourceAdapterState(
         source_name="google_calendar.completed",
         chronicler_compatibility=Compatibility.SUPPORTED,
-        read_surface="calendar module completed-instance view",
+        read_surface=(
+            "<butler_schema>.calendar_event_instances + "
+            "<butler_schema>.calendar_events + "
+            "<butler_schema>.calendar_sources + "
+            "optional <butler_schema>.calendar_event_entities + "
+            "public.google_accounts"
+        ),
         boundary_semantics=(
             "completed non-cancelled instances → scheduled-block episode; "
             "(instance_start, instance_end) bound the episode; "

@@ -454,6 +454,10 @@ BEGIN
     -- Approved evidence surfaces (v1):
     --   {schema}.sessions               — CoreSessionsAdapter (all butler schemas)
     --   {schema}.calendar_event_instances — CalendarCompletedAdapter (optional)
+    --   {schema}.calendar_events + {schema}.calendar_sources — required
+    --                                      companions for the calendar join
+    --   {schema}.calendar_event_entities — optional participant resolution
+    --   public.google_accounts          — optional calendar-owner resolution
     --   relationship.entity_facts       — CoreSessionsAdapter contact resolution
     --                                      (bu-hjo3i) + comms.message_bursts
     --                                      participant resolution (bu-jc6htw.1)
@@ -492,6 +496,24 @@ BEGIN
                 _schema
             );
         END IF;
+        -- calendar_events + calendar_sources (required join companions for
+        -- CalendarCompletedAdapter's completed-instance projection).
+        FOREACH _table IN ARRAY ARRAY[
+            'calendar_events',
+            'calendar_sources',
+            'calendar_event_entities'
+        ] LOOP
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = _schema AND table_name = _table
+            ) THEN
+                EXECUTE format(
+                    'GRANT SELECT ON TABLE %I.%I TO butler_chronicler_rw',
+                    _schema,
+                    _table
+                );
+            END IF;
+        END LOOP;
         -- entity_facts (CoreSessionsAdapter contact resolution + the
         -- comms.message_bursts participant resolution — relationship schema only)
         IF _schema = 'relationship' AND EXISTS (
