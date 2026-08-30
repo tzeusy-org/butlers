@@ -26,13 +26,19 @@ This adapter reads only ``chronicler.episodes`` / ``chronicler.point_events``
 ``source_name = 'chronicler.exercise_inferred'`` with deterministic source refs
 derived from the underlying movement episode id, so re-running is idempotent.
 
+Late HR corroboration is rechecked over a bounded recent movement window. The
+movement source is watermark-incremental, while Google Health deliberately
+re-polls a trailing day to capture delayed device syncs; without this second
+look, a movement already past the exercise watermark could never gain a later
+heart-rate event. The same elevated-HR predicate is used on both paths.
+
 No LLM call — Tier-1 deterministic projection only (RFC 0014 §D5).
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
@@ -65,10 +71,21 @@ _WORKOUT_EPISODE_TYPE = "workout_episode"
 
 DEFAULT_BATCH_LIMIT = 500
 
+# Google Health deliberately re-polls a trailing day to capture delayed device
+# syncs. Cover that interval plus one normal half-hour projection cadence while
+# keeping the late-corroboration pass bounded well below a history scan.
+CORROBORATION_RECHECK_LOOKBACK_HOURS = 30
+CORROBORATION_RECHECK_LIMIT = 500
+
 # Heart-rate threshold (bpm) above which a summary is treated as "elevated" and
 # thus evidence of physical exertion. Conservative: resting/ambient HR rarely
 # clears 100 bpm, so this avoids inferring exercise from ordinary movement.
 ELEVATED_HR_BPM = 100
+
+
+def _now() -> datetime:
+    """Wall-clock now, isolated for bounded recheck tests."""
+    return datetime.now(UTC)
 
 
 class ExerciseInferredAdapter(ProjectionAdapter):
@@ -121,6 +138,13 @@ class ExerciseInferredAdapter(ProjectionAdapter):
             result.rows_projected += 1
             result.episodes_closed += 1
 
+        # A movement episode is incremental, but Google Health deliberately
+        # accepts late HR device syncs for a trailing day. Recheck recent
+        # movement spans even on an empty movement tick so a late corroborator
+        # cannot leave an otherwise-qualified exercise unprojected forever.
+        result.episodes_closed += await self._recheck_late_corroboration(
+            chronicler_pool, entity_id=entity_id
+        )
         result.watermark = latest_watermark
         return result
 
@@ -191,13 +215,19 @@ class ExerciseInferredAdapter(ProjectionAdapter):
             return None
         return list(rows)
 
-    async def _fetch_elevated_hr_event_ids(
+    async def _corroborator_event_ids(
         self,
         chronicler_pool: asyncpg.Pool,
         start_at: datetime,
         end_at: datetime,
     ) -> list[UUID]:
-        """Return ids of elevated heart-rate events inside ``[start_at, end_at]``."""
+        """Return elevated-HR corroborator ids inside ``[start_at, end_at]``.
+
+        This is the single HR corroboration predicate used by both initial
+        movement projection and the bounded late-sync recheck. Keeping one
+        predicate prevents a span from qualifying on one path but not the
+        other as source definitions evolve.
+        """
         async with chronicler_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -238,7 +268,7 @@ class ExerciseInferredAdapter(ProjectionAdapter):
         if bool(row["overlaps_workout"]):
             return None
 
-        hr_event_ids = await self._fetch_elevated_hr_event_ids(chronicler_pool, start_at, end_at)
+        hr_event_ids = await self._corroborator_event_ids(chronicler_pool, start_at, end_at)
         if not hr_event_ids:
             # GPS movement alone is not exercise — it is already a travel
             # candidate. Without an elevated-HR corroboration there is nothing
@@ -295,8 +325,77 @@ class ExerciseInferredAdapter(ProjectionAdapter):
                     )
         return episode
 
+    async def _recheck_late_corroboration(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        *,
+        entity_id: UUID | None,
+    ) -> int:
+        """Create exercises for recent movement spans whose HR arrived late.
+
+        The candidate scan is bounded by both a trailing window and a row cap.
+        It excludes source spans that already have their deterministic inferred
+        exercise, so the pass is idempotent and does no historical churn.
+        """
+        cutoff = _now() - timedelta(hours=CORROBORATION_RECHECK_LOOKBACK_HOURS)
+        async with chronicler_pool.acquire() as conn:
+            candidates = await conn.fetch(
+                """
+                SELECT e.id, e.source_ref, e.start_at, e.end_at, e.created_at,
+                       EXISTS (
+                           SELECT 1
+                           FROM episodes w
+                           WHERE w.tombstone_at IS NULL
+                             AND w.source_name = $1
+                             AND w.episode_type = $2
+                             AND w.start_at < e.end_at
+                             AND (w.end_at IS NULL OR w.end_at > e.start_at)
+                       ) AS overlaps_workout
+                FROM episodes e
+                WHERE e.tombstone_at IS NULL
+                  AND e.source_name = $3
+                  AND e.episode_type = $4
+                  AND e.end_at IS NOT NULL
+                  AND e.start_at >= $5
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM episodes inferred
+                      WHERE inferred.tombstone_at IS NULL
+                        AND inferred.source_name = $6
+                        AND inferred.episode_type = $7
+                        AND inferred.source_ref =
+                            'chronicler.episodes:' || e.id::text || ':exercise'
+                  )
+                ORDER BY e.start_at ASC, e.id ASC
+                LIMIT $8
+                """,
+                _WORKOUT_SOURCE,
+                _WORKOUT_EPISODE_TYPE,
+                _MOVEMENT_SOURCE,
+                _MOVEMENT_EPISODE_TYPE,
+                cutoff,
+                self.source_name,
+                EPISODE_TYPE_EXERCISE,
+                CORROBORATION_RECHECK_LIMIT,
+            )
+
+        created = 0
+        for row in candidates:
+            episode = await self._maybe_project(chronicler_pool, row, entity_id=entity_id)
+            if episode is None:
+                continue
+            created += 1
+            logger.info(
+                "%s: inferred exercise %s after late HR corroboration",
+                SOURCE_NAME,
+                row["id"],
+            )
+        return created
+
 
 __all__ = [
+    "CORROBORATION_RECHECK_LIMIT",
+    "CORROBORATION_RECHECK_LOOKBACK_HOURS",
     "DEFAULT_BATCH_LIMIT",
     "ELEVATED_HR_BPM",
     "EPISODE_TYPE_EXERCISE",

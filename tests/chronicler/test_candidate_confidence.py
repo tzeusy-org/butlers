@@ -22,7 +22,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from butlers.chronicler.adapters.exercise import ExerciseInferredAdapter
+from butlers.chronicler.adapters.exercise import (
+    CORROBORATION_RECHECK_LIMIT,
+    CORROBORATION_RECHECK_LOOKBACK_HOURS,
+    ExerciseInferredAdapter,
+)
 from butlers.chronicler.adapters.google_health import (
     GoogleHealthSleepAdapter,
     GoogleHealthWorkoutAdapter,
@@ -386,6 +390,109 @@ async def test_inferred_exercise_suppressed_without_elevated_hr() -> None:
     assert captured == []
 
 
+@pytest.mark.asyncio
+async def test_late_hr_on_an_empty_movement_tick_promotes_existing_exercise() -> None:
+    """A late HR sync must recheck an already-watermarked movement span."""
+    adapter = ExerciseInferredAdapter()
+    movement = _movement_candidate(overlaps_workout=False)
+    late_hr_id = uuid4()
+    captured: list[Episode] = []
+
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=_NullCtx())
+    # First tick: new movement, but no HR. Second tick: no new movement, then
+    # the bounded recheck must recover that movement and see the late HR.
+    conn.fetch = AsyncMock(
+        side_effect=[
+            [movement],
+            [],
+            [],
+            [],
+            [movement],
+            [_row(id=late_hr_id)],
+        ]
+    )
+    chronicler_pool = AsyncMock()
+    chronicler_pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.exercise.upsert_episode",
+            side_effect=_capture_upsert(captured),
+        ),
+        patch(
+            "butlers.chronicler.adapters.exercise.link_event_to_episode",
+            side_effect=_noop_owner,
+        ),
+        patch(
+            "butlers.chronicler.adapters.exercise.upsert_owner_episode_entity",
+            side_effect=_noop_owner,
+        ),
+        patch(
+            "butlers.chronicler.adapters.exercise.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        first = await adapter.project(AsyncMock(), chronicler_pool=chronicler_pool, since=None)
+        second = await adapter.project(
+            AsyncMock(), chronicler_pool=chronicler_pool, since=first.watermark
+        )
+
+    assert first.rows_projected == 0
+    assert second.rows_projected == 0
+    assert second.episodes_closed == 1
+    assert captured[0].source_ref == f"chronicler.episodes:{movement['id']}:exercise"
+    assert [episode.evidence_refs for episode in captured] == [[str(late_hr_id)]]
+
+
+@pytest.mark.asyncio
+async def test_empty_exercise_batch_runs_late_hr_recheck() -> None:
+    """Late corroboration normally arrives on a tick with no new movement."""
+    adapter = ExerciseInferredAdapter()
+    chronicler_pool = _chronicler_pool(fetch_rows=[])
+    recheck = AsyncMock(return_value=1)
+
+    with (
+        patch.object(adapter, "_recheck_late_corroboration", recheck, create=True),
+        patch(
+            "butlers.chronicler.adapters.exercise.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        result = await adapter.project(AsyncMock(), chronicler_pool=chronicler_pool, since=_NOW)
+
+    recheck.assert_awaited_once_with(chronicler_pool, entity_id=None)
+    assert result.episodes_closed == 1
+
+
+@pytest.mark.asyncio
+async def test_exercise_late_hr_recheck_is_bounded_and_shares_the_hr_predicate() -> None:
+    """The same HR rule handles initial and late-corroboration paths."""
+    adapter = ExerciseInferredAdapter()
+    movement = _movement_candidate(overlaps_workout=False)
+    predicate = AsyncMock(return_value=[])
+
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[movement])
+    chronicler_pool = AsyncMock()
+    chronicler_pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    with (
+        patch.object(adapter, "_corroborator_event_ids", predicate),
+        patch("butlers.chronicler.adapters.exercise._now", return_value=_NOW),
+    ):
+        await adapter._maybe_project(chronicler_pool, movement)
+        created = await adapter._recheck_late_corroboration(chronicler_pool, entity_id=None)
+
+    assert created == 0
+    assert predicate.await_count == 2
+    query, *args = conn.fetch.await_args_list[0].args
+    assert "e.start_at >= $5" in query and "LIMIT $8" in query
+    assert "'chronicler.episodes:' || e.id::text || ':exercise'" in query
+    assert args[4] == _NOW - timedelta(hours=CORROBORATION_RECHECK_LOOKBACK_HOURS)
+    assert args[7] == CORROBORATION_RECHECK_LIMIT
+
+
 # ── no-LLM guarantee: full deterministic project() path emits a candidate ───
 
 
@@ -395,14 +502,15 @@ async def test_exercise_project_is_pure_deterministic_no_llm() -> None:
     adapter = ExerciseInferredAdapter()
     captured: list[Episode] = []
 
-    # chronicler_pool.fetch is called twice: once for movement candidates, once
-    # per candidate for elevated-HR events. Sequence the return values.
+    # The bounded late-HR recheck adds one candidate query after normal
+    # movement/HR projection. Sequence all three reads explicitly.
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetch = AsyncMock(
         side_effect=[
             [_movement_candidate(overlaps_workout=False)],  # candidate query
             [_row(id=uuid4())],  # elevated-HR query
+            [],  # bounded late-HR recheck has no remaining candidate
         ]
     )
     chron_pool = AsyncMock()
