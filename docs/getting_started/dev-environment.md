@@ -168,7 +168,7 @@ Once the dev environment is running, you can run the test suite:
 ```bash
 make check         # Lint + test
 make test          # Tests only
-make test-unit     # Fast unit tests (no Docker needed)
+make test-unit     # Explicitly marked unit tests (not a comprehensive fast lane)
 make test-integration  # Integration tests (requires Docker)
 ```
 
@@ -177,6 +177,10 @@ For quick feedback during development, prefer targeted test runs:
 ```bash
 uv run pytest tests/test_foo.py -q --tb=short
 ```
+
+For agent work, run `make test-plan` before widening a scope. It prints a
+dirty-worktree-aware suggestion but does not execute pytest. The exact test
+ladder and CI-shaped final commands live in `AGENTS.md`.
 
 ## Verification
 

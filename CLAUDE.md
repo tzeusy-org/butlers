@@ -58,26 +58,18 @@ asyncio. Butler config is git-based under `roster/{butler}/`.
 uv sync --dev                                          # Install dependencies
 make lint | make format | make test | make check       # ruff / ruff / pytest / lint+test
 uv run pytest tests/test_foo.py -q --tb=short          # Single file (quiet)
-uv run pytest tests/test_foo.py::test_bar              # Single test
+uv run pytest tests/test_foo.py::test_bar -n 0         # Single test (avoid inherited xdist)
+make test-plan                                         # Dirty-worktree plan only; does not run pytest
 uv run ruff check src/ tests/ --output-format concise  # Lint only (quiet)
 uv run ruff format src/ tests/                         # Format only
 ```
 
-**Test scope:** start targeted and widen gradually; run the full suite only for final pre-merge
-validation (rationale and evidence standards: `craft-and-care`). Low-context quality gate:
-
-```bash
-uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
-uv run ruff format --check src/ tests/ roster/ conftest.py -q
-PYTEST_LOG=".tmp/test-logs/pytest-$(basename "$PWD")-$(date +%Y%m%d-%H%M%S)-$$.log"
-uv run python scripts/pytest_gate.py run --log "$PYTEST_LOG" -- tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short
-uv run python scripts/pytest_gate.py verdict "$PYTEST_LOG" || tail -n 120 "$PYTEST_LOG"
-```
-
-`pytest_gate.py` runs pytest in its own session (so a harness timeout signalling the calling
-process group cannot kill it) and requires a **positive terminator** before calling a run green:
-`verdict` exits `0` PASS / `1` FAILED / `2` UNKNOWN. A log with no summary line is UNKNOWN, never
-a pass — see `AGENTS.md` (§ Notes to self) for why that distinction is load-bearing.
+**Test scope:** start with an exact node or file and widen gradually. `make test-plan` inspects
+committed, staged, unstaged, and untracked changes but does **not** execute tests. `make test-qg`
+is a local `tests/` gate, not universal coverage: it omits roster, root DB/migration suites, and
+the CI-shaped selection. The exact agent ladder and final CI-shaped commands live in
+`AGENTS.md` (§ Test Scope Policy). `pytest_gate.py` receipts require a positive terminator before a
+run is called green; `UNKNOWN` is never a pass.
 
 ## Key Conventions
 

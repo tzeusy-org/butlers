@@ -49,13 +49,19 @@ Butlers intentionally uses graduated verification:
 2. Expand to broader file or subsystem coverage when the risk surface widens.
 3. Run the full repo gate for final merge-readiness checks.
 
-The normal full gate in this repo is:
+The normal local hygiene gate in this repo is:
 
 ```bash
 uv run ruff check src/ tests/ roster/ conftest.py
 uv run ruff format --check src/ tests/ roster/ conftest.py
 make test-qg
 ```
+
+`make test-qg` is valuable regression evidence, but it is not CI-equivalent: it
+does not cover `roster/`, root DB/migration suites, or the CI marker selection.
+For a final backend claim, use the CI-shaped unit and integration targets in
+`AGENTS.md` only when local reproduction is needed; otherwise push the exact
+head after focused evidence and use terminal hosted CI as the one broad result.
 
 Use `make test-qg-serial` when debugging order-dependent failures.
 
@@ -69,7 +75,7 @@ When reporting completion, include the checks that actually ran. For example:
 
 - targeted pytest file or test node
 - Ruff check and format verification
-- `make test-qg` for full readiness
+- `make test-qg` as local broad regression evidence, plus the CI-shaped lanes when the claim requires them
 - manual verification steps for docs or operator workflows
 
 If something could not be verified, state that plainly.

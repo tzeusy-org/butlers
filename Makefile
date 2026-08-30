@@ -1,7 +1,10 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
+CI_UNIT_PYTEST_ARGS = tests/ roster/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e and not nightly and not bench and not perf" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
+CI_INTEGRATION_PYTEST_ARGS = tests/ roster/ -q --maxfail=5 --tb=short -m "integration and not nightly and not bench and not perf" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
+BASE ?= origin/main
 
 lint:
 	uv run ruff check src/ tests/
@@ -28,6 +31,13 @@ test-core:
 # Module tests — tests/modules/ directory
 test-modules:
 	uv run pytest tests/modules/ -v
+
+# Print a fail-closed, dirty-worktree-aware pytest plan. This command does not
+# execute pytest and is not verification evidence; it identifies the narrowest
+# candidate scope or tells the caller to escalate for shared/migration/unknown
+# changes. Use BASE=<ref> when the comparison base differs from origin/main.
+test-plan:
+	uv run --no-sync python -m butlers.testing.scoped_runner --base "$(BASE)"
 
 # Every pytest-based E2E target below passes `-n 0` (bu-ejgwv). It is not redundant:
 # pytest prepends `addopts` to every invocation, and this repo's addopts carries
@@ -91,6 +101,24 @@ test-e2e-frontend:
 # PID: make eats one $ per pair, and the timestamp+PID pair keeps concurrent runs off each other.
 QG_GATE = uv run python scripts/pytest_gate.py
 QG_LOG = .tmp/test-logs/pytest-$@-$$(date +%Y%m%d-%H%M%S)-$$$$.log
+
+# Mirrors the pytest-and-coverage portions of CI's `check` job. The smoke
+# release-evidence step, static checks, and throwaway-runner Ryuk override stay
+# CI-only; local testcontainers keep Ryuk enabled for cleanup. These targets use
+# pytest_gate so a killed foreground process never looks green.
+test-ci-unit:
+	LOG="$(QG_LOG)"; \
+	if [ -n "$$(git status --porcelain)" ]; then echo "REFUSED: test-ci receipts require a clean worktree" >&2; exit 2; fi; \
+	printf '## test-ci HEAD=%s clean=true target=$@\n' "$$(git rev-parse HEAD)" | tee "$$LOG"; \
+	$(QG_GATE) run --tee --log "$$LOG" -- $(CI_UNIT_PYTEST_ARGS); \
+	$(QG_GATE) verdict "$$LOG"
+
+test-ci-integration:
+	LOG="$(QG_LOG)"; \
+	if [ -n "$$(git status --porcelain)" ]; then echo "REFUSED: test-ci receipts require a clean worktree" >&2; exit 2; fi; \
+	printf '## test-ci HEAD=%s clean=true target=$@\n' "$$(git rev-parse HEAD)" | tee "$$LOG"; \
+	$(QG_GATE) run --tee --log "$$LOG" -- $(CI_INTEGRATION_PYTEST_ARGS); \
+	$(QG_GATE) verdict "$$LOG"
 
 # Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures

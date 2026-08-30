@@ -83,31 +83,56 @@ Both paths are declared in `testpaths` in `pyproject.toml`.
 
 ## Quality Gates
 
-The recommended quality gate sequence for agent runs:
+The scope is intentional: iteration evidence is narrow, while final evidence
+uses the exact CI lanes. A command called "full" elsewhere is not automatically
+CI-equivalent.
 
 ```bash
-# Lint
+# Planner only: inspects committed, staged, unstaged, and untracked changes.
+# It never executes pytest and cannot be cited as a passing test result.
+make test-plan BASE=origin/main
+
+# Iteration: run the exact affected node or file first.
+uv run --no-sync pytest path/to/test_file.py::test_name -q --tb=short -n 0
+
+# Hygiene for changed Python paths.
 uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
-
-# Format check
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
-
-# Test (excluding DB and migration tests for speed)
-uv run pytest tests/ --ignore=tests/test_db.py --ignore=tests/test_migrations.py \
-  -q --maxfail=1 --tb=short
 ```
 
-For final pre-merge validation, run the full suite:
+For final merge readiness, do not repeat broad lanes locally by default. Push
+the exact head after targeted, collection, and hygiene evidence; terminal hosted
+CI supplies the one broad result. The receipt-producing targets below mirror the
+pytest and coverage portions of CI's unit and integration steps when a local
+reproduction is necessary:
 
 ```bash
-make check  # lint + full test suite
+make test-ci-unit
+make test-ci-integration
 ```
+
+CI also runs static checks and a separate smoke/release-evidence step; terminal
+hosted CI is the only evidence for the whole `check` job. For a given SHA, one
+owner may run a broad local lane from a clean worktree; its receipt records the
+SHA and rejects dirty state. Reviewers reuse only a matching clean receipt and
+run focused checks for any finding rather than repeating the entire suite.
 
 ## Test Execution Policy
 
-- During active development, prefer targeted `pytest` runs for fast feedback.
-- Run the full suite only when branch changes are finalized for pre-merge validation.
-- Increase test scope gradually; do not default to full-suite runs early.
+- During active development, prefer a test node, file, or owning package for
+  fast feedback. Pass `-n 0` for a single node or when diagnosing ordering.
+- For roster changes, include the affected `roster/<butler>/tests/` path.
+  After test fixture, import, registration, move, or deletion changes, run
+  `pytest tests/ roster/ --collect-only -q -n 0` before interpreting a scoped
+  run as useful. Collection is additional topology evidence, not a substitute
+  for escalation across a shared boundary.
+- The planner returns `ESCALATE` for root `conftest.py`, migrations, shared
+  core/registry, test tooling, CI/Make/configuration, and unknown source paths.
+  An escalation is a request to state and run the relevant suites, not a green
+  result.
+- The current performance objective is five minutes each for routine unit and
+  integration lanes on the reference CI runner. It is a staged,
+  contract-preserving reduction target; no test is removed merely to reach it.
 
 ## Suppressed Warnings
 

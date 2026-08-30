@@ -1,8 +1,9 @@
-"""Diff-based changed-file detection for MR branches.
+"""Changed-file detection for scoped test planning.
 
-Given an MR branch name, determines the list of files changed relative to a
-base ref (default ``origin/main``).  This is the input to source-to-test
-mapping for scoped test runs in the refinery merge queue.
+The refinery still needs a branch-only comparison, while agents need a plan
+that also sees their staged, unstaged, and untracked worktree changes.  Keep
+those inputs separate: a merge-queue plan must be reproducible from refs, and
+an iteration plan must not omit code the agent has not committed yet.
 """
 
 from __future__ import annotations
@@ -19,6 +20,38 @@ class ChangedFiles:
     files: list[str] = field(default_factory=list)
     base_ref: str = ""
     head_ref: str = ""
+    sources: tuple[str, ...] = ()
+
+
+def _run_git(
+    args: list[str],
+    *,
+    repo_dir: str | Path | None,
+    purpose: str,
+) -> list[str]:
+    """Run a NUL-delimited Git file query and return its paths.
+
+    Git paths may contain spaces, so newline splitting is not a safe parser for
+    a planner that agents will rely on.  ``--no-renames`` deliberately reports
+    a rename as an old-path deletion plus a new-path addition, allowing the
+    caller to widen a deleted test to its surviving parent scope.
+    """
+
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=False,
+        cwd=repo_dir,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {purpose} failed (exit {result.returncode}): {stderr}")
+    return [
+        path.decode("utf-8", errors="surrogateescape")
+        for path in result.stdout.split(b"\0")
+        if path
+    ]
 
 
 def get_changed_files(
@@ -51,28 +84,57 @@ def get_changed_files(
     RuntimeError
         If the ``git diff`` command exits with a non-zero status.
     """
-    cmd = [
-        "git",
-        "diff",
-        "--name-only",
-        "--no-renames",
-        f"{base}...{branch}",
-    ]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        cwd=repo_dir,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"git diff failed (exit {result.returncode}): {result.stderr.strip()}")
-
-    files = [f for f in result.stdout.strip().splitlines() if f]
     return ChangedFiles(
-        files=sorted(set(files)),
+        files=sorted(
+            set(
+                _run_git(
+                    ["diff", "--name-only", "-z", "--no-renames", f"{base}...{branch}"],
+                    repo_dir=repo_dir,
+                    purpose="branch diff",
+                )
+            )
+        ),
         base_ref=base,
         head_ref=branch,
+        sources=("branch",),
+    )
+
+
+def get_worktree_changed_files(
+    base: str = "origin/main",
+    *,
+    repo_dir: str | Path | None = None,
+) -> ChangedFiles:
+    """Return branch, index, worktree, and untracked changes for an agent run.
+
+    ``base...HEAD`` captures commits made on the current branch.  The remaining
+    queries capture the three forms of unfinished agent work.  Their union is
+    deliberately conservative: a path seen by more than one source appears
+    once, and ignored untracked files remain excluded by Git itself.
+    """
+
+    queries = (
+        (
+            "branch",
+            ["diff", "--name-only", "-z", "--no-renames", f"{base}...HEAD"],
+            "branch diff",
+        ),
+        ("staged", ["diff", "--name-only", "-z", "--no-renames", "--cached"], "index diff"),
+        ("unstaged", ["diff", "--name-only", "-z", "--no-renames"], "worktree diff"),
+        ("untracked", ["ls-files", "--others", "--exclude-standard", "-z"], "untracked files"),
+    )
+
+    files: set[str] = set()
+    sources: list[str] = []
+    for source, args, purpose in queries:
+        result = _run_git(args, repo_dir=repo_dir, purpose=purpose)
+        if result:
+            files.update(result)
+            sources.append(source)
+
+    return ChangedFiles(
+        files=sorted(files),
+        base_ref=base,
+        head_ref="HEAD",
+        sources=tuple(sources),
     )

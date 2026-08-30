@@ -42,9 +42,83 @@ there is no `bd sync` and no SQLite. See "Beads DB Mode" below.
 
 ## Test Scope Policy
 
-- For bugfixes and new features under active development or investigation, prefer targeted `pytest` runs (single test, file, or focused subset).
-- Run the full test suite only when branch changes are finalized and you want a final merge-readiness signal.
-- Expand test scope incrementally if risk is broader, instead of defaulting to full-suite runs early.
+### Agent test ladder
+
+**Target:** routine unit and integration lanes should each reach five minutes on
+the reference CI runner. This is a staged performance goal, not evidence that
+the current suite has met it. Do not meet it by dropping an invariant, wire,
+privacy, authorization, retry, idempotency, or migration-outcome test.
+
+1. Start each behavior change with the exact new or affected node, then widen
+   to its owning file or package:
+
+   ```bash
+   uv run --no-sync pytest path/to/test_file.py::test_name -q --tb=short -n 0
+   uv run --no-sync pytest path/to/test_file.py -q --tb=short
+   ```
+
+   `-n 0` is intentional for a single node or order-dependent debugging:
+   `pyproject.toml` otherwise starts three xdist workers for every command.
+
+2. Before choosing a broader scope, run the planner from the dirty worktree:
+
+   ```bash
+   make test-plan BASE=origin/main
+   ```
+
+   It prints suggested paths or `ESCALATE` reasons from committed, staged,
+   unstaged, and untracked files. It **does not run pytest** and is never test
+   evidence or merge-readiness evidence.
+
+3. Include `roster/<butler>/tests/` explicitly for roster work. For a deleted
+   or moved test, run collection on its surviving parent scope. For test
+   fixtures, imports, module registration, or topology changes, run:
+
+   ```bash
+   uv run --no-sync pytest tests/ roster/ --collect-only -q -n 0
+   ```
+
+   Collection is additional topology evidence, not a substitute for the
+   escalation required below when the change crosses a shared boundary.
+
+4. Migrations, database/shared core, registry/discovery, root `conftest.py`,
+   test tooling, `pyproject.toml`, Makefile, CI, and unknown source paths must
+   escalate beyond a file-level run. State the relevant real-Postgres,
+   contract, API, roster, or CI-shaped lane explicitly; never accept a guessed
+   selector result as exhaustive coverage.
+
+5. Do **not** run the broad lanes locally by default. At final merge readiness,
+   push the exact head after targeted tests, collection, and hygiene checks,
+   then use one terminal hosted CI run as the broad evidence. These
+   receipt-producing targets mirror the pytest and coverage portions of CI's
+   unit and integration steps when a local reproduction is genuinely needed:
+
+   ```bash
+   make test-ci-unit
+   make test-ci-integration
+   ```
+
+   CI also runs static checks and a separate smoke/release-evidence step, so
+   these targets alone are not a full `check`-job claim. Run only one broad
+   Docker-backed lane at a time, and only one owner may run a broad local lane
+   for an exact SHA from a **clean** worktree. `test-ci-*` records that SHA and
+   refuses dirty state; any edit or rebase invalidates its receipt. Reviewers
+   reuse only that matching clean receipt and run focused tests for their
+   findings; they do not repeat an already-valid broad gate. A targeted PASS
+   proves only its named scope; terminal hosted CI is the broad merge evidence,
+   even though this repository's branch protection does not technically enforce
+   it.
+
+### Scope names are not interchangeable
+
+- `make test-qg` is a local, receipt-producing regression gate. It runs
+  `tests/` but omits `roster/`, root DB/migration suites, and E2E; do not call
+  it the universal or CI-equivalent full suite.
+- `make test-unit` selects only explicitly marked unit tests. It is not the
+  routine fast lane: the marker currently selects thousands of cases.
+- A command-line `-m` replaces pytest's default marker expression. Restate the
+  nightly/bench/perf exclusions when using a custom marker expression, as CI
+  does.
 
 ### Frontend CI gate order (knip masks build and test)
 
@@ -659,6 +733,10 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `pyproject.toml` testpaths: `["tests", "roster"]`
 - Uses `--import-mode=importlib` to avoid module-name collisions across butler test dirs
 
+### Agent test-plan contract
+- `make test-plan` is a dirty-worktree-aware **plan only**: it unions branch, staged, unstaged, and untracked paths, and prints either existing pytest paths or an `ESCALATE` reason. It never runs pytest and cannot be cited as green evidence.
+- Its broad roots are derived from pytest `testpaths` (`tests/` and `roster/`). Unknown, shared-core, migration, test-tooling, CI, and configuration paths fail closed to escalation; a deleted test file widens to its existing parent for a subsequent collect-only run.
+
 ### Test Patterns
 - All DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`
 - Tables created via direct SQL from migration files (not Alembic runner)
@@ -924,7 +1002,7 @@ make test-qg
 - `src/butlers/core/runtimes/codex.py::_extract_tool_call` and `_looks_like_tool_call_event` must treat nested `tool` objects like other containers (`function`/`call`/`tool_call`/`toolCall`) when extracting tool name + arguments, preventing name loss for this Codex event shape.
 
 ### Quality-gate command contract
-- `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
+- `make test-qg` is a local `tests/` regression gate and runs with xdist parallelization (`-n auto`); it is not CI-equivalent because it omits `roster/`, root DB/migration suites, and E2E.
 - `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
 - Both route through `scripts/pytest_gate.py` (see "Parallel Test Command"); read the printed
   `PASS`/`FAILED`/`UNKNOWN` verdict line, not the presence or absence of `FAILED` in the log.
