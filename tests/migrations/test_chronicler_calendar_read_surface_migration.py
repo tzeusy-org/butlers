@@ -56,6 +56,7 @@ def test_revision_chain_and_calendar_surface_allowlist() -> None:
         "calendar_sources",
         "calendar_event_entities",
     }
+    assert module._PUBLIC_READ_SURFACE_TABLES == ("google_accounts",)
 
 
 def test_upgrade_grants_each_calendar_table_only_when_present() -> None:
@@ -72,6 +73,8 @@ def test_upgrade_grants_each_calendar_table_only_when_present() -> None:
     ):
         assert f"table_name = '{table}'" in sql
         assert f'GRANT SELECT ON TABLE "education"."{table}"' in sql
+    assert "table_schema = 'public'" in sql
+    assert 'GRANT SELECT ON TABLE public."google_accounts"' in sql
 
 
 def test_downgrade_revokes_only_the_explicit_calendar_grants() -> None:
@@ -82,6 +85,7 @@ def test_downgrade_revokes_only_the_explicit_calendar_grants() -> None:
     for table in ("calendar_events", "calendar_sources", "calendar_event_entities"):
         assert f'REVOKE SELECT ON TABLE "education"."{table}"' in sql
     assert 'REVOKE SELECT ON TABLE "education"."calendar_event_instances"' not in sql
+    assert 'REVOKE SELECT ON TABLE public."google_accounts"' not in sql
 
 
 @pytest.mark.integration
@@ -109,6 +113,10 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
             # is irrelevant to this effective-role ACL test.
             for table in (*calendar_tables, "calendar_sync_cursors"):
                 conn.exec_driver_sql(f'CREATE TABLE general."{table}" (id INTEGER)')
+            conn.exec_driver_sql('CREATE TABLE public."google_accounts" (id INTEGER)')
+            conn.exec_driver_sql(
+                'REVOKE SELECT ON TABLE public."google_accounts" FROM "butler_chronicler_rw"'
+            )
     finally:
         engine.dispose()
 
@@ -137,6 +145,16 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
                     conn.exec_driver_sql(f'SELECT count(*) FROM general."{table}"').scalar_one()
                     == 0
                 )
+
+            google_accounts = conn.execute(
+                text("SELECT has_table_privilege(current_user, :table_name, 'SELECT')"),
+                {"table_name": "public.google_accounts"},
+            ).scalar_one()
+            assert google_accounts is True
+            assert (
+                conn.exec_driver_sql('SELECT count(*) FROM public."google_accounts"').scalar_one()
+                == 0
+            )
 
             denied = conn.execute(
                 text("SELECT has_table_privilege(current_user, :table_name, 'SELECT')"),

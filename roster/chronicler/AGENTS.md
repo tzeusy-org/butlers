@@ -684,12 +684,13 @@ GROUP BY 1;
 
 `CalendarCompletedAdapter` reads `calendar_event_instances` together with its
 `calendar_events` and `calendar_sources` join companions.  When participant
-links exist, it also reads `calendar_event_entities`.  The restricted
-`butler_chronicler_rw` role receives explicit cross-schema `SELECT` grants for
-those four tables through `chronicler_026`; an incomplete grant is reported as
-an unavailable calendar read surface rather than allowing a projection query
-to fail opaquely.  `calendar_event_entities` remains optional for deployments
-that predate the calendar participant table.
+links exist, it also reads `calendar_event_entities`, and optional owner
+resolution reads `public.google_accounts`.  The restricted
+`butler_chronicler_rw` role receives explicit `SELECT` grants for those four
+calendar tables and the shared account lookup through `chronicler_026`; an
+incomplete grant is reported as an unavailable calendar read surface rather
+than allowing a projection query to fail opaquely.  `calendar_event_entities`
+remains optional for deployments that predate the calendar participant table.
 
 ### Derived column cleanup (bead bu-cfsgy, DONE)
 

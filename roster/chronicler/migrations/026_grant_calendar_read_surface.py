@@ -7,6 +7,8 @@ Create Date: 2026-08-31 00:00:00.000000
 ``CalendarCompletedAdapter`` reads the completed-instance table together with
 its ``calendar_events`` and ``calendar_sources`` join companions.  When the
 participant join table exists, it also reads ``calendar_event_entities``.
+It also performs optional owner-entity resolution through
+``public.google_accounts``.
 Migration ``chronicler_003`` granted only ``calendar_event_instances``, so a
 restricted ``butler_chronicler_rw`` role could see the first table but not the
 complete projection surface.  Grant each table explicitly and only when it is
@@ -50,6 +52,7 @@ _NEW_CALENDAR_GRANTS = (
     "calendar_sources",
     "calendar_event_entities",
 )
+_PUBLIC_READ_SURFACE_TABLES = ("google_accounts",)
 _ROLE = "butler_chronicler_rw"
 
 
@@ -114,6 +117,22 @@ def upgrade() -> None:
                 )
             )
 
+    for table in _PUBLIC_READ_SURFACE_TABLES:
+        op.execute(
+            _role_exists_guard(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name = {_lit(table)}
+                ) THEN
+                    EXECUTE 'GRANT SELECT ON TABLE public.{_q(table)} '
+                            'TO {_role()}';
+                END IF;
+                """
+            )
+        )
+
 
 def downgrade() -> None:
     for schema in _BUTLER_SCHEMAS:
@@ -132,3 +151,7 @@ def downgrade() -> None:
                     """
                 )
             )
+
+    # ``init-db.sql`` has historically granted all runtime roles access to
+    # shared public lookup tables.  Preserve that baseline on downgrade; ACLs
+    # do not retain which grant statement originally supplied the privilege.

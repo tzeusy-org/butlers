@@ -514,6 +514,15 @@ BEGIN
                 );
             END IF;
         END LOOP;
+        -- public.google_accounts (optional calendar-owner resolution).  Keep
+        -- this explicit alongside the calendar surface grants so a bootstrap
+        -- does not depend on the broad shared-public role block above.
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'google_accounts'
+        ) THEN
+            EXECUTE 'GRANT SELECT ON TABLE public.google_accounts TO butler_chronicler_rw';
+        END IF;
         -- entity_facts (CoreSessionsAdapter contact resolution + the
         -- comms.message_bursts participant resolution — relationship schema only)
         IF _schema = 'relationship' AND EXISTS (
