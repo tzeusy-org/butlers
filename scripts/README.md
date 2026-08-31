@@ -367,3 +367,65 @@ Fixing issue butlers-2bq.7:
 
 Summary: scanned 746 issues, modified 9 issues, fixed 9 dependencies
 ```
+
+## Maintainer command index
+
+The sections above carry the full procedures for the highest-risk bootstrap,
+restore, development, and merge paths. The commands below are also direct
+maintainer or operator entry points. Their entries name the purpose and boundary;
+read the script's own usage text and the linked runbook before running a command
+that changes infrastructure or historical data.
+Scripts whose only callers are Docker, Compose, or CI plumbing are intentionally
+omitted from this human command index; they are not maintainer entry points.
+
+### Quality and review guards
+
+| Script | Purpose and invocation boundary |
+| --- | --- |
+| [`check-no-em-dashes.py`](check-no-em-dashes.py) | Ratchets prohibited em dashes in doctrine and roster prose; frontend user-facing copy is enforced separately by ESLint. Use `make check-em-dashes` or the script while editing the scanned prose. |
+| [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | Confirms archived OpenSpec requirements reached their canonical specs; run as the archived-requirements CI guard. |
+| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | Confirms requirement IDs cited by tests resolve to a live or active definition; run as the cited-requirements CI guard. |
+| [`check_countable_tasks.py`](check_countable_tasks.py) | Fails when an unarchived change's tasks cannot be counted by the archive gate; use `make check-countable-tasks` before archival work. |
+| [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | Finds module-level Python definitions that would silently shadow each other after a merge; use `make check-duplicate-names` as the local or CI duplicate-name guard. |
+| [`check_for_update_joins.py`](check_for_update_joins.py) | Statically rejects `FOR UPDATE` on nullable outer-join sides; use `make check-for-update-joins` after SQL query changes. |
+| [`check_ci_test_shards.py`](check_ci_test_shards.py) | Verifies checked-in backend CI test-shard manifests cover the current unit and integration selections; run `make check-ci-test-shards` when changing the CI test lanes or manifests. |
+| [`check_spec_overwrites.py`](check_spec_overwrites.py) | Compares active OpenSpec MODIFIED blocks against current canonical bodies; run `make check-spec-overwrites` before archival work. |
+| [`extract-frontend-copy.py`](extract-frontend-copy.py) | Regenerates the checked-in frontend copy inventory; run it only when the inventory guard reports the generated file stale. |
+| [`lint_decision_beads.py`](lint_decision_beads.py) | Validates the structured decision-bead convention; run through the `lint-decision-beads` Make targets when working that workflow. |
+| [`pytest_gate.py`](pytest_gate.py) | Records a positive pytest completion receipt and classifies it as PASS, FAILED, or UNKNOWN; use its `run` and `verdict` subcommands through the quality-gate recipes rather than grepping a log. |
+| [`session_link_guard.py`](session_link_guard.py) | Scans supplied PR metadata, commit ranges, and review-comment data for prohibited tool-session links; run `make check-session-links` before pushing, while CI and PR review tooling provide the broader scoped inputs. |
+| [`reap_orphaned_testcontainers.py`](reap_orphaned_testcontainers.py) | Reports Docker testcontainers left behind by dead pytest runs; use `--reap` only after reviewing the reported orphan candidates. |
+
+### Development, release, and recovery commands
+
+| Script | Purpose and invocation boundary |
+| --- | --- |
+| [`compose.sh`](compose.sh) | Supported Compose launcher for the local stack and protected restore-drill variants; use it instead of composing protected fragments directly. |
+| [`setup_worktree.sh`](setup_worktree.sh) | Prepares a newly created worktree with its machine-local pointers and cache links; run from that worktree. |
+| [`bump_version.py`](bump_version.py) | Updates the project version in `pyproject.toml`; use only as part of a reviewed release preparation. |
+| [`release_tag.py`](release_tag.py) | Creates the annotated tag for the current project version locally; pushing the tag remains a separate release action. |
+| [`staging.py`](staging.py) | Holds an E2E ecosystem open for interactive load testing; use only in a local environment that meets the E2E prerequisites. |
+| [`egress-firewall.sh`](egress-firewall.sh) | Applies or removes the host Docker egress policy; run only with the required host-administrator authority. |
+| [`pg_restore.sh`](pg_restore.sh) | Restores a PostgreSQL backup into the restore-drill target; follow the backup/restore runbook rather than treating it as a general production restore command. |
+| [`pg_verify_restore.sh`](pg_verify_restore.sh) | Verifies schema and data integrity in a restored database; run after the restore-drill restore step. |
+
+### Historical data repairs
+
+These are one-off, scoped maintenance commands. They change historical state;
+review each script's selection criteria and dry-run or scope controls before
+applying it to a database.
+
+| Script | Repair scope |
+| --- | --- |
+| [`backfill_batch_sender_identities.py`](backfill_batch_sender_identities.py) | Recovers per-sender identities from historical batch message inbox rows. |
+| [`backfill_email_identity_facts.py`](backfill_email_identity_facts.py) | Adds unambiguous existing-entity `has-email` facts for historical email senders. |
+| [`backfill_entity_fact_observed_at.py`](backfill_entity_fact_observed_at.py) | Fills missing `observed_at` values on historical relationship facts. |
+| [`backfill_point_event_entity_id.py`](backfill_point_event_entity_id.py) | Links historical owner-only chronicler point events to the owner entity. |
+| [`backfill_tombstone_heartbeat_episodes.py`](backfill_tombstone_heartbeat_episodes.py) | Tombstones historical chronicler episodes generated by butler-internal heartbeats. |
+| [`backfill_transitory_entities.py`](backfill_transitory_entities.py) | Creates and links transitory entities for historical string-anchored facts. |
+| [`cleanup_bulk_email_identity_proposals.py`](cleanup_bulk_email_identity_proposals.py) | Retracts email-identity proposals created for bulk or automated senders. |
+| [`dedupe_orphan_contacts.py`](dedupe_orphan_contacts.py) | Deduplicates orphan contact rows that share one entity. |
+| [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | Moves scoped local attachment blobs to the configured S3-compatible backend. |
+| [`migrate_fact_subjects.py`](migrate_fact_subjects.py) | Normalizes historical fact subjects and backfills their entity links. |
+| [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | Runs the content-blind WhatsApp entity reconciliation maintenance pass. |
+| [`retract_digest_measurements.py`](retract_digest_measurements.py) | Retracts measurement-weight facts created from butler-generated digest or briefing text. |
