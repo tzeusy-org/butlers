@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
 // CARTO raster basemap style for the Chronicles map.
+// Labels are omitted because the heatmap and markers carry the location story;
+// labels would compete visually with those overlays.
 // ---------------------------------------------------------------------------
 
 import type { StyleSpecification } from "maplibre-gl"
