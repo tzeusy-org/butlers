@@ -220,10 +220,12 @@ uv run --no-sync pytest tests/ --collect-only -q
 # Contract tests
 uv run --no-sync pytest tests/contracts/ -q --tb=short -m contract
 
-# Mirror the CI `check` job's unit step. Keep this in sync with the `run:` line
-# in .github/workflows/ci.yml (search for `--cov-report=json`) — it drifts.
-# NOTE: unit / smoke / integration are sequential STEPS of the single `check`
-# job, not separate jobs.
+# Mirror the unit marker expression used by the CI `check-unit-N` shard selector.
+# Keep this in sync with `scripts/check_ci_test_shards.py` and the commands in
+# .github/workflows/ci.yml - it drifts.
+# NOTE: `check-preflight` owns smoke and release evidence; five `check-unit-N`
+# jobs run file-balanced unit shards; five `check-integration-N` jobs run the
+# integration shards; and `check` only fans in their results.
 uv run --no-sync pytest tests/ roster/ -q --maxfail=1 --tb=short \
   --ignore=tests/e2e \
   -m "not integration and not e2e and not nightly and not bench and not perf"

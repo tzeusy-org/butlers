@@ -35,8 +35,9 @@ and then exits.
 
 There is one place the variable *is* set, and it is worth knowing before you grep and conclude this
 page is wrong: CI sets `TESTCONTAINERS_RYUK_DISABLED: "true"` in `.github/workflows/ci.yml` (the
-`check` job's smoke and integration steps) and in `.github/workflows/nightly.yml`. That is harmless
-there and cannot leak onto a developer machine, because those jobs are `runs-on: ubuntu-latest`
+`check-preflight` job's smoke step and the `check-integration-1..5` shard jobs) and in
+`.github/workflows/nightly.yml`. That is harmless there and cannot leak onto a developer machine,
+because those jobs are `runs-on: ubuntu-latest`
 throwaway VMs that are destroyed wholesale. (The `gha-runner-*` containers on this host belong to a
 different project, not to butlers CI.) It matters here only because copying the CI environment into
 a local run turns Ryuk off and defeats the live-Ryuk predicate below.

@@ -32,10 +32,11 @@ commands in [discovery.md](discovery.md) after pulling a newer head.
   Collection establishes the selected-test population; it is not test-execution
   timing.
 
-- **CI duration evidence (re-check before relying on it):** unit ~**15m48s**,
-  integration ~**18m25s**. These are sequential **steps of the single `check`
-  job**, NOT separate jobs — `check` as a whole runs ~45min+ (unit → smoke →
-  testcontainers integration). Enumerate real per-step timings with
+- **Historical CI duration evidence (re-check before relying on it):** unit
+  ~**15m48s**, integration ~**18m25s**. These measurements predate the split
+  into `check-preflight`, five `check-unit-N` shards, and five
+  `check-integration-N` shards; `check` is their fail-closed coverage fan-in.
+  Enumerate current per-step timings with
   `gh api repos/Tzeusy/butlers/actions/jobs/<job_id> --jq '.steps[]'`.
   Durations, not collection measurements.
 

@@ -161,12 +161,16 @@ Before marking a bead complete:
 6. **Lint**: `uv run ruff check tests/YOUR_DOMAIN --output-format concise`
 7. **Commit documents delta**: `"Condense X tests: N → M (details of what was removed)"`
 
-**CI-gate reality** (what actually blocks merge):
-- The **required** CI job runs `uv run pytest tests/ -m "not integration and not e2e"`
-  (no Docker). Integration runs in a **separate** Docker job
-  (`-m "integration and not nightly"`).
-- `frontend`, `e2e`, and `check` are **NOT required** GitHub checks — PRs can
-  merge over them red. Don't rely on them; gate locally.
+**CI-gate reality** (what the hosted workflow actually runs):
+- `check-preflight` runs the lock, lint, format, SQL-safety, shard-manifest,
+  and smoke/release-evidence checks.
+- Five `check-unit-N` jobs and five `check-integration-N` jobs run the
+  manifest-backed unit and integration selections independently; integration
+  shards retain Docker/testcontainers.
+- The legacy `check` job is a fail-closed fan-in over preflight and every shard,
+  and combines their coverage artifacts.
+- `frontend`, `frontend-e2e`, and `check` are not required by branch protection.
+  Do not rely on that configuration; wait for every hosted check to be green.
 - Local pre-merge gate = ruff + the non-integration subset + `--collect-only`.
 
 **Verifying in a worktree** (a fresh worktree has no `.venv`): give it a **real**
