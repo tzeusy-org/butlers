@@ -847,9 +847,9 @@ pull request as a fast gate, distinct from and faster than the integration tier,
 and MUST NOT pull in the E2E suite or any real LLM dependency.
 
 #### Scenario: Dedicated smoke selection in CI
-- **WHEN** the CI `check` job runs
+- **WHEN** the CI `check-preflight` job runs
 - **THEN** smoke tests are selected via `-m smoke` (excluding `e2e` and any real-LLM
-  paths) and run before or alongside the heavier integration step
+  paths) and run alongside the independent unit and integration shards
 - **AND** a smoke failure fails the CI run
 
 #### Scenario: No E2E or real-LLM dependency in the smoke gate

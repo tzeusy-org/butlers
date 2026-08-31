@@ -161,40 +161,41 @@ All must pass. No exceptions, no "I'll fix the lint later." The
 the nullable side of an outer join at runtime, and mock-based tests silently
 bypass it, so it is enforced statically.
 
-**CI pipeline** (GitHub Actions, runs automatically on push/PR). There are three
-jobs:
+**CI pipeline** (GitHub Actions, runs automatically on push/PR). The core
+Python gate is a duration-balanced fan-out/fan-in:
 
-1. `check` (Python). Verifies the uv lock file (`uv lock --check`), installs
-   with `uv sync --frozen --dev`, then runs lint, the format check, the SQL
-   safety check, and the test stages below with coverage:
+1. `check-preflight` runs the lock, lint, format, SQL-safety, exact-shard
+   verification, and smoke/release-evidence checks once.
+2. Five `check-unit-N` jobs and five `check-integration-N` jobs start on
+   independent runners. Each keeps whole test files together with xdist's
+   `--dist loadfile`; the integration shards retain Docker/testcontainers.
+3. `check` always evaluates every preflight/shard result, including a
+   cancellation result, fails on any non-success, then combines all ten
+   coverage artifacts and updates the main-push badge.
 
-```bash
-# Unit tests: excludes E2E, selects non-integration/non-e2e markers.
-# A command-line -m REPLACES addopts' own `-m` rather than ANDing with it, so
-# the nightly/bench/perf exclusion from addopts must be restated here too, or
-# nightly adapter tests (real creds/binaries) leak into this fast lane
-# (bu-y189y).
-uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e \
-  -m "not integration and not e2e and not nightly and not bench and not perf" \
-  --cov=src/butlers --cov-report=json:coverage.json
+The checked-in file manifests live in `.github/ci-test-shards/`. The sole
+selector, `scripts/check_ci_test_shards.py`, owns the exact current unit and
+integration marker expressions. Its `verify` command derives pytest's actual
+selected node IDs and refuses a stale manifest, missing file/node, duplicate
+within a lane, or zero-selected shard. A file can correctly appear once in
+each independent lane when it contains both unit and integration items.
 
-# Smoke tests: fast operational gate plus release evidence
-uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short
+`coverage combine` runs only in the fan-in job because runners do not share a
+filesystem. The local `make test-ci-*` targets remain sequential convenience
+commands and therefore use `--cov-append` within their single worktree.
 
-# Integration tests: requires Docker (testcontainers), runs in parallel.
-# Same restatement applies: "not bench and not perf" keeps perf-opt-in tests
-# that are also marked integration (e.g. test_audit_log_index_perf.py) out of
-# this lane (bu-y189y).
-uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ \
-  -q --maxfail=5 --tb=short -m "integration and not nightly and not bench and not perf" \
-  -n auto --dist loadfile --cov=src/butlers --cov-append
-```
+Each shard emits a unique non-hidden coverage artifact plus runner-local raw
+JUnit input. CI derives retained timing evidence from that input, but uploads
+only the sanitized JUnit metadata and top-duration table; it never uploads raw
+JUnit or test logs. Each named artifact is overwrite-safe so rerunning a failed
+job within one workflow run can recover instead of colliding with an immutable
+v4 artifact.
 
-2. `frontend` (Node 24, `frontend/`). Runs `npm ci`, `npm run lint`
+`frontend` (Node 24, `frontend/`) runs `npm ci`, `npm run lint`
    (`eslint .`), `npm run build` (`tsc -b && vite build`), and `npm run test`
    (`vitest run`).
 
-3. `frontend-e2e` (Node 24, `frontend/`). Installs Playwright browsers, builds,
+`frontend-e2e` (Node 24, `frontend/`) installs Playwright browsers, builds,
    and runs `npm run test:e2e`.
 
 Longer-running schema-matrix and migration tests run separately in the nightly

@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -102,7 +102,10 @@ test-e2e-frontend:
 QG_GATE = uv run python scripts/pytest_gate.py
 QG_LOG = .tmp/test-logs/pytest-$@-$$(date +%Y%m%d-%H%M%S)-$$$$.log
 
-# Mirrors the pytest-and-coverage portions of CI's `check` job. The smoke
+# Mirrors CI's pytest selectors and coverage semantics on one local filesystem.
+# Hosted CI runs the unit and integration lanes independently, then combines
+# their separate coverage artifacts in its fail-closed `check` fan-in; these
+# sequential convenience targets use --cov-append instead. The smoke
 # release-evidence step, static checks, and throwaway-runner Ryuk override stay
 # CI-only; local testcontainers keep Ryuk enabled for cleanup. These targets use
 # pytest_gate so a killed foreground process never looks green.
@@ -154,11 +157,11 @@ test-qg-parallel:
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
 
-# Regression guard for bu-m8cmk: fails if the CI "Integration tests
-# (testcontainers)" job's pytest path list would silently miss any
-# pytest.mark.integration test that exists elsewhere in the repo.
-check-integration-coverage:
-	uv run python3 scripts/check_integration_coverage.py
+# Fail-closed replacement for the former integration-only coverage guard.
+# Collects the real unit and integration marker populations and rejects stale,
+# missing, overlapping, or zero-selected checked-in file manifests.
+check-ci-test-shards:
+	uv run --no-sync python scripts/check_ci_test_shards.py
 
 # Non-negotiable #6: no em-dashes in doctrine or dashboard copy. Ratchets a
 # per-file baseline (scripts/em-dash-baseline.json) so pre-existing debt is
@@ -196,7 +199,7 @@ check-countable-tasks:
 check-duplicate-names:
 	python3 scripts/check_duplicate_toplevel_names.py
 
-check: lint check-for-update-joins check-integration-coverage check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names test
+check: lint check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

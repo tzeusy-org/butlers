@@ -1,0 +1,5 @@
+roster/education/tests/test_api.py
+roster/relationship/tests/test_entities_api.py
+roster/relationship/tests/test_entity_tabs.py
+tests/api/test_api_health_facts_reads.py
+tests/api/test_api_qa.py

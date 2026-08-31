@@ -8,8 +8,9 @@ Condensed from:
   + test_auth.py (10) + test_app.py (9) + test_app_integration.py (8)
   + test_audit.py (14) → ~20 tests (bu-egmz6) → 8 tests (bu-2yw2d)
 
-Keeps: health/CORS, auth gate (parametrized), middleware error codes,
-       sessions 200+404, SSE broadcast, audit 200, notifications 200, home 503.
+Keeps: CORS, middleware error codes, sessions 200+404, SSE broadcast, audit
+       200, notifications 200, home 503. Health and API-key coverage lives in
+       their dedicated smoke and middleware suites.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerNotFoundError,
@@ -37,54 +37,6 @@ pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(tz=UTC)
 _roster_root = Path(__file__).resolve().parents[2] / "roster"
-
-
-# ---------------------------------------------------------------------------
-# App / health / CORS / auth (parametrized)
-# ---------------------------------------------------------------------------
-
-
-async def test_health_returns_ok():
-    app = create_app()
-    app.state.ready = True  # simulate completed lifespan startup
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/health")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "ok"
-    assert isinstance(body.get("auth", {}).get("api_key_auth_enabled"), bool)
-    assert isinstance(body.get("auth", {}).get("export_secret_insecure_default"), bool)
-
-
-@pytest.mark.parametrize(
-    "api_key,headers,path,expected",
-    [
-        ("", {}, "/api/health", 200),  # auth disabled
-        ("secret", {}, "/api/butlers", 401),  # missing key → 401
-        ("secret", {}, "/api/health", 200),  # health bypasses auth
-    ],
-    ids=["auth-disabled", "missing-key-401", "health-bypasses-auth"],
-)
-async def test_auth_gate(api_key, headers, path, expected):
-    app = create_app(api_key=api_key)
-    app.state.ready = True  # simulate completed lifespan startup so health returns 200
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(path, headers=headers)
-    assert resp.status_code == expected
-
-
-async def test_valid_api_key_grants_access_to_protected_endpoint():
-    """A valid X-API-Key must not be rejected with 401 on a protected route."""
-    app = create_app(api_key="secret")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/butlers", headers={"X-API-Key": "secret"})
-    assert resp.status_code != 401
 
 
 # ---------------------------------------------------------------------------
