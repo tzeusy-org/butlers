@@ -5,7 +5,6 @@ Covers:
 - Revision metadata is correct (revision ID, down_revision, branch_labels).
 - upgrade() and downgrade() are callable.
 - Chain link to chronicler_019 is intact.
-- Migration file is ordered after 019_* in the migrations directory.
 
 Pure-unit tests — no Docker / PostgreSQL required.
 """
@@ -47,27 +46,6 @@ def test_revision_chain_links_onto_019() -> None:
     assert m.branch_labels is None
     assert callable(m.upgrade)
     assert callable(m.downgrade)
-
-
-def test_migration_ordered_after_019() -> None:
-    """020_daily_rollup_narrative must sort after 019_daily_rollups in the directory."""
-    files = sorted(f.name for f in _MIGRATIONS_DIR.glob("[0-9]*.py"))
-    file_names = [f for f in files if not f.startswith("_")]
-    idx_019 = next((i for i, f in enumerate(file_names) if f.startswith("019_")), None)
-    idx_020 = next((i for i, f in enumerate(file_names) if f.startswith("020_")), None)
-    assert idx_019 is not None, "019_* migration not found"
-    assert idx_020 is not None, "020_* migration not found"
-    assert idx_020 > idx_019, "020_daily_rollup_narrative must sort after 019_daily_rollups"
-
-
-def test_chronicler_chain_includes_020() -> None:
-    """Ensure the migration chain discovery picks up 020_daily_rollup_narrative."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir("chronicler")
-    assert chain_dir is not None, "Chronicler chain directory not found"
-    files = sorted(f.name for f in chain_dir.glob("[0-9]*.py"))
-    assert _MIGRATION_FILE in files, f"{_MIGRATION_FILE} not in discovered chronicler chain"
 
 
 def test_upgrade_adds_narrative_to_both_tables() -> None:

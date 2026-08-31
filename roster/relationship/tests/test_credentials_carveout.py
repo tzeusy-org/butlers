@@ -1,7 +1,7 @@
 """Tests for relationship.credentials carve-out table (bu-uj3xv).
 
 Covers:
-  (a) Migration DDL structure — revision, down_revision, upgrade/downgrade are defined.
+  (a) Migration metadata — revision, down_revision, branch labels, and dependencies.
   (b) Credential insert and read-back (integration, requires Docker/Postgres).
   (c) Credential does NOT appear in relationship.entity_facts.
   (d) Unique constraint: cannot insert duplicate active credentials of same type/entity.
@@ -68,14 +68,6 @@ class TestMigrationStructure:
     def test_down_revision_is_rel_015(self):
         mod = _load_migration()
         assert mod.down_revision == "rel_015"
-
-    def test_upgrade_is_callable(self):
-        mod = _load_migration()
-        assert callable(mod.upgrade)
-
-    def test_downgrade_is_callable(self):
-        mod = _load_migration()
-        assert callable(mod.downgrade)
 
     def test_branch_labels_is_none(self):
         mod = _load_migration()

@@ -1,7 +1,8 @@
 """Tests for spend (was: costs), pricing, and schedule spend API endpoints.
 
 Condensed: 22 → ~12 tests [bu-gg4y1]. Migrated from /api/costs → /api/spend [bu-dvb7i].
-Keeps: pricing config load (parametrized errors + tiered parse), pricing endpoint,
+Keeps: pricing config loading and tiered parsing (error paths remain covered in
+tests/api/test_pricing.py), pricing endpoint,
 spend summary aggregation + tiered pricing + unreachable fallback, daily sorting,
 by-schedule contract + zero-div guard.
 """
@@ -31,7 +32,6 @@ from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import (
     ModelPricing,
     PricingConfig,
-    PricingError,
     PricingTier,
     TieredModelPricing,
     load_pricing,
@@ -213,26 +213,6 @@ def test_load_pricing_flat_and_tiered(tmp_path):
     assert len(pricing.tiers) == 2
     assert pricing.tiers[1].context_threshold == 272_000
     assert cfg2.get_model_pricing("nonexistent-model") is None
-
-
-def test_load_pricing_missing_file_raises(tmp_path):
-    with pytest.raises(PricingError, match="not found"):
-        load_pricing(tmp_path / "nonexistent.toml")
-
-
-@pytest.mark.parametrize(
-    "content,match",
-    [
-        ("[models\ngarbage!!!", "Invalid TOML"),
-        ('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n', "Missing required field"),
-        ('[models]\n[models."m"]\ntiers = []\n', "non-empty array"),
-    ],
-)
-def test_load_pricing_malformed_content_raises(tmp_path, content, match):
-    p = tmp_path / "bad.toml"
-    p.write_text(content)
-    with pytest.raises(PricingError, match=match):
-        load_pricing(p)
 
 
 # ---------------------------------------------------------------------------
