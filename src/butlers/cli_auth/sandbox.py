@@ -16,6 +16,7 @@ import os
 import stat
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -35,6 +36,31 @@ _OPENCODE_GO_AUTHORITY_KEY = "opencode-go"
 
 class StagedOutputValidationError(RuntimeError):
     """Raised when a child-produced device-auth artifact is unsafe to consume."""
+
+
+class _DeviceAuthStageValidationReason(StrEnum):
+    """Fixed, value-free reasons for rejecting a device-auth child stage."""
+
+    invalid_policy = "invalid_policy"
+    missing_required_child = "missing_required_child"
+    unknown_child = "unknown_child"
+    directory_metadata = "directory_metadata"
+    auth_type = "auth_type"
+    auth_owner = "auth_owner"
+    auth_mode = "auth_mode"
+    auth_link_count = "auth_link_count"
+    auth_empty = "auth_empty"
+    auth_size = "auth_size"
+    auth_changed_during_read = "auth_changed_during_read"
+    stage_io = "stage_io"
+
+
+class _DeviceAuthStageValidationError(StagedOutputValidationError):
+    """Carry one fixed reason without exposing child-controlled detail."""
+
+    def __init__(self, reason: _DeviceAuthStageValidationReason) -> None:
+        super().__init__("device-auth staged output is invalid")
+        self.reason = reason
 
 
 class SandboxUnavailableError(RuntimeError):
@@ -320,6 +346,28 @@ def _require_private_directory(fd: int, *, expected_uid: int) -> None:
         raise StagedOutputValidationError("staged directory metadata is unsafe")
 
 
+def _require_device_auth_private_directory(fd: int, *, expected_uid: int) -> None:
+    """Validate one device-auth stage directory with a fixed safe failure reason."""
+    try:
+        metadata = os.fstat(fd)
+    except OSError as exc:
+        raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.stage_io) from exc
+
+    mode = stat.S_IMODE(metadata.st_mode)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != expected_uid or mode & 0o077:
+        raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.directory_metadata)
+
+
+def _device_auth_relative_parts(relative_output_path: Path) -> tuple[str, ...]:
+    """Validate a declared device-auth artifact path without leaking its detail."""
+    try:
+        return _validated_relative_parts(relative_output_path)
+    except StagedOutputValidationError as exc:
+        raise _DeviceAuthStageValidationError(
+            _DeviceAuthStageValidationReason.invalid_policy
+        ) from exc
+
+
 def _stage_tree_policy(relative_output_path: Path) -> _DeviceAuthStageTreePolicy:
     """Return the provider-declared scratch policy for one fixed artifact path."""
     for policy in _DEVICE_AUTH_STAGE_TREE_POLICIES:
@@ -342,21 +390,26 @@ def _validate_device_auth_stage_tree(
     scratch roots; the generic tree form prevents a provider from inheriting
     an implicit broad HOME allowlist.
     """
-    policy = _stage_tree_policy(relative_output_path)
-    artifact_parts = _validated_relative_parts(policy.credential_artifact)
-    if artifact_parts != _validated_relative_parts(relative_output_path):
-        raise StagedOutputValidationError("staged output path does not match its provider policy")
+    try:
+        policy = _stage_tree_policy(relative_output_path)
+        artifact_parts = _device_auth_relative_parts(policy.credential_artifact)
+        output_parts = _device_auth_relative_parts(relative_output_path)
+        scratch_parts = {_device_auth_relative_parts(root) for root in policy.scratch_roots}
+    except StagedOutputValidationError as exc:
+        raise _DeviceAuthStageValidationError(
+            _DeviceAuthStageValidationReason.invalid_policy
+        ) from exc
 
-    scratch_parts = {_validated_relative_parts(root) for root in policy.scratch_roots}
+    if artifact_parts != output_parts:
+        raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.invalid_policy)
+
     if any(
         scratch == artifact_parts
         or scratch[: len(artifact_parts)] == artifact_parts
         or artifact_parts[: len(scratch)] == scratch
         for scratch in scratch_parts
     ):
-        raise StagedOutputValidationError(
-            "provider scratch policy overlaps its credential artifact"
-        )
+        raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.invalid_policy)
 
     allowed_children: dict[tuple[str, ...], set[str]] = {}
     for allowed_path in (artifact_parts, *scratch_parts):
@@ -372,12 +425,14 @@ def _validate_device_auth_stage_tree(
         parent = (*parent, part)
 
     def _validate_directory(directory_fd: int, prefix: tuple[str, ...]) -> None:
-        _require_private_directory(directory_fd, expected_uid=expected_uid)
+        _require_device_auth_private_directory(directory_fd, expected_uid=expected_uid)
         children = set(os.listdir(directory_fd))
-        if not (
-            required_children.get(prefix, set()) <= children <= allowed_children.get(prefix, set())
-        ):
-            raise StagedOutputValidationError("staged HOME contains an undeclared artifact")
+        if required_children.get(prefix, set()) - children:
+            raise _DeviceAuthStageValidationError(
+                _DeviceAuthStageValidationReason.missing_required_child
+            )
+        if children - allowed_children.get(prefix, set()):
+            raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.unknown_child)
 
         for child in sorted(children):
             child_prefix = (*prefix, child)
@@ -391,7 +446,7 @@ def _validate_device_auth_stage_tree(
                 dir_fd=directory_fd,
             )
             try:
-                _require_private_directory(child_fd, expected_uid=expected_uid)
+                _require_device_auth_private_directory(child_fd, expected_uid=expected_uid)
                 if child_prefix not in scratch_parts:
                     _validate_directory(child_fd, child_prefix)
             finally:
@@ -418,11 +473,11 @@ def _read_expected_output_from_stage_fd(
     ``openat2`` resolution for this fixed path.  The returned bytes originate
     from the same descriptor whose link/owner/mode checks succeeded.
     """
-    parts = _validated_relative_parts(relative_output_path)
+    parts = _device_auth_relative_parts(relative_output_path)
     root_fd = os.dup(stage_home_fd)
     current_fd = root_fd
     try:
-        _require_private_directory(current_fd, expected_uid=expected_uid)
+        _require_device_auth_private_directory(current_fd, expected_uid=expected_uid)
         for part in parts[:-1]:
             next_fd = os.open(
                 part,
@@ -431,7 +486,7 @@ def _read_expected_output_from_stage_fd(
             )
             os.close(current_fd)
             current_fd = next_fd
-            _require_private_directory(current_fd, expected_uid=expected_uid)
+            _require_device_auth_private_directory(current_fd, expected_uid=expected_uid)
 
         output_fd = os.open(
             parts[-1],
@@ -440,28 +495,37 @@ def _read_expected_output_from_stage_fd(
         )
         try:
             metadata = os.fstat(output_fd)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != expected_uid
-                or stat.S_IMODE(metadata.st_mode) != _EXPECTED_DEVICE_AUTH_FILE_MODE
-                or metadata.st_nlink != 1
-                or metadata.st_size <= 0
-                or metadata.st_size > _MAX_DEVICE_AUTH_OUTPUT_BYTES
-            ):
-                raise StagedOutputValidationError("staged output metadata is unsafe")
+            if not stat.S_ISREG(metadata.st_mode):
+                raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.auth_type)
+            if metadata.st_uid != expected_uid:
+                raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.auth_owner)
+            if stat.S_IMODE(metadata.st_mode) != _EXPECTED_DEVICE_AUTH_FILE_MODE:
+                raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.auth_mode)
+            if metadata.st_nlink != 1:
+                raise _DeviceAuthStageValidationError(
+                    _DeviceAuthStageValidationReason.auth_link_count
+                )
+            if metadata.st_size <= 0:
+                raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.auth_empty)
+            if metadata.st_size > _MAX_DEVICE_AUTH_OUTPUT_BYTES:
+                raise _DeviceAuthStageValidationError(_DeviceAuthStageValidationReason.auth_size)
 
             chunks: list[bytes] = []
             remaining = metadata.st_size
             while remaining:
                 chunk = os.read(output_fd, min(remaining, 64 * 1024))
                 if not chunk:
-                    raise StagedOutputValidationError("staged output changed during read")
+                    raise _DeviceAuthStageValidationError(
+                        _DeviceAuthStageValidationReason.auth_changed_during_read
+                    )
                 chunks.append(chunk)
                 remaining -= len(chunk)
             # Reject a file that grew after its fstat size check rather than
             # accepting a prefix controlled by a still-running child.
             if os.read(output_fd, 1):
-                raise StagedOutputValidationError("staged output exceeds its checked size")
+                raise _DeviceAuthStageValidationError(
+                    _DeviceAuthStageValidationReason.auth_changed_during_read
+                )
             return b"".join(chunks)
         finally:
             os.close(output_fd)
@@ -500,9 +564,17 @@ def read_validated_staged_device_auth_output(
             relative_output_path,
             expected_uid=expected_uid,
         )
-    except (OSError, StagedOutputValidationError):
-        logger.warning("CLI auth sandbox: staged device-auth output validation failed")
-        return None
+    except _DeviceAuthStageValidationError as exc:
+        reason = exc.reason
+    except OSError:
+        reason = _DeviceAuthStageValidationReason.stage_io
+    except StagedOutputValidationError:
+        reason = _DeviceAuthStageValidationReason.invalid_policy
+
+    logger.warning(
+        "CLI auth sandbox: staged device-auth output validation failed reason=%s", reason
+    )
+    return None
 
 
 async def persist_staged_device_auth_output(

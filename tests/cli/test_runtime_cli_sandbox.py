@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -335,6 +336,7 @@ async def test_device_auth_rejects_unprojectable_openai_output_before_persistenc
 
 async def test_codex_device_auth_persists_only_strict_projected_authority(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """REQ-core-credentials-002: Codex persists auth while discarding its login log."""
     from butlers.cli_auth.sandbox import persist_staged_device_auth_output
@@ -374,17 +376,18 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     authority.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
     stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        persisted = await persist_staged_device_auth_output(
-            provider,
-            authority,
-            stage_home_fd=stage_home_fd,
-            relative_output_path=output.relative_to(stage_home),
-            expected_uid=os.geteuid(),
-            pid1_terminated=True,
-            payload_fds_closed=True,
-            codex_authority=authority,
-            expected_authority_value=None,
-        )
+        with caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"):
+            persisted = await persist_staged_device_auth_output(
+                provider,
+                authority,
+                stage_home_fd=stage_home_fd,
+                relative_output_path=output.relative_to(stage_home),
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+                codex_authority=authority,
+                expected_authority_value=None,
+            )
     finally:
         os.close(stage_home_fd)
 
@@ -395,10 +398,12 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     )
     assert provider.token_path is not None
     assert provider.token_path.read_text(encoding="utf-8") == expected_content
+    assert "staged device-auth output validation failed" not in caplog.text
 
 
 async def test_codex_device_auth_rejects_undeclared_stage_child_before_persistence(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """REQ-core-credentials-002: the login-log exception cannot widen the Codex HOME."""
     from butlers.cli_auth.sandbox import persist_staged_device_auth_output
@@ -420,7 +425,8 @@ async def test_codex_device_auth_rejects_undeclared_stage_child_before_persisten
     login_log = log_dir / "codex-login.log"
     login_log.write_text("allowed log cannot mask a peer", encoding="utf-8")
     os.chmod(login_log, 0o600)
-    peer_artifact = codex_home / "peer-artifact"
+    stage_child_sentinel = "UNDECLARED-STAGE-CHILD-MUST-NOT-REACH-LOGS"
+    peer_artifact = codex_home / stage_child_sentinel
     peer_artifact.write_text("must not cross the stage boundary", encoding="utf-8")
     os.chmod(peer_artifact, 0o600)
 
@@ -430,22 +436,58 @@ async def test_codex_device_auth_rejects_undeclared_stage_child_before_persisten
     authority.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
     stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        persisted = await persist_staged_device_auth_output(
-            provider,
-            authority,
-            stage_home_fd=stage_home_fd,
-            relative_output_path=output.relative_to(stage_home),
-            expected_uid=os.geteuid(),
-            pid1_terminated=True,
-            payload_fds_closed=True,
-            codex_authority=authority,
-            expected_authority_value=None,
-        )
+        with caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"):
+            persisted = await persist_staged_device_auth_output(
+                provider,
+                authority,
+                stage_home_fd=stage_home_fd,
+                relative_output_path=output.relative_to(stage_home),
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+                codex_authority=authority,
+                expected_authority_value=None,
+            )
     finally:
         os.close(stage_home_fd)
 
     assert persisted is False
     authority.store_codex_cli_auth_if_unchanged.assert_not_awaited()
+    assert "reason=unknown_child" in caplog.text
+    assert stage_child_sentinel not in caplog.text
+
+
+def test_device_auth_stage_io_reason_is_value_free(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-core-credentials-002: stage I/O never reaches the diagnostic log."""
+    from butlers.cli_auth.sandbox import read_validated_staged_device_auth_output
+
+    stage_home, output = _make_stage_output(tmp_path / "stage-home")
+    stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
+    io_sentinel = "STAGE-IO-DETAIL-MUST-NOT-REACH-LOGS"
+    try:
+        with (
+            patch(
+                "butlers.cli_auth.sandbox._validate_device_auth_stage_tree",
+                side_effect=OSError(io_sentinel),
+            ),
+            caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"),
+        ):
+            result = read_validated_staged_device_auth_output(
+                stage_home_fd=stage_home_fd,
+                relative_output_path=output.relative_to(stage_home),
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+            )
+    finally:
+        os.close(stage_home_fd)
+
+    assert result is None
+    assert "reason=stage_io" in caplog.text
+    assert io_sentinel not in caplog.text
 
 
 async def test_codex_device_auth_rejects_login_log_without_auth_before_persistence(
@@ -1000,6 +1042,7 @@ async def test_device_auth_session_does_not_persist_when_sandbox_finalization_fa
     await session.wait()
 
     assert session.state == "failed"
+    assert session.message == "CLI authentication result could not be validated safely."
     assert events == ["launch", "finalize"]
     on_success.assert_not_awaited()
 
