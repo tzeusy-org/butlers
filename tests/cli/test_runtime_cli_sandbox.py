@@ -369,6 +369,11 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     login_log.parent.mkdir(mode=0o700)
     login_log.write_text("opaque disposable login trace", encoding="utf-8")
     os.chmod(login_log, 0o600)
+    tmp_sentinel = "opaque-disposable-tmp-state"
+    tmp_file = output.parent / "tmp" / "state"
+    tmp_file.parent.mkdir(mode=0o700)
+    tmp_file.write_text(tmp_sentinel, encoding="utf-8")
+    os.chmod(tmp_file, 0o600)
 
     provider = replace(PROVIDERS["codex"], token_path=tmp_path / "canonical" / "auth.json")
     authority = MagicMock()
@@ -398,6 +403,7 @@ async def test_codex_device_auth_persists_only_strict_projected_authority(
     )
     assert provider.token_path is not None
     assert provider.token_path.read_text(encoding="utf-8") == expected_content
+    assert tmp_sentinel not in provider.token_path.read_text(encoding="utf-8")
     assert "staged device-auth output validation failed" not in caplog.text
 
 
@@ -425,6 +431,10 @@ async def test_codex_device_auth_rejects_undeclared_stage_child_before_persisten
     login_log = log_dir / "codex-login.log"
     login_log.write_text("allowed log cannot mask a peer", encoding="utf-8")
     os.chmod(login_log, 0o600)
+    tmp_file = codex_home / "tmp" / "state"
+    tmp_file.parent.mkdir(mode=0o700)
+    tmp_file.write_text("allowed tmp cannot mask a peer", encoding="utf-8")
+    os.chmod(tmp_file, 0o600)
     stage_child_sentinel = "UNDECLARED-STAGE-CHILD-MUST-NOT-REACH-LOGS"
     peer_artifact = codex_home / stage_child_sentinel
     peer_artifact.write_text("must not cross the stage boundary", encoding="utf-8")
@@ -455,6 +465,75 @@ async def test_codex_device_auth_rejects_undeclared_stage_child_before_persisten
     authority.store_codex_cli_auth_if_unchanged.assert_not_awaited()
     assert "reason=unknown_child" in caplog.text
     assert stage_child_sentinel not in caplog.text
+
+
+def test_codex_device_auth_rejects_public_tmp_scratch(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-core-credentials-002: the new tmp root remains private to its child."""
+    from butlers.cli_auth.sandbox import read_validated_staged_device_auth_output
+
+    stage_home = tmp_path / "stage-home"
+    stage_home.mkdir(mode=0o700)
+    codex_home = stage_home / ".codex"
+    codex_home.mkdir(mode=0o700)
+    output = codex_home / "auth.json"
+    output.write_bytes(b"{}")
+    os.chmod(output, 0o600)
+    tmp_dir = codex_home / "tmp"
+    tmp_dir.mkdir(mode=0o755)
+
+    stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"):
+            result = read_validated_staged_device_auth_output(
+                stage_home_fd=stage_home_fd,
+                relative_output_path=output.relative_to(stage_home),
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+            )
+    finally:
+        os.close(stage_home_fd)
+
+    assert result is None
+    assert "reason=directory_metadata" in caplog.text
+
+
+def test_codex_device_auth_rejects_linked_tmp_scratch(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-core-credentials-002: tmp cannot redirect the parent outside its stage."""
+    from butlers.cli_auth.sandbox import read_validated_staged_device_auth_output
+
+    stage_home = tmp_path / "stage-home"
+    stage_home.mkdir(mode=0o700)
+    codex_home = stage_home / ".codex"
+    codex_home.mkdir(mode=0o700)
+    output = codex_home / "auth.json"
+    output.write_bytes(b"{}")
+    os.chmod(output, 0o600)
+    target = tmp_path / "tmp-target"
+    target.mkdir(mode=0o700)
+    (codex_home / "tmp").symlink_to(target, target_is_directory=True)
+
+    stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"):
+            result = read_validated_staged_device_auth_output(
+                stage_home_fd=stage_home_fd,
+                relative_output_path=output.relative_to(stage_home),
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+            )
+    finally:
+        os.close(stage_home_fd)
+
+    assert result is None
+    assert "reason=stage_io" in caplog.text
 
 
 def test_device_auth_stage_io_reason_is_value_free(
@@ -492,6 +571,7 @@ def test_device_auth_stage_io_reason_is_value_free(
 
 async def test_codex_device_auth_rejects_login_log_without_auth_before_persistence(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """REQ-core-credentials-002: disposable Codex logs never substitute for auth output."""
     from butlers.cli_auth.sandbox import persist_staged_device_auth_output
@@ -504,6 +584,11 @@ async def test_codex_device_auth_rejects_login_log_without_auth_before_persisten
     login_log.parent.mkdir(mode=0o700)
     login_log.write_text("no credential artifact", encoding="utf-8")
     os.chmod(login_log, 0o600)
+    tmp_sentinel = "tmp-without-auth-must-not-persist"
+    tmp_file = codex_home / "tmp" / "state"
+    tmp_file.parent.mkdir(mode=0o700)
+    tmp_file.write_text(tmp_sentinel, encoding="utf-8")
+    os.chmod(tmp_file, 0o600)
 
     provider = replace(PROVIDERS["codex"], token_path=tmp_path / "canonical" / "auth.json")
     authority = MagicMock()
@@ -511,22 +596,25 @@ async def test_codex_device_auth_rejects_login_log_without_auth_before_persisten
     authority.store_codex_cli_auth_if_unchanged = AsyncMock(return_value=True)
     stage_home_fd = os.open(stage_home, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        persisted = await persist_staged_device_auth_output(
-            provider,
-            authority,
-            stage_home_fd=stage_home_fd,
-            relative_output_path=Path(".codex") / "auth.json",
-            expected_uid=os.geteuid(),
-            pid1_terminated=True,
-            payload_fds_closed=True,
-            codex_authority=authority,
-            expected_authority_value=None,
-        )
+        with caplog.at_level(logging.WARNING, logger="butlers.cli_auth.sandbox"):
+            persisted = await persist_staged_device_auth_output(
+                provider,
+                authority,
+                stage_home_fd=stage_home_fd,
+                relative_output_path=Path(".codex") / "auth.json",
+                expected_uid=os.geteuid(),
+                pid1_terminated=True,
+                payload_fds_closed=True,
+                codex_authority=authority,
+                expected_authority_value=None,
+            )
     finally:
         os.close(stage_home_fd)
 
     assert persisted is False
     authority.store_codex_cli_auth_if_unchanged.assert_not_awaited()
+    assert "reason=missing_required_child" in caplog.text
+    assert tmp_sentinel not in caplog.text
 
 
 @pytest.mark.parametrize(

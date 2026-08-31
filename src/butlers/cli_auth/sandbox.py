@@ -76,10 +76,10 @@ class _DeviceAuthStageTreePolicy:
     scratch_roots: tuple[Path, ...] = ()
 
 
-# Codex's device-code flow writes its private `log/codex-login.log` alongside
-# the auth artifact. The log root stays disposable: validation never reads or
-# persists its child-created bytes. A new provider (or verified CLI requirement)
-# must declare its exact disposable roots here before they can coexist with the
+# Codex's device-code flow writes private log and tmp directories alongside the
+# auth artifact. Both roots stay disposable: validation never reads or persists
+# their child-created bytes. A new provider (or verified CLI requirement) must
+# declare its exact disposable roots here before they can coexist with the
 # credential artifact in a staged HOME.
 _DEVICE_AUTH_STAGE_TREE_POLICIES = (
     _DeviceAuthStageTreePolicy(
@@ -89,7 +89,7 @@ _DEVICE_AUTH_STAGE_TREE_POLICIES = (
     _DeviceAuthStageTreePolicy(
         provider_name="codex",
         credential_artifact=Path(".codex") / "auth.json",
-        scratch_roots=(Path(".codex") / "log",),
+        scratch_roots=(Path(".codex") / "log", Path(".codex") / "tmp"),
     ),
 )
 
