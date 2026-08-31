@@ -205,7 +205,7 @@ describe("SettingsModelsPage — verify-all result", () => {
   it("reports unprobed models as unavailable rather than failed, because an outage is not a verdict", () => {
     const mutate = vi.fn((_unused, options) => {
       options.onSuccess({
-        data: { accepted: true, total: 2, ok: 1, failed: 0, skipped: 0, unavailable: 1 },
+        data: { accepted: true, total: 2, ok: 1, failed: 0, unavailable: 1 },
         meta: {},
       });
     });

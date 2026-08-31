@@ -5029,7 +5029,6 @@ export interface VerifyAllResult {
   total: number;
   ok: number;
   failed: number;
-  skipped: number;
   /** Models the runtime-probe control plane could not probe at all. Their
    *  existing verification evidence is left untouched. */
   unavailable: number;

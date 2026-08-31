@@ -11,6 +11,7 @@ server sort order, failures tail.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -328,8 +329,80 @@ async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
     assert route_calls[0].kwargs["result"] == "success"
 
 
-async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeypatch):
-    """POST /api/settings/models/verify-all is accepted once the 60s window passes."""
+async def test_verify_all_pool_failure_does_not_consume_rate_limit(
+    app, audit_append_spy, monkeypatch
+):
+    """A rejected run remains eligible for retry once the pool is available."""
+    import butlers.api.routers.model_settings as _ms
+
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+
+    app, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db.credential_shared_pool.side_effect = [KeyError("No shared pool"), mock_pool]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        rejected = await client.post("/api/settings/models/verify-all")
+        accepted = await client.post("/api/settings/models/verify-all")
+
+    assert rejected.status_code == 503
+    assert accepted.status_code == 200
+    assert accepted.json()["data"] == {
+        "accepted": True,
+        "total": 0,
+        "ok": 0,
+        "failed": 0,
+        "unavailable": 0,
+    }
+
+
+async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app, monkeypatch):
+    """A second request is rejected while the accepted run is still running."""
+    import butlers.api.routers.model_settings as _ms
+
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setattr(_ms, "_verify_all_in_flight", False)
+    _, mock_pool = _app_with_pool(app)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_verify_all(pool, *, audit_actor):
+        assert pool is mock_pool
+        assert audit_actor == "owner"
+        started.set()
+        await release.wait()
+        return _ms.VerifyAllResult(
+            accepted=True,
+            total=0,
+            ok=0,
+            failed=0,
+            unavailable=0,
+        )
+
+    monkeypatch.setattr(_ms, "run_verify_all_models", blocked_verify_all)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            concurrent = await client.post("/api/settings/models/verify-all")
+        finally:
+            release.set()
+        first = await first_task
+
+    assert concurrent.status_code == 429
+    assert first.status_code == 200
+
+
+async def test_verify_all_accepted_after_interval_returns_current_result_shape(
+    app, audit_append_spy, monkeypatch
+):
+    """The accepted API response exposes only meaningful verification buckets."""
     import butlers.api.routers.model_settings as _ms
 
     # Simulate last run well in the past
@@ -344,7 +417,13 @@ async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeyp
         resp = await client.post("/api/settings/models/verify-all")
 
     assert resp.status_code == 200
-    assert resp.json()["data"]["accepted"] is True
+    assert resp.json()["data"] == {
+        "accepted": True,
+        "total": 0,
+        "ok": 0,
+        "failed": 0,
+        "unavailable": 0,
+    }
 
 
 # ---------------------------------------------------------------------------

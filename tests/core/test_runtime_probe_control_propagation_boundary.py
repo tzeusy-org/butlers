@@ -26,6 +26,16 @@ pytestmark = pytest.mark.unit
 
 _PACKAGE = "butlers.core.runtime_probe_control"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_MODEL_SETTINGS_SPEC = _REPO_ROOT / "openspec" / "specs" / "dashboard-model-settings" / "spec.md"
+_ACTIVE_MODEL_SETTINGS_DELTA = (
+    _REPO_ROOT
+    / "openspec"
+    / "changes"
+    / "harden-runtime-auth-and-breaker-attention"
+    / "specs"
+    / "dashboard-model-settings"
+    / "spec.md"
+)
 
 #: Everywhere the control plane may legitimately be reached from:
 #:
@@ -71,6 +81,21 @@ def _control_plane_importers() -> set[Path]:
         if any(name.startswith(_PACKAGE) for name in _imported_modules(path.read_text())):
             importers.add(path.relative_to(_REPO_ROOT))
     return importers
+
+
+def _requirement_block(spec: str, title: str) -> str:
+    """Return one requirement body without conflating neighbouring requirements."""
+    marker = f"### Requirement: {title}\n"
+    _, remainder = spec.split(marker, 1)
+    return remainder.split("\n### Requirement:", 1)[0]
+
+
+def _scenario_names(requirement: str) -> list[str]:
+    return [
+        line.removeprefix("#### Scenario: ")
+        for line in requirement.splitlines()
+        if line.startswith("#### Scenario: ")
+    ]
 
 
 def test_the_enumeration_actually_finds_the_known_importers() -> None:
@@ -139,3 +164,34 @@ def test_model_settings_no_longer_holds_a_local_verification_adapter() -> None:
     assert present == []
     assert hasattr(model_settings, "run_verify_all_models")
     assert model_settings._VERIFY_ALL_CONCURRENCY == 8
+
+
+def test_active_verify_all_delta_matches_the_signed_control_plane_cutover() -> None:
+    """REQ-dashboard-model-settings-001 keeps Verify-all outside dashboard adapters."""
+    baseline = _MODEL_SETTINGS_SPEC.read_text(encoding="utf-8")
+    delta = _ACTIVE_MODEL_SETTINGS_DELTA.read_text(encoding="utf-8")
+    source = (_REPO_ROOT / "src" / "butlers" / "api" / "routers" / "model_settings.py").read_text(
+        encoding="utf-8"
+    )
+
+    for title in ("Catalog Verify-All API", "Hourly Automated Verification Sweep"):
+        canonical = _requirement_block(baseline, title)
+        changed = _requirement_block(delta, title)
+        assert set(_scenario_names(canonical)).issubset(_scenario_names(changed))
+        assert "CredentialStore" not in changed
+        assert "dashboard-local" not in changed.lower()
+        assert "construct a Codex adapter" not in changed
+        assert "switchboard" in changed.lower()
+        assert "signed" in changed.lower()
+        assert "runtime-probe" in changed.lower()
+
+    catalog_changed = _requirement_block(delta, "Catalog Verify-All API")
+    assert "- **WHEN** `POST /api/settings/models/verify-all` is accepted" in catalog_changed
+
+    verify_all_source = source.split("async def run_verify_all_models(", 1)[1].split(
+        "# ---------------------------------------------------------------------------\n# POST /api/settings/models/verify-all",
+        1,
+    )[0]
+    assert "client = _probe_client(caller)" in verify_all_source
+    assert 'await client.probe(row["id"])' in verify_all_source
+    assert "CredentialStore" not in verify_all_source

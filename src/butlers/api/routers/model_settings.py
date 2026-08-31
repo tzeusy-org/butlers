@@ -53,6 +53,10 @@ _COMPLEXITY_TIERS = ("reasoning", "workhorse", "cheap", "specialty", "local", "l
 _verify_all_last_run: float = 0.0
 _VERIFY_ALL_MIN_INTERVAL_S = 60.0
 _VERIFY_ALL_CONCURRENCY = 8
+# This flag is checked and set before the first await in the route, so a
+# concurrent request is rejected immediately instead of waiting behind a
+# long-running verification sweep.
+_verify_all_in_flight = False
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -128,7 +132,6 @@ class VerifyAllResult(BaseModel):
     total: int = 0
     ok: int = 0
     failed: int = 0
-    skipped: int = 0
     unavailable: int = 0
 
 
@@ -731,8 +734,6 @@ async def run_verify_all_models(
     * ``failed`` --- the probe ran and the model did not;
     * ``unavailable`` --- the control plane could not run a probe at all
       (no signer, no readiness, busy, timed out, replayed, or refused);
-    * ``skipped`` --- nothing to probe.
-
     Only the first two are evidence about a model, and only the coordinator
     writes them.  Everything else leaves the catalog's verification history
     exactly as it was, which is the difference between "this model is broken"
@@ -754,7 +755,7 @@ async def run_verify_all_models(
 
     if not rows:
         await audit.append(pool, audit_actor, "models.verify_all", result="success")
-        return VerifyAllResult(accepted=True, total=0, ok=0, failed=0, skipped=0)
+        return VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
 
     client = _probe_client(caller)
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
@@ -793,13 +794,12 @@ async def run_verify_all_models(
         total=len(results),
         ok=ok_count,
         failed=failed_count,
-        skipped=0,
         unavailable=unavailable_count,
     )
 
 
 # ---------------------------------------------------------------------------
-# POST /api/settings/models/verify-all — parallel 1-token verification
+# POST /api/settings/models/verify-all — parallel signed runtime-probe requests
 # ---------------------------------------------------------------------------
 
 
@@ -807,25 +807,33 @@ async def run_verify_all_models(
 async def verify_all_models(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[VerifyAllResult]:
-    """Issue a 1-token completion against every enabled model in parallel.
+    """Request a signed Switchboard runtime probe for every enabled model in parallel.
 
     Rate-limited to once per minute system-wide: subsequent calls within the
     window return HTTP 429. Delegates the actual verification work to
     ``run_verify_all_models`` (shared with the hourly automated sweep).
+    Switchboard performs runtime construction and verification persistence; this
+    route returns only the coordinator's summary.
     """
-    global _verify_all_last_run  # noqa: PLW0603
+    global _verify_all_in_flight, _verify_all_last_run  # noqa: PLW0603
 
     now = time.monotonic()
-    if now - _verify_all_last_run < _VERIFY_ALL_MIN_INTERVAL_S:
+    if _verify_all_in_flight or now - _verify_all_last_run < _VERIFY_ALL_MIN_INTERVAL_S:
         raise HTTPException(
             status_code=429,
             detail="verify-all was called recently — wait at least 60 seconds between runs",
         )
-    _verify_all_last_run = now
 
-    pool = _shared_pool(db)
-    result = await run_verify_all_models(pool, audit_actor="owner")
-    return ApiResponse[VerifyAllResult](data=result)
+    # Admission is synchronous on the event loop, so no second request can
+    # pass this check before the first one marks itself in flight.
+    _verify_all_in_flight = True
+    try:
+        pool = _shared_pool(db)
+        result = await run_verify_all_models(pool, audit_actor="owner")
+        _verify_all_last_run = now
+        return ApiResponse[VerifyAllResult](data=result)
+    finally:
+        _verify_all_in_flight = False
 
 
 # ---------------------------------------------------------------------------
