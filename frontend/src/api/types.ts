@@ -8779,31 +8779,6 @@ export interface SecretsProbeResult {
 }
 
 /**
- * Content-blind projection of a probe result, as returned by the
- * per-credential detail reads. Maps to CredentialTestOutcome in secrets_v2.py.
- *
- * The probe's free-text `message` is deliberately absent: it can echo a
- * provider response or the credential's own content.
- */
-export interface SecretsProbeOutcome {
-  ok: boolean;
-  code: number | null;
-  at: string | null;
-  latency_ms?: number | null;
-}
-
-/**
- * One audit-log entry without its free-text `note`, as returned by the
- * per-credential detail reads. Maps to CredentialAuditOutcome in
- * secrets_v2.py. `ts` is pre-formatted server-side.
- */
-export interface SecretsAuditOutcome {
-  ts: string;
-  actor: string;
-  action: string;
-}
-
-/**
  * One credential's outcome from a probe-all sweep (POST /api/secrets/probe-all).
  *
  * `key` is the canonical credential key ("u:google" / "s:KEY" / "c:cli-auth/codex")
@@ -8896,18 +8871,21 @@ export interface SecretsSystemRaw {
 }
 
 /**
- * Content-blind probe outcome for a user credential (bu-iph56).
+ * Content-blind probe outcome for a credential (bu-iph56).
  *
  * Maps to CredentialTestOutcome in the backend secrets_v2 router. The
  * distinction from `SecretsProbeResult` is deliberate and load-bearing: this
  * shape has no `message`, because a probe message can echo a provider response
  * or the credential's own content. Do not widen it to include one.
+ *
+ * The backend serialises `code` and `at` on every response, including when
+ * their values are null; neither detail route excludes unset or null fields.
  */
 export interface SecretsCredentialTestOutcome {
   ok: boolean;
-  code?: number | null;
+  code: number | null;
   /** Pre-formatted relative timestamp (e.g. "14:21 today"). */
-  at?: string | null;
+  at: string | null;
   latency_ms?: number | null;
 }
 
@@ -8926,7 +8904,7 @@ export interface SecretsCredentialCapabilityOutcome {
 }
 
 /**
- * One audit-log entry for a user credential, without its free-text `note`
+ * One audit-log entry for a credential, without its free-text `note`
  * (bu-iph56).
  *
  * Maps to CredentialAuditOutcome in the backend secrets_v2 router. `note` is
@@ -9186,8 +9164,8 @@ export interface SecretsSystemCredentialDetail {
   last_verified: string | null;
   used_by: string[];
 
-  test: SecretsProbeOutcome | null;
-  audit: SecretsAuditOutcome[];
+  test: SecretsCredentialTestOutcome | null;
+  audit: SecretsCredentialAuditOutcome[];
 
   /** Butler schema that owns this row. */
   butler: string;
@@ -9218,7 +9196,7 @@ export interface SecretsCliDetail {
   capabilities_required: string[];
   capabilities_granted: string[];
 
-  test: SecretsProbeOutcome | null;
+  test: SecretsCredentialTestOutcome | null;
 }
 
 /**
