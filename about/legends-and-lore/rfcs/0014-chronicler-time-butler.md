@@ -121,7 +121,7 @@ Source declarations (v1, as amended):
 | Source | Status | Read surface |
 |---|---|---|
 | `core.sessions` | supported | `public.sessions` (cross-butler view) |
-| `google_calendar.completed` | supported | calendar module completed-instance view |
+| `google_calendar.completed` | supported | `<butler_schema>.calendar_event_instances` + `<butler_schema>.calendar_events` + `<butler_schema>.calendar_sources` + optional `<butler_schema>.calendar_event_entities` + `public.google_accounts` |
 | `spotify.session_summary` | deferred pending durable evidence surface | — |
 | `steam.play_history` | planned | — |
 | `owntracks.points` | planned | — |

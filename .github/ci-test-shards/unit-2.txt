@@ -176,6 +176,7 @@ tests/jobs/test_relationship_pending_actions_curation.py
 tests/jobs/test_secrets_lifecycle.py
 tests/migrations/test_calendar_event_columns_and_entities.py
 tests/migrations/test_calendar_search_trgm_migration.py
+tests/migrations/test_chronicler_calendar_read_surface_migration.py
 tests/migrations/test_contact_predicate_seed_repair_migration.py
 tests/migrations/test_drop_quick_facts_migration.py
 tests/migrations/test_drop_source_links_contacts_fk_migration.py

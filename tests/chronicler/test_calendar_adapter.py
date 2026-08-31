@@ -29,8 +29,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.chronicler.adapters.base import AdapterResult
 from butlers.chronicler.adapters.calendar import (
     BUTLER_MANAGED_SOURCE_KINDS,
+    CALENDAR_READ_SURFACE_TABLES,
     EPISODE_TYPE_SCHEDULED_BLOCK,
     SOURCE_NAME,
     CalendarCompletedAdapter,
@@ -292,9 +294,18 @@ def test_butler_managed_source_kinds_includes_scheduler_and_reminders() -> None:
     assert "internal_reminders" in BUTLER_MANAGED_SOURCE_KINDS
 
 
-def _make_pool_with_rows(rows: list[_Row] | None, *, table_exists: bool = True) -> AsyncMock:
+def _make_pool_with_rows(
+    rows: list[_Row] | None,
+    *,
+    visible_tables: set[str] | None = None,
+) -> AsyncMock:
     conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=table_exists)
+    visible = set(CALENDAR_READ_SURFACE_TABLES) if visible_tables is None else visible_tables
+
+    async def _missing_tables(_sql: str, _schema: str, required_tables: list[str]) -> list[str]:
+        return sorted(set(required_tables) - visible)
+
+    conn.fetchval = AsyncMock(side_effect=_missing_tables)
     conn.fetch = AsyncMock(return_value=rows if rows is not None else [])
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
@@ -318,6 +329,151 @@ async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
     assert "INNER JOIN" in sql.upper() or "JOIN" in sql.upper(), (
         "calendar_sources join must be present"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "visible_tables",
+    [
+        set(),
+        {"calendar_event_instances"},
+        {"calendar_event_instances", "calendar_events"},
+    ],
+)
+async def test_fetch_instances_skips_incomplete_calendar_read_surface(
+    visible_tables: set[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The adapter must preflight every table used by its projection query.
+
+    ``calendar_event_instances`` can be present or visible while one of the
+    joined ``calendar_events`` / ``calendar_sources`` tables is absent or not
+    readable by Chronicler's restricted runtime role.  Treat that partial
+    surface like an unavailable optional schema instead of issuing a query
+    that is guaranteed to fail and emit an error-level log.
+    """
+    pool = _make_pool_with_rows([], visible_tables=visible_tables)
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+
+    caplog.set_level("WARNING", logger="butlers.chronicler.adapters.calendar")
+    rows = await adapter._fetch_instances(pool, "test_schema", None, datetime.now(UTC))
+
+    assert rows is None
+    conn = pool.acquire.return_value._obj
+    availability_call = conn.fetchval.call_args
+    availability_sql = availability_call.args[0]
+    assert "unnest($2::text[])" in availability_sql
+    assert availability_call.args[2] == list(CALENDAR_READ_SURFACE_TABLES)
+    warning = next(record for record in caplog.records if record.levelname == "WARNING")
+    missing_text = warning.message.split("missing or unreadable tables: ", 1)[1]
+    missing_text = missing_text.split(" —", 1)[0]
+    assert set(missing_text.split(", ")) == set(CALENDAR_READ_SURFACE_TABLES) - visible_tables
+    conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_project_marks_source_skipped_when_every_schema_is_unavailable() -> None:
+    adapter = CalendarCompletedAdapter(butler_schemas=("schema_a", "schema_b"))
+
+    with patch.object(adapter, "_fetch_instances", new=AsyncMock(return_value=None)):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    assert result.skipped is True
+    assert result.skipped_reason == "calendar read surface unavailable on all configured schemas"
+    assert result.rows_projected == 0
+
+
+@pytest.mark.unit
+async def test_mixed_unavailable_schema_does_not_advance_or_persist_checkpoint() -> None:
+    """A partial fan-out must replay the unavailable schema after recovery."""
+    since = _NOW - timedelta(days=1)
+    checkpoint = MagicMock(watermark=since, watermark_id=17)
+    row = _make_row(ends_at=_NOW)
+    adapter = CalendarCompletedAdapter(butler_schemas=("readable", "unreadable"))
+    chronicler_pool = MagicMock()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.base.get_checkpoint",
+            new=AsyncMock(return_value=checkpoint),
+        ),
+        patch(
+            "butlers.chronicler.adapters.base.mark_source_active", new=AsyncMock()
+        ) as mark_active,
+        patch(
+            "butlers.chronicler.adapters.base.upsert_checkpoint", new=AsyncMock()
+        ) as checkpoint_writer,
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(side_effect=([row], None)),
+        ),
+        patch.object(
+            adapter,
+            "_resolve_schema_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            adapter,
+            "_fetch_event_entities",
+            new=AsyncMock(return_value={}),
+        ),
+        patch.object(adapter, "_project_row", new=AsyncMock()) as project_row,
+    ):
+        result = await adapter.run(pool=MagicMock(), chronicler_pool=chronicler_pool)
+
+    assert result.skipped is True
+    assert result.skipped_reason == (
+        "calendar read surface unavailable on one or more configured schemas"
+    )
+    assert result.rows_projected == 1
+    assert result.watermark == since
+    assert result.watermark_id == 17
+    project_row.assert_awaited_once()
+    mark_active.assert_awaited_once_with(
+        chronicler_pool,
+        SOURCE_NAME,
+        active=False,
+        inactive_reason=result.skipped_reason,
+    )
+    checkpoint_writer.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_run_marks_source_inactive_when_calendar_surface_is_unavailable() -> None:
+    adapter = CalendarCompletedAdapter(butler_schemas=("schema_a",))
+    skipped = AdapterResult(
+        source_name=SOURCE_NAME,
+        skipped=True,
+        skipped_reason="calendar read surface unavailable on all configured schemas",
+    )
+    chronicler_pool = MagicMock()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.base.get_checkpoint",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.chronicler.adapters.base.mark_source_active", new=AsyncMock()
+        ) as mark_active,
+        patch("butlers.chronicler.adapters.base.upsert_checkpoint", new=AsyncMock()) as checkpoint,
+        patch.object(adapter, "project", new=AsyncMock(return_value=skipped)),
+    ):
+        result = await adapter.run(pool=MagicMock(), chronicler_pool=chronicler_pool)
+
+    assert result is skipped
+    mark_active.assert_awaited_once_with(
+        chronicler_pool,
+        SOURCE_NAME,
+        active=False,
+        inactive_reason=skipped.skipped_reason,
+    )
+    checkpoint.assert_not_awaited()
 
 
 @pytest.mark.unit

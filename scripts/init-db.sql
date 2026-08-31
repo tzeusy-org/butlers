@@ -454,6 +454,10 @@ BEGIN
     -- Approved evidence surfaces (v1):
     --   {schema}.sessions               — CoreSessionsAdapter (all butler schemas)
     --   {schema}.calendar_event_instances — CalendarCompletedAdapter (optional)
+    --   {schema}.calendar_events + {schema}.calendar_sources — required
+    --                                      companions for the calendar join
+    --   {schema}.calendar_event_entities — optional participant resolution
+    --   public.google_accounts          — optional calendar-owner resolution
     --   relationship.entity_facts       — CoreSessionsAdapter contact resolution
     --                                      (bu-hjo3i) + comms.message_bursts
     --                                      participant resolution (bu-jc6htw.1)
@@ -466,6 +470,10 @@ BEGIN
     -- Adding a new evidence surface requires an explicit grant here plus a
     -- compatibility declaration in src/butlers/chronicler/contracts.py.
     -- Do NOT restore GRANT SELECT ON ALL TABLES — that violates RFC 0014 §D1.
+    -- init-db runs before Alembic's specialist core migrations on a fresh
+    -- install. Its guarded calendar grants therefore cover existing/legacy
+    -- tables and reruns; core_207 is the post-calendar convergence point for
+    -- fresh installs and must retain the same explicit allowlist.
     FOR _idx IN 1 .. array_length(_butler_schemas, 1) LOOP
         _schema := _butler_schemas[_idx];
         IF _schema = 'chronicler' THEN
@@ -491,6 +499,33 @@ BEGIN
                 'GRANT SELECT ON TABLE %I.calendar_event_instances TO butler_chronicler_rw',
                 _schema
             );
+        END IF;
+        -- calendar_events + calendar_sources (required join companions for
+        -- CalendarCompletedAdapter's completed-instance projection).
+        FOREACH _table IN ARRAY ARRAY[
+            'calendar_events',
+            'calendar_sources',
+            'calendar_event_entities'
+        ] LOOP
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = _schema AND table_name = _table
+            ) THEN
+                EXECUTE format(
+                    'GRANT SELECT ON TABLE %I.%I TO butler_chronicler_rw',
+                    _schema,
+                    _table
+                );
+            END IF;
+        END LOOP;
+        -- public.google_accounts (optional calendar-owner resolution).  Keep
+        -- this explicit alongside the calendar surface grants so a bootstrap
+        -- does not depend on the broad shared-public role block above.
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'google_accounts'
+        ) THEN
+            EXECUTE 'GRANT SELECT ON TABLE public.google_accounts TO butler_chronicler_rw';
         END IF;
         -- entity_facts (CoreSessionsAdapter contact resolution + the
         -- comms.message_bursts participant resolution — relationship schema only)

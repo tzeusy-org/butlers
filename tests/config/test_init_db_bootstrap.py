@@ -1372,6 +1372,8 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # general.calendar_event_instances — approved evidence surface
             conn.execute(
                 text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_instances ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
                     "  event_id UUID,"
@@ -1383,6 +1385,36 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
                     "  timezone TEXT,"
                     "  metadata JSONB,"
                     "  updated_at TIMESTAMPTZ"
+                    ")"
+                )
+            )
+            # The completed-instance projection also reads these join
+            # companions; each is an approved Chronicler read surface.
+            conn.execute(
+                text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
+                    "CREATE TABLE general.calendar_sources ("
+                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+                    ")"
+                )
+            )
+            conn.execute(
+                text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
+                    "CREATE TABLE general.calendar_events ("
+                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+                    ")"
+                )
+            )
+            conn.execute(
+                text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
+                    "CREATE TABLE general.calendar_event_entities ("
+                    "  event_id UUID NOT NULL,"
+                    "  entity_id UUID NOT NULL"
                     ")"
                 )
             )
@@ -1419,6 +1451,22 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
                         "    'general.calendar_event_instances',"
                         "    'SELECT'"
                         "  ) AS can_read_calendar,"
+                        # Approved — calendar join companions
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'general.calendar_sources',"
+                        "    'SELECT'"
+                        "  ) AS can_read_calendar_sources,"
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'general.calendar_events',"
+                        "    'SELECT'"
+                        "  ) AS can_read_calendar_events,"
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'general.calendar_event_entities',"
+                        "    'SELECT'"
+                        "  ) AS can_read_calendar_event_entities,"
                         # Denied — state_store is not an evidence surface
                         "  has_table_privilege("
                         "    'butler_chronicler_rw',"
@@ -1441,6 +1489,15 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
         "butler_chronicler_rw must be able to SELECT general.calendar_event_instances "
         "(approved RFC 0014 evidence surface)"
     )
+    for key, table in (
+        ("can_read_calendar_sources", "general.calendar_sources"),
+        ("can_read_calendar_events", "general.calendar_events"),
+        ("can_read_calendar_event_entities", "general.calendar_event_entities"),
+    ):
+        assert result[key] is True, (
+            f"butler_chronicler_rw must be able to SELECT {table} "
+            "(approved RFC 0014 evidence surface)"
+        )
     assert result["can_read_state_store"] is False, (
         "butler_chronicler_rw must NOT be able to SELECT education.state_store "
         "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"

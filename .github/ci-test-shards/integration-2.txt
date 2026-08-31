@@ -62,6 +62,7 @@ tests/integration/test_whatsapp_pipeline.py
 tests/jobs/test_home_ha_snapshot_persist.py
 tests/migrations/test_audit_log_failed_outcome_backfill_migration.py
 tests/migrations/test_calendar_search_trgm_migration.py
+tests/migrations/test_chronicler_calendar_read_surface_migration.py
 tests/migrations/test_chronicler_coverage_witness_origin_migration.py
 tests/migrations/test_dedup_contacts_public_refs_migration.py
 tests/migrations/test_memory_catalog_migration.py

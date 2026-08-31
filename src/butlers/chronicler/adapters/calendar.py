@@ -20,8 +20,11 @@ Semantics:
   rounds. The episode's ``source_ref`` is derived from
   ``origin_instance_ref`` alone (``calendar:{origin_instance_ref}``)
   so the upsert is idempotent across runs and schemas.
-- Missing calendar tables (module not enabled on this deployment)
-  degrades gracefully — the adapter emits a warning and exits clean.
+- Missing or unreadable calendar tables (the module is not enabled on this
+  deployment, or the Chronicler read grant is incomplete) degrade gracefully.
+  The adapter records the missing surface in its warning and exits clean.
+- A partial fan-out is marked skipped without advancing the global checkpoint;
+  readable rows may be replayed idempotently after the missing surface recovers.
 
 Butler-managed calendar exclusion (defence-in-depth):
 - Instances whose ``calendar_sources.lane = 'butler'`` are excluded
@@ -113,6 +116,15 @@ SOURCE_NAME = "google_calendar.completed"
 EPISODE_TYPE_SCHEDULED_BLOCK = "scheduled_block"
 DEFAULT_BATCH_LIMIT = 500
 
+# Tables required by the completed-instance projection query.  Keep this list
+# next to the preflight so the availability check cannot silently drift from
+# the SQL read surface.
+CALENDAR_READ_SURFACE_TABLES: tuple[str, ...] = (
+    "calendar_event_instances",
+    "calendar_events",
+    "calendar_sources",
+)
+
 # Butler-managed source kinds — instances from these sources are never projected
 # into the user's Chronicle Calendar lane. The primary guard is the
 # ``lane='butler'`` filter on ``calendar_sources``; this constant documents the
@@ -148,6 +160,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
         latest_watermark = since
+        readable_schemas = 0
+        unavailable_schemas = 0
         # Provider-level dedup set for this run, keyed on origin_instance_ref.
         # The upstream Google Calendar instance ID is stable across butler
         # schemas, so the same logical event appearing in multiple schemas
@@ -161,8 +175,9 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         for schema in self.butler_schemas:
             rows = await self._fetch_instances(pool, schema, since, now)
             if rows is None:
+                unavailable_schemas += 1
                 result.warnings.append(
-                    f"calendar_event_instances missing for schema {schema!r}; skipping"
+                    f"calendar read surface unavailable for schema {schema!r}; skipping"
                 )
                 continue
 
@@ -179,10 +194,12 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             # deleting existing participant links on the basis of bad data.
             event_entities = await self._fetch_event_entities(pool, schema, event_ids)
             if event_entities is None:
+                unavailable_schemas += 1
                 result.warnings.append(
                     f"Failed to fetch event entities for schema {schema!r}; skipping"
                 )
                 continue
+            readable_schemas += 1
 
             for row in rows:
                 dedup_key = row["origin_instance_ref"]
@@ -220,7 +237,24 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 ):
                     latest_watermark = candidate
 
-        result.watermark = latest_watermark
+        if not readable_schemas:
+            result.skipped = True
+            result.skipped_reason = "calendar read surface unavailable on all configured schemas"
+            result.watermark = since
+            result.watermark_id = since_id
+        elif unavailable_schemas:
+            # The global checkpoint covers every configured schema.  Readable
+            # schemas may have been projected idempotently above, but advancing
+            # the watermark would permanently skip older rows in an unavailable
+            # schema when its grant or transient read failure is repaired.
+            result.skipped = True
+            result.skipped_reason = (
+                "calendar read surface unavailable on one or more configured schemas"
+            )
+            result.watermark = since
+            result.watermark_id = since_id
+        else:
+            result.watermark = latest_watermark
         return result
 
     async def _resolve_schema_entity_id(
@@ -381,17 +415,30 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         quoted = self._quote_ident(schema)
         try:
             async with pool.acquire() as conn:
-                exists = await conn.fetchval(
+                missing_tables = await conn.fetchval(
                     """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = $1
-                          AND table_name = 'calendar_event_instances'
+                    SELECT ARRAY(
+                        SELECT required.table_name
+                        FROM unnest($2::text[]) AS required(table_name)
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.tables AS available
+                            WHERE available.table_schema = $1
+                              AND available.table_name = required.table_name
+                        )
+                        ORDER BY required.table_name
                     )
                     """,
                     schema,
+                    list(CALENDAR_READ_SURFACE_TABLES),
                 )
-                if not exists:
+                if missing_tables:
+                    logger.warning(
+                        "CalendarCompletedAdapter: calendar read surface unavailable "
+                        "for schema %r; missing or unreadable tables: %s — skipping",
+                        schema,
+                        ", ".join(missing_tables),
+                    )
                     return None
 
                 if since is None:
