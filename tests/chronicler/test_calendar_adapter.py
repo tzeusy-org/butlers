@@ -388,6 +388,62 @@ async def test_project_marks_source_skipped_when_every_schema_is_unavailable() -
 
 
 @pytest.mark.unit
+async def test_mixed_unavailable_schema_does_not_advance_or_persist_checkpoint() -> None:
+    """A partial fan-out must replay the unavailable schema after recovery."""
+    since = _NOW - timedelta(days=1)
+    checkpoint = MagicMock(watermark=since, watermark_id=17)
+    row = _make_row(ends_at=_NOW)
+    adapter = CalendarCompletedAdapter(butler_schemas=("readable", "unreadable"))
+    chronicler_pool = MagicMock()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.base.get_checkpoint",
+            new=AsyncMock(return_value=checkpoint),
+        ),
+        patch(
+            "butlers.chronicler.adapters.base.mark_source_active", new=AsyncMock()
+        ) as mark_active,
+        patch(
+            "butlers.chronicler.adapters.base.upsert_checkpoint", new=AsyncMock()
+        ) as checkpoint_writer,
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(side_effect=([row], None)),
+        ),
+        patch.object(
+            adapter,
+            "_resolve_schema_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            adapter,
+            "_fetch_event_entities",
+            new=AsyncMock(return_value={}),
+        ),
+        patch.object(adapter, "_project_row", new=AsyncMock()) as project_row,
+    ):
+        result = await adapter.run(pool=MagicMock(), chronicler_pool=chronicler_pool)
+
+    assert result.skipped is True
+    assert result.skipped_reason == (
+        "calendar read surface unavailable on one or more configured schemas"
+    )
+    assert result.rows_projected == 1
+    assert result.watermark == since
+    assert result.watermark_id == 17
+    project_row.assert_awaited_once()
+    mark_active.assert_awaited_once_with(
+        chronicler_pool,
+        SOURCE_NAME,
+        active=False,
+        inactive_reason=result.skipped_reason,
+    )
+    checkpoint_writer.assert_not_awaited()
+
+
+@pytest.mark.unit
 async def test_run_marks_source_inactive_when_calendar_surface_is_unavailable() -> None:
     adapter = CalendarCompletedAdapter(butler_schemas=("schema_a",))
     skipped = AdapterResult(
