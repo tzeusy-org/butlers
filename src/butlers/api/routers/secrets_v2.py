@@ -3003,46 +3003,25 @@ async def get_inventory(
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_single_user_secret(
+async def _select_single_user_secret_row(
     pool: Any,
     *,
     provider: str,
     identity: UUID | None,
-    include_audit: bool = False,
-    include_scopes: bool = True,
-    include_probe_log: bool = True,
-    include_capabilities: bool = True,
-) -> _UserCredentialRecord | None:
-    """Fetch a single entity_info row matching the given provider.
-
-    The provider display slug maps to entity_info.type through the
-    alias-aware patterns from ``_provider_like_patterns`` (e.g. 'google'
-    matches 'google_oauth_refresh', 'homeassistant' matches
-    'home_assistant_token').  When identity is provided, filters to that
-    entity; otherwise uses the owner entity.
-
-    Returns None when no matching row exists. ``include_audit`` is reserved
-    for the user-detail GET route: it fetches history strictly so an audit
-    source failure can be reported explicitly without changing mutation
-    semantics.
-
-    ``include_scopes``, ``include_probe_log``, and
-    ``include_capabilities`` default to True because their respective result
-    fields are published as credential evidence. A caller that forgets to ask
-    would otherwise project an empty list or ``None`` as an honest absence.
-    Mutation pre-reads pass all three as False: they do not publish that
-    evidence. The record carries matching ``*_loaded=False`` sentinels so
-    ``_content_blind_detail`` refuses it rather than projecting the gap. The
-    rotate route's post-update response re-read leaves the defaults intact.
-
-    The result is an internal record, not a response payload — route it
-    through ``_content_blind_detail`` before returning it to a client.
+    for_update: bool = False,
+) -> Any | None:
+    """Select one matching internal row, optionally retaining its row lock.
+    This returns an unprojected row, including ``value``, for callers that need
+    the old credential solely for a provider-side revoke.  Callers must never
+    serialise that row.  ``for_update`` is used only inside a transaction that
+    immediately writes the same primary key.
     """
     patterns = _provider_like_patterns(provider)
+    lock_clause = " FOR UPDATE OF ei" if for_update else ""
     try:
         if identity is not None:
             row = await pool.fetchrow(
-                """
+                f"""
                 SELECT
                     ei.id,
                     ei.entity_id,
@@ -3060,7 +3039,7 @@ async def _fetch_single_user_secret(
                   AND ei.secured = true
                   AND NOT (ei.type = ANY($3::text[]))
                 ORDER BY ei.created_at DESC
-                LIMIT 1
+                LIMIT 1{lock_clause}
                 """,
                 identity,
                 patterns,
@@ -3068,7 +3047,7 @@ async def _fetch_single_user_secret(
             )
         else:
             row = await pool.fetchrow(
-                """
+                f"""
                 SELECT
                     ei.id,
                     ei.entity_id,
@@ -3087,7 +3066,7 @@ async def _fetch_single_user_secret(
                   AND ei.secured = true
                   AND NOT (ei.type = ANY($2::text[]))
                 ORDER BY ei.created_at DESC
-                LIMIT 1
+                LIMIT 1{lock_clause}
                 """,
                 patterns,
                 list(SPOTIFY_MANAGED_ENTITY_INFO_TYPES),
@@ -3100,13 +3079,28 @@ async def _fetch_single_user_secret(
         logger.warning("Failed to fetch user secret for provider %s: %s", provider, exc)
         return None
 
-    if row is None:
-        return None
-    if row["type"] in SPOTIFY_MANAGED_ENTITY_INFO_TYPES:
+    if row is not None and row["type"] in SPOTIFY_MANAGED_ENTITY_INFO_TYPES:
         # Defensive for non-SQL mocks/adapters; production filtering happens in SQL.
         return None
+    return row
 
-    value: str | None = row["value"]
+
+async def _user_credential_record_from_row(
+    pool: Any,
+    row: Any,
+    *,
+    provider: str,
+    raw_value: str | None,
+    include_audit: bool = False,
+    include_scopes: bool = True,
+    include_probe_log: bool = True,
+    include_capabilities: bool = True,
+) -> _UserCredentialRecord:
+    """Build the internal record and its content-blind evidence from one row.
+
+    ``raw_value`` exists only long enough to derive state and fingerprint.  It
+    is never placed on ``_UserCredentialRecord`` or a response payload.
+    """
     last_test_ok: bool | None = row["last_test_ok"]
     entity_id = str(row["entity_id"])
 
@@ -3116,10 +3110,12 @@ async def _fetch_single_user_secret(
         expires_at = expiry_map.get(entity_id)
 
     state = _reclassify_stale_ok_state(
-        state=_derive_state(is_set=bool(value), last_test_ok=last_test_ok, expires_at=expires_at),
+        state=_derive_state(
+            is_set=bool(raw_value), last_test_ok=last_test_ok, expires_at=expires_at
+        ),
         last_verified=row["last_verified"],
     )
-    fp = _fingerprint(value)
+    fp = _fingerprint(raw_value)
     test: TestResult | None = None
     if include_probe_log:
         test = await _fetch_probe_log(pool, "user", row["type"])
@@ -3171,6 +3167,57 @@ async def _fetch_single_user_secret(
         audit=audit,
         capabilities=capability_map.get(row["type"], []),
         capabilities_loaded=include_capabilities,
+    )
+
+
+async def _fetch_single_user_secret(
+    pool: Any,
+    *,
+    provider: str,
+    identity: UUID | None,
+    include_audit: bool = False,
+    include_scopes: bool = True,
+    include_probe_log: bool = True,
+    include_capabilities: bool = True,
+) -> _UserCredentialRecord | None:
+    """Fetch and build a single user record matching the given provider.
+
+    The provider display slug maps to entity_info.type through the
+    alias-aware patterns from ``_provider_like_patterns`` (e.g. 'google'
+    matches 'google_oauth_refresh', 'homeassistant' matches
+    'home_assistant_token').  When identity is provided, filters to that
+    entity; otherwise uses the owner entity.
+
+    Returns None when no matching row exists. ``include_audit`` is reserved
+    for the user-detail GET route: it fetches history strictly so an audit
+    source failure can be reported explicitly without changing mutation
+    semantics.
+
+    ``include_scopes``, ``include_probe_log``, and
+    ``include_capabilities`` default to True because their respective result
+    fields are published as credential evidence. A caller that forgets to ask
+    would otherwise project an empty list or ``None`` as an honest absence.
+    Mutation pre-reads pass all three as False: they do not publish that
+    evidence. The record carries matching ``*_loaded=False`` sentinels so
+    ``_content_blind_detail`` refuses it rather than projecting the gap. The
+    rotate route's post-update response is built directly from its
+    ``UPDATE RETURNING`` row rather than calling this helper again.
+
+    The result is an internal record, not a response payload — route it
+    through ``_content_blind_detail`` before returning it to a client.
+    """
+    row = await _select_single_user_secret_row(pool, provider=provider, identity=identity)
+    if row is None:
+        return None
+    return await _user_credential_record_from_row(
+        pool,
+        row,
+        provider=provider,
+        raw_value=row["value"],
+        include_audit=include_audit,
+        include_scopes=include_scopes,
+        include_probe_log=include_probe_log,
+        include_capabilities=include_capabilities,
     )
 
 
@@ -5154,61 +5201,66 @@ async def rotate_user_credential(
     if shared_pool is None:
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
-    # Locate the existing row so we can confirm it exists and capture the old token value.
-    # Evidence reads are skipped: this read only supplies `id` and `type`, and the response is
-    # built from the post-update re-read below, which does load them (bu-psw7o, bu-mxfjt).
-    detail = await _fetch_single_user_secret(
-        shared_pool,
-        provider=provider,
-        identity=identity,
-        include_scopes=False,
-        include_probe_log=False,
-        include_capabilities=False,
-    )
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
-    if detail.type in _GUIDED_ROTATE_ONLY_USER_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "telegram_api_hash can only be updated through the guided Telegram session setup."
-            ),
-        )
-
-    # Capture the old raw value before we overwrite it.  We need it for provider revocation.
-    # _fetch_single_user_secret returns a UserSecretDetail which does NOT expose the raw value
-    # (fingerprint only), so we re-read it directly here.
+    # Lock the exact matching row and update it through the same connection.
+    # That makes the 404/type decision and write one serialized unit: a second
+    # rotate cannot pass the existence/type check against the old row while this
+    # rotation is in flight.  The locked row supplies the old value only for
+    # revocation; UPDATE RETURNING deliberately omits the new credential value.
     old_raw_value: str | None = None
+    credential_type = ""
+    updated_row: Any | None = None
     try:
-        _old_row = await shared_pool.fetchrow(
-            "SELECT value FROM public.entity_info WHERE id = $1",
-            UUID(detail.id),
-        )
-        if _old_row is not None:
-            old_raw_value = _old_row["value"]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "rotate_user_credential: could not read old value for revoke (provider=%s): %s",
-            provider,
-            exc,
-        )
-
-    # Update the value in-place using the primary key from the fetched row.
-    # Using id (PK) is safer than entity_id+LIKE which could match multiple rows
-    # in multi-account scenarios.
-    try:
-        await shared_pool.execute(
-            """
-            UPDATE public.entity_info
-            SET value = $1, updated_at = now()
-            WHERE id = $2
-            """,
-            body.value,
-            UUID(detail.id),
-        )
+        async with shared_pool.acquire() as conn:
+            async with conn.transaction():
+                locked_row = await _select_single_user_secret_row(
+                    conn,
+                    provider=provider,
+                    identity=identity,
+                    for_update=True,
+                )
+                if locked_row is None:
+                    raise HTTPException(status_code=404, detail="Credential not found")
+                credential_type = locked_row["type"]
+                if credential_type in _GUIDED_ROTATE_ONLY_USER_TYPES:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "telegram_api_hash can only be updated through the guided Telegram "
+                            "session setup."
+                        ),
+                    )
+                old_raw_value = locked_row["value"]
+                updated_row = await conn.fetchrow(
+                    """
+                    UPDATE public.entity_info
+                    SET value = $1, updated_at = now()
+                    WHERE id = $2
+                    RETURNING
+                        id,
+                        entity_id,
+                        type,
+                        label,
+                        created_at,
+                        last_verified,
+                        last_test_ok,
+                        last_test_code,
+                        last_test_message
+                    """,
+                    body.value,
+                    UUID(str(locked_row["id"])),
+                )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.warning("rotate_user_credential: update failed for provider=%s: %s", provider, exc)
+        logger.warning(
+            "rotate_user_credential: update failed provider=%s exception_type=%s",
+            provider,
+            type(exc).__name__,
+        )
         raise HTTPException(status_code=503, detail="Credential rotation failed") from exc
+    if updated_row is None:
+        # Should not happen: the row was locked before this primary-key update.
+        raise HTTPException(status_code=503, detail="Credential not found after rotation")
 
     # Revoke the old OAuth token at the provider — fire-and-forget.
     # Only triggered when: (a) we have the old value, (b) it differs from the new value,
@@ -5216,7 +5268,7 @@ async def rotate_user_credential(
     revoke_status = "skipped"
     if old_raw_value is not None and old_raw_value != body.value:
         revoke_status = await _revoke_oauth_token(
-            provider, detail.type, old_raw_value, shared_pool=shared_pool
+            provider, credential_type, old_raw_value, shared_pool=shared_pool
         )
 
     # Audit — fire-and-forget.
@@ -5227,11 +5279,14 @@ async def rotate_user_credential(
         note=f"Value replaced via rotate endpoint; revoke_status={revoke_status}",
     )
 
-    # Re-fetch to return the updated state with freshly computed fingerprint.
-    updated = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
-    if updated is None:
-        # Should not happen; the row was just updated.
-        raise HTTPException(status_code=503, detail="Credential not found after rotation")
+    # Build the content-blind response record from the non-secret RETURNING row
+    # while still loading the scope evidence the projection requires.
+    updated = await _user_credential_record_from_row(
+        shared_pool,
+        updated_row,
+        provider=provider,
+        raw_value=body.value,
+    )
 
     return ApiResponse[UserSecretDetail](data=_content_blind_detail(updated), meta=ApiMeta())
 

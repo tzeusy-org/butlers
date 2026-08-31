@@ -178,9 +178,19 @@ def test_user_probe_persists_the_real_failure_tail():
     resp = client.post("/api/secrets/user/google/probe")
 
     assert resp.status_code == 200, resp.status_code
+    # The production probe persists through an acquired transaction connection.
+    # The mutation fixture deliberately keeps that connection independent from
+    # pool-level spies so rotation tests can prove their lock/update sequence;
+    # inspect both supported write boundaries instead of mistaking the fixture
+    # split for an absent durable diagnostic.
+    write_methods = [shared_pool.execute]
+    transaction_connection = getattr(shared_pool, "_transaction_connection", None)
+    if transaction_connection is not None:
+        write_methods.append(transaction_connection.execute)
     persisted = any(
-        tail in [a for a in call.args if isinstance(a, str)]
-        for call in shared_pool.execute.await_args_list
+        tail in [arg for arg in call.args if isinstance(arg, str)]
+        for method in write_methods
+        for call in method.await_args_list
     )
     assert persisted, "the real failure tail must still be written to probe_log/entity_info"
 
