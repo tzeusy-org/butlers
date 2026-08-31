@@ -7556,7 +7556,7 @@ async def probe_all_credentials(
             family=o.family,
             label=o.label,
             ok=o.ok,
-            message=_probe_category(o.message),
+            message=None if o.ok is True else _probe_category(o.message),
             skipped=o.skipped,
             skip_reason=o.skip_reason,
         )

@@ -242,6 +242,36 @@ def test_system_probe_never_set_reports_a_vocabulary_category():
 # ---------------------------------------------------------------------------
 
 
+def test_probe_all_success_from_cli_subsystem_publishes_no_failure_evidence(monkeypatch):
+    """A successful external probe may carry detail, but it has no failure evidence."""
+    detail = _sentinel("cli-success-detail")
+
+    import butlers.jobs.secrets_staleness as staleness
+
+    async def _fake_sweep(_db):
+        return [
+            staleness.ProbeOutcome(
+                key="c:cli-auth/codex",
+                family="cli",
+                label="cli-auth/codex",
+                ok=True,
+                message=detail,
+            )
+        ]
+
+    monkeypatch.setattr(staleness, "run_secrets_probe_all", _fake_sweep)
+    mock_db = _make_db(user_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/probe-all")
+
+    assert resp.status_code == 200, resp.status_code
+    assert detail.encode() not in resp.content, (
+        "probe-all republished another subsystem's success detail"
+    )
+    assert resp.json()["data"]["results"][0]["message"] is None, resp.text
+
+
 def test_probe_all_clamps_messages_from_other_subsystems(monkeypatch):
     """The CLI family's message is ``cli_auth.test_api_key``'s free-text detail.
 

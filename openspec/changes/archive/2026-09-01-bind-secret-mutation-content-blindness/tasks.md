@@ -17,7 +17,7 @@
 
 ## 2. Close out
 
-- [ ] 2.1 After merge, apply the delta to `openspec/specs/dashboard-api/spec.md`
+- [x] 2.1 After merge, apply the delta to `openspec/specs/dashboard-api/spec.md`
   and archive the change to `openspec/changes/archive/YYYY-MM-DD-bind-secret-mutation-content-blindness`.
   A spec amendment that merges un-applied leaves the baseline silent, which is
   the exact failure mode this change exists to fix.
