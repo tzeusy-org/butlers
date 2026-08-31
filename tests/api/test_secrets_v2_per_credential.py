@@ -27,7 +27,6 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
-from butlers._sql_utils import escape_like_pattern as _escape_like_pattern
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
@@ -1023,16 +1022,6 @@ def test_system_credential_searches_all_butlers():
 # ---------------------------------------------------------------------------
 # Tests: LIKE wildcard escaping for provider path param (bu-vcv7c)
 # ---------------------------------------------------------------------------
-
-
-def test_escape_like_pattern_backslash():
-    """Backslash in provider value is doubled before other escapes are applied."""
-    assert _escape_like_pattern("go\\ogle") == "go\\\\ogle"
-
-
-def test_escape_like_pattern_multiple_metacharacters():
-    """Multiple metacharacters in one value are all escaped."""
-    assert _escape_like_pattern("%_foo%") == "\\%\\_foo\\%"
 
 
 def _make_capturing_db_manager(

@@ -1,9 +1,9 @@
 """Unit tests for butlers.core.owner_conditions (bu-ep4ks.6).
 
-Mirrors tests/core/test_infra_conditions.py's split: fingerprinting and
-reconcile_snapshot's input validation are covered here without a real
-Postgres connection. The actual lifecycle/concurrency/recurrence semantics
-are covered against real Postgres in
+The shared engine's fingerprinting behavior is covered in
+tests/core/test_infra_conditions.py. This module covers
+reconcile_snapshot's input validation without a real Postgres connection.
+The actual lifecycle/concurrency/recurrence semantics are covered against real Postgres in
 tests/integration/test_owner_conditions_roundtrip.py.
 """
 
