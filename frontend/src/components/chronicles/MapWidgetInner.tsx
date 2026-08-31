@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef } from "react"
 import { EmptyState } from "@/components/ui/empty-state"
 import { useDarkMode } from "@/hooks/useDarkMode"
 import { useRegisterMapPan } from "@/components/workspace/map-pan-store"
+import { cartoStyle } from "./carto-basemap"
 import { buildTrailGeoJSON } from "./trail-geojson"
 import { buildHexHeatmap, type HexFeatureCollection } from "./hex-heatmap"
 
@@ -77,48 +78,6 @@ export interface MapWidgetInnerProps {
    * @default true
    */
   heatmapVisible?: boolean
-}
-
-// ---------------------------------------------------------------------------
-// CARTO basemaps (theme-aware)
-//
-// Positron No Labels (light) and Dark Matter No Labels (dark) — CARTO's
-// label-free basemaps. Labels are stripped because the heatmap and markers
-// already carry the location story; labels would compete visually.
-// Free for non-commercial use; attribution is provided in the style.
-// ---------------------------------------------------------------------------
-
-const CARTO_LIGHT_TILES = [
-  "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-  "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-  "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-  "https://d.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
-]
-
-const CARTO_DARK_TILES = [
-  "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-  "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-  "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-  "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
-]
-
-const CARTO_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>'
-
-function cartoStyle(isDark: boolean): maplibreGl.StyleSpecification {
-  return {
-    version: 8,
-    sources: {
-      basemap: {
-        type: "raster",
-        tiles: isDark ? CARTO_DARK_TILES : CARTO_LIGHT_TILES,
-        tileSize: 256,
-        attribution: CARTO_ATTRIBUTION,
-        maxzoom: 19,
-      },
-    },
-    layers: [{ id: "basemap-tiles", type: "raster", source: "basemap" }],
-  }
 }
 
 // Default center (0,0) and zoom when there are no points.

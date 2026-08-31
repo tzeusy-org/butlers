@@ -64,6 +64,7 @@ vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}))
 // ---------------------------------------------------------------------------
 
 import { MapWidgetInner } from "./MapWidgetInner"
+import { cartoStyle } from "./carto-basemap"
 import { buildTrailGeoJSON } from "./trail-geojson"
 import type { MapPoint } from "./MapWidget"
 
@@ -107,6 +108,47 @@ describe("MapWidgetInner with points", () => {
   it("does NOT render the empty-state heading when points are provided", () => {
     const html = renderToStaticMarkup(<MapWidgetInner points={samplePoints} />)
     expect(html).not.toContain("No activity recorded for this window")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CARTO basemap authentication
+// ---------------------------------------------------------------------------
+
+describe("CARTO basemap authentication", () => {
+  it("appends an encoded key to every light raster tile URL", () => {
+    const style = cartoStyle(false, "carto test/key")
+    const source = style.sources.basemap
+
+    expect(source.type).toBe("raster")
+    if (source.type !== "raster") return
+
+    expect(source.tiles).toEqual([
+      "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=carto%20test%2Fkey",
+      "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=carto%20test%2Fkey",
+      "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=carto%20test%2Fkey",
+      "https://d.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png?key=carto%20test%2Fkey",
+    ])
+  })
+
+  it("appends the same key to every dark raster tile URL", () => {
+    const style = cartoStyle(true, "carto-test-key")
+    const source = style.sources.basemap
+
+    expect(source.type).toBe("raster")
+    if (source.type !== "raster") return
+
+    expect(source.tiles?.every((tile) => tile.endsWith("?key=carto-test-key"))).toBe(true)
+  })
+
+  it("leaves raster tile URLs unchanged when no key is configured", () => {
+    const style = cartoStyle(false, "  ")
+    const source = style.sources.basemap
+
+    expect(source.type).toBe("raster")
+    if (source.type !== "raster") return
+
+    expect(source.tiles?.every((tile) => !tile.includes("?key="))).toBe(true)
   })
 })
 

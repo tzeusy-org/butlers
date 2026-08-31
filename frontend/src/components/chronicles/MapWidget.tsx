@@ -107,7 +107,10 @@ export type { MapPoint } from "./MapWidgetInner"
 export type { MapWidgetInnerProps as MapWidgetProps }
 
 /**
- * Map widget with OSM tiles via MapLibre GL.
+ * Map widget with CARTO raster basemaps via MapLibre GL.
+ *
+ * When configured, the browser-visible, domain-restricted CARTO key is passed
+ * through Vite and appended by carto-basemap.ts; it is not a backend secret.
  *
  * - Lazy-loads maplibre-gl into a separate async chunk.
  * - Shows a loading skeleton while the chunk is fetching.
