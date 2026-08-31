@@ -496,6 +496,16 @@ def _run_gate(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _wait_and_close_stdout(process: subprocess.Popen[bytes] | subprocess.Popen[str]) -> int:
+    """Wait for a tee-test child and always close its captured stdout."""
+    try:
+        return process.wait(timeout=10)
+    finally:
+        stdout = process.stdout
+        assert stdout is not None
+        stdout.close()
+
+
 def test_tee_mirrors_the_run_to_stdout(tmp_path: Path) -> None:
     """`make test-qg` stays watchable: what lands in the log also lands on stdout."""
     log = tmp_path / "run.log"
@@ -554,8 +564,12 @@ def test_tee_shows_output_while_the_run_is_still_going(tmp_path: Path) -> None:
         assert elapsed < 5, f"the first line took {elapsed:.1f}s: nothing was mirrored live"
         assert process.poll() is None, "the run had already finished; this proves nothing"
     finally:
-        process.kill()
-        process.wait(timeout=10)
+        try:
+            process.kill()
+        finally:
+            _wait_and_close_stdout(process)
+        assert process.stdout is not None
+        assert process.stdout.closed, "test-owned tee stdout must close before teardown"
 
 
 def test_tee_leaves_no_pipe_between_the_caller_and_pytest(tmp_path: Path) -> None:
@@ -596,8 +610,38 @@ def test_tee_leaves_no_pipe_between_the_caller_and_pytest(tmp_path: Path) -> Non
             f"{log.read_text(encoding='utf-8')}"
         )
     finally:
-        if runner.poll() is None:  # pragma: no cover - defensive
-            runner.kill()
+        try:
+            if runner.poll() is None:  # pragma: no cover - defensive
+                runner.kill()
+        finally:
+            _wait_and_close_stdout(runner)
+        assert runner.stdout is not None
+        assert runner.stdout.closed, "test-owned tee stdout must close before teardown"
+
+
+def test_tee_cleanup_closes_stdout_when_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A teardown timeout cannot leak the test-owned pipe."""
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    original_wait = process.wait
+
+    def raise_timeout(timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired(process.args, 10 if timeout is None else timeout)
+
+    try:
+        assert process.stdout is not None
+        monkeypatch.setattr(process, "wait", raise_timeout)
+        with pytest.raises(subprocess.TimeoutExpired):
+            _wait_and_close_stdout(process)
+        assert process.stdout.closed
+    finally:
+        monkeypatch.setattr(process, "wait", original_wait)
+        if process.poll() is None:
+            process.kill()
+        original_wait(timeout=10)
 
 
 def test_tee_survives_its_reader_hanging_up(tmp_path: Path) -> None:
