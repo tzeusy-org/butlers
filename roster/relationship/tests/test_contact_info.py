@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # Skip all tests in this module if Docker is not available
@@ -68,15 +72,7 @@ async def pool(provisioned_postgres_pool):
         """)
 
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate TEXT NOT NULL PRIMARY KEY,
-                kind TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await p.execute("""
             INSERT INTO relationship.entity_predicate_registry
                 (predicate, kind, object_kind, description)
@@ -141,17 +137,7 @@ async def pool(provisioned_postgres_pool):
         # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
         # _entity_resolve and channel_search.  Unqualified: resolves to public
         # schema under the test pool's default search_path.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
 
         # Create public.contact_info
         await p.execute("""

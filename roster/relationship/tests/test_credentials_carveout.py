@@ -29,6 +29,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
+
 # ---------------------------------------------------------------------------
 # Helper: load the migration module.
 # Filenames starting with a digit (016_…) cannot be imported via standard
@@ -171,15 +173,7 @@ async def pool(provisioned_postgres_pool):
         """)
 
         # 7. entity_predicate_registry (used by credential-vs-fact independence test)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate   TEXT NOT NULL PRIMARY KEY,
-                kind        TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                description TEXT,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await p.execute("""
             INSERT INTO relationship.entity_predicate_registry
                 (predicate, kind, object_kind, description)

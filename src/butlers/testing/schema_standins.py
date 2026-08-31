@@ -44,9 +44,12 @@ The one self-contained trigger, ``approvals_001``'s append-only guard on
 trigger adds it there, or takes the real chain via
 :func:`butlers.testing.migration.create_migrated_test_db`.
 
-Chains may be shared (``core``), roster (``switchboard``) or module
-(``approvals``, under ``src/butlers/modules/<chain>/migrations/``);
-``create_migrated_test_db`` resolves all three by name.
+Chains may be shared (``core``), roster (``switchboard``, ``relationship``) or
+module (``approvals``, under ``src/butlers/modules/<chain>/migrations/``);
+``create_migrated_test_db`` resolves all three by name.  A roster chain that
+owns a schema names it in :attr:`TableStandin.chain_schemas`, because its
+tables only reach :attr:`TableStandin.real_schema` when it is migrated under
+that ``search_path``.
 
 Usage::
 
@@ -85,6 +88,16 @@ class TableStandin:
 
     indexes: tuple[str, ...] = ()
     """``CREATE INDEX`` statements, with ``{table}`` for the qualified name."""
+
+    chain_schemas: tuple[tuple[str, str], ...] = ()
+    """``(chain, schema)`` pairs a chain must be migrated under, if any.
+
+    A roster chain that owns its own schema (``relationship``) only puts its
+    tables in :attr:`real_schema` when it is migrated with that ``search_path``.
+    Stated per stand-in rather than inferred from :attr:`real_schema`, because
+    a chain and the schema it lands in are two different facts and only the
+    declaration knows both.
+    """
 
     def ddl(self, *, schema: str | None = None) -> str:
         """Return the ``CREATE TABLE`` plus index DDL, optionally schema-qualified.
@@ -370,6 +383,64 @@ APPROVAL_EVENTS = TableStandin(
 )
 
 
+# The relationship chain owns its own schema. rel_014 explicitly qualifies
+# ``entity_predicate_registry``; rel_029 leaves ``contact_entity_map``
+# unqualified, so it lands in ``relationship`` only when the chain is migrated
+# with that ``search_path``. ``chain_schemas`` records that chain-level
+# requirement for the parity fixture; each test fixture chooses DDL
+# qualification for its own pool. The registry is qualified at every call
+# site; ``contact_entity_map`` is qualified in relationship-schema fixtures and
+# left unqualified only where the test pool's default schema is public.
+ENTITY_PREDICATE_REGISTRY = TableStandin(
+    table="entity_predicate_registry",
+    chains=("core", "relationship"),
+    real_schema="relationship",
+    chain_schemas=(("relationship", "relationship"),),
+    constant_path="src/butlers/testing/schema_standins.py::ENTITY_PREDICATE_REGISTRY",
+    # roster/relationship/migrations: rel_014 (base table), rel_015 (widens the
+    # kind CHECK with 'state'), rel_021 (cardinality), rel_022 (seeds a row).
+    columns=(
+        ("predicate", "TEXT NOT NULL PRIMARY KEY"),
+        (
+            "kind",
+            "TEXT NOT NULL CHECK (kind IN ('contact', 'relational', 'override', 'state'))",
+        ),
+        ("object_kind", "TEXT NOT NULL CHECK (object_kind IN ('literal', 'entity'))"),
+        ("description", "TEXT"),
+        ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        (
+            "cardinality",
+            "TEXT NOT NULL DEFAULT 'multi' CHECK (cardinality IN ('single', 'multi'))",
+        ),
+    ),
+)
+"""The predicate vocabulary ``assert_fact`` validates against.
+
+``cardinality`` is behaviour, not decoration: ``single`` is what makes a second
+assertion of the same predicate supersede the first rather than accumulate
+(rel_021), so a stand-in that omits it lets a test observe multi-valued
+behaviour the real schema does not have.
+"""
+
+
+CONTACT_ENTITY_MAP = TableStandin(
+    table="contact_entity_map",
+    chains=("core", "relationship"),
+    real_schema="relationship",
+    chain_schemas=(("relationship", "relationship"),),
+    constant_path="src/butlers/testing/schema_standins.py::CONTACT_ENTITY_MAP",
+    # roster/relationship/migrations/029_contact_entity_map.py, unchanged since.
+    # rel_029 deliberately declares no FK on either column, so this stand-in is
+    # a complete mirror rather than one narrowed by the no-FK rule above.
+    columns=(
+        ("contact_id", "UUID NOT NULL"),
+        ("entity_id", "UUID NOT NULL"),
+    ),
+    table_constraints=("CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)",),
+    indexes=("CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id ON {table} (entity_id)",),
+)
+
+
 STANDINS: dict[str, TableStandin] = {
     standin.table: standin
     for standin in (
@@ -379,6 +450,8 @@ STANDINS: dict[str, TableStandin] = {
         AUTONOMY_SUGGESTIONS,
         APPROVAL_RULES,
         APPROVAL_EVENTS,
+        ENTITY_PREDICATE_REGISTRY,
+        CONTACT_ENTITY_MAP,
     )
 }
 """Every declared stand-in, keyed by table name. Both guards iterate this."""
@@ -390,6 +463,8 @@ __all__ = [
     "AUTONOMY_APPROVAL_HISTORY",
     "AUTONOMY_SUGGESTIONS",
     "CONNECTOR_REGISTRY",
+    "CONTACT_ENTITY_MAP",
+    "ENTITY_PREDICATE_REGISTRY",
     "PENDING_ACTIONS",
     "STANDINS",
     "TableStandin",

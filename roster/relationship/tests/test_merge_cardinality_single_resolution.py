@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
@@ -51,23 +52,17 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate   TEXT        NOT NULL PRIMARY KEY,
-                kind        TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL,
-                cardinality TEXT        NOT NULL DEFAULT 'multi',
-                description TEXT,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         # has-birthday is single-cardinality: an entity holds at most one active
         # value. has-email is multi-cardinality (the three-emails-three-rows rule).
         await p.execute("""
             INSERT INTO relationship.entity_predicate_registry
                 (predicate, kind, object_kind, cardinality, description)
             VALUES
-                ('has-birthday', 'attribute', 'literal', 'single', 'Birthday.'),
+                -- 'contact', as rel_014/rel_017 seed it. The hand-rolled registry
+                -- this fixture used to build had no kind CHECK, so 'attribute' --
+                -- a kind the real chain has never allowed -- inserted cleanly.
+                ('has-birthday', 'contact',   'literal', 'single', 'Birthday.'),
                 ('has-email',    'contact',   'literal', 'multi',  'Email address.')
             ON CONFLICT (predicate) DO NOTHING
         """)
@@ -141,17 +136,7 @@ async def pool(provisioned_postgres_pool):
         """)
         # contact_entity_map (rel_029) — merge_entities now updates this instead of
         # public.contacts.entity_id directly (bu-j77a5).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

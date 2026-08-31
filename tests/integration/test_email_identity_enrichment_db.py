@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
 
 
 def _apply_evidence_schema():
@@ -134,15 +134,7 @@ async def identity_pool(provisioned_postgres_pool):
         # and persists evidence in the same transaction, so a hand-rolled
         # entity_facts without those objects cannot execute the writer at all.
         await _apply_evidence_schema()(pool)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate   TEXT        NOT NULL PRIMARY KEY,
-                kind        TEXT        NOT NULL CHECK (kind IN ('contact', 'relational', 'override')),
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                description TEXT,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await pool.execute("""
             INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind)
             VALUES ('has-email', 'contact', 'literal')

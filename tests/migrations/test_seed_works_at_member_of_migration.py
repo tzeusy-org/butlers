@@ -96,6 +96,8 @@ async def _provision_registry(pool) -> None:
             updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
+    # schema-standin-exempt: a deliberately minimal registry prerequisite for
+    # rel_024's seed assertions, not a copy claiming current-head parity.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
             predicate   TEXT        NOT NULL PRIMARY KEY,

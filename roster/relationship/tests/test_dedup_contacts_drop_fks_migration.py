@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "030_dedup_contacts_drop_contacts_fks.py"
 )
@@ -152,10 +154,6 @@ CREATE TABLE tasks (
     CONSTRAINT tasks_contact_id_fkey FOREIGN KEY (contact_id)
         REFERENCES public.contacts(id) ON DELETE CASCADE
 );
-CREATE TABLE contact_entity_map (
-    contact_id UUID PRIMARY KEY,
-    entity_id  UUID NOT NULL
-);
 """
 
 
@@ -229,6 +227,7 @@ async def test_dedup_and_fk_drop(provisioned_postgres_pool) -> None:
     mod = _load_migration()
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_PROVISION_SCHEMA)
+        await pool.execute(CONTACT_ENTITY_MAP.ddl())
         ids = await _seed(pool)
         c1, c2, c3, l1, l2 = ids["c1"], ids["c2"], ids["c3"], ids["l1"], ids["l2"]
 

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 docker_available = shutil.which("docker") is not None
@@ -196,15 +197,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
     WHERE validity = 'active'
 """
 
-_CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = """
-CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-    predicate   TEXT        NOT NULL PRIMARY KEY,
-    kind        TEXT        NOT NULL,
-    object_kind TEXT        NOT NULL,
-    description TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+_CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship")
 
 _SEED_PREDICATES_SQL = """
 INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)

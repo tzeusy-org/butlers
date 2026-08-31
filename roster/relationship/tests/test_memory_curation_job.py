@@ -35,7 +35,7 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_memory_curation,
     run_pending_actions_curation,
 )
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # ---------------------------------------------------------------------------
@@ -96,15 +96,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
     WHERE validity = 'active'
 """
 
-_CREATE_PREDICATE_REGISTRY_SQL = """
-CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-    predicate   TEXT        NOT NULL PRIMARY KEY,
-    kind        TEXT        NOT NULL,
-    object_kind TEXT        NOT NULL,
-    description TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+_CREATE_PREDICATE_REGISTRY_SQL = ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship")
 
 _SEED_PREDICATES_SQL = """
 INSERT INTO relationship.entity_predicate_registry

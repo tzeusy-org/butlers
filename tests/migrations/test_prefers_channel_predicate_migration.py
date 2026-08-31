@@ -85,6 +85,9 @@ class TestDowngradeSQLShape:
 async def _provision_registry(pool) -> None:
     """Create the registry table (with cardinality) and seed rel_014 rows."""
     await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+    # schema-standin-exempt: a deliberately minimal registry fixture for the
+    # rel_022 insert/downgrade assertions, rather than a current-head parity
+    # copy; cardinality is included because this test exercises that column.
     await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (

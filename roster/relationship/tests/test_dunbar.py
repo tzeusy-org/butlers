@@ -16,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)
 # ---------------------------------------------------------------------------
@@ -428,17 +430,7 @@ async def dunbar_pool(provisioned_postgres_pool):
         """)
         # contact_entity_map (rel_029) — contact_id → entity_id bridge that
         # dunbar reads instead of public.contacts (Phase 7.4e).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         # important_dates table (for context bonus tests)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS important_dates (
@@ -1786,17 +1778,7 @@ async def simple_pool(provisioned_postgres_pool):
             )
         """)
         # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -21,6 +21,7 @@ import uuid
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
 from butlers.tools.relationship.relationship_assert_fact import (
     PREFERS_CHANNEL_PREDICATE,
     AssertOutcome,
@@ -58,18 +59,7 @@ async def pool(provisioned_postgres_pool):
             """
         )
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(
-            """
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate   TEXT        NOT NULL PRIMARY KEY,
-                kind        TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL,
-                description TEXT,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                cardinality TEXT        NOT NULL DEFAULT 'multi'
-            )
-            """
-        )
+        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await p.execute(
             """
             INSERT INTO relationship.entity_predicate_registry

@@ -24,6 +24,7 @@ from fastapi import FastAPI
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
 
 pytestmark_integration = [
     pytest.mark.integration,
@@ -109,17 +110,7 @@ async def tier_pool(provisioned_postgres_pool):
         )
         # contact_entity_map (rel_029) — contact_id → entity_id bridge.
         # patch_entity_dunbar_tier looks here instead of contacts.entity_id (bu-j77a5).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         yield p
 
 

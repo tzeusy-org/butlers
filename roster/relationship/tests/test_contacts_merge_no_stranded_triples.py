@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
@@ -60,16 +61,7 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-                predicate   TEXT        NOT NULL PRIMARY KEY,
-                kind        TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL,
-                cardinality TEXT        NOT NULL DEFAULT 'multi',
-                description TEXT,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         # Channel predicates are multi-cardinality: two different emails are two
         # legitimate rows (the three-emails-three-rows rule) and must both survive.
         await p.execute("""
@@ -185,17 +177,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute("ALTER TABLE facts ADD COLUMN IF NOT EXISTS contact_id UUID")
         # contact_entity_map (rel_029) — merge_entities now updates this instead of
         # public.contacts.entity_id directly (bu-j77a5).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
         await apply_evidence_schema(p)

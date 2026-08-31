@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -60,17 +62,7 @@ async def pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_entity_map (
-                contact_id  UUID NOT NULL,
-                entity_id   UUID NOT NULL,
-                CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_entity_map_entity_id
-                ON contact_entity_map (entity_id)
-        """)
+        await p.execute(CONTACT_ENTITY_MAP.ddl())
         await p.execute("""
             CREATE TABLE IF NOT EXISTS relationship_types (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

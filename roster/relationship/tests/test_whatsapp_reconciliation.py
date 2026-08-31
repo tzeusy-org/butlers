@@ -16,7 +16,11 @@ import asyncpg
 import pytest
 
 import butlers.tools.relationship.whatsapp_reconciliation as reconciliation
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from butlers.tools.relationship.entity_merge import (
     LockedEntityPair,
     LockedGuardRejected,
@@ -84,18 +88,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             )
             """
         )
-        await pool.execute(
-            """
-            CREATE TABLE relationship.entity_predicate_registry (
-                predicate TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                cardinality TEXT NOT NULL DEFAULT 'multi',
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-            """
-        )
+        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await pool.execute(
             """
             CREATE TABLE relationship.entity_facts (
@@ -145,14 +138,7 @@ async def reconciliation_pool(provisioned_postgres_pool):
             )
             """
         )
-        await pool.execute(
-            """
-            CREATE TABLE relationship.contact_entity_map (
-                contact_id UUID PRIMARY KEY,
-                entity_id UUID NOT NULL
-            )
-            """
-        )
+        await pool.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
         await pool.execute(
             """
             CREATE TABLE relationship.merge_reviews (

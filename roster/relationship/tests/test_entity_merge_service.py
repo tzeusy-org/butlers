@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
 from butlers.tools.relationship.entity_merge import (
     AuditEntityOrderError,
     LockedGuardRejected,
@@ -189,22 +190,13 @@ async def merge_pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        await pool.execute("""
-            CREATE TABLE relationship.entity_predicate_registry (
-                predicate TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                cardinality TEXT NOT NULL DEFAULT 'multi',
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
         await pool.execute("""
             INSERT INTO relationship.entity_predicate_registry
                 (predicate, kind, object_kind, cardinality)
             VALUES
                 ('has-email', 'contact', 'literal', 'multi'),
-                ('knows', 'relationship', 'entity', 'multi')
+                ('knows', 'relational', 'entity', 'multi')
         """)
         await pool.execute("""
             CREATE TABLE relationship.entity_facts (
@@ -249,12 +241,7 @@ async def merge_pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        await pool.execute("""
-            CREATE TABLE contact_entity_map (
-                contact_id UUID PRIMARY KEY,
-                entity_id UUID NOT NULL
-            )
-        """)
+        await pool.execute(CONTACT_ENTITY_MAP.ddl())
         await pool.execute("""
             CREATE TABLE relationship.merge_reviews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -9,6 +9,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
@@ -110,13 +112,7 @@ CREATE TABLE IF NOT EXISTS public.entities (
 
 # contact_entity_map (rel_029) — contact_id → entity_id bridge that dunbar reads
 # instead of public.contacts (Phase 7.4e).
-CREATE_CONTACT_ENTITY_MAP_SQL = """
-CREATE TABLE IF NOT EXISTS contact_entity_map (
-    contact_id  UUID NOT NULL,
-    entity_id   UUID NOT NULL,
-    CONSTRAINT contact_entity_map_pkey PRIMARY KEY (contact_id)
-)
-"""
+CREATE_CONTACT_ENTITY_MAP_SQL = CONTACT_ENTITY_MAP.ddl()
 
 
 async def _setup_relationship_schema(pool) -> None:
@@ -1341,15 +1337,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
 """
 
 # Predicate registry used by relationship_assert_fact for validation.
-CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = """
-CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-    predicate   TEXT        NOT NULL PRIMARY KEY,
-    kind        TEXT        NOT NULL,
-    object_kind TEXT        NOT NULL,
-    description TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+CREATE_RELATIONSHIP_PREDICATE_REGISTRY_SQL = ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship")
 
 # Seed just the predicates relevant to interaction_sync tests.
 SEED_RELATIONSHIP_PREDICATES_SQL = """

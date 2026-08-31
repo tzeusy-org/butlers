@@ -17,7 +17,11 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from butlers.tools.relationship.whatsapp_reconciliation import (
     ContentBlindReconciliationReport,
     PartialApplyError,
@@ -326,10 +330,6 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
                 lid TEXT PRIMARY KEY,
                 pn TEXT NOT NULL
             );
-            CREATE TABLE relationship.entity_predicate_registry (
-                predicate TEXT PRIMARY KEY,
-                cardinality TEXT NOT NULL DEFAULT 'multi'
-            );
             CREATE TABLE relationship.entity_facts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 subject UUID NOT NULL REFERENCES public.entities(id),
@@ -357,10 +357,6 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
                 scope TEXT NOT NULL DEFAULT 'relationship',
                 validity TEXT NOT NULL DEFAULT 'active'
             );
-            CREATE TABLE relationship.contact_entity_map (
-                contact_id UUID PRIMARY KEY,
-                entity_id UUID NOT NULL
-            );
             CREATE TABLE relationship.merge_reviews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 entity_a UUID NOT NULL REFERENCES public.entities(id),
@@ -373,6 +369,8 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(
             );
             """
         )
+        await conn.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
+        await conn.execute(CONTACT_ENTITY_MAP.ddl(schema="relationship"))
         await conn.execute(PENDING_ACTIONS.ddl(schema="relationship"))
         source_id = await conn.fetchval(
             """
