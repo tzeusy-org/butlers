@@ -605,7 +605,6 @@ export {
 export type {
   ConnectorArchiveResult,
   ConnectorCheckpoint,
-  ConnectorCrossSummaryResponse,
   ConnectorCounters,
   ConnectorDaySummary,
   ConnectorDetail,

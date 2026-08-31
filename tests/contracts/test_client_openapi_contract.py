@@ -91,13 +91,11 @@ pytestmark = pytest.mark.contract
 # tests/contracts/test_client_openapi_contract.py -> tests/ -> repo root
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CLIENT_TS = _REPO_ROOT / "frontend" / "src" / "api" / "client.ts"
-_TYPES_TS = _REPO_ROOT / "frontend" / "src" / "api" / "types.ts"
 _INGESTION_CONNECTORS = (
     _REPO_ROOT / "src" / "butlers" / "api" / "routers" / "ingestion_connectors.py"
 )
 
 _CROSS_SUMMARY_HANDLER = "get_cross_connector_summary_with_aggregates"
-_CROSS_SUMMARY_INTERFACE = "ConnectorCrossSummaryResponse"
 
 # Wildcard marker substituted for each `${...}` template interpolation.
 _WILDCARD = "\x00"
@@ -257,28 +255,6 @@ def _cross_summary_payload_shapes() -> list[set[str]]:
         )
         shapes.setdefault(ast.dump(data), {key.value for key in data.keys})
     return list(shapes.values())
-
-
-def _typescript_interface_fields(interface: str) -> dict[str, tuple[bool, str]]:
-    """Map one flat exported TypeScript interface to ``{field: (optional, type)}``."""
-    text = _TYPES_TS.read_text(encoding="utf-8")
-    start = re.search(rf"export interface {re.escape(interface)}\s*{{", text)
-    assert start is not None, f"{interface} not found in {_TYPES_TS}"
-    brace = text.index("{", start.start())
-    body = text[brace + 1 : _find_matching(text, brace, "{", "}")]
-    matches = list(
-        re.finditer(
-            r"^\s*(?P<name>[A-Za-z_]\w*)(?P<optional>\?)?:\s*(?P<type>[^;]+);",
-            body,
-            re.MULTILINE,
-        )
-    )
-    fields = {
-        match.group("name"): (match.group("optional") == "?", match.group("type").strip())
-        for match in matches
-    }
-    assert len(fields) == len(matches), f"{interface} declares a duplicate field"
-    return fields
 
 
 _FUNC_START_RE = re.compile(r"(?:export (?:async )?|async )?\bfunction (\w+)\s*\(")
@@ -886,17 +862,17 @@ def test_frontend_limit_literal_within_backend_ceiling(
 
 
 # ---------------------------------------------------------------------------
-# Check D: cross-summary response shape parity.
+# Check D: cross-summary backend response shape parity.
 #
 # ``ApiResponse[dict]`` deliberately leaves the response fields out of
 # OpenAPI, so the route/path checks above cannot catch a backend field that
-# the corresponding TypeScript interface omits. This one endpoint-local guard
-# compares both literal backend payload shapes with its frontend response type.
+# is omitted from one of the handler's fallback payloads. This endpoint-local
+# guard compares both literal backend payload shapes directly.
 # ---------------------------------------------------------------------------
 
 
-def test_cross_summary_backend_fields_match_frontend_response_type() -> None:
-    """A backend field cannot silently become invisible to the TS contract."""
+def test_cross_summary_backend_payload_shapes_match() -> None:
+    """The success and degraded backend payloads expose the same fields."""
     payload_shapes = _cross_summary_payload_shapes()
     assert len(payload_shapes) == 2, (
         f"{_CROSS_SUMMARY_HANDLER} no longer has its two literal payload shapes; "
@@ -907,17 +883,17 @@ def test_cross_summary_backend_fields_match_frontend_response_type() -> None:
         f"{payload_shapes}"
     )
 
-    backend_fields = payload_shapes[0]
-    frontend_fields = _typescript_interface_fields(_CROSS_SUMMARY_INTERFACE)
-    assert backend_fields == set(frontend_fields), (
-        f"{_CROSS_SUMMARY_INTERFACE} drifted from {_CROSS_SUMMARY_HANDLER}: "
-        f"missing={sorted(backend_fields - set(frontend_fields))}; "
-        f"stale={sorted(set(frontend_fields) - backend_fields)}"
-    )
-    assert frontend_fields["connectors_unclassified"] == (False, "number"), (
-        "connectors_unclassified is always an integer (including the zero/degraded payload), "
-        "so ConnectorCrossSummaryResponse must declare required, non-null number semantics"
-    )
+    assert payload_shapes[0] == {
+        "total_connectors",
+        "connectors_online",
+        "connectors_stale",
+        "connectors_offline",
+        "connectors_unclassified",
+        "total_messages_ingested",
+        "total_messages_failed",
+        "overall_error_rate_pct",
+        "aggregates_available",
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
  * - ingestionKeys.connectorSummariesWithAggregates()  → ConnectorSummariesResponse
- * - ingestionKeys.crossSummaryWithAggregates()        → ConnectorCrossSummaryResponse
  * - ingestionKeys.pipelineStats(window)               → PipelineStats
  *
  * Overview and Connectors tabs share the connectors list key so switching
@@ -65,8 +64,6 @@ export const ingestionKeys = {
     ] as const,
   connectorSummariesWithAggregates: () =>
     [...ingestionKeys.all, "connectors-summaries-with-aggregates"] as const,
-  crossSummaryWithAggregates: () =>
-    [...ingestionKeys.all, "cross-summary-with-aggregates"] as const,
   pipelineStats: (window: string) =>
     [...ingestionKeys.all, "pipeline-stats", window] as const,
   connectorEvents: (connectorType: string, endpointIdentity: string, limit: number) =>
@@ -174,7 +171,7 @@ export function useUpdateConnectorSettings(
  * Mutation to soft-archive a connector identity (bu-u19yv one-click archive from
  * the review queue; reuses the audit-logged archive endpoint, no new mechanics).
  *
- * On success, invalidates the summaries + cross-summary queries so the archived
+ * On success, invalidates the summaries query so the archived
  * identity moves from the active roster (and its review-queue candidate row)
  * into the collapsed "archived" section and drops out of the fleet-health
  * rollups — no manual refetch needed.
@@ -192,9 +189,6 @@ export function useArchiveConnector() {
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorSummariesWithAggregates(),
-      });
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.crossSummaryWithAggregates(),
       });
     },
   });
@@ -221,9 +215,6 @@ export function useUnarchiveConnector() {
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorSummariesWithAggregates(),
-      });
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.crossSummaryWithAggregates(),
       });
     },
   });

@@ -193,28 +193,7 @@ async function installCommonMocks(page: Page) {
     });
   });
 
-  // 3. Connector cross-summary
-  await page.route("**/api/ingestion/connectors/cross-summary*", (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          total_connectors: 1,
-          online_count: 1,
-          stale_count: 0,
-          offline_count: 0,
-          unknown_count: 0,
-          total_messages_ingested: 1500,
-          total_messages_failed: 5,
-          error_rate_pct: 0.33,
-        },
-        aggregates_available: false,
-      }),
-    });
-  });
-
-  // 4. Switchboard connector detail for gmail/alice@example.com
+  // 3. Switchboard connector detail for gmail/alice@example.com
   await page.route(
     "**/api/switchboard/connectors/gmail/alice%40example.com/stats*",
     (route) => {
@@ -226,7 +205,7 @@ async function installCommonMocks(page: Page) {
     },
   );
 
-  // 5. Connector stats for gmail
+  // 4. Connector stats for gmail
   await page.route(
     "**/api/switchboard/connectors/gmail/alice%40example.com*",
     (route) => {
@@ -238,7 +217,7 @@ async function installCommonMocks(page: Page) {
     },
   );
 
-  // 6. Switchboard connector list
+  // 5. Switchboard connector list
   await page.route("**/api/switchboard/connectors*", (route) => {
     route.fulfill({
       status: 200,
@@ -247,7 +226,7 @@ async function installCommonMocks(page: Page) {
     });
   });
 
-  // 6b. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
+  // 5b. Connector-scoped sub-sections: events, incidents, routing-rules [bu-5ywn2]
   //     These must be registered before the generic connectors catch-all so
   //     they win under LIFO matching. The catch-all (**/api/**) would return
   //     { data: [] } which does not match ConnectorEventsResponse shape and
@@ -301,7 +280,7 @@ async function installCommonMocks(page: Page) {
     },
   );
 
-  // 7. Pipeline stats
+  // 6. Pipeline stats
   await page.route("**/api/ingestion/pipeline*", (route) => {
     route.fulfill({
       status: 200,
@@ -321,7 +300,7 @@ async function installCommonMocks(page: Page) {
     });
   });
 
-  // 8. Ingestion rules
+  // 7. Ingestion rules
   await page.route("**/switchboard/ingestion-rules*", (route) => {
     route.fulfill({
       status: 200,
@@ -349,7 +328,7 @@ async function installCommonMocks(page: Page) {
     });
   });
 
-  // 9. Per-event sub-resources (must be before events list)
+  // 8. Per-event sub-resources (must be before events list)
   await page.route("**/api/ingestion/events/*/sender-contact", (route) => {
     route.fulfill({
       status: 200,
@@ -391,7 +370,7 @@ async function installCommonMocks(page: Page) {
     });
   });
 
-  // 10. Events list — registered LAST so it wins over catch-all in LIFO matching.
+  // 9. Events list — registered LAST so it wins over catch-all in LIFO matching.
   //     Pattern does NOT cross '/' boundaries, so /events?... matches but
   //     /events/abc/sessions does not.
   await page.route("**/api/ingestion/events*", (route) => {

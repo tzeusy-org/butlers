@@ -4058,29 +4058,6 @@ export interface ConnectorArchiveResult {
   archived_at: string | null;
 }
 
-/**
- * Cross-connector summary with aggregates_available flag
- * (GET /api/ingestion/connectors/cross-summary).
- */
-export interface ConnectorCrossSummaryResponse {
-  total_connectors: number;
-  connectors_online: number;
-  connectors_stale: number;
-  connectors_offline: number;
-  /** Runtime-role-unknown rows, counted apart from fleet liveness. */
-  connectors_unclassified: number;
-  total_messages_ingested: number;
-  total_messages_failed: number;
-  overall_error_rate_pct: number;
-  /**
-   * True only when Prometheus actually answered the funnel queries behind the
-   * console's time-series panels — not merely when a PROMETHEUS_URL is
-   * configured (bu-avkvr). Every other field above is DB-sourced and stays
-   * valid when this is false.
-   */
-  aggregates_available: boolean;
-}
-
 /** A connector profile from the available-discovery catalog.
  *
  * Returned by GET /api/ingestion/connectors/available.
