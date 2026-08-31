@@ -12,9 +12,11 @@ import type { ReactNode } from "react";
 import type { DispatchAttemptEntry, PaginatedResponse } from "@/api/types.ts";
 
 const mockGetDispatchAttempts = vi.fn();
+const mockGetFleetHaltAttention = vi.fn();
 
 vi.mock("@/api/client", () => ({
   getDispatchAttempts: (...args: unknown[]) => mockGetDispatchAttempts(...args),
+  getFleetHaltAttention: (...args: unknown[]) => mockGetFleetHaltAttention(...args),
 }));
 
 // useFleetHaltStatus's useBusAwarePollInterval reads the shared EventBusProvider
@@ -68,6 +70,10 @@ function makeWrapper() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetFleetHaltAttention.mockResolvedValue({
+    data: { available: true, episode: null },
+    meta: {},
+  });
 });
 
 describe("useFleetHaltStatus", () => {
@@ -120,6 +126,19 @@ describe("useFleetHaltStatus", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
     expect(result.current.active).toBe(false);
     expect(result.current.deniedTotal).toBe(0);
+  });
+
+  it("keeps durable attention degradation independent from denial state", async () => {
+    mockGetDispatchAttempts.mockResolvedValue(page([], 0));
+    mockGetFleetHaltAttention.mockRejectedValue(new Error("503"));
+
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useFleetHaltStatus(), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.isAttentionLoading).toBe(false));
+    expect(result.current.isError).toBe(false);
+    expect(result.current.attentionAvailable).toBe(false);
+    expect(result.current.attention).toBeNull();
   });
 
   it("scopes queries to outcome=quota_skip and the ceiling reason prefix", async () => {

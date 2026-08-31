@@ -30,9 +30,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { render, cleanup, fireEvent, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { axe, toHaveNoViolations } from "jest-axe";
 
 import SettingsModelsPage from "@/pages/SettingsModelsPage";
 import type { ModelCatalogEntry } from "@/api/types";
+
+expect.extend(toHaveNoViolations);
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -49,6 +52,12 @@ vi.mock("@/hooks/use-model-catalog", () => ({
   })),
   useUpdateModelPriority: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useVerifyAllModels: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  useModelAttention: vi.fn(() => ({
+    data: { data: { available: true, episodes: {} } },
+    isLoading: false,
+    isError: false,
+  })),
+  useReissueModelAttention: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetModelTokenLimits: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResetModelUsage: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useModelUsageDetail: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -71,6 +80,8 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
+  useModelAttention,
+  useReissueModelAttention,
   useResetModelUsage,
   useSetModelTokenLimits,
   useUpdateModelCatalogEntry,
@@ -173,6 +184,109 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+});
+
+describe("SettingsModelsPage — truthful runtime attention", () => {
+  const uncertainEpisode = {
+    episode_id: "episode-1",
+    lifecycle_state: "uncertain" as const,
+    created_at: "2026-08-26T12:00:00Z",
+    updated_at: "2026-08-26T12:01:00Z",
+    delivered_at: null,
+    safe_reason: "Delivery timed out; outcome is uncertain",
+    manual_reissue_of: null,
+    successor_id: null,
+    reissue_eligible: true,
+  };
+
+  it("renders probe, routing, breaker, and attention as independent facts", () => {
+    setHookState({
+      entries: [
+        makeModel({
+          last_verified_ok: true,
+          last_verified_at: "2026-08-26T11:00:00Z",
+          breaker_open: true,
+          breaker_consecutive_failures: 5,
+        }),
+      ],
+    });
+    vi.mocked(useModelAttention).mockReturnValue({
+      data: { data: { available: true, episodes: { "model-1": uncertainEpisode } } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+
+    mountPage();
+
+    expect(screen.getByText("Verification: runtime probe passed")).toBeTruthy();
+    expect(screen.getByText("A successful probe does not close the breaker.")).toBeTruthy();
+    expect(screen.getByText("Routing: excluded by breaker · 5 consecutive failures")).toBeTruthy();
+    expect(screen.getByText("Attention: uncertain")).toBeTruthy();
+  });
+
+  it("keeps attention degradation honest without hiding model facts", () => {
+    setHookState({ entries: [makeModel({ last_verified_ok: true })] });
+    vi.mocked(useModelAttention).mockReturnValue({
+      data: { data: { available: false, episodes: {} } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+
+    mountPage();
+
+    expect(screen.getByText("Attention: unavailable")).toBeTruthy();
+    expect(screen.getByText("Verification: runtime probe passed")).toBeTruthy();
+  });
+
+  it("renders attention loading separately from unavailable and proven empty", () => {
+    setHookState({ entries: [makeModel()] });
+    vi.mocked(useModelAttention).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as AnyMock);
+
+    mountPage();
+
+    expect(screen.getByText("Attention: loading…")).toBeTruthy();
+    expect(screen.queryByText("Attention: unavailable")).toBeNull();
+    expect(screen.queryByText("Attention: no alert recorded")).toBeNull();
+  });
+
+  it("uses an accessible confirmation and reports the actual successor", async () => {
+    setHookState({ entries: [makeModel()] });
+    vi.mocked(useModelAttention).mockReturnValue({
+      data: { data: { available: true, episodes: { "model-1": uncertainEpisode } } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+    const mutate = vi.fn((_episodeId, options) =>
+      options.onSuccess({
+        data: {
+          original_episode_id: "episode-1",
+          successor_episode_id: "episode-2",
+          successor_state: "pending",
+          created: true,
+        },
+      }),
+    );
+    vi.mocked(useReissueModelAttention).mockReturnValue({ mutate, isPending: false } as AnyMock);
+
+    mountPage();
+    fireEvent.click(screen.getByRole("button", { name: "Send a new alert for claude-sonnet" }));
+    const dialog = screen.getByRole("dialog", { name: "Send a new alert?" });
+    expect(dialog).toBeTruthy();
+    expect(screen.getByText(/original delivery may still have succeeded/i)).toBeTruthy();
+    expect(
+      await axe(dialog, { rules: { "color-contrast": { enabled: false } } }),
+    ).toHaveNoViolations();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm send new alert" }));
+
+    expect(mutate).toHaveBeenCalledWith("episode-1", expect.any(Object));
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "New alert episode episode-2 is pending.",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

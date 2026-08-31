@@ -579,6 +579,18 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
                 AND lease_guard.proconfig = ARRAY[
                     'search_path=pg_catalog, public, pg_temp'
                 ]::text[] AS fixed_lease_guard_path,
+            operator_upgrade.prosecdef
+                AND pg_get_userbyid(operator_upgrade.proowner)
+                    = 'runtime_attention_outbox_owner'
+                AND operator_upgrade.proconfig = ARRAY[
+                    'search_path=pg_catalog, pg_temp'
+                ]::text[] AS fenced_operator_upgrade,
+            operator_deactivate.prosecdef
+                AND pg_get_userbyid(operator_deactivate.proowner)
+                    = 'runtime_attention_outbox_owner'
+                AND operator_deactivate.proconfig = ARRAY[
+                    'search_path=pg_catalog, pg_temp'
+                ]::text[] AS fenced_operator_deactivate,
             has_table_privilege(owner_role.oid, 'public.model_catalog'::regclass, 'SELECT')
                 AND has_table_privilege(
                     owner_role.oid, 'public.model_dispatch_attempts'::regclass, 'SELECT'
@@ -652,6 +664,10 @@ async def test_core_only_database_has_guarded_outbox_without_specialist_schema(
           ON fleet_halt.oid = 'public.append_runtime_attention_fleet_halt()'::regprocedure
         JOIN pg_proc AS lease_guard
           ON lease_guard.oid = 'public.runtime_attention_delivery_lease_guard()'::regprocedure
+        JOIN pg_proc AS operator_upgrade
+          ON operator_upgrade.oid = 'public.runtime_attention_upgrade_operator_v3()'::regprocedure
+        JOIN pg_proc AS operator_deactivate
+          ON operator_deactivate.oid = 'public.runtime_attention_deactivate_operator_v3()'::regprocedure
         JOIN pg_namespace AS admin_schema
           ON admin_schema.nspname = 'runtime_attention_admin'
         JOIN pg_roles AS bootstrap_owner ON bootstrap_owner.oid = admin_schema.nspowner
@@ -959,7 +975,7 @@ async def test_constraints_reject_non_edge_forgery_keep_source_snapshot_and_fenc
         "DELETE FROM public.model_catalog WHERE id = $1", retained_entry_id
     )
     retained = await upgraded_admin_pool.fetchrow(
-        f"SELECT triggering_attempt_id, source_snapshot FROM {_OUTBOX} WHERE id = $1",
+        f"SELECT triggering_attempt_id, source_snapshot, payload FROM {_OUTBOX} WHERE id = $1",
         retained_episode_id,
     )
     assert retained is not None
@@ -989,8 +1005,11 @@ async def test_constraints_reject_non_edge_forgery_keep_source_snapshot_and_fenc
         is False
     )
 
-    reissue_snapshot = {"reissue_of": str(retained_episode_id)}
-    reissue_payload = {"classification": "manual_reissue"}
+    reissue_snapshot = {
+        **retained["source_snapshot"],
+        "reissue_of": str(retained_episode_id),
+    }
+    reissue_payload = retained["payload"]
     await upgraded_admin_pool.execute(
         f"""
         INSERT INTO {_OUTBOX} (
@@ -1013,6 +1032,97 @@ async def test_constraints_reject_non_edge_forgery_keep_source_snapshot_and_fenc
             reissue_snapshot,
             reissue_payload,
             retained_episode_id,
+        )
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_operator_rollback_disables_reissue_without_deleting_evidence_or_attempts(
+    upgraded_pool: asyncpg.Pool,
+    upgraded_admin_pool: asyncpg.Pool,
+) -> None:
+    """REQ-runtime-attention-outbox-003: rollback is additive and evidence-safe."""
+    assert (
+        await upgraded_pool.fetchval(
+            "SELECT reissue_enabled FROM public.runtime_attention_operator_control WHERE singleton"
+        )
+        is True
+    )
+    entry_id = uuid.uuid4()
+    episode_id = uuid.uuid4()
+    claim_token = uuid.uuid4()
+    await upgraded_admin_pool.execute(
+        """
+        INSERT INTO public.model_catalog (id, alias, runtime_type, model_id)
+        VALUES ($1, $2, 'codex', $3)
+        """,
+        entry_id,
+        f"rollback-{entry_id}",
+        f"rollback-model-{entry_id}",
+    )
+    attempt_id = await upgraded_admin_pool.fetchval(
+        """
+        INSERT INTO public.model_dispatch_attempts (catalog_entry_id, butler, outcome)
+        VALUES ($1, 'general', 'runtime_failure') RETURNING id
+        """,
+        entry_id,
+    )
+    await upgraded_admin_pool.execute(
+        """
+        INSERT INTO public.runtime_attention_outbox (
+            id, source, lifecycle_state, triggering_attempt_id, source_snapshot, payload,
+            claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance,
+            claimed_at, claim_expires_at, delivery_error_class, delivery_error_detail
+        ) VALUES (
+            $1, 'model_breaker', 'uncertain', $2::bigint,
+            jsonb_build_object(
+                'catalog_entry_id', $3::text, 'alias', 'rollback-model',
+                'model_id', 'rollback-model', 'triggering_attempt_id', $2::bigint,
+                'consecutive_failures', 5
+            ),
+            '{"classification":"model_breaker_open","consecutive_failures":5,"door":"/settings/models"}'::jsonb,
+            $4, 1, 1, 'dead-worker', now() - interval '2 minutes',
+            now() - interval '1 minute', 'transport_uncertain', 'worker_recovery'
+        )
+        """,
+        episode_id,
+        attempt_id,
+        str(entry_id),
+        claim_token,
+    )
+    successor = await upgraded_pool.fetchrow(
+        "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+    )
+    assert successor is not None
+    before_attempts = await upgraded_admin_pool.fetchval(
+        "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id = $1",
+        entry_id,
+    )
+
+    try:
+        await upgraded_admin_pool.execute(
+            "SELECT public.runtime_attention_deactivate_operator_v3()"
+        )
+        with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
+            await upgraded_pool.fetchrow(
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+            )
+        assert (
+            await upgraded_admin_pool.fetchval(
+                "SELECT count(*) FROM public.runtime_attention_outbox WHERE id = $1 OR manual_reissue_of = $1",
+                episode_id,
+            )
+            == 2
+        )
+        assert (
+            await upgraded_admin_pool.fetchval(
+                "SELECT count(*) FROM public.model_dispatch_attempts WHERE catalog_entry_id = $1",
+                entry_id,
+            )
+            == before_attempts
+        )
+    finally:
+        await upgraded_admin_pool.execute(
+            "UPDATE public.runtime_attention_operator_control SET reissue_enabled = true WHERE singleton"
         )
 
 

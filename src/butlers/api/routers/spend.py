@@ -67,6 +67,7 @@ from butlers.api.models import (
     TopSession,
     UnpricedModelUsage,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
 from butlers.core.model_routing import (
     LedgerSpend,
@@ -697,6 +698,78 @@ async def _get_butler_session_stats_for_range(
         if tracker is not None:
             tracker.mark(info.name, msg="Cost summary (date range) tool call failed")
     return (info.name, 0.0, 0, 0, 0, {})
+
+
+class FleetHaltAttentionEpisode(BaseModel):
+    """Content-blind durable delivery evidence for the current breach window."""
+
+    episode_id: uuid.UUID
+    lifecycle_state: str
+    created_at: datetime
+    updated_at: datetime
+    delivered_at: datetime | None = None
+    safe_reason: str | None = None
+
+
+class FleetHaltAttentionObservation(BaseModel):
+    """Fleet-halt outbox availability, distinct from an empty observation."""
+
+    available: bool
+    episode: FleetHaltAttentionEpisode | None = None
+
+
+_FLEET_ATTENTION_REASON_COPY = {
+    ("pre_transport", "recipient_unavailable"): "Recipient unavailable before delivery",
+    ("pre_transport", "policy_denied"): "Delivery policy denied the alert",
+    ("transport_rejected", "provider_rejected"): "Transport rejected the alert",
+    ("transport_uncertain", "transport_timeout"): "Delivery timed out; outcome is uncertain",
+    (
+        "transport_uncertain",
+        "transport_connection_lost",
+    ): "Delivery connection was lost; outcome is uncertain",
+    ("transport_uncertain", "worker_recovery"): "A dead delivery claim was fenced as uncertain",
+}
+
+
+@router.get(
+    "/runtime-attention",
+    response_model=ApiResponse[FleetHaltAttentionObservation],
+)
+async def get_fleet_halt_runtime_attention(
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager | None = Depends(_get_db_manager),
+) -> ApiResponse[FleetHaltAttentionObservation]:
+    """Return sanitized durable alert evidence without weakening Spend data."""
+    if db is None:
+        return ApiResponse[FleetHaltAttentionObservation](
+            data=FleetHaltAttentionObservation(available=False)
+        )
+    try:
+        pool = db.credential_shared_pool()
+        row = await pool.fetchrow("SELECT * FROM public.observe_runtime_attention_fleet_halt()")
+    except Exception:
+        logger.warning("Spend fleet-halt runtime-attention observation unavailable")
+        return ApiResponse[FleetHaltAttentionObservation](
+            data=FleetHaltAttentionObservation(available=False)
+        )
+    if row is None:
+        return ApiResponse[FleetHaltAttentionObservation](
+            data=FleetHaltAttentionObservation(available=True)
+        )
+    safe_reason = _FLEET_ATTENTION_REASON_COPY.get(
+        (row["delivery_error_class"], row["delivery_error_detail"])
+    )
+    episode = FleetHaltAttentionEpisode(
+        episode_id=row["episode_id"],
+        lifecycle_state=row["lifecycle_state"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        delivered_at=row["delivered_at"],
+        safe_reason=safe_reason,
+    )
+    return ApiResponse[FleetHaltAttentionObservation](
+        data=FleetHaltAttentionObservation(available=True, episode=episode)
+    )
 
 
 @router.get("", response_model=ApiResponse[SpendSummary])

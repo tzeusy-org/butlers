@@ -125,10 +125,11 @@ async def test_catalog_list_and_503(app):
     # than threaded through the generic catalog-row mock rows, which model
     # the model_catalog list shape, not model_dispatch_attempts.
     _app_with_pool(app, fetch_rows=rows)
+    breaker_batch = AsyncMock(return_value={})
     with (
         patch(
             "butlers.api.routers.model_settings.get_breaker_states",
-            new=AsyncMock(return_value={}),
+            new=breaker_batch,
         ),
         patch(
             "butlers.api.routers.model_settings.get_routing_scores",
@@ -143,6 +144,8 @@ async def test_catalog_list_and_503(app):
     assert len(resp.json()["data"]) == 2
     assert resp.json()["data"][0]["breaker_open"] is False
     assert resp.json()["data"][0]["routing_score_insufficient_data"] is True
+    breaker_batch.assert_awaited_once()
+    assert breaker_batch.await_args.args[1] == [row["id"] for row in rows]
 
     # 503 when pool unavailable
     _app_with_pool(app, pool_raises=KeyError("No shared pool"))

@@ -48,7 +48,12 @@ vi.mock("@/hooks/use-spend-ticker", () => ({
 const mockUseFleetHaltStatus = vi.fn();
 
 vi.mock("@/hooks/use-fleet-halt", () => ({
-  useFleetHaltStatus: () => mockUseFleetHaltStatus(),
+  useFleetHaltStatus: () => ({
+    attentionAvailable: true,
+    attention: null,
+    isAttentionLoading: false,
+    ...mockUseFleetHaltStatus(),
+  }),
 }));
 
 // BreakdownSection/SpendRulesSection/the posture forecast query now call
@@ -2248,6 +2253,52 @@ describe("SpendPage — fleet-halt banner (bu-7o89u.3)", () => {
     expect(note.textContent ?? "").toContain("Fleet-halt status");
     // The (potentially false) "no halt" banner must not also render.
     expect(screen.queryByTestId("fleet-halt-banner")).toBeNull();
+  });
+
+  it("renders durable alert state independently from denial attempts", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 1,
+      deniedTotal: 1,
+      since: "2026-05-10T08:00:00.000Z",
+      recentAttempts: [],
+      isLoading: false,
+      isError: false,
+      attentionAvailable: true,
+      attention: {
+        episode_id: "episode-fleet-1",
+        lifecycle_state: "sent",
+        created_at: "2026-05-10T08:00:01.000Z",
+        updated_at: "2026-05-10T08:00:03.000Z",
+        delivered_at: "2026-05-10T08:00:03.000Z",
+        safe_reason: null,
+      },
+    });
+
+    await act(async () => renderPage());
+    expect((await screen.findByTestId("fleet-halt-attention")).textContent).toContain(
+      "Alert delivery: sent",
+    );
+    expect(screen.getByTestId("fleet-halt-banner")).toBeTruthy();
+  });
+
+  it("names durable attention degradation instead of rendering no alert", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 1,
+      deniedTotal: 1,
+      since: "2026-05-10T08:00:00.000Z",
+      recentAttempts: [],
+      isLoading: false,
+      isError: false,
+      attentionAvailable: false,
+      attention: null,
+    });
+
+    await act(async () => renderPage());
+    expect(await screen.findByTestId("fleet-halt-attention-error")).toBeTruthy();
+    expect(screen.queryByText(/no alert/i)).toBeNull();
+    expect(screen.getByTestId("fleet-halt-banner")).toBeTruthy();
   });
 
   it("attempts drawer: expands to list recent denied attempts with session doors", async () => {

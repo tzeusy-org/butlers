@@ -29,6 +29,7 @@ import butlers.api.routers.audit as audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.core.model_routing import (
     RoutingScore,
     get_breaker_states,
@@ -38,6 +39,7 @@ from butlers.core.model_routing import (
 from butlers.core.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.runtime_probe_control.activation import probe_client
 from butlers.core.runtime_probe_control.coordinator import HTTP_STATUS, ProbeResult, ProbeStatus
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,12 @@ _VERIFY_ALL_CONCURRENCY = 8
 # concurrent request is rejected immediately instead of waiting behind a
 # long-running verification sweep.
 _verify_all_in_flight = False
+
+model_attention_operator_total = get_or_create_counter(
+    "model_attention_operator_total",
+    "Sanitized Models runtime-attention observation and manual-reissue outcomes.",
+    labelnames=["operation", "outcome"],
+)
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -288,6 +296,36 @@ class ModelTestResult(BaseModel):
     duration_ms: int = 0
 
 
+class ModelAttentionEpisode(BaseModel):
+    """Content-blind lifecycle projection for one model attention episode."""
+
+    episode_id: UUID
+    lifecycle_state: str
+    created_at: datetime
+    updated_at: datetime
+    delivered_at: datetime | None = None
+    safe_reason: str | None = None
+    manual_reissue_of: UUID | None = None
+    successor_id: UUID | None = None
+    reissue_eligible: bool = False
+
+
+class ModelAttentionObservation(BaseModel):
+    """Batched attention source state, distinct from a proven empty result."""
+
+    available: bool
+    episodes: dict[UUID, ModelAttentionEpisode] = Field(default_factory=dict)
+
+
+class ModelAttentionReissueResult(BaseModel):
+    """The one atomic successor result returned for an original episode."""
+
+    original_episode_id: UUID
+    successor_episode_id: UUID
+    successor_state: str
+    created: bool
+
+
 class ModelPricingResponse(BaseModel):
     """Per-model pricing entry (USD per 1M tokens).
 
@@ -411,6 +449,61 @@ def _shared_pool(db: DatabaseManager):
         )
 
 
+_ATTENTION_REASON_COPY = {
+    ("pre_transport", "recipient_unavailable"): "Recipient unavailable before delivery",
+    ("pre_transport", "policy_denied"): "Delivery policy denied the alert",
+    ("transport_rejected", "provider_rejected"): "Transport rejected the alert",
+    ("transport_uncertain", "transport_timeout"): "Delivery timed out; outcome is uncertain",
+    (
+        "transport_uncertain",
+        "transport_connection_lost",
+    ): "Delivery connection was lost; outcome is uncertain",
+    ("transport_uncertain", "worker_recovery"): "A dead delivery claim was fenced as uncertain",
+}
+
+
+def _attention_safe_reason(row: Any) -> str | None:
+    return _ATTENTION_REASON_COPY.get(
+        (
+            _row_value(row, "delivery_error_class"),
+            _row_value(row, "delivery_error_detail"),
+        )
+    )
+
+
+def _attention_episode(row: Any) -> ModelAttentionEpisode:
+    successor_id = _row_value(row, "successor_id")
+    state = str(row["lifecycle_state"])
+    return ModelAttentionEpisode(
+        episode_id=row["episode_id"],
+        lifecycle_state=state,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        delivered_at=_row_value(row, "delivered_at"),
+        safe_reason=_attention_safe_reason(row),
+        manual_reissue_of=_row_value(row, "manual_reissue_of"),
+        successor_id=successor_id,
+        reissue_eligible=(
+            state == "uncertain"
+            and _row_value(row, "manual_reissue_of") is None
+            and successor_id is None
+        ),
+    )
+
+
+def _attention_metric(operation: str, outcome: str) -> None:
+    """Best-effort categorical counter; never alter an operator outcome."""
+    try:
+        model_attention_operator_total.labels(operation=operation, outcome=outcome).inc()
+    except Exception:
+        logger.debug(
+            "Models attention counter unavailable operation=%s outcome=%s",
+            operation,
+            outcome,
+            exc_info=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/settings/models — list catalog entries
 # ---------------------------------------------------------------------------
@@ -492,6 +585,83 @@ async def list_catalog_entries(
             _apply_routing_score(entry, score)
         entries.append(entry)
     return ApiResponse[list[ModelCatalogEntry]](data=entries)
+
+
+# ---------------------------------------------------------------------------
+# Owner-only runtime-attention observation and deliberate uncertain reissue
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.get("/attention", response_model=ApiResponse[ModelAttentionObservation])
+async def observe_model_attention(
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ModelAttentionObservation]:
+    """Return the latest sanitized episode for each model in one batch.
+
+    Source failure is a successful response with ``available=false`` so the
+    Models catalog can retain its independently available verification and
+    breaker facts without inventing a no-alert state.
+    """
+    pool = _shared_pool(db)
+    try:
+        rows = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
+    except Exception:
+        logger.warning("Models runtime-attention observation unavailable")
+        _attention_metric("observe", "unavailable")
+        return ApiResponse[ModelAttentionObservation](
+            data=ModelAttentionObservation(available=False)
+        )
+
+    episodes = {row["catalog_entry_id"]: _attention_episode(row) for row in rows}
+    _attention_metric("observe", "present" if episodes else "empty")
+    return ApiResponse[ModelAttentionObservation](
+        data=ModelAttentionObservation(available=True, episodes=episodes)
+    )
+
+
+@catalog_router.post(
+    "/attention/{episode_id}/reissue",
+    response_model=ApiResponse[ModelAttentionReissueResult],
+)
+async def reissue_model_attention(
+    episode_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ModelAttentionReissueResult]:
+    """Create or return the one pending successor for an uncertain episode."""
+    pool = _shared_pool(db)
+    try:
+        row = await pool.fetchrow(
+            "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+        )
+    except asyncpg.PostgresError as exc:
+        if exc.sqlstate in {"55000", "23514"}:
+            _attention_metric("reissue", "ineligible")
+            raise HTTPException(
+                status_code=409, detail="Attention episode is not eligible for reissue"
+            ) from None
+        if exc.sqlstate == "P0002":
+            _attention_metric("reissue", "not_found")
+            raise HTTPException(status_code=404, detail="Attention episode not found") from None
+        logger.warning("Models attention reissue database operation unavailable")
+        _attention_metric("reissue", "unavailable")
+        raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
+    except (asyncpg.InterfaceError, OSError, RuntimeError, TimeoutError):
+        logger.warning("Models attention reissue database connection unavailable")
+        _attention_metric("reissue", "unavailable")
+        raise HTTPException(status_code=503, detail="Attention reissue is unavailable") from None
+
+    if row is None:
+        _attention_metric("reissue", "unavailable")
+        raise HTTPException(status_code=503, detail="Attention reissue is unavailable")
+    result = ModelAttentionReissueResult(**dict(row))
+    _attention_metric("reissue", "created" if result.created else "existing")
+    logger.info(
+        "Models attention reissue completed outcome=%s",
+        "created" if result.created else "existing",
+    )
+    return ApiResponse[ModelAttentionReissueResult](data=result)
 
 
 # ---------------------------------------------------------------------------

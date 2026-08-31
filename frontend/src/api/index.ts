@@ -710,6 +710,8 @@ export {
   createModelCatalogEntry,
   updateModelCatalogEntry,
   testModelCatalogEntry,
+  getModelAttention,
+  reissueModelAttention,
   deleteModelCatalogEntry,
   listButlerModelOverrides,
   upsertButlerModelOverrides,
@@ -725,6 +727,9 @@ export {
 export type {
   ComplexityTier,
   ModelCatalogEntry,
+  ModelAttentionEpisode,
+  ModelAttentionObservation,
+  ModelAttentionReissueResult,
   ModelPricingEntry,
   PricingMap,
   ModelCatalogCreate,

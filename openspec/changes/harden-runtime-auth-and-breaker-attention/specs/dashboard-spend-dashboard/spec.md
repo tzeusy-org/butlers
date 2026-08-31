@@ -62,3 +62,13 @@ Scope: v1-mandatory
 - **WHEN** `GET /api/dispatch/attempts` fails (network error, non-2xx)
 - **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt
   state instead of silently omitting the banner
+
+#### Scenario: Fleet-halt attention observation requires owner control
+
+- **WHEN** the Spend page requests `GET /api/spend/runtime-attention`
+- **THEN** the API SHALL require the fail-closed dashboard owner-control
+  dependency before reading durable attention state
+- **AND** missing owner-control configuration returns `503`, while a missing or
+  incorrect `X-API-Key` returns `401`
+- **AND** a source read failure returns `available: false` rather than an
+  available empty observation

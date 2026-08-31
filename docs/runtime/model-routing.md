@@ -75,6 +75,28 @@ A failed probe is also not the same as a control-plane failure. `401`, `409`, `4
 verification evidence and the Models tab renders them as "could not be probed". See
 [Runtime-Probe Control Keys](../operations/runtime-probe-control-keys.md).
 
+### Operator attention and deliberate reissue
+
+The Models page reads durable breaker-alert delivery separately from both verification and routing.
+`GET /api/settings/models/attention` is a batched, content-blind projection: it publishes only the
+episode identity, lifecycle timestamps/state, finite safe reason, and direct-successor state. It
+does not publish the stored source snapshot or payload. The protected read and
+`POST /api/settings/models/attention/{episode_id}/reissue` both require the fail-closed dashboard
+owner key even when general API authentication is disabled; absent owner-control configuration is
+`503`, while a missing or wrong key is `401` before database observation.
+
+Only an `uncertain` original may be reissued. The database operation serializes on that original,
+refuses a sending row or live delivery-service lease, and atomically creates or returns its one
+pending successor. It never mutates the original, invokes transport, writes dispatch provenance,
+or changes the breaker. Disabling the operator-v3 control stops new successors while retaining all
+observation evidence.
+
+Spend uses the same content-blind boundary for the current UTC month's fleet-halt episode at
+`GET /api/spend/runtime-attention`. The durable alert source and the dispatch-denial attempts source
+remain independent: either one failing is rendered as unavailable, not as “no alert” or “no
+denials,” and the existing denial drawer and session links remain available whenever their source
+is healthy.
+
 ## Per-Butler Overrides
 
 The `public.butler_model_overrides` table allows per-butler customization without duplicating catalog entries. An override row references a catalog entry and can remap `enabled`, `priority`, and `complexity_tier`. Overrides use `COALESCE` semantics: when an override field is NULL, the catalog value is used.

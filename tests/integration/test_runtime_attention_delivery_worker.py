@@ -17,6 +17,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -36,6 +37,7 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
 )
 from butlers.tools.switchboard.runtime_attention.worker import (
     RuntimeAttentionDeliveryWorker,
+    build_messenger_transport,
 )
 
 pytestmark = [pytest.mark.db, pytest.mark.integration]
@@ -359,7 +361,7 @@ async def test_row_age_alone_never_authorizes_a_transition(
 
 
 # ---------------------------------------------------------------------------
-# AC 3 — slow claimant, and the absence of manual reissue
+# AC 3 — slow claimant and deliberate fenced manual reissue
 # ---------------------------------------------------------------------------
 
 
@@ -395,33 +397,120 @@ async def test_fenced_claimant_cannot_mutate_the_recovered_row(
         assert transport.calls == []
 
 
-async def test_manual_reissue_is_structurally_unavailable(
+async def test_manual_reissue_waits_for_recovery_then_returns_one_successor(
     migrated_core_postgres_pool,
 ) -> None:
-    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as pool:
-        episode_id = await _seed_pending_episode(pool, "no-reissue")
-        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
-        lease = await repository.acquire_service_lease()
-        assert lease is not None
-        episode = await repository.claim_next_pending(lease)
+    """REQ-runtime-attention-outbox-003: recovery/reissue races are DB-fenced."""
+    async with migrated_core_postgres_pool(min_pool_size=4, max_pool_size=8) as pool:
+        episode_id = await _seed_pending_episode(pool, "one-reissue")
+        repo_a = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        repo_b = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+        lease_a = await repo_a.acquire_service_lease()
+        assert lease_a is not None
+        episode = await repo_a.claim_next_pending(lease_a)
         assert episode is not None
 
-        # Switchboard holds no INSERT grant, so a successor row cannot be
-        # manufactured while the original is still sending — reissue is absent
-        # by construction, not by omission.
-        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
-            await _as_role(
-                pool,
-                "butler_switchboard_rw",
-                """
-                INSERT INTO public.runtime_attention_outbox
-                    (source, manual_reissue_of, source_snapshot, payload)
-                VALUES ('model_breaker', $1, '{"reissue_of": "x"}'::jsonb,
-                        '{"classification": "model_breaker_open"}'::jsonb)
-                """,
-                episode_id,
+        # A sending row and its live claimant lease are never eligible.
+        with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
+            await pool.fetchrow(
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
             )
         assert (await _row(pool, episode_id))["lifecycle_state"] == "sending"
+
+        await repo_a.release_service_lease(lease_a)
+        lease_b = await repo_b.acquire_service_lease()
+        assert lease_b is not None
+        claims = await repo_b.list_recoverable(lease_b, stale_after_seconds=0.0)
+        assert await repo_b.fence_stale_claim(claims[0], lease_b) is True
+
+        # Recovery has fenced the row uncertain, but its still-live service
+        # lease closes the tiny recovery/reissue overlap.
+        with pytest.raises(asyncpg.ObjectNotInPrerequisiteStateError):
+            await pool.fetchrow(
+                "SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id
+            )
+        await repo_b.release_service_lease(lease_b)
+
+        first, second = await asyncio.gather(
+            pool.fetchrow("SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id),
+            pool.fetchrow("SELECT * FROM public.reissue_runtime_attention_episode($1)", episode_id),
+        )
+        assert first is not None and second is not None
+        assert first["successor_episode_id"] == second["successor_episode_id"]
+        assert {first["created"], second["created"]} == {True, False}
+
+        rows = await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            """
+            SELECT id, lifecycle_state, manual_reissue_of
+            FROM public.runtime_attention_outbox
+            WHERE manual_reissue_of = $1
+            """,
+            episode_id,
+        )
+        assert [(row["id"], row["lifecycle_state"], row["manual_reissue_of"]) for row in rows] == [
+            (first["successor_episode_id"], "pending", episode_id)
+        ]
+
+        successor_rows = await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            """
+            SELECT source_snapshot, payload
+            FROM public.runtime_attention_outbox
+            WHERE manual_reissue_of = $1
+            """,
+            episode_id,
+        )
+        assert len(successor_rows) == 1
+        successor = successor_rows[0]
+        original_rows = await _as_role(
+            pool,
+            "butler_switchboard_rw",
+            "SELECT source_snapshot, payload FROM public.runtime_attention_outbox WHERE id = $1",
+            episode_id,
+        )
+        assert len(original_rows) == 1
+        original = original_rows[0]
+        assert successor["source_snapshot"] == {
+            **original["source_snapshot"],
+            "reissue_of": str(episode_id),
+        }
+        assert successor["payload"] == original["payload"]
+
+        delivery_repo = RuntimeAttentionOutbox(pool, instance_id="delivery-worker")
+
+        async def _recipient() -> str:
+            return "owner-recipient"
+
+        with patch(
+            "butlers.tools.switchboard.runtime_attention.worker.deliver",
+            new_callable=AsyncMock,
+            return_value={"status": "sent"},
+        ) as deliver_mock:
+            cycle = await _worker(
+                delivery_repo,
+                build_messenger_transport(pool, resolve_recipient=_recipient),
+            ).run_once()
+
+        assert cycle.delivered == 1
+        notify_request = deliver_mock.await_args.kwargs["notify_request"]
+        assert notify_request["delivery"]["message"] == (
+            "Runtime attention: model_breaker_open. Open "
+            f"/settings/models?highlight={original['source_snapshot']['catalog_entry_id']} "
+            "to review."
+        )
+        assert (await _row(pool, episode_id))["lifecycle_state"] == "uncertain"
+
+        for role in ("butler_general_rw", "butler_switchboard_rw"):
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await _as_role(
+                    pool,
+                    role,
+                    "SELECT * FROM public.reissue_runtime_attention_episode($1)",
+                    episode_id,
+                )
 
 
 # ---------------------------------------------------------------------------

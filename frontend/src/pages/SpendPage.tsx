@@ -2300,6 +2300,49 @@ function SpendRulesSection() {
 // each denied attempt.
 // ---------------------------------------------------------------------------
 
+function FleetHaltAttentionEvidence({
+  halt,
+}: {
+  halt: ReturnType<typeof useFleetHaltStatus>;
+}) {
+  if (halt.isAttentionLoading) {
+    return (
+      <p className="font-mono text-[10px] text-muted-foreground" role="status">
+        Loading durable alert evidence…
+      </p>
+    );
+  }
+  if (!halt.attentionAvailable) {
+    return (
+      <SourceDegradedNote
+        label="Fleet-halt alert delivery"
+        detail="durable attention source unavailable -- alert delivery state is unknown"
+        testId="fleet-halt-attention-error"
+      />
+    );
+  }
+  if (!halt.attention) {
+    if (!halt.active) return null;
+    return (
+      <p className="font-mono text-[10px] text-muted-foreground" data-testid="fleet-halt-attention">
+        Durable alert episode: none observed for this breach window.
+      </p>
+    );
+  }
+  return (
+    <p
+      className="font-mono text-[10px] text-muted-foreground"
+      data-testid="fleet-halt-attention"
+      role="status"
+    >
+      Alert delivery: {halt.attention.lifecycle_state}
+      {halt.attention.safe_reason ? ` · ${halt.attention.safe_reason}` : ""}
+      {" · updated "}
+      <Time value={halt.attention.updated_at} mode="absolute" precision="minute" compact />
+    </p>
+  );
+}
+
 function FleetHaltBanner() {
   // Door target for the attention-ledger owner push (bu-7o89u.4): a
   // ?openDrawer=fleet-halt link lands here with the attempts drawer already
@@ -2316,15 +2359,19 @@ function FleetHaltBanner() {
   // consequential spend signal (fleet degraded-source convention).
   if (halt.isError) {
     return (
-      <SourceDegradedNote
-        label="Fleet-halt status"
-        detail="dispatch denial feed unavailable -- cannot confirm whether the monthly ceiling is halting dispatches"
-        testId="fleet-halt-source-error"
-      />
+      <div className="space-y-2">
+        <SourceDegradedNote
+          label="Fleet-halt status"
+          detail="dispatch denial feed unavailable -- cannot confirm whether the monthly ceiling is halting dispatches"
+          testId="fleet-halt-source-error"
+        />
+        <FleetHaltAttentionEvidence halt={halt} />
+      </div>
     );
   }
 
-  if (halt.isLoading || !halt.active) return null;
+  if (halt.isLoading) return null;
+  if (!halt.active) return <FleetHaltAttentionEvidence halt={halt} />;
 
   return (
     <div
@@ -2442,6 +2489,9 @@ function FleetHaltBanner() {
           )}
         </div>
       )}
+      <div className="px-4 py-2 border-t border-[var(--red)]/20">
+        <FleetHaltAttentionEvidence halt={halt} />
+      </div>
     </div>
   );
 }

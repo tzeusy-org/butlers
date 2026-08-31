@@ -23,7 +23,11 @@ import { RotateCcw } from "lucide-react";
 
 import { ApiError } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
-import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
+import type {
+  ComplexityTier,
+  ModelAttentionEpisode,
+  ModelCatalogEntry,
+} from "@/api/types.ts";
 import { Switch } from "@/components/ui/switch";
 import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
@@ -54,9 +58,11 @@ import {
 import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
+  useModelAttention,
   useModelCatalog,
   useModelUsageDetail,
   useResetModelUsage,
+  useReissueModelAttention,
   useSetModelTokenLimits,
   useTestModelCatalogEntry,
   useUpdateModelCatalogEntry,
@@ -1339,12 +1345,26 @@ function UsageCell({
 // Model row
 // ---------------------------------------------------------------------------
 
-function ModelRow({ model }: { model: ModelCatalogEntry }) {
+function ModelRow({
+  model,
+  attention,
+  attentionLoading,
+  attentionAvailable,
+}: {
+  model: ModelCatalogEntry;
+  attention?: ModelAttentionEpisode;
+  attentionLoading: boolean;
+  attentionAvailable: boolean;
+}) {
   const updateEntry = useUpdateModelCatalogEntry();
   const testEntry = useTestModelCatalogEntry();
   const deleteEntry = useDeleteModelCatalogEntry();
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [reissueOpen, setReissueOpen] = useState(false);
+  const [reissueResult, setReissueResult] = useState<string | null>(null);
+  const [reissueError, setReissueError] = useState<string | null>(null);
+  const reissue = useReissueModelAttention();
 
   const toggleEnabled = () => {
     updateEntry.mutate(
@@ -1381,6 +1401,24 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
     : model.last_verified_ok === false
       ? "error"
       : "untested";
+
+  const handleReissue = () => {
+    if (!attention?.reissue_eligible) return;
+    setReissueError(null);
+    reissue.mutate(attention.episode_id, {
+      onSuccess: (response) => {
+        setReissueOpen(false);
+        setReissueResult(
+          response.data.created
+            ? `New alert episode ${response.data.successor_episode_id} is ${response.data.successor_state}.`
+            : `Existing alert episode ${response.data.successor_episode_id} is ${response.data.successor_state}.`,
+        );
+      },
+      onError: (error) => {
+        setReissueError(error instanceof Error ? error.message : "Alert reissue failed");
+      },
+    });
+  };
 
   return (
     <div
@@ -1476,6 +1514,56 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
             </span>
           )}
         </div>
+        <div className="mt-1 space-y-0.5 font-mono text-[10px] text-muted-foreground">
+          <p>
+            Verification: {verificationStatus === "verified"
+              ? "runtime probe passed"
+              : verificationStatus === "error"
+                ? "runtime probe failed"
+                : "not yet probed"}
+          </p>
+          {verificationStatus === "verified" && model.breaker_open && (
+            <p>A successful probe does not close the breaker.</p>
+          )}
+          <p>
+            Routing: {!model.enabled
+              ? "disabled"
+              : model.breaker_open
+                ? `excluded by breaker · ${model.breaker_consecutive_failures} consecutive failures`
+                : model.last_verified_ok === false
+                  ? "ineligible after failed probe"
+                  : "eligible"}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span>
+              Attention: {attentionLoading
+                ? "loading…"
+                : !attentionAvailable
+                ? "unavailable"
+                : attention
+                  ? attention.lifecycle_state
+                  : "no episode observed"}
+            </span>
+            {attention?.safe_reason && <span>· {attention.safe_reason}</span>}
+            {attention?.reissue_eligible && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-[10px]"
+                disabled={reissue.isPending}
+                aria-label={`Send a new alert for ${model.alias}`}
+                onClick={() => setReissueOpen(true)}
+              >
+                Send a new alert
+              </Button>
+            )}
+          </div>
+          {reissueResult && (
+            <p role="status" aria-live="polite">{reissueResult}</p>
+          )}
+          {reissueError && <p role="alert">{reissueError}</p>}
+        </div>
       </div>
 
       {/* Usage (rolling 24h) — bar + thresholds + reset + inline limit edit */}
@@ -1534,6 +1622,32 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         onConfirm={handleDeleteConfirm}
         isPending={deleteEntry.isPending}
       />
+      <Dialog open={reissueOpen} onOpenChange={setReissueOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Send a new alert?</DialogTitle>
+            <DialogDescription>
+              The original delivery may still have succeeded. This creates one new
+              auditable episode; it does not replay the original or close the breaker.
+            </DialogDescription>
+          </DialogHeader>
+          {reissueError && (
+            <p role="alert" className="text-sm text-destructive">{reissueError}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setReissueOpen(false)}
+              disabled={reissue.isPending}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleReissue} disabled={reissue.isPending}>
+              {reissue.isPending ? "Sending new alert…" : "Confirm send new alert"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1570,6 +1684,8 @@ function ApiWireFooter() {
     "PUT /api/settings/models/{id}/limits",
     "POST /api/settings/models/{id}/reset-usage",
     "GET /api/settings/models/{id}/usage",
+    "GET /api/settings/models/attention",
+    "POST /api/settings/models/attention/{episode_id}/reissue",
   ];
 
   return (
@@ -1598,6 +1714,7 @@ export default function SettingsModelsPage() {
   const [addOpen, setAddOpen] = useState(false);
 
   const { data, isLoading, isError } = useModelCatalog();
+  const attentionQuery = useModelAttention();
   const verifyAll = useVerifyAllModels();
 
   const entries: ModelCatalogEntry[] = data?.data ?? [];
@@ -1796,7 +1913,18 @@ export default function SettingsModelsPage() {
                   {rows.length === 0 ? (
                     <EmptyTierState />
                   ) : (
-                    rows.map((model) => <ModelRow key={model.id} model={model} />)
+                    rows.map((model) => (
+                      <ModelRow
+                        key={model.id}
+                        model={model}
+                        attention={attentionQuery.data?.data.episodes?.[model.id]}
+                        attentionLoading={attentionQuery.isLoading}
+                        attentionAvailable={
+                          !attentionQuery.isError &&
+                          attentionQuery.data?.data.available === true
+                        }
+                      />
+                    ))
                   )}
                 </section>
               );

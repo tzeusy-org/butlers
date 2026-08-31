@@ -19,6 +19,8 @@ import {
   resetModelUsage,
   getModelUsageDetail,
   verifyAllModels,
+  getModelAttention,
+  reissueModelAttention,
 } from "@/api/index.ts";
 import type {
   ModelCatalogCreate,
@@ -38,6 +40,23 @@ export function useModelCatalog() {
   return useQuery({
     queryKey: ["model-catalog"],
     queryFn: listModelCatalog,
+  });
+}
+
+export function useModelAttention() {
+  return useQuery({
+    queryKey: ["model-catalog", "runtime-attention"],
+    queryFn: getModelAttention,
+  });
+}
+
+export function useReissueModelAttention() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (episodeId: string) => reissueModelAttention(episodeId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["model-catalog", "runtime-attention"] });
+    },
   });
 }
 

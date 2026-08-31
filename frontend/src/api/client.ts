@@ -208,6 +208,9 @@ import type {
   PriorityContactListParams,
   ContactSearchResponse,
   ModelCatalogEntry,
+  ModelAttentionObservation,
+  ModelAttentionReissueResult,
+  FleetHaltAttentionObservation,
   PricingMap,
   ModelCatalogCreate,
   ModelCatalogUpdate,
@@ -1099,6 +1102,14 @@ export function getDispatchAttempts(
   const qs = query.toString();
   return apiFetch<PaginatedResponse<DispatchAttemptEntry>>(
     `/dispatch/attempts${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function getFleetHaltAttention(): Promise<
+  ApiResponse<FleetHaltAttentionObservation>
+> {
+  return apiFetch<ApiResponse<FleetHaltAttentionObservation>>(
+    "/spend/runtime-attention",
   );
 }
 
@@ -4997,6 +5008,19 @@ export function testModelCatalogEntry(
 ): Promise<ApiResponse<ModelTestResult>> {
   return apiFetch<ApiResponse<ModelTestResult>>(
     `/settings/models/${encodeURIComponent(id)}/test`,
+    { method: "POST" },
+  );
+}
+
+export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservation>> {
+  return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
+}
+
+export function reissueModelAttention(
+  episodeId: string,
+): Promise<ApiResponse<ModelAttentionReissueResult>> {
+  return apiFetch<ApiResponse<ModelAttentionReissueResult>>(
+    `/settings/models/attention/${encodeURIComponent(episodeId)}/reissue`,
     { method: "POST" },
   );
 }

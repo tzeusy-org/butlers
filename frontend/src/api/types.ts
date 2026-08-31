@@ -5018,6 +5018,51 @@ export interface ModelCatalogEntry {
   routing_sample_count: number;
 }
 
+export type RuntimeAttentionLifecycle =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "uncertain";
+
+export interface ModelAttentionEpisode {
+  episode_id: string;
+  lifecycle_state: RuntimeAttentionLifecycle;
+  created_at: string;
+  updated_at: string;
+  delivered_at: string | null;
+  safe_reason: string | null;
+  manual_reissue_of: string | null;
+  successor_id: string | null;
+  reissue_eligible: boolean;
+}
+
+export interface ModelAttentionObservation {
+  available: boolean;
+  episodes: Record<string, ModelAttentionEpisode>;
+}
+
+export interface ModelAttentionReissueResult {
+  original_episode_id: string;
+  successor_episode_id: string;
+  successor_state: RuntimeAttentionLifecycle;
+  created: boolean;
+}
+
+export interface FleetHaltAttentionEpisode {
+  episode_id: string;
+  lifecycle_state: RuntimeAttentionLifecycle;
+  created_at: string;
+  updated_at: string;
+  delivered_at: string | null;
+  safe_reason: string | null;
+}
+
+export interface FleetHaltAttentionObservation {
+  available: boolean;
+  episode: FleetHaltAttentionEpisode | null;
+}
+
 /** Request body for PUT /api/settings/models/{id}/priority. */
 export interface ModelPriorityDelta {
   delta: number;

@@ -27,8 +27,8 @@
 import { fromZonedTime } from "date-fns-tz";
 import { useQuery } from "@tanstack/react-query";
 
-import { getDispatchAttempts } from "@/api/client";
-import type { DispatchAttemptEntry } from "@/api/types";
+import { getDispatchAttempts, getFleetHaltAttention } from "@/api/client";
+import type { DispatchAttemptEntry, FleetHaltAttentionEpisode } from "@/api/types";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { todayISO } from "@/lib/day-window";
@@ -76,6 +76,10 @@ export interface FleetHaltStatus {
   isLoading: boolean;
   /** True when any of the underlying queries failed -- render a degraded note, not "no halt". */
   isError: boolean;
+  /** Durable outbox source availability; absent/failed fields are unavailable. */
+  attentionAvailable: boolean;
+  attention: FleetHaltAttentionEpisode | null;
+  isAttentionLoading: boolean;
 }
 
 export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): FleetHaltStatus {
@@ -122,6 +126,12 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
     refetchInterval,
   });
 
+  const attention = useQuery({
+    queryKey: ["spend", "fleet-halt", "runtime-attention"],
+    queryFn: getFleetHaltAttention,
+    refetchInterval,
+  });
+
   const isLoading = onset.isLoading || today.isLoading || recent.isLoading;
   const isError = onset.isError || today.isError || recent.isError;
   const deniedTotal = onset.data?.meta.total ?? 0;
@@ -134,5 +144,9 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
     recentAttempts: recent.data?.data ?? [],
     isLoading,
     isError,
+    attentionAvailable:
+      !attention.isError && attention.data?.data.available === true,
+    attention: attention.data?.data.episode ?? null,
+    isAttentionLoading: attention.isLoading,
   };
 }

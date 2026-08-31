@@ -304,11 +304,45 @@ Required query support:
   issues may be missing; the field is absent when the grouped result is
   complete, including exactly 500 groups.
 
+## Model Settings Runtime Attention Contract
+
+- `GET /api/settings/models/attention` ->
+  `ApiResponse<ModelAttentionObservation>`
+- `POST /api/settings/models/attention/{episode_id}/reissue` ->
+  `ApiResponse<ModelAttentionReissueResult>`
+
+Both endpoints require the fail-closed dashboard owner-control boundary: the
+server must have a non-empty `DASHBOARD_API_KEY`, and the caller must supply a
+matching `X-API-Key` header. Missing configuration returns `503`; a missing or
+incorrect header returns `401`. The key is never part of the frontend bundle or
+an API response.
+
+`ModelAttentionObservation` contains `available` and an `episodes` map keyed by
+catalog-entry ID. A successful empty map means no episode was observed; an
+unavailable source is a successful response with `available: false` and an
+empty map, so the client must not render it as a proven empty state. Each
+episode carries only its lifecycle state, safe timestamps/reason, lineage IDs,
+and the server-computed `reissue_eligible` flag.
+
+`ModelAttentionReissueResult` returns the original and successor episode IDs,
+the successor lifecycle state, and whether the successor was newly created.
+The endpoint returns `409` for an ineligible episode, `404` for an unknown
+episode, and `503` when the database operation is unavailable; none of these
+responses authorizes or performs a direct transport retry.
+
 ## Spend Contract
 
 - `GET /api/spend/summary?period={today|7d|30d|90d}` -> `ApiResponse<SpendSummary>`
 - `GET /api/spend/daily` -> `ApiResponse<DailySpend[]>`
 - `GET /api/spend/top-sessions?limit=...` -> `ApiResponse<TopSession[]>`
+- `GET /api/spend/runtime-attention` ->
+  `ApiResponse<FleetHaltAttentionObservation>`
+
+`/api/spend/runtime-attention` uses the same owner-control boundary and
+`401`/`503` responses as the Models attention endpoints. Its `available` flag
+distinguishes an unavailable durable attention source from an available source
+with no current fleet-halt episode; the Spend page must keep this state
+independent from the attempts source and the spend aggregates.
 
 ## Audit Contract
 

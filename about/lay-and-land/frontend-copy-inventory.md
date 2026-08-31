@@ -821,9 +821,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - BLOCKED
 - never verified
 - score: n/a
+- A successful probe does not close the breaker.
+- Send a new alert
 - Test →
 - Edit →
 - Delete →
+- Send a new alert?
 - Nothing in this tier.
 - dev · api wire
 - model catalog
@@ -852,6 +855,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - verification failed
 - Excluded by breaker after {} consecutive dispatch failures
 - insufficient dispatch history
+- Send a new alert for {}
 - Disable
 - Enable
 - Edit {}
@@ -1009,6 +1013,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Routing Rules
 - + Add rule
 - Dismiss
+- Loading durable alert evidence…
+- Durable alert episode: none observed for this breach window.
 - Monthly ceiling reached
 - No recent denied attempts loaded.
 - Reason
@@ -1041,6 +1047,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Max cost per call
 - no cap
 - Routing rules
+- Fleet-halt alert delivery
 - Fleet-halt status
 - Spend
 - Projected spend exceeds the monthly ceiling
@@ -4148,4 +4155,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3247*
+*Total strings: 3254*
