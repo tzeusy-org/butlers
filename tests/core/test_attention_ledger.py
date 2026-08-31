@@ -236,13 +236,16 @@ class TestGetSuppressingContextSignal:
         from butlers.context_bus import ContextEntry
 
         async def _fake_get_active_context(pool):
+            # An hour of headroom: a hold only suppresses while it is unexpired
+            # at the instant it is read, so an expiry of exactly "now" would
+            # describe a row the context-bus query itself excludes.
             return [
                 ContextEntry(
                     signal_type="dnd",
                     value=None,
                     set_by_butler="general",
                     set_at=datetime.now(UTC),
-                    expires_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
                     confidence=1.0,
                 )
             ]
@@ -260,7 +263,7 @@ class TestGetSuppressingContextSignal:
                     value=None,
                     set_by_butler="travel",
                     set_at=datetime.now(UTC),
-                    expires_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
                     confidence=1.0,
                 )
             ]
@@ -310,6 +313,100 @@ class TestGetSuppressingContextSignal:
         assert suppression is not None
         assert suppression.signal_type == "dnd"
         assert suppression.expires_at == sleeping_expires_at
+
+    # ---- The instant is the input (bu-8y575) ----
+    #
+    # A hold suppresses only while it is unexpired at the instant the gate is
+    # evaluated at. Before bu-8y575 that instant was the wall clock, read
+    # inside the callee, so no test could name it and the expiry boundary was
+    # unassertable. These two pin the same DND hold either side of its own
+    # expiry; one of them alone would prove nothing, because a branch that
+    # never fires is green too.
+    #
+    # Both instants are in the past on every real run, so a `now` that were
+    # accepted and then ignored would report the hold expired at both -- the
+    # "still holding" case below is what makes the injection load-bearing.
+
+    _HOLD_SET_AT = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+    _HOLD_EXPIRES_AT = datetime(2026, 1, 15, 13, 0, tzinfo=UTC)
+
+    @staticmethod
+    def _dnd_hold_expiring_at_13_00():
+        from butlers.context_bus import ContextEntry
+
+        async def _fake_get_active_context(pool):
+            return [
+                ContextEntry(
+                    signal_type="dnd",
+                    value=None,
+                    set_by_butler="general",
+                    set_at=TestGetSuppressingContextSignal._HOLD_SET_AT,
+                    expires_at=TestGetSuppressingContextSignal._HOLD_EXPIRES_AT,
+                    confidence=1.0,
+                )
+            ]
+
+        return _fake_get_active_context
+
+    async def test_hold_still_active_at_pinned_instant_suppresses(self, monkeypatch):
+        """12:30, half an hour before the hold expires -> still suppressing."""
+        monkeypatch.setattr(
+            "butlers.context_bus.get_active_context", self._dnd_hold_expiring_at_13_00()
+        )
+        signal = await get_suppressing_context_signal(
+            AsyncMock(), now=self._HOLD_EXPIRES_AT - timedelta(minutes=30)
+        )
+        assert signal == "dnd"
+
+    async def test_hold_expired_at_pinned_instant_does_not_suppress(self, monkeypatch):
+        """13:30, half an hour after the same hold expires -> not suppressing."""
+        monkeypatch.setattr(
+            "butlers.context_bus.get_active_context", self._dnd_hold_expiring_at_13_00()
+        )
+        signal = await get_suppressing_context_signal(
+            AsyncMock(), now=self._HOLD_EXPIRES_AT + timedelta(minutes=30)
+        )
+        assert signal is None
+
+    @staticmethod
+    def _dnd_hold_expiring_at(expires_at):
+        from butlers.context_bus import ContextEntry
+
+        async def _fake_get_active_context(pool):
+            return [
+                ContextEntry(
+                    signal_type="dnd",
+                    value=None,
+                    set_by_butler="general",
+                    set_at=expires_at - timedelta(hours=1),
+                    expires_at=expires_at,
+                    confidence=1.0,
+                )
+            ]
+
+        return _fake_get_active_context
+
+    async def test_omitted_instant_reads_the_wall_clock_for_a_live_hold(self, monkeypatch):
+        """The default path: no ``now=``, hold expires an hour from real now.
+
+        Both wall-clock tests are needed together. This one alone would also
+        pass if the default had frozen to any instant before the expiry; its
+        pair below would also pass if the default had frozen to any instant
+        after it. Only a default that tracks the real clock satisfies both.
+        """
+        monkeypatch.setattr(
+            "butlers.context_bus.get_active_context",
+            self._dnd_hold_expiring_at(datetime.now(UTC) + timedelta(hours=1)),
+        )
+        assert await get_suppressing_context_signal(AsyncMock()) == "dnd"
+
+    async def test_omitted_instant_reads_the_wall_clock_for_a_stale_hold(self, monkeypatch):
+        """The default path with a hold that expired an hour before real now."""
+        monkeypatch.setattr(
+            "butlers.context_bus.get_active_context",
+            self._dnd_hold_expiring_at(datetime.now(UTC) - timedelta(hours=1)),
+        )
+        assert await get_suppressing_context_signal(AsyncMock()) is None
 
 
 class TestRecordOwnerIngressRollup:

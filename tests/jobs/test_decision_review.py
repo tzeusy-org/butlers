@@ -825,6 +825,91 @@ async def test_check_suppression_none_when_clear():
 
 
 # ---------------------------------------------------------------------------
+# _check_suppression: the instant is the input (bu-8y575)
+#
+# The three tests above either patch ``is_policy_quiet_now`` to a constant or
+# hand the gate no policy at all, so none of them exercises the hour
+# comparison. These two feed the real
+# :func:`butlers.core.approvals_policy.is_policy_quiet_now` the production
+# Owner Attention Policy (23:00-08:00 Asia/Singapore, i.e. 15:00-24:00 UTC)
+# and pin instants either side of that boundary. Both sides are required: one
+# pinned instant coming back green proves nothing, because a branch that never
+# fires is green too.
+# ---------------------------------------------------------------------------
+
+_OWNER_POLICY = {"quiet_start_hour": 23, "quiet_end_hour": 8, "timezone": "Asia/Singapore"}
+
+# The window opens at 23:00 SGT (15:00 UTC). These two straddle that edge by
+# thirty minutes each way, so shifting the instant by a single hour in either
+# direction crosses it.
+_INSTANT_INSIDE_QUIET_HOURS = datetime(2026, 1, 15, 15, 30, tzinfo=UTC)  # 23:30 SGT
+_INSTANT_OUTSIDE_QUIET_HOURS = datetime(2026, 1, 15, 14, 30, tzinfo=UTC)  # 22:30 SGT
+
+
+async def test_check_suppression_holds_at_an_instant_inside_the_quiet_window():
+    with (
+        patch(
+            "butlers.jobs.decision_review.get_approvals_policy_quiet_hours",
+            new=AsyncMock(return_value=_OWNER_POLICY),
+        ),
+        patch(
+            "butlers.jobs.decision_review.get_suppressing_context_signal",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        reason = await _check_suppression(object(), now=_INSTANT_INSIDE_QUIET_HOURS)
+    assert reason == "quiet_hours"
+
+
+async def test_check_suppression_clears_at_an_instant_outside_the_quiet_window():
+    """Same policy, same clear context bus, an hour earlier -> delivers."""
+    context_lookup = AsyncMock(return_value=None)
+    with (
+        patch(
+            "butlers.jobs.decision_review.get_approvals_policy_quiet_hours",
+            new=AsyncMock(return_value=_OWNER_POLICY),
+        ),
+        patch("butlers.jobs.decision_review.get_suppressing_context_signal", new=context_lookup),
+    ):
+        reason = await _check_suppression(object(), now=_INSTANT_OUTSIDE_QUIET_HOURS)
+    assert reason is None
+    # The second gate is evaluated at the caller's instant too, not the wall clock.
+    assert context_lookup.await_args.kwargs["now"] == _INSTANT_OUTSIDE_QUIET_HOURS
+
+
+async def test_check_suppression_without_an_instant_reads_the_wall_clock():
+    """The default path, which is the one the scheduler actually takes.
+
+    Injecting an instant is only safe if omitting it still asks the real
+    clock. Both gates are handed an instant captured from inside the call and
+    checked against a window bracketing it, so a default that had frozen to a
+    constant -- or been dropped -- would fall outside the bracket.
+    """
+    seen_by_quiet_hours: list[datetime] = []
+
+    def _capture_quiet_hours(policy, *, now):
+        seen_by_quiet_hours.append(now)
+        return False
+
+    context_lookup = AsyncMock(return_value=None)
+    with (
+        patch(
+            "butlers.jobs.decision_review.get_approvals_policy_quiet_hours",
+            new=AsyncMock(return_value=_OWNER_POLICY),
+        ),
+        patch("butlers.jobs.decision_review.is_policy_quiet_now", new=_capture_quiet_hours),
+        patch("butlers.jobs.decision_review.get_suppressing_context_signal", new=context_lookup),
+    ):
+        before = datetime.now(UTC)
+        await _check_suppression(object())
+        after = datetime.now(UTC)
+
+    assert len(seen_by_quiet_hours) == 1
+    assert before <= seen_by_quiet_hours[0] <= after
+    assert before <= context_lookup.await_args.kwargs["now"] <= after
+
+
+# ---------------------------------------------------------------------------
 # _deliver -- bu-hmdqz.3: genuine terminal failures record outcome='failed',
 # not 'deferred' (reserved for a benign hold that resolves on its own).
 # ---------------------------------------------------------------------------

@@ -615,18 +615,27 @@ def _compose_lint_violation_message(violations: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _check_suppression(pool: asyncpg.Pool) -> str | None:
-    """Mirrors notify()'s owner-default gate (quiet hours, then context bus)."""
+async def _check_suppression(pool: asyncpg.Pool, *, now: datetime | None = None) -> str | None:
+    """Mirrors notify()'s owner-default gate (quiet hours, then context bus).
+
+    ``now`` is the instant both gates are evaluated at, defaulting to the wall
+    clock so the scheduler is unaffected. It exists so a test can name the hour
+    it is asserting about instead of asking about whichever hour CI reached
+    (bu-1z9an).
+    """
     try:
         policy = await get_approvals_policy_quiet_hours(pool)
     except Exception:
         logger.debug("decision_review: quiet-hours policy lookup failed", exc_info=True)
         policy = None
 
-    if is_policy_quiet_now(policy, now=datetime.now(UTC)):
+    if now is None:
+        now = datetime.now(UTC)
+
+    if is_policy_quiet_now(policy, now=now):
         return "quiet_hours"
 
-    context_signal = await get_suppressing_context_signal(pool)
+    context_signal = await get_suppressing_context_signal(pool, now=now)
     if context_signal is not None:
         return f"context_bus:{context_signal}"
 

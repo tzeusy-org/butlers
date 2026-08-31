@@ -476,7 +476,9 @@ class SuppressingContext:
     expires_at: datetime
 
 
-async def get_suppressing_context(pool: asyncpg.Pool | None) -> SuppressingContext | None:
+async def get_suppressing_context(
+    pool: asyncpg.Pool | None, *, now: datetime | None = None
+) -> SuppressingContext | None:
     """Return the active context hold and its latest suppressor expiry.
 
     Deterministic, non-LLM read of ``public.user_context`` via the existing
@@ -484,9 +486,19 @@ async def get_suppressing_context(pool: asyncpg.Pool | None) -> SuppressingConte
     open (returns None) on any error, consistent with every other
     context-bus reader in this codebase (see
     ``spawner_context.fetch_situational_context_preamble``).
+
+    ``now`` is the instant the hold is evaluated at, defaulting to the wall
+    clock. A signal only holds while it is unexpired *at that instant*: the
+    context-bus query already excludes ``expires_at <= now()`` using the
+    database clock, so re-checking here against the caller's instant is a
+    no-op in production and is what lets a test pin the boundary --
+    a now-relative expiry filter distinct from the insight broker's max-hold
+    calculation (``roster/switchboard/tools/insight/broker.py``).
     """
     if pool is None:
         return None
+    if now is None:
+        now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
@@ -499,7 +511,9 @@ async def get_suppressing_context(pool: asyncpg.Pool | None) -> SuppressingConte
         return None
 
     suppressing = [
-        signal for signal in signals if signal.signal_type in _SUPPRESSING_CONTEXT_SIGNALS
+        signal
+        for signal in signals
+        if signal.signal_type in _SUPPRESSING_CONTEXT_SIGNALS and signal.expires_at > now
     ]
     if not suppressing:
         return None
@@ -515,14 +529,20 @@ async def get_suppressing_context(pool: asyncpg.Pool | None) -> SuppressingConte
     return None  # pragma: no cover - ``suppressing`` is filtered above.
 
 
-async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | None:
-    """Return the suppressing signal type, preserving the legacy read API."""
-    suppression = await get_suppressing_context(pool)
+async def get_suppressing_context_signal(
+    pool: asyncpg.Pool | None, *, now: datetime | None = None
+) -> str | None:
+    """Return the suppressing signal type, preserving the legacy read API.
+
+    ``now`` is forwarded to :func:`get_suppressing_context`; see its docstring
+    for what the instant decides.
+    """
+    suppression = await get_suppressing_context(pool, now=now)
     return suppression.signal_type if suppression is not None else None
 
 
 async def check_owner_notify_suppression(
-    pool: asyncpg.Pool | None, *, log_context: str
+    pool: asyncpg.Pool | None, *, log_context: str, now: datetime | None = None
 ) -> str | None:
     """Return a suppression reason for legacy out-of-process callers that drop sends.
 
@@ -541,6 +561,11 @@ async def check_owner_notify_suppression(
     ``butlers.jobs.home._check_owner_notify_suppression`` (bu-gts7r). ``log_context``
     is the debug-log prefix used when the quiet-hours policy lookup fails, so each
     caller's log line reads exactly as it did before the extraction.
+
+    ``now`` is the instant both gates are evaluated at, defaulting to the wall
+    clock so existing callers are unaffected. It exists because the answer is
+    hour-dependent: without it no test can say *which* instant it is asserting
+    about, and a quiet-hours assertion is only contingently true (bu-1z9an).
     """
     try:
         policy = await get_approvals_policy_quiet_hours(pool)
@@ -548,10 +573,13 @@ async def check_owner_notify_suppression(
         logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
         policy = None
 
-    if is_policy_quiet_now(policy, now=datetime.now(UTC)):
+    if now is None:
+        now = datetime.now(UTC)
+
+    if is_policy_quiet_now(policy, now=now):
         return "quiet_hours"
 
-    context_signal = await get_suppressing_context_signal(pool)
+    context_signal = await get_suppressing_context_signal(pool, now=now)
     if context_signal is not None:
         return f"context_bus:{context_signal}"
 
