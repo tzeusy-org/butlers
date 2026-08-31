@@ -8,8 +8,16 @@
 // (same pattern as existing component tests in this codebase).
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+
+// cartoStyle defaults its key argument from import.meta.env. Clear that value
+// before module evaluation so the undefined fixture is genuinely absent.
+vi.hoisted(() => {
+  vi.stubEnv("VITE_CARTO_BASEMAP_API_KEY", undefined)
+})
+
+afterAll(() => vi.unstubAllEnvs())
 
 // ---------------------------------------------------------------------------
 // Mock maplibre-gl before any component imports.
@@ -115,9 +123,10 @@ describe("MapWidgetInner with points", () => {
 // CARTO basemap authentication
 // ---------------------------------------------------------------------------
 
+// Spec: REQ-dashboard-chronicles-003
 describe("CARTO basemap authentication", () => {
   it("appends an encoded key to every light raster tile URL", () => {
-    const style = cartoStyle(false, "carto test/key")
+    const style = cartoStyle(false, "  carto test/key  ")
     const source = style.sources.basemap
 
     expect(source.type).toBe("raster")
@@ -138,18 +147,58 @@ describe("CARTO basemap authentication", () => {
     expect(source.type).toBe("raster")
     if (source.type !== "raster") return
 
-    expect(source.tiles?.every((tile) => tile.endsWith("?key=carto-test-key"))).toBe(true)
+    expect(source.tiles).toEqual([
+      "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=carto-test-key",
+      "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=carto-test-key",
+      "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=carto-test-key",
+      "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png?key=carto-test-key",
+    ])
   })
 
-  it("leaves raster tile URLs unchanged when no key is configured", () => {
-    const style = cartoStyle(false, "  ")
-    const source = style.sources.basemap
+  it("attributes both OpenStreetMap and CARTO", () => {
+    const source = cartoStyle(false, "carto-test-key").sources.basemap
 
     expect(source.type).toBe("raster")
     if (source.type !== "raster") return
 
-    expect(source.tiles?.every((tile) => !tile.includes("?key="))).toBe(true)
+    expect(source.attribution).toContain("OpenStreetMap")
+    expect(source.attribution).toContain("https://www.openstreetmap.org/copyright")
+    expect(source.attribution).toContain("CARTO")
+    expect(source.attribution).toContain("https://carto.com/attributions")
   })
+
+  const lightTilesWithoutKey = [
+    "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+    "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+    "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+    "https://d.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+  ]
+  const darkTilesWithoutKey = [
+    "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+    "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+    "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+    "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  ]
+
+  it.each([
+    ["absent", "light", false, undefined, lightTilesWithoutKey],
+    ["empty", "light", false, "", lightTilesWithoutKey],
+    ["whitespace-only", "light", false, "  ", lightTilesWithoutKey],
+    ["absent", "dark", true, undefined, darkTilesWithoutKey],
+    ["empty", "dark", true, "", darkTilesWithoutKey],
+    ["whitespace-only", "dark", true, "  ", darkTilesWithoutKey],
+  ] as const)(
+    "leaves raster tile URLs unchanged for the %s key in the %s theme",
+    (_case, _theme, isDark, apiKey, expectedTiles) => {
+      const style = cartoStyle(isDark, apiKey)
+      const source = style.sources.basemap
+
+      expect(source.type).toBe("raster")
+      if (source.type !== "raster") return
+
+      expect(source.tiles).toEqual(expectedTiles)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------
