@@ -563,7 +563,7 @@ class TestDayCloseRefreshQuiet:
 
 
 # ---------------------------------------------------------------------------
-# Tests: 503 when no dispatch wired
+# Tests: no cache write when dispatch is unavailable
 # ---------------------------------------------------------------------------
 
 

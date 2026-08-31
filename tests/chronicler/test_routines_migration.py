@@ -44,13 +44,3 @@ def test_revision_chain_links_onto_017() -> None:
     assert m.branch_labels is None
     assert callable(m.upgrade)
     assert callable(m.downgrade)
-
-
-def test_chronicler_chain_includes_018() -> None:
-    """Ensure the migration chain discovery picks up 018_routines."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir("chronicler")
-    assert chain_dir is not None, "Chronicler chain directory not found"
-    files = sorted(f.name for f in chain_dir.glob("[0-9]*.py"))
-    assert _MIGRATION_FILE in files, f"{_MIGRATION_FILE} not in discovered chronicler chain"

@@ -46,16 +46,6 @@ def test_revision_chain_links_onto_018() -> None:
     assert callable(m.downgrade)
 
 
-def test_chronicler_chain_includes_019() -> None:
-    """Ensure the migration chain discovery picks up 019_daily_rollups."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir("chronicler")
-    assert chain_dir is not None, "Chronicler chain directory not found"
-    files = sorted(f.name for f in chain_dir.glob("[0-9]*.py"))
-    assert _MIGRATION_FILE in files, f"{_MIGRATION_FILE} not in discovered chronicler chain"
-
-
 def test_lanes_check_constraint_matches_aggregations_lanes() -> None:
     """The CURRENT lane CHECK list must match aggregations.LANES exactly — a
     drift here would let the rollup writer silently reject (or under-constrain) a

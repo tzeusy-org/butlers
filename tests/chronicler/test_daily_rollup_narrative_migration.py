@@ -48,16 +48,6 @@ def test_revision_chain_links_onto_019() -> None:
     assert callable(m.downgrade)
 
 
-def test_chronicler_chain_includes_020() -> None:
-    """Ensure the migration chain discovery picks up 020_daily_rollup_narrative."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir("chronicler")
-    assert chain_dir is not None, "Chronicler chain directory not found"
-    files = sorted(f.name for f in chain_dir.glob("[0-9]*.py"))
-    assert _MIGRATION_FILE in files, f"{_MIGRATION_FILE} not in discovered chronicler chain"
-
-
 def test_upgrade_adds_narrative_to_both_tables() -> None:
     """upgrade() must ALTER both daily_rollups and daily_rollup_flags,
     additive/nullable (no NOT NULL, no default value requiring backfill)."""

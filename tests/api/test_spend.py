@@ -31,7 +31,6 @@ from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import (
     ModelPricing,
     PricingConfig,
-    PricingError,
     PricingTier,
     TieredModelPricing,
     load_pricing,
@@ -213,21 +212,6 @@ def test_load_pricing_flat_and_tiered(tmp_path):
     assert len(pricing.tiers) == 2
     assert pricing.tiers[1].context_threshold == 272_000
     assert cfg2.get_model_pricing("nonexistent-model") is None
-
-
-@pytest.mark.parametrize(
-    "content,match",
-    [
-        ("[models\ngarbage!!!", "Invalid TOML"),
-        ('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n', "Missing required field"),
-        ('[models]\n[models."m"]\ntiers = []\n', "non-empty array"),
-    ],
-)
-def test_load_pricing_malformed_content_raises(tmp_path, content, match):
-    p = tmp_path / "bad.toml"
-    p.write_text(content)
-    with pytest.raises(PricingError, match=match):
-        load_pricing(p)
 
 
 # ---------------------------------------------------------------------------

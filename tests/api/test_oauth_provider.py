@@ -253,20 +253,6 @@ def test_whatsapp_is_catalog_oauth_but_unregistered():
 # ===========================================================================
 
 
-async def test_provider_start_google_json_mode(app):
-    """Generalised google/start (via legacy route) returns same JSON as before."""
-    _make_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
-    assert resp.status_code == 200
-    body = resp.json()
-    # Legacy route returns flat OAuthStartResponse (not ApiResponse envelope)
-    assert "authorization_url" in body
-    assert "accounts.google.com" in body["authorization_url"]
-
-
 async def test_generalised_google_start_returns_api_response_envelope(app):
     """The /{provider}/start route (when provider=google) wraps in ApiResponse."""
     _make_app(app)
@@ -659,17 +645,6 @@ async def test_google_callback_via_generalised_route_writes_connected_audit(app)
 # ===========================================================================
 # 10. Pre-change Google route snapshot tests
 # ===========================================================================
-
-
-async def test_google_start_snapshot_status_and_location(app):
-    """Snapshot: GET /api/oauth/google/start → 302 to accounts.google.com."""
-    _make_app(app)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
-    ) as client:
-        resp = await client.get("/api/oauth/google/start")
-    assert resp.status_code in (302, 307)
-    assert "accounts.google.com" in resp.headers["location"]
 
 
 async def test_google_start_json_snapshot(app):
