@@ -262,7 +262,7 @@ async def load_ha_checkpoint(
     Args:
         pool: asyncpg pool with access to the ``switchboard`` schema.
         endpoint_identity: Endpoint identity for this connector instance,
-            e.g. ``"home_assistant:ha.local:8123"``.
+            e.g. ``"home_assistant:ha.example.invalid:8123"``.
         overlap_seconds: Safety margin subtracted from ``last_event_ts`` on
             resume (default 30, matches ``HA_CHECKPOINT_OVERLAP_S``).
 

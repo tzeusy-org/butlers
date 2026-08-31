@@ -11,12 +11,12 @@ Typical usage inside a connector::
 
     from butlers.connectors.cursor_store import load_cursor, save_cursor
 
-    cursor = await load_cursor(pool, "gmail", "gmail:user:alice@gmail.com")
+    cursor = await load_cursor(pool, "gmail", "gmail:user:alice@example.invalid")
     ...
     await save_cursor(
         pool,
         "gmail",
-        "gmail:user:alice@gmail.com",
+        "gmail:user:alice@example.invalid",
         new_value,
         parent_endpoint_identity=NO_PARENT,
     )

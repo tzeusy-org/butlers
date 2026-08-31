@@ -35,7 +35,7 @@ Usage in the HA connector::
 
     # Instantiate once at connector startup
     ha_filter = HAFilterPersistence(
-        endpoint_identity="home_assistant:homeassistant.local:8123",
+        endpoint_identity="home_assistant:homeassistant.example.invalid:8123",
         db_pool=pool,
         submit_fn=connector._submit_envelope,
     )
@@ -176,7 +176,7 @@ def ha_full_payload(
 
     Args:
         endpoint_identity: Connector endpoint identity
-            (e.g. ``"home_assistant:homeassistant.local:8123"``).
+            (e.g. ``"home_assistant:homeassistant.example.invalid:8123"``).
         entity_id: HA entity ID (e.g. ``"sensor.living_room_temperature"``).
         time_fired: ISO 8601 timestamp when the HA event was fired.
         ha_event: Raw HA event dict as received from the WebSocket or REST API.
@@ -251,7 +251,7 @@ class HAFilterPersistence:
 
     Args:
         endpoint_identity: Connector endpoint identity string
-            (e.g. ``"home_assistant:homeassistant.local:8123"``).
+            (e.g. ``"home_assistant:homeassistant.example.invalid:8123"``).
         db_pool: asyncpg connection pool used for flush and replay drain.
             May be ``None`` during tests or when DB is unavailable; in that
             case flush/drain calls are no-ops.

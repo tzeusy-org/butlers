@@ -143,8 +143,8 @@ def _redact_email(email: str | None) -> str | None:
 
     Shows the first 2 characters of the local part, then ***, then @domain.
     Examples:
-        "test@gmail.com" → "te***@gmail.com"
-        "a@example.com"  → "a***@example.com"
+        "test@example.invalid" → "te***@example.invalid"
+        "a@example.invalid"    → "a***@example.invalid"
         None             → None
 
     This prevents PII leakage in the unauthenticated /health endpoint.

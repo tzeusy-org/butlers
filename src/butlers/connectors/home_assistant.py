@@ -199,7 +199,7 @@ class HAWebSocketClient:
             ...  # route to filter pipeline
 
         client = HAWebSocketClient(
-            ha_base_url="http://ha.local:8123",
+            ha_base_url="http://ha.example.invalid:8123",
             ha_access_token="super-secret-token",
             dispatch=handle_event,
             ping_interval_s=30,
@@ -1384,7 +1384,7 @@ class HAConnector:
         Per spec: ``"home_assistant:<ha_host>:<ha_port>"``.
 
         Args:
-            ha_base_url: The HA instance base URL, e.g. ``"http://ha.local:8123"``.
+            ha_base_url: The HA instance base URL, e.g. ``"http://ha.example.invalid:8123"``.
 
         Returns:
             Endpoint identity string.

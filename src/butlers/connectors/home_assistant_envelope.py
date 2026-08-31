@@ -108,7 +108,7 @@ def mint_idempotency_key(
 
     Args:
         endpoint_identity: Connector endpoint identity, e.g.
-            ``"home_assistant:homeassistant.local:8123"``.
+            ``"home_assistant:homeassistant.example.invalid:8123"``.
         entity_id: HA entity ID, e.g. ``"sensor.living_room_temperature"``.
         time_fired_ms: Event timestamp as milliseconds since UNIX epoch.
 
@@ -210,7 +210,7 @@ def build_state_changed_envelope(
 
     Args:
         endpoint_identity: Connector endpoint identity, derived from the HA
-            base URL (e.g. ``"home_assistant:homeassistant.local:8123"``).
+            base URL (e.g. ``"home_assistant:homeassistant.example.invalid:8123"``).
         entity_id: HA entity ID (e.g. ``"sensor.living_room_temperature"``).
         time_fired: ISO-8601 timestamp from the HA event.
         ha_event: Raw HA event dict as received from the WebSocket or REST API.
@@ -471,7 +471,7 @@ def build_automation_triggered_envelope(
 
     Args:
         endpoint_identity: Connector endpoint identity, derived from the HA
-            base URL (e.g. ``"home_assistant:homeassistant.local:8123"``).
+            base URL (e.g. ``"home_assistant:homeassistant.example.invalid:8123"``).
         entity_id: HA entity ID of the triggered automation
             (e.g. ``"automation.morning_lights"``).
         time_fired: ISO-8601 timestamp from the HA event.

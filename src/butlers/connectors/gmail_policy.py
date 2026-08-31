@@ -63,7 +63,7 @@ def _normalize_email(address: str) -> str:
     stripping) are NOT applied unless both sides are normalized the same way.
     """
     address = address.strip()
-    # Strip display-name angle-bracket: "Alice <alice@example.com>" -> "alice@example.com"
+    # Strip display-name angle-bracket: "Alice <alice@example.invalid>" -> "alice@example.invalid"
     m = _ANGLE_BRACKET_RE.search(address)
     if m:
         address = m.group(1).strip()

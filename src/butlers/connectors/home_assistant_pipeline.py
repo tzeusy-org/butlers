@@ -29,13 +29,13 @@ Usage::
     pipeline = HAFilterPipeline(
         domain_allowlist=frozenset({"light", "sensor", "lock"}),
         discretion_evaluator=DiscretionEvaluator(
-            source_name="home_assistant:ha.local:8123",
+            source_name="home_assistant:ha.example.invalid:8123",
             dispatcher=DiscretionDispatcher(
                 pool=db_pool,
                 codex_auth_authority=system_global_codex_authority,
             ),
         ),
-        metrics=HAConnectorMetrics("home_assistant:ha.local:8123"),
+        metrics=HAConnectorMetrics("home_assistant:ha.example.invalid:8123"),
     )
 
     result = await pipeline.run(

@@ -15,14 +15,14 @@ Typical usage inside a connector::
 
     buf = FilteredEventBuffer(
         connector_type="gmail",
-        endpoint_identity="gmail:user:alice@example.com",
+        endpoint_identity="gmail:user:alice@example.invalid",
     )
 
     # During poll cycle — record filtered / errored messages
     buf.record(
         external_message_id="msg-1",
         source_channel="email",
-        sender_identity="sender@example.com",
+        sender_identity="sender@example.invalid",
         subject_or_preview="Hello",
         filter_reason=FilteredEventBuffer.reason_label_exclude("CATEGORY_PROMOTIONS"),
         full_payload=buf.full_payload(...),
@@ -274,7 +274,7 @@ class FilteredEventBuffer:
 
     Args:
         connector_type: Connector type string (e.g. ``"gmail"``).
-        endpoint_identity: Endpoint identity string (e.g. ``"gmail:user:alice@gmail.com"``).
+        endpoint_identity: Endpoint identity string (e.g. ``"gmail:user:alice@example.invalid"``).
     """
 
     def __init__(self, connector_type: str, endpoint_identity: str) -> None:

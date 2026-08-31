@@ -665,7 +665,7 @@ class OwnerContext:
         query.  Informational; not a live credential check.
     endpoint_identity:
         3-segment canonical identity string, e.g.
-        ``"google_health:user:foo@gmail.com"``.
+        ``"google_health:user:foo@example.invalid"``.
     cached_access_token:
         Per-account in-memory access token (never persisted).
     token_expires_at:

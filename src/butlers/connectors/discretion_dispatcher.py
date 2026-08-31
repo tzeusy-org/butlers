@@ -297,7 +297,7 @@ class DiscretionDispatcher:
             Optional system-level instructions for the model.
         identity:
             Per-connector identity for spend attribution (e.g. ``"tg:<chat_id>"``,
-            ``"home_assistant:ha.local:8123"``) forwarded by
+            ``"home_assistant:ha.example.invalid:8123"``) forwarded by
             :class:`~butlers.connectors.discretion.DiscretionEvaluator` as its
             ``source_name``. Recorded as the ledger's ``butler_name`` in place
             of the constructor's ``butler_name`` default (``"__discretion__"``)

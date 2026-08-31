@@ -25,7 +25,7 @@ Usage in the HA connector::
     # Create cache and poller
     cache = HAStateCache()
     poller = HARestPoller(
-        base_url="http://homeassistant.local:8123",
+        base_url="http://homeassistant.example.invalid:8123",
         access_token="my-token",
         state_cache=cache,
         poll_interval_s=60,
@@ -303,7 +303,7 @@ class HARestPoller:
     :meth:`stop` to manage the lifecycle.
 
     Args:
-        base_url: HA instance base URL, e.g. ``"http://homeassistant.local:8123"``.
+        base_url: HA instance base URL, e.g. ``"http://homeassistant.example.invalid:8123"``.
         access_token: HA long-lived access token (bearer token).
         state_cache: Shared ``HAStateCache`` for diff-based change detection.
         poll_interval_s: Seconds between poll cycles (default 60).

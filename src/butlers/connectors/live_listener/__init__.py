@@ -28,7 +28,9 @@ filter_gate
 
 Env vars:
     LIVE_LISTENER_TRANSCRIPTION_URL: Transcription service URL (required).
-        For Wyoming: tcp://host:10300. For WS: ws://host:port/path. For HTTP: http://host:port.
+        For Wyoming: tcp://transcriber.example.invalid:10300. For WS:
+        ws://transcriber.example.invalid:port/path. For HTTP:
+        http://transcriber.example.invalid:port.
     LIVE_LISTENER_TRANSCRIPTION_PROTOCOL: "wyoming" | "websocket" | "http" (default: "wyoming")
     LIVE_LISTENER_LANGUAGE: Language hint for transcription (default: "en")
     LIVE_LISTENER_MIN_CONFIDENCE: Minimum confidence threshold (default: 0.3)

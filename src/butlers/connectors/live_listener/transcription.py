@@ -218,7 +218,7 @@ class WyomingTranscriptionClient(TranscriptionClient):
     the next ``transcribe()`` call.
 
     Args:
-        url: TCP URL in the form ``tcp://host:port``.
+        url: TCP URL in the form ``tcp://transcriber.example.invalid:port``.
         mic_name: Mic identifier used in metric labels.
         language: BCP-47 language hint (e.g. ``"en"``).
         min_confidence: Minimum confidence to accept; results below this are
@@ -474,7 +474,7 @@ class WebSocketTranscriptionClient(TranscriptionClient):
     with exponential backoff.
 
     Args:
-        url: WebSocket URL (e.g. ``ws://localhost:8765/transcribe``).
+        url: WebSocket URL (e.g. ``ws://transcriber.example.invalid:8765/transcribe``).
         mic_name: Mic identifier used in metric labels.
         language: BCP-47 language hint sent as a connection header.
         min_confidence: Minimum confidence to accept.

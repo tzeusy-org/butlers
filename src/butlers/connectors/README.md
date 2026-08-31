@@ -51,7 +51,7 @@ python -m butlers.connectors.telegram_bot
 ```bash
 export SWITCHBOARD_MCP_URL="http://localhost:41100/sse"
 export BUTLER_TELEGRAM_TOKEN="your-telegram-bot-token"
-export CONNECTOR_WEBHOOK_URL="https://yourdomain.com/telegram/webhook"
+export CONNECTOR_WEBHOOK_URL="https://webhook.example.invalid/telegram/webhook"
 
 python -m butlers.connectors.telegram_bot
 ```
@@ -145,9 +145,9 @@ Required environment variables:
 - `SWITCHBOARD_MCP_URL`: SSE endpoint URL for Switchboard MCP server
 - `LIVE_LISTENER_DEVICES`: JSON list of mic device specs
 - `LIVE_LISTENER_TRANSCRIPTION_URL`: Transcription service URL
-  - Wyoming: `tcp://host:10300`
-  - WebSocket: `ws://host:port/transcribe`
-  - HTTP: `http://host:port/transcribe`
+  - Wyoming: `tcp://transcriber.example.invalid:10300`
+  - WebSocket: `ws://transcriber.example.invalid:port/transcribe`
+  - HTTP: `http://transcriber.example.invalid:port/transcribe`
 
 Optional:
 - `CONNECTOR_HEALTH_PORT`: HTTP port for `/health` and `/metrics` (default: 40091)
