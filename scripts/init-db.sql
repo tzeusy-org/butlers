@@ -470,6 +470,10 @@ BEGIN
     -- Adding a new evidence surface requires an explicit grant here plus a
     -- compatibility declaration in src/butlers/chronicler/contracts.py.
     -- Do NOT restore GRANT SELECT ON ALL TABLES — that violates RFC 0014 §D1.
+    -- init-db runs before Alembic's specialist core migrations on a fresh
+    -- install. Its guarded calendar grants therefore cover existing/legacy
+    -- tables and reruns; core_207 is the post-calendar convergence point for
+    -- fresh installs and must retain the same explicit allowlist.
     FOR _idx IN 1 .. array_length(_butler_schemas, 1) LOOP
         _schema := _butler_schemas[_idx];
         IF _schema = 'chronicler' THEN

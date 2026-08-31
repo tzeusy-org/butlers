@@ -1372,6 +1372,8 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # general.calendar_event_instances — approved evidence surface
             conn.execute(
                 text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_instances ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
                     "  event_id UUID,"
@@ -1390,6 +1392,8 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # companions; each is an approved Chronicler read surface.
             conn.execute(
                 text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_sources ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
                     ")"
@@ -1397,6 +1401,8 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_events ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
                     ")"
@@ -1404,6 +1410,8 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
+                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_entities ("
                     "  event_id UUID NOT NULL,"
                     "  entity_id UUID NOT NULL"

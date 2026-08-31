@@ -14,6 +14,11 @@ restricted ``butler_chronicler_rw`` role could see the first table but not the
 complete projection surface.  Grant each table explicitly and only when it is
 present; the optional calendar module remains safe on deployments without it.
 
+The shared core chain's post-calendar ``core_207`` revision replays these
+allowlisted grants after late core migrations create the target tables.  This
+keeps the independent Chronicler chain safe when it runs before that surface
+exists, without relying on a later ``init-db.sql`` rerun.
+
 The grants are intentionally separate from the broad own-schema permissions
 used by normal butler roles.  Chronicler's cross-schema role remains
 least-privilege and migration-tracked.
