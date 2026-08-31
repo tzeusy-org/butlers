@@ -1,7 +1,8 @@
 """Tests for spend (was: costs), pricing, and schedule spend API endpoints.
 
 Condensed: 22 → ~12 tests [bu-gg4y1]. Migrated from /api/costs → /api/spend [bu-dvb7i].
-Keeps: pricing config load (parametrized errors + tiered parse), pricing endpoint,
+Keeps: pricing config loading and tiered parsing (error paths remain covered in
+tests/api/test_pricing.py), pricing endpoint,
 spend summary aggregation + tiered pricing + unreachable fallback, daily sorting,
 by-schedule contract + zero-div guard.
 """
