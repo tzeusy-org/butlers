@@ -18,7 +18,7 @@ metadata:
     - tze
     - Claude Fable 5
   status: active
-  last_reviewed: "2026-07-22"
+  last_reviewed: "2026-09-02"
 compatibility: >
   Needs repo-root access, bd (beads) against the shared Dolt server, and the Workflow tool
   for the fan-out. The dev stack being up is optional (auditors work statically; live
@@ -35,6 +35,13 @@ never a re-filing of what a prior run already found.
 
 Invoking this skill is the owner's explicit opt-in to multi-agent orchestration: run the
 fan-out phases with the **Workflow tool**.
+
+**Standing emphasis (owner, 2026-09-02): feature exploration first.** Successive runs were
+converging on UX-polish findings; the owner wants the generative center of gravity on *new
+capability* — what the system could newly perceive, do, or say for the owner — with UX audit
+as the supporting half, not the headline. Concretely: Phase 2 (ecosystem lenses) is the
+primary fan-out and gets the larger share of agent-hours; Phase 1 groups surfaces more
+coarsely; the ranked move list leads with feature/ecosystem moves (see Phase 3).
 
 **Precedent:** the 2026-07-03 run (`docs/redesigns/2026-07-03-jarvis-audit.md` + `-data.json`,
 epic `bu-86c4c`, 28 subagents). Reuse its shape; treat its dossier as the canonical example of
@@ -68,8 +75,9 @@ shapes a pursuit run discovers get appended there (its maintenance contract).
    - `docs/frontend/purpose-and-single-pane.md` — the single-pane / detect→diagnose→act doctrine.
    - Butler manifestos (`roster/*/MANIFESTO.md`) for the ecosystem lenses.
 2. **Build the page inventory** from `frontend/src/router-config.tsx` — the route table is the
-   source of truth, NOT a directory listing of `frontend/src/pages/`. Group routes into page
-   *surfaces* (e.g. entity index + detail = one surface) to keep the fan-out ~20–25 agents.
+   source of truth, NOT a directory listing of `frontend/src/pages/`. Under the standing
+   feature-first emphasis, group routes into *coarse* surfaces (~10–14 UX agents, e.g. all of
+   settings+secrets+permissions = one surface) so the freed agent-hours go to Phase 2 lenses.
 3. **Build the "already known" ledger** — the dedup input injected into EVERY subagent prompt:
    - Prior pursuit dossiers: `ls docs/redesigns/*jarvis*` and read their move lists + tier boards.
    - Open work: `bd list --json` filtered to open/in-progress design and feature beads; note
@@ -101,7 +109,15 @@ baked into every prompt:
 
 ## Phase 2 — Ecosystem pursuit fan-out (Workflow, runs concurrently with Phase 1)
 
-One ideation agent per lens. Default lenses (add/remove per run as the owner directs):
+**This is the primary fan-out** under the standing feature-first emphasis: run every standing
+lens *plus* 2–4 rotating lenses per run, and give the deepest lenses two agents (one
+breadth-ideation, one that takes the prior run's single best unbuilt idea and designs it to
+integration-point depth). Rotating-lens candidates: voice & ambient interfaces, household
+automation/IoT, finance & commerce, health & wellbeing, travel & logistics, media & content,
+agent self-improvement (butlers proposing their own tooling), owner-absent operation
+(delegation, trust boundaries, spend autonomy). Pick rotations that no prior run has mined —
+the dossier history is the record. One ideation agent per lens. Standing lenses (add/remove
+per run as the owner directs):
 
 | Lens | Ground in | Pursuit question |
 |---|---|---|
@@ -126,8 +142,11 @@ or session context was lost (see Execution discipline §3).
 
 - Dedupe across agents and against the known ledger once more.
 - Produce: tier board (with movement vs. baseline), systemic themes (cross-page defects with
-  exemplars), and a single ranked move list (~10–15 moves) mixing UX moves and ecosystem
-  extensions. Each move: what, why (doctrine citation), evidence, rough slice plan.
+  exemplars), and a single ranked move list (~10–15 moves). Under the standing feature-first
+  emphasis, aim for roughly **60%+ ecosystem/feature moves**, and let a genuinely new
+  capability outrank a UX repair of similar owner-value — but never demote a
+  trust/correctness defect (fabricated data, failure impersonating health) below a feature;
+  those still lead. Each move: what, why (doctrine citation), evidence, rough slice plan.
 
 ## Phase 4 — Deliverables
 
@@ -222,8 +241,9 @@ Never let harvested findings live only in conversation context or an unfinished 
 
 ### 4. Cadence, scale, and resume hygiene
 
-- Default scale: ~20–25 page-surface + 4 cross-cutting + ~5 lens + 1 synthesis, delivered as
-  2–3-wide hourly batches. Honor any `+Nk` budget as **depth**, never concurrency.
+- Default scale (feature-first): ~10–14 page-surface + 4 cross-cutting + ~8–10 lens (standing
+  + rotating + deep-design doubles) + 1 synthesis, delivered as 2–3-wide hourly batches. Honor
+  any `+Nk` budget as **depth**, never concurrency.
 - Keep the state file current so wakeups survive context summarization.
 - On a re-run soon after a prior release, expect fewer NEW findings — that is success, not
   failure. Report tier movement prominently; do not pad the move list to hit a count.
