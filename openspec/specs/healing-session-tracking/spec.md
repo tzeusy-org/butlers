@@ -156,6 +156,8 @@ On dispatcher startup (daemon boot), the system SHALL recover from incomplete he
 - **AND** the stale worktree reaper runs after recovery completes
 
 ### Requirement: Workflow Deadline Authority
+
+The implementation SHALL provide the behavior described by this requirement.
 The `workflow_deadline_at` field is the authoritative deadline reference for multi-session recovery workflows.
 
 #### Scenario: Deadline is set at row creation

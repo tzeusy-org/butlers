@@ -25,6 +25,8 @@ The `public.ingestion_events` table is the canonical first-class record of every
 - **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries
 
 ### Requirement: Ingestion Event Query by ID
+
+The implementation SHALL provide the behavior described by this requirement.
 Fetch a single ingestion event record by its UUID7 primary key.
 
 #### Scenario: Successful lookup
@@ -36,6 +38,8 @@ Fetch a single ingestion event record by its UUID7 primary key.
 - **THEN** `None` is returned (no exception raised)
 
 ### Requirement: Ingestion Event List (Paginated)
+
+The implementation SHALL provide the behavior described by this requirement.
 Return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
 #### Scenario: Paginated list
@@ -62,6 +66,8 @@ Return a unified stream of all ingestion events (ingested, filtered, errored) or
 - **AND** all other status values query only `connectors.filtered_events`
 
 ### Requirement: Session Lineage Query
+
+The implementation SHALL provide the behavior described by this requirement.
 Return all sessions spawned from a given `request_id`, joined across all butler schemas. Works for both connector-sourced events (via `ingestion_event_id` FK) and internally-minted request IDs (via direct `request_id` match).
 
 #### Scenario: Lineage for a connector-sourced event
@@ -74,6 +80,8 @@ Return all sessions spawned from a given `request_id`, joined across all butler 
 - **THEN** all sessions where `request_id` matches are returned (the query falls back to direct `request_id` match when no ingestion event row exists)
 
 ### Requirement: Dashboard Channel as Valid Ingestion Source
+
+The implementation SHALL provide the behavior described by this requirement.
 The `public.ingestion_events` table accepts events with `source_channel = "dashboard"`. Dashboard-originated events follow the same deduplication, request-context, and lineage semantics as connector-originated events without becoming connector provenance or acquiring connector-specific filtered-event/status semantics.
 
 #### Scenario: Dashboard ingestion event recorded

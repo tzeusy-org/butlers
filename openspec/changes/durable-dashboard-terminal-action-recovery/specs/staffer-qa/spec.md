@@ -92,6 +92,11 @@ Scope: v1-mandatory
 - **AND** the patrol cycle continues with findings from other sources
 - **AND** the patrol record includes the failed source in `error_detail`
 
+#### Scenario: Reactive finding buffer is volatile
+- **WHEN** the QA staffer daemon restarts
+- **THEN** any buffered findings from `report_finding` that were not yet processed by a patrol cycle are lost
+- **AND** this is acceptable because: (a) the `session_records` source will rediscover these failures from the DB on the next patrol, and (b) the `log_scanner` source will find them in logs
+- **AND** no duplicate investigation is created because the triage layer deduplicates by fingerprint
 ### Requirement: V1 Discovery Sources
 
 The QA Staffer SHALL ship with five discovery sources in v1.

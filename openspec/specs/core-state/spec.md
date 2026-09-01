@@ -6,6 +6,8 @@ Provides a per-butler key-value store backed by PostgreSQL JSONB, supporting get
 ## Requirements
 
 ### Requirement: State Get
+
+The implementation SHALL provide the behavior described by this requirement.
 Retrieve a JSONB value by key from the `state` table. Returns `None` if the key does not exist. Handles both decoded Python objects and raw JSON strings from asyncpg.
 
 #### Scenario: Key exists
@@ -17,6 +19,8 @@ Retrieve a JSONB value by key from the `state` table. Returns `None` if the key 
 - **THEN** it returns `None`
 
 ### Requirement: State Set (Upsert)
+
+The implementation SHALL provide the behavior described by this requirement.
 Upsert a key with any JSON-serializable value. If the key exists, its value, `updated_at` timestamp, and `version` are updated (version incremented). If the key does not exist, a new row is inserted with `version=1`. Returns the new version number.
 
 #### Scenario: Insert new key
@@ -30,6 +34,8 @@ Upsert a key with any JSON-serializable value. If the key exists, its value, `up
 - **AND** the returned version reflects the increment
 
 ### Requirement: State Compare-and-Set (CAS)
+
+The implementation SHALL provide the behavior described by this requirement.
 Conditionally update a key only if its current version matches the expected version. Provides safe concurrent KV writes.
 
 #### Scenario: Version matches
@@ -45,6 +51,8 @@ Conditionally update a key only if its current version matches the expected vers
 - **THEN** a `CASConflictError` is raised with `actual_version=None`
 
 ### Requirement: State Delete
+
+The implementation SHALL provide the behavior described by this requirement.
 Delete a key from the state store. No-op if the key does not exist.
 
 #### Scenario: Delete existing key
@@ -56,6 +64,8 @@ Delete a key from the state store. No-op if the key does not exist.
 - **THEN** no error is raised (no-op)
 
 ### Requirement: State List
+
+The implementation SHALL provide the behavior described by this requirement.
 Return state entries optionally filtered by key prefix. Supports two modes: keys-only (default) and full key-value pairs.
 
 #### Scenario: List all keys
@@ -71,6 +81,8 @@ Return state entries optionally filtered by key prefix. Supports two modes: keys
 - **THEN** it returns a list of `{"key": ..., "value": ...}` dicts
 
 ### Requirement: Per-Butler Schema Isolation
+
+The implementation SHALL provide the behavior described by this requirement.
 Each butler operates against its own PostgreSQL schema. The `state` table is a core table required in every butler's database. Direct cross-butler schema access is prohibited.
 
 #### Scenario: Schema isolation

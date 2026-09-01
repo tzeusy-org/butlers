@@ -66,6 +66,18 @@ not use a blanket RLS policy that hides DND rows from those readers.
   `butler_name="finance"` and `signal_type="exercising"`
 - **THEN** a `PermissionError` is raised before any context write
 
+#### Scenario: Authorized butler writes signal
+- **WHEN** the health butler calls `set_context(butler_name="health", signal_type="exercising", ...)`
+- **THEN** the signal is written successfully
+
+#### Scenario: Unauthorized butler rejected
+- **WHEN** the finance butler calls `set_context(butler_name="finance", signal_type="exercising", ...)`
+- **THEN** a `PermissionError` is raised with a message identifying the butler and signal type
+- **AND** no database write occurs
+
+#### Scenario: General butler has broad write access
+- **WHEN** the general butler calls `set_context()` with any signal type
+- **THEN** the write succeeds because general is authorized for all signal types
 ## ADDED Requirements
 
 ### Requirement: Canonical DND Mutation and Durable Generation

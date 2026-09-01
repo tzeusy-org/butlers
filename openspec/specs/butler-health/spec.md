@@ -6,6 +6,8 @@ The Health butler (port 41103) is a health tracking companion for measurements, 
 ## Requirements
 
 ### Requirement: Health Butler Identity and Runtime
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler tracks health data with compound JSONB values and domain-specific analysis tools.
 
 #### Scenario: Identity and port
@@ -20,6 +22,8 @@ The health butler tracks health data with compound JSONB values and domain-speci
 - **AND** `google_health` declares `dependencies = []` at the `Module` level — it does not declare a module-level dependency on `memory` and instead relies on the butler's module topological-init ordering plus the handler's runtime use of memory-module MCP tools
 
 ### Requirement: Health Butler Tool Surface
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler provides measurement, medication, condition, symptom, meal, and research tools.
 
 #### Scenario: Tool inventory
@@ -28,6 +32,8 @@ The health butler provides measurement, medication, condition, symptom, meal, an
 - **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_history`, `breathing_rate_history`, `activity_summary`, `vo2_max_latest`
 
 ### Requirement: Health Data Conventions
+
+The implementation SHALL provide the behavior described by this requirement.
 Health data uses compound JSONB values and standardized severity scales.
 
 #### Scenario: Measurement conventions
@@ -50,6 +56,8 @@ job is per-deployment, not per-pageview.
 - **AND** the `insight-scan` cron MUST be weekly, not the prior monthly `0 7 15 * * *`
 
 ### Requirement: Health Butler Skills
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler has check-in and trend interpretation skills.
 
 #### Scenario: Skill inventory
@@ -57,6 +65,8 @@ The health butler has check-in and trend interpretation skills.
 - **THEN** it has access to `health-check-in` (guided health check-in workflow covering medication adherence, vitals, symptoms, diet, and summary) and `trend-interpreter` (measurement trend interpretation and anomaly detection for BP, weight, glucose, heart rate), plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: Health Memory Taxonomy
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler uses a clinical memory taxonomy with permanence based on condition chronicity.
 
 #### Scenario: Memory classification
@@ -64,6 +74,8 @@ The health butler uses a clinical memory taxonomy with permanence based on condi
 - **THEN** it uses subjects like medication names, condition names, or "user"; predicates like `medication`, `medication_frequency`, `condition_status`, `symptom_pattern`, `dietary_restriction`, `allergy`; permanence `stable` for chronic conditions and allergies, `standard` for current medications and symptoms, `volatile` for acute symptoms
 
 ### Requirement: CRUD-to-SPO migration — health domain (bu-ddb.2)
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medication_doses, medications, conditions, research) to temporal SPO facts using the memory module's facts table. All facts use `scope='health'` and `entity_id = owner_entity_id`. Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
 
 #### Scenario: Measurement tools as temporal fact wrappers
@@ -114,6 +126,8 @@ The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medi
 - **THEN** it MUST query facts with `predicate='measurement_{type}'` and `valid_at` in the requested date range, returning the same response shape as before (data_points, trend, min, max, avg)
 
 ### Requirement: Meal tracking as bitemporal facts
+
+The implementation SHALL provide the behavior described by this requirement.
 The health butler stores meal observations using the memory module's meal-specific temporal predicates and nutrition metadata, enabling historical meal querying and pattern analysis.
 
 #### Scenario: Meal predicates and temporal facts

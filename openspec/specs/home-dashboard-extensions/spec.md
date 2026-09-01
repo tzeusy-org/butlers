@@ -8,6 +8,7 @@ Dashboard API endpoints for device inventory, energy consumption time-series, an
 
 ### Requirement: Device Inventory Endpoint
 
+The implementation SHALL provide the behavior described by this requirement.
 A paginated endpoint listing all known HA devices with their current state, area, and health status.
 
 #### Scenario: List all devices
@@ -38,6 +39,7 @@ A paginated endpoint listing all known HA devices with their current state, area
 
 ### Requirement: Energy Consumption Endpoint
 
+The implementation SHALL provide the behavior described by this requirement.
 An endpoint returning energy consumption time-series data for dashboard charts.
 
 #### Scenario: Daily energy consumption
@@ -89,6 +91,7 @@ An endpoint returning energy consumption time-series data for dashboard charts.
 
 ### Requirement: Maintenance Calendar Endpoint
 
+The implementation SHALL provide the behavior described by this requirement.
 An endpoint returning maintenance items for calendar display and management.
 
 #### Scenario: List all maintenance items
@@ -128,6 +131,7 @@ An endpoint returning maintenance items for calendar display and management.
 
 ### Requirement: Dashboard Response Models
 
+The implementation SHALL provide the behavior described by this requirement.
 Pydantic models for all new dashboard endpoints.
 
 #### Scenario: DeviceInventoryEntry model

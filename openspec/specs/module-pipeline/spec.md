@@ -7,6 +7,8 @@ The Pipeline module provides LLM-based message classification and routing for th
 ## Requirements
 
 ### Requirement: Ingestion Architecture
+
+The implementation SHALL provide the behavior described by this requirement.
 Live data enters the system through connectors and flows through the Switchboard before reaching any domain butler. Modules on individual butlers provide runtime data lookup — they do not participate in ingestion.
 
 #### Scenario: End-to-end ingestion flow
@@ -26,6 +28,8 @@ Live data enters the system through connectors and flows through the Switchboard
 - **AND** the pipeline does not duplicate these responsibilities
 
 ### Requirement: Modules Enable Runtime Data Lookup
+
+The implementation SHALL provide the behavior described by this requirement.
 Modules on domain butlers provide tools for querying and manipulating domain-specific data. They sync with external sources independently and serve the LLM CLI at query time.
 
 #### Scenario: Calendar module as runtime lookup
@@ -49,6 +53,8 @@ Modules on domain butlers provide tools for querying and manipulating domain-spe
 - **AND** memory is populated during LLM CLI sessions (store_episode, store_fact) and consolidated by scheduled jobs, not by an ingestion pipeline
 
 ### Requirement: Pipeline as Post-Triage LLM Router
+
+The implementation SHALL provide the behavior described by this requirement.
 The pipeline's sole responsibility is LLM-driven classification and routing for messages that pass through deterministic triage without a match. It runs exclusively on the Switchboard butler.
 
 #### Scenario: Pipeline receives pre-processed messages
@@ -77,6 +83,8 @@ The pipeline's sole responsibility is LLM-driven classification and routing for 
 - **AND** classification or routing errors are captured in `classification_error` and `routing_error` fields
 
 ### Requirement: Conversation History for Routing Context
+
+The implementation SHALL provide the behavior described by this requirement.
 The pipeline loads channel-appropriate conversation history to improve LLM routing accuracy.
 
 #### Scenario: Realtime messaging history
@@ -92,6 +100,8 @@ The pipeline loads channel-appropriate conversation history to improve LLM routi
 - **THEN** no conversation history is loaded
 
 ### Requirement: Concurrent Pipeline Session Isolation
+
+The implementation SHALL provide the behavior described by this requirement.
 The pipeline uses per-task context variables to prevent cross-contamination between concurrent routing sessions.
 
 #### Scenario: Context isolation

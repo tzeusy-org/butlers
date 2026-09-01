@@ -118,6 +118,27 @@ jobs:
       - name: Check unarchived MODIFIED spec blocks against the live baseline
         run: python3 scripts/check_spec_overwrites.py
 
+  openspec-strict-validation:
+    # Strict OpenSpec validation gate for bu-n58sv. The repository carries
+    # both canonical specs and active deltas; validating both prevents
+    # RFC-2119/prose and scenario-loss debt from accumulating behind scoped
+    # per-change checks. Pin the CLI version so local and hosted results use
+    # the same parser and strictness rules.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install OpenSpec 1.9.0
+        run: npm install --global @fission-ai/openspec@1.9.0
+
+      - name: Validate all OpenSpec artifacts in strict mode
+        run: make check-openspec-strict
+
   archived-requirements-guard:
     # Fast, dependency-free gate (bu-966by): the other side of the ledger from
     # spec-overwrite-guard. Archiving a change is supposed to write its

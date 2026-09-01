@@ -256,6 +256,8 @@ Naming note: the summary's "per source" grouping is `origin_butler` (which butle
 - **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state, not a source failure
 
 ### Requirement: notify.v1 Envelope Schema
+
+The implementation SHALL provide the behavior described by this requirement.
 The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
 
 #### Scenario: Send intent envelope
@@ -264,6 +266,8 @@ The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (re
 - **AND** `origin_butler` matches the calling butler's name
 
 ### Requirement: Delivery Intent Validation
+
+The implementation SHALL provide the behavior described by this requirement.
 Four delivery intents are supported: `send`, `reply`, `react`, and `insight`. Each has specific field requirements.
 
 #### Scenario: Send intent
@@ -299,6 +303,8 @@ Four delivery intents are supported: `send`, `reply`, `react`, and `insight`. Ea
 - **THEN** the tool returns an error response
 
 ### Requirement: Channel Validation
+
+The implementation SHALL provide the behavior described by this requirement.
 Only `telegram` and `email` channels are currently supported. Unsupported channels produce an immediate error response.
 
 #### Scenario: Supported channel
@@ -355,6 +361,8 @@ as defined by the Channel Validation requirement above.
 - **THEN** `channel` resolves to `telegram`
 
 ### Requirement: Request Context Propagation
+
+The implementation SHALL provide the behavior described by this requirement.
 For `reply` and `react` intents, the `request_context` must carry lineage from the originating inbound request. This enables the Messenger butler to route the delivery to the correct conversation thread.
 
 #### Scenario: Request context forwarded to envelope
@@ -366,6 +374,8 @@ For `reply` and `react` intents, the `request_context` must carry lineage from t
 - **THEN** the runtime can pass the `request_context` from its session's routing lineage
 
 ### Requirement: NotifyRequestContextInput Schema
+
+The implementation SHALL provide the behavior described by this requirement.
 The `request_context` parameter follows the `NotifyRequestContextInput` TypedDict with required fields (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) and optional fields (`source_thread_identity`, `received_at`).
 
 #### Scenario: Valid request context
@@ -452,6 +462,8 @@ The `notify` tool SHALL apply approval gating based on whether the target is the
 - **THEN** the notification MUST require approval (conservative default)
 
 ### Requirement: [TARGET-STATE] Messenger Routing via Switchboard
+
+The implementation SHALL provide the behavior described by this requirement.
 The `notify.v1` envelope is carried inside a Switchboard-routed `route.v1` payload and executed by the Messenger butler's `route.execute`. The Messenger returns `route_response.v1` with a `notify_response.v1` nested result.
 
 #### Scenario: Notify routed through Switchboard
@@ -481,6 +493,8 @@ This requirement exists because the delivery architecture has two layers: `notif
 - **THEN** delivery proceeds immediately without checking standing rules
 
 ### Requirement: [TARGET-STATE] Notify Response Envelope
+
+The implementation SHALL provide the behavior described by this requirement.
 Successful delivery returns `notify_response.v1` with `status="ok"` and delivery metadata. Failed delivery returns `status="error"` with canonical error class and message.
 
 #### Scenario: Successful delivery response
@@ -492,6 +506,8 @@ Successful delivery returns `notify_response.v1` with `status="ok"` and delivery
 - **THEN** the notify tool returns a response with `status="error"`, `error.class`, and `error.message`
 
 ### Requirement: Origin Butler Identity
+
+The implementation SHALL provide the behavior described by this requirement.
 Every outbound interaction must include the originating butler's identity as `origin_butler` in the envelope. This is set automatically from the daemon's configuration.
 
 #### Scenario: Origin butler set automatically
@@ -499,6 +515,8 @@ Every outbound interaction must include the originating butler's identity as `or
 - **THEN** the envelope's `origin_butler` field is `"health"`
 
 ### Requirement: [TARGET-STATE] Idempotency and Replay Tolerance
+
+The implementation SHALL provide the behavior described by this requirement.
 Because fanout is at-least-once, butlers must tolerate duplicate routed subrequests where request lineage matches.
 
 #### Scenario: Duplicate notify tolerated

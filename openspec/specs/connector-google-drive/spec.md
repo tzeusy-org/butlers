@@ -6,6 +6,8 @@ The Google Drive connector ingests file metadata events from a user's Google Dri
 ## Requirements
 
 ### Requirement: Google Drive Connector Identity and Authentication
+
+The implementation SHALL provide the behavior described by this requirement.
 The Google Drive connector runs as a single process that discovers and manages all connected Google accounts with Drive scopes. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database. No new OAuth flow is needed — it piggybacks on the existing Google OAuth infrastructure.
 
 #### Scenario: Multi-account discovery at startup
@@ -43,6 +45,8 @@ The Google Drive connector runs as a single process that discovers and manages a
 - **AND** it SHALL periodically re-scan for new accounts (see dynamic account discovery)
 
 ### Requirement: Polling via changes.list API
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector polls Google Drive's `changes.list` endpoint with a persistent `pageToken` checkpoint. This is the only ingestion mode for v1 — no push notifications.
 
 #### Scenario: Polling mode
@@ -62,6 +66,8 @@ The connector polls Google Drive's `changes.list` endpoint with a persistent `pa
 - **AND** checkpoint SHALL be advanced only after all pages in the cycle are processed and submitted
 
 ### Requirement: PageToken Cursor Persistence
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector tracks its position in Drive's change stream via a persistent cursor.
 
 #### Scenario: Cursor model
@@ -74,6 +80,9 @@ The connector tracks its position in Drive's change stream via a persistent curs
 - **AND** on restart, it replays from the last safe page token (harmless due to dedup)
 
 ### Requirement: ingest.v1 Field Mapping
+
+The Google Drive connector SHALL normalize every ingested Drive file change to
+the `ingest.v1` envelope using exactly the field mapping defined below.
 
 #### Scenario: Google Drive field mapping
 - **WHEN** a Drive file change is normalized to `ingest.v1`
@@ -91,6 +100,8 @@ The connector tracks its position in Drive's change stream via a persistent curs
   - `control.idempotency_key` = `"gdrive:<endpoint_identity>:<file_id>:<modified_time_epoch>"`
 
 ### Requirement: Event Normalization
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector normalizes Drive changes into human-readable metadata summaries by detecting the type of change via comparison with a local metadata cache.
 
 #### Scenario: File created event
@@ -135,6 +146,8 @@ The connector normalizes Drive changes into human-readable metadata summaries by
 - **AND** trashed/removed files SHALL be deleted from the cache
 
 ### Requirement: Source Filter Integration (Google Drive)
+
+The implementation SHALL provide the behavior described by this requirement.
 The Google Drive connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:google_drive:<endpoint_identity>'`.
 
 #### Scenario: IngestionPolicyEvaluator instantiation
@@ -150,6 +163,8 @@ The Google Drive connector implements the ingestion policy gate using `Ingestion
 - **THEN** `sender_address` is the file owner's email, `source_channel = "google_drive"`, and `raw_key` is the filename
 
 ### Requirement: Multi-Account Connector Architecture
+
+The implementation SHALL provide the behavior described by this requirement.
 A single Google Drive connector process manages concurrent poll loops for all connected Google accounts.
 
 #### Scenario: Independent per-account loops
@@ -193,12 +208,21 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 ### Requirement: Aggregated Health Status
 
+The Google Drive connector SHALL expose a single aggregated health status
+covering every account loop, reporting the worst-case status across accounts
+together with per-account detail.
+
 #### Scenario: Health model (multi-account)
 - **WHEN** the Google Drive connector's health is queried
 - **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
 - **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity`, `error` (if any)
 
 ### Requirement: Environment Variables
+
+The Google Drive connector SHALL take its configuration from environment
+variables. The variables identified below as required MUST be set for the
+connector to run; the remainder are optional process-level defaults, which
+per-account metadata MAY override.
 
 #### Scenario: Required variables
 - **WHEN** the Google Drive connector starts
@@ -212,6 +236,8 @@ The connector SHALL support discovering new or removed accounts without a full p
 - **AND** per-account overrides in `google_accounts.metadata.google_drive` take precedence
 
 ### Requirement: Google Drive Connector Prometheus Metrics
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector exports standardized Prometheus metrics via `ConnectorMetrics` plus Drive-specific counters.
 
 #### Scenario: Standard connector metrics
@@ -228,6 +254,8 @@ The connector exports standardized Prometheus metrics via `ConnectorMetrics` plu
 - **THEN** `connector_gdrive_metadata_cache_size` (Gauge, labels: `endpoint_identity`) SHALL reflect the current number of cached file entries
 
 ### Requirement: Rate Limiting
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector respects Google Drive API rate limits.
 
 #### Scenario: Source API rate limit handling

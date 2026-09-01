@@ -67,6 +67,10 @@ The OAuth callback SHALL resolve the authenticated Google account and store cred
 
 ### Requirement: Force Consent for Scope Upgrade
 
+When a scope upgrade is requested, the authorization URL SHALL force a fresh
+Google consent prompt so that a new refresh token is issued covering the
+combined scope set.
+
 #### Scenario: Re-authorize with additional scopes
 
 - **WHEN** `GET /api/oauth/google/start?account_hint=work@gmail.com&force_consent=true` is called
@@ -74,6 +78,9 @@ The OAuth callback SHALL resolve the authenticated Google account and store cred
 - **AND** the `scope` parameter SHALL include all requested scopes (existing + new)
 
 ### Requirement: State Token Carries Account Context
+
+The OAuth CSRF state entry SHALL carry the account context supplied at start,
+and the callback SHALL read it back during resolution.
 
 #### Scenario: Account context in CSRF state
 
@@ -121,6 +128,11 @@ The OAuth start endpoint SHALL accept a `scope_set` query parameter enumerating 
 
 ### Requirement: Google Health Scopes are Restricted
 
+Google Health scopes SHALL be treated as Restricted scopes: the scope catalog
+SHALL document the production-mode review requirement and the test-mode
+limits, and the OAuth callback SHALL record when a grant was issued under a
+test-mode client.
+
 #### Scenario: Restricted-scope documentation in the OAuth catalog
 
 - **WHEN** a developer or operator reads the Google OAuth scope catalog source
@@ -132,6 +144,9 @@ The OAuth start endpoint SHALL accept a `scope_set` query parameter enumerating 
 - **THEN** the callback SHALL set `metadata.google_health_test_mode = true` on the `google_accounts` row
 
 ### Requirement: Additive Schema Support for Test-Mode Tracking
+
+The Google accounts table SHALL carry the additive columns that test-mode
+tracking and the dashboard's consent-expiry heuristic read.
 
 #### Scenario: Metadata JSONB column
 
@@ -146,6 +161,10 @@ The OAuth start endpoint SHALL accept a `scope_set` query parameter enumerating 
 - **AND** the dashboard's 7-day test-mode expiry heuristic SHALL read this column
 
 ### Requirement: Scope-Selective Revocation
+
+Disconnecting a single Google integration SHALL revoke only that integration's
+scopes, preserving the account row, its companion entity, and every other
+granted scope; a full account disconnect SHALL revoke them together.
 
 #### Scenario: Revoke Google Health scopes only
 

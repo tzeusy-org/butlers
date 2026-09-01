@@ -364,6 +364,23 @@ Scope: v1-mandatory
 - **THEN** it SHALL register `conversation_reply` regardless of core-group
   configuration because any routable butler can own a dashboard conversation
 
+#### Scenario: conversation_reply persists the confirm-loop message
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message)` for a `conversation_id` that references an existing conversation
+- **THEN** an assistant-role row is inserted into `public.dashboard_messages` with `content = message`
+- **AND** the conversation's `message_count` is incremented and `updated_at` is refreshed
+- **AND** the tool returns `{"status": "ok", "message_id": "...", "conversation_id": "..."}`
+
+#### Scenario: conversation_reply rejects an unknown conversation_id
+
+- **WHEN** `conversation_reply` is called with a `conversation_id` that does not reference an existing conversation
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` (never raises) so the calling model can see and correct its own mistake
+
+#### Scenario: conversation_reply is available to every butler
+
+- **WHEN** any butler's MCP server registers its core tools
+- **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
 ## ADDED Requirements
 
 ### Requirement: Dashboard Turn Cancellation API

@@ -69,3 +69,14 @@ a suggested rule is never broader than what its fingerprint held constant.
 - **WHEN** a promotion suggestion is created from a version-2 fingerprint
 - **THEN** confirming it mints a rule whose constraints pin exactly the
   fingerprinted safety-critical args as exact matches
+
+#### Scenario: Same tool and args produce identical fingerprint
+
+- **WHEN** `compute_fingerprint("send_telegram", {"chat_id": "mom_123", "text": "hello"})` is called twice
+- **THEN** both calls MUST return the same SHA-256 hex digest
+
+#### Scenario: Different arg values produce different fingerprints
+
+- **WHEN** `compute_fingerprint("send_telegram", {"chat_id": "mom_123", "text": "hello"})` is computed
+- **AND** `compute_fingerprint("send_telegram", {"chat_id": "dad_456", "text": "hello"})` is computed
+- **THEN** the two fingerprints MUST be different

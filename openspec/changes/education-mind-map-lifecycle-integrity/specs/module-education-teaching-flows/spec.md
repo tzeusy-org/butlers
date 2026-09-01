@@ -174,6 +174,9 @@ committed alongside it.
 
 ### Requirement: Staleness Detection and Auto-Abandonment
 
+The implementation SHALL provide the behavior described by this requirement.
+A weekly scheduled task (`stale-flow-check`) checks all active flows. Any flow with `last_session_at` more than 30 days before the check time is automatically abandoned. All pending review schedules for the abandoned mind map are deleted.
+
 A weekly scheduled task (`stale-flow-check`) checks for unfinished learning
 that has gone quiet. Its work list SHALL be drawn from rows in
 `education.mind_maps` whose status is `draft` or `active` — **not** from the

@@ -114,6 +114,35 @@ Scope: v1-mandatory
   receipt live region, decorative dots, and `Routed to` link so the authoritative
   Stop status is the only live status
 
+#### Scenario: Stop click on an already-finished turn is a benign no-op
+
+- **WHEN** the user clicks "Stop" but the turn already completed on the
+  routed butler (`already_finished: true` in the cancel response)
+- **THEN** the frontend stops watching the stream without rendering
+  "Cancelled by owner" or any other claim that it stopped something —
+  the (already-arrived or arriving) reply is unaffected
+
+#### Scenario: A failed cancel attempt is never rendered as calm
+
+- **WHEN** the cancel request itself fails (e.g. the routed butler is
+  unreachable), an already-ended runtime is still settling, or an irreversible
+  action was already committed, so the server cannot confirm cancellation
+- **THEN** the frontend surfaces the returned explanation inline in the thread
+  and gives the owner an actionable, truthful Stop state
+- **AND** it SHALL NOT render "Cancelled by owner", "Interrupted", or any
+  other terminal-state indicator implying the session actually stopped
+
+#### Scenario: A same-message ingress is still in progress
+
+- **WHEN** the SSE stream reports `INGEST_IN_PROGRESS` because another caller
+  owns or is settling the same immutable dashboard turn
+- **THEN** the frontend retains that logical message and presents a
+  "Check again" or history-refresh affordance
+- **AND** it SHALL NOT offer Retry or issue a new ingestion request for that
+  `message_id`
+- **AND** `SESSION_CANCELLED` remains a confirmed terminal Stop outcome, while
+  `TURN_OUTCOME_UNKNOWN` suppresses automatic replay and surfaces the
+  uncertainty honestly
 ### Requirement: Conversation React Query Hooks
 
 TanStack Query hooks SHALL manage conversation data fetching and caching,
@@ -197,6 +226,11 @@ Scope: v1-mandatory
   SHALL not render optimistic messages owned by the previous conversation or a
   false empty-history state
 
+#### Scenario: Mutation invalidation
+
+- **WHEN** a new message is sent or a conversation is created
+- **THEN** the `["conversations", butlerName]` query is invalidated to refresh the list
+- **AND** the `["conversation-messages", butlerName, conversationId]` query is invalidated after `message_complete`
 ## ADDED Requirements
 
 ### Requirement: Durable Dashboard Outcome Presentation

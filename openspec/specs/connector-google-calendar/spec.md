@@ -6,6 +6,8 @@ The Google Calendar connector ingests calendar event changes (created, updated, 
 ## Requirements
 
 ### Requirement: Google Calendar Connector Identity and Authentication
+
+The implementation SHALL provide the behavior described by this requirement.
 The Google Calendar connector runs as a single process that discovers and manages all connected Google accounts with calendar scope. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.
 
 #### Scenario: Multi-account discovery at startup
@@ -36,6 +38,8 @@ The Google Calendar connector runs as a single process that discovers and manage
 - **AND** it SHALL periodically re-scan for new accounts (see dynamic account discovery)
 
 ### Requirement: Incremental Sync via syncToken
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector uses Google Calendar API's incremental sync mechanism to detect changes efficiently.
 
 #### Scenario: Initial full sync
@@ -61,6 +65,8 @@ The connector uses Google Calendar API's incremental sync mechanism to detect ch
 - **AND** the cursor SHALL only advance after the final page is fully processed
 
 ### Requirement: Event Change Classification
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector classifies each calendar change into an event type for the ingest envelope.
 
 #### Scenario: Event created
@@ -81,6 +87,8 @@ The connector classifies each calendar change into an event type for the ingest 
 - **AND** the Switchboard's deduplication layer handles any resulting duplicates
 
 ### Requirement: Event Starting Soon Notifications
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector synthesizes time-triggered notifications for upcoming events.
 
 #### Scenario: Lead time configuration
@@ -105,6 +113,10 @@ The connector synthesizes time-triggered notifications for upcoming events.
 - **AND** the Switchboard's deduplication layer provides additional protection against duplicates
 
 ### Requirement: ingest.v1 Field Mapping
+
+The Google Calendar connector SHALL normalize every ingested calendar event
+change to the `ingest.v1` envelope using exactly the field mappings defined
+below.
 
 #### Scenario: Google Calendar event field mapping
 - **WHEN** a Google Calendar event change is normalized to `ingest.v1`
@@ -135,6 +147,8 @@ The connector synthesizes time-triggered notifications for upcoming events.
 - **AND** the format SHALL be: `"[Calendar: <event_type>] <title> | <start> - <end> | <location> | <attendee_count> attendees | Organizer: <organizer>"`
 
 ### Requirement: SyncToken Cursor Persistence
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector tracks its position in Google Calendar's change stream via a persistent cursor.
 
 #### Scenario: Cursor model
@@ -148,6 +162,8 @@ The connector tracks its position in Google Calendar's change stream via a persi
 - **AND** on restart, it replays from the last safe sync token (harmless due to dedup)
 
 ### Requirement: Source Filter Integration (Google Calendar)
+
+The implementation SHALL provide the behavior described by this requirement.
 The Google Calendar connector implements the ingestion policy gate using `IngestionPolicyEvaluator`.
 
 #### Scenario: IngestionPolicyEvaluator instantiation
@@ -163,6 +179,8 @@ The Google Calendar connector implements the ingestion policy gate using `Ingest
 - **THEN** `sender_address` is the event organizer email, `source_channel = "google_calendar"`, and `raw_key` is the Google Calendar event ID
 
 ### Requirement: Multi-Account Connector Architecture
+
+The implementation SHALL provide the behavior described by this requirement.
 A single Google Calendar connector process manages concurrent poll loops for all connected Google accounts.
 
 #### Scenario: Independent per-account loops
@@ -201,6 +219,10 @@ The connector SHALL support discovering new or removed accounts without a full p
 
 ### Requirement: Aggregated Health Status
 
+The Google Calendar connector SHALL expose a single aggregated health status
+covering every account loop, reporting the worst-case status across accounts
+together with per-account detail.
+
 #### Scenario: Health model (multi-account)
 - **WHEN** the Google Calendar connector's health is queried
 - **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
@@ -208,6 +230,10 @@ The connector SHALL support discovering new or removed accounts without a full p
 - **AND** the aggregated status also includes a `timestamp` field (RFC3339)
 
 ### Requirement: Environment Variables
+
+The Google Calendar connector SHALL take its configuration from environment
+variables. The variables identified below as required MUST be set for the
+connector to run; the remainder are optional.
 
 #### Scenario: Required variables
 - **WHEN** the Google Calendar connector starts

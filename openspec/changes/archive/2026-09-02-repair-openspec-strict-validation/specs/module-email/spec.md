@@ -1,0 +1,99 @@
+## MODIFIED Requirements
+
+### Requirement: Email Tools
+
+The implementation SHALL provide the behavior described by this requirement.
+The module registers MCP tools for inbox operations and message send/reply.
+
+#### Scenario: Email read tools
+
+- **WHEN** the email module registers tools
+- **THEN** the following read tools are available:
+  - `email_search_inbox` (search inbox by query)
+  - `email_read_message` (read a specific message by ID)
+
+#### Scenario: Email write tools
+
+- **WHEN** the email module registers tools AND `send_tools = true` is configured (default `false`)
+- **THEN** the following write tools are available:
+  - `email_send_message` (compose and send a new email)
+  - `email_reply_to_thread` (reply to an existing email thread)
+- **AND** when `send_tools = false` these tools are NOT registered (only butlers that opt in, such as the Messenger, enable them)
+- **AND** `email_send_message` declares `to` as a safety-critical arg (`tool_metadata`) so the approval gate can intercept outbound sends, enforces the email send permission before SMTP, and writes a `gmail_send` audit event
+
+### Requirement: EmailConfig with Credential Scoping
+
+The implementation SHALL provide the behavior described by this requirement.
+Configuration supports independent enable/disable per identity scope with configurable env var names for credentials.
+
+#### Scenario: Config structure
+
+- **WHEN** `[modules.email]` is configured
+- **THEN** it includes `smtp_host` (default "smtp.gmail.com"), `smtp_port` (default 587), `imap_host` (default "imap.gmail.com"), `imap_port` (default 993), `use_tls` (default true)
+- **AND** `[modules.email.user]` with `enabled` (default false), `address_env`, `password_env`
+- **AND** `[modules.email.bot]` with `enabled` (default true), `address_env`, `password_env`
+
+#### Scenario: Env var name validation
+
+- **WHEN** credential env var names are configured
+- **THEN** they must match the pattern `^[A-Za-z_][A-Za-z0-9_]*$`
+- **AND** empty or whitespace-only values are rejected
+
+### Requirement: Credential Resolution
+
+The implementation SHALL provide the behavior described by this requirement.
+Credentials are resolved at startup via CredentialStore (DB-first, then env) and cached.
+
+#### Scenario: Startup credential resolution
+
+- **WHEN** `on_startup` is called with a credential store
+- **THEN** all configured credential keys are resolved and cached in `_resolved_credentials`
+- **AND** runtime helpers use the cached values first, falling back to `os.environ`
+
+#### Scenario: credentials_env property
+
+- **WHEN** `credentials_env` is queried
+- **THEN** it returns the env var names for the bot scope only (address and password) when the bot scope is enabled
+- **AND** user-scope credentials are NOT included; they are resolved from the owner `entity_info` record, not from environment variables
+
+### Requirement: IMAP Inbox Search
+
+The implementation SHALL provide the behavior described by this requirement.
+Email inbox search uses IMAP SEARCH commands via stdlib `imaplib`.
+
+#### Scenario: Search inbox
+
+- **WHEN** `email_search_inbox` is called with a query string
+- **THEN** IMAP SEARCH is executed against the INBOX folder
+- **AND** up to 50 most recent matching message headers are returned with `message_id`, `from`, `subject`, `date`
+- **AND** blocking IMAP calls are run via `asyncio.to_thread`
+
+### Requirement: IMAP Message Reading
+
+The implementation SHALL provide the behavior described by this requirement.
+Full message reading via IMAP FETCH.
+
+#### Scenario: Read a message
+
+- **WHEN** `email_read_message` is called with a message_id
+- **THEN** the full RFC822 message is fetched via IMAP
+- **AND** the response includes `message_id`, `from`, `to`, `subject`, `date`, `rfc_message_id`, `body`
+- **AND** multipart messages extract the text/plain part; single-part messages decode the payload
+
+### Requirement: SMTP Email Sending
+
+The implementation SHALL provide the behavior described by this requirement.
+Email sending uses SMTP via stdlib `smtplib`.
+
+#### Scenario: Send email
+
+- **WHEN** `email_send_message` is called with `to`, `subject`, `body`
+- **THEN** a MIME text email is constructed and sent via SMTP
+- **AND** TLS STARTTLS is used when `use_tls` is configured
+- **AND** the response includes `{"status": "sent", "to": ..., "subject": ...}`
+
+#### Scenario: Reply to thread
+
+- **WHEN** `email_reply_to_thread` is called with `to`, `thread_id`, `body`, and optional `subject`
+- **THEN** the email is sent with a subject defaulting to `Re: {thread_id}` if not provided
+- **AND** the `thread_id` is included in the response

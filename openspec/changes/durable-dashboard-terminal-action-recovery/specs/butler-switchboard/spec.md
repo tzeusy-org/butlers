@@ -139,3 +139,47 @@ Scope: v1-mandatory
   dead-letter effects
 - **AND** it SHALL NOT capture that later failure in the dead-letter queue or
   persist an additional in-thread reply on its behalf
+
+#### Scenario: Lane A — data statement routes with deterministic confirm-loop context
+
+- **WHEN** a dashboard message is classified as a data statement or correction
+- **THEN** the classification session SHALL call `route_to_butler` exactly as for any other channel
+- **AND** the routed envelope's `input.context` SHALL deterministically carry the conversation's `conversation_id`, its `page_context` (if any), and instructions to interpret the statement, apply it, and confirm via `conversation_reply` — appended in code regardless of what the classification session itself wrote into `context` or `prompt`
+
+#### Scenario: Lane A — first successful route stamps sticky routed_butler
+
+- **WHEN** `route_to_butler` for a dashboard-originated message receives an `accepted` status from the target butler
+- **THEN** the Switchboard SHALL stamp `routed_butler` on the conversation (best-effort; a stamping failure SHALL NOT fail the route call)
+
+#### Scenario: Lane B — bug/system report is filed to QA, never routed to a domain butler
+
+- **WHEN** a dashboard message is classified as a bug or system report (e.g. "the concentration chart is empty for child-of")
+- **THEN** the classification session SHALL call `file_bug_report` instead of `route_to_butler`
+- **AND** `file_bug_report` SHALL compute a canonical fingerprint and relay a finding to the QA staffer via the internal `route()` function targeting `report_finding` (the same plumbing QA canary injection uses)
+- **AND** the message SHALL NOT be routed to any domain butler via `route_to_butler`
+- **AND** the tool SHALL post a `conversation_reply` acknowledgment containing the case reference (the fingerprint's first 12 characters), whether or not the QA relay itself succeeded
+
+#### Scenario: Lane exclusivity is enforced at the tool layer, not just the classification prompt
+
+- **WHEN** a dashboard classification session calls `file_bug_report` and then calls `route_to_butler` for the same session (regardless of what the classification prompt instructs)
+- **THEN** `route_to_butler` SHALL refuse to dispatch to a domain butler and SHALL return a structured refusal (`status: "refused"`, `reason: "dashboard_lane_conflict"`) instead of invoking `route.execute`
+- **AND** the refusal SHALL be logged at WARNING with the conversation id and the attempted target butler
+- **WHEN** a dashboard classification session calls `route_to_butler` and then calls `file_bug_report` for the same session
+- **THEN** `file_bug_report` SHALL still file the bug report (bug reports are terminal and are never suppressed)
+- **AND** the co-occurrence SHALL be logged at WARNING with the conversation id and outcome-qualified targets, and SHALL be surfaced in `file_bug_report`'s own result (`dashboard_lane_conflict`) and in the pipeline's `RoutingResult.route_result` rather than being hidden by tool-call extraction that stops at the first matching call
+- **AND** acknowledged domain-butler dispatches SHALL appear only in `co_occurring_dispatched_targets`; failed or refused calls with no acknowledgement in the classification session SHALL appear only in `co_occurring_attempted_only_targets`; the two lists SHALL be mutually exclusive and the ambiguous `co_occurring_route_targets` field SHALL NOT be emitted
+- **AND** this exclusivity guard SHALL be scoped to dashboard-source sessions only (a `dashboard_context` carrying a `conversation_id`) — non-dashboard Switchboard flows (e.g. domain-butler-initiated `route_to_butler` calls, QA canary injection) SHALL be unaffected
+
+#### Scenario: Unroutable dashboard message dead-letters and notifies the owner
+
+- **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message), the classification spawn raises an exception, or `route_to_butler` was attempted but no target acknowledged the route because every `route.execute` dispatch failed
+- **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
+- **AND** SHALL persist an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
+- **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
+
+#### Scenario: Route acknowledgement is terminal for the dead-letter net; downstream session completion is out of scope
+
+- **WHEN** `route_to_butler` dispatches via `route.execute` and the target butler returns an `accepted` (or `ok`) status for a dashboard-originated message
+- **THEN** the dead-letter net gate SHALL treat that acknowledgement as terminal success for the synchronous reply contract — the target butler has confirmed only that it accepted the dispatch, not that the spawned downstream session will run to completion
+- **AND** if that downstream session subsequently crashes, hangs, or times out after acknowledgement, this contract SHALL NOT capture the failure to the dead-letter queue and SHALL NOT persist an additional in-thread reply on its behalf; the owner is left with whatever live-only signal (e.g. a widget-side `SESSION_TIMEOUT`) the caller surfaces independently
+- **AND** this ack-terminal boundary is a deliberate, accepted scope decision for the synchronous reply contract, not an oversight — closing the last hop (e.g. a reply-watch timeout that persists an in-thread failure note when an acknowledged downstream session never completes) is a possible future extension, not a current requirement

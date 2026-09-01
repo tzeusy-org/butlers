@@ -66,6 +66,17 @@ stalled predicate.
 - **AND** any returned `meta.stalled_count` is treated as observed partial
   coverage rather than proof that no stalled approvals exist.
 
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon` receives a non-blank reason from
+  the dashboard for an action whose status is `approved` and whose execution
+  result is null
+- **THEN** the response reports terminal `abandoned` status
+- **AND** the action immediately leaves stalled results and has no Retry
+  affordance.
+- **WHEN** a callback, MCP, automatic, bulk, or scheduled path attempts the
+  same operation
+- **THEN** that path does not expose or invoke abandonment.
 ### Requirement: Approval Verbs
 
 The dashboard SHALL expose explicit verb endpoints for approve, deny, defer,

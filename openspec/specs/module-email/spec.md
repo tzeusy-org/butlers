@@ -8,6 +8,7 @@ The Email module provides email MCP tools for inbox search, message reading, sen
 
 ### Requirement: Email Tools
 
+The implementation SHALL provide the behavior described by this requirement.
 The module registers MCP tools for inbox operations and message send/reply.
 
 #### Scenario: Email read tools
@@ -28,6 +29,7 @@ The module registers MCP tools for inbox operations and message send/reply.
 
 ### Requirement: EmailConfig with Credential Scoping
 
+The implementation SHALL provide the behavior described by this requirement.
 Configuration supports independent enable/disable per identity scope with configurable env var names for credentials.
 
 #### Scenario: Config structure
@@ -45,6 +47,7 @@ Configuration supports independent enable/disable per identity scope with config
 
 ### Requirement: Credential Resolution
 
+The implementation SHALL provide the behavior described by this requirement.
 Credentials are resolved at startup via CredentialStore (DB-first, then env) and cached.
 
 #### Scenario: Startup credential resolution
@@ -61,6 +64,7 @@ Credentials are resolved at startup via CredentialStore (DB-first, then env) and
 
 ### Requirement: IMAP Inbox Search
 
+The implementation SHALL provide the behavior described by this requirement.
 Email inbox search uses IMAP SEARCH commands via stdlib `imaplib`.
 
 #### Scenario: Search inbox
@@ -72,6 +76,7 @@ Email inbox search uses IMAP SEARCH commands via stdlib `imaplib`.
 
 ### Requirement: IMAP Message Reading
 
+The implementation SHALL provide the behavior described by this requirement.
 Full message reading via IMAP FETCH.
 
 #### Scenario: Read a message
@@ -83,6 +88,7 @@ Full message reading via IMAP FETCH.
 
 ### Requirement: SMTP Email Sending
 
+The implementation SHALL provide the behavior described by this requirement.
 Email sending uses SMTP via stdlib `smtplib`.
 
 #### Scenario: Send email
@@ -100,5 +106,14 @@ Email sending uses SMTP via stdlib `smtplib`.
 
 ### Requirement: Classification Pipeline Integration (Removed)
 
-The `email_check_and_route_inbox` tool has been removed. Email ingestion is
+The `email_check_and_route_inbox` tool has been removed. The email module SHALL
+NOT register any inbox classification or routing tool; email ingestion is
 handled by `GmailConnector` via the connector-based pipeline.
+
+#### Scenario: No inbox classification tool is registered
+
+- **WHEN** the email module registers tools
+- **THEN** `email_check_and_route_inbox` SHALL NOT be among them
+- **AND** incoming email reaches butlers through `GmailConnector` and the
+  connector-based ingestion pipeline rather than through a module-side
+  classification tool

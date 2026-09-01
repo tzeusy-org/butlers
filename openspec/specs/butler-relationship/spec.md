@@ -6,6 +6,8 @@ The Relationship butler (port 41102) is a personal CRM that manages contacts, re
 ## Requirements
 
 ### Requirement: Relationship Butler Identity and Runtime
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler maintains personal CRM context with 40+ domain tools.
 
 #### Scenario: Identity and port
@@ -19,6 +21,8 @@ The relationship butler maintains personal CRM context with 40+ domain tools.
 - **THEN** it loads modules: `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), and `memory`
 
 ### Requirement: Relationship Butler Tool Surface
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler exposes a comprehensive personal CRM tool set.
 
 #### Scenario: Tool inventory
@@ -37,6 +41,8 @@ The relationship butler SHALL expose Dunbar tier management and group interactio
 - **AND** it MUST have access to `interaction_log_group(group_id, direction, occurred_at, summary)` for logging interactions with all members of a contact group in a single call
 
 ### Requirement: Entity Resolution Pipeline
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler follows a 7-step entity resolution pipeline for person mentions.
 
 #### Scenario: Entity resolution flow
@@ -44,6 +50,8 @@ The relationship butler follows a 7-step entity resolution pipeline for person m
 - **THEN** it follows a 7-step pipeline: (1) identify person mentions, (2) resolve each via `entity_resolve` with context hints, (3) apply disambiguation policy (zero candidates: create entity; single candidate or top leads by 30+ points: use entity_id; multiple candidates with gap less than 30 points: ask user), (4) handle new people, (5) store facts with entity_id, (6) log interactions, (7) update domain records
 
 ### Requirement: Relationship Butler Schedules
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler runs date checks, maintenance sweeps, and memory jobs.
 
 #### Scenario: Scheduled task inventory
@@ -51,6 +59,8 @@ The relationship butler runs date checks, maintenance sweeps, and memory jobs.
 - **THEN** it executes: `upcoming-dates-check` (0 8 * * *, prompt-based: check birthdays/anniversaries in the next 7 days), `relationship-maintenance` (0 9 * * 1, prompt-based: rank overdue contacts by Dunbar tier-weighted urgency and suggest top 3 reconnections), `memory-consolidation` (0 */6 * * *, job), `memory-episode-cleanup` (0 4 * * *, job), and `insight-scan` (0 7 * * *, job: evaluate relationship domain data and generate insight candidates)
 
 ### Requirement: Relationship Butler Skills
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler has gift brainstorming and reconnection planning skills.
 
 #### Scenario: Skill inventory
@@ -58,6 +68,8 @@ The relationship butler has gift brainstorming and reconnection planning skills.
 - **THEN** it has access to `gift-brainstorm` (personalized gift idea generation with budget tiers and gift pipeline integration) and `reconnect-planner` (Dunbar tier-aware stale contact identification and reconnection outreach planning using tier-weighted urgency ranking), plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: Relationship Memory Taxonomy
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler uses a person-centric memory taxonomy.
 
 #### Scenario: Memory classification
@@ -65,6 +77,8 @@ The relationship butler uses a person-centric memory taxonomy.
 - **THEN** it uses the person's human-readable name as subject (with entity_id as anchor); predicates like `relationship_to_user`, `birthday`, `preference`, `current_interest`, `workplace`, `lives_in`, `dunbar_tier_override`; permanence `permanent` for identity facts and tier overrides, `stable` for workplace/location, `standard` for interests, `volatile` for temporary states
 
 ### Requirement: CRUD-to-SPO migration — relationship domain (bu-ddb.3)
+
+The implementation SHALL provide the behavior described by this requirement.
 The relationship butler migrates 9 dedicated CRUD tables to temporal SPO facts. All facts use `scope='relationship'` and `entity_id = contact_entity_id` (resolved from `public.contacts.entity_id` for each contact). Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
 
 The relationship butler maintains TWO temporal fact stores that the CRUD-to-SPO tools route between by predicate kind. Narrative triples (interactions, notes, gifts, loans, tasks, reminders, life events, quick facts) are written to the `memory.facts` store (snake_case predicates, `scope='relationship'`) via `memory_store_fact` and the CRUD wrappers. Registry-relational edges and identity-contact predicates are written to the `relationship.entity_facts` store (kebab-case RDF-style predicates) via the central writer `relationship_assert_fact` and read via `relationship_lookup`; this store powers the relational columns and Dunbar concentration views.

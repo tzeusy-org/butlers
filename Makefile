@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -180,6 +180,13 @@ check-em-dashes:
 check-spec-overwrites:
 	python3 scripts/check_spec_overwrites.py
 
+# Regression gate for bu-n58sv: validate every canonical spec and unarchived
+# change with OpenSpec's strict RFC-2119 and scenario-shape checks. Keep the
+# command explicit so a bare `openspec validate --strict` cannot silently
+# validate nothing.
+check-openspec-strict:
+	openspec validate --all --strict
+
 # Regression guard for bu-h7igs: `openspec archive`'s incomplete-task gate counts
 # markdown checkboxes only, so a `### N.` heading-style tasks.md reports
 # `Task status: No tasks`, cannot be incomplete, and archives unprompted -- and
@@ -199,7 +206,7 @@ check-countable-tasks:
 check-duplicate-names:
 	python3 scripts/check_duplicate_toplevel_names.py
 
-check: lint check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names test
+check: lint check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

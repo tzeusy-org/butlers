@@ -1,6 +1,8 @@
 ## MODIFIED Requirements
 
 ### Requirement: Policy Tier Assignment
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector assigns policy tiers for Switchboard queue ordering using a `PolicyTierAssigner` with first-match-wins rules.
 
 The known-contact set consumed by the `known_contact` rule is resolved by `GmailPolicyEvaluator`, which owns the read path onto `public.priority_contacts`. The evaluator SHALL load the set with a single query joining `public.priority_contacts` to `relationship.entity_facts` on `ef.subject = pc.entity_id`, restricted to `predicate = 'has-email'`, `object_kind = 'literal'`, `validity = 'active'`, and non-NULL `object` and `entity_id`. It SHALL NOT join through `public.contacts`, which has been dropped, and SHALL NOT read any flat file. Addresses SHALL be normalized on both load and lookup so membership is case- and whitespace-insensitive.

@@ -8,6 +8,7 @@ The Telegram module provides MCP tools for sending and replying to Telegram mess
 
 ### Requirement: Telegram Send/Reply Tools
 
+The implementation SHALL provide the behavior described by this requirement.
 The module registers MCP tools for send and reply operations.
 
 #### Scenario: Tool registration
@@ -20,6 +21,7 @@ The module registers MCP tools for send and reply operations.
 
 ### Requirement: Output-Only Module Design
 
+The implementation SHALL provide the behavior described by this requirement.
 Ingestion is handled by the `TelegramBotConnector` via the canonical ingest API. The module does not register input tools.
 
 #### Scenario: No input tools registered
@@ -30,6 +32,7 @@ Ingestion is handled by the `TelegramBotConnector` via the canonical ingest API.
 
 ### Requirement: TelegramConfig with Credential Scoping
 
+The implementation SHALL provide the behavior described by this requirement.
 Configuration supports independent enable/disable per identity scope.
 
 #### Scenario: Config structure
@@ -46,6 +49,7 @@ Configuration supports independent enable/disable per identity scope.
 
 ### Requirement: Credential Resolution
 
+The implementation SHALL provide the behavior described by this requirement.
 Bot tokens are resolved at startup via CredentialStore (DB-first, then env) and cached.
 
 #### Scenario: Startup credential resolution
@@ -62,6 +66,7 @@ Bot tokens are resolved at startup via CredentialStore (DB-first, then env) and 
 
 ### Requirement: Telegram API Integration
 
+The implementation SHALL provide the behavior described by this requirement.
 The module uses httpx to call Telegram Bot API endpoints.
 
 #### Scenario: Send message
@@ -82,6 +87,7 @@ The module uses httpx to call Telegram Bot API endpoints.
 
 ### Requirement: Lifecycle Reaction Emoji Support
 
+The implementation SHALL provide the behavior described by this requirement.
 The module supports setting Telegram reactions for ingest pipeline lifecycle events.
 
 #### Scenario: React for ingest events

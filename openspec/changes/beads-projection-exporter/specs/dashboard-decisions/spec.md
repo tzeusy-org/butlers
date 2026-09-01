@@ -43,3 +43,10 @@ Scope: v1-mandatory
 - **WHEN** `beads_source` is `jsonl` and `export_as_of` is known
 - **THEN** the plaque identifies JSONL rather than projection and renders the
   export-as-of time
+
+#### Scenario: Plaque persists alongside a stale-export note
+
+- **WHEN** `decisions_available` is `false` for a stale export and
+  `export_as_of` is known
+- **THEN** the page renders both the named degraded note and the export-as-of
+  plaque

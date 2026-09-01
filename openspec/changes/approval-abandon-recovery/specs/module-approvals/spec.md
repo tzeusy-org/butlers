@@ -75,6 +75,16 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 - **THEN** the stored `execution_result` is returned (idempotent replay)
 - **AND** no second execution occurs.
 
+#### Scenario: Dashboard abandons a stalled approved action
+
+- **WHEN** a dashboard actor supplies a non-blank reason for an action whose
+  status is `approved` and whose `execution_result` is null
+- **THEN** a compare-and-set update transitions that action to `abandoned`
+- **AND** an immutable `action_abandoned` event stores the actor and reason in
+  the same transaction
+- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
+  invoke abandonment
+- **AND** an action outside that exact predicate remains unchanged.
 ### Requirement: Immutable Audit Events
 
 The `approval_events` table MUST be an append-only audit log. Events include

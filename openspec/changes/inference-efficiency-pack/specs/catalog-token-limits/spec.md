@@ -37,3 +37,8 @@ The system SHALL hard-block session spawning or discretion dispatching when a ca
 #### Scenario: Error message includes quota details
 - **WHEN** a spawn is blocked due to quota exhaustion
 - **THEN** the error message includes: the catalog entry alias, which window(s) are exceeded, current usage, and the configured limit
+
+#### Scenario: Discretion dispatcher remains hard-blocked
+- **WHEN** the discretion dispatcher resolves a model and `check_token_quota()` returns `allowed=False`
+- **THEN** the dispatcher SHALL preserve the existing hard-block behavior (raises `RuntimeError` with a message indicating quota exhaustion)
+- **AND** it SHALL NOT use spawner model failover

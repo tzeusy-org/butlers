@@ -8,6 +8,7 @@ The Steam module provides read-only MCP tools for querying the Steam Web API. It
 
 ### Requirement: Steam Module Configuration
 
+The implementation SHALL provide the behavior described by this requirement.
 The module is configured via `[modules.steam]` in `butler.toml`.
 
 #### Scenario: Config structure
@@ -26,6 +27,7 @@ The module is configured via `[modules.steam]` in `butler.toml`.
 
 ### Requirement: Credential Resolution
 
+The implementation SHALL provide the behavior described by this requirement.
 The module resolves Steam API keys at startup from the account registry.
 
 #### Scenario: Startup credential resolution
@@ -42,6 +44,9 @@ The module resolves Steam API keys at startup from the account registry.
 - **AND** all tools SHALL return an actionable error: `{"error": "no_steam_account", "message": "No Steam account is connected.", "hint": "Connect a Steam account via the dashboard settings and set it as primary."}`
 
 ### Requirement: Player Summary Tool
+
+The module SHALL register `steam_get_player_summary`, returning a player's
+profile summary and degrading to the fields a private profile still exposes.
 
 #### Scenario: Get player summary with default account
 
@@ -64,6 +69,9 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Owned Games Tool
 
+The module SHALL register `steam_get_owned_games`, returning the player's game
+library, or an actionable privacy error when the library is not public.
+
 #### Scenario: Get owned games
 
 - **WHEN** `steam_get_owned_games` is called with optional `steam_id` and `include_free_games` (default true)
@@ -77,6 +85,9 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Recently Played Games Tool
 
+The module SHALL register `steam_get_recently_played`, returning the player's
+recently played games with their two-week and lifetime playtimes.
+
 #### Scenario: Get recently played games
 
 - **WHEN** `steam_get_recently_played` is called with optional `steam_id` and `count` (default 10)
@@ -84,6 +95,10 @@ The module resolves Steam API keys at startup from the account registry.
 - **AND** return `total_count` and a list of games with: `app_id`, `name`, `playtime_2weeks_minutes`, `playtime_forever_minutes`, `icon_url`
 
 ### Requirement: Achievements Tool
+
+The module SHALL register `steam_get_achievements`, returning per-achievement
+unlock state for a game, or an actionable error when the game has no
+achievements or the player's stats are private.
 
 #### Scenario: Get achievements for a game
 
@@ -103,6 +118,10 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Friend List Tool
 
+The module SHALL register `steam_get_friend_list`, returning the player's
+friends with optional player-summary enrichment, or an actionable privacy
+error when the list is not public.
+
 #### Scenario: Get friend list
 
 - **WHEN** `steam_get_friend_list` is called with optional `steam_id`
@@ -117,6 +136,9 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Game News Tool
 
+The module SHALL register `steam_get_game_news`, returning recent news items
+for a game without requiring a SteamID.
+
 #### Scenario: Get news for a game
 
 - **WHEN** `steam_get_game_news` is called with `app_id` and optional `count` (default 5)
@@ -126,6 +148,9 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Player Level Tool
 
+The module SHALL register `steam_get_player_level`, returning the player's
+Steam level.
+
 #### Scenario: Get player level and badges
 
 - **WHEN** `steam_get_player_level` is called with optional `steam_id`
@@ -133,6 +158,9 @@ The module resolves Steam API keys at startup from the account registry.
 - **AND** return `steam_level`
 
 ### Requirement: Current Players Tool
+
+The module SHALL register `steam_get_current_players`, returning a game's
+current player count without requiring a SteamID or an API key.
 
 #### Scenario: Get current player count
 
@@ -143,6 +171,9 @@ The module resolves Steam API keys at startup from the account registry.
 
 ### Requirement: Vanity URL Resolution Tool
 
+The module SHALL register `steam_resolve_vanity_url`, resolving a vanity URL
+name to a SteamID or returning an actionable not-found error.
+
 #### Scenario: Resolve vanity URL
 
 - **WHEN** `steam_resolve_vanity_url` is called with `vanity_name`
@@ -150,6 +181,10 @@ The module resolves Steam API keys at startup from the account registry.
 - **AND** return `steam_id` if found, or `{"error": "not_found", "message": "No Steam account found for vanity URL '<vanity_name>'.", "hint": "Check the spelling or use a numeric SteamID instead."}` if not
 
 ### Requirement: Tool Metadata for Argument Sensitivity
+
+The module SHALL declare its internal API key parameters sensitive through
+`tool_metadata()`, so that API keys never reach session logs or tool call
+traces.
 
 #### Scenario: API key is never logged
 

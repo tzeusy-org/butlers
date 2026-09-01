@@ -2,6 +2,9 @@
 
 ### Requirement: Teaching Phase — Explain, Question, Evaluate
 
+The implementation SHALL provide the behavior described by this requirement.
+While in `teaching` status, the session moves through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
+
 The teaching phase SHALL select a primary pedagogical technique based on the concept node's `metadata.concept_type` when set (`factual` → retrieval practice, `procedural` → worked example then guided practice, `conceptual` → Socratic questioning with analogy, `creative` → divergent prompts then critique), falling back to Socratic questioning when unset. The teaching session SHALL explain its technique choice when the owner asks, citing the pedagogical principle; SHALL include source citations in explanations when relevant registered or model-recalled sources exist; and SHALL suggest reading pathways after concept explanation completes.
 
 ID: REQ-module-education-teaching-flows-006

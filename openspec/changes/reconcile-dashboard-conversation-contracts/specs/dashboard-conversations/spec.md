@@ -84,3 +84,15 @@ Scope: v1-mandatory
   unchanged, grounding the statement for the routed butler
 - **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a
   `page_context` key
+
+#### Scenario: Sticky follow-up pinning for classification-routed conversations
+
+- **WHEN** a follow-up message is submitted via `POST /api/butlers/switchboard/conversations/{conversation_id}/messages` and the conversation already has a `routed_butler` set (from an earlier successful `route_to` decision)
+- **THEN** the constructed envelope SHALL set `control.pinned_target` to `routed_butler`, bypassing classification entirely
+- **AND** a conversation whose `routed_butler` is still NULL (not yet routed, or a bug-lane report with no domain-butler target) continues through classification as in the "unpinned until routed" scenario above
+
+#### Scenario: Optional page context on dashboard messages
+
+- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`) on the request body
+- **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
+- **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key

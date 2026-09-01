@@ -246,3 +246,20 @@ their next curriculum request MUST NOT depend on model obedience.
 
 - **WHEN** a POST request is made with a `topic` longer than 200 characters
 - **THEN** the response status SHALL be 422
+
+#### Scenario: Receipt precedes detached work
+
+- **WHEN** a curriculum request is accepted
+- **THEN** the receipt row SHALL be persisted before the detached curriculum task is created
+
+#### Scenario: Duplicate request while one is in flight
+
+- **WHEN** a POST request is made to `/api/education/curriculum-requests`
+- **AND** a receipt already exists in status `accepted` or `running`
+- **THEN** the response status SHALL be 409
+- **AND** the response body SHALL indicate a curriculum request is already pending
+
+#### Scenario: Receipt store unavailable
+
+- **WHEN** a POST request is made and `education.curriculum_requests` does not exist
+- **THEN** the response status SHALL be 503

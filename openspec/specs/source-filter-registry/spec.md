@@ -10,6 +10,8 @@ Defines the shared registry of named source filter objects and their connector a
 ## Requirements
 
 ### Requirement: Source Filter Data Model
+
+The implementation SHALL provide the behavior described by this requirement.
 The `source_filters` table stores named, reusable filter definitions in the switchboard schema.
 
 #### Scenario: Filter object fields
@@ -36,6 +38,8 @@ The `source_filters` table stores named, reusable filter definitions in the swit
 - **AND** the DB enforces a UNIQUE constraint on `name`
 
 ### Requirement: Connector Filter Assignment
+
+The implementation SHALL provide the behavior described by this requirement.
 The `connector_source_filters` table is the many-to-many join between connectors and named filters.
 
 #### Scenario: Assignment fields
@@ -54,6 +58,8 @@ The `connector_source_filters` table is the many-to-many join between connectors
 - **AND** the assignment API does not require the connector to be present in `connector_registry`
 
 ### Requirement: Source Filter CRUD API
+
+The implementation SHALL provide the behavior described by this requirement.
 REST endpoints for managing named source filter objects in the switchboard API router.
 
 #### Scenario: List all filters
@@ -86,6 +92,8 @@ REST endpoints for managing named source filter objects in the switchboard API r
 - **AND** on unknown `filter_id` it returns HTTP 404
 
 ### Requirement: Connector Filter Assignment API
+
+The implementation SHALL provide the behavior described by this requirement.
 REST endpoints for managing which filters are assigned and enabled on a specific connector.
 
 #### Scenario: List connector filter assignments

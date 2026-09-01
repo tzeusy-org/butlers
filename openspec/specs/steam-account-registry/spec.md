@@ -100,6 +100,10 @@ Each Steam account row SHALL have a companion entity in `public.entities` that a
 
 ### Requirement: Account Lifecycle Management
 
+A Steam account SHALL support disconnection as a soft delete, permanent hard
+deletion, and reconnection of a previously revoked account, retaining stored
+credentials across a soft delete.
+
 #### Scenario: Disconnect (soft delete)
 
 - **WHEN** a user disconnects a Steam account via the dashboard
@@ -122,6 +126,7 @@ Each Steam account row SHALL have a companion entity in `public.entities` that a
 
 ### Requirement: Metadata Schema
 
+The implementation SHALL provide the behavior described by this requirement.
 The `metadata` JSONB column stores per-account configuration overrides.
 
 #### Scenario: Default metadata structure

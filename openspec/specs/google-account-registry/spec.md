@@ -133,6 +133,9 @@ Disconnecting an account SHALL revoke the token with Google and remove local cre
 
 ### Requirement: Account Listing
 
+Listing Google accounts SHALL return every registry row in a defined order
+with a defined field set.
+
 #### Scenario: List all connected accounts
 
 - **WHEN** `list_google_accounts(pool)` is called
@@ -141,6 +144,9 @@ Disconnecting an account SHALL revoke the token with Google and remove local cre
 
 ### Requirement: Account Soft Limit
 
+The number of connected Google accounts SHALL be bounded by a configurable
+soft limit, enforced at the OAuth start endpoint.
+
 #### Scenario: Maximum accounts enforced
 
 - **WHEN** a user attempts to connect a new Google account and the count of active accounts equals or exceeds the soft limit (default 10)
@@ -148,6 +154,10 @@ Disconnecting an account SHALL revoke the token with Google and remove local cre
 - **AND** the limit SHALL be configurable via `GOOGLE_MAX_ACCOUNTS` environment variable
 
 ### Requirement: Scope Tracking
+
+Granted Google scopes SHALL be recorded on the account row when OAuth
+completes, and a module requiring specific scopes SHALL check them at startup
+and fail fast with an actionable message when they are missing.
 
 #### Scenario: Scopes recorded on connect
 

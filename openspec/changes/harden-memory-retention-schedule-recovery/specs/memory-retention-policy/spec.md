@@ -94,6 +94,32 @@ TOML cadence with the module-default cadence.
 - **AND** episodes in `consolidation_status = 'dead_letter'` MUST NOT be
   reclaimed by this or any consolidation pass
 
+#### Scenario: Decay sweep runs without any toml schedule
+
+- **WHEN** a butler's `butler.toml` enables `[modules.memory]` and declares no
+  `[[butler.schedule]]` block named `memory_decay_sweep`
+- **THEN** a `memory_decay_sweep` scheduled task MUST exist and be enabled
+  after the daemon boots
+- **AND** it MUST dispatch to a handler that calls `run_decay_sweep`
+
+#### Scenario: Module registration is idempotent across restarts
+
+- **WHEN** the daemon restarts and the memory module's `on_startup` runs again
+- **THEN** no duplicate schedule rows are created for any of the module's
+  default schedule names
+- **AND** an existing schedule's cron, `enabled` state, and `job_args` are left
+  untouched (module registration never clobbers an operator's DB-level cadence
+  customization)
+
+#### Scenario: TOML overrides cadence, not existence
+
+- **WHEN** a butler's `butler.toml` declares a `[[butler.schedule]]` block
+  named `memory_consolidation` with a custom cron
+- **THEN** the schedule's cadence MUST follow the TOML-declared cron
+- **AND** if the operator later removes that `[[butler.schedule]]` block, the
+  schedule MUST remain enabled (falling back to the module-registered default
+  cadence on the next module registration pass) rather than being disabled as
+  an orphaned TOML schedule
 ## ADDED Requirements
 
 ### Requirement: Retention recovery and observation never authorize historical deletion

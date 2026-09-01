@@ -38,6 +38,9 @@ exact arguments accepted by that tool's handler.
 
 ### Requirement: Channel Validation
 
+The implementation SHALL provide the behavior described by this requirement.
+Only `telegram` and `email` channels are currently supported. Unsupported channels produce an immediate error response.
+
 The public `notify()` envelope-construction surface MUST accept only `telegram` and
 `email`. Messenger `route.execute` termination MUST accept routed `notify.v1`
 delivery through `telegram`, `email`, and `whatsapp`. Each surface MUST reject
@@ -57,3 +60,7 @@ channels outside its supported set immediately.
 
 - **WHEN** `channel="sms"` is passed to `notify()`
 - **THEN** the tool returns `{"status": "error", "error": "Unsupported channel 'sms'..."}`
+
+#### Scenario: Supported channel
+- **WHEN** `channel="telegram"` or `channel="email"` is passed
+- **THEN** the notify tool proceeds with envelope construction

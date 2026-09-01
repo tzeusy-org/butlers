@@ -44,6 +44,11 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 
 ### Requirement: Scope Availability Verification at Startup
 
+The module SHALL verify the required Google Health scopes at startup. It SHALL
+register its tools either way, and when scopes are missing each tool SHALL
+return an actionable not-connected message rather than blocking the butler's
+startup.
+
 #### Scenario: Successful scope verification
 
 - **WHEN** `on_startup` is called and the primary Google account has all three required Google Health scopes
@@ -57,6 +62,10 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 - **AND** the module SHALL NOT block the butler's startup
 
 ### Requirement: Sleep Query Tools
+
+The module SHALL expose sleep query tools over the ingested fact store,
+returning the most recent session, a bounded history with aggregates, and an
+actionable empty result when no sleep facts exist.
 
 #### Scenario: `sleep_latest`
 
@@ -77,6 +86,9 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 
 ### Requirement: Heart-Rate and HRV Query Tools
 
+The module SHALL expose bounded resting heart-rate and HRV history tools, each
+returning daily values alongside a summary.
+
 #### Scenario: `hr_history`
 
 - **WHEN** `hr_history` is called with optional `days` (default 30, max 365)
@@ -88,6 +100,9 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 - **THEN** the module SHALL query `measurement_hrv` facts and return daily RMSSD values plus a `summary` with `avg_rmssd`, `coverage`, and trend direction
 
 ### Requirement: Oxygen and Breathing Query Tools
+
+The module SHALL expose bounded SpO2 and breathing-rate history tools over the
+corresponding measurement facts.
 
 #### Scenario: `spo2_history`
 
@@ -101,6 +116,9 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 
 ### Requirement: Activity Query Tool
 
+The module SHALL expose a bounded activity summary tool returning per-day step
+and active-minute detail alongside an aggregate summary.
+
 #### Scenario: `activity_summary`
 
 - **WHEN** `activity_summary` is called with optional `days` (default 7)
@@ -109,6 +127,9 @@ The module SHALL resolve the primary Google account's `entity_id` via the shared
 - **AND** aggregate summary: average steps, average active minutes, days meeting a 10,000-step threshold
 
 ### Requirement: VO2 Max Query Tool
+
+The module SHALL expose a tool returning the most recent VO2 max measurement
+with its range and measurement date.
 
 #### Scenario: `vo2_max_latest`
 

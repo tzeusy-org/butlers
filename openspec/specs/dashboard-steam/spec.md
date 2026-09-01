@@ -45,6 +45,9 @@ The dashboard SHALL expose REST endpoints for managing connected Steam accounts,
 
 ### Requirement: Account Status Endpoint
 
+The dashboard SHALL expose a per-account Steam status endpoint reporting
+credential presence, key validity, last poll time, and connector health.
+
 #### Scenario: Per-account status
 
 - **WHEN** `GET /api/steam/accounts/<id>/status` is called
@@ -115,6 +118,9 @@ The dashboard SHALL expose endpoints for querying playtime data.
 
 ### Requirement: Connector Health View
 
+The dashboard SHALL expose a Steam connector health endpoint that proxies the
+connector's own health endpoint.
+
 #### Scenario: Get connector health
 
 - **WHEN** `GET /api/steam/connector/health` is called
@@ -143,6 +149,10 @@ The dashboard SHALL provide a configuration section for Steam connector settings
 - **AND** overrides SHALL be stored in the account's `metadata` JSONB column
 
 ### Requirement: Dashboard UI Components
+
+The dashboard SHALL present Steam connection management in the settings
+Integrations section, and MAY surface gaming activity on relevant domain
+pages.
 
 #### Scenario: Steam integration card on settings page
 

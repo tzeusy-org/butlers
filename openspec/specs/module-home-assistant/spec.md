@@ -8,6 +8,7 @@ The Home Assistant module provides MCP tools for bidirectional smart-home contro
 
 ### Requirement: HomeAssistantConfig Schema
 
+The implementation SHALL provide the behavior described by this requirement.
 Configuration controls the HA connection URL, SSL verification, WebSocket keepalive, polling fallback interval, and snapshot persistence frequency.
 
 #### Scenario: Config structure
@@ -32,6 +33,7 @@ Configuration controls the HA connection URL, SSL verification, WebSocket keepal
 
 ### Requirement: Credential Resolution via Owner Contact Info
 
+The implementation SHALL provide the behavior described by this requirement.
 The HA long-lived access token is resolved from the owner contact's `contact_info` entry at startup.
 
 #### Scenario: Token resolved from contact_info
@@ -53,6 +55,7 @@ The HA long-lived access token is resolved from the owner contact's `contact_inf
 
 ### Requirement: HTTP Client Lifecycle
 
+The implementation SHALL provide the behavior described by this requirement.
 The module uses `httpx.AsyncClient` for REST API calls, created at startup and closed at shutdown.
 
 #### Scenario: Client initialization
@@ -71,6 +74,7 @@ The module uses `httpx.AsyncClient` for REST API calls, created at startup and c
 
 ### Requirement: WebSocket Connection Lifecycle
 
+The implementation SHALL provide the behavior described by this requirement.
 The module maintains a persistent WebSocket connection for real-time state updates and registry queries.
 
 #### Scenario: WebSocket connection and authentication
@@ -109,6 +113,7 @@ The module maintains a persistent WebSocket connection for real-time state updat
 
 ### Requirement: In-Memory Entity State Cache
 
+The implementation SHALL provide the behavior described by this requirement.
 The module maintains a `dict[str, CachedEntity]` populated at startup and updated via WebSocket events.
 
 #### Scenario: Initial cache population
@@ -137,6 +142,7 @@ The module maintains a `dict[str, CachedEntity]` populated at startup and update
 
 ### Requirement: Area and Entity Registry Cache
 
+The implementation SHALL provide the behavior described by this requirement.
 The module caches HA registry data for area and entity metadata resolution.
 
 #### Scenario: Registry population at startup
@@ -152,6 +158,7 @@ The module caches HA registry data for area and entity metadata resolution.
 
 ### Requirement: Query Tool — ha_get_entity_state
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns the full state object for a single entity by ID.
 
 #### Scenario: Entity found in cache
@@ -167,6 +174,7 @@ Returns the full state object for a single entity by ID.
 
 ### Requirement: Query Tool — ha_list_entities
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns compact summaries of entities, filtered by domain and/or area.
 
 #### Scenario: List all entities
@@ -192,6 +200,7 @@ Returns compact summaries of entities, filtered by domain and/or area.
 
 ### Requirement: Query Tool — ha_list_areas
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns all defined areas/rooms from the HA area registry.
 
 #### Scenario: List areas
@@ -202,6 +211,7 @@ Returns all defined areas/rooms from the HA area registry.
 
 ### Requirement: Query Tool — ha_list_services
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns available HA services, optionally filtered by domain.
 
 #### Scenario: List all services
@@ -217,6 +227,7 @@ Returns available HA services, optionally filtered by domain.
 
 ### Requirement: Query Tool — ha_get_history
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns state history for entities over a time window from HA's recorder.
 
 #### Scenario: Fetch history with entity filter
@@ -232,6 +243,7 @@ Returns state history for entities over a time window from HA's recorder.
 
 ### Requirement: Query Tool — ha_get_statistics
 
+The implementation SHALL provide the behavior described by this requirement.
 Returns aggregated hourly/daily statistics for sensor entities from HA's recorder.
 
 #### Scenario: Fetch statistics
@@ -247,6 +259,7 @@ Returns aggregated hourly/daily statistics for sensor entities from HA's recorde
 
 ### Requirement: Query Tool — ha_render_template
 
+The implementation SHALL provide the behavior described by this requirement.
 Evaluates a Jinja2 template server-side on the HA instance.
 
 #### Scenario: Render template
@@ -257,6 +270,7 @@ Evaluates a Jinja2 template server-side on the HA instance.
 
 ### Requirement: Control Tool — ha_call_service
 
+The implementation SHALL provide the behavior described by this requirement.
 Generic service call supporting any HA domain, service, target, and data.
 
 #### Scenario: Successful service call
@@ -279,6 +293,7 @@ Generic service call supporting any HA domain, service, target, and data.
 
 ### Requirement: Control Tool — ha_activate_scene
 
+The implementation SHALL provide the behavior described by this requirement.
 Convenience wrapper for activating a scene by entity_id.
 
 #### Scenario: Activate scene
@@ -293,6 +308,7 @@ Convenience wrapper for activating a scene by entity_id.
 
 ### Requirement: Command Audit Logging
 
+The implementation SHALL provide the behavior described by this requirement.
 Every service call issued through the module is persisted to the `ha_command_log` table.
 
 #### Scenario: Successful command logged
@@ -307,6 +323,7 @@ Every service call issued through the module is persisted to the `ha_command_log
 
 ### Requirement: Entity Snapshot Persistence
 
+The implementation SHALL provide the behavior described by this requirement.
 Snapshot persistence to the `ha_entity_snapshot` table is currently disabled. HA state is queried live via `ha_get_entity_state` / `ha_list_entities`, so the module does not write the periodic cache snapshot (an earlier implementation that stored every entity as a property fact produced roughly 210k superseded rows in three days). When the snapshot loop does run, it persists entity state to the memory subsystem as volatile `ha_state` property facts anchored to HA entities (one active fact per entity), not to the `ha_entity_snapshot` table.
 
 #### Scenario: Snapshot loop persistence target
@@ -321,6 +338,7 @@ Snapshot persistence to the `ha_entity_snapshot` table is currently disabled. HA
 
 ### Requirement: Database Schema Migration
 
+The implementation SHALL provide the behavior described by this requirement.
 The module provides an Alembic migration for its home-domain tables.
 
 #### Scenario: Migration creates tables
@@ -339,6 +357,7 @@ The module provides an Alembic migration for its home-domain tables.
 
 ### Requirement: Tool Metadata for Approval Sensitivity
 
+The implementation SHALL provide the behavior described by this requirement.
 The module declares approval sensitivity for control tools via `tool_metadata()`.
 
 #### Scenario: Sensitive args declared
@@ -353,6 +372,7 @@ The module declares approval sensitivity for control tools via `tool_metadata()`
 
 ### Requirement: Module Identity and Dependencies
 
+The implementation SHALL provide the behavior described by this requirement.
 The module registers under the name `home_assistant` with a dependency on `contacts` (for owner resolution) and `approvals` (for gating).
 
 #### Scenario: Module identity
@@ -364,6 +384,7 @@ The module registers under the name `home_assistant` with a dependency on `conta
 
 ### Requirement: Tool Registration
 
+The implementation SHALL provide the behavior described by this requirement.
 The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
@@ -379,6 +400,7 @@ The module registers up to 13 MCP tools during `register_tools()`: 9 Home Assist
 
 ### Requirement: Maintenance Tool Suite
 
+The implementation SHALL provide the behavior described by this requirement.
 The module provides recurring home-maintenance tracking backed by the `maintenance_items` table.
 
 #### Scenario: Create a maintenance item

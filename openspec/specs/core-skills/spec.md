@@ -6,6 +6,8 @@ Provides infrastructure for loading butler system prompts from `CLAUDE.md`, mana
 ## Requirements
 
 ### Requirement: System Prompt Loading from CLAUDE.md
+
+The implementation SHALL provide the behavior described by this requirement.
 The `read_system_prompt(config_dir, butler_name)` function reads the system prompt from `<config_dir>/CLAUDE.md`. If the file is missing or empty, a default prompt `"You are the {butler_name} butler."` is returned.
 
 #### Scenario: CLAUDE.md present and non-empty
@@ -21,6 +23,8 @@ The `read_system_prompt(config_dir, butler_name)` function reads the system prom
 - **THEN** the default prompt is returned
 
 ### Requirement: Include Directive Resolution
+
+The implementation SHALL provide the behavior described by this requirement.
 Lines matching `<!-- @include path/to/file.md -->` in system prompts are replaced with the contents of the referenced file. Paths are resolved relative to the roster directory (`config_dir.parent`). Path traversal (`..` segments) is rejected. Includes are not recursive.
 
 #### Scenario: Valid include directive
@@ -36,6 +40,8 @@ Lines matching `<!-- @include path/to/file.md -->` in system prompts are replace
 - **THEN** a warning is logged and the directive is preserved as-is
 
 ### Requirement: Shared Snippet Appending
+
+The implementation SHALL provide the behavior described by this requirement.
 After include resolution, the system prompt has shared snippets appended in a stable order: first `roster/shared/BUTLER_SKILLS.md`, then `roster/shared/MCP_LOGGING.md`. Each is appended with a blank line separator if the file exists and is non-empty.
 
 #### Scenario: Shared files appended
@@ -47,6 +53,8 @@ After include resolution, the system prompt has shared snippets appended in a st
 - **THEN** no content is appended for that file
 
 ### Requirement: SKILL.md Format
+
+The implementation SHALL provide the behavior described by this requirement.
 Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory must have a valid kebab-case name matching `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. The `SKILL.md` file within each skill directory provides the skill description.
 
 #### Scenario: Valid skill directory name
@@ -70,6 +78,8 @@ Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory m
 - **AND** outbound notifications use `notify(intent="send")` — not `intent="reply"` — because scheduled tasks have no incoming message to reply to
 
 ### Requirement: Skill Directory Discovery
+
+The implementation SHALL provide the behavior described by this requirement.
 `list_valid_skills(skills_dir)` returns all valid skill subdirectories sorted by name, skipping files and invalid directory names.
 
 #### Scenario: Multiple skills discovered
@@ -81,6 +91,8 @@ Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory m
 - **THEN** `None` is returned
 
 ### Requirement: AGENTS.md Read/Write Access
+
+The implementation SHALL provide the behavior described by this requirement.
 `read_agents_md(config_dir)` reads the AGENTS.md file, returning empty string if absent. `write_agents_md(config_dir, content)` writes/overwrites. `append_agents_md(config_dir, content)` appends to existing content. These are used by runtime instances for runtime agent notes.
 
 #### Scenario: Read existing AGENTS.md

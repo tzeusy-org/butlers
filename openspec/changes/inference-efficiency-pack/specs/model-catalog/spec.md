@@ -94,3 +94,8 @@ The system SHALL provide model resolution functions that select catalog entries 
   separate connection-state machine (no distinct error / offline / deprecated / rate-limited /
   anomaly states); `last_verified_ok`, `enabled`, and breaker state are the canonical and only
   eligibility signals.
+
+#### Scenario: Priority tie-breaking via round-robin
+- **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
+- **THEN** the initial resolver load-balances across them using a per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
+- **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter)

@@ -36,6 +36,13 @@ The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every in
 - **AND** `resolve_contact_by_channel('email', 'chloe@example.com')` returns a contact
 - **THEN** the Switchboard MUST identify the sender using the resolved contact
 
+#### Scenario: Fleet activation supplies the standard owner-delivery callback
+
+- **WHEN** the Switchboard daemon wires its production `MessagePipeline`
+- **THEN** the pipeline MUST enable identity resolution
+- **AND** the pipeline MUST receive a non-null owner-notification callback
+- **AND** an unknown-sender notification from that callback MUST use the
+  `notify.v1` Switchboard-to-Messenger delivery path
 ### Requirement: Identity-enriched prompt injection
 
 After resolving the sender's identity, the Switchboard MUST inject a structured identity preamble into the prompt before routing to downstream butlers. The preamble format depends on the sender's identity resolution result. The text preamble carries `entity_id` only; `contact_id` is no longer emitted in the preamble (bead bu-akads), `entity_id` being the canonical preamble identifier. An entity-only unknown sender MUST NOT gain a contact identifier merely to populate the preamble or routing context.

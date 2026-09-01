@@ -6,6 +6,8 @@ Provides OpenTelemetry tracing initialization, structured logging with butler id
 ## Requirements
 
 ### Requirement: OpenTelemetry Tracer Initialization
+
+The implementation SHALL provide the behavior described by this requirement.
 `init_telemetry(service_name)` configures a `TracerProvider` with OTLP gRPC exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When the endpoint is not set, a no-op tracer is returned. The provider is installed once per process; subsequent calls for additional butlers reuse the existing provider and return a correctly-named tracer.
 
 #### Scenario: OTLP endpoint configured
@@ -24,6 +26,8 @@ Provides OpenTelemetry tracing initialization, structured logging with butler id
 - **AND** a tracer with the new service name is returned
 
 ### Requirement: Butler Span Attribution
+
+The implementation SHALL provide the behavior described by this requirement.
 `tag_butler_span(span, butler_name)` sets `butler.name` and `service.name` (as `butler.<name>`) on any span. This enables per-butler filtering in observability backends when all butlers share a single TracerProvider.
 
 #### Scenario: Span tagged with butler identity
@@ -31,6 +35,8 @@ Provides OpenTelemetry tracing initialization, structured logging with butler id
 - **THEN** the span has attributes `butler.name="health"` and `service.name="butler.health"`
 
 ### Requirement: Tool Span Wrapper
+
+The implementation SHALL provide the behavior described by this requirement.
 `tool_span(tool_name, butler_name)` creates an OpenTelemetry span named `butler.tool.<tool_name>` usable as both a context manager and async decorator. Each invocation creates a fresh span instance (safe for concurrent async calls). Exceptions are recorded with stack trace and span status set to ERROR.
 
 #### Scenario: Context manager usage
@@ -46,6 +52,8 @@ Provides OpenTelemetry tracing initialization, structured logging with butler id
 - **THEN** the span's status is set to ERROR with the exception message and a stack trace is recorded
 
 ### Requirement: Active Session Context Propagation
+
+The implementation SHALL provide the behavior described by this requirement.
 The spawner stores the active LLM session's OTel context in a `ContextVar` before invoking the runtime. Tool handlers (running in separate HTTP handler tasks that don't inherit contextvars) read this context to parent their spans to the session span.
 
 #### Scenario: Tool span parents to session span
@@ -57,6 +65,8 @@ The spawner stores the active LLM session's OTel context in a `ContextVar` befor
 - **THEN** tool spans create root spans (new trace IDs)
 
 ### Requirement: W3C Trace Context Propagation
+
+The implementation SHALL provide the behavior described by this requirement.
 `inject_trace_context()` serializes the current context into a dict with `traceparent`/`tracestate` keys. `extract_trace_context(dict)` deserializes a carrier dict into an OTel `Context`. `get_traceparent_env()` returns `{"TRACEPARENT": "..."}` for passing to spawned subprocess environments.
 
 #### Scenario: Inject and extract round-trip
@@ -69,6 +79,8 @@ The spawner stores the active LLM session's OTel context in a `ContextVar` befor
 - **THEN** it returns `{"TRACEPARENT": "<value>"}` suitable for subprocess environment
 
 ### Requirement: Structured Logging with Butler Context
+
+The implementation SHALL provide the behavior described by this requirement.
 `configure_logging(level, fmt, log_root, butler_name)` sets up structlog-based logging with two formats: `text` (colored console, HH:MM:SS timestamps) and `json` (JSON lines, ISO timestamps). Processors inject `butler` (from ContextVar), `trace_id`, and `span_id` (from current OTel span) into every log record.
 
 #### Scenario: Text format logging
@@ -88,6 +100,8 @@ The spawner stores the active LLM session's OTel context in a `ContextVar` befor
 - **THEN** `trace_id` and `span_id` are injected into the log event dict
 
 ### Requirement: File Logging with Directory Layout
+
+The implementation SHALL provide the behavior described by this requirement.
 When `log_root` is configured, structured JSON log files are written to `{log_root}/butlers/{name}.log` for application logs and `{log_root}/uvicorn/{name}.log` for transport logs. A `connectors/` subdirectory is also created.
 
 #### Scenario: File logs created
@@ -95,6 +109,8 @@ When `log_root` is configured, structured JSON log files are written to `{log_ro
 - **THEN** `logs/butlers/health.log` and `logs/uvicorn/health.log` file handlers are created
 
 ### Requirement: Credential Redaction Filter
+
+The implementation SHALL provide the behavior described by this requirement.
 A `CredentialRedactionFilter` is attached to the root logger, scrubbing Telegram bot tokens (`/bot<id>:<token>/`) and Bearer tokens (`Bearer <token>`) from all log records before they reach any handler. This fires on every record including third-party libraries.
 
 #### Scenario: Telegram bot token redacted
@@ -106,6 +122,8 @@ A `CredentialRedactionFilter` is attached to the root logger, scrubbing Telegram
 - **THEN** it is replaced with `Bearer [REDACTED]`
 
 ### Requirement: OpenTelemetry Metrics Initialization
+
+The implementation SHALL provide the behavior described by this requirement.
 `init_metrics(service_name)` configures a `MeterProvider` with periodic OTLP gRPC exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Otherwise, a no-op meter is used. Installed once per process.
 
 #### Scenario: Metrics endpoint configured
@@ -113,6 +131,8 @@ A `CredentialRedactionFilter` is attached to the root logger, scrubbing Telegram
 - **THEN** a real `MeterProvider` with 15-second export interval is installed
 
 ### Requirement: Spawner Metric Instruments
+
+The implementation SHALL provide the behavior described by this requirement.
 Three spawner instruments: `butlers.spawner.active_sessions` (UpDownCounter), `butlers.spawner.queued_triggers` (UpDownCounter), `butlers.spawner.session_duration_ms` (Histogram). All carry a `butler` label.
 
 #### Scenario: Session duration recorded
@@ -120,6 +140,8 @@ Three spawner instruments: `butlers.spawner.active_sessions` (UpDownCounter), `b
 - **THEN** the duration is recorded on the `butlers.spawner.session_duration_ms` histogram with the `butler` attribute
 
 ### Requirement: Route Metric Instruments
+
+The implementation SHALL provide the behavior described by this requirement.
 Three route instruments: `butlers.route.accept_latency_ms` (Histogram), `butlers.route.queue_depth` (UpDownCounter), `butlers.route.process_latency_ms` (Histogram). All carry a `butler` label.
 
 #### Scenario: Route accept latency recorded
@@ -127,6 +149,8 @@ Three route instruments: `butlers.route.accept_latency_ms` (Histogram), `butlers
 - **THEN** `record_route_accept_latency(latency_ms)` records the accept phase duration
 
 ### Requirement: Buffer Metric Instruments
+
+The implementation SHALL provide the behavior described by this requirement.
 Six buffer instruments: `butlers.buffer.queue_depth` (UpDownCounter), `butlers.buffer.enqueue_total` (Counter with path=hot|cold), `butlers.buffer.backpressure_total` (Counter), `butlers.buffer.scanner_recovered_total` (Counter), `butlers.buffer.process_latency_ms` (Histogram), `butlers.switchboard.queue.dequeue_by_tier` (Counter with policy_tier and starvation_override labels).
 
 #### Scenario: Hot path enqueue recorded
@@ -154,6 +178,8 @@ Beyond the core spawner, route, and buffer instruments above, the metrics module
 - **AND** a metric-export failure does not roll back or hide the durable terminal outcome
 
 ### Requirement: Metric Namespace Convention
+
+The implementation SHALL provide the behavior described by this requirement.
 All metric instruments use the `butlers.` namespace prefix. Instruments are lazily created from the global MeterProvider (safe to construct before `init_metrics` is called).
 
 #### Scenario: Lazy instrument creation

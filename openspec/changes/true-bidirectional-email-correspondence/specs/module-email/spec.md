@@ -2,6 +2,9 @@
 
 ### Requirement: Email Tools
 
+The implementation SHALL provide the behavior described by this requirement.
+The module registers MCP tools for inbox operations and message send/reply.
+
 The module SHALL register MCP tools for inbox operations and message send/reply.
 
 #### Scenario: Email read tools
@@ -27,6 +30,9 @@ The module SHALL register MCP tools for inbox operations and message send/reply.
   also content-free
 
 ### Requirement: SMTP Email Sending
+
+The implementation SHALL provide the behavior described by this requirement.
+Email sending uses SMTP via stdlib `smtplib`.
 
 Email sending SHALL use SMTP via stdlib `smtplib` when the selected provider is SMTP,
 but a successful SMTP call is transport acceptance only.  The module SHALL

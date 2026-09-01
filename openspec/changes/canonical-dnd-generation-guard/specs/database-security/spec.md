@@ -122,6 +122,65 @@ any direct Health/Messenger access to another butler's records.
   `PUBLIC`, migration-role, direct, and cross-role DND authority
 - **AND** static source inspection alone is not accepted as that proof
 
+#### Scenario: Core infrastructure table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these core infrastructure public tables:
+  - `public.ingestion_events` — INSERT, UPDATE, DELETE (ingestion pipeline, owntracks retention)
+  - `public.user_context` — INSERT, UPDATE (context bus, RFC 0009)
+  - `public.model_round_robin_counters` — INSERT, UPDATE (model routing)
+  - `public.token_usage_ledger` — INSERT (token tracking)
+
+#### Scenario: Identity and contacts table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these identity public tables:
+  - `public.entities` — INSERT, UPDATE, DELETE (identity module, bootstrap)
+  - `public.contacts` — INSERT, UPDATE (contacts module)
+  - `public.contact_info` — INSERT, UPDATE, DELETE (contacts, relationship)
+  - `public.entity_info` — INSERT, UPDATE, DELETE (credentials, entity management)
+
+#### Scenario: External account registry table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these account registry public tables:
+  - `public.google_accounts` — INSERT, UPDATE (Google OAuth registry)
+  - `public.steam_accounts` — INSERT, UPDATE, DELETE (Steam account registry)
+
+#### Scenario: QA and healing table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these QA public tables:
+  - `public.healing_attempts` — INSERT, UPDATE
+  - `public.qa_dismissals` — INSERT, UPDATE, DELETE
+  - `public.qa_findings` — INSERT, UPDATE
+  - `public.qa_repo_config` — UPDATE
+  - `public.qa_patrols` — INSERT, UPDATE
+
+#### Scenario: Memory and domain table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these domain public tables:
+  - `public.memory_catalog` — INSERT, UPDATE (memory module)
+  - `public.facts` — INSERT, UPDATE (finance anomaly detection, ON CONFLICT DO UPDATE)
+
+#### Scenario: Insight pipeline table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to these insight public tables:
+  - `public.insight_candidates` — INSERT, UPDATE, DELETE (insight broker)
+  - `public.insight_cooldowns` — INSERT, DELETE (cooldown tracking)
+  - `public.insight_engagement` — INSERT, UPDATE, DELETE (engagement tracking)
+  - `public.insight_settings` — INSERT, UPDATE (delivery settings)
+
+#### Scenario: Dispatch attempt provenance table writes
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can write to the dispatch attempt provenance table:
+  - `public.model_dispatch_attempts` — SELECT, INSERT (failover provenance, core_104 migration)
+
+#### Scenario: Read-only public tables
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can only SELECT (not INSERT, UPDATE, or DELETE) from public tables not in the write authorization matrix
+- **AND** this includes `public.model_catalog`, `public.token_limits`, and any future public tables that do not have explicit write grants
+
+#### Scenario: Adding new public tables to the matrix
+- **WHEN** a new public table is created by a migration and butlers need to write to it
+- **THEN** a subsequent core migration SHALL add targeted GRANT statements for that table to all butler runtime roles
+- **AND** the write authorization matrix in this spec SHALL be updated
 ### Requirement: Graceful Fallback Policy
 SET ROLE enforcement SHALL retain its existing graceful development fallback
 for ordinary non-DND workloads. When runtime roles are absent, the normal
@@ -148,6 +207,19 @@ as a substitute for verified runtime authority.
   boundary because role, RLS/ACL, guard, or database-time evidence is missing
 - **THEN** it writes no durable admission and authorizes no external effect
 
+#### Scenario: Missing roles in development
+- **WHEN** the `core_001_foundation` migration ran but could not create roles (e.g., connecting user lacks CREATEROLE)
+- **THEN** the roles do not exist in `pg_roles`
+- **AND** `Database.connect()` detects this and skips the `setup` callback
+- **AND** a warning is logged: "Role {role} not found; SET ROLE enforcement disabled. Butler {name} runs with shared-user privileges."
+- **AND** all queries execute with the shared database user's privileges (identical to pre-enforcement behavior)
+- **AND** no error is raised -- the butler starts and operates normally
+
+#### Scenario: Enforcement in production
+- **WHEN** the PostgreSQL instance has roles created by the migration (production default)
+- **THEN** SET ROLE enforcement is active for all butler and connector connections
+- **AND** the connecting user (`butlers`) must be a member of each runtime role (granted by `core_065`)
+- **AND** any query that violates the role's privileges fails with a PostgreSQL permission error
 ## ADDED Requirements
 
 ### Requirement: DND Guard Least-Privilege Mutation Boundary

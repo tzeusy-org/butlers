@@ -6,6 +6,8 @@ The OwnTracks connector receives HTTP webhook POSTs from the OwnTracks mobile ap
 ## Requirements
 
 ### Requirement: Connector Identity and Role
+
+The implementation SHALL provide the behavior described by this requirement.
 The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosystem as a location data ingestion channel.
 
 #### Scenario: Connector as location webhook receiver
@@ -27,6 +29,8 @@ The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosyst
 - **AND** setting `OWNTRACKS_TRACKER_ID` pins the connector to one fixed identity (ignoring device-reported `tid`) for deployments that intentionally run one connector instance per device
 
 ### Requirement: Webhook Server
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector runs a FastAPI HTTP server that receives OwnTracks webhook POSTs and serves health/metrics endpoints on the same port.
 
 #### Scenario: Webhook endpoint
@@ -70,6 +74,8 @@ Every incoming webhook POST MUST be authenticated via a bearer token before proc
 - **AND** a valid password authenticates identically to a matching bearer token
 
 ### Requirement: Dashboard Setup UX
+
+The implementation SHALL provide the behavior described by this requirement.
 A dedicated "OwnTracks" section on the Butlers dashboard settings page provides the complete setup flow for connecting the OwnTracks mobile app.
 
 #### Scenario: Settings section layout
@@ -111,6 +117,8 @@ A dedicated "OwnTracks" section on the Butlers dashboard settings page provides 
   - `GET /api/connectors/owntracks/config` -- webhook URL and setup instructions metadata
 
 ### Requirement: Supported Payload Types
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector processes a defined subset of OwnTracks payload types and silently ignores the rest.
 
 #### Scenario: Location payload (`_type: "location"`)
@@ -134,6 +142,8 @@ The connector processes a defined subset of OwnTracks payload types and silently
 - **AND** the event is NOT recorded in `connectors.filtered_events` (these are protocol-level ignores, not policy-filtered)
 
 ### Requirement: ingest.v1 Field Mapping
+
+The implementation SHALL provide the behavior described by this requirement.
 Each OwnTracks event is normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Location event field mapping
@@ -160,6 +170,8 @@ Each OwnTracks event is normalized to the canonical `ingest.v1` envelope.
   - `payload.normalized_text` = transition-specific summary (see Normalized Text Generation)
 
 ### Requirement: Normalized Text Generation
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector generates human-readable summaries for `payload.normalized_text` based on event type.
 
 #### Scenario: Location event text (Tier 2 / metadata)
@@ -182,6 +194,8 @@ The connector generates human-readable summaries for `payload.normalized_text` b
 - **THEN** `normalized_text` is formatted as: `"Waypoint sync: {count} regions ({name1}, {name2}, ...)"` listing up to 5 region names, with `"and N more"` suffix if more than 5
 
 ### Requirement: Privacy Controls
+
+The implementation SHALL provide the behavior described by this requirement.
 Location data is privacy-sensitive. The connector enforces conservative defaults and explicit opt-in for full data capture.
 
 #### Scenario: Default ingestion tier
@@ -287,6 +301,8 @@ degraded source rather than present an all-clear.
 - **AND** connector health and liveness remain unchanged
 
 ### Requirement: Data Retention
+
+The implementation SHALL provide the behavior described by this requirement.
 Location events are automatically purged after a configurable retention period.
 
 #### Scenario: Retention purge schedule
@@ -309,6 +325,8 @@ Location events are automatically purged after a configurable retention period.
 - **AND** purge failures are logged at WARNING level but do NOT crash the connector
 
 ### Requirement: Checkpoint and Resume
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector persists a timestamp-based checkpoint for crash-safe restart.
 
 #### Scenario: Checkpoint persistence
@@ -325,6 +343,8 @@ The connector persists a timestamp-based checkpoint for crash-safe restart.
 - **THEN** all received events are processed normally (no backfill window -- OwnTracks only sends live events via HTTP)
 
 ### Requirement: Connector Lifecycle
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector follows the connector base contract for heartbeat, metrics, health, filtered events, and replay queue.
 
 #### Scenario: Heartbeat
@@ -352,6 +372,8 @@ The connector follows the connector base contract for heartbeat, metrics, health
 - **THEN** it checks for pending replay requests per the base contract replay queue drain loop
 
 ### Requirement: Environment Variables
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector is configured via environment variables following the base connector contract plus OwnTracks-specific variables.
 
 #### Scenario: Required environment variables
@@ -369,6 +391,8 @@ The connector is configured via environment variables following the base connect
   - `CONNECTOR_HEARTBEAT_INTERVAL_S` -- heartbeat interval (default: 120)
 
 ### Requirement: Context Bus Integration
+
+The implementation SHALL provide the behavior described by this requirement.
 OwnTracks events feed the situational context bus (RFC 0009). Context signal derivation is a butler-side concern -- the connector only ingests and normalizes events. Butlers consuming OwnTracks events interpret them and write context signals via `set_context()` / `clear_context()`.
 
 #### Scenario: Travel butler derives at_home from geofence transition
@@ -394,6 +418,8 @@ OwnTracks events feed the situational context bus (RFC 0009). Context signal der
 - **AND** when a signal is derived from distance or velocity inference, the confidence level is 0.6-0.7
 
 ### Requirement: Docker Compose Integration
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector is deployed as a standalone service in the docker-compose stack.
 
 #### Scenario: Service definition

@@ -8,6 +8,7 @@ Track recurring home maintenance items (filter replacements, HVAC service, appli
 
 ### Requirement: Maintenance Items Table
 
+The implementation SHALL provide the behavior described by this requirement.
 Recurring maintenance items are stored in the `home.maintenance_items` database table.
 
 #### Scenario: Table schema
@@ -33,6 +34,7 @@ Recurring maintenance items are stored in the `home.maintenance_items` database 
 
 ### Requirement: Maintenance Schedule Check Job
 
+The implementation SHALL provide the behavior described by this requirement.
 The `maintenance_schedule_check` deterministic job checks all maintenance items for due or overdue status and sends reminders.
 
 #### Scenario: Due item detection
@@ -77,6 +79,7 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 
 ### Requirement: Maintenance Item Management via MCP Tools
 
+The implementation SHALL provide the behavior described by this requirement.
 The Home butler provides MCP tools for creating, completing, listing, and removing maintenance items.
 
 #### Scenario: Create maintenance item
@@ -113,6 +116,7 @@ The Home butler provides MCP tools for creating, completing, listing, and removi
 
 ### Requirement: Maintenance Memory Integration
 
+The implementation SHALL provide the behavior described by this requirement.
 Maintenance completion events are stored as memory facts for historical tracking.
 
 #### Scenario: Completion fact stored

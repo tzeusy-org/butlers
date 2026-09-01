@@ -40,3 +40,18 @@ replay-safe.
 - **WHEN** the operator clicks the Replay button and the API returns 200
 - **THEN** the row's status badge SHALL immediately update to `replay_pending` (optimistic update)
 - **AND** the Replay button SHALL be replaced with a spinner
+
+#### Scenario: Replay button for filtered events
+- **WHEN** a row has status `filtered` or `error`
+- **THEN** the Action column SHALL display a "Replay" button
+- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
+
+#### Scenario: Replay button for replay_failed events
+- **WHEN** a row has status `replay_failed`
+- **THEN** the Action column SHALL display a "Retry" button
+- **AND** clicking the button SHALL call `POST /api/ingestion/events/{id}/replay`
+
+#### Scenario: Error handling on replay
+- **WHEN** the replay API returns 409 or another error
+- **THEN** a toast notification SHALL display the error message
+- **AND** the row's status SHALL remain unchanged

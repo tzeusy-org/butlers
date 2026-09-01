@@ -123,6 +123,9 @@ The connector SHALL run independent polling loops per data type bundle.
 
 ### Requirement: Reconciled Stream Consumption
 
+The connector SHALL consume each supported data-type bundle through its
+Reconciled Stream endpoint rather than through raw per-source data points.
+
 #### Scenario: Reconciled stream preference
 
 - **WHEN** the connector fetches a data type bundle that supports the Reconciled Stream
@@ -167,6 +170,10 @@ The connector SHALL persist per-resource cursors that disambiguate by account, s
 - **AND** the per-account dimension SHALL be encoded into the `endpoint_identity` between the email and the resource
 
 ### Requirement: Rate-Limit Discipline
+
+The connector SHALL respect Google Health API rate limits, backing off without
+advancing its cursor and capturing the rate-limit headers it observes as
+metrics.
 
 #### Scenario: 429 response handling
 
@@ -213,6 +220,10 @@ The connector SHALL report health status via the shared heartbeat mechanism. All
 
 ### Requirement: Source Filter Gate
 
+The connector SHALL evaluate every `ingest.v1` envelope against the source
+filter gate before submission, and SHALL treat a dropped envelope as handled
+for cursor purposes.
+
 #### Scenario: Source filter gate evaluation
 
 - **WHEN** the connector is about to submit an `ingest.v1` envelope
@@ -221,12 +232,18 @@ The connector SHALL report health status via the shared heartbeat mechanism. All
 
 ### Requirement: Filtered Event Flush
 
+The connector SHALL record every envelope the source filter gate drops and
+flush those records at the end of the poll cycle.
+
 #### Scenario: Filtered envelope recording
 
 - **WHEN** the source filter gate drops an envelope
 - **THEN** the connector SHALL buffer a record with `connector_type="google_health"`, `source_channel="wellness"`, `status="filtered"`, and flush to `connectors.filtered_events` at end of poll cycle
 
 ### Requirement: Replay Queue Drain
+
+The connector SHALL drain pending replay requests targeting it before doing
+new work in a poll cycle.
 
 #### Scenario: Replay drain on each poll cycle
 
@@ -236,6 +253,11 @@ The connector SHALL report health status via the shared heartbeat mechanism. All
 ### Requirement: Structural Cost Gates Not Applicable
 
 Wellness is a single-owner passive signal. The connector SHALL NOT invoke participant-count or chat-metadata structural cost gates.
+
+#### Scenario: Structural cost gates are not invoked
+
+- **WHEN** the connector prepares a wellness envelope for submission
+- **THEN** it SHALL NOT invoke participant-count or chat-metadata structural cost gates
 
 ### Requirement: Chronicler Compatibility Deferred
 

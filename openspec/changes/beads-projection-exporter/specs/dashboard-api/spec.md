@@ -117,3 +117,27 @@ Scope: v1-mandatory
   known, including on a stale result
 - **THEN** `meta.export_as_of` remains populated with that mtime
 - **AND** `meta.beads_source` is `jsonl`
+
+#### Scenario: Malformed metadata is visible without degrading the whole export
+
+- **WHEN** a readable export contains an otherwise eligible decision whose
+  `metadata.decision.options` or default violates the decision convention
+- **THEN** the response still contains that decision and
+  `meta.decisions_available` remains `true`
+- **AND** that decision reports `structured_details_available: false` with a
+  named malformed-metadata reason
+- **AND** the endpoint MUST NOT turn the invalid source into a calm empty
+  options/default result
+
+#### Scenario: Degraded export never reads as an all-clear
+
+- **WHEN** the beads export is missing, stale, or unreadable
+- **THEN** `GET /api/decisions` returns HTTP 200 with `data: []`
+- **AND** `meta.decisions_available` is `false`
+- **AND** `meta.unavailable_reason` names the export failure
+
+#### Scenario: A stale export still reports its known age
+
+- **WHEN** the export is readable but stale enough to set
+  `decisions_available: false`
+- **THEN** `meta.export_as_of` remains populated with the export mtime

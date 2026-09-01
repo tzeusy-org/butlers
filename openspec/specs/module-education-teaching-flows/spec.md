@@ -213,6 +213,7 @@ While in `planning` status, the ephemeral session decomposes the topic into a co
 
 ### Requirement: Teaching Phase — Explain, Question, Evaluate
 
+The implementation SHALL provide the behavior described by this requirement.
 While in `teaching` status, the session moves through three sub-phases for the current node: `explaining` → `questioning` → `evaluating`. After a successful evaluation, mastery is updated and the flow advances to `quizzing`.
 
 #### Scenario: Session delivers explanation for current node
@@ -250,6 +251,7 @@ While in `teaching` status, the session moves through three sub-phases for the c
 
 ### Requirement: Quizzing Phase — Comprehension Testing
 
+The implementation SHALL provide the behavior described by this requirement.
 In `quizzing` status the session asks 1–3 additional quiz questions that vary in format (free-form, multiple-choice) to solidify comprehension. After the final question is evaluated, the session calls `teaching_flow_advance()` to branch toward the next frontier node or toward `completed`.
 
 #### Scenario: Session asks at least one quiz question in quizzing phase
@@ -277,6 +279,7 @@ In `quizzing` status the session asks 1–3 additional quiz questions that vary 
 
 ### Requirement: Reviewing Phase — Spaced Repetition Sessions
 
+The implementation SHALL provide the behavior described by this requirement.
 A scheduled trigger fires when a review is due. The spawned session reads all nodes with `next_review_at <= now()` for the mind map, asks 1–3 recall questions per batch, records responses, updates SM-2 parameters, and schedules the next review. After processing, the session calls `teaching_flow_advance()`.
 
 #### Scenario: Scheduled trigger fires for due review
@@ -331,6 +334,7 @@ A scheduled trigger fires when a review is due. The spawned session reads all no
 
 ### Requirement: Mid-Flow User Questions — Contextual Help
 
+The implementation SHALL provide the behavior described by this requirement.
 When a user sends a freeform question (e.g., "I don't understand recursion") during an active teaching flow, the Switchboard routes it to the education butler. The session identifies the relevant node in the current mind map, provides a targeted explanation, asks a follow-up comprehension question, and records the response — without disrupting the main flow sequence.
 
 #### Scenario: Mid-flow question matched to current node
@@ -359,6 +363,7 @@ When a user sends a freeform question (e.g., "I don't understand recursion") dur
 
 ### Requirement: Staleness Detection and Auto-Abandonment
 
+The implementation SHALL provide the behavior described by this requirement.
 A weekly scheduled task (`stale-flow-check`) checks all active flows. Any flow with `last_session_at` more than 30 days before the check time is automatically abandoned. All pending review schedules for the abandoned mind map are deleted.
 
 #### Scenario: Stale flow detected and abandoned

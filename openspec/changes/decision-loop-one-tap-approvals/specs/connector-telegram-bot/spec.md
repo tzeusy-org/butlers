@@ -22,6 +22,19 @@ The connector SHALL process a defined subset of Telegram update types.
 - **THEN** the callback is answered generically (no error toast loop) and no
   further processing occurs
 
+#### Scenario: Gap-interview one-tap callback routed
+- **WHEN** a `callback_query` arrives whose `callback_data` begins with the
+  `cgi:` prefix (`cgi:<interview_id>:<answer>`)
+- **THEN** the connector SHALL route it to the chronicler gap-interview resolve
+  path (`POST /api/chronicler/gap-interview/resolve`) instead of dropping it,
+  and SHALL acknowledge the tap via `answerCallbackQuery` with an owner-facing
+  toast
+- **AND** this routing SHALL be strictly additive — any `callback_query` whose
+  `callback_data` does not carry the `cgi:` prefix retains its existing drop
+  behavior
+- **AND** when the internal API URL is unconfigured or unreachable, the tap
+  SHALL still be acknowledged with a graceful toast rather than left with a
+  loading spinner
 ## ADDED Requirements
 
 ### Requirement: Approval Callback Ingestion

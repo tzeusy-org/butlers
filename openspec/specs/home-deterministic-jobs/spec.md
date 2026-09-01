@@ -8,6 +8,7 @@ Deterministic Python job handlers for the Home butler's scheduled monitoring tas
 
 ### Requirement: Job Handler Signature and Registration
 
+The implementation SHALL provide the behavior described by this requirement.
 All home deterministic job handlers follow the standard `_DeterministicScheduleJobHandler` signature and are registered in the daemon's job registry.
 
 #### Scenario: Job handler signature
@@ -41,6 +42,7 @@ and then converts Markdown to Telegram HTML.
 
 ### Requirement: Threshold Loading from State Store
 
+The implementation SHALL provide the behavior described by this requirement.
 All monitoring thresholds are loaded from the state store at job invocation time, with hardcoded defaults used only if no stored value exists. This enables user-configurable monitoring sensitivity.
 
 #### Scenario: Load threshold from state store
@@ -70,6 +72,7 @@ All monitoring thresholds are loaded from the state store at job invocation time
 
 ### Requirement: Device Health Check Job
 
+The implementation SHALL provide the behavior described by this requirement.
 The `device_health_check` job reads all HA entity states, classifies battery and connectivity issues by severity, stores findings in memory, and sends a Telegram notification.
 
 #### Scenario: Entity survey from connector cache
@@ -135,6 +138,7 @@ The `device_health_check` job reads all HA entity states, classifies battery and
 
 ### Requirement: Environment Report Job
 
+The implementation SHALL provide the behavior described by this requirement.
 The `environment_report` job reads environmental sensors per area, compares against stored comfort preferences, and sends a room-by-room report.
 
 #### Scenario: Area and sensor discovery
@@ -193,6 +197,7 @@ The `environment_report` job reads environmental sensors per area, compares agai
 
 ### Requirement: Energy Digest Job
 
+The implementation SHALL provide the behavior described by this requirement.
 The `energy_digest` job fetches weekly energy statistics, computes top consumers and trends vs. baselines, and sends a structured weekly digest.
 
 #### Scenario: Energy sensor discovery
@@ -267,6 +272,7 @@ The `energy_digest` job fetches weekly energy statistics, computes top consumers
 
 ### Requirement: Entity State Access and HA Statistics Fallback for Jobs
 
+The implementation SHALL provide the behavior described by this requirement.
 Job handlers read current entity state from the connector-populated `ha_entity_snapshot` table. A short-lived HA WebSocket client is available for historical statistics queries that the connector does not provide.
 
 #### Scenario: Entity state from connector cache

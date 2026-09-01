@@ -6,6 +6,8 @@ The Home Assistant connector is a standalone process that subscribes to a Home A
 ## Requirements
 
 ### Requirement: Connector Identity and Role
+
+The implementation SHALL provide the behavior described by this requirement.
 The Home Assistant connector bridges real-time HA events into the butler ecosystem as a device-state ingestion channel.
 
 #### Scenario: Connector as home automation event interface
@@ -23,6 +25,8 @@ The Home Assistant connector bridges real-time HA events into the butler ecosyst
 - **AND** it shares the MCP client, metrics registry, health server, and heartbeat task across the WebSocket and REST fallback paths
 
 ### Requirement: Authentication and Connection Configuration
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector authenticates with Home Assistant using a long-lived access token configured via the Butlers dashboard.
 
 #### Scenario: Dashboard settings UX
@@ -55,6 +59,8 @@ The connector authenticates with Home Assistant using a long-lived access token 
 - **AND** for example, `http://homeassistant.local:8123` becomes `ws://homeassistant.local:8123/api/websocket`
 
 ### Requirement: WebSocket Event Subscription
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector maintains a persistent WebSocket connection to Home Assistant for real-time event streaming.
 
 #### Scenario: WebSocket authentication handshake
@@ -87,6 +93,8 @@ The connector maintains a persistent WebSocket connection to Home Assistant for 
 - **AND** if no `pong` response is received within 10 seconds, the connection SHALL be considered dead and reconnection initiated
 
 ### Requirement: REST API Polling Fallback
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector falls back to REST API polling when the WebSocket connection is unavailable.
 
 #### Scenario: Fallback activation
@@ -108,6 +116,8 @@ The connector falls back to REST API polling when the WebSocket connection is un
 - **AND** the connector's health state SHALL transition back to `healthy`
 
 ### Requirement: Three-Layer Filtering Pipeline
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector implements a three-layer filtering pipeline to reduce HA event noise before Switchboard submission.
 
 #### Scenario: Layer 1 — Domain allowlist
@@ -143,6 +153,8 @@ The connector implements a three-layer filtering pipeline to reduce HA event noi
 - **AND** the connector SHALL record the overall pass rate in `connector_ha_filter_pass_rate` (gauge, 0.0 to 1.0)
 
 ### Requirement: ingest.v1 Field Mapping
+
+The implementation SHALL provide the behavior described by this requirement.
 Each event that passes all three filter layers is normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Field mapping for state_changed events
@@ -174,6 +186,8 @@ Each event that passes all three filter layers is normalized to the canonical `i
 - **AND** it SHALL include units of measurement from the entity's `unit_of_measurement` attribute when available
 
 ### Requirement: Checkpoint Semantics
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector persists checkpoint state for crash-safe resumption.
 
 #### Scenario: Checkpoint contents
@@ -192,6 +206,8 @@ The connector persists checkpoint state for crash-safe resumption.
 - **AND** if no checkpoint exists (first run), the connector SHALL begin ingesting from the current time (no historical backfill)
 
 ### Requirement: Health State Derivation
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector reports health based on HA connection and service availability.
 
 #### Scenario: Health states
@@ -211,6 +227,8 @@ The connector reports health based on HA connection and service availability.
 - **THEN** `status.error_message` SHALL include the current transport mode (e.g., `"transport=websocket"` or `"transport=rest_fallback, ws_reconnect_attempts=5"`)
 
 ### Requirement: Prometheus Metrics
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector exports HA-specific metrics in addition to the standard `ConnectorMetrics`.
 
 #### Scenario: HA-specific counters
@@ -233,6 +251,8 @@ The connector exports HA-specific metrics in addition to the standard `Connector
 - **AND** SHALL NOT label these metrics with entity IDs, measurement values, units, payload data, or exception text
 
 ### Requirement: Environment Variables
+
+The implementation SHALL provide the behavior described by this requirement.
 Configuration via environment variables extending the base connector variables.
 
 #### Scenario: Required variables
@@ -336,6 +356,8 @@ The connector SHALL recover recorder-backed weight measurements independently of
 - **AND** SHALL NOT emit an ordinary `home_assistant` envelope or mutate the shared WebSocket/REST checkpoint
 
 ### Requirement: Idempotency and Safety
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector guarantees at-least-once delivery with HA-derived event identifiers.
 
 #### Scenario: Dedup identity
@@ -349,6 +371,8 @@ The connector guarantees at-least-once delivery with HA-derived event identifier
 - **AND** out-of-order WebSocket events (rare but possible during HA internal batching) SHALL be reordered before submission
 
 ### Requirement: Filtered Event Persistence
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector persists filtered events per the base connector contract.
 
 #### Scenario: HA-specific filter reasons

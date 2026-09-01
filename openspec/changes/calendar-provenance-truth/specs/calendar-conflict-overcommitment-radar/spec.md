@@ -169,3 +169,16 @@ default strategy with no overrides (fail-open) rather than failing the scan.
   the ledger; keying identity on `origin_ref` alone lets the read converge to
   the copy that reflects the provider's current truth instead of rendering the
   same event twice
+
+#### Scenario: Butler-authored shadow copy excluded from overlap pairing
+
+- **GIVEN** a butler-authored event whose title carries the
+  `BUTLER: ` prefix and whose stripped title case-insensitively matches
+  another (non-butler-titled) row in the same window — a butler-projected
+  copy of the owner's own event, not caught by the dedup pass above because
+  its title and `origin_ref` genuinely differ from the row it shadows
+- **WHEN** the conflict scan builds its candidate set
+- **THEN** the butler-titled row is excluded from overlap/back-to-back/
+  overloaded-day pairing
+- **AND** a genuine overlap between two DIFFERENT butler-authored events
+  (neither shadows a same-titled non-butler row) is still detected normally

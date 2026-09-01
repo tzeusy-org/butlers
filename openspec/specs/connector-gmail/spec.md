@@ -6,6 +6,8 @@ The Gmail connector ingests emails from a user's Gmail inbox in near real-time, 
 ## Requirements
 
 ### Requirement: Gmail Connector Identity and Authentication
+
+The implementation SHALL provide the behavior described by this requirement.
 The Gmail connector runs as a single process that discovers and manages all connected Google accounts. It authenticates each account independently via Google OAuth, resolving per-account credentials from the butler database.
 
 #### Scenario: Multi-account discovery at startup
@@ -36,6 +38,8 @@ The Gmail connector runs as a single process that discovers and manages all conn
 - **AND** it SHALL periodically re-scan for new accounts (see dynamic account discovery)
 
 ### Requirement: Ingestion Modes
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector supports two ingestion modes with different latency/complexity trade-offs.
 
 #### Scenario: Polling mode (default for v1)
@@ -66,6 +70,9 @@ The connector supports two ingestion modes with different latency/complexity tra
 
 ### Requirement: ingest.v1 Field Mapping
 
+The Gmail connector SHALL normalize every ingested Gmail message to the
+`ingest.v1` envelope using exactly the field mapping defined below.
+
 #### Scenario: Gmail field mapping
 - **WHEN** a Gmail email is normalized to `ingest.v1`
 - **THEN** the mapping is:
@@ -82,6 +89,8 @@ The connector supports two ingestion modes with different latency/complexity tra
   - `control.idempotency_key` = `"gmail:<endpoint_identity>:<message_id>"`
 
 ### Requirement: History ID Cursor Persistence
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector tracks its position in Gmail's history stream via a persistent cursor.
 
 #### Scenario: Cursor model
@@ -94,6 +103,8 @@ The connector tracks its position in Gmail's history stream via a persistent cur
 - **AND** on restart, it replays from the last safe history ID (harmless due to dedup)
 
 ### Requirement: Label Filtering
+
+The implementation SHALL provide the behavior described by this requirement.
 Gmail label include/exclude policy gates ingestion before tier evaluation.
 
 #### Scenario: Label filter precedence
@@ -116,6 +127,8 @@ Gmail label include/exclude policy gates ingestion before tier evaluation.
 - **AND** multiple connectors for the same account may use different label filters (e.g., one for INBOX, one for finance labels)
 
 ### Requirement: Tiered Email Ingestion Policy
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector implements a three-tier ingestion policy to process emails in proportion to value.
 
 #### Scenario: Tier 1 — full pipeline
@@ -142,6 +155,7 @@ The connector implements a three-tier ingestion policy to process emails in prop
 
 ### Requirement: Source Filter Integration (Gmail)
 
+The implementation SHALL provide the behavior described by this requirement.
 The Gmail connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:gmail:<endpoint_identity>'`. It builds an `IngestionEnvelope` from the Gmail message's `From` header. Compatible rule types for Gmail connector scope: `sender_domain`, `sender_address`, `substring`.
 
 #### Scenario: IngestionPolicyEvaluator instantiation
@@ -169,6 +183,8 @@ The Gmail connector implements the ingestion policy gate using `IngestionPolicyE
 - **THEN** the message is counted as skipped and the backfill continues to the next message
 
 ### Requirement: Policy Tier Assignment
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector assigns policy tiers for Switchboard queue ordering using a `PolicyTierAssigner` with first-match-wins rules.
 
 #### Scenario: Known contact → high priority
@@ -192,6 +208,8 @@ The connector assigns policy tiers for Switchboard queue ordering using a `Polic
 - **THEN** `butlers_connector_gmail_priority_tier_assigned_total` counter is incremented with labels `endpoint_identity`, `policy_tier`, `assignment_rule`
 
 ### Requirement: Triage Rules
+
+The implementation SHALL provide the behavior described by this requirement.
 Connector-side triage rules evaluated before ingest to determine ingestion tier.
 
 #### Scenario: Sender domain rule
@@ -216,6 +234,8 @@ Connector-side triage rules evaluated before ingest to determine ingestion tier.
 - **AND** if no rule matches, the default action is `pass_through` (Tier 1)
 
 ### Requirement: Attachment Handling
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector implements metadata-first lazy fetching with per-MIME-type size limits and fetch mode policies. Fetched attachments are stored in the S3-compatible blob store; blob refs use the `s3://` scheme.
 
 #### Scenario: Attachment policy map (ATTACHMENT_POLICY)
@@ -253,6 +273,8 @@ The connector implements metadata-first lazy fetching with per-MIME-type size li
 - **THEN** counters track: `connector_attachment_fetched_eager_total`, `connector_attachment_fetched_lazy_total`, `connector_attachment_skipped_oversized_total`, `connector_attachment_type_distribution_total`
 
 ### Requirement: Backfill Mode
+
+The implementation SHALL provide the behavior described by this requirement.
 The connector implements the optional backfill polling protocol for dashboard-triggered historical email processing.
 
 #### Scenario: Backfill poll loop
@@ -297,6 +319,8 @@ The connector implements the optional backfill polling protocol for dashboard-tr
 - **AND** backfill cursor is maintained server-side in `backfill_jobs.cursor` via MCP
 
 ### Requirement: [TARGET-STATE] Selective Email Backfill Strategy
+
+The implementation SHALL provide the behavior described by this requirement.
 Dashboard-triggered, cost-aware historical email processing with recommended category windows.
 
 #### Scenario: MCP-mediated orchestration
@@ -318,6 +342,8 @@ Dashboard-triggered, cost-aware historical email processing with recommended cat
 - **AND** lifecycle actions (create, pause, resume, cancel, complete, error, cost cap) are audit logged
 
 ### Requirement: Email Metadata Storage for Tier 2
+
+The implementation SHALL provide the behavior described by this requirement.
 Tier 2 (metadata-only) emails are persisted in the canonical `switchboard.message_inbox`
 lifecycle table, tagged with `ingestion_tier='metadata'`. A separate
 `email_metadata_refs` table was introduced and later dropped (switchboard
@@ -344,6 +370,8 @@ truth for accepted ingestion records across all tiers.
 - **AND** fetching does not auto-promote to Tier 1
 
 ### Requirement: Multi-Account Connector Architecture
+
+The implementation SHALL provide the behavior described by this requirement.
 A single Gmail connector process manages concurrent watch/poll loops for all connected Google accounts.
 
 #### Scenario: Independent per-account loops
@@ -393,6 +421,8 @@ The connector SHALL support discovering new or removed accounts without a full p
 - **AND** the loop SHALL be stopped without affecting other account loops
 
 ### Requirement: Multiple Concurrent Connectors
+
+The implementation SHALL provide the behavior described by this requirement.
 Multiple Gmail connector processes can still run concurrently for horizontal scaling or policy isolation.
 
 #### Scenario: Per-account isolation across processes
@@ -411,12 +441,21 @@ Multiple Gmail connector processes can still run concurrently for horizontal sca
 
 ### Requirement: Aggregated Health Status
 
+The Gmail connector SHALL expose a single aggregated health status covering
+every account loop, reporting the worst-case status across accounts together
+with per-account detail.
+
 #### Scenario: Health model (multi-account)
 - **WHEN** the Gmail connector's health is queried
 - **THEN** it returns: `status` (worst-case across all account loops), `uptime_seconds`, `active_accounts` (count), `account_health` (array of per-account status objects)
 - **AND** each per-account status includes: `email`, `endpoint_identity`, `status` (`healthy`/`degraded`/`error`), `last_checkpoint_save_at`, `last_ingest_submit_at`, `source_api_connectivity`, `error` (if any)
 
 ### Requirement: Environment Variables
+
+The Gmail connector SHALL take its configuration from environment variables.
+The variables identified below as required MUST be set for the connector to
+run; the remainder are optional process-level defaults, which per-account
+metadata MAY override.
 
 #### Scenario: Required variables
 - **WHEN** the Gmail connector starts

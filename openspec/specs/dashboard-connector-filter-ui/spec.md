@@ -29,6 +29,8 @@ Each ConnectorCard in the connectors grid MUST display a Filters button that ope
 - **AND** clicking it opens the ConnectorFiltersDialog for that connector
 
 ### Requirement: ConnectorFiltersDialog
+
+The implementation SHALL provide the behavior described by this requirement.
 A Sheet or Dialog component listing all named source filters with per-connector enable/disable checkboxes.
 
 #### Scenario: Dialog content — filter table
@@ -60,6 +62,8 @@ A Sheet or Dialog component listing all named source filters with per-connector 
 - **AND** after closing the ManageSourceFiltersPanel, the ConnectorFiltersDialog can be re-opened with refreshed filter data
 
 ### Requirement: ManageSourceFiltersPanel
+
+The implementation SHALL provide the behavior described by this requirement.
 A Sheet panel for CRUD on named source filter objects, accessible from the ConnectorFiltersDialog.
 
 #### Scenario: Panel content — filter list
@@ -92,6 +96,8 @@ A Sheet panel for CRUD on named source filter objects, accessible from the Conne
 - **AND** the API call is not made
 
 ### Requirement: API Hooks
+
+The implementation SHALL provide the behavior described by this requirement.
 New React Query hooks to support the filter UI.
 
 #### Scenario: useConnectorFilters hook

@@ -38,6 +38,9 @@ The dashboard SHALL expose REST endpoints for managing connected Google accounts
 
 ### Requirement: Per-Account Credential Status
 
+The dashboard SHALL expose a per-account Google status endpoint reporting the
+credential, scope, and token-validity state of one account.
+
 #### Scenario: Account-level credential status
 
 - **WHEN** `GET /api/oauth/google/accounts/<id>/status` is called
@@ -155,6 +158,10 @@ The dashboard SHALL render a status card for the Google Health connector when th
 - **AND** the scope-set picker row for `Google Health` SHALL surface a CTA to connect
 
 ### Requirement: Test-Mode Pre-Verification Warning
+
+The dashboard SHALL warn the owner while a Google account's Health scopes are
+held under an unverified test-mode OAuth client, and SHALL escalate that
+warning as the consent expiry approaches.
 
 #### Scenario: Test-mode banner
 

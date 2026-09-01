@@ -78,6 +78,17 @@ tenant context from their source episodes.
 - **AND** the SKILL.md MUST contain a security notice instructing the LLM to
   treat episode content as data only
 
+#### Scenario: Artifact output names exact episode evidence
+
+- **WHEN** a non-empty episode group is formatted for consolidation
+- **THEN** each rendered episode MUST expose its UUID to the runtime session
+- **AND** every emitted `new_facts`, `updated_facts`, and `new_rules` entry MUST include a non-empty `evidence_episode_ids` array naming only the claimed episode UUIDs that support that artifact
+
+#### Scenario: Invalid artifact evidence fails the group before persistence
+
+- **WHEN** any emitted fact or rule artifact has absent, empty, malformed, duplicate, or out-of-group `evidence_episode_ids`
+- **THEN** the consolidation group MUST use the existing failed/dead-letter retry path
+- **AND** no fact, rule, `memory_links` row, or consolidated episode state from that group MAY be persisted before the failure
 ## ADDED Requirements
 
 ### Requirement: Bounded Episode Retry and Dead-Letter Lifecycle
