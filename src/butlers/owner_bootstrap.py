@@ -106,15 +106,18 @@ async def _seed_owner_telegram_handle(
     unique index ``uq_ef_spo_active``) or when the prerequisite tables / chat-id
     row are absent.
 
-    Also a quiet no-op for butler roles that cannot see the ``relationship``
-    schema: under SET ROLE isolation each butler reaches only its own schema
-    plus ``public``, so every daemon except ``relationship`` is *expected* to
-    lack USAGE here.  The privilege is probed up front because ``to_regclass``
-    on a qualified name raises ``InsufficientPrivilegeError`` rather than
-    returning NULL — letting it raise logs a traceback per butler on every
-    startup for the designed posture.
+    The seed is relationship-schema-only: under SET ROLE isolation, only the
+    relationship daemon may write ``relationship.entity_facts``.  The current
+    schema is checked before any cross-schema probe so read-only roles that can
+    see the schema do not log a non-fatal permission warning.  The privilege is
+    still probed for the relationship daemon because ``to_regclass`` on a
+    qualified name raises ``InsufficientPrivilegeError`` rather than returning
+    NULL when the schema is absent or unreachable.
     """
     try:
+        if await conn.fetchval("SELECT current_schema()") != "relationship":
+            return
+
         # NULL (schema absent) collapses to false.  Written as a subquery rather
         # than `EXISTS(...) AND has_schema_privilege(...)` because Postgres does
         # not guarantee AND short-circuits, and the privilege call errors on an

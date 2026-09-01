@@ -521,6 +521,7 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 
 ### Owner entity bootstrap conflict contract
 - `_ensure_owner_entity` in `src/butlers/daemon.py` must first resolve an existing owner via `WHERE 'owner' = ANY(roles)` before attempting insert, and the insert must use `ON CONFLICT DO NOTHING` (no explicit conflict target) so the partial unique index `shared.ix_entities_owner_singleton` cannot raise `UniqueViolationError` during startup.
+- Owner Telegram handle seeding is relationship-schema-only: `_seed_owner_telegram_handle` must check `current_schema() = 'relationship'` before probing `relationship.entity_facts`, because other butler runtime roles may have read-only visibility but must not attempt the relationship-owned write.
 
 ### Runtime args passthrough contract
 - Runtime args are sourced solely from `public.model_catalog.extra_args` — there is no butler.toml fallback. The catalog's `extra_args` array is forwarded verbatim to the adapter as `runtime_args`.
