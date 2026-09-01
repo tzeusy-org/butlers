@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -220,6 +222,33 @@ def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_containe
         ")",
         scalar=True,
     )
+
+
+def test_concurrent_heartbeat_partition_ensures_are_idempotent(postgres_container):
+    """Concurrent first heartbeats cannot race while creating a monthly partition."""
+    db_url = _run_schema_scoped_core_and_switchboard(postgres_container, "switchboard")
+    worker_count = 8
+    ready = threading.Barrier(worker_count)
+    sql = (
+        "SELECT switchboard.switchboard_connector_heartbeat_log_ensure_partition("
+        "'2035-04-15T00:00:00+00:00'::timestamptz"
+        ")"
+    )
+
+    def ensure_partition(_worker_index: int) -> str:
+        engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as conn:
+                conn.execute(text('SET ROLE "butler_switchboard_rw"'))
+                ready.wait(timeout=30)
+                return str(conn.execute(text(sql)).scalar_one())
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(ensure_partition, range(worker_count)))
+
+    assert results == ["connector_heartbeat_log_p203504"] * worker_count
 
 
 def test_downgrade_drops_all_objects(postgres_container):
