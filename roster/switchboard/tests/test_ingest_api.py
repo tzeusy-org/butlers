@@ -343,10 +343,7 @@ class TestIngestV1Basic:
         assert row["normalized_text"] == "Test message"
         assert _decode_jsonb(row["request_context"])["source_channel"] == "telegram_bot"
         assert _decode_jsonb(row["request_context"])["source_endpoint_identity"] == "test_bot"
-        assert (
-            _decode_jsonb(row["request_context"])["external_conversation_id"]
-            == "telegram:12345"
-        )
+        assert _decode_jsonb(row["request_context"])["external_conversation_id"] == "telegram:12345"
         assert _decode_jsonb(row["request_context"])["reply_target_ref"] == "12345:1"
         assert _decode_jsonb(row["request_context"])["source_thread_identity"] == "12345:1"
         assert _decode_jsonb(row["request_context"])["source_sender_identity"] == "user_alice"

@@ -68,26 +68,6 @@ The connector supports two ingestion modes with different latency/complexity tra
 - **THEN** it is created on connector startup, auto-renewed when approaching expiration (configurable), and expires after ~7 days if not renewed
 - **AND** the connector logs watch expiration timestamps for monitoring
 
-### Requirement: ingest.v1 Field Mapping
-
-The Gmail connector SHALL normalize every ingested Gmail message to the
-`ingest.v1` envelope using exactly the field mapping defined below.
-
-#### Scenario: Gmail field mapping
-- **WHEN** a Gmail email is normalized to `ingest.v1`
-- **THEN** the mapping is:
-  - `source.channel` = `"email"`
-  - `source.provider` = `"gmail"` (must be `gmail`, not `imap`)
-  - `source.endpoint_identity` = `"gmail:user:<email_address>"`
-  - `event.external_event_id` = the RFC822 `Message-ID` header value (falls back to the Gmail message ID when the header is absent)
-  - `event.external_thread_id` = Gmail `threadId`
-  - `event.observed_at` = connector-observed timestamp (RFC3339)
-  - `sender.identity` = normalized sender address from `From` header
-  - `sender.display_name` = the raw display-name part of the `From` header (e.g. `"John Doe"` from `"John Doe <john@example.com>"`), or `null` when the header carried no display name; stored verbatim (not normalized) so identity enrichment can use the real name instead of guessing one from the address local-part
-  - `payload.raw` = full Gmail API message payload (Tier 1) or `null` (Tier 2)
-  - `payload.normalized_text` = normalized subject + body text (Tier 1) or subject only (Tier 2)
-  - `control.idempotency_key` = `"gmail:<endpoint_identity>:<message_id>"`
-
 ### Requirement: History ID Cursor Persistence
 
 The implementation SHALL provide the behavior described by this requirement.
@@ -357,7 +337,8 @@ truth for accepted ingestion records across all tiers.
   `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"`
 - **AND** Switchboard persists a `message_inbox` row with `ingestion_tier='metadata'`,
   bypassing LLM classification; `raw_payload` retains the source endpoint identity,
-  `external_event_id` (Gmail message ID), `external_thread_id`, and sender identity
+  `external_event_id` (Gmail message ID), `external_conversation_id`,
+  `reply_target_ref`, and sender identity
 
 #### Scenario: Tier 2 metadata is queryable by tier
 - **WHEN** Tier 2 records are queried
@@ -471,3 +452,25 @@ metadata MAY override.
 #### Scenario: Backfill variables
 - **WHEN** backfill is configured
 - **THEN** `CONNECTOR_BACKFILL_ENABLED` (default true), `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (default 60), `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` (default 50) are optionally configurable
+
+### Requirement: Stable ingest.v1 Field Mapping
+
+The Gmail connector SHALL normalize every ingested Gmail message to the
+`ingest.v1` envelope using exactly the field mapping defined below.
+
+#### Scenario: Gmail field mapping
+
+- **WHEN** a Gmail email is normalized to `ingest.v1`
+- **THEN** the mapping is:
+  - `source.channel` = `"email"`
+  - `source.provider` = `"gmail"` (must be `gmail`, not `imap`)
+  - `source.endpoint_identity` = `"gmail:user:<email_address>"`
+  - `event.external_event_id` = the RFC822 `Message-ID` header value (falls back to the Gmail message ID when the header is absent)
+  - `event.external_conversation_id` = Gmail `threadId`
+  - `event.reply_target_ref` = Gmail `threadId`
+  - `event.observed_at` = connector-observed timestamp (RFC3339)
+  - `sender.identity` = normalized sender address from `From` header
+  - `sender.display_name` = the raw display-name part of the `From` header (e.g. `"John Doe"` from `"John Doe <john@example.com>"`), or `null` when the header carried no display name; stored verbatim (not normalized) so identity enrichment can use the real name instead of guessing one from the address local-part
+  - `payload.raw` = full Gmail API message payload (Tier 1) or `null` (Tier 2)
+  - `payload.normalized_text` = normalized subject + body text (Tier 1) or subject only (Tier 2)
+  - `control.idempotency_key` = `"gmail:<endpoint_identity>:<message_id>"`

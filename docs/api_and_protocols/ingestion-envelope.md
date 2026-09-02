@@ -98,7 +98,8 @@ Connectors submit envelopes via MCP tool call (`ingest`) to the Switchboard's MC
 The connector provides source/event/sender facts only. The Switchboard assigns canonical request context at ingest acceptance:
 
 - **Required**: `request_id` (UUIDv7), `received_at`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
-- **Optional**: `source_thread_identity`, `trace_context`
+- **Optional**: `source_thread_identity`, `external_conversation_id`, `reply_target_ref`,
+  `trace_context`
 
 The response includes the canonical `request_id` for lineage tracking.
 

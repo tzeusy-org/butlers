@@ -372,7 +372,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
               `source_sender_identity` plus `source_thread_identity` for
-              telegram `reply`/`react`.
+              telegram `reply`/`react`. Preserve `external_conversation_id`
+              when present so outbound replies remain in stable history.
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
@@ -396,7 +397,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "source_channel": "telegram_bot",
                 "source_endpoint_identity": "switchboard",
                 "source_sender_identity": "health",
-                "source_thread_identity": "12345"
+                "source_thread_identity": "12345:678",
+                "external_conversation_id": "telegram:12345"
               }
             }
             """

@@ -325,58 +325,6 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
 - **THEN** a `: keepalive` SSE comment is sent to prevent connection timeout
 
-### Requirement: Dashboard Ingestion Envelope Construction
-
-Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool. RFC 0003 §"ingest.v1 Envelope Format" defines `dashboard` / `internal` as direct owner-dashboard ingress: the dashboard API, rather than a connector startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint identity.
-
-#### Scenario: Envelope structure for dashboard messages
-
-- **WHEN** a dashboard message is submitted for ingestion
-- **THEN** the envelope SHALL have:
-  - `schema_version`: `"ingest.v1"`
-  - `source.channel`: `"dashboard"`
-  - `source.provider`: `"internal"`
-  - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
-  - `event.external_event_id`: `"{message_id}"`, where dashboard UI provides one immutable client-generated ID for a new user message and reuses it for retry and Stop
-  - `event.external_conversation_id`: `"dashboard:{conversation_id}"`
-  - `event.reply_target_ref`: `"{conversation_id}"`
-  - `event.observed_at`: current timestamp
-  - `sender.identity`: `"dashboard:operator"`
-  - `payload.normalized_text`: the user's message content (with conversation context for follow-ups)
-  - `payload.raw`: `{"source": "dashboard", "conversation_id": "...", "message_id": "...", "message": "...", "page_context": {...}}` — `page_context` is present only when the client supplied one
-  - `control.policy_tier`: `"interactive"`
-  - `control.ingestion_tier`: `"full"`
-  - `control.pinned_target`: present per the routing-pin scenarios below
-
-#### Scenario: Dashboard messages bypass discretion
-
-- **WHEN** a dashboard message is ingested by the Switchboard
-- **THEN** the `"dashboard"` channel SHALL NOT be subject to discretion evaluation (operator messages are always intentional)
-
-#### Scenario: Per-butler conversation envelope carries a routing pin
-
-- **WHEN** a message is submitted via `POST /api/butlers/{name}/conversations` (or a follow-up on an existing per-butler conversation) and `{name}` is a routable domain butler (not the Switchboard staffer)
-- **THEN** the constructed envelope SHALL set `control.pinned_target` to `{name}`
-- **AND** the Switchboard SHALL route the message to `{name}` deterministically, without LLM classification choosing a different target
-
-#### Scenario: Switchboard-addressed conversations are unpinned until routed
-
-- **WHEN** a message is submitted via `POST /api/butlers/switchboard/conversations` (the dashboard chat widget's classification-routed conversation) and the conversation has no `routed_butler` yet
-- **THEN** the constructed envelope SHALL NOT set `control.pinned_target` — the Switchboard staffer is never a registered, routable target
-- **AND** the message proceeds through Switchboard's ordinary classify -> route pipeline
-
-#### Scenario: Sticky follow-up pinning for classification-routed conversations
-
-- **WHEN** a follow-up message is submitted via `POST /api/butlers/switchboard/conversations/{conversation_id}/messages` and the conversation already has a `routed_butler` set (from an earlier successful `route_to` decision)
-- **THEN** the constructed envelope SHALL set `control.pinned_target` to `routed_butler`, bypassing classification entirely
-- **AND** a conversation whose `routed_butler` is still NULL (not yet routed, or a bug-lane report with no domain-butler target) continues through classification as in the "unpinned until routed" scenario above
-
-#### Scenario: Optional page context on dashboard messages
-
-- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`) on the request body
-- **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
-- **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key
-
 ### Requirement: Conversation Summary Queries
 
 The dashboard API SHALL provide conversation-count summary statistics.
@@ -431,3 +379,55 @@ SSE Response Streaming requirement).
 
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
+
+### Requirement: Stable Dashboard Ingestion Envelope Construction
+
+Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool. RFC 0003 section "ingest.v1 Envelope Format" defines `dashboard` / `internal` as direct owner-dashboard ingress: the dashboard API, rather than a connector startup probe, SHALL assign `dashboard:web:{conversation_id}` as the endpoint identity.
+
+#### Scenario: Envelope structure for dashboard messages
+
+- **WHEN** a dashboard message is submitted for ingestion
+- **THEN** the envelope SHALL have:
+  - `schema_version`: `"ingest.v1"`
+  - `source.channel`: `"dashboard"`
+  - `source.provider`: `"internal"`
+  - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
+  - `event.external_event_id`: `"{message_id}"`, where dashboard UI provides one immutable client-generated ID for a new user message and reuses it for retry and Stop
+  - `event.external_conversation_id`: `"dashboard:{conversation_id}"`
+  - `event.reply_target_ref`: `"{conversation_id}"`
+  - `event.observed_at`: current timestamp
+  - `sender.identity`: `"dashboard:operator"`
+  - `payload.normalized_text`: the user's message content (with conversation context for follow-ups)
+  - `payload.raw`: `{"source": "dashboard", "conversation_id": "...", "message_id": "...", "message": "...", "page_context": {...}}` — `page_context` is present only when the client supplied one
+  - `control.policy_tier`: `"interactive"`
+  - `control.ingestion_tier`: `"full"`
+  - `control.pinned_target`: present per the routing-pin scenarios below
+
+#### Scenario: Dashboard messages bypass discretion
+
+- **WHEN** a dashboard message is ingested by the Switchboard
+- **THEN** the `"dashboard"` channel SHALL NOT be subject to discretion evaluation (operator messages are always intentional)
+
+#### Scenario: Per-butler conversation envelope carries a routing pin
+
+- **WHEN** a message is submitted via `POST /api/butlers/{name}/conversations` (or a follow-up on an existing per-butler conversation) and `{name}` is a routable domain butler (not the Switchboard staffer)
+- **THEN** the constructed envelope SHALL set `control.pinned_target` to `{name}`
+- **AND** the Switchboard SHALL route the message to `{name}` deterministically, without LLM classification choosing a different target
+
+#### Scenario: Switchboard-addressed conversations are unpinned until routed
+
+- **WHEN** a message is submitted via `POST /api/butlers/switchboard/conversations` (the dashboard chat widget's classification-routed conversation) and the conversation has no `routed_butler` yet
+- **THEN** the constructed envelope SHALL NOT set `control.pinned_target` — the Switchboard staffer is never a registered, routable target
+- **AND** the message proceeds through Switchboard's ordinary classify -> route pipeline
+
+#### Scenario: Sticky follow-up pinning for classification-routed conversations
+
+- **WHEN** a follow-up message is submitted via `POST /api/butlers/switchboard/conversations/{conversation_id}/messages` and the conversation already has a `routed_butler` set (from an earlier successful `route_to` decision)
+- **THEN** the constructed envelope SHALL set `control.pinned_target` to `routed_butler`, bypassing classification entirely
+- **AND** a conversation whose `routed_butler` is still NULL (not yet routed, or a bug-lane report with no domain-butler target) continues through classification as in the "unpinned until routed" scenario above
+
+#### Scenario: Optional page context on dashboard messages
+
+- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`) on the request body
+- **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
+- **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key

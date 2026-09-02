@@ -563,6 +563,7 @@ class NotifyRequestContextV1(BaseModel):
     source_endpoint_identity: NonEmptyStr
     source_sender_identity: NonEmptyStr
     source_thread_identity: NonEmptyStr | None = None
+    external_conversation_id: NonEmptyStr | None = None
     received_at: datetime | None = None
 
     @field_validator("request_id")

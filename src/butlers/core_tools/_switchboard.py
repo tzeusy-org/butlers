@@ -599,6 +599,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if isinstance(request_context, dict)
             else None
         )
+        external_conversation_id = (
+            request_context.get("external_conversation_id")
+            if isinstance(request_context, dict)
+            else None
+        )
 
         if dashboard_turn_id is not None:
             # This read is only a fast rejection. The target's route.execute
@@ -683,6 +688,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": source_sender_identity,
             "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
             "trace_context": {},
         }
         _src_contact_id = _routing_ctx.get("source_contact_id")

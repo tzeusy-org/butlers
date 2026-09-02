@@ -7,6 +7,7 @@ schema (post migration sw_008).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -384,6 +385,63 @@ async def test_realtime_history_outbound_messages_and_formatted(switchboard_dsn)
         result = _format_history_context(messages)
         assert "**user42**" in result and "**butler → relationship**" in result
         assert "So does da pe pe" in result
+    finally:
+        await pool.close()
+
+
+async def test_production_outbound_writer_preserves_stable_conversation_history(
+    postgres_container,
+):
+    """A Telegram reply remains queryable by its stable conversation identity."""
+    from butlers.api.conversations import _generate_uuid7
+    from butlers.db import register_jsonb_codec
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+    from butlers.tools.switchboard import _write_outbound_message_inbox
+    from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+    dsn = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "switchboard"],
+        {"switchboard": "switchboard"},
+    )
+    pool = await asyncpg.create_pool(
+        dsn,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
+    try:
+        now = datetime.now(UTC)
+        stable_id = f"telegram:{uuid.uuid4().int}"
+        reply_target = f"{stable_id.removeprefix('telegram:')}:91"
+        request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "reply",
+                    "channel": "telegram",
+                    "message": "Persisted through the production writer.",
+                },
+                "request_context": {
+                    "request_id": str(_generate_uuid7()),
+                    "source_channel": "telegram_bot",
+                    "source_endpoint_identity": "telegram:bot:test",
+                    "source_sender_identity": "owner",
+                    "source_thread_identity": reply_target,
+                    "external_conversation_id": stable_id,
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(pool, notify_request=request, delivered_at=now)
+
+        messages = await _load_realtime_history(pool, stable_id, now + timedelta(seconds=1))
+        assert [message["raw_content"] for message in messages] == [
+            "Persisted through the production writer."
+        ]
+        assert messages[0]["direction"] == "outbound"
     finally:
         await pool.close()
 

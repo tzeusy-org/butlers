@@ -1567,6 +1567,7 @@ class TestWriteOutboundMessageInbox:
                     "source_endpoint_identity": "telegram:bot",
                     "source_sender_identity": "user123",
                     "source_thread_identity": "12345678:999",
+                    "external_conversation_id": "telegram:12345678",
                 },
             }
         )
@@ -1594,6 +1595,7 @@ class TestWriteOutboundMessageInbox:
         assert isinstance(req_ctx, dict)
         assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_thread_identity"] == "12345678:999"
+        assert req_ctx["external_conversation_id"] == "telegram:12345678"
         assert req_ctx["source_sender_identity"] == "relationship"
 
         raw_payload = pos_args[3]

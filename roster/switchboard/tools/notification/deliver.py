@@ -200,6 +200,8 @@ async def _write_outbound_message_inbox(
         "source_sender_identity": origin_butler,
         "source_thread_identity": thread_identity,
     }
+    if ctx is not None and ctx.external_conversation_id is not None:
+        request_context_payload["external_conversation_id"] = ctx.external_conversation_id
     raw_payload = {
         "content": message_text,
         "metadata": {"origin_butler": origin_butler},

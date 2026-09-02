@@ -114,6 +114,7 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 #### Scenario: Event metadata (IngestEventV1)
 - **WHEN** `event` is populated
 - **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_thread_id` is an optional non-empty string (email thread ID, Telegram chat ID), and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
+- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_conversation_id` is the optional stable conversation key, `reply_target_ref` is the optional provider reply/reaction target, `external_thread_id` is accepted only from legacy producers, and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
 
 #### Scenario: Sender identity (IngestSenderV1)
 - **WHEN** `sender` is populated
@@ -172,6 +173,7 @@ The Switchboard SHALL build an immutable request context from each accepted inge
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
 - **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
+- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `reply_target_ref`, falling back to legacy `external_thread_id`), `external_conversation_id`, `reply_target_ref`, `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
 - **AND** if the envelope carries group-chat metadata: `participant_count`, `chat_type`, and `interaction_eligible` (only when `false`)
 - **AND** if the envelope is a batch covering several senders: `source_sender_identities` (a JSON array built from `sender.participants`) and, when the connector reports one, `owner_sender_identity` (from `sender.owner_sender_id`)
