@@ -1028,6 +1028,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Monthly Ceiling
 - Days in Month
 - Spend forecast chart
+- Monthly ceiling (USD)
+- Set a ceiling at or below current spend?
+- This is at/below month-to-date spend of {} and will immediately deny every butler dispatch fleet-wide.
 - Spend breakdown
 - Purpose breakdown
 - Historical attribution
@@ -1058,6 +1061,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Monthly ceiling updated
 - Failed to update ceiling
 - Enter a positive amount
+- Monthly spend is unavailable; try again when the forecast recovers
 - Rule created
 - Failed to create rule
 - Per-call cap must be a positive number
@@ -4155,4 +4159,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3254*
+*Total strings: 3258*

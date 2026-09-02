@@ -38,6 +38,14 @@ import { todayISO } from "@/lib/day-window";
  * just outcome-scoped. */
 export const CEILING_DENIAL_REASON_PREFIX = "Monthly spend ceiling reached";
 
+/** Query keys owned by the fleet-halt banner and invalidated after a ceiling save. */
+export const FLEET_HALT_DISPATCH_ATTEMPTS_QUERY_KEY = ["dispatch-attempts"] as const;
+export const FLEET_HALT_QUERY_KEY = [
+  "spend",
+  "fleet-halt",
+  "runtime-attention",
+] as const;
+
 const DEFAULT_DRAWER_LIMIT = 20;
 
 // "Today" uses the owner's configured timezone (day-window.ts / useTimezone),
@@ -89,7 +97,11 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
   const sinceToday = startOfTodayIso(ownerTz);
 
   const onset = useQuery({
-    queryKey: ["dispatch-attempts", "ceiling-onset", sinceMonth],
+    queryKey: [
+      ...FLEET_HALT_DISPATCH_ATTEMPTS_QUERY_KEY,
+      "ceiling-onset",
+      sinceMonth,
+    ],
     queryFn: () =>
       getDispatchAttempts({
         outcome: "quota_skip",
@@ -102,7 +114,11 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
   });
 
   const today = useQuery({
-    queryKey: ["dispatch-attempts", "ceiling-today", sinceToday],
+    queryKey: [
+      ...FLEET_HALT_DISPATCH_ATTEMPTS_QUERY_KEY,
+      "ceiling-today",
+      sinceToday,
+    ],
     queryFn: () =>
       getDispatchAttempts({
         outcome: "quota_skip",
@@ -114,7 +130,12 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
   });
 
   const recent = useQuery({
-    queryKey: ["dispatch-attempts", "ceiling-recent", sinceMonth, drawerLimit],
+    queryKey: [
+      ...FLEET_HALT_DISPATCH_ATTEMPTS_QUERY_KEY,
+      "ceiling-recent",
+      sinceMonth,
+      drawerLimit,
+    ],
     queryFn: () =>
       getDispatchAttempts({
         outcome: "quota_skip",
@@ -127,7 +148,7 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
   });
 
   const attention = useQuery({
-    queryKey: ["spend", "fleet-halt", "runtime-attention"],
+    queryKey: FLEET_HALT_QUERY_KEY,
     queryFn: getFleetHaltAttention,
     refetchInterval,
   });
