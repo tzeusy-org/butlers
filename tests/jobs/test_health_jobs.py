@@ -138,7 +138,7 @@ async def test_measurement_gap_submits_typed_door_metadata():
         if "SELECT DISTINCT predicate" in sql:
             return [{"predicate": "measurement_weight"}]
         if "ORDER BY valid_at DESC NULLS LAST" in sql:
-            return [{"measured_at": measured_at} for measured_at in history]
+            return [{"measured_at": measured_at, "source": "owner_log"} for measured_at in history]
         return []
 
     pool = _RoutingPool(fetch_router)

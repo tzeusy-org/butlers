@@ -181,6 +181,9 @@ MCP/Switchboard, never a direct cross-schema DB read.
 - **AND** the `dedup_key` SHALL be `health:measurement-gap:{measurement-type}`
 - **AND** `expires_at` SHALL be 3 days from generation
 - **AND** measurement types with fewer than 3 historical entries SHALL be excluded (insufficient data for cadence computation)
+- **AND** before proposing a gap, the detector SHALL upsert `health:measurement-gap:{measurement-type}` through the shared expected-signals helper
+- **AND** connector-backed measurements SHALL join the canonical connector liveness projection
+- **AND** stale, offline, unhealthy, unknown, or unreadable producer evidence SHALL produce `unmeasurable` and no measurement-gap candidate
 
 #### Scenario: Medication refill timing insights
 - **WHEN** the insight-scan job evaluates active medications

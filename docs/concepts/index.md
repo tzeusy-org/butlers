@@ -10,3 +10,4 @@
 - [Trigger Flow](trigger-flow.md) — external MCP calls vs scheduler triggers
 - [Identity Model](identity-model.md) — owner, contacts, tenant model
 - [MCP Model](mcp-model.md) — Model Context Protocol in the Butlers context
+- [Expected Signals](expected-signals.md) — liveness-qualified present, absent, and unmeasurable observations

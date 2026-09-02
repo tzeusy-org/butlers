@@ -4,6 +4,7 @@ Covers:
   GET /api/health/measurements/latest?types=X,Y,Z
   GET /api/health/measurements/sleep/latest
   GET /api/health/measurements/sources
+  GET /api/health/measurements/expected-signals
 
 SQL queries do NOT filter on butler_name — the pool is butler-scoped.
 """
@@ -455,3 +456,54 @@ class TestMeasurementSources:
 
         sql = pool.fetch.call_args.args[0]
         assert "COALESCE(metadata->>'source', metadata->>'provider')" in sql
+
+
+class TestExpectedSignals:
+    async def test_unmeasurable_signal_is_rendered_as_instrument_state(self):
+        from datetime import UTC, datetime
+
+        now = datetime.now(tz=UTC)
+        pool = _mock_pool(
+            fetch_rows=[
+                _row(
+                    {
+                        "signal_key": "health:measurement-gap:weight",
+                        "producer": "connector:google_health",
+                        "expected_cadence_seconds": 1_209_600,
+                        "last_observed_at": now,
+                        "measurability": "unmeasurable",
+                        "unmeasurable_reason": "producer_stale_or_offline",
+                        "evaluated_at": now,
+                    }
+                )
+            ]
+        )
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/health/measurements/expected-signals")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["available"] is True
+        assert body["signals"][0]["measurability"] == "unmeasurable"
+        assert body["signals"][0]["unmeasurable_reason"] == "producer_stale_or_offline"
+
+    async def test_query_failure_is_degraded_not_an_empty_all_clear(self):
+        pool = _mock_pool()
+        pool.fetch.side_effect = RuntimeError("expected signals unavailable")
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/health/measurements/expected-signals")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "signals": None,
+            "available": False,
+            "degraded_reason": "expected_signals_unavailable",
+        }

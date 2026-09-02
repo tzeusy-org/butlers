@@ -68,6 +68,7 @@ vi.mock("@/hooks/use-health", () => ({
   useMeasurementsLatest: vi.fn(),
   useSleepLatest: vi.fn(),
   useMeasurementSources: vi.fn(),
+  useExpectedSignals: vi.fn(),
   useMeasurements: vi.fn(),
   useMedications: vi.fn(),
   useConditions: vi.fn(),
@@ -86,6 +87,7 @@ import {
   useMeasurementsLatest,
   useSleepLatest,
   useMeasurementSources,
+  useExpectedSignals,
   useMeasurements,
   useMedications,
   useConditions,
@@ -138,6 +140,22 @@ const SOURCES = [
   { name: "apple_health", last_sample_at: "2026-05-11T07:00:00Z", sample_count: 5821 },
   { name: "manual", last_sample_at: null, sample_count: 0 },
 ];
+
+const EXPECTED_SIGNALS = {
+  available: true,
+  degraded_reason: null,
+  signals: [
+    {
+      signal_key: "health:measurement-gap:weight",
+      producer: "connector:google_health",
+      expected_cadence_seconds: 1_209_600,
+      last_observed_at: "2026-04-01T08:00:00Z",
+      measurability: "unmeasurable" as const,
+      unmeasurable_reason: "producer_stale_or_offline",
+      evaluated_at: "2026-05-11T08:00:00Z",
+    },
+  ],
+};
 
 const MEASUREMENTS_TREND = [
   {
@@ -245,6 +263,11 @@ function setupWithData() {
     isLoading: false,
     isError: false,
   } as AnyQueryResult);
+  vi.mocked(useExpectedSignals).mockReturnValue({
+    data: EXPECTED_SIGNALS,
+    isLoading: false,
+    isError: false,
+  } as AnyQueryResult);
 
   vi.mocked(useMeasurements).mockReturnValue({
     data: { data: MEASUREMENTS_TREND, meta: { total: 2, offset: 0, limit: 50 } },
@@ -266,6 +289,11 @@ function setupLoading() {
   vi.mocked(useMeasurementsLatest).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useSleepLatest).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useMeasurementSources).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
+  vi.mocked(useExpectedSignals).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as AnyQueryResult);
   vi.mocked(useMeasurements).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useMedications).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useConditions).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
@@ -284,6 +312,11 @@ function setupEmpty() {
 
   vi.mocked(useMeasurementSources).mockReturnValue({
     data: [],
+    isLoading: false,
+    isError: false,
+  } as AnyQueryResult);
+  vi.mocked(useExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
     isLoading: false,
     isError: false,
   } as AnyQueryResult);
@@ -574,6 +607,38 @@ describe("ButlerHealthMeasurementsTab — sources list", () => {
     renderTab();
     expect(screen.queryByTestId("sources-list")).toBeNull();
     expect(screen.getByText("Could not load sources.")).toBeDefined();
+  });
+});
+
+describe("ButlerHealthMeasurementsTab — expected signal honesty", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("renders unmeasurable as instrument failure rather than owner absence", () => {
+    renderTab();
+    expect(screen.getByText("unmeasurable")).toBeDefined();
+    expect(
+      screen.getByText("Instrument unavailable; owner-behavior nudges paused."),
+    ).toBeDefined();
+  });
+
+  it("renders query degradation instead of an empty all-clear", () => {
+    vi.mocked(useExpectedSignals).mockReturnValue({
+      data: {
+        signals: null,
+        available: false,
+        degraded_reason: "expected_signals_unavailable",
+      },
+      isLoading: false,
+      isError: false,
+    } as AnyQueryResult);
+    renderTab();
+    expect(
+      screen.getByText("Signal health is unavailable. Absence nudges are paused."),
+    ).toBeDefined();
   });
 });
 

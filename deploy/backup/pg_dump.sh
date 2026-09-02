@@ -73,6 +73,9 @@
 #     public.runtime_attention_delivery_lease
 #     public.runtime_attention_producer_control
 #         runtime-attention delivery state and its producer control row.
+#   - public.expected_signals                 rebuildable liveness-qualified
+#         cadence state. Source observations and connector heartbeats remain in
+#         the dump; the next detector run recreates this projection.
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
@@ -106,7 +109,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in

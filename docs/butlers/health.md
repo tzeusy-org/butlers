@@ -70,6 +70,13 @@ The Health Butler also has read-only access to Home Assistant sensor data, enabl
 
 **Pattern Detection.** The butler spots trends the user might miss: a symptom that only occurs on Mondays, measurements that drift slowly upward, medication adherence that falters before the user catches it.
 
+**Honest absence.** Measurement-gap scans record a shared expected signal before
+proposing a nudge. Connector-backed measurements are `absent` only while their
+producer heartbeat is healthy; a stale, offline, unhealthy, or unreadable
+instrument is `unmeasurable`, suppresses the owner-behavior message, and renders
+as instrument failure on the Health measurements tab. Pure owner-entered
+histories remain measurable without a connector.
+
 **Non-Judgmental Tracking.** The butler is patient and non-judgmental. It exists to listen, remember, and help the user see what they might otherwise miss. It is a companion, not a doctor.
 
 ## Interaction Patterns

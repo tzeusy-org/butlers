@@ -22,6 +22,11 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.expected_signals import (
+    ExpectedSignalState,
+    measurement_producer,
+    upsert_expected_signal,
+)
 from butlers.tools.health._medication_utils import (
     frequency_to_doses_per_day as _frequency_to_doses_per_day,
 )
@@ -341,7 +346,9 @@ async def run_insight_scan(
         predicate = f"measurement_{mtype}"
         history_rows = await db_pool.fetch(
             """
-            SELECT valid_at AS measured_at
+            SELECT
+                valid_at AS measured_at,
+                COALESCE(metadata->>'source', metadata->>'provider') AS source
             FROM facts
             WHERE predicate = $1
               AND scope = 'health'
@@ -384,7 +391,29 @@ async def run_insight_scan(
         most_recent = timestamps[0]
         time_since_seconds = (now_utc - most_recent).total_seconds()
 
-        if time_since_seconds < _GAP_WARNING_MULTIPLIER * median_cadence_seconds:
+        # The existing warning threshold is 2x the typical cadence. Persist
+        # that exact expectation so the shared tri-state and the candidate
+        # decision cannot drift apart.
+        expected_signal = await upsert_expected_signal(
+            db_pool,
+            signal_key=f"health:measurement-gap:{mtype}",
+            producer=measurement_producer([row.get("source") for row in history_rows]),
+            expected_cadence=timedelta(seconds=_GAP_WARNING_MULTIPLIER * median_cadence_seconds),
+            last_observed_at=most_recent,
+            now=now_utc,
+        )
+
+        if expected_signal.state is ExpectedSignalState.UNMEASURABLE:
+            logger.warning(
+                "Health measurement gap is unmeasurable, suppressing owner nudge "
+                "(signal=%s producer=%s reason=%s)",
+                expected_signal.signal_key,
+                expected_signal.producer,
+                expected_signal.unmeasurable_reason,
+            )
+            continue
+
+        if expected_signal.state is ExpectedSignalState.PRESENT:
             continue
 
         if time_since_seconds >= _GAP_CRITICAL_MULTIPLIER * median_cadence_seconds:

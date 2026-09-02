@@ -441,6 +441,26 @@ class MeasurementSourcesResponse(BaseModel):
     sources: list[MeasurementSource]
 
 
+class ExpectedSignalResponse(BaseModel):
+    """One liveness-qualified expectation used by a Health gap detector."""
+
+    signal_key: str
+    producer: str
+    expected_cadence_seconds: int
+    last_observed_at: str | None
+    measurability: Literal["present", "absent", "unmeasurable"]
+    unmeasurable_reason: str | None
+    evaluated_at: str
+
+
+class ExpectedSignalsResponse(BaseModel):
+    """Honest expected-signal surface; unavailable evidence is not an empty list."""
+
+    signals: list[ExpectedSignalResponse] | None
+    available: bool
+    degraded_reason: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Measurements — trend aggregation
 # ---------------------------------------------------------------------------

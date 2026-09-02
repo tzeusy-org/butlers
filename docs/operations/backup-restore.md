@@ -93,6 +93,7 @@ plane by name:
 | `public.dnd_generation_mutations` | DND generation mutation audit |
 | `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
+| `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
 command. These objects are not recovered from a dump in the first place: the
@@ -141,8 +142,9 @@ included — was published. Adding `public.audit_log` to the exclusion set is th
 one change that would silently empty this path, and it fails four tests across
 two files.
 
-Everything else in the table above is either reconstructed by the bootstrap or
-expiring runtime state. No ordinary application data is excluded.
+Everything else in the table above is reconstructed by the bootstrap, expiring
+runtime state, or a deterministic projection rebuilt on the next detector run.
+No canonical source observation is excluded.
 
 `tests/scripts/test_pg_dump_backup.py` pins that claim against a real
 bootstrapped database, in both directions: it fails if a fenced object appears

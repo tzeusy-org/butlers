@@ -107,6 +107,13 @@ keys.
 - **THEN** that fact MUST still be attributed to its provider via
   `COALESCE(metadata->>'source', metadata->>'provider')`, never dropped from the source list
 
+#### Scenario: Expected measurement gaps distinguish instrument failure
+
+- **WHEN** the Health expected-signals endpoint returns `unmeasurable`
+- **THEN** the measurements tab SHALL render instrument unavailability and state that owner-behavior nudges are paused
+- **WHEN** the endpoint returns `available=false` with `signals=null`
+- **THEN** the tab SHALL render signal-health degradation, never an empty all-clear
+
 #### Scenario: Voice line carries the honesty pill
 
 - **WHEN** the Voice briefing renders a model-written elaboration served from cache

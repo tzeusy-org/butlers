@@ -474,6 +474,13 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
         "insight_settings",
         "UPDATE public.insight_settings SET verbosity = 'normal' WHERE id = 1",
     ),
+    (
+        "expected_signals",
+        "INSERT INTO public.expected_signals "
+        "(signal_key, producer, expected_cadence_seconds, last_observed_at, "
+        "measurability, evaluated_at) "
+        "VALUES ('general:acl-probe', 'owner', 3600, now(), 'present', now())",
+    ),
 ]
 
 

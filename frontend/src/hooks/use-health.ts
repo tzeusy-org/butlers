@@ -24,6 +24,7 @@ import {
   getMeasurements,
   getMeasurementsLatest,
   getMeasurementSources,
+  getExpectedSignals,
   getMeasurementsTrend,
   getMedicationAdherence,
   getMedicationDoses,
@@ -522,6 +523,15 @@ export function useMeasurementSources() {
   return useQuery({
     queryKey: ["health-measurement-sources"],
     queryFn: () => getMeasurementSources(),
+    refetchInterval: HEALTH_POLL_SLOW_MS,
+  });
+}
+
+/** Fetch tri-state measurement expectations without collapsing degradation to absence. */
+export function useExpectedSignals() {
+  return useQuery({
+    queryKey: ["health-expected-signals"],
+    queryFn: getExpectedSignals,
     refetchInterval: HEALTH_POLL_SLOW_MS,
   });
 }

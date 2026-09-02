@@ -129,6 +129,7 @@ tests/core/test_domain_event_contracts.py
 tests/core/test_domain_event_reactions.py
 tests/core/test_dsa4_validation.py
 tests/core/test_event_chains_mcp.py
+tests/core/test_expected_signals.py
 tests/core/test_general_settings_resolver.py
 tests/core/test_infra_default_creds.py
 tests/core/test_mcp_wrappers.py

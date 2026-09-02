@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -113,6 +115,36 @@ async def _setup_health_schema(pool) -> None:
     await pool.execute(CREATE_MEDICATIONS_SQL)
     await pool.execute(CREATE_MEDICATION_DOSES_SQL)
     await pool.execute(CREATE_SYMPTOMS_SQL)
+    migration_path = (
+        Path(__file__).resolve().parents[3] / "alembic/versions/core/core_210_expected_signals.py"
+    )
+    spec = importlib.util.spec_from_file_location("core_210_expected_signals", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    statements: list[str] = []
+    mocked_op = MagicMock()
+    mocked_op.execute.side_effect = statements.append
+    with patch.object(migration, "op", mocked_op):
+        migration.upgrade()
+    for statement in statements:
+        await pool.execute(statement)
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public._health_job_test_liveness (
+            connector_type text NOT NULL,
+            state text NOT NULL,
+            last_heartbeat_at timestamptz
+        )
+        """
+    )
+    await pool.execute(
+        """
+        CREATE OR REPLACE VIEW public.v_qa_connector_state AS
+        SELECT connector_type, state, last_heartbeat_at
+        FROM public._health_job_test_liveness
+        """
+    )
 
 
 async def _setup_insight_tables(pool) -> None:
@@ -133,6 +165,7 @@ async def _insert_measurement(
     mtype: str = "weight",
     value: dict | None = None,
     measured_at: datetime | None = None,
+    source: str = "owner_log",
 ) -> str:
     """Insert a measurement fact into public.facts and return its UUID string.
 
@@ -147,7 +180,10 @@ async def _insert_measurement(
         measured_at = _utcnow()
     mid = str(uuid.uuid4())
     predicate = f"measurement_{mtype}"
-    metadata = {"value": value.get("value", value) if isinstance(value, dict) else value}
+    metadata = {
+        "value": value.get("value", value) if isinstance(value, dict) else value,
+        "source": source,
+    }
 
     # Pass the dict so the pool's JSONB codec serializes it once (no double-encode);
     # otherwise metadata->>'value' would be NULL.
@@ -456,6 +492,47 @@ async def test_measurement_gap_3x_cadence_generates_critical_candidate(provision
         assert len(gap_rows) == 1
         assert gap_rows[0]["priority"] == 75
         assert result["candidates_accepted"] == 1
+
+
+async def test_measurement_gap_dead_connector_is_unmeasurable_without_owner_nudge(
+    provisioned_postgres_pool,
+):
+    """Elapsed cadence cannot become an owner claim after producer liveness dies."""
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+        now = _utcnow()
+        await pool.execute(
+            "INSERT INTO public._health_job_test_liveness VALUES ($1, 'healthy', $2)",
+            "google_health",
+            now - timedelta(minutes=16),
+        )
+        for i in range(5):
+            await _insert_measurement(
+                pool,
+                mtype="weight",
+                measured_at=now - timedelta(days=25 + (i * 7)),
+                source="google_health",
+            )
+
+        result = await run_insight_scan(pool)
+
+        signal = await pool.fetchrow(
+            "SELECT measurability, unmeasurable_reason FROM public.expected_signals "
+            "WHERE signal_key = 'health:measurement-gap:weight'"
+        )
+        assert signal is not None
+        assert signal["measurability"] == "unmeasurable"
+        assert signal["unmeasurable_reason"] == "producer_stale_or_offline"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM insight_candidates WHERE category = 'measurement-gap'"
+            )
+            == 0
+        )
+        assert result["candidates_proposed"] == 0
 
 
 async def test_measurement_gap_dedup_key_format(provisioned_postgres_pool):

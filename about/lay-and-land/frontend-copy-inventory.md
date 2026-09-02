@@ -1441,6 +1441,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No sources connected.
 - Last sample:
 - No samples yet
+- Expected measurements
+- Signal health is unavailable. Absence nudges are paused.
+- No measurement cadence has enough history yet.
 - Active medications
 - No active medications.
 - Recent conditions
@@ -4159,4 +4162,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3258*
+*Total strings: 3261*

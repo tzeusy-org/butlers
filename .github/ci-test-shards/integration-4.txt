@@ -61,6 +61,7 @@ tests/migrations/test_breaker_resets_migration.py
 tests/migrations/test_domain_event_delivery_retry_migration.py
 tests/migrations/test_drop_quick_facts_migration.py
 tests/migrations/test_drop_source_links_contacts_fk_migration.py
+tests/migrations/test_expected_signals_migration.py
 tests/migrations/test_fading_validity_backfill_migration.py
 tests/migrations/test_finance_migrations.py
 tests/migrations/test_home_assistant_person_entity_only_migration.py

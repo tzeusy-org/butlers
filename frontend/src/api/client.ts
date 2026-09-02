@@ -159,6 +159,7 @@ import type {
   EntityInfoEntry,
   EntityParams,
   EntitySummary,
+  ExpectedSignalsResponse,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -2364,6 +2365,13 @@ export async function getMeasurementSources(): Promise<
     "/health/measurements/sources",
   );
   return res.sources ?? [];
+}
+
+/** Fetch liveness-qualified Health measurement expectations. */
+export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
+  return apiFetch<ExpectedSignalsResponse>(
+    "/health/measurements/expected-signals",
+  );
 }
 
 /**

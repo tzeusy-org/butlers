@@ -175,6 +175,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `model_dispatch_attempts` | SELECT, INSERT | failover provenance (core_104 migration) |
 | `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
 | `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
+| `expected_signals` | SELECT for all roles; INSERT/UPDATE only for the row's originating runtime role through forced RLS. | liveness-qualified gap detectors (RFC 0029) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers

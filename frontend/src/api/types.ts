@@ -2471,6 +2471,22 @@ export interface MeasurementTrendBucket {
 export interface MeasurementSourcesResponse {
   sources: MeasurementSource[];
 }
+
+export interface ExpectedSignal {
+  signal_key: string;
+  producer: string;
+  expected_cadence_seconds: number;
+  last_observed_at: string | null;
+  measurability: "present" | "absent" | "unmeasurable";
+  unmeasurable_reason: string | null;
+  evaluated_at: string;
+}
+
+export interface ExpectedSignalsResponse {
+  signals: ExpectedSignal[] | null;
+  available: boolean;
+  degraded_reason: string | null;
+}
 /** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface MeasurementTrendResponse {
   type: string;

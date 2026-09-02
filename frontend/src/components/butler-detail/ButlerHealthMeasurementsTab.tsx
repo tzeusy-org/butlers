@@ -33,6 +33,7 @@ import {
 
 import type {
   LatestMeasurementEntry,
+  ExpectedSignal,
   Measurement,
   MeasurementSource,
   Medication,
@@ -47,6 +48,7 @@ import {
   useMeasurementsLatest,
   useSleepLatest,
   useMeasurementSources,
+  useExpectedSignals,
   useMeasurements,
   useMedications,
   useConditions,
@@ -536,6 +538,78 @@ function SourcesPanel({
   );
 }
 
+function ExpectedSignalsPanel({
+  signals,
+  available,
+  isLoading,
+  isError,
+}: {
+  signals: ExpectedSignal[];
+  available: boolean;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  return (
+    <Card data-testid="expected-signals-panel">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Expected measurements</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <LoadingLine testId="expected-signals-loading" />
+        ) : isError || !available ? (
+          <p className="text-sm text-[var(--amber-text)]" role="status">
+            Signal health is unavailable. Absence nudges are paused.
+          </p>
+        ) : signals.length === 0 ? (
+          <EmptyLine>No measurement cadence has enough history yet.</EmptyLine>
+        ) : (
+          <ul className="divide-y" data-testid="expected-signals-list">
+            {signals.map((signal) => {
+              const label = signal.signal_key.split(":").at(-1)?.replaceAll("_", " ");
+              const unmeasurable = signal.measurability === "unmeasurable";
+              return (
+                <li
+                  key={signal.signal_key}
+                  className="flex items-start justify-between gap-3 py-2"
+                >
+                  <div>
+                    <p className="text-sm font-medium capitalize">{label}</p>
+                    <p
+                      className={
+                        unmeasurable
+                          ? "text-xs text-[var(--amber-text)]"
+                          : "text-xs text-muted-foreground"
+                      }
+                    >
+                      {unmeasurable ? (
+                        "Instrument unavailable; owner-behavior nudges paused."
+                      ) : signal.last_observed_at ? (
+                        <>
+                          Last observed{" "}
+                          <Time value={signal.last_observed_at} mode="relative-compact" />
+                        </>
+                      ) : (
+                        "No observation recorded."
+                      )}
+                    </p>
+                  </div>
+                  <Badge
+                    variant={signal.measurability === "absent" ? "destructive" : "outline"}
+                    className="shrink-0 text-xs"
+                  >
+                    {signal.measurability}
+                  </Badge>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Row 5a: Active medications
 // ---------------------------------------------------------------------------
@@ -667,6 +741,12 @@ export default function ButlerHealthMeasurementsTab() {
   const { data: sourcesData, isLoading: sourcesLoading, isError: sourcesError } = useMeasurementSources();
   const sources = sourcesData ?? [];
 
+  const {
+    data: expectedSignalsData,
+    isLoading: expectedSignalsLoading,
+    isError: expectedSignalsError,
+  } = useExpectedSignals();
+
   // Row 5: Medications + conditions
   const { data: medsData, isLoading: medsLoading } = useMedications({ active: true, limit: 20 });
   const medications = medsData?.data ?? [];
@@ -732,6 +812,13 @@ export default function ButlerHealthMeasurementsTab() {
         <SleepStagesPanel sleep={sleepData} isLoading={sleepLoading} />
         <SourcesPanel sources={sources} isLoading={sourcesLoading} isError={sourcesError} />
       </div>
+
+      <ExpectedSignalsPanel
+        signals={expectedSignalsData?.signals ?? []}
+        available={expectedSignalsData?.available ?? false}
+        isLoading={expectedSignalsLoading}
+        isError={expectedSignalsError}
+      />
 
       {/* Row 5: Active medications + Recent conditions */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

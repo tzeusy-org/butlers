@@ -167,6 +167,13 @@ any direct Health/Messenger access to another butler's records.
   - `public.insight_engagement` — INSERT, UPDATE, DELETE (engagement tracking)
   - `public.insight_settings` — INSERT, UPDATE (delivery settings)
 
+#### Scenario: Expected-signal producer-owned writes
+
+- **WHEN** a butler operates under SET ROLE enforcement
+- **THEN** it can SELECT from `public.expected_signals`
+- **AND** it can INSERT or UPDATE only rows whose `producer_role` equals its active runtime role
+- **AND** forced row-level security prevents one runtime role from replacing another role's signal key
+
 #### Scenario: Dispatch attempt provenance table writes
 - **WHEN** a butler operates under SET ROLE enforcement
 - **THEN** it can write to the dispatch attempt provenance table:

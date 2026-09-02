@@ -45,6 +45,8 @@ if _spec is not None and _spec.loader is not None:
     ConditionUpdateRequest = _models.ConditionUpdateRequest
     Dose = _models.Dose
     DoseLogRequest = _models.DoseLogRequest
+    ExpectedSignalResponse = _models.ExpectedSignalResponse
+    ExpectedSignalsResponse = _models.ExpectedSignalsResponse
     LatestMeasurementEntry = _models.LatestMeasurementEntry
     LatestMeasurementsResponse = _models.LatestMeasurementsResponse
     Meal = _models.Meal
@@ -1911,6 +1913,49 @@ async def get_measurements_sources(
     ]
 
     return MeasurementSourcesResponse(sources=sources)
+
+
+@router.get("/measurements/expected-signals", response_model=ExpectedSignalsResponse)
+async def get_measurement_expected_signals(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ExpectedSignalsResponse:
+    """Return Health gap truth without turning unavailable evidence into absence."""
+    pool = _pool(db)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT signal_key, producer, expected_cadence_seconds,
+                   last_observed_at, measurability, unmeasurable_reason, evaluated_at
+            FROM public.expected_signals
+            WHERE signal_key LIKE 'health:measurement-gap:%'
+            ORDER BY signal_key
+            """
+        )
+    except Exception:  # noqa: BLE001 -- the response carries explicit degradation
+        logger.warning("Health expected-signals read is unavailable", exc_info=True)
+        return ExpectedSignalsResponse(
+            signals=None,
+            available=False,
+            degraded_reason="expected_signals_unavailable",
+        )
+
+    return ExpectedSignalsResponse(
+        signals=[
+            ExpectedSignalResponse(
+                signal_key=row["signal_key"],
+                producer=row["producer"],
+                expected_cadence_seconds=int(row["expected_cadence_seconds"]),
+                last_observed_at=(
+                    row["last_observed_at"].isoformat() if row["last_observed_at"] else None
+                ),
+                measurability=row["measurability"],
+                unmeasurable_reason=row["unmeasurable_reason"],
+                evaluated_at=row["evaluated_at"].isoformat(),
+            )
+            for row in rows
+        ],
+        available=True,
+    )
 
 
 # ---------------------------------------------------------------------------
