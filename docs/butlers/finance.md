@@ -118,6 +118,46 @@ A `finance.budgets` table is defined for future implementation of category-perio
 
 **Spending queries.** Users ask "How much did I spend last month?" or "What are my active subscriptions?" and receive data-backed answers from the transaction ledger and subscription registry.
 
+## Recurrence and renewal source authority
+
+Finance keeps three ideas separate: a predicted next charge, a declared renewal date, and proof
+that the source which would observe a charge is working. `recurring_groups.last_seen_date` and
+`next_expected_date` are calculated from transaction intervals; `subscriptions.next_renewal` is a
+tracked declaration. None of those dates alone proves that a charge was missed, paid, cancelled,
+paused, or stopped.
+
+| Input | Target expected-signal producer | Current disposition |
+|---|---|---|
+| Server-attested Gmail transaction/renewal evidence | `connector:gmail` plus exact `producer_endpoint_identity` | target-state only; current core is type-only, so Finance remains unadopted/unmeasurable until continued bu-8cdl1.3 lands endpoint enforcement |
+| Server-attested direct owner observation/declaration | `owner` | measurable only with server-derived owner attestation; semantics remain "not recorded by owner" |
+| Current `source_message_id` or `source=manual` row | none | unmeasurable; both values can arise through public tool inputs/defaults |
+| CSV/bulk, API/bank-sync, backfill, or split row | none | unmeasurable without reserved server attestation |
+| SimpleFIN `source=aggregator` row | none | unmeasurable under RFC 0029 because the scheduled bridge has no connector heartbeat |
+| Current or mixed `recurring_groups` row | none | unmeasurable until all contributing transactions prove exactly one producer |
+| `track_subscription_fact` property fact | none | outside current subscription audit/renewal readers; unmeasurable if later consumed without reserved attestation |
+
+Stale, dead/offline, unhealthy, missing, unsupported, mixed, or unreadable producer evidence is
+`unmeasurable`. It must not produce "missed renewal", owner-behavior, or inferred payment-state
+copy. A healthy elapsed signal can be recorded as `absent`, but no current Finance alert consumes
+that state.
+
+The existing dashboard and alert behavior stays narrower. An active yearly subscription with a
+declared renewal inside 14 days may still show and emit the existing forward-looking
+`subscription-renewal` candidate. An untracked regular payment predicted inside 30 days may still
+produce the existing `bill-predicted` candidate. The Finance tab may show declared renewal dates
+and `detected_untracked` patterns, but must not turn missing instrumentation into a missed charge,
+payment result, cancellation, stopped-subscription verdict, or complete all-clear.
+
+After runtime adoption of this contract, operator triage starts with the expected signal's exact
+producer and `producer_endpoint_identity`, then liveness for that exact pair. Do not use a healthy
+Gmail sibling endpoint for a dead account or for SimpleFIN/manual/imported evidence, and do not
+infer authority from a message ID, merchant name, account freshness, or generic source label.
+
+Continued `bu-8cdl1.3` owns that runtime adoption: add the shared expected-signals endpoint field,
+make the helper and liveness query exact-pair-aware, migrate existing Health callers/rows without a
+guessed endpoint or type-only fallback, and add migrated-PostgreSQL two-endpoint coverage. This
+Finance mapping PR changes no runtime schema or evaluator.
+
 ## Verification
 
 To confirm the Finance Butler's domain tables, scheduled tasks, and ingestion pipeline are working as described:

@@ -105,6 +105,7 @@ tests/contracts/test_context_bus.py
 tests/contracts/test_credential_tier_resolution.py
 tests/contracts/test_degraded_envelope.py
 tests/contracts/test_email_correspondence_aggregate_schedule.py
+tests/contracts/test_finance_recurrence_producer_mapping.py
 tests/contracts/test_identity_resolution.py
 tests/contracts/test_module_boundaries.py
 tests/contracts/test_module_boundary.py
