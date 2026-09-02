@@ -192,6 +192,52 @@ def test_telegram_anchor_collapse_and_downgrade_restore(postgres_container) -> N
             ).scalar_one()
             == "telegram:-100456"
         )
+        old_writer_duplicate_id = uuid.uuid4()
+        conn.execute(
+            text(
+                """
+                INSERT INTO public.dashboard_conversations (
+                    id, butler_name, title, source_channel, source_thread_identity
+                ) VALUES (
+                    :id, 'general', 'old writer duplicate',
+                    'telegram_bot', '-100123:999'
+                )
+                ON CONFLICT (butler_name, source_channel, source_thread_identity)
+                    WHERE source_thread_identity IS NOT NULL
+                DO NOTHING
+                """
+            ),
+            {"id": old_writer_duplicate_id},
+        )
+        canonical_rows = conn.execute(
+            text(
+                """
+                SELECT id, source_thread_identity, external_conversation_id
+                FROM public.dashboard_conversations
+                WHERE butler_name = 'general'
+                  AND source_channel = 'telegram_bot'
+                  AND external_conversation_id = 'telegram:-100123'
+                """
+            )
+        ).all()
+        assert canonical_rows == [(anchor_ids[-1], "telegram:-100123", "telegram:-100123")]
+        trigger_security = conn.execute(
+            text(
+                """
+                SELECT procedure.prosecdef,
+                       procedure.proconfig,
+                       procedure.proowner = conversations.relowner AS owner_aligned
+                FROM pg_proc AS procedure
+                JOIN pg_class AS conversations
+                  ON conversations.oid = 'public.dashboard_conversations'::regclass
+                WHERE procedure.oid =
+                    'public.core_209_fill_external_conversation_id()'::regprocedure
+                """
+            )
+        ).one()
+        assert trigger_security[0] is True
+        assert trigger_security[1] == ["search_path=pg_catalog, public"]
+        assert trigger_security[2] is True
 
     command.downgrade(config, "core@core_208")
 
@@ -230,22 +276,124 @@ def test_telegram_anchor_collapse_and_downgrade_restore(postgres_container) -> N
             {"message_ids": message_ids},
         ).all()
         assert dict(restored_turns) == dict(zip(message_ids, anchor_ids[:2], strict=True))
+        restored_prefixes = dict(
+            conn.execute(
+                text(
+                    """
+                    SELECT id, source_thread_identity
+                    FROM public.dashboard_conversations
+                    WHERE id IN (:telegram_id, :whatsapp_id)
+                    """
+                ),
+                {"telegram_id": telegram_user_anchor, "whatsapp_id": whatsapp_anchor},
+            ).all()
+        )
+        assert restored_prefixes == {
+            telegram_user_anchor: "998877",
+            whatsapp_anchor: "6591234567@s.whatsapp.net",
+        }
         backup_tables = (
             conn.execute(
                 text(
                     """
                 SELECT tablename FROM pg_tables
                 WHERE schemaname = 'public'
-                  AND tablename LIKE 'core_209_telegram_%_backup'
+                  AND tablename LIKE 'core_209_%_backup'
                 """
                 )
             )
             .scalars()
             .all()
         )
-        assert set(backup_tables) == {
-            "core_209_telegram_anchor_backup",
-            "core_209_telegram_message_backup",
-            "core_209_telegram_turn_backup",
+        assert backup_tables == []
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE public.dashboard_conversations
+                SET source_thread_identity = CASE id
+                    WHEN :telegram_id THEN '112233'
+                    WHEN :whatsapp_id THEN '6597654321@s.whatsapp.net'
+                END
+                WHERE id IN (:telegram_id, :whatsapp_id)
+                """
+            ),
+            {"telegram_id": telegram_user_anchor, "whatsapp_id": whatsapp_anchor},
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE public.dashboard_messages
+                SET conversation_id = :conversation_id
+                WHERE id = :message_id
+                """
+            ),
+            {"conversation_id": anchor_ids[2], "message_id": message_ids[0]},
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE public.dashboard_conversation_turns
+                SET conversation_id = :conversation_id
+                WHERE message_id = :message_id
+                """
+            ),
+            {"conversation_id": anchor_ids[2], "message_id": message_ids[0]},
+        )
+
+    command.upgrade(config, "core@core_209")
+    command.downgrade(config, "core@core_208")
+
+    with engine.connect() as conn:
+        second_cycle_prefixes = dict(
+            conn.execute(
+                text(
+                    """
+                    SELECT id, source_thread_identity
+                    FROM public.dashboard_conversations
+                    WHERE id IN (:telegram_id, :whatsapp_id)
+                    """
+                ),
+                {"telegram_id": telegram_user_anchor, "whatsapp_id": whatsapp_anchor},
+            ).all()
+        )
+        assert second_cycle_prefixes == {
+            telegram_user_anchor: "112233",
+            whatsapp_anchor: "6597654321@s.whatsapp.net",
         }
+        second_cycle_messages = dict(
+            conn.execute(
+                text(
+                    """
+                    SELECT id, conversation_id
+                    FROM public.dashboard_messages
+                    WHERE id = ANY(:message_ids)
+                    """
+                ),
+                {"message_ids": message_ids},
+            ).all()
+        )
+        assert second_cycle_messages[message_ids[0]] == anchor_ids[2]
+        second_cycle_turn = conn.execute(
+            text(
+                """
+                SELECT conversation_id
+                FROM public.dashboard_conversation_turns
+                WHERE message_id = :message_id
+                """
+            ),
+            {"message_id": message_ids[0]},
+        ).scalar_one()
+        assert second_cycle_turn == anchor_ids[2]
+        remaining_backups = conn.execute(
+            text(
+                """
+                SELECT count(*) FROM pg_tables
+                WHERE schemaname = 'public'
+                  AND tablename LIKE 'core_209_%_backup'
+                """
+            )
+        ).scalar_one()
+        assert remaining_backups == 0
     engine.dispose()

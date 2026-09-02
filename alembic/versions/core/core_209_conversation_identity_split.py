@@ -55,6 +55,40 @@ def _create_backups() -> None:
         )
         """
     )
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS public.core_209_source_identity_backup (
+            conversation_id UUID PRIMARY KEY,
+            source_thread_identity TEXT NOT NULL
+        )
+        """
+    )
+    op.execute(
+        """
+        DO $ownership$
+        DECLARE
+            target_owner TEXT;
+            backup_table TEXT;
+        BEGIN
+            SELECT role.rolname INTO target_owner
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_roles AS role ON role.oid = relation.relowner
+            WHERE relation.oid = 'public.dashboard_conversations'::regclass;
+
+            FOREACH backup_table IN ARRAY ARRAY[
+                'core_209_telegram_anchor_backup',
+                'core_209_telegram_message_backup',
+                'core_209_telegram_turn_backup',
+                'core_209_source_identity_backup'
+            ] LOOP
+                EXECUTE format(
+                    'ALTER TABLE public.%I OWNER TO %I', backup_table, target_owner
+                );
+            END LOOP;
+        END;
+        $ownership$
+        """
+    )
 
 
 def _candidate_cte() -> str:
@@ -82,6 +116,21 @@ def upgrade() -> None:
         """
     )
     _create_backups()
+    op.execute("TRUNCATE TABLE public.core_209_telegram_anchor_backup")
+    op.execute("TRUNCATE TABLE public.core_209_telegram_message_backup")
+    op.execute("TRUNCATE TABLE public.core_209_telegram_turn_backup")
+    op.execute("TRUNCATE TABLE public.core_209_source_identity_backup")
+    op.execute(
+        """
+        INSERT INTO public.core_209_source_identity_backup (
+            conversation_id, source_thread_identity
+        )
+        SELECT id, source_thread_identity
+        FROM public.dashboard_conversations
+        WHERE source_channel IN ('telegram_user_client', 'whatsapp_user_client')
+          AND source_thread_identity IS NOT NULL
+        """
+    )
     op.execute(
         """
         INSERT INTO public.core_209_telegram_anchor_backup (
@@ -188,10 +237,15 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE OR REPLACE FUNCTION public.core_209_fill_external_conversation_id()
-        RETURNS trigger LANGUAGE plpgsql AS $function$
+        RETURNS trigger LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog, public
+        AS $function$
+        DECLARE
+            stable_identity TEXT;
         BEGIN
             IF NEW.external_conversation_id IS NULL AND NEW.source_thread_identity IS NOT NULL THEN
-                NEW.external_conversation_id := CASE
+                stable_identity := CASE
                     WHEN NEW.source_channel IN ('telegram', 'telegram_bot')
                          AND NEW.source_thread_identity ~ '^-?[0-9]+:[0-9]+$'
                         THEN 'telegram:' || split_part(NEW.source_thread_identity, ':', 1)
@@ -203,10 +257,41 @@ def upgrade() -> None:
                         THEN 'whatsapp:' || NEW.source_thread_identity
                     ELSE NEW.source_thread_identity
                 END;
+                NEW.external_conversation_id := stable_identity;
+                IF NEW.source_channel IN (
+                    'telegram', 'telegram_bot',
+                    'telegram_user_client', 'whatsapp_user_client'
+                ) THEN
+                    IF stable_identity IS DISTINCT FROM NEW.source_thread_identity THEN
+                        INSERT INTO public.core_209_source_identity_backup (
+                            conversation_id, source_thread_identity
+                        ) VALUES (NEW.id, NEW.source_thread_identity)
+                        ON CONFLICT (conversation_id) DO NOTHING;
+                    END IF;
+                    NEW.source_thread_identity := stable_identity;
+                END IF;
             END IF;
             RETURN NEW;
         END;
         $function$
+        """
+    )
+    op.execute(
+        """
+        DO $ownership$
+        DECLARE
+            target_owner TEXT;
+        BEGIN
+            SELECT role.rolname INTO target_owner
+            FROM pg_catalog.pg_class AS relation
+            JOIN pg_catalog.pg_roles AS role ON role.oid = relation.relowner
+            WHERE relation.oid = 'public.dashboard_conversations'::regclass;
+            EXECUTE format(
+                'ALTER FUNCTION public.core_209_fill_external_conversation_id() OWNER TO %I',
+                target_owner
+            );
+        END;
+        $ownership$
         """
     )
     op.execute(
@@ -279,7 +364,19 @@ def downgrade() -> None:
     )
     op.execute(
         """
+        UPDATE public.dashboard_conversations AS c
+        SET source_thread_identity = b.source_thread_identity
+        FROM public.core_209_source_identity_backup AS b
+        WHERE c.id = b.conversation_id
+        """
+    )
+    op.execute(
+        """
         ALTER TABLE public.dashboard_conversations
             DROP COLUMN IF EXISTS external_conversation_id
         """
     )
+    op.execute("DROP TABLE IF EXISTS public.core_209_source_identity_backup")
+    op.execute("DROP TABLE IF EXISTS public.core_209_telegram_turn_backup")
+    op.execute("DROP TABLE IF EXISTS public.core_209_telegram_message_backup")
+    op.execute("DROP TABLE IF EXISTS public.core_209_telegram_anchor_backup")
