@@ -99,6 +99,24 @@ The connector provides source/event/sender facts only. The Switchboard assigns c
 
 The response includes the canonical `request_id` for lineage tracking.
 
+### Core 208 conversation-anchor convergence prerequisite
+
+On the core_208 schema, Telegram bot ingress still carries its provider reply
+target (`<chat_id>:<message_id>`) in `event.external_thread_id`. The
+conversation-anchor application helper derives `telegram:<chat_id>` for
+persistence, then performs its insert and conflict lookup on one acquired
+PostgreSQL connection under a transaction-scoped advisory lock. This is an
+application compatibility step only: it does not add a schema column or split
+the connector wire fields.
+
+Roll out this helper to every conversation-anchor writer and verify that no
+older writer remains before applying the core_209 identity-split migration or
+deploying code that requires its schema. For rollback, first return every
+writer to this core_208-compatible application version while core_209 is still
+present, then downgrade the schema to core_208. Keep the convergence helper in
+place throughout the downgrade; reverting it earlier reopens the duplicate
+anchor and cold-start race.
+
 ## Idempotency and Deduplication
 
 Deduplication is the Switchboard's responsibility at the ingest boundary. Connectors must:

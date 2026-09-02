@@ -463,10 +463,26 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
 # ---------------------------------------------------------------------------
 
 
+def _transactional_anchor_pool(*fetchrow_results):
+    connection = AsyncMock()
+    connection.fetchrow = AsyncMock(side_effect=fetchrow_results)
+
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
+
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=connection)
+    acquired.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire.return_value = acquired
+    return pool, connection
+
+
 async def test_conversation_get_or_create_by_thread_new_row_inserts_full_shape():
-    pool = AsyncMock()
     inserted_row = _make_conversation_row(source_channel="telegram", source_thread_identity="t:1")
-    pool.fetchrow = AsyncMock(return_value=inserted_row)
+    pool, connection = _transactional_anchor_pool(inserted_row)
 
     conv, is_new = await conversation_get_or_create_by_thread(
         pool,
@@ -478,18 +494,20 @@ async def test_conversation_get_or_create_by_thread_new_row_inserts_full_shape()
 
     assert is_new is True
     assert conv == inserted_row
-    pool.fetchrow.assert_awaited_once()
-    sql = pool.fetchrow.await_args.args[0]
+    connection.execute.assert_awaited_once()
+    assert "pg_advisory_xact_lock" in connection.execute.await_args.args[0]
+    connection.transaction.assert_called_once_with(isolation="read_committed")
+    connection.fetchrow.assert_awaited_once()
+    sql = connection.fetchrow.await_args.args[0]
     assert "ON CONFLICT" in sql
     assert "DO NOTHING" in sql
 
 
 async def test_conversation_get_or_create_by_thread_conflict_reuses_existing_row():
-    pool = AsyncMock()
     existing_row = _make_conversation_row(source_channel="telegram", source_thread_identity="t:1")
     # INSERT ... ON CONFLICT DO NOTHING RETURNING yields no row on conflict;
     # the follow-up SELECT recovers the winner.
-    pool.fetchrow = AsyncMock(side_effect=[None, existing_row])
+    pool, connection = _transactional_anchor_pool(None, existing_row)
 
     conv, is_new = await conversation_get_or_create_by_thread(
         pool,
@@ -501,12 +519,12 @@ async def test_conversation_get_or_create_by_thread_conflict_reuses_existing_row
 
     assert is_new is False
     assert conv == existing_row
-    assert pool.fetchrow.await_count == 2
+    assert connection.fetchrow.await_count == 2
+    assert pool.acquire.call_count == 1
 
 
 async def test_conversation_get_or_create_by_thread_raises_if_row_vanishes():
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(side_effect=[None, None])
+    pool, _connection = _transactional_anchor_pool(None, None)
 
     with pytest.raises(RuntimeError, match="disappeared"):
         await conversation_get_or_create_by_thread(

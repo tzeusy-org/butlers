@@ -7,7 +7,9 @@ already normalizes a `source_thread_identity` at ingest (Telegram, email,
 ...) obtain a durable `public.dashboard_conversations` anchor row for that
 thread, without needing its own separate conversation-identity concept. This
 generalizes conversation creation beyond the dashboard-only
-`conversation_create` path.
+`conversation_create` path. On the core_208 schema, the helper SHALL normalize
+legacy Telegram bot reply targets of the form `<chat_id>:<message_id>` to the
+stable anchor key `telegram:<chat_id>` without changing the ingest envelope.
 
 #### Scenario: First ingress for a thread creates the anchor
 
@@ -27,10 +29,29 @@ generalizes conversation creation beyond the dashboard-only
 - **AND** the function returns the existing row with `is_new=False`, even if
   a different `first_message` was supplied on the repeat call
 
+#### Scenario: Legacy Telegram message targets share one provider lineage
+
+- **WHEN** two core_208 callers supply distinct `<chat_id>:<message_id>`
+  `source_thread_identity` values for messages in the same Telegram chat
+- **THEN** both calls return the same conversation anchor in either arrival order
+- **AND** the persisted `source_thread_identity` is `telegram:<chat_id>`
+- **AND** a provider session stored after the first call is available to the
+  second call
+
+#### Scenario: Concurrent anchor conflict resolution is connection-bound
+
+- **WHEN** callers for one stable conversation overlap, including while an
+  insert conflict commits or rolls back
+- **THEN** canonicalization, insert, conflict fallback, and result selection
+  execute under one transaction-scoped advisory lock
+- **AND** the insert and fallback select use one acquired PostgreSQL connection
+- **AND** rollback leaves no anchor from the failed transaction, while retry
+  creates or resolves exactly one anchor without timing-based sleeps
+
 #### Scenario: Different channel or thread identity never collides
 
 - **WHEN** two calls share a `butler_name` but differ in `source_channel` or
-  `source_thread_identity`
+  stable conversation identity (after legacy Telegram normalization)
 - **THEN** each gets its own distinct anchor row
 
 #### Scenario: Pre-existing dashboard-created rows are unaffected
@@ -109,6 +130,9 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
 - **THEN** a composite index on `(butler_name, status, updated_at DESC)` SHALL exist for listing active conversations per butler
 - **AND** a composite index on `(butler_name, updated_at DESC)` SHALL exist for chronological listing
 - **AND** a unique index on `(butler_name, source_channel, source_thread_identity)` WHERE `source_thread_identity IS NOT NULL` SHALL exist so concurrent ingress for the same thread converges on one anchor row
+- **AND** core_208 application callers SHALL serialize resolution by stable
+  conversation identity before using that index, so legacy per-message inputs
+  converge without requiring a core_209 column or trigger
 
 #### Scenario: Sticky routed_butler stamping
 

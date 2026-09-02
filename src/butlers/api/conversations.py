@@ -70,6 +70,27 @@ def _auto_title(message: str, max_len: int = 80) -> str:
     return truncated + "…"
 
 
+def _core_208_conversation_identity(source_channel: str, source_thread_identity: str) -> str:
+    """Derive a stable anchor key without changing the legacy ingest wire shape.
+
+    Telegram bot ingress uses ``<chat_id>:<message_id>`` as its reply target.
+    The message suffix must not split provider-session lineage across turns in
+    the same chat. Other core_208 channel keys are already conversation-stable.
+    """
+    if source_channel not in {"telegram", "telegram_bot"}:
+        return source_thread_identity
+
+    chat_id, separator, message_id = source_thread_identity.partition(":")
+    if (
+        separator
+        and chat_id.removeprefix("-").isdigit()
+        and message_id.isdigit()
+        and ":" not in message_id
+    ):
+        return f"telegram:{chat_id}"
+    return source_thread_identity
+
+
 # ---------------------------------------------------------------------------
 # Conversation CRUD
 # ---------------------------------------------------------------------------
@@ -288,56 +309,73 @@ async def conversation_get_or_create_by_thread(
     to attach session lineage and a provider resume handle to, without
     needing to track its own anchor concept.
 
-    Concurrency-safe: relies on the partial unique index on
-    ``(butler_name, source_channel, source_thread_identity)`` (core_185) so
-    two concurrent callers for the same thread converge on one row via
-    ``ON CONFLICT ... DO NOTHING`` rather than racing to create duplicates.
+    Core_208 compatibility keeps the legacy input name and schema column. The
+    helper normalizes Telegram's per-message reply target to a stable chat key
+    before persistence. It then acquires one pool connection and holds a
+    transaction-scoped advisory lock through INSERT conflict recovery. This
+    prevents two callers for one stable conversation from creating separate
+    anchors, and prevents the INSERT and fallback SELECT from switching pool
+    connections.
 
     Returns ``(conversation, is_new)``.
     """
     conv_id = _generate_uuid7()
     title = _auto_title(first_message)
     now = datetime.now(UTC)
-
-    inserted = await pool.fetchrow(
-        """
-        INSERT INTO public.dashboard_conversations
-            (id, butler_name, title, status, created_at, updated_at,
-             message_count, source_channel, source_thread_identity)
-        VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6)
-        ON CONFLICT (butler_name, source_channel, source_thread_identity)
-            WHERE source_thread_identity IS NOT NULL
-        DO NOTHING
-        RETURNING id, butler_name, title, status, created_at, updated_at,
-                  message_count, routed_butler, source_channel, source_thread_identity
-        """,
-        conv_id,
-        butler_name,
-        title,
-        now,
-        source_channel,
-        source_thread_identity,
+    stable_identity = _core_208_conversation_identity(source_channel, source_thread_identity)
+    lock_identity = json.dumps(
+        ["core_208_conversation_anchor", butler_name, source_channel, stable_identity],
+        separators=(",", ":"),
     )
-    if inserted is not None:
-        return dict(inserted), True
 
-    existing = await pool.fetchrow(
-        """
-        SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, routed_butler, source_channel, source_thread_identity
-        FROM public.dashboard_conversations
-        WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
-        """,
-        butler_name,
-        source_channel,
-        source_thread_identity,
-    )
-    if existing is None:
-        raise RuntimeError(
-            f"Conversation anchor for {butler_name}/{source_channel}/"
-            f"{source_thread_identity} disappeared after an upsert conflict"
+    async with pool.acquire() as connection, connection.transaction(isolation="read_committed"):
+        await connection.execute(
+            """
+            SELECT pg_catalog.pg_advisory_xact_lock(
+                pg_catalog.hashtextextended($1::text, 0)
+            )
+            """,
+            lock_identity,
         )
-    return dict(existing), False
+        inserted = await connection.fetchrow(
+            """
+            INSERT INTO public.dashboard_conversations
+                (id, butler_name, title, status, created_at, updated_at,
+                 message_count, source_channel, source_thread_identity)
+            VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6)
+            ON CONFLICT (butler_name, source_channel, source_thread_identity)
+                WHERE source_thread_identity IS NOT NULL
+            DO NOTHING
+            RETURNING id, butler_name, title, status, created_at, updated_at,
+                      message_count, routed_butler, source_channel, source_thread_identity
+            """,
+            conv_id,
+            butler_name,
+            title,
+            now,
+            source_channel,
+            stable_identity,
+        )
+        if inserted is not None:
+            return dict(inserted), True
+
+        existing = await connection.fetchrow(
+            """
+            SELECT id, butler_name, title, status, created_at, updated_at,
+                   message_count, routed_butler, source_channel, source_thread_identity
+            FROM public.dashboard_conversations
+            WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+            """,
+            butler_name,
+            source_channel,
+            stable_identity,
+        )
+        if existing is None:
+            raise RuntimeError(
+                f"Conversation anchor for {butler_name}/{source_channel}/"
+                f"{stable_identity} disappeared after an upsert conflict"
+            )
+        return dict(existing), False
 
 
 async def conversation_get_provider_session(

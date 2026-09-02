@@ -24,6 +24,7 @@ correlated subquery against ``public.dashboard_messages``.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -50,6 +51,62 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
+
+
+class _InstrumentedConnection:
+    """Keep real PostgreSQL calls while exposing deterministic concurrency barriers."""
+
+    def __init__(
+        self,
+        connection,
+        *,
+        advisory_barrier: asyncio.Barrier | None = None,
+        insert_started: asyncio.Event | None = None,
+        fail_after_insert: bool = False,
+    ) -> None:
+        self._connection = connection
+        self._advisory_barrier = advisory_barrier
+        self._insert_started = insert_started
+        self._fail_after_insert = fail_after_insert
+
+    def transaction(self, *args, **kwargs):
+        return self._connection.transaction(*args, **kwargs)
+
+    async def execute(self, query: str, *args):
+        if self._advisory_barrier is not None and "pg_advisory_xact_lock" in query:
+            await self._advisory_barrier.wait()
+        return await self._connection.execute(query, *args)
+
+    async def fetchrow(self, query: str, *args):
+        is_anchor_insert = "INSERT INTO public.dashboard_conversations" in query
+        if is_anchor_insert and self._insert_started is not None:
+            self._insert_started.set()
+        row = await self._connection.fetchrow(query, *args)
+        if is_anchor_insert and row is not None and self._fail_after_insert:
+            raise RuntimeError("injected failure after anchor insert")
+        return row
+
+
+class _InstrumentedAcquire:
+    def __init__(self, acquire_context, **connection_options) -> None:
+        self._acquire_context = acquire_context
+        self._connection_options = connection_options
+
+    async def __aenter__(self):
+        connection = await self._acquire_context.__aenter__()
+        return _InstrumentedConnection(connection, **self._connection_options)
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return await self._acquire_context.__aexit__(exc_type, exc, traceback)
+
+
+class _InstrumentedPool:
+    def __init__(self, pool, **connection_options) -> None:
+        self._pool = pool
+        self._connection_options = connection_options
+
+    def acquire(self):
+        return _InstrumentedAcquire(self._pool.acquire(), **self._connection_options)
 
 
 async def test_conversation_reply_create_persists_message_and_bumps_count(
@@ -306,6 +363,176 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
             "telegram:12345",
         )
         assert count == 1
+
+
+@pytest.mark.parametrize(
+    "message_keys",
+    [
+        ("-100123:41", "-100123:42"),
+        ("-100123:42", "-100123:41"),
+    ],
+)
+async def test_legacy_telegram_message_keys_converge_and_resume_provider_session(
+    migrated_core_postgres_pool,
+    message_keys: tuple[str, str],
+) -> None:
+    """Either legacy message order resolves one anchor and one provider lineage."""
+    async with migrated_core_postgres_pool() as pool:
+        first, first_is_new = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="general",
+            source_channel="telegram_bot",
+            source_thread_identity=message_keys[0],
+            first_message="first turn",
+        )
+        await conversation_set_provider_session(
+            pool,
+            first["id"],
+            butler_name="general",
+            provider_session_id="provider-session-first-turn",
+            provider_runtime_type="claude",
+        )
+
+        second, second_is_new = await conversation_get_or_create_by_thread(
+            pool,
+            butler_name="general",
+            source_channel="telegram_bot",
+            source_thread_identity=message_keys[1],
+            first_message="second turn",
+        )
+        resumed = await conversation_get_provider_session(
+            pool,
+            second["id"],
+            butler_name="general",
+        )
+
+        assert first_is_new is True
+        assert second_is_new is False
+        assert second["id"] == first["id"]
+        assert resumed is not None
+        assert resumed["provider_session_id"] == "provider-session-first-turn"
+        assert (
+            await pool.fetchval(
+                """
+                SELECT count(*) FROM public.dashboard_conversations
+                WHERE butler_name = 'general' AND source_channel = 'telegram_bot'
+                """
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("finish_holder", ["commit", "rollback"])
+async def test_anchor_insert_conflict_or_disappearing_conflict_never_misses(
+    migrated_core_postgres_pool,
+    finish_holder: str,
+) -> None:
+    """A real unique-index wait resolves after either holder transaction outcome."""
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=3) as pool:
+        canonical_key = f"telegram:-100{1 if finish_holder == 'commit' else 2}"
+        raw_key = f"{canonical_key.removeprefix('telegram:')}:99"
+        holder = await pool.acquire()
+        holder_transaction = holder.transaction()
+        await holder_transaction.start()
+        holder_id = uuid.uuid4()
+        await holder.execute(
+            """
+            INSERT INTO public.dashboard_conversations (
+                id, butler_name, title, source_channel, source_thread_identity
+            ) VALUES ($1, 'general', 'holder', 'telegram_bot', $2)
+            """,
+            holder_id,
+            canonical_key,
+        )
+
+        insert_started = asyncio.Event()
+        task = asyncio.create_task(
+            conversation_get_or_create_by_thread(
+                _InstrumentedPool(pool, insert_started=insert_started),
+                butler_name="general",
+                source_channel="telegram_bot",
+                source_thread_identity=raw_key,
+                first_message="contending turn",
+            )
+        )
+        await asyncio.wait_for(insert_started.wait(), timeout=5)
+        if finish_holder == "commit":
+            await holder_transaction.commit()
+        else:
+            await holder_transaction.rollback()
+        await pool.release(holder)
+
+        conversation, is_new = await asyncio.wait_for(task, timeout=5)
+        assert conversation["source_thread_identity"] == canonical_key
+        assert is_new is (finish_holder == "rollback")
+        if finish_holder == "commit":
+            assert conversation["id"] == holder_id
+        else:
+            assert conversation["id"] != holder_id
+        assert (
+            await pool.fetchval(
+                """
+                SELECT count(*) FROM public.dashboard_conversations
+                WHERE butler_name = 'general'
+                  AND source_channel = 'telegram_bot'
+                  AND source_thread_identity = $1
+                """,
+                canonical_key,
+            )
+            == 1
+        )
+
+
+async def test_simultaneous_callers_converge_and_failed_transaction_retries_cleanly(
+    migrated_core_postgres_pool,
+) -> None:
+    """The advisory lock serializes real callers and rollback leaves no ghost row."""
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=2) as pool:
+        with pytest.raises(RuntimeError, match="injected failure after anchor insert"):
+            await conversation_get_or_create_by_thread(
+                _InstrumentedPool(pool, fail_after_insert=True),
+                butler_name="general",
+                source_channel="telegram_bot",
+                source_thread_identity="-100777:1",
+                first_message="rolled back",
+            )
+        assert (
+            await pool.fetchval(
+                """
+                SELECT count(*) FROM public.dashboard_conversations
+                WHERE butler_name = 'general' AND source_channel = 'telegram_bot'
+                """
+            )
+            == 0
+        )
+
+        barrier = asyncio.Barrier(2)
+
+        async def resolve(raw_key: str):
+            return await conversation_get_or_create_by_thread(
+                _InstrumentedPool(pool, advisory_barrier=barrier),
+                butler_name="general",
+                source_channel="telegram_bot",
+                source_thread_identity=raw_key,
+                first_message=raw_key,
+            )
+
+        first, second = await asyncio.wait_for(
+            asyncio.gather(resolve("-100777:1"), resolve("-100777:2")),
+            timeout=5,
+        )
+
+        assert first[0]["id"] == second[0]["id"]
+        assert {first[1], second[1]} == {True, False}
+        assert (
+            await pool.fetchval(
+                """
+                SELECT count(*) FROM public.dashboard_conversations
+                WHERE butler_name = 'general' AND source_channel = 'telegram_bot'
+                """
+            )
+            == 1
+        )
 
 
 async def test_conversation_get_or_create_by_thread_distinguishes_channels_and_threads(
