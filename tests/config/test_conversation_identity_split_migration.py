@@ -193,9 +193,13 @@ def test_telegram_anchor_collapse_and_downgrade_restore(postgres_container) -> N
             == "telegram:-100456"
         )
         old_writer_duplicate_id = uuid.uuid4()
-        conn.execute(
-            text(
-                """
+        # Exercise the exact core_208 application sequence: INSERT through the
+        # legacy source-thread conflict target, then SELECT by the untouched raw
+        # key when RETURNING reports that the row already existed.
+        legacy_insert = (
+            conn.execute(
+                text(
+                    """
                 INSERT INTO public.dashboard_conversations (
                     id, butler_name, title, source_channel, source_thread_identity
                 ) VALUES (
@@ -205,10 +209,33 @@ def test_telegram_anchor_collapse_and_downgrade_restore(postgres_container) -> N
                 ON CONFLICT (butler_name, source_channel, source_thread_identity)
                     WHERE source_thread_identity IS NOT NULL
                 DO NOTHING
+                RETURNING id, source_thread_identity
                 """
-            ),
-            {"id": old_writer_duplicate_id},
+                ),
+                {"id": old_writer_duplicate_id},
+            )
+            .mappings()
+            .one_or_none()
         )
+        if legacy_insert is None:
+            legacy_insert = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT id, source_thread_identity
+                        FROM public.dashboard_conversations
+                        WHERE butler_name = 'general'
+                          AND source_channel = 'telegram_bot'
+                          AND source_thread_identity = '-100123:999'
+                        """
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        assert legacy_insert is not None
+        assert legacy_insert["id"] == anchor_ids[-1]
+        assert legacy_insert["source_thread_identity"] == "-100123:999"
         canonical_rows = conn.execute(
             text(
                 """
@@ -220,7 +247,7 @@ def test_telegram_anchor_collapse_and_downgrade_restore(postgres_container) -> N
                 """
             )
         ).all()
-        assert canonical_rows == [(anchor_ids[-1], "telegram:-100123", "telegram:-100123")]
+        assert canonical_rows == [(anchor_ids[-1], "-100123:999", "telegram:-100123")]
         trigger_security = conn.execute(
             text(
                 """

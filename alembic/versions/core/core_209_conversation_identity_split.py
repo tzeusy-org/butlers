@@ -243,6 +243,7 @@ def upgrade() -> None:
         AS $function$
         DECLARE
             stable_identity TEXT;
+            existing_anchor_id UUID;
         BEGIN
             IF NEW.external_conversation_id IS NULL AND NEW.source_thread_identity IS NOT NULL THEN
                 stable_identity := CASE
@@ -257,19 +258,29 @@ def upgrade() -> None:
                         THEN 'whatsapp:' || NEW.source_thread_identity
                     ELSE NEW.source_thread_identity
                 END;
-                NEW.external_conversation_id := stable_identity;
                 IF NEW.source_channel IN (
                     'telegram', 'telegram_bot',
                     'telegram_user_client', 'whatsapp_user_client'
-                ) THEN
-                    IF stable_identity IS DISTINCT FROM NEW.source_thread_identity THEN
-                        INSERT INTO public.core_209_source_identity_backup (
-                            conversation_id, source_thread_identity
-                        ) VALUES (NEW.id, NEW.source_thread_identity)
-                        ON CONFLICT (conversation_id) DO NOTHING;
+                ) AND stable_identity IS DISTINCT FROM NEW.source_thread_identity THEN
+                    UPDATE public.dashboard_conversations
+                    SET source_thread_identity = NEW.source_thread_identity
+                    WHERE butler_name = NEW.butler_name
+                      AND source_channel = NEW.source_channel
+                      AND external_conversation_id = stable_identity
+                    RETURNING id INTO existing_anchor_id;
+
+                    IF existing_anchor_id IS NOT NULL THEN
+                        NEW.external_conversation_id := stable_identity;
+                        RETURN NEW;
                     END IF;
+
+                    INSERT INTO public.core_209_source_identity_backup (
+                        conversation_id, source_thread_identity
+                    ) VALUES (NEW.id, NEW.source_thread_identity)
+                    ON CONFLICT (conversation_id) DO NOTHING;
                     NEW.source_thread_identity := stable_identity;
                 END IF;
+                NEW.external_conversation_id := stable_identity;
             END IF;
             RETURN NEW;
         END;
