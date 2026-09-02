@@ -46,6 +46,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | **Draft.** A deterministic tracker-host exporter publishes a minimal active Beads projection to PostgreSQL; bounded runtime readers receive atomic snapshots, fixed freshness/retention, and explicit JSONL rollback without tracker access. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | **Draft.** Extends the owner-condition ledger with explicit resolution, commitment metadata, closure receipts, escalation, and owner-confirmed lifecycle evidence. |
 | [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | **Accepted.** Adds a runtime-neutral LLM tool-list projection, verified native deferred discovery, eager cross-CLI fallback, content-blind receipts, and measured rollout gates without changing MCP handler authority. |
+| [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | **Accepted.** Defines the fail-closed HA risk map, approval boundary, per-attempt receipt, live post-condition proof, rollback hints, and minimized domain event for LLM-to-physical-world actions. |
 
 ## Related
 

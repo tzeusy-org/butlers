@@ -59,6 +59,7 @@ from butlers.modules.approvals.autonomy_suggestions import (
     create_promotion_suggestion,
 )
 from butlers.modules.approvals.autonomy_tracker import record_approval
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.testing.schema_standins import (
@@ -339,6 +340,58 @@ class TestExecutionResultRoundtrip:
         assert event is not None
         assert event["event_type"] == "action_execution_succeeded"
         assert event["event_metadata"] == {"tool_name": "notify"}
+
+    async def test_approval_authority_is_exact_and_does_not_escape_to_child_task(
+        self, approvals_full_pool
+    ) -> None:
+        tool_args = {"domain": "lock", "service": "unlock"}
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="ha_call_service",
+            tool_args=tool_args,
+            status="approved",
+        )
+        release_child = asyncio.Event()
+        observations: dict[str, object] = {}
+        child_task: asyncio.Task[None] | None = None
+
+        async def _tool_fn(**kwargs):
+            nonlocal child_task
+            observations["exact"] = get_approval_execution_context(
+                tool_name="ha_call_service", tool_args=kwargs
+            )
+            observations["wrong_tool"] = get_approval_execution_context(
+                tool_name="ha_activate_scene", tool_args=kwargs
+            )
+            observations["wrong_args"] = get_approval_execution_context(
+                tool_name="ha_call_service", tool_args={**kwargs, "service": "lock"}
+            )
+
+            async def _detached_child() -> None:
+                await release_child.wait()
+                observations["child"] = get_approval_execution_context(
+                    tool_name="ha_call_service", tool_args=kwargs
+                )
+
+            child_task = asyncio.create_task(_detached_child())
+            return {"status": "succeeded"}
+
+        outcome = await executor_mod.execute_approved_action(
+            approvals_full_pool,
+            action_id,
+            "ha_call_service",
+            tool_args,
+            _tool_fn,
+        )
+        assert outcome.success is True
+        assert observations["exact"] is not None
+        assert observations["wrong_tool"] is None
+        assert observations["wrong_args"] is None
+
+        release_child.set()
+        assert child_task is not None
+        await child_task
+        assert observations["child"] is None
 
     async def test_executor_failure_stays_approved_and_writes_failure_audit(
         self, approvals_full_pool

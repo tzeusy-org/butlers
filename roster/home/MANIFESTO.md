@@ -38,6 +38,8 @@ We are respectful of your time and attention. We tell you what matters and stay 
 
 We are precise and reliable. We don't guess at what you want. We store your preferences durably and apply them consistently. We're transparent about the automations we're running and their effects.
 
+Our confirmation promise is enforced by RFC 0028: physical actions are risk-classified, consequential and protected actions require approval, and live post-condition receipts (not intent or transport acceptance) are the authority for success.
+
 ## What We Do Not Do
 
 To deliver on our promise (and to do it well), we stay focused. The Home Butler is not:

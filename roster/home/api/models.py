@@ -49,7 +49,7 @@ class AreaResponse(BaseModel):
 
 
 class CommandLogEntry(BaseModel):
-    """A single entry in the Home Assistant command audit log."""
+    """A single durable Home Assistant actuation receipt."""
 
     id: int
     domain: str
@@ -59,6 +59,17 @@ class CommandLogEntry(BaseModel):
     result: dict[str, Any] | None = None
     context_id: str | None = None
     issued_at: str
+    attempt_id: UUID | None = None
+    risk: Literal["safe", "reversible", "consequential", "protected"] | None = None
+    actor: str | None = None
+    session_id: UUID | None = None
+    approval_id: UUID | None = None
+    requested_state: dict[str, Any] | None = None
+    observed_state: dict[str, Any] | None = None
+    status: Literal["attempting", "succeeded", "failed", "unverified"] | None = None
+    rollback_hint: dict[str, Any] | None = None
+    failure_reason: str | None = None
+    completed_at: str | None = None
 
 
 class StatisticsResponse(BaseModel):

@@ -305,16 +305,23 @@ function MaintenanceQueue({ items, isLoading, isError }: MaintenanceQueueProps) 
 // Row 2c: HA command log
 // ---------------------------------------------------------------------------
 
-function CommandResultBadge({ result }: { result: Record<string, unknown> | null }) {
+function CommandResultBadge({ entry }: { entry: HomeCommandLogEntry }) {
+  if (entry.status === "unverified") {
+    return <Badge variant="destructive" className="text-xs shrink-0">unverified</Badge>;
+  }
+  if (entry.status === "attempting") {
+    return <Badge variant="secondary" className="text-xs shrink-0">attempting</Badge>;
+  }
   const isError =
-    result != null &&
-    (result["error"] != null ||
-      result["success"] === false ||
-      result["result"] === "error");
+    entry.status === "failed" ||
+    (entry.result != null &&
+      (entry.result["error"] != null ||
+        entry.result["success"] === false ||
+        entry.result["result"] === "error"));
 
   return (
     <Badge variant={isError ? "destructive" : "secondary"} className="text-xs shrink-0">
-      {isError ? "error" : "ok"}
+      {isError ? "failed" : entry.status ?? "legacy"}
     </Badge>
   );
 }
@@ -362,8 +369,14 @@ function CommandLog({ entries, isLoading, isError }: CommandLogProps) {
             <p className="text-xs text-muted-foreground">
               <Time value={entry.issued_at} mode="relative-compact" />
             </p>
+            {entry.risk && (
+              <p className="text-xs text-muted-foreground">Risk: {entry.risk}</p>
+            )}
+            {entry.failure_reason && (
+              <p className="text-xs text-destructive">{entry.failure_reason}</p>
+            )}
           </div>
-          <CommandResultBadge result={entry.result} />
+          <CommandResultBadge entry={entry} />
         </li>
       ))}
     </ul>

@@ -168,3 +168,10 @@ The home butler's system prompt establishes its domain expertise and interaction
 - **WHEN** the home butler is asked to perform safety-critical actions (unlock doors, disable security automations, area-wide power-off)
 - **THEN** it SHALL explicitly confirm with the owner before executing
 - **AND** log the action with full context to the command audit trail
+
+#### Scenario: Physical consequence boundary
+
+- **WHEN** any Home Assistant service call can change physical state
+- **THEN** the Home butler SHALL apply the declared safe/reversible/consequential/protected risk map
+- **AND** consequential or protected calls SHALL require an approvals-module grant
+- **AND** a durable receipt and observed post-condition SHALL be the only authority for reporting success

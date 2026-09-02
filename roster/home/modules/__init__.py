@@ -22,8 +22,9 @@ import json
 import logging
 import random
 import re
+import uuid
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -33,7 +34,22 @@ from butlers.connectors.home_assistant_statistics import (
     VALID_STATISTICS_PERIODS,
     HAStatisticsClient,
 )
+from butlers.core import approvals_hooks
+from butlers.core.tool_call_capture import (
+    get_current_approval_push_runtime,
+    get_current_runtime_session_id,
+)
+from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+
+from .actuation import (
+    ActuationRisk,
+    classify_actuation,
+    rollback_hint,
+    target_entity_ids,
+    verify_post_condition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +216,7 @@ class HomeAssistantModule(Module):
         self._token: str | None = None
         self._client: Any | None = None  # httpx.AsyncClient, imported lazily
         self._db: Any = None
+        self._switchboard_client: Any | None = None
 
         # ---- WebSocket state ----
         self._ws_session: Any | None = None  # aiohttp.ClientSession
@@ -265,6 +282,17 @@ class HomeAssistantModule(Module):
         return {
             "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
         }
+
+    def wire_runtime(
+        self,
+        spawner: Any,
+        repo_root: Any,
+        *,
+        switchboard_client: Any | None = None,
+    ) -> None:
+        """Retain the daemon-owned Switchboard client for domain-event fan-out."""
+        del spawner, repo_root
+        self._switchboard_client = switchboard_client
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1620,10 +1648,7 @@ class HomeAssistantModule(Module):
         target: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Call a HA service via REST API and log the call to ``ha_command_log``.
-
-        Both successful and failed service calls are logged.  On failure the
-        exception is re-raised after logging so callers still see the error.
+        """Call a HA service through risk, approval, receipt, and verification gates.
 
         Parameters
         ----------
@@ -1639,8 +1664,8 @@ class HomeAssistantModule(Module):
         Returns
         -------
         dict[str, Any]
-            Parsed JSON response from Home Assistant (may be ``{}`` for
-            services that return no body).
+            Receipt-bearing outcome. A transport success is not reported as
+            successful until the live post-condition is verified.
 
         Raises
         ------
@@ -1662,6 +1687,12 @@ class HomeAssistantModule(Module):
             )
 
         client = self._get_client()
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError(
+                "Home Assistant actuation refused: durable receipt storage is unavailable"
+            )
+
         payload: dict[str, Any] = {}
         # Merge data first so that the explicit target argument always wins if
         # data happens to also carry a "target" key.
@@ -1670,13 +1701,144 @@ class HomeAssistantModule(Module):
         if target is not None:
             payload["target"] = target
 
-        result: dict[str, Any] = {}
+        risk = classify_actuation(domain, service)
+        approval_context = get_approval_execution_context(
+            tool_name="ha_call_service",
+            tool_args={"domain": domain, "service": service, "target": target, "data": data},
+        )
+        session_id = self._runtime_session_uuid(
+            approval_context.session_id
+            if approval_context is not None
+            else get_current_runtime_session_id()
+        )
+
+        if risk.requires_approval and approval_context is None:
+            action_id = await self._park_actuation_for_approval(
+                pool=pool,
+                domain=domain,
+                service=service,
+                target=target,
+                data=data,
+                risk=risk,
+                session_id=session_id,
+            )
+            return {
+                "status": "pending_approval",
+                "action_id": str(action_id),
+                "risk": risk.value,
+                "message": f"{domain}.{service} requires explicit owner approval",
+            }
+
+        if approval_context is not None:
+            prior_effect_possible = await pool.fetchrow(
+                "SELECT attempt_id, status, result, observed_state, failure_reason "
+                "FROM ha_command_log "
+                "WHERE approval_id = $1 AND status IS DISTINCT FROM 'failed' "
+                "ORDER BY issued_at DESC LIMIT 1",
+                approval_context.action_id,
+            )
+            if prior_effect_possible is not None:
+                prior_status = prior_effect_possible["status"]
+                if prior_status == "succeeded":
+                    return {
+                        "status": "succeeded",
+                        "attempt_id": str(prior_effect_possible["attempt_id"]),
+                        "risk": risk.value,
+                        "approval_id": str(approval_context.action_id),
+                        "result": prior_effect_possible["result"],
+                        "observed_state": prior_effect_possible["observed_state"],
+                        "receipt_replay": True,
+                    }
+                return {
+                    "status": "unverified",
+                    "attempt_id": str(prior_effect_possible["attempt_id"]),
+                    "risk": risk.value,
+                    "approval_id": str(approval_context.action_id),
+                    "error": (
+                        "This approval already has an ambiguous physical outcome; "
+                        "inspect the receipt and reconcile the device before issuing "
+                        "a new approved action."
+                    ),
+                    "receipt_status": prior_status,
+                    "failure_reason": prior_effect_possible["failure_reason"],
+                    "attention_required": True,
+                }
+
+        attempt_id = uuid.uuid4()
+        actor = approval_context.actor if approval_context is not None else "system:home"
+        approval_id = approval_context.action_id if approval_context is not None else None
+        requested_state = {
+            "domain": domain,
+            "service": service,
+            "target": target,
+            "data": data,
+        }
+        rollback = rollback_hint(domain, service, target, data)
+        if risk is ActuationRisk.REVERSIBLE and rollback is None:
+            raise RuntimeError(
+                f"Home Assistant actuation refused: {domain}.{service} is classified "
+                "reversible but has no rollback hint"
+            )
+
+        await self._start_actuation_receipt(
+            pool=pool,
+            attempt_id=attempt_id,
+            domain=domain,
+            service=service,
+            target=target,
+            data=data,
+            risk=risk,
+            actor=actor,
+            session_id=session_id,
+            approval_id=approval_id,
+            requested_state=requested_state,
+            rollback=rollback,
+        )
+
+        result: Any = {}
         context_id: str | None = None
-        exc_to_raise: Exception | None = None
 
         try:
             resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
+        except Exception as exc:
+            if self._is_definitive_pre_send_failure(exc):
+                await self._settle_failed_actuation(
+                    pool=pool,
+                    attempt_id=attempt_id,
+                    domain=domain,
+                    service=service,
+                    risk=risk,
+                    error=exc,
+                )
+                raise
+            return await self._settle_ambiguous_actuation(
+                pool=pool,
+                attempt_id=attempt_id,
+                domain=domain,
+                service=service,
+                target=target,
+                data=data,
+                risk=risk,
+                approval_id=approval_id,
+                result=None,
+                context_id=None,
+                uncertainty=exc,
+            )
+
+        try:
             resp.raise_for_status()
+        except Exception as exc:
+            await self._settle_failed_actuation(
+                pool=pool,
+                attempt_id=attempt_id,
+                domain=domain,
+                service=service,
+                risk=risk,
+                error=exc,
+            )
+            raise
+
+        try:
             result = resp.json() if resp.content else {}
             # HA embeds the event context ID in the first state-change result entry.
             if isinstance(result, list) and result and isinstance(result[0], dict):
@@ -1684,33 +1846,351 @@ class HomeAssistantModule(Module):
             elif isinstance(result, dict):
                 context_id = result.get("context", {}).get("id")
         except Exception as exc:
-            exc_to_raise = exc
-            result = {"error": str(exc)}
-
-        # Log the command (fire-and-forget with error swallowing so a DB issue
-        # never prevents the caller from seeing a service error).
-        try:
-            await self._log_command(
+            return await self._settle_ambiguous_actuation(
+                pool=pool,
+                attempt_id=attempt_id,
                 domain=domain,
                 service=service,
                 target=target,
                 data=data,
-                result=result if not exc_to_raise else None,
-                error_result=result if exc_to_raise else None,
+                risk=risk,
+                approval_id=approval_id,
+                result=None,
                 context_id=context_id,
+                uncertainty=exc,
             )
-        except Exception as log_exc:
+
+        observed_state = await self._observe_target_states(target)
+        verification = verify_post_condition(domain, service, data, observed_state)
+        status = "succeeded" if verification.verified else "unverified"
+        await self._settle_actuation_receipt(
+            pool=pool,
+            attempt_id=attempt_id,
+            status=status,
+            observed_state=observed_state,
+            result=result,
+            context_id=context_id,
+            failure_reason=verification.reason,
+        )
+        await self._emit_actuation_event(
+            pool=pool,
+            attempt_id=attempt_id,
+            domain=domain,
+            service=service,
+            risk=risk,
+            status=status,
+            attention_required=not verification.verified,
+        )
+
+        outcome = {
+            "status": status,
+            "attempt_id": str(attempt_id),
+            "risk": risk.value,
+            "approval_id": str(approval_id) if approval_id is not None else None,
+            "result": result,
+            "observed_state": observed_state,
+        }
+        if not verification.verified:
             logger.warning(
-                "HomeAssistantModule: failed to log command %s.%s: %s",
+                "Home Assistant actuation requires attention (attempt=%s, service=%s.%s): %s",
+                attempt_id,
                 domain,
                 service,
-                log_exc,
+                verification.reason,
             )
+            outcome["error"] = verification.reason
+            outcome["attention_required"] = True
+        return outcome
 
-        if exc_to_raise is not None:
-            raise exc_to_raise
+    @staticmethod
+    def _is_definitive_pre_send_failure(exc: Exception) -> bool:
+        """Return true only when HTTPX proves no request reached Home Assistant."""
+        import httpx
 
-        return result
+        return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+    async def _settle_failed_actuation(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        domain: str,
+        service: str,
+        risk: ActuationRisk,
+        error: Exception,
+    ) -> None:
+        await self._settle_actuation_receipt(
+            pool=pool,
+            attempt_id=attempt_id,
+            status="failed",
+            observed_state=None,
+            result={"error": str(error)},
+            context_id=None,
+            failure_reason=str(error),
+        )
+        await self._emit_actuation_event(
+            pool=pool,
+            attempt_id=attempt_id,
+            domain=domain,
+            service=service,
+            risk=risk,
+            status="failed",
+            attention_required=True,
+        )
+
+    async def _settle_ambiguous_actuation(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        risk: ActuationRisk,
+        approval_id: uuid.UUID | None,
+        result: Any,
+        context_id: str | None,
+        uncertainty: Exception,
+    ) -> dict[str, Any]:
+        """Preserve post-dispatch uncertainty without authorizing a blind retry."""
+        observed_state = await self._observe_target_states(target)
+        verification = verify_post_condition(domain, service, data, observed_state)
+        verification_detail = (
+            "live post-condition matched"
+            if verification.verified
+            else verification.reason or "live post-condition did not verify"
+        )
+        reason = (
+            f"ambiguous Home Assistant outcome after request dispatch: "
+            f"{type(uncertainty).__name__}: {uncertainty}; {verification_detail}"
+        )
+        await self._settle_actuation_receipt(
+            pool=pool,
+            attempt_id=attempt_id,
+            status="unverified",
+            observed_state=observed_state,
+            result={"uncertainty": type(uncertainty).__name__, "response": result},
+            context_id=context_id,
+            failure_reason=reason,
+        )
+        await self._emit_actuation_event(
+            pool=pool,
+            attempt_id=attempt_id,
+            domain=domain,
+            service=service,
+            risk=risk,
+            status="unverified",
+            attention_required=True,
+        )
+        logger.warning(
+            "Home Assistant actuation outcome is ambiguous (attempt=%s, service=%s.%s): %s",
+            attempt_id,
+            domain,
+            service,
+            reason,
+        )
+        return {
+            "status": "unverified",
+            "attempt_id": str(attempt_id),
+            "risk": risk.value,
+            "approval_id": str(approval_id) if approval_id is not None else None,
+            "result": result,
+            "observed_state": observed_state,
+            "error": reason,
+            "attention_required": True,
+        }
+
+    @staticmethod
+    def _runtime_session_uuid(raw_session_id: Any) -> uuid.UUID | None:
+        if raw_session_id is None:
+            return None
+        try:
+            return (
+                raw_session_id
+                if isinstance(raw_session_id, uuid.UUID)
+                else uuid.UUID(raw_session_id)
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "Ignoring malformed server-derived runtime session id %r", raw_session_id
+            )
+            return None
+
+    async def _park_actuation_for_approval(
+        self,
+        *,
+        pool: Any,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        risk: ActuationRisk,
+        session_id: uuid.UUID | None,
+    ) -> uuid.UUID:
+        """Park a consequential call through the approvals module's sole choke point."""
+        if not approvals_hooks.is_approval_parking_available(pool):
+            raise RuntimeError("Home Assistant actuation refused: approval parking is unavailable")
+
+        action_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        tool_args = json.loads(
+            json.dumps(
+                {"domain": domain, "service": service, "target": target, "data": data},
+                default=str,
+            )
+        )
+        await approvals_hooks.park_pending_action(
+            pool,
+            action_id=action_id,
+            tool_name="ha_call_service",
+            tool_args=tool_args,
+            agent_summary=f"Home Assistant {risk.value} actuation: {domain}.{service}",
+            requested_at=now,
+            expires_at=now + timedelta(hours=24),
+            session_id=session_id,
+            why=f"{domain}.{service} crosses the physical-world {risk.value} boundary",
+            evidence=[],
+            blast_radius="self",
+            reversibility="irreversible" if risk is ActuationRisk.PROTECTED else "compensable",
+            origin_butler="home",
+            approval_push_runtime=get_current_approval_push_runtime(),
+        )
+        await record_approval_event(
+            pool,
+            ApprovalEventType.ACTION_QUEUED,
+            actor="system:home_physical_gate",
+            action_id=action_id,
+            reason=f"{risk.value} Home Assistant actuation requires owner approval",
+            metadata={"tool_name": "ha_call_service", "risk": risk.value},
+            occurred_at=now,
+        )
+        return action_id
+
+    async def _start_actuation_receipt(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        risk: ActuationRisk,
+        actor: str,
+        session_id: uuid.UUID | None,
+        approval_id: uuid.UUID | None,
+        requested_state: dict[str, Any],
+        rollback: dict[str, Any] | None,
+    ) -> None:
+        """Claim a unique receipt before allowing the physical call to leave."""
+        await pool.execute(
+            """
+            INSERT INTO ha_command_log (
+                attempt_id, domain, service, target, data, risk, actor, session_id,
+                approval_id, requested_state, status, rollback_hint
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'attempting', $11)
+            """,
+            attempt_id,
+            domain,
+            service,
+            target,
+            data,
+            risk.value,
+            actor,
+            session_id,
+            approval_id,
+            requested_state,
+            rollback,
+        )
+
+    async def _settle_actuation_receipt(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        status: str,
+        observed_state: dict[str, dict[str, Any]] | None,
+        result: Any,
+        context_id: str | None,
+        failure_reason: str | None,
+    ) -> None:
+        stored_result = result if isinstance(result, dict) else {"value": result}
+        updated = await pool.execute(
+            """
+            UPDATE ha_command_log
+            SET status = $2, observed_state = $3, result = $4, context_id = $5,
+                failure_reason = $6, completed_at = now()
+            WHERE attempt_id = $1 AND status = 'attempting'
+            """,
+            attempt_id,
+            status,
+            observed_state,
+            stored_result,
+            context_id,
+            failure_reason,
+        )
+        if not str(updated).endswith(" 1"):
+            raise RuntimeError(f"Actuation receipt {attempt_id} could not be settled")
+
+    async def _observe_target_states(
+        self, target: dict[str, Any] | None
+    ) -> dict[str, dict[str, Any]]:
+        client = self._get_client()
+        observed: dict[str, dict[str, Any]] = {}
+        for entity_id in target_entity_ids(target):
+            try:
+                response = await client.get(f"/api/states/{quote(entity_id, safe='.')}")
+                response.raise_for_status()
+                state = response.json()
+                observed[entity_id] = {
+                    "state": state.get("state"),
+                    "attributes": state.get("attributes") or {},
+                    "last_updated": state.get("last_updated"),
+                }
+            except Exception as exc:
+                observed[entity_id] = {"error": str(exc)}
+        return observed
+
+    async def _emit_actuation_event(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        domain: str,
+        service: str,
+        risk: ActuationRisk,
+        status: str,
+        attention_required: bool,
+    ) -> None:
+        """Publish the minimized receipt outcome without changing physical truth."""
+        try:
+            from butlers.core_tools._domain_events import publish_domain_event
+
+            result = await publish_domain_event(
+                pool,
+                self._switchboard_client,
+                event_type="home.actuation_executed",
+                source_butler="home",
+                payload={
+                    "attempt_id": str(attempt_id),
+                    "domain": domain,
+                    "service": service,
+                    "risk": risk.value,
+                    "status": status,
+                    "attention_required": attention_required,
+                },
+            )
+            if result.get("status") != "ok":
+                logger.warning(
+                    "Actuation event refused (attempt=%s): %s", attempt_id, result.get("error")
+                )
+        except Exception:
+            logger.warning(
+                "Failed to publish home.actuation_executed (attempt=%s)",
+                attempt_id,
+                exc_info=True,
+            )
 
     async def _list_areas(self) -> list[dict[str, Any]]:
         """Return all cached areas sorted by name.
@@ -1877,68 +2357,6 @@ class HomeAssistantModule(Module):
         resp = await client.post("/api/template", json={"template": template})
         resp.raise_for_status()
         return resp.text
-
-    async def _log_command(
-        self,
-        domain: str,
-        service: str,
-        target: dict[str, Any] | None,
-        data: dict[str, Any] | None,
-        result: dict[str, Any] | None,
-        error_result: dict[str, Any] | None = None,
-        context_id: str | None = None,
-    ) -> None:
-        """Insert a row into ``ha_command_log`` for every service call.
-
-        Uses the DB pool directly (``asyncpg``).  Silently skips when no
-        pool is available (e.g. tests that bypass ``on_startup``).
-
-        Parameters
-        ----------
-        domain:
-            HA service domain.
-        service:
-            HA service name.
-        target:
-            Service call target dict (may be ``None``).
-        data:
-            Service call data payload (may be ``None``).
-        result:
-            Parsed HA response on success (may be ``None`` when an error
-            occurred before a response was received).
-        error_result:
-            Error payload when the call failed (mutually exclusive with
-            ``result``).
-        context_id:
-            HA event context ID extracted from the response (may be ``None``).
-        """
-        import json as _json
-
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            return
-
-        log_result = result if result is not None else error_result
-
-        await pool.execute(
-            """
-            INSERT INTO ha_command_log
-                (domain, service, target, data, result, context_id)
-            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6)
-            """,
-            domain,
-            service,
-            _json.dumps(target) if target is not None else None,
-            _json.dumps(data) if data is not None else None,
-            _json.dumps(log_result) if log_result is not None else None,
-            context_id,
-        )
-        logger.debug(
-            "HomeAssistantModule: logged command %s.%s (context=%s)",
-            domain,
-            service,
-            context_id,
-        )
 
     async def _activate_scene(
         self,

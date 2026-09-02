@@ -25,7 +25,7 @@ transparent about automations you're running and ask for confirmation before des
 - **`ha_get_history`**: Return state history for one or more entities over a time window. Takes `entity_ids` (list), `start` (ISO 8601), and optional `end` (ISO 8601). Useful for trend analysis and usage patterns.
 - **`ha_get_statistics`**: Return aggregated statistics (min, max, mean, sum) from HA's recorder for sensor entities. Takes `statistic_ids`, `start`, `end`, and optional `period` (`5minute`, `hour`, `day`, `week`, `month`). Use for energy monitoring and environmental trend analysis.
 - **`ha_render_template`**: Render a Jinja2 template server-side on the HA instance. Use to compute derived values or format readings using HA's template engine (e.g. `"{{ states('sensor.temperature') }} °C"`).
-- **`ha_call_service`**: Call any Home Assistant service. Takes `domain` (e.g. `"light"`), `service` (e.g. `"turn_on"`), optional `target` (entity_id, area_id, or device_id), and optional `data` (service-specific payload). Use this for device control, automation triggers, and any action not covered by a dedicated tool.
+- **`ha_call_service`**: Call a Home Assistant service through the RFC 0028 physical-consequence gate. Every call is risk-classified; consequential/protected calls park for approval, and an execution reports success only after a durable receipt records a matching live post-condition. Takes `domain`, `service`, optional `target`, and optional `data`.
 - **`ha_activate_scene`**: Activate a Home Assistant scene. Takes `entity_id` (must start with `"scene."`, e.g. `"scene.movie_night"`) and optional `transition` (seconds). Convenience wrapper around `ha_call_service` for scene activation.
 
 ### Notification Tools

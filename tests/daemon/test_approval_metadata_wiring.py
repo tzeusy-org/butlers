@@ -73,14 +73,14 @@ def _approval_wiring_daemon(
     return daemon
 
 
-async def test_disabled_roster_injects_metadata_for_manual_approvals(
+async def test_enabled_home_roster_injects_metadata_and_applies_gates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Configured ApprovalsModule receives ToolMeta even when it has no gates."""
+    """Home's enabled approvals runtime receives metadata and applies its gate setup."""
     roster_name = "home"
     config = load_config(_REPO_ROOT / "roster" / roster_name)
     approvals = _ApprovalsModuleProbe()
-    apply_gates = AsyncMock()
+    apply_gates = AsyncMock(return_value={})
     monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
 
     daemon = _approval_wiring_daemon(
@@ -97,7 +97,11 @@ async def test_disabled_roster_injects_metadata_for_manual_approvals(
         "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
     }
     assert approvals.tool_executor is not None
-    apply_gates.assert_not_awaited()
+    apply_gates.assert_awaited_once()
+    assert apply_gates.await_args.args[1].enabled is True
+    assert apply_gates.await_args.kwargs["tool_metadata"] == {
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
+    }
 
 
 async def test_unconfigured_approvals_module_keeps_gate_setup_inactive() -> None:

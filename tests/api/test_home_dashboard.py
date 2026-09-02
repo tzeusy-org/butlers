@@ -104,6 +104,47 @@ async def test_devices_200_and_503(app):
     assert resp_503.status_code == 503
 
 
+async def test_command_log_exposes_honest_actuation_receipt_fields(app):
+    attempt_id = uuid4()
+    session_id = uuid4()
+    approval_id = uuid4()
+    row = {
+        "id": 7,
+        "domain": "lock",
+        "service": "unlock",
+        "target": {"entity_id": "lock.front_door"},
+        "data": None,
+        "result": {"value": []},
+        "context_id": "ha-context",
+        "issued_at": _NOW,
+        "attempt_id": attempt_id,
+        "risk": "protected",
+        "actor": "human:owner",
+        "session_id": session_id,
+        "approval_id": approval_id,
+        "requested_state": {"target": {"entity_id": "lock.front_door"}},
+        "observed_state": {"lock.front_door": {"state": "locked"}},
+        "status": "unverified",
+        "rollback_hint": None,
+        "failure_reason": "post-condition mismatch",
+        "completed_at": _NOW,
+    }
+    _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/home/command-log")
+
+    assert response.status_code == 200
+    receipt = response.json()["data"][0]
+    assert receipt["attempt_id"] == str(attempt_id)
+    assert receipt["session_id"] == str(session_id)
+    assert receipt["approval_id"] == str(approval_id)
+    assert receipt["actor"] == "human:owner"
+    assert receipt["status"] == "unverified"
+    assert receipt["observed_state"]["lock.front_door"]["state"] == "locked"
+
+
 # ---------------------------------------------------------------------------
 # Devices — large page size rejected
 # ---------------------------------------------------------------------------

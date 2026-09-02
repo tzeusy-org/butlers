@@ -40,7 +40,25 @@ The butler's philosophy is that smart home technology should feel invisible: res
 - `ha_get_history` -- State history for entities over a time window for trend analysis.
 - `ha_get_statistics` -- Aggregated statistics (min, max, mean, cumulative sum, state, and per-period change) for sensor entities over configurable periods (5-minute, hourly, daily, weekly, monthly).
 - `ha_render_template` -- Render Jinja2 templates server-side on the HA instance for computed values.
-- `ha_call_service` -- Call any Home Assistant service: device control, automation triggers, scene creation. Takes domain, service, optional target (entity/area/device), and optional service-specific data.
+- `ha_call_service` -- Call a Home Assistant service through RFC 0028's physical-risk boundary. Consequential/protected calls park for owner approval; every execution attempt is receipted and must pass live post-condition verification before reporting success.
+
+### Physical actuation receipts
+
+`home.ha_command_log` is the authoritative actuation ledger. New rows carry a
+unique attempt id, declared risk, server-derived actor and session, approval
+lineage, requested and observed state, status, and rollback hint. The status is
+`succeeded` only after live read-back. A definitive connection failure or HA
+rejection is `failed`; post-send timeout, reset, response-parse uncertainty,
+missing proof, or mismatched proof is `unverified` and shown as requiring
+attention in Recent commands. An approved attempt left `attempting` by a crash
+or settlement failure, or settled `unverified`, cannot be blindly retried with
+the same approval; the owner reconciles the device and issues a new approved
+action. A durable `succeeded` receipt can be replayed for approval bookkeeping
+without another HA call. Each permitted retry creates a new attempt row.
+
+Home also publishes the minimized `home.actuation_executed` event after a
+terminal attempt. The event deliberately excludes requested/observed home state
+and never supersedes the Home-owned receipt.
 - `ha_activate_scene` -- Activate a Home Assistant scene with optional transition time.
 
 **Notification and Memory**

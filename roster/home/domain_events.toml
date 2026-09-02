@@ -1,0 +1,21 @@
+# Publisher-owned physical-actuation event contract.
+
+[[event]]
+type = "home.actuation_executed"
+schema_version = 1
+summary = "A Home Assistant physical actuation attempt reached a terminal receipt state."
+retention_policy = "standard"
+reaction_expectation = "optional"
+reaction_contract = """
+The receipt is the authority for physical outcome. An unverified or failed status needs owner \
+attention; a delivered event alone never proves the requested physical state changed."""
+permitted_subscribers = []
+required_fields = [
+  "attempt_id",
+  "domain",
+  "service",
+  "risk",
+  "status",
+  "attention_required",
+]
+optional_fields = []

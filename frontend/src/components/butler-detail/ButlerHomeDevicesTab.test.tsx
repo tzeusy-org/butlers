@@ -213,8 +213,21 @@ const COMMAND_LOG_RESP = {
       context_id: "ctx-2",
       issued_at: "2026-05-10T07:00:00Z",
     },
+    {
+      id: 3,
+      domain: "lock",
+      service: "unlock",
+      target: { entity_id: "lock.front_door" },
+      data: {},
+      result: { value: [] },
+      context_id: "ctx-3",
+      issued_at: "2026-05-10T06:30:00Z",
+      risk: "protected" as const,
+      status: "unverified" as const,
+      failure_reason: "post-condition mismatch",
+    },
   ],
-  meta: { total: 2, offset: 0, limit: 20 },
+  meta: { total: 3, offset: 0, limit: 20 },
 };
 
 // ---------------------------------------------------------------------------
@@ -619,6 +632,14 @@ describe("ButlerHomeDevicesTab — recent commands", () => {
   it("renders domain.service format", () => {
     renderTab();
     expect(screen.getByText("light.turn_on")).toBeDefined();
+  });
+
+  it("surfaces an unverified protected actuation as attention, never ok", () => {
+    renderTab();
+    expect(screen.getByText("lock.unlock")).toBeDefined();
+    expect(screen.getByText("Risk: protected")).toBeDefined();
+    expect(screen.getByText("unverified")).toBeDefined();
+    expect(screen.getByText("post-condition mismatch")).toBeDefined();
   });
 });
 

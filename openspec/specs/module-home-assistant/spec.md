@@ -291,6 +291,74 @@ Generic service call supporting any HA domain, service, target, and data.
 - **THEN** the module SHALL log the error to `ha_command_log` with the error in the result field
 - **AND** return the error message to the LLM
 
+### Requirement: Physical Actuation Risk Gate
+
+Every `ha_call_service` invocation MUST be classified by the repository-owned
+`(domain, service)` physical-risk map as `safe`, `reversible`, `consequential`,
+or `protected`. Unknown pairs MUST fail closed as `protected`. Consequential and
+protected calls MUST be durably parked before any Home Assistant request and
+MUST execute only through the approvals executor's server-derived lineage.
+
+#### Scenario: Consequential call is parked without physical execution
+
+- **WHEN** an LLM session requests `lock.unlock` without approved execution lineage
+- **THEN** the module SHALL create a pending `ha_call_service` approval carrying the session id
+- **AND** it SHALL return `pending_approval` without sending a request to Home Assistant
+
+#### Scenario: Approval grant permits one execution attempt
+
+- **WHEN** an authenticated owner approves the parked action
+- **THEN** the approvals executor SHALL bind the action id, originating session id, and decided-by actor while invoking the original Home Assistant handler
+- **AND** the handler SHALL perform one new, independently receipted actuation attempt
+
+### Requirement: Honest Actuation Receipts
+
+Before a Home Assistant service request leaves the process, the module MUST
+insert a uniquely identified `attempting` receipt. It MUST then settle that same
+receipt to `succeeded`, `failed`, or `unverified`, recording server-derived
+actor/session/approval lineage, requested and observed state, and any rollback
+hint. A receipt write failure MUST refuse the physical call rather than act
+without evidence.
+
+#### Scenario: Verified post-condition is required for success
+
+- **WHEN** Home Assistant accepts a service call
+- **THEN** the module SHALL read every explicit entity target back from Home Assistant
+- **AND** it SHALL record `succeeded` only when the declared post-condition matches
+- **AND** a missing verifier, unreadable observation, or mismatch SHALL record `unverified`, require attention, and never claim success
+
+#### Scenario: Definitive Home Assistant rejection is a failed attempt
+
+- **WHEN** connection establishment definitively fails or Home Assistant returns an HTTP error
+- **THEN** the module SHALL settle the pre-existing receipt to `failed`
+- **AND** it SHALL re-raise the error after preserving the receipt
+
+#### Scenario: Post-dispatch uncertainty is unverified and fenced from retry
+
+- **WHEN** a request may have left the process but its response times out, resets, or cannot be parsed
+- **THEN** the module SHALL attempt the declared live state read-back
+- **AND** it SHALL settle the receipt to `unverified` even when the read-back matches
+- **AND** the same approval id SHALL NOT issue another physical request while a prior receipt remains `attempting` or `unverified`; the owner must reconcile it and create a new approved action
+- **AND** a prior `succeeded` receipt MAY be replayed to finalize approval bookkeeping without another physical request
+
+#### Scenario: Reversible action records a rollback hint
+
+- **WHEN** the risk map classifies an action as `reversible`
+- **THEN** its receipt SHALL contain an explicit inverse service or a restore-previous-state instruction
+- **AND** each retry SHALL create a distinct attempt id rather than deduplicating physical execution
+
+### Requirement: Actuation Domain Event
+
+Every terminal physical attempt SHOULD publish the minimized
+`home.actuation_executed` domain event. Event delivery MUST NOT replace the
+receipt or turn a failed/unverified physical outcome into success.
+
+#### Scenario: Terminal receipt emits a minimized event
+
+- **WHEN** an actuation receipt reaches `succeeded`, `failed`, or `unverified`
+- **THEN** the module SHALL publish the attempt id, domain, service, risk, status, and attention flag
+- **AND** requested/observed home state SHALL remain in the home-owned receipt rather than the shared event payload
+
 ### Requirement: Control Tool — ha_activate_scene
 
 The implementation SHALL provide the behavior described by this requirement.
@@ -349,6 +417,7 @@ The module provides an Alembic migration for its home-domain tables.
 - **AND** `maintenance_items` SHALL be created (backing the maintenance tool suite)
 - **AND** the `ha_state` predicate SHALL be seeded into `predicate_registry`
 - **AND** index `ix_ha_command_log_issued_at` on `ha_command_log(issued_at)` SHALL be created
+- **AND** the command log SHALL carry nullable legacy-compatible actuation receipt columns for attempt id, risk, actor, session id, approval id, requested/observed state, status, rollback hint, failure reason, and completion time
 
 #### Scenario: Migration branch label
 

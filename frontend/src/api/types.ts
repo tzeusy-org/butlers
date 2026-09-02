@@ -8056,6 +8056,17 @@ export interface HomeCommandLogEntry {
   result: Record<string, unknown> | null;
   context_id: string | null;
   issued_at: string;
+  attempt_id?: string | null;
+  risk?: "safe" | "reversible" | "consequential" | "protected" | null;
+  actor?: string | null;
+  session_id?: string | null;
+  approval_id?: string | null;
+  requested_state?: Record<string, unknown> | null;
+  observed_state?: Record<string, unknown> | null;
+  status?: "attempting" | "succeeded" | "failed" | "unverified" | null;
+  rollback_hint?: Record<string, unknown> | null;
+  failure_reason?: string | null;
+  completed_at?: string | null;
 }
 
 // ---------------------------------------------------------------------------

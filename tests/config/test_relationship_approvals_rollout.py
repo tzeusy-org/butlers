@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from butlers.config import parse_approval_config
 from butlers.modules.approvals.module import ApprovalsConfig
 
 pytestmark = pytest.mark.unit
@@ -29,3 +30,14 @@ def test_relationship_enables_approvals_for_owner_carveout() -> None:
     )
     validated = ApprovalsConfig.model_validate(approvals)
     assert "actions" in validated.groups
+
+
+def test_home_enables_approvals_for_physical_consequence_gate() -> None:
+    """RFC 0028 cannot park protected HA calls with the gate disabled."""
+    path = REPO_ROOT / "roster" / "home" / "butler.toml"
+    with path.open("rb") as fh:
+        config = tomllib.load(fh)
+
+    approval_config = parse_approval_config(config["modules"]["approvals"])
+    assert approval_config is not None
+    assert approval_config.enabled is True

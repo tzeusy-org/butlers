@@ -278,7 +278,9 @@ async def list_command_log(
     total = await pool.fetchval(f"SELECT count(*) FROM ha_command_log{where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, domain, service, target, data, result, context_id, issued_at"
+        f"SELECT id, domain, service, target, data, result, context_id, issued_at, "
+        f"attempt_id, risk, actor, session_id, approval_id, requested_state, "
+        f"observed_state, status, rollback_hint, failure_reason, completed_at"
         f" FROM ha_command_log{where}"
         f" ORDER BY issued_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -294,9 +296,26 @@ async def list_command_log(
             service=r["service"],
             target=dict(r["target"]) if r["target"] else None,
             data=dict(r["data"]) if r["data"] else None,
-            result=dict(r["result"]) if r["result"] else None,
+            result=(
+                dict(r["result"])
+                if isinstance(r["result"], dict)
+                else {"value": r["result"]}
+                if r["result"] is not None
+                else None
+            ),
             context_id=r["context_id"],
             issued_at=str(r["issued_at"]),
+            attempt_id=r.get("attempt_id"),
+            risk=r.get("risk"),
+            actor=r.get("actor"),
+            session_id=r.get("session_id"),
+            approval_id=r.get("approval_id"),
+            requested_state=(dict(r.get("requested_state")) if r.get("requested_state") else None),
+            observed_state=(dict(r.get("observed_state")) if r.get("observed_state") else None),
+            status=r.get("status"),
+            rollback_hint=(dict(r.get("rollback_hint")) if r.get("rollback_hint") else None),
+            failure_reason=r.get("failure_reason"),
+            completed_at=str(r.get("completed_at")) if r.get("completed_at") else None,
         )
         for r in rows
     ]

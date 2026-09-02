@@ -479,3 +479,19 @@ When a new standing rule is created (via `create_approval_rule` or `create_rule_
 - **WHEN** `create_approval_rule` is called and succeeds
 - **THEN** the module MUST query for pending suggestions where `tool_name` matches and `representative_args` would be matched by the new rule's constraints
 - **AND** any matching pending suggestions MUST be transitioned to `superseded` status
+
+### Requirement: Server-Derived Approved Execution Lineage
+
+While the shared executor invokes an approved tool, it MUST bind trusted
+execution lineage containing the pending action id, the action's originating
+session id, and its persisted `decided_by` actor. Tool arguments MUST NOT be
+able to supply or override this lineage. Authority MUST be bound to the exact
+executor task, tool name, and canonical tool arguments, and the binding MUST be
+reset after the invocation, including when the handler fails. An asynchronous
+child task that inherits context storage MUST receive no approval authority.
+
+#### Scenario: Approved physical action receives trusted lineage
+
+- **WHEN** an approved action is dispatched through `execute_approved_action`
+- **THEN** the original handler can read its action id, session id, and decision actor from executor-owned context
+- **AND** wrong-tool, wrong-argument, concurrent child-task, and subsequent calls cannot observe that action's lineage

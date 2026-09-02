@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,6 +30,18 @@ from pydantic import BaseModel, ValidationError
 from butlers.modules._roster_home import (
     HomeAssistantConfig,
     HomeAssistantModule,
+)
+from butlers.modules._roster_home.actuation import (
+    ActuationRisk,
+    classify_actuation,
+    rollback_hint,
+    verify_post_condition,
+)
+from butlers.modules.approvals.execution_context import (
+    ApprovalExecutionContext,
+    approval_tool_args_digest,
+    reset_approval_execution_context,
+    set_approval_execution_context,
 )
 from butlers.modules.base import Module, ToolMeta
 
@@ -117,6 +130,43 @@ class TestModuleABCCompliance:
         module = HomeAssistantModule()
         module._config = HomeAssistantConfig(read_only=True)
         assert module.tool_metadata() == {}
+
+
+class TestPhysicalRiskContract:
+    @pytest.mark.parametrize(
+        ("domain", "service", "expected"),
+        [
+            ("homeassistant", "update_entity", ActuationRisk.SAFE),
+            ("light", "turn_on", ActuationRisk.REVERSIBLE),
+            ("scene", "turn_on", ActuationRisk.CONSEQUENTIAL),
+            ("lock", "unlock", ActuationRisk.PROTECTED),
+            ("unknown_domain", "do_thing", ActuationRisk.PROTECTED),
+        ],
+    )
+    def test_risk_map_is_explicit_and_unknown_calls_fail_closed(
+        self, domain: str, service: str, expected: ActuationRisk
+    ) -> None:
+        assert classify_actuation(domain, service) is expected
+
+    def test_reversible_action_has_concrete_rollback_hint(self) -> None:
+        assert rollback_hint(
+            "light", "turn_on", {"entity_id": "light.kitchen"}, {"brightness_pct": 80}
+        ) == {
+            "domain": "light",
+            "service": "turn_off",
+            "target": {"entity_id": "light.kitchen"},
+            "data": None,
+        }
+
+    def test_post_condition_mismatch_is_never_verified(self) -> None:
+        outcome = verify_post_condition(
+            "light",
+            "turn_on",
+            None,
+            {"light.kitchen": {"state": "off", "attributes": {}}},
+        )
+        assert outcome.verified is False
+        assert "mismatch" in (outcome.reason or "")
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +529,143 @@ class TestEntityCache:
 
 
 class TestToolBehaviors:
+    @pytest.mark.parametrize(
+        ("authorized_tool", "authorized_args"),
+        [
+            (
+                "ha_activate_scene",
+                {
+                    "domain": "lock",
+                    "service": "unlock",
+                    "target": {"entity_id": "lock.front_door"},
+                    "data": None,
+                },
+            ),
+            (
+                "ha_call_service",
+                {
+                    "domain": "lock",
+                    "service": "lock",
+                    "target": {"entity_id": "lock.front_door"},
+                    "data": None,
+                },
+            ),
+        ],
+    )
+    async def test_wrong_tool_or_args_cannot_bypass_home_physical_gate(
+        self,
+        ha_module: HomeAssistantModule,
+        authorized_tool: str,
+        authorized_args: dict[str, object],
+    ) -> None:
+        client = MagicMock()
+        client.post = AsyncMock()
+        pool = MagicMock()
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+        ha_module._client = client
+        task = asyncio.current_task()
+        assert task is not None
+        context = ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name=authorized_tool,
+            tool_args_digest=approval_tool_args_digest(authorized_args),
+            authorized_task=task,
+        )
+        token = set_approval_execution_context(context)
+        try:
+            with (
+                patch(
+                    "butlers.core.approvals_hooks.is_approval_parking_available",
+                    return_value=True,
+                ),
+                patch(
+                    "butlers.core.approvals_hooks.park_pending_action",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "butlers.modules._roster_home.record_approval_event",
+                    new=AsyncMock(),
+                ),
+            ):
+                result = await ha_module._call_service(
+                    "lock", "unlock", target={"entity_id": "lock.front_door"}
+                )
+        finally:
+            reset_approval_execution_context(token)
+
+        assert result["status"] == "pending_approval"
+        client.post.assert_not_awaited()
+
+    async def test_child_task_inheriting_context_cannot_bypass_home_physical_gate(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        tool_args = {
+            "domain": "lock",
+            "service": "unlock",
+            "target": {"entity_id": "lock.front_door"},
+            "data": None,
+        }
+        client = MagicMock()
+        client.post = AsyncMock()
+        pool = MagicMock()
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+        ha_module._client = client
+        task = asyncio.current_task()
+        assert task is not None
+        context = ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name="ha_call_service",
+            tool_args_digest=approval_tool_args_digest(tool_args),
+            authorized_task=task,
+        )
+        token = set_approval_execution_context(context)
+        try:
+            with (
+                patch(
+                    "butlers.core.approvals_hooks.is_approval_parking_available",
+                    return_value=True,
+                ),
+                patch(
+                    "butlers.core.approvals_hooks.park_pending_action",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "butlers.modules._roster_home.record_approval_event",
+                    new=AsyncMock(),
+                ),
+            ):
+                result = await asyncio.create_task(ha_module._call_service(**tool_args))
+        finally:
+            reset_approval_execution_context(token)
+
+        assert result["status"] == "pending_approval"
+        client.post.assert_not_awaited()
+
+    async def test_receipt_failure_refuses_physical_call(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        client = MagicMock()
+        client.post = AsyncMock()
+        pool = MagicMock()
+        pool.execute = AsyncMock(side_effect=RuntimeError("receipt store unavailable"))
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+        ha_module._client = client
+
+        with pytest.raises(RuntimeError, match="receipt store unavailable"):
+            await ha_module._call_service("light", "turn_on", target={"entity_id": "light.kitchen"})
+
+        client.post.assert_not_awaited()
+
     async def test_get_statistics_uses_current_recorder_command(
         self, ha_module: HomeAssistantModule
     ) -> None:
