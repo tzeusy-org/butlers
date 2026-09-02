@@ -110,6 +110,7 @@ tests/contracts/test_module_boundaries.py
 tests/contracts/test_module_boundary.py
 tests/contracts/test_qg_serial_target.py
 tests/contracts/test_relationship_pending_actions_choke_point.py
+tests/contracts/test_relationship_stale_contact_producer_mapping.py
 tests/contracts/test_routing_pipeline.py
 tests/core/healing/test_fingerprint.py
 tests/core/healing/test_tracking.py
