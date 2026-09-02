@@ -192,11 +192,15 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         Primarily driven by the internal scheduler loop. Retained as an MCP tool
         for debugging and manual triggering.
         """
+        runtime_context = await daemon._build_scheduler_runtime_context()
         count = await _tick(
             pool,
             daemon._dispatch_scheduled_task,
             stagger_key=daemon.config.name,
             butler_name=daemon.config.name,
+            prompt_hooks=runtime_context.prompt_hooks,
+            completion_hooks=runtime_context.completion_hooks,
+            default_timezone=runtime_context.default_timezone,
         )
         return {"dispatched": count}
 

@@ -8,6 +8,7 @@ croniter and dispatches due task prompts to the LLM CLI spawner serially.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -38,6 +39,67 @@ _DEFAULT_COMPLEXITY = Complexity.WORKHORSE.value
 
 # Pattern to find candidate skill names in prompt text (kebab-case words).
 _SKILL_NAME_PATTERN = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\b")
+
+
+def _accepts_keyword(callback: Any, keyword: str) -> bool:
+    """Return whether *callback* accepts a named keyword or arbitrary kwargs."""
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    return keyword in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
+def _prepare_scheduled_prompt(
+    prompt_hooks: dict[str, Any] | None,
+    *,
+    task_name: str,
+    prompt: str,
+    run_at: datetime,
+    timezone: str,
+) -> str:
+    """Apply one task-owned deterministic prompt hook, failing closed on bad output."""
+    hook = prompt_hooks.get(task_name) if prompt_hooks else None
+    if hook is None:
+        return prompt
+    prepared_prompt = hook(
+        task_name=task_name,
+        prompt=prompt,
+        run_at=run_at,
+        timezone=timezone,
+    )
+    if not isinstance(prepared_prompt, str) or not prepared_prompt.strip():
+        raise RuntimeError(
+            f"Prompt hook for scheduled task {task_name!r} returned an empty or non-string prompt"
+        )
+    return prepared_prompt
+
+
+async def _run_completion_hook(
+    completion_hooks: dict[str, Any] | None,
+    *,
+    task_name: str,
+    result: Any,
+    run_at: datetime,
+    timezone: str,
+) -> None:
+    """Run one completion hook while preserving the original callback contract."""
+    hook = completion_hooks.get(task_name) if completion_hooks else None
+    if hook is None:
+        return
+    try:
+        hook_kwargs = {
+            "task_name": task_name,
+            "result": result,
+            "run_at": run_at,
+        }
+        if _accepts_keyword(hook, "timezone"):
+            hook_kwargs["timezone"] = timezone
+        await hook(**hook_kwargs)
+    except Exception:
+        logger.exception("Completion hook for scheduled task %r raised; continuing", task_name)
 
 
 def _parse_uuid_reference(value: Any) -> uuid.UUID | None:
@@ -1890,6 +1952,7 @@ async def tick(
     metrics: ButlerMetrics | None = None,
     butler_name: str | None = None,
     notify_fn=None,
+    prompt_hooks: dict[str, Any] | None = None,
     completion_hooks: dict[str, Any] | None = None,
     eligibility_pool: asyncpg.Pool | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
@@ -1904,7 +1967,8 @@ async def tick(
 
     Queries ``scheduled_tasks`` WHERE ``enabled=true AND next_run_at <= now()``
     for cron tasks.  Deadline tasks are handled separately.
-    For each due cron task, calls
+    For each due cron task, optionally prepares the prompt through a
+    task-specific deterministic hook, then calls
     ``dispatch_fn(prompt=..., trigger_source="schedule:<task-name>")``.
     After dispatch, updates ``next_run_at``, ``last_run_at``, and ``last_result``.
     If dispatch fails, logs the error and stores the error in ``last_result``,
@@ -1939,14 +2003,29 @@ async def tick(
             When ``None``, due notifications are left ``pending`` and retried
             on the next tick.  The scheduler loop in the daemon wires this to
             the butler's own notify delivery path.
+        prompt_hooks: Optional mapping of ``task_name → callable`` invoked
+            immediately before a prompt-mode task dispatches.  Signature::
+
+                def hook(
+                    *, task_name: str, prompt: str, run_at: datetime, timezone: str
+                ) -> str: ...
+
+            Hooks receive the same tick timestamp and effective schedule
+            timezone later supplied to completion hooks. Hook failures are
+            handled as dispatch failures, so no unbound prompt reaches the LLM.
         completion_hooks: Optional mapping of ``task_name → async callable``
             invoked after a prompt-mode task dispatches (regardless of
             success/failure).  Signature::
 
-                async def hook(*, task_name: str, result: Any, run_at: datetime) -> None: ...
+                async def hook(
+                    *, task_name: str, result: Any, run_at: datetime, timezone: str
+                ) -> None: ...
 
             Hooks are called with the task name, the dispatch result (a
-            SpawnerResult or None), and the wall-clock time the tick fired.
+            SpawnerResult or None), the wall-clock time the tick fired, and the
+            same effective timezone used to prepare the prompt. Existing hooks
+            with the original three-keyword signature remain supported; the
+            scheduler passes ``timezone`` only when the callable accepts it.
             Hook exceptions are logged and swallowed — a hook failure never
             blocks task progression or advances to the next tick.
             Job-mode tasks do NOT trigger completion hooks.
@@ -2153,6 +2232,13 @@ async def tick(
                     # so that dispatch_fn (Spawner.trigger / _dispatch_scheduled_task)
                     # does not need to be aware of seasonal periods.
                     dispatched_prompt = _prepend_seasonal_context(prompt, active_seasons)
+                    dispatched_prompt = _prepare_scheduled_prompt(
+                        prompt_hooks,
+                        task_name=name,
+                        prompt=dispatched_prompt,
+                        run_at=now,
+                        timezone=task_timezone,
+                    )
                     dispatch_kwargs: dict[str, Any] = {
                         "prompt": dispatched_prompt,
                         "trigger_source": f"schedule:{name}",
@@ -2194,15 +2280,14 @@ async def tick(
             # Fire completion hook for prompt-mode tasks (after success or failure).
             # Hooks are butler-specific post-processing (e.g. cache writes).
             # A hook exception is logged and swallowed — it never blocks task progression.
-            if dispatch_mode == _DISPATCH_MODE_PROMPT and completion_hooks:
-                hook = completion_hooks.get(name)
-                if hook is not None:
-                    try:
-                        await hook(task_name=name, result=dispatch_result, run_at=now)
-                    except Exception:
-                        logger.exception(
-                            "Completion hook for scheduled task %r raised; continuing", name
-                        )
+            if dispatch_mode == _DISPATCH_MODE_PROMPT:
+                await _run_completion_hook(
+                    completion_hooks,
+                    task_name=name,
+                    result=dispatch_result,
+                    run_at=now,
+                    timezone=task_timezone,
+                )
 
             # Record the dispatch outcome.  next_run_at was already advanced in the
             # claim step above; only last_run_at and last_result need updating here.

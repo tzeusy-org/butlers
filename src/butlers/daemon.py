@@ -43,6 +43,7 @@ import os
 import socket
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict
 from urllib.parse import quote, quote_plus
@@ -102,6 +103,16 @@ logger = logging.getLogger(__name__)
 
 _MCP_SERVER_START_TIMEOUT_S = 5.0
 _MCP_SERVER_START_POLL_INTERVAL_S = 0.01
+
+
+@dataclass(frozen=True)
+class _SchedulerRuntimeContext:
+    """Timezone and butler-owned hooks shared by every scheduler entry point."""
+
+    default_timezone: str
+    prompt_hooks: dict[str, Any] | None
+    completion_hooks: dict[str, Any] | None
+
 
 # Tool surface is now controlled by the core_groups mechanism in the
 # runtime_config table (see RFC 0002 §Core Tool Gating via core_groups).
@@ -1069,21 +1080,10 @@ class ButlerDaemon:
             approval_push_runtime=self._approval_push_runtime,
         )
 
-    async def _scheduler_loop(self) -> None:
-        """Periodically call tick() to dispatch due scheduled tasks.
-
-        Thin wrapper — implementation lives in :func:`butlers.background.scheduler_loop`.
-
-        On cancellation (graceful shutdown):
-        - If sleeping between ticks, the loop exits immediately.
-        - If a tick() call is in-progress, ``asyncio.shield()`` wraps the inner
-          task so that the CancelledError interrupts only the await but the
-          tick itself continues running; the loop then awaits the shielded task
-          to let the in-progress tick() finish before exiting.
-        """
-        if self.db is None or self.db.pool is None or self.spawner is None:
-            logger.warning("Scheduler loop: DB or spawner not ready, loop will not run")
-            return
+    async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:
+        """Resolve scheduler timezone and butler-owned hooks for any tick entry point."""
+        if self.db is None or self.db.pool is None:
+            raise RuntimeError("Scheduler runtime context requires an initialized database")
 
         # Resolve the owner's general timezone so hour-pinned crons fire at the
         # intended local time, failing open to UTC.  Resolved once at loop
@@ -1096,13 +1096,17 @@ class ButlerDaemon:
         )
         default_timezone = await resolve_general_timezone(shared_pool)
 
-        # Build butler-specific completion hooks.
-        # The chronicler day-close hook persists the prose output to tier2_cache.
-        # It must close the day in the owner's timezone — the cron fires at 01:05
-        # local, so a UTC-based window would be off by a local day (#2681).
+        # Build butler-specific scheduler hooks. Chronicler binds the exact local
+        # day into its prompt before dispatch, then persists the prose output to
+        # tier2_cache after completion. Both hooks receive the same tick timestamp
+        # and effective timezone, avoiding the UTC/local rollover defect (#2681).
+        prompt_hooks = None
         completion_hooks = None
         if self.config.name == "chronicler":
-            from butlers.chronicler.day_close_writer import build_day_close_completion_hooks
+            from butlers.chronicler.day_close_writer import (
+                build_day_close_completion_hooks,
+                build_day_close_prompt_hooks,
+            )
 
             # Wire the memory write-back loop (bu-93y4rt, tasks.md §8) when the
             # memory module is enabled and started. store_fact_fn writes ONLY to
@@ -1142,12 +1146,37 @@ class ButlerDaemon:
                         lambda: self.switchboard_client
                     )
 
+            prompt_hooks = build_day_close_prompt_hooks(timezone=default_timezone)
             completion_hooks = build_day_close_completion_hooks(
                 self.db.pool,
                 timezone=default_timezone,
                 store_fact_fn=store_fact_fn,
                 propose_enrichment_fn=propose_enrichment_fn,
             )
+
+        return _SchedulerRuntimeContext(
+            default_timezone=default_timezone,
+            prompt_hooks=prompt_hooks,
+            completion_hooks=completion_hooks,
+        )
+
+    async def _scheduler_loop(self) -> None:
+        """Periodically call tick() to dispatch due scheduled tasks.
+
+        Thin wrapper — implementation lives in :func:`butlers.background.scheduler_loop`.
+
+        On cancellation (graceful shutdown):
+        - If sleeping between ticks, the loop exits immediately.
+        - If a tick() call is in-progress, ``asyncio.shield()`` wraps the inner
+          task so that the CancelledError interrupts only the await but the
+          tick itself continues running; the loop then awaits the shielded task
+          to let the in-progress tick() finish before exiting.
+        """
+        if self.db is None or self.db.pool is None or self.spawner is None:
+            logger.warning("Scheduler loop: DB or spawner not ready, loop will not run")
+            return
+
+        runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
         await _background.scheduler_loop(
@@ -1158,9 +1187,10 @@ class ButlerDaemon:
             tick_fn=_tick,
             get_switchboard_client=lambda: daemon.switchboard_client,
             get_db=lambda: daemon.db,
-            completion_hooks=completion_hooks,
+            prompt_hooks=runtime_context.prompt_hooks,
+            completion_hooks=runtime_context.completion_hooks,
             get_eligibility_pool=lambda: daemon._audit_pool,
-            default_timezone=default_timezone,
+            default_timezone=runtime_context.default_timezone,
         )
 
     def _resolve_memory_module(self) -> Any | None:

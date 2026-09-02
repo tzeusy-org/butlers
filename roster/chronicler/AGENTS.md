@@ -78,7 +78,10 @@ tools. These are out of scope.
     you need to parse it into structured fields).
 - In all four, the input MUST be a token-bounded bundle. Projection
   adapters NEVER call the LLM.
-- For day-close, always call `chronicler_day_close_bundle(date_label="<date>")`.
+- For day-close, the invocation prompt supplies a trusted scheduled target (or
+  trusted refresh target). Call `chronicler_day_close_bundle` exactly once with
+  that target's `date_label` and `timezone`. Do not recompute or substitute
+  either value from the runtime clock.
   NEVER call `chronicler_list_episodes` or `chronicler_list_events` directly
   for Tier-2 paths; these tools are for interactive/read-only queries only.
   The bundle tool enforces sensitive masking and hard caps; the list tools do not.

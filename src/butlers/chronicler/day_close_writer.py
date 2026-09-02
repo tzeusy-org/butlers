@@ -320,6 +320,45 @@ def _compute_day_window(
     return yesterday_local, start_at, end_at
 
 
+def build_day_close_prompt_hooks(
+    *,
+    timezone: str | ZoneInfo = "UTC",
+) -> dict[str, Callable[..., str]]:
+    """Return the deterministic prompt hook for the scheduled day close.
+
+    The scheduler owns the occurrence timestamp and effective timezone. Bind
+    their resolved local-day target into the prompt before the LLM runs so the
+    model never has to infer ``yesterday`` from a provider clock that may still
+    be on the previous UTC calendar day at 01:05 Asia/Singapore.
+
+    ``timezone`` remains a compatibility fallback for direct callers; the live
+    scheduler supplies its effective task timezone on every invocation.
+    """
+    fallback_timezone = timezone
+
+    def _hook(
+        *,
+        task_name: str,
+        prompt: str,
+        run_at: datetime,
+        timezone: str | ZoneInfo | None = None,
+    ) -> str:
+        if task_name != DAY_CLOSE_TASK_NAME:
+            return prompt
+        effective_timezone = timezone or fallback_timezone
+        day_date, _, _ = _compute_day_window(run_at, effective_timezone)
+        timezone_name = str(_coerce_zone(effective_timezone))
+        return (
+            f"{prompt}\n\n"
+            "Trusted scheduled target: call chronicler_day_close_bundle exactly once "
+            f"with date_label={day_date.isoformat()} and timezone={timezone_name}. "
+            "Use this exact closed local day; do not recompute or substitute another "
+            "date or timezone."
+        )
+
+    return {DAY_CLOSE_TASK_NAME: _hook}
+
+
 async def write_day_close_cache(
     pool: asyncpg.Pool,
     *,
@@ -529,10 +568,11 @@ def build_day_close_completion_hooks(
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
-    The returned dict maps ``chronicler_day_close`` to a partial of
-    :func:`write_day_close_cache` with the pool and owner *timezone* pre-bound.
-    The daemon passes the owner's resolved general timezone so the closed day is
-    the local calendar day, matching the timezone the cron fires in (#2681).
+    The returned dict maps ``chronicler_day_close`` to a wrapper around
+    :func:`write_day_close_cache`. The live scheduler passes the task's effective
+    timezone with the same timestamp used by the prompt hook; the pre-bound owner
+    timezone remains a compatibility fallback for direct callers. This keeps the
+    prompt target, cache window, and write-back on one local calendar day (#2681).
 
     When ``store_fact_fn`` is supplied (bu-93y4rt, tasks.md §8) the hook also
     runs the deterministic memory write-back loop after the prose is cached:
@@ -548,23 +588,36 @@ def build_day_close_completion_hooks(
         await scheduler_loop(..., completion_hooks=hooks)
     """
 
-    async def _hook(*, task_name: str, result: Any, run_at: datetime) -> None:
+    fallback_timezone = timezone
+
+    async def _hook(
+        *,
+        task_name: str,
+        result: Any,
+        run_at: datetime,
+        timezone: str | ZoneInfo | None = None,
+    ) -> None:
+        effective_timezone = timezone or fallback_timezone
         await write_day_close_cache(
-            pool, task_name=task_name, result=result, run_at=run_at, tz=timezone
+            pool,
+            task_name=task_name,
+            result=result,
+            run_at=run_at,
+            tz=effective_timezone,
         )
         if task_name != DAY_CLOSE_TASK_NAME or store_fact_fn is None:
             return
         # Run the once-daily memory write-back beside the cache write. It reads
         # the chronicler's own rollups (not the prose), so it runs regardless of
         # whether the summary itself was non-empty — but never raises upward.
-        day_date, _, _ = _compute_day_window(run_at, timezone)
+        day_date, _, _ = _compute_day_window(run_at, effective_timezone)
         try:
             from butlers.chronicler.writeback import run_day_close_writeback
 
             wb = await run_day_close_writeback(
                 pool,
                 day_date=day_date,
-                timezone=str(timezone),
+                timezone=str(_coerce_zone(effective_timezone)),
                 store_fact_fn=store_fact_fn,
                 propose_enrichment_fn=propose_enrichment_fn,
             )

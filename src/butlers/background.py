@@ -225,6 +225,7 @@ async def scheduler_loop(
     tick_fn: Callable[..., Coroutine[Any, Any, Any]],
     get_switchboard_client: Callable[[], Any],
     get_db: Callable[[], Any],
+    prompt_hooks: dict[str, Any] | None = None,
     completion_hooks: dict[str, Any] | None = None,
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
@@ -264,6 +265,10 @@ async def scheduler_loop(
     get_db:
         Zero-argument callable that returns the current Database instance (or
         ``None``).  Same laziness rationale as ``get_switchboard_client``.
+    prompt_hooks:
+        Optional mapping of ``task_name → deterministic prompt callable``
+        forwarded to ``tick_fn`` on each invocation.  See ``tick()`` for the
+        hook signature.  When ``None``, stored prompts dispatch unchanged.
     completion_hooks:
         Optional mapping of ``task_name → async callable`` forwarded to
         ``tick_fn`` on each invocation.  See ``tick()`` for the hook signature.
@@ -336,6 +341,7 @@ async def scheduler_loop(
                     stagger_key=butler_name,
                     butler_name=butler_name,
                     notify_fn=_scheduler_notify_fn,
+                    prompt_hooks=prompt_hooks,
                     completion_hooks=completion_hooks,
                     eligibility_pool=eligibility_pool,
                     default_timezone=default_timezone,

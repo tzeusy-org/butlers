@@ -181,10 +181,12 @@ Run the Chronicler day-close RECONCILIATION + narration for yesterday. The
 deterministic reconciliation (which activity blocks are merged, which
 calendar blocks are dropped as contradicted) is ALREADY DECIDED before you
 run — your job is to narrate over that result, not to re-derive it.
-1. Use the owner's configured timezone from your system prompt. Compute
-   yesterday's local date in that timezone, not in UTC.
-2. Call `chronicler_day_close_bundle(date_label="<local-yesterday>", timezone="<owner-IANA-timezone>")`
-   to fetch a pre-truncated, token-bounded, ALREADY-RECONCILED bundle. Do NOT
+1. The scheduler appends a trusted scheduled target containing the exact
+   closed local date and owner IANA timezone. Use it as authoritative; do not
+   recompute yesterday from your runtime clock.
+2. Call `chronicler_day_close_bundle` exactly once with the trusted scheduled
+   target's `date_label` and `timezone` values. This fetches a pre-truncated,
+   token-bounded, ALREADY-RECONCILED bundle. Do NOT
    call chronicler_list_episodes or chronicler_list_events directly — the
    bundle tool enforces the hard cap, sensitive-event masking, and the
    deterministic reconciliation pass (duplicate merge, contradicted-intent

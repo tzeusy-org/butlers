@@ -36,10 +36,23 @@ def test_day_close_prompt_keeps_prose_human_readable() -> None:
     config = load_config(ROSTER_DIR)
     task = next(t for t in config.schedules if t.name == "chronicler_day_close")
     prompt = task.prompt or ""
+    normalized_prompt = " ".join(prompt.lower().split())
 
-    assert 'timezone="<owner-IANA-timezone>"' in prompt
+    assert "trusted scheduled target" in normalized_prompt
+    assert "do not recompute" in normalized_prompt
+    assert "compute yesterday's local date" not in normalized_prompt
     assert "Does not print raw source_ref values" in prompt
     assert "system records provenance" in prompt
     assert "human-facing message" in prompt
     assert "episodes_truncated" in prompt
     assert "cites source_ref values" not in prompt.lower()
+
+
+def test_day_close_system_prompt_requires_trusted_date_and_timezone() -> None:
+    """Runtime guidance cannot weaken the scheduler's exact tuple binding."""
+    prompt = " ".join((ROSTER_DIR / "AGENTS.md").read_text().lower().split())
+
+    assert "trusted scheduled target" in prompt
+    assert "date_label" in prompt
+    assert "timezone" in prompt
+    assert "do not recompute" in prompt

@@ -38,6 +38,7 @@ from butlers.chronicler.day_close_writer import (
     _extract_date_label,
     _extract_provenance_refs,
     build_day_close_completion_hooks,
+    build_day_close_prompt_hooks,
     write_day_close_cache,
 )
 from butlers.core.runtimes.codex import _parse_codex_output_payload
@@ -1161,6 +1162,30 @@ async def test_write_day_close_cache_hook_swallows_upsert_error(
 
 
 # ---------------------------------------------------------------------------
+# build_day_close_prompt_hooks
+# ---------------------------------------------------------------------------
+
+
+def test_day_close_prompt_hook_binds_owner_local_yesterday_at_utc_rollover() -> None:
+    """The scheduled prompt target comes from the SGT day, not the UTC date."""
+    hooks = build_day_close_prompt_hooks(timezone="Asia/Singapore")
+
+    prompt = hooks[DAY_CLOSE_TASK_NAME](
+        task_name=DAY_CLOSE_TASK_NAME,
+        prompt="Run the day close.",
+        run_at=datetime(2026, 9, 2, 17, 19, tzinfo=UTC),
+        timezone="Asia/Singapore",
+    )
+
+    assert prompt.startswith("Run the day close.")
+    assert "Trusted scheduled target:" in prompt
+    assert "date_label=2026-09-02" in prompt
+    assert "timezone=Asia/Singapore" in prompt
+    assert "date_label=2026-09-01" not in prompt
+    assert "do not recompute" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
 # build_day_close_completion_hooks
 # ---------------------------------------------------------------------------
 
@@ -1201,7 +1226,12 @@ async def test_build_day_close_completion_hooks_uses_owner_timezone(fake_pool, m
     run_at = datetime(2026, 6, 21, 17, 5, 0, tzinfo=UTC)
     result = _make_result(date_label="2026-06-21")
 
-    await hook(task_name=DAY_CLOSE_TASK_NAME, result=result, run_at=run_at)
+    await hook(
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+        timezone="Asia/Singapore",
+    )
 
     mock_upsert.assert_awaited_once()
     assert mock_upsert.call_args.kwargs["cache_key"] == "day_close:2026-06-21:tz:Asia/Singapore"

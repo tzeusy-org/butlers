@@ -10,7 +10,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.config import ButlerType
-from butlers.core.scheduler import _parse_complexity_from_db_row
+from butlers.core.scheduler import (
+    _effective_schedule_timezone,
+    _parse_complexity_from_db_row,
+    _prepare_scheduled_prompt,
+    _run_completion_hook,
+)
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_list as _schedule_list
@@ -231,7 +236,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             task_uuid = uuid.UUID(resolved_id)
 
             row = await pool.fetchrow(
-                "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity "
+                "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity, timezone "
                 "FROM scheduled_tasks WHERE id = $1",
                 task_uuid,
             )
@@ -245,8 +250,14 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             raw_job_args = row["job_args"]
             job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
             task_complexity = _parse_complexity_from_db_row(row)
+            runtime_context = await daemon._build_scheduler_runtime_context()
+            task_timezone = _effective_schedule_timezone(
+                row.get("timezone"),
+                runtime_context.default_timezone,
+            )
 
             now = datetime.now(UTC)
+            completion_ran = False
             try:
                 if dispatch_mode == "job":
                     result = await daemon._dispatch_scheduled_task(
@@ -255,11 +266,26 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                         job_args=job_args,
                     )
                 else:
+                    prepared_prompt = _prepare_scheduled_prompt(
+                        runtime_context.prompt_hooks,
+                        task_name=name,
+                        prompt=prompt,
+                        run_at=now,
+                        timezone=task_timezone,
+                    )
                     result = await daemon._dispatch_scheduled_task(
                         trigger_source=f"schedule:{name}",
-                        prompt=prompt,
+                        prompt=prepared_prompt,
                         complexity=task_complexity,
                     )
+                    await _run_completion_hook(
+                        runtime_context.completion_hooks,
+                        task_name=name,
+                        result=result,
+                        run_at=now,
+                        timezone=task_timezone,
+                    )
+                    completion_ran = True
 
                 # Serialize dispatch result for JSONB storage
                 if result is None:
@@ -283,6 +309,14 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 import logging
 
                 logging.getLogger(__name__).exception("Manual trigger failed for schedule %s", name)
+                if dispatch_mode != "job" and not completion_ran:
+                    await _run_completion_hook(
+                        runtime_context.completion_hooks,
+                        task_name=name,
+                        result=None,
+                        run_at=now,
+                        timezone=task_timezone,
+                    )
                 await pool.execute(
                     "UPDATE scheduled_tasks "
                     "SET last_run_at = $2, last_result = $3, updated_at = now() "

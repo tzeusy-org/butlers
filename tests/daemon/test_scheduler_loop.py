@@ -241,6 +241,47 @@ class TestSchedulerLoopBehavior:
         assert all(key == "health" for key, _ in tick_calls)
         assert all(name == "health" for _, name in tick_calls)
 
+    async def test_chronicler_scheduler_registers_day_close_hooks(self, tmp_path: Path) -> None:
+        """Only Chronicler prepares and completes the owner-local day-close prompt."""
+        daemon = _make_daemon_with_loop(
+            _make_butler_toml(tmp_path),
+            name="chronicler",
+            interval=1,
+        )
+        tick_kwargs: list[dict] = []
+
+        async def capture_tick(_pool, _dispatch_fn, **kwargs):
+            tick_kwargs.append(kwargs)
+            return 0
+
+        with (
+            patch(
+                "butlers.core.general_settings.resolve_general_timezone",
+                new_callable=AsyncMock,
+                return_value="Asia/Singapore",
+            ),
+            patch("butlers.daemon._tick", side_effect=capture_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert tick_kwargs
+        assert all(
+            set(kwargs["prompt_hooks"]) == {"chronicler_day_close"} for kwargs in tick_kwargs
+        )
+        assert all(
+            set(kwargs["completion_hooks"]) == {"chronicler_day_close"} for kwargs in tick_kwargs
+        )
+        assert all(kwargs["default_timezone"] == "Asia/Singapore" for kwargs in tick_kwargs)
+
     async def test_exception_tolerance_and_db_guard_and_custom_interval(
         self, tmp_path: Path
     ) -> None:

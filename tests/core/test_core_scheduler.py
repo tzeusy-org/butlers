@@ -918,6 +918,120 @@ async def test_tick_dispatch_prompt_and_job(pool):
     assert "prompt" not in call and "complexity" not in call
 
 
+@_asyncio_session
+async def test_tick_prepares_prompt_with_shared_run_time_and_timezone(pool):
+    """Prompt and completion hooks share one authoritative tick context."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "bound-task", "*/1 * * * *", "original prompt")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        _past(),
+    )
+    prompt_context: dict[str, Any] = {}
+    completion_context: dict[str, Any] = {}
+
+    def prepare_prompt(*, task_name, prompt, run_at, timezone):
+        prompt_context.update(
+            task_name=task_name,
+            prompt=prompt,
+            run_at=run_at,
+            timezone=timezone,
+        )
+        return f"{prompt}\n\nBound target."
+
+    async def complete(*, task_name, result, run_at, timezone):
+        completion_context.update(
+            task_name=task_name,
+            result=result,
+            run_at=run_at,
+            timezone=timezone,
+        )
+
+    dispatch = _Dispatch(result={"status": "ok"})
+    count = await tick(
+        pool,
+        dispatch,
+        prompt_hooks={"bound-task": prepare_prompt},
+        completion_hooks={"bound-task": complete},
+        default_timezone="Asia/Singapore",
+    )
+
+    assert count == 1
+    assert dispatch.calls[0]["prompt"] == "original prompt\n\nBound target."
+    assert prompt_context["task_name"] == "bound-task"
+    assert prompt_context["prompt"] == "original prompt"
+    assert prompt_context["timezone"] == "Asia/Singapore"
+    assert completion_context["task_name"] == "bound-task"
+    assert completion_context["result"] == {"status": "ok"}
+    assert completion_context["run_at"] == prompt_context["run_at"]
+    assert completion_context["timezone"] == prompt_context["timezone"]
+
+
+@_asyncio_session
+async def test_tick_keeps_legacy_completion_hook_signature_compatible(pool):
+    """Existing three-keyword completion hooks keep running after timezone wiring."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "legacy-hook-task", "*/1 * * * *", "prompt")
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        _past(),
+    )
+    completed: dict[str, Any] = {}
+
+    async def complete(*, task_name, result, run_at):
+        completed.update(task_name=task_name, result=result, run_at=run_at)
+
+    result = {"status": "ok"}
+    count = await tick(
+        pool,
+        _Dispatch(result=result),
+        completion_hooks={"legacy-hook-task": complete},
+    )
+
+    assert count == 1
+    assert completed["task_name"] == "legacy-hook-task"
+    assert completed["result"] == result
+    assert completed["run_at"].tzinfo is not None
+
+
+@_asyncio_session
+async def test_tick_prompt_hook_failure_prevents_unbound_dispatch(pool):
+    """A failed deterministic binding must not send the stored prompt to the LLM."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "unbound-task", "*/1 * * * *", "unsafe prompt")
+    original_next_run_at = _past()
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        original_next_run_at,
+    )
+
+    def fail_preparation(**_kwargs):
+        raise RuntimeError("target binding failed")
+
+    dispatch = _Dispatch()
+    count = await tick(
+        pool,
+        dispatch,
+        prompt_hooks={"unbound-task": fail_preparation},
+    )
+
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_run_at, last_result FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert count == 0
+    assert dispatch.calls == []
+    assert row["next_run_at"] > original_next_run_at
+    assert row["last_run_at"] is not None
+    assert "target binding failed" in row["last_result"]["error"]
+
+
 @pytest.mark.parametrize(
     "stored,expected",
     [

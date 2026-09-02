@@ -80,14 +80,22 @@ class _RecordingDaemon:
     without spinning up a real spawner.
     """
 
-    def __init__(self, *, result=None):
+    def __init__(self, *, result=None, runtime_context=None):
         self.calls: list[dict] = []
         self._result = result
         self.config = SimpleNamespace(name="test-butler")
+        self._runtime_context = runtime_context or SimpleNamespace(
+            default_timezone="UTC",
+            prompt_hooks=None,
+            completion_hooks=None,
+        )
 
     async def _dispatch_scheduled_task(self, **kwargs):
         self.calls.append(kwargs)
         return self._result
+
+    async def _build_scheduler_runtime_context(self):
+        return self._runtime_context
 
 
 def _register_and_grab_schedule_trigger(pool, daemon):
@@ -165,6 +173,59 @@ async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expec
         "SELECT last_run_at FROM scheduled_tasks WHERE id = $1", task_id
     )
     assert last_run_at is not None
+
+
+async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
+    """Dashboard Run now binds and completes the same owner-local schedule tuple."""
+    from butlers.core.scheduler import schedule_create
+
+    prompt_context: dict = {}
+    completion_context: dict = {}
+
+    def prepare(*, task_name, prompt, run_at, timezone):
+        prompt_context.update(
+            task_name=task_name,
+            prompt=prompt,
+            run_at=run_at,
+            timezone=timezone,
+        )
+        return f"{prompt}\n\nBound target."
+
+    async def complete(*, task_name, result, run_at, timezone):
+        completion_context.update(
+            task_name=task_name,
+            result=result,
+            run_at=run_at,
+            timezone=timezone,
+        )
+
+    dispatch_result = {"status": "ok"}
+    daemon = _RecordingDaemon(
+        result=dispatch_result,
+        runtime_context=SimpleNamespace(
+            default_timezone="Asia/Singapore",
+            prompt_hooks={"chronicler_day_close": prepare},
+            completion_hooks={"chronicler_day_close": complete},
+        ),
+    )
+    daemon.config.name = "chronicler"
+    schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
+
+    task_id = await schedule_create(
+        pool,
+        "chronicler_day_close",
+        "5 1 * * *",
+        "day-close prompt",
+    )
+    result = await schedule_trigger(task_id=str(task_id))
+
+    assert result["status"] == "triggered"
+    assert daemon.calls[0]["prompt"] == "day-close prompt\n\nBound target."
+    assert prompt_context["task_name"] == "chronicler_day_close"
+    assert prompt_context["timezone"] == "Asia/Singapore"
+    assert completion_context["result"] is dispatch_result
+    assert completion_context["run_at"] == prompt_context["run_at"]
+    assert completion_context["timezone"] == prompt_context["timezone"]
 
 
 async def test_schedule_trigger_job_mode_dispatches_without_complexity(pool):

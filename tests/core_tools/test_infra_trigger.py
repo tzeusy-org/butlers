@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -96,6 +97,59 @@ async def test_trigger_remaps_legacy_complexity_instead_of_crashing():
     result = await trigger(prompt="hello", complexity="medium")
     assert result["success"] is True
     assert spawner.calls[0]["complexity"] is Complexity.WORKHORSE
+
+
+async def test_tick_forwards_daemon_scheduler_runtime_context(monkeypatch):
+    """Manual force-tick uses the same timezone and hooks as the daemon loop."""
+    registered: dict[str, callable] = {}
+
+    def _core_tool(_group: str, **_kwargs):
+        def decorator(fn):
+            registered[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    prompt_hooks = {"chronicler_day_close": object()}
+    completion_hooks = {"chronicler_day_close": object()}
+    runtime_context = SimpleNamespace(
+        default_timezone="Asia/Singapore",
+        prompt_hooks=prompt_hooks,
+        completion_hooks=completion_hooks,
+    )
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="chronicler"),
+        _build_scheduler_runtime_context=AsyncMock(return_value=runtime_context),
+        _dispatch_scheduled_task=AsyncMock(),
+    )
+    pool = object()
+    captured: dict = {}
+
+    async def capture_tick(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return 1
+
+    monkeypatch.setattr("butlers.core_tools._infra._tick", capture_tick)
+    ctx = ToolContext(
+        daemon=daemon,
+        pool=pool,
+        spawner=None,
+        butler_name="chronicler",
+        butler_type=None,
+        is_switchboard=False,
+        is_messenger=False,
+        route_metrics=None,
+    )
+    register_infra_tools(ctx, SimpleNamespace(), _core_tool)
+
+    result = await registered["tick"]()
+
+    assert result == {"dispatched": 1}
+    daemon._build_scheduler_runtime_context.assert_awaited_once_with()
+    assert captured["args"] == (pool, daemon._dispatch_scheduled_task)
+    assert captured["kwargs"]["default_timezone"] == "Asia/Singapore"
+    assert captured["kwargs"]["prompt_hooks"] is prompt_hooks
+    assert captured["kwargs"]["completion_hooks"] is completion_hooks
 
 
 async def test_trigger_returns_session_id():
