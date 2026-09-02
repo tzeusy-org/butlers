@@ -212,6 +212,8 @@ def _make_telegram_envelope(
     idempotency_key: str | None = None,
 ) -> dict:
     """Helper to build a telegram ingest.v1 envelope."""
+    reply_target_ref = thread_id or "12345:1"
+    chat_id = reply_target_ref.partition(":")[0]
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -221,7 +223,8 @@ def _make_telegram_envelope(
         },
         "event": {
             "external_event_id": update_id,
-            "external_thread_id": thread_id,
+            "external_conversation_id": f"telegram:{chat_id}",
+            "reply_target_ref": reply_target_ref,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -257,7 +260,8 @@ def _make_email_envelope(
         },
         "event": {
             "external_event_id": message_id,
-            "external_thread_id": None,
+            "external_conversation_id": message_id,
+            "reply_target_ref": message_id,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -294,7 +298,8 @@ def _make_dashboard_envelope(
         },
         "event": {
             "external_event_id": message_id,
-            "external_thread_id": conversation_id,
+            "external_conversation_id": f"dashboard:{conversation_id}",
+            "reply_target_ref": conversation_id,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -338,6 +343,12 @@ class TestIngestV1Basic:
         assert row["normalized_text"] == "Test message"
         assert _decode_jsonb(row["request_context"])["source_channel"] == "telegram_bot"
         assert _decode_jsonb(row["request_context"])["source_endpoint_identity"] == "test_bot"
+        assert (
+            _decode_jsonb(row["request_context"])["external_conversation_id"]
+            == "telegram:12345"
+        )
+        assert _decode_jsonb(row["request_context"])["reply_target_ref"] == "12345:1"
+        assert _decode_jsonb(row["request_context"])["source_thread_identity"] == "12345:1"
         assert _decode_jsonb(row["request_context"])["source_sender_identity"] == "user_alice"
 
     async def test_ingest_email_envelope_success(self, pool: asyncpg.Pool) -> None:
@@ -540,6 +551,8 @@ class TestIngestV1DedupeKeyComputation:
             ),
             event=IngestEventV1(
                 external_event_id="123",
+                external_conversation_id="telegram:12345",
+                reply_target_ref="12345:1",
                 observed_at=datetime.now(UTC).isoformat(),
             ),
             sender=IngestSenderV1(identity="user_1"),
@@ -564,6 +577,8 @@ class TestIngestV1DedupeKeyComputation:
             ),
             event=IngestEventV1(
                 external_event_id="update_456",
+                external_conversation_id="telegram:12345",
+                reply_target_ref="12345:2",
                 observed_at=datetime.now(UTC).isoformat(),
             ),
             sender=IngestSenderV1(identity="user_2"),
@@ -768,7 +783,8 @@ class TestPinnedTargetRouting:
             message_id="<pin-affinity-001@example.com>",
             sender="alerts@chase.com",
         )
-        envelope["event"]["external_thread_id"] = "thread-pin-001"
+        envelope["event"]["external_conversation_id"] = "thread-pin-001"
+        envelope["event"]["reply_target_ref"] = "thread-pin-001"
         envelope["control"]["pinned_target"] = "finance"
 
         with patch(

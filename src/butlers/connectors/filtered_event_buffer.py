@@ -151,6 +151,19 @@ def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
     if isinstance(control_section, dict) and control_section.get("policy_tier") is None:
         control_section.pop("policy_tier", None)
 
+    source_section = payload_dict.get("source")
+    event_section = payload_dict.get("event")
+    if (
+        isinstance(source_section, dict)
+        and source_section.get("channel") == "telegram_bot"
+        and isinstance(event_section, dict)
+    ):
+        legacy_target = event_section.get("external_thread_id")
+        if legacy_target:
+            chat_id = str(legacy_target).partition(":")[0]
+            event_section.setdefault("external_conversation_id", f"telegram:{chat_id}")
+            event_section.setdefault("reply_target_ref", str(legacy_target))
+
 
 async def drain_replay_pending(
     pool: asyncpg.Pool,

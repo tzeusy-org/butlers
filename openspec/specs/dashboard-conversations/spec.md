@@ -22,12 +22,24 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
   - `updated_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the last message was added
   - `message_count` (INTEGER, NOT NULL, default `0`) — denormalized count of messages
   - `routed_butler` (TEXT, nullable): the butler this conversation's first message was routed to by Switchboard classification; NULL for pinned per-butler conversations (already deterministic) and for classification-routed conversations that haven't routed yet (e.g. a bug-lane report, which never targets a domain butler)
+  - `source_channel` (TEXT, NOT NULL, default `'dashboard'`) — ingress channel owning this anchor
+  - `external_conversation_id` (TEXT, nullable) — channel-stable conversation identity, distinct from any per-message reply target
+  - `provider_session_id` (TEXT, nullable): the most recent provider-native session/resume handle minted for this conversation
+  - `provider_runtime_type` (TEXT, nullable): which runtime adapter type minted `provider_session_id` — a handle is only resumable by the same adapter type
+  - `provider_session_updated_at` (TIMESTAMPTZ, nullable): when `provider_session_id` was last refreshed; governs TTL-based resume eligibility
 
 #### Scenario: Conversation table indexes
 
 - **WHEN** the migration creates indexes
 - **THEN** a composite index on `(butler_name, status, updated_at DESC)` SHALL exist for listing active conversations per butler
 - **AND** a composite index on `(butler_name, updated_at DESC)` SHALL exist for chronological listing
+- **AND** a partial unique index on `(butler_name, source_channel, external_conversation_id)` SHALL guarantee one non-dashboard anchor per provider conversation
+
+#### Scenario: Legacy Telegram per-message anchors collapse reversibly
+- **WHEN** the conversation-identity migration encounters multiple Telegram anchors for one chat whose legacy keys are `<chat_id>:<message_id>`
+- **THEN** it collapses them to one `telegram:<chat_id>` anchor and retains the newest provider-session handle
+- **AND** it re-links messages before deleting redundant zero-message anchors
+- **AND** downgrade restores the original anchor rows and message links
 
 #### Scenario: Sticky routed_butler stamping
 
@@ -121,7 +133,7 @@ Sending a follow-up message in an existing conversation SHALL preserve the threa
 
 - **WHEN** `POST /api/butlers/{name}/conversations/{conversation_id}/messages` is called with `{ "message": "Follow up question" }` and an optional `page_context`
 - **THEN** a user message row is inserted in `public.dashboard_messages`
-- **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with the same `endpoint_identity` as the original conversation and `event.external_thread_id = {conversation_id}`
+- **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with the same `endpoint_identity` as the original conversation, `event.external_conversation_id = "dashboard:{conversation_id}"`, and `event.reply_target_ref = {conversation_id}`
 - **AND** the envelope's `payload.normalized_text` includes prior conversation context (last N messages as summarized context, configurable, default last 5 exchange pairs)
 - **AND** the response is streamed back via SSE
 - **AND** `updated_at` and `message_count` on the conversation are updated
@@ -326,7 +338,8 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
   - `source.provider`: `"internal"`
   - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
   - `event.external_event_id`: `"{message_id}"`, where dashboard UI provides one immutable client-generated ID for a new user message and reuses it for retry and Stop
-  - `event.external_thread_id`: `"{conversation_id}"`
+  - `event.external_conversation_id`: `"dashboard:{conversation_id}"`
+  - `event.reply_target_ref`: `"{conversation_id}"`
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`
   - `payload.normalized_text`: the user's message content (with conversation context for follow-ups)

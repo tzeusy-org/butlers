@@ -25,7 +25,8 @@ Scope: v1-mandatory
   - `event.external_event_id`: `"{message_id}"`, where `message_id` is
     client-generated for a new user message and reused for a retry of that
     message
-  - `event.external_thread_id`: `"{conversation_id}"`
+  - `event.external_conversation_id`: `"dashboard:{conversation_id}"`
+  - `event.reply_target_ref`: `"{conversation_id}"`
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`
   - `payload.normalized_text`: the user's message content (with conversation

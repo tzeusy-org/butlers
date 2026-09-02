@@ -31,7 +31,8 @@ The connector uses a per-chat buffering model rather than submitting messages in
 | `source.provider` | `telegram` |
 | `source.endpoint_identity` | Auto-resolved via `get_me()` (e.g., `telegram:user:@username`) |
 | `event.external_event_id` | Telegram message/update event ID |
-| `event.external_thread_id` | Chat ID / thread ID |
+| `event.external_conversation_id` | `telegram:<chat ID>` |
+| `event.reply_target_ref` | `<chat ID>:<message ID>` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | Telegram sender ID for the message author |
 | `payload.raw` | Full provider event payload |

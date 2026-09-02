@@ -900,7 +900,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
 
             # --- Process phase (asynchronous): build context and call spawner ---
             source_channel = parsed_route.request_context.source_channel
-            source_thread_identity = parsed_route.request_context.source_thread_identity
+            external_conversation_id = parsed_route.request_context.external_conversation_id
             _addressed = parsed_route.request_context.addressed
             context_text = _build_route_runtime_context(
                 route_context=route_context,
@@ -1012,7 +1012,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             # slow anchor must not make a healthy worker appear dead
                             # to recovery before it reaches the Spawner boundary.
                             _conversation_id: uuid.UUID | None = None
-                            if source_thread_identity:
+                            if external_conversation_id:
                                 try:
                                     from butlers.api.conversations import (
                                         conversation_get_or_create_by_thread,
@@ -1022,7 +1022,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                         _pool,
                                         butler_name=butler_name,
                                         source_channel=source_channel,
-                                        source_thread_identity=source_thread_identity,
+                                        external_conversation_id=external_conversation_id,
                                         # The raw, un-fenced prompt -- _prompt is the
                                         # <routed_message>-wrapped text (_wrap_routed_
                                         # message), which would otherwise pollute the

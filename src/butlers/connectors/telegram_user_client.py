@@ -1218,7 +1218,8 @@ class TelegramUserClientConnector:
             },
             "event": {
                 "external_event_id": f"batch:{chat_id}:{min_id}-{max_id}",
-                "external_thread_id": chat_id,
+                "external_conversation_id": f"telegram:{chat_id}",
+                "reply_target_ref": f"{chat_id}:{max_id}",
                 "observed_at": flush_timestamp,
             },
             "sender": {
@@ -1886,7 +1887,8 @@ class TelegramUserClientConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: user-client identity
         - event.external_event_id: message.id
-        - event.external_thread_id: chat.id or thread_id
+        - event.external_conversation_id: stable Telegram chat identity
+        - event.reply_target_ref: chat.id:message.id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: sender user ID
         - sender.participant_count: number of chat participants (RFC 0013)
@@ -1973,7 +1975,8 @@ class TelegramUserClientConnector:
             },
             "event": {
                 "external_event_id": message_id,
-                "external_thread_id": chat_id,
+                "external_conversation_id": f"telegram:{chat_id}" if chat_id else None,
+                "reply_target_ref": f"{chat_id}:{message_id}" if chat_id else None,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {

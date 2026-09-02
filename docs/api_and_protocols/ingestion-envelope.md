@@ -20,7 +20,8 @@ Connectors are transport adapters that normalize events from external systems (T
   },
   "event": {
     "external_event_id": "provider-event-id",
-    "external_thread_id": "thread-or-conversation-id-or-null",
+    "external_conversation_id": "stable-conversation-id-or-null",
+    "reply_target_ref": "provider-reply-target-or-null",
     "observed_at": "RFC3339 timestamp"
   },
   "sender": {
@@ -60,7 +61,9 @@ Endpoint identity is auto-resolved from the source API at connector startup: Tel
 | Field | Required | Description |
 |-------|----------|-------------|
 | `external_event_id` | When available | Provider's native event identifier (Telegram `update_id`, email `Message-ID`) |
-| `external_thread_id` | No | Thread/conversation ID for grouping related messages |
+| `external_conversation_id` | Interactive channels | Stable ID used for continuity, anchors, and history |
+| `reply_target_ref` | Interactive channels | Provider-native per-message/thread target used only for replies or reactions |
+| `external_thread_id` | Legacy producers only | Compatibility field; never preferred for new interactive ingress |
 | `observed_at` | Yes | RFC 3339 timestamp when the connector observed the event |
 
 ### `sender` Block

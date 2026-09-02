@@ -276,20 +276,20 @@ async def conversation_get_or_create_by_thread(
     *,
     butler_name: str,
     source_channel: str,
-    source_thread_identity: str,
+    external_conversation_id: str,
     first_message: str,
 ) -> tuple[dict[str, Any], bool]:
     """Upsert the channel-agnostic conversation anchor for an inbound thread.
 
     Generalizes conversation creation beyond the dashboard-only
     ``conversation_create``: any channel that already normalizes a
-    ``source_thread_identity`` at ingest (Telegram, email, ...) can call this
+    ``external_conversation_id`` at ingest (Telegram, email, ...) can call this
     once per inbound message to get a stable ``dashboard_conversations`` row
     to attach session lineage and a provider resume handle to, without
     needing to track its own anchor concept.
 
     Concurrency-safe: relies on the partial unique index on
-    ``(butler_name, source_channel, source_thread_identity)`` (core_185) so
+    ``(butler_name, source_channel, external_conversation_id)`` (core_209) so
     two concurrent callers for the same thread converge on one row via
     ``ON CONFLICT ... DO NOTHING`` rather than racing to create duplicates.
 
@@ -303,20 +303,22 @@ async def conversation_get_or_create_by_thread(
         """
         INSERT INTO public.dashboard_conversations
             (id, butler_name, title, status, created_at, updated_at,
-             message_count, source_channel, source_thread_identity)
-        VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6)
-        ON CONFLICT (butler_name, source_channel, source_thread_identity)
-            WHERE source_thread_identity IS NOT NULL
+             message_count, source_channel, source_thread_identity,
+             external_conversation_id)
+        VALUES ($1, $2, $3, 'active', $4, $4, 0, $5, $6, $6)
+        ON CONFLICT (butler_name, source_channel, external_conversation_id)
+            WHERE external_conversation_id IS NOT NULL
         DO NOTHING
         RETURNING id, butler_name, title, status, created_at, updated_at,
-                  message_count, routed_butler, source_channel, source_thread_identity
+                  message_count, routed_butler, source_channel, source_thread_identity,
+                  external_conversation_id
         """,
         conv_id,
         butler_name,
         title,
         now,
         source_channel,
-        source_thread_identity,
+        external_conversation_id,
     )
     if inserted is not None:
         return dict(inserted), True
@@ -324,18 +326,19 @@ async def conversation_get_or_create_by_thread(
     existing = await pool.fetchrow(
         """
         SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, routed_butler, source_channel, source_thread_identity
+               message_count, routed_butler, source_channel, source_thread_identity,
+               external_conversation_id
         FROM public.dashboard_conversations
-        WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+        WHERE butler_name = $1 AND source_channel = $2 AND external_conversation_id = $3
         """,
         butler_name,
         source_channel,
-        source_thread_identity,
+        external_conversation_id,
     )
     if existing is None:
         raise RuntimeError(
             f"Conversation anchor for {butler_name}/{source_channel}/"
-            f"{source_thread_identity} disappeared after an upsert conflict"
+            f"{external_conversation_id} disappeared after an upsert conflict"
         )
     return dict(existing), False
 

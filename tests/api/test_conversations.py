@@ -472,7 +472,7 @@ async def test_conversation_get_or_create_by_thread_new_row_inserts_full_shape()
         pool,
         butler_name=_BUTLER,
         source_channel="telegram",
-        source_thread_identity="t:1",
+        external_conversation_id="telegram:t:1",
         first_message="hello",
     )
 
@@ -495,7 +495,7 @@ async def test_conversation_get_or_create_by_thread_conflict_reuses_existing_row
         pool,
         butler_name=_BUTLER,
         source_channel="telegram",
-        source_thread_identity="t:1",
+        external_conversation_id="telegram:t:1",
         first_message="a retried first message",
     )
 
@@ -513,7 +513,7 @@ async def test_conversation_get_or_create_by_thread_raises_if_row_vanishes():
             pool,
             butler_name=_BUTLER,
             source_channel="telegram",
-            source_thread_identity="t:1",
+            external_conversation_id="telegram:t:1",
             first_message="hello",
         )
 

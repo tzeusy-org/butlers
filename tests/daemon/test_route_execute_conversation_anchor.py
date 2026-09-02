@@ -164,6 +164,7 @@ def _route_request_context(
     source_sender_identity: str = "health",
     source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345:678",
+    external_conversation_id: str | None = "telegram:12345",
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
         "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
@@ -174,6 +175,8 @@ def _route_request_context(
     }
     if source_thread_identity is not None:
         ctx["source_thread_identity"] = source_thread_identity
+    if external_conversation_id is not None:
+        ctx["external_conversation_id"] = external_conversation_id
     return ctx
 
 
@@ -248,7 +251,7 @@ async def test_creates_conversation_anchor_and_forwards_conversation_id(
     call_kwargs = mock_get_or_create.call_args.kwargs
     assert call_kwargs["butler_name"] == "health"
     assert call_kwargs["source_channel"] == "telegram_bot"
-    assert call_kwargs["source_thread_identity"] == "12345:678"
+    assert call_kwargs["external_conversation_id"] == "telegram:12345"
     # The raw prompt, not the <routed_message>-wrapped text sent to the runtime.
     assert call_kwargs["first_message"] == "Hello from Telegram."
     assert "<routed_message>" not in call_kwargs["first_message"]
@@ -293,7 +296,9 @@ async def test_skips_conversation_anchor_when_no_thread_identity(tmp_path: Path)
         await route_execute_fn(
             schema_version="route.v1",
             request_context=_route_request_context(
-                source_channel="api", source_thread_identity=None
+                source_channel="api",
+                source_thread_identity=None,
+                external_conversation_id=None,
             ),
             input={"prompt": "Run health check."},
         )

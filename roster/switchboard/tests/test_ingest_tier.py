@@ -363,6 +363,8 @@ class TestIngestionTierBackwardCompatibility:
             },
             "event": {
                 "external_event_id": "upd_legacy_001",
+                "external_conversation_id": "telegram:legacy-chat",
+                "reply_target_ref": "legacy-chat:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user_legacy_001"},

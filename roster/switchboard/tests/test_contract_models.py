@@ -34,7 +34,8 @@ def _valid_ingest_payload() -> dict[str, Any]:
         },
         "event": {
             "external_event_id": "update-123",
-            "external_thread_id": "chat-456",
+            "external_conversation_id": "telegram:chat-456",
+            "reply_target_ref": "chat-456:123",
             "observed_at": now,
         },
         "sender": {"identity": "user-123"},
@@ -88,6 +89,21 @@ def test_ingest_v1_valid_envelope() -> None:
     assert envelope.schema_version == "ingest.v1"
     assert envelope.source.channel == "telegram_bot"
     assert envelope.payload.normalized_text == "ping"
+
+
+def test_ingest_v1_telegram_bot_requires_split_conversation_identity() -> None:
+    payload = _valid_ingest_payload()
+    payload["event"].pop("external_conversation_id")
+
+    with pytest.raises(ValidationError, match="external_conversation_id"):
+        IngestEnvelopeV1.model_validate(payload)
+
+
+def test_ingest_v1_telegram_bot_accepts_conversation_and_reply_target() -> None:
+    envelope = IngestEnvelopeV1.model_validate(_valid_ingest_payload())
+
+    assert envelope.event.external_conversation_id == "telegram:chat-456"
+    assert envelope.event.reply_target_ref == "chat-456:123"
 
 
 def test_ingest_v1_accepts_email_channel_with_gmail_provider() -> None:
@@ -534,6 +550,8 @@ class TestIngestionTierContract:
             },
             "event": {
                 "external_event_id": "upd_001",
+                "external_conversation_id": "telegram:legacy-chat",
+                "reply_target_ref": "legacy-chat:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user_001"},

@@ -2543,7 +2543,8 @@ class GmailConnectorRuntime:
                 },
                 "event": {
                     "external_event_id": rfc_message_id,
-                    "external_thread_id": thread_id,
+                    "external_conversation_id": thread_id,
+                    "reply_target_ref": thread_id,
                     "observed_at": observed_at.isoformat(),
                 },
                 "sender": {
@@ -2611,7 +2612,8 @@ class GmailConnectorRuntime:
             },
             "event": {
                 "external_event_id": rfc_message_id,
-                "external_thread_id": thread_id,
+                "external_conversation_id": thread_id,
+                "reply_target_ref": thread_id,
                 "observed_at": observed_at.isoformat(),
             },
             "sender": {

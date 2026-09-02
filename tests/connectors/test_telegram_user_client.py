@@ -92,7 +92,8 @@ async def test_text_message_envelope_contract(connector: TelegramUserClientConne
     assert env["source"]["provider"] == "telegram"
     assert env["source"]["endpoint_identity"] == _ENDPOINT
     assert env["event"]["external_event_id"] == "42"
-    assert env["event"]["external_thread_id"] == "200"
+    assert env["event"]["external_conversation_id"] == "telegram:200"
+    assert env["event"]["reply_target_ref"] == "200:42"
     assert env["sender"]["identity"] == "777"
     assert "Event test" in env["payload"]["normalized_text"]
     key = env["control"]["idempotency_key"]

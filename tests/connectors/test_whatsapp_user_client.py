@@ -63,7 +63,8 @@ def test_single_event_envelope_contract(connector: WhatsAppUserClientConnector) 
     assert env["source"]["provider"] == "whatsapp"
     assert env["source"]["endpoint_identity"] == _ENDPOINT
     assert env["event"]["external_event_id"] == "msg-abc"
-    assert env["event"]["external_thread_id"] == "chat-123"
+    assert env["event"]["external_conversation_id"] == "whatsapp:chat-123"
+    assert env["event"]["reply_target_ref"] == "chat-123"
     assert env["sender"]["identity"] == "sender-456"
     key = env["control"]["idempotency_key"]
     assert "whatsapp:" in key

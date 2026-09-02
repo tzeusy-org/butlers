@@ -174,6 +174,10 @@ class IngestEventV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     external_event_id: NonEmptyStr
+    external_conversation_id: NonEmptyStr | None = None
+    reply_target_ref: NonEmptyStr | None = None
+    # Compatibility-only for producers that have not adopted the split
+    # conversation/reply identity contract yet.
     external_thread_id: NonEmptyStr | None = None
     observed_at: datetime
 
@@ -343,6 +347,23 @@ class IngestEnvelopeV1(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _validate_interactive_conversation_identity(self) -> IngestEnvelopeV1:
+        if self.source.channel == "telegram_bot":
+            if self.event.external_conversation_id is None:
+                raise PydanticCustomError(
+                    "external_conversation_id_required",
+                    "event.external_conversation_id is required for telegram_bot ingress.",
+                    {},
+                )
+            if self.event.reply_target_ref is None:
+                raise PydanticCustomError(
+                    "reply_target_ref_required",
+                    "event.reply_target_ref is required for telegram_bot ingress.",
+                    {},
+                )
+        return self
+
 
 class RouteRequestContextV1(BaseModel):
     """Immutable routed request lineage context."""
@@ -357,6 +378,8 @@ class RouteRequestContextV1(BaseModel):
     source_sender_contact_id: NonEmptyStr | None = None
     source_sender_entity_id: NonEmptyStr | None = None
     source_thread_identity: NonEmptyStr | None = None
+    external_conversation_id: NonEmptyStr | None = None
+    reply_target_ref: NonEmptyStr | None = None
     addressed: bool = False
     subrequest_id: NonEmptyStr | None = None
     segment_id: NonEmptyStr | None = None

@@ -31,7 +31,8 @@ Telegram updates are mapped to the `ingest.v1` envelope as follows:
 | `source.provider` | `telegram` |
 | `source.endpoint_identity` | Auto-resolved via `getMe()` (e.g., `telegram:bot:@mybot`) |
 | `event.external_event_id` | `update_id` |
-| `event.external_thread_id` | `chat.id` |
+| `event.external_conversation_id` | `telegram:<chat.id>` (plus topic ID for forum topics) |
+| `event.reply_target_ref` | `<chat.id>:<message_id>` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | `message.from.id` |
 | `payload.raw` | Full Telegram update JSON |

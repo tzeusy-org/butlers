@@ -63,7 +63,10 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
     """Build request context and pipeline tool args for a buffered inbox ref."""
     channel = ref.source.get("channel", "unknown")
     endpoint_identity = ref.source.get("endpoint_identity", "unknown")
-    external_thread_id = ref.event.get("external_thread_id")
+    external_conversation_id = ref.event.get("external_conversation_id") or ref.event.get(
+        "external_thread_id"
+    )
+    reply_target_ref = ref.event.get("reply_target_ref") or ref.event.get("external_thread_id")
     addressed = bool(ref.source.get("addressed", False))
     sender_identity = ref.sender.get("identity", "unknown")
 
@@ -93,7 +96,9 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         "source_channel": channel,
         "source_endpoint_identity": f"{channel}:{endpoint_identity}",
         "source_sender_identity": source_sender_identity,
-        "source_thread_identity": external_thread_id,
+        "source_thread_identity": reply_target_ref,
+        "external_conversation_id": external_conversation_id,
+        "reply_target_ref": reply_target_ref,
         "trace_context": {},
     }
     if addressed:
@@ -116,7 +121,9 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         "source_endpoint_identity": f"{channel}:{endpoint_identity}",
         "sender_identity": sender_identity,
         "external_event_id": ref.event.get("external_event_id", ""),
-        "external_thread_id": external_thread_id,
+        "external_thread_id": reply_target_ref,
+        "external_conversation_id": external_conversation_id,
+        "reply_target_ref": reply_target_ref,
         "source_tool": "ingest",
         "request_id": ref.request_id,
         "request_context": request_context,
@@ -255,7 +262,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         observability_request_id = (
             opaque_route_ref(ref.request_id) if content_blind_observability else ref.request_id
         )
-        external_thread_id = ref.event.get("external_thread_id")
+        reply_target_ref = ref.event.get("reply_target_ref") or ref.event.get("external_thread_id")
         _, _buf_tool_args = build_buffer_pipeline_inputs(ref)
 
         # Fire reaction before pipeline processing (telegram_bot only).
@@ -264,7 +271,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             if callable(react_fn):
                 try:
                     await react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=REACTION_IN_PROGRESS,
                     )
                 except Exception:
@@ -324,7 +331,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                 terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
                 try:
                     await react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=terminal_reaction,
                     )
                 except Exception:

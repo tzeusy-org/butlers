@@ -93,7 +93,8 @@ async def test_build_ingest_envelope_event_fields(
     """Envelope event fields map correctly from message headers."""
     envelope = await gmail_runtime._build_ingest_envelope(_make_message())
     assert envelope["event"]["external_event_id"] == "<unique-msg-id@example.com>"
-    assert envelope["event"]["external_thread_id"] == "thread456"
+    assert envelope["event"]["external_conversation_id"] == "thread456"
+    assert envelope["event"]["reply_target_ref"] == "thread456"
     assert envelope["sender"]["identity"] == "sender@example.com"
 
 

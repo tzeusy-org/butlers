@@ -48,6 +48,7 @@ async def _insert_message(
     thread_identity: str,
     received_at: datetime,
     channel: str = "telegram_bot",
+    external_conversation_id: str | None = None,
 ) -> None:
     """Insert a v2-schema message_inbox row."""
     # Ensure the monthly partition exists (mirrors production ingestion behaviour).
@@ -58,6 +59,8 @@ async def _insert_message(
         "source_thread_identity": thread_identity,
         "source_endpoint_identity": f"{channel}:bot",
     }
+    if external_conversation_id is not None:
+        request_context["external_conversation_id"] = external_conversation_id
     raw_payload = {
         "content": text,
         "metadata": {},
@@ -156,13 +159,13 @@ async def test_realtime_history_count_window(switchboard_dsn):
         await pool.close()
 
 
-async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switchboard_dsn):
-    """Telegram history groups message-scoped thread IDs by chat identity."""
+async def test_realtime_history_telegram_uses_external_conversation_id(switchboard_dsn):
+    """Telegram history is keyed by the connector's stable conversation identity."""
     pool = await asyncpg.create_pool(switchboard_dsn)
     try:
         now = datetime.now(UTC)
         chat_id = f"-100{uuid.uuid4().int % 10_000_000:07d}"
-        current_thread = f"{chat_id}:103"
+        conversation_id = f"telegram:{chat_id}"
 
         await _insert_message(
             pool,
@@ -171,6 +174,7 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             thread_identity=f"{chat_id}:101",
             received_at=now - timedelta(minutes=6),
             channel="telegram_bot",
+            external_conversation_id=conversation_id,
         )
         await _insert_outbound_message(
             pool,
@@ -179,6 +183,7 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             thread_identity=f"{chat_id}:102",
             received_at=now - timedelta(minutes=5),
             channel="telegram_bot",
+            external_conversation_id=conversation_id,
         )
         await _insert_message(
             pool,
@@ -187,11 +192,12 @@ async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switch
             thread_identity=f"-100{uuid.uuid4().int % 10_000_000:07d}:201",
             received_at=now - timedelta(minutes=4),
             channel="telegram_bot",
+            external_conversation_id=f"telegram:-100{uuid.uuid4().int % 10_000_000:07d}",
         )
 
         messages = await _load_realtime_history(
             pool,
-            current_thread,
+            conversation_id,
             now,
             source_channel="telegram_bot",
         )
@@ -311,6 +317,7 @@ async def _insert_outbound_message(
     thread_identity: str,
     received_at: datetime,
     channel: str = "telegram_bot",
+    external_conversation_id: str | None = None,
 ) -> None:
     """Insert an outbound (direction='outbound') message_inbox row."""
     import json
@@ -323,6 +330,8 @@ async def _insert_outbound_message(
         "source_thread_identity": thread_identity,
         "source_endpoint_identity": f"butler:{origin_butler}",
     }
+    if external_conversation_id is not None:
+        request_context["external_conversation_id"] = external_conversation_id
     raw_payload = {
         "content": text,
         "metadata": {"origin_butler": origin_butler},

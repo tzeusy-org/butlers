@@ -1311,7 +1311,8 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
+        - event.external_conversation_id: stable Telegram chat/topic identity
+        - event.reply_target_ref: chat.id:message_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
@@ -1348,10 +1349,13 @@ class TelegramBotConnector:
 
         message_id = msg.get("message_id")
 
-        # Build thread identity as chat_id:message_id for reply targeting
-        thread_identity = (
+        reply_target_ref = (
             f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
         )
+        topic_id = msg.get("message_thread_id")
+        external_conversation_id = f"telegram:{chat_id}" if chat_id else None
+        if external_conversation_id and topic_id is not None:
+            external_conversation_id = f"{external_conversation_id}:topic:{topic_id}"
 
         # Canonical idempotency key: tg:<chat_id>:<message_id>
         # Uses chat_id + message_id (unique per chat) so that bot and user-client
@@ -1372,7 +1376,8 @@ class TelegramBotConnector:
             },
             "event": {
                 "external_event_id": update_id,
-                "external_thread_id": thread_identity,
+                "external_conversation_id": external_conversation_id,
+                "reply_target_ref": reply_target_ref,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {

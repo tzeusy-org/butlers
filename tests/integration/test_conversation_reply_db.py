@@ -279,14 +279,14 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
             pool,
             butler_name="telegram-relay",
             source_channel="telegram",
-            source_thread_identity="telegram:12345",
+            external_conversation_id="telegram:12345",
             first_message="hello from telegram",
         )
         second, second_is_new = await conversation_get_or_create_by_thread(
             pool,
             butler_name="telegram-relay",
             source_channel="telegram",
-            source_thread_identity="telegram:12345",
+            external_conversation_id="telegram:12345",
             first_message="a different first message on retry",
         )
 
@@ -299,7 +299,7 @@ async def test_conversation_get_or_create_by_thread_creates_once_then_reuses(
         count = await pool.fetchval(
             """
             SELECT count(*) FROM public.dashboard_conversations
-            WHERE butler_name = $1 AND source_channel = $2 AND source_thread_identity = $3
+            WHERE butler_name = $1 AND source_channel = $2 AND external_conversation_id = $3
             """,
             "telegram-relay",
             "telegram",
@@ -316,21 +316,21 @@ async def test_conversation_get_or_create_by_thread_distinguishes_channels_and_t
             pool,
             butler_name="switchboard",
             source_channel="telegram",
-            source_thread_identity="telegram:1",
+            external_conversation_id="telegram:1",
             first_message="hi from telegram",
         )
         email_conv, _ = await conversation_get_or_create_by_thread(
             pool,
             butler_name="switchboard",
             source_channel="email",
-            source_thread_identity="telegram:1",
+            external_conversation_id="telegram:1",
             first_message="hi from email",
         )
         other_thread_conv, _ = await conversation_get_or_create_by_thread(
             pool,
             butler_name="switchboard",
             source_channel="telegram",
-            source_thread_identity="telegram:2",
+            external_conversation_id="telegram:2",
             first_message="a different telegram thread",
         )
 

@@ -35,7 +35,8 @@ Connectors and the dashboard API submit events using this canonical envelope:
   },
   "event": {
     "external_event_id": "<provider-event-id>",
-    "external_thread_id": "<thread-or-conversation-id | null>",
+    "external_conversation_id": "<stable provider conversation id | null>",
+    "reply_target_ref": "<provider reply target | null>",
     "observed_at": "<RFC 3339 timestamp>"
   },
   "sender": {
@@ -70,7 +71,8 @@ The Switchboard assigns canonical request context at ingest acceptance:
 - `request_id` (UUIDv7) -- canonical identifier for the request lifecycle
 - `received_at` -- server-side timestamp
 - `source_channel`, `source_endpoint_identity`, `source_sender_identity` -- derived from the envelope
-- `source_thread_identity` -- from `event.external_thread_id` when present
+- `external_conversation_id` -- from the same-named event field; the only continuity/history key
+- `source_thread_identity` / `reply_target_ref` -- from `event.reply_target_ref`; delivery targeting only
 - `trace_context` -- propagated from `control.trace_context`
 
 The ingest response includes the canonical `request_id` for lineage tracking.
@@ -91,7 +93,7 @@ After deduplication and envelope normalization, the triage pipeline evaluates in
 
 **Stage 1: Thread affinity** (email only, if enabled)
 
-Given `source_channel = "email"` and a non-null `event.external_thread_id`:
+Given `source_channel = "email"` and a non-null `event.external_conversation_id`:
 
 1. Check global disable flag.
 2. Check thread-specific override (`disabled` or `force:<butler>`).

@@ -98,7 +98,8 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
   - `message_count` (INTEGER, NOT NULL, default `0`) — denormalized count of messages
   - `routed_butler` (TEXT, nullable): the butler this conversation's first message was routed to by Switchboard classification; NULL for pinned per-butler conversations (already deterministic) and for classification-routed conversations that haven't routed yet (e.g. a bug-lane report, which never targets a domain butler)
   - `source_channel` (TEXT, NOT NULL, default `'dashboard'`): origin channel for the conversation (`'dashboard'`, `'telegram'`, `'email'`, ...); every pre-existing row backfills as `'dashboard'`
-  - `source_thread_identity` (TEXT, nullable): the channel-normalized thread identity (mirrors `message_inbox.request_context ->> 'source_thread_identity'`); NULL for dashboard-created rows, which are already anchored 1:1 on `id`
+  - `source_thread_identity` (TEXT, nullable): compatibility copy of the channel-normalized thread identity
+  - `external_conversation_id` (TEXT, nullable): channel-stable conversation identity, distinct from any per-message reply target
   - `provider_session_id` (TEXT, nullable): the most recent provider-native session/resume handle minted for this conversation
   - `provider_runtime_type` (TEXT, nullable): which runtime adapter type minted `provider_session_id` — a handle is only resumable by the same adapter type
   - `provider_session_updated_at` (TIMESTAMPTZ, nullable): when `provider_session_id` was last refreshed; governs TTL-based resume eligibility
@@ -108,7 +109,14 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
 - **WHEN** the migration creates indexes
 - **THEN** a composite index on `(butler_name, status, updated_at DESC)` SHALL exist for listing active conversations per butler
 - **AND** a composite index on `(butler_name, updated_at DESC)` SHALL exist for chronological listing
-- **AND** a unique index on `(butler_name, source_channel, source_thread_identity)` WHERE `source_thread_identity IS NOT NULL` SHALL exist so concurrent ingress for the same thread converges on one anchor row
+- **AND** a partial unique index on `(butler_name, source_channel, external_conversation_id)` SHALL guarantee one non-dashboard anchor per provider conversation
+
+#### Scenario: Legacy Telegram per-message anchors collapse reversibly
+
+- **WHEN** the conversation-identity migration encounters multiple Telegram anchors for one chat whose legacy keys are `<chat_id>:<message_id>`
+- **THEN** it collapses them to one `telegram:<chat_id>` anchor and retains the newest provider-session handle
+- **AND** it re-links messages before deleting redundant zero-message anchors
+- **AND** downgrade restores the original anchor rows and message links
 
 #### Scenario: Sticky routed_butler stamping
 

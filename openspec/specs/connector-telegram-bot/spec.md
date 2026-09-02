@@ -41,13 +41,20 @@ Each Telegram update SHALL be normalized to the canonical `ingest.v1` envelope.
   - `source.provider` = `"telegram"`
   - `source.endpoint_identity` = receiving bot identity
   - `event.external_event_id` = Telegram `update_id`
-  - `event.external_thread_id` = `<chat_id>:<message_id>`
+  - `event.external_conversation_id` = `telegram:<chat_id>` (or `telegram:<chat_id>:topic:<message_thread_id>` for forum topics)
+  - `event.reply_target_ref` = `<chat_id>:<message_id>`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = `message.from.id` (Telegram sender user ID)
   - `payload.raw` = full Telegram update JSON
   - `payload.normalized_text` = extracted text (see tiered extraction)
   - `control.idempotency_key` = `"tg:<chat_id>:<message_id>"` (canonical across the bot and user-client connectors so the same Telegram message dedupes identically; falls back to `"telegram:<endpoint_identity>:<update_id>"` only when chat_id or message_id is unavailable)
   - `control.policy_tier` = `"interactive"` (bot messages are direct user-to-bot interactions)
+
+#### Scenario: Conversation identity and reply targets remain distinct
+- **WHEN** two Telegram updates carry different messages from the same chat or forum topic
+- **THEN** both envelopes have the same `event.external_conversation_id`
+- **AND** each envelope has a distinct `event.reply_target_ref`
+- **AND** a `telegram_bot` envelope missing either field is rejected at the `ingest.v1` boundary
 
 ### Requirement: Tiered Text Extraction
 The connector SHALL extract human-readable text from Telegram messages using a four-tier fallback strategy.

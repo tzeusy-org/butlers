@@ -69,9 +69,32 @@ def test_text_message_event_fields(connector: TelegramBotConnector) -> None:
     env = connector._normalize_to_ingest_v1(update)
     assert env is not None
     assert env["event"]["external_event_id"] == "456"
+    assert env["event"]["external_conversation_id"] == "telegram:200"
+    assert env["event"]["reply_target_ref"] == "200:7"
     assert env["sender"]["identity"] == "777"
     assert "Hello Bot!" not in env["payload"]["normalized_text"]
     assert "Test message" in env["payload"]["normalized_text"]
+
+
+def test_two_messages_share_conversation_but_keep_distinct_reply_targets(
+    connector: TelegramBotConnector,
+) -> None:
+    first = connector._normalize_to_ingest_v1(
+        {
+            "update_id": 1,
+            "message": {"message_id": 7, "from": {"id": 1}, "chat": {"id": 200}, "text": "one"},
+        }
+    )
+    second = connector._normalize_to_ingest_v1(
+        {
+            "update_id": 2,
+            "message": {"message_id": 8, "from": {"id": 1}, "chat": {"id": 200}, "text": "two"},
+        }
+    )
+
+    assert first is not None and second is not None
+    assert first["event"]["external_conversation_id"] == second["event"]["external_conversation_id"]
+    assert first["event"]["reply_target_ref"] != second["event"]["reply_target_ref"]
 
 
 def test_channel_post_produces_envelope(connector: TelegramBotConnector) -> None:
