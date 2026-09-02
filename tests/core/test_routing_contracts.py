@@ -46,6 +46,13 @@ def _build_valid_ingest_envelope(
         "sender": {"identity": sender_identity},
         "payload": {"raw": {"text": text}, "normalized_text": text},
     }
+    if channel == "telegram_bot":
+        envelope["event"].update(
+            {
+                "external_conversation_id": "telegram:user123",
+                "reply_target_ref": "user123:1",
+            }
+        )
     if idempotency_key:
         envelope["control"] = {"idempotency_key": idempotency_key}
     return envelope

@@ -26,6 +26,7 @@ tests/api/test_calendar_workspace_undo_jsonb_integration.py
 tests/api/test_relationship_queue_dismissed_suppression_db.py
 tests/api/test_runtime_probe_control_receipts_db.py
 tests/api/test_secrets_v2_schema_drift_db.py
+tests/config/test_conversation_identity_split_migration.py
 tests/config/test_init_db_bootstrap.py
 tests/config/test_init_db_runtime_attention_interface_version.py
 tests/config/test_schema_acl_isolation.py
