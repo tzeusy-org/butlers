@@ -132,7 +132,29 @@ ledger and the prior tier board. Produce:
 2. themes: cross-surface systemic defects, each with 2-3 exemplar citations and affected list.
 3. ranked_moves: single ranked list of 10-15 moves mixing UX and ecosystem, deduped, each
    with what/why/evidence/slice plan. Rank by owner-value per unit cost, doctrine-weighted
-   (trust/honesty defects outrank polish).
+   (trust/honesty defects outrank polish). Each move must also carry the Dispatch Readiness
+   Packet fields below — a move without them cannot be filed as a dispatchable bead.
 4. dropped: what you deduped or cut, one line each (so nothing silently vanishes).
 Return JSON: {"tier_board": ..., "themes": [...], "ranked_moves": [...], "dropped": [...]}.
+```
+
+Each `ranked_moves` entry (these map 1:1 onto `bd create --design` / `--acceptance`; shape per
+`~/.dotfiles/ai-bootstrap/skills/personal/th-projects/references/work-allocation.md`
+§ Dispatch Readiness Packet):
+
+```json
+{
+  "title": "string",
+  "why": "doctrine/spec citation + owner payoff",
+  "evidence": "file:line citations",
+  "cost": "S|M|L",
+  "outcome": "observable result",
+  "non_goals": "explicit exclusions",
+  "governing_intent": "doctrine mandate or exact openspec/ requirement",
+  "surface_map": "modules/interfaces, trust boundaries, schemas, persistence, callers",
+  "behavior_matrix": "happy path + failure/concurrency/idempotence/rollback (omit an axis only when demonstrably irrelevant)",
+  "doc_impact": "docs/spec/RFC updates required, or 'none' with reason",
+  "verification": "named behavior-executing checks at the real seam",
+  "slice_plan": "string"
+}
 ```

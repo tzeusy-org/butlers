@@ -147,6 +147,16 @@ or session context was lost (see Execution discipline §3).
   capability outrank a UX repair of similar owner-value — but never demote a
   trust/correctness defect (fabricated data, failure impersonating health) below a feature;
   those still lead. Each move: what, why (doctrine citation), evidence, rough slice plan.
+- **Synthesize each move as a fileable bead, not a headline.** A move is only done when it
+  carries the Dispatch Readiness Packet fields (normative shape:
+  `~/.dotfiles/ai-bootstrap/skills/personal/th-projects/references/work-allocation.md`
+  § Dispatch Readiness Packet), derived from the lens/auditor proposals' named integration
+  points: outcome + non-goals · governing intent (doctrine or `openspec/` citation) ·
+  surface map (modules, interfaces, trust boundaries, schemas, callers) · behavior matrix
+  (happy path plus failure, concurrency, idempotence, rollback — omit an axis only when
+  demonstrably irrelevant) · documentation impact (or an explicit "none, because …") ·
+  verification (named behavior-executing checks at the real seam). Keep each field to a line
+  or two; a move you cannot fill these in for is under-synthesized, not ready to rank.
 
 ## Phase 4 — Deliverables
 
@@ -156,7 +166,8 @@ or session context was lost (see Execution discipline §3).
    `jq '.audits[] | select(.page=="<key>")'` access pattern in the md).
 2. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
    version of the dossier.
-3. **Gated beads epic** — see protocol below.
+3. **Gated beads epic** — see protocol below; every child ships packet-complete (structured
+   `design` + `acceptance_criteria`) or the fleet will skip it after release.
 4. **Memory** — write/update a `reference` memory with the artifact URL, dossier path, epic id,
    and gate id, linking `[[reference-jarvis-frontend-audit-2026-07]]` and successors.
 
@@ -170,11 +181,31 @@ run is *planning*, not execution. Always:
    blocked. bd rejects a task blocking an epic ("epics can only block other epics") — so also
    **assign the epic itself to the owner** to keep it off `bd ready`.
 3. Every bead description cites its evidence and points at the dossier JSON.
-4. Bulk creation: `bd create` Dolt-commits per write (~7s, serialized) — use
+4. **Every child is created with a full Dispatch Readiness Packet in its structured fields** —
+   `bd create --design "…" --acceptance "…"` (or `bd update <id> --design/--acceptance` after
+   the fact). Normative shape:
+   `~/.dotfiles/ai-bootstrap/skills/personal/th-projects/references/work-allocation.md`
+   § Dispatch Readiness Packet. `--design` carries outcome + non-goals, governing intent
+   (doctrine/spec citation), surface map, behavior matrix, and documentation impact;
+   `--acceptance` carries named behavior-executing checks at the real seam (plus any
+   source-scan/completeness gate). **Prose in `description` does not count** — the fleet reads
+   the structured fields. The dossier md/`-data.json` is the evidence *pointer*, never a
+   substitute for these fields; a worker must not have to open the dossier to learn what to build.
+   *Why:* the coordinator's dispatch-readiness gate
+   (`~/.dotfiles/ai-bootstrap/skills/personal/beads-orchestration/subskills/beads-coordinator/references/coordinator-loop.md`
+   § Dispatch readiness gate) silently skips any bead with a blank structured
+   `acceptance_criteria` — runs 09 (epic `bu-7exe4`, 2026-09-01) and 10 (epic `bu-0ynlk`,
+   2026-09-02) filed 30 packet-less children, the owner released both gates, and the fleet
+   executed none of them.
+5. **Pre-release lint gate.** Before handing the gate to the owner, run `bd lint <id>` on every
+   child and require **zero warnings** — a child that warns is not releasable, fix it with
+   `bd update` and re-lint. (`bd create --validate` is the per-create form; use it while filing
+   and keep the sweep as the backstop.) Report the lint result in the final message.
+6. Bulk creation: `bd create` Dolt-commits per write (~7s, serialized) — use
    `--dolt-auto-commit batch` and one `bd dolt commit` at the end. **Never** use
    `bd create --graph` (its `--dry-run` actually creates beads and drops deps); add edges with
    `bd dep add`.
-5. Release is the owner's move: closing the gate bead un-blocks the children and the fleet
+7. Release is the owner's move: closing the gate bead un-blocks the children and the fleet
    executes. Say this explicitly in the final report.
 
 ## Execution discipline (throttle · model routing · checkpoint · resume)
