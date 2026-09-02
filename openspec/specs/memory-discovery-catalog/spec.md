@@ -221,7 +221,48 @@ A search function SHALL query `public.memory_catalog` to discover memory items a
 
 - **WHEN** a cross-butler search is performed
 - **THEN** results with `sensitivity` values that the caller is not authorized to view MUST be excluded
-- **AND** the default behavior MUST include only `sensitivity = 'normal'` results unless the caller explicitly requests higher sensitivity levels
+- **AND** authorization MUST be derived from the searching butler's held
+  `runtime_config.catalog_read_sensitivity` value, not from an MCP tool argument
+  or other caller assertion
+- **AND** the default held authority MUST include only `sensitivity = 'normal'`
+- **AND** the `internal` held authority MUST include the existing `normal` and
+  `pii` sensitivity values without adding `internal` to the stored sensitivity
+  vocabulary
+- **AND** the MCP tool MUST NOT expose a caller-supplied sensitivity ceiling
+
+#### Scenario: Dashboard search uses one held authority source
+
+- **WHEN** `GET /api/memory/catalog/search` queries the fleet catalog
+- **THEN** it MUST load the held policy from
+  `switchboard.runtime_config.catalog_read_sensitivity`
+- **AND** a caller-supplied `max_sensitivity` query parameter MUST be ignored
+  rather than granting additional authority
+- **AND** if the Switchboard authority source is unavailable, the endpoint MUST
+  fail closed instead of selecting another butler's policy
+
+### Requirement: Catalog provenance pointers are fetchable under held authority
+
+The memory module SHALL provide a read-only `memory_catalog_fetch` tool that
+dereferences one live `facts` or `rules` provenance pointer under the same
+server-derived policy used by catalog search. Canonical reads owned by another
+butler SHALL be brokered through Switchboard to the owning butler's local
+`memory_get` tool; the fetch path SHALL NOT grant cross-schema table access.
+
+#### Scenario: Authorized pointer returns its canonical memory
+
+- **WHEN** `memory_catalog_fetch` receives a live catalog pointer whose
+  sensitivity is at or below the butler's held ceiling
+- **THEN** it MUST return the canonical source row from the owning schema
+- **AND** the operation MUST be read-only and idempotent
+
+#### Scenario: Pointer above authority is content-blind
+
+- **WHEN** `memory_catalog_fetch` receives a pointer whose catalog sensitivity
+  is above the butler's held ceiling
+- **THEN** it MUST return only a stable withheld marker
+- **AND** it MUST NOT return canonical content, the stored sensitivity value, or
+  any additional source metadata
+- **AND** the tool MUST NOT expose a caller-supplied sensitivity ceiling
 
 #### Scenario: Scope and predicate filtering
 
@@ -444,4 +485,3 @@ fields (episode/fact/rule counts).
 - **AND** when the gauge's catalog degraded-source list in `meta` is non-empty,
   the console MUST name the dropped pools inline via the `SourceDegradedNote`
   convention, so the drift counts never render as a clean all-clear
-

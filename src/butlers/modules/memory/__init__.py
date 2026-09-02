@@ -379,6 +379,7 @@ class MemoryModule(Module):
             # configured with a private memory schema. Context recall must use
             # the module-owned pool just like storage and consolidation do.
             memory_pool = module._get_pool()
+            catalog_read_policy = await module._catalog_read_policy()
             result = await _context.memory_context(
                 memory_pool,
                 embedding_engine,
@@ -394,6 +395,7 @@ class MemoryModule(Module):
                 # conservative include_fleet_knowledge=False default so their
                 # deterministic output is unaffected unless requested.
                 include_fleet_knowledge=True,
+                catalog_read_policy=catalog_read_policy,
             )
             if isinstance(result, str) and result.strip():
                 return result
@@ -427,7 +429,15 @@ class MemoryModule(Module):
             import asyncio
 
             embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
-            return await _search_catalog(pool, query, embedding_engine, limit=limit, mode=mode)
+            read_policy = await module._catalog_read_policy()
+            return await _search_catalog(
+                pool,
+                query,
+                embedding_engine,
+                limit=limit,
+                mode=mode,
+                read_policy=read_policy,
+            )
 
         async def _consolidation_hook(
             *,
@@ -648,6 +658,21 @@ class MemoryModule(Module):
         if self._db is None:
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
+
+    async def _catalog_read_policy(self) -> Any:
+        """Resolve held authority without reading a domain or memory pool.
+
+        Normal daemon startup wires the DB-backed RuntimeConfigAccessor onto
+        ``Database`` after seeding. Lightweight module/isolation harnesses do
+        not hold that authority object and therefore fail closed to ``normal``.
+        """
+        from butlers.modules.memory.tools._helpers import _search as _search_helper
+
+        accessor = getattr(self._db, "runtime_config_accessor", None)
+        if accessor is None:
+            return _search_helper.resolve_catalog_read_policy("normal")
+        runtime_config = await accessor.get()
+        return _search_helper.resolve_catalog_read_policy(runtime_config.catalog_read_sensitivity)
 
     def _allows_failed_consolidation_retry(self) -> bool:
         """Return whether this module may automatically retry failed episodes.
@@ -1453,6 +1478,9 @@ class MemoryModule(Module):
 
             Same inputs always produce identical output (deterministic section compiler).
             """
+            catalog_read_policy = None
+            if include_fleet_knowledge:
+                catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1461,6 +1489,7 @@ class MemoryModule(Module):
                 token_budget=token_budget,
                 include_recent_episodes=include_recent_episodes,
                 include_fleet_knowledge=include_fleet_knowledge,
+                catalog_read_policy=catalog_read_policy,
                 request_context=request_context,
             )
 
@@ -1811,17 +1840,6 @@ class MemoryModule(Module):
                 str,
                 Field(description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."),
             ] = "hybrid",
-            max_sensitivity: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Highest sensitivity level the caller is authorized to view. "
-                        "Ordered low-to-high: 'normal', 'pii', 'confidential'. "
-                        "Defaults to 'normal' (excludes anything more sensitive); "
-                        "unknown values fail closed to 'normal'-only."
-                    )
-                ),
-            ] = "normal",
         ) -> list[dict[str, Any]]:
             """Search the shared memory catalog for cross-butler memory discovery.
 
@@ -1840,12 +1858,10 @@ class MemoryModule(Module):
             - ``memory_type``: 'fact' | 'rule' (omit to search both)
             - ``limit`` (int)
             - ``mode``: 'hybrid' | 'semantic' | 'keyword'
-            - ``max_sensitivity``: 'normal' (default) | 'pii' | 'confidential'
-
-            Sensitivity filtering: results above ``max_sensitivity`` are
-            excluded. The default ('normal') returns only non-sensitive
-            entries; request a higher level only when authorized.
+            Sensitivity filtering uses the server-held runtime config value.
+            No MCP argument can raise that authority.
             """
+            read_policy = await module._catalog_read_policy()
             return await _reading.memory_catalog_search(
                 module._get_pool(),
                 module._get_embedding_engine(),
@@ -1853,7 +1869,7 @@ class MemoryModule(Module):
                 memory_type=memory_type,
                 limit=limit,
                 mode=mode,
-                max_sensitivity=max_sensitivity,
+                read_policy=read_policy,
             )
 
         # --- Preference tools ---

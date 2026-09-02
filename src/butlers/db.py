@@ -377,6 +377,10 @@ class Database:
         # Set by daemon lifecycle from the loaded ButlerConfig. Modules use it
         # when a scheduler recovery needs an auditable configured identity.
         self.owner_butler: str | None = None
+        # Set after runtime_config is seeded. Modules consume held operational
+        # authority through this accessor rather than querying whichever domain
+        # or private-memory pool a runtime hook happens to receive.
+        self.runtime_config_accessor: Any | None = None
         self.role = role
         self.host = host
         self.port = port

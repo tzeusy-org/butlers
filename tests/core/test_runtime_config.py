@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
 def _make_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
+    catalog_read_sensitivity: str = "normal",
     max_concurrent: int = 3,
     max_queued: int = 10,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
@@ -36,6 +37,7 @@ def _make_row(
     return {
         "butler_name": butler_name,
         "core_groups": core_groups,
+        "catalog_read_sensitivity": catalog_read_sensitivity,
         "max_concurrent": max_concurrent,
         "max_queued": max_queued,
         "seeded_at": seeded_at,
@@ -195,3 +197,20 @@ def test_row_to_config_with_core_groups():
     row = _mock_record(_make_row(core_groups=["infra", "state"]))
     config = _row_to_config(row)
     assert config.core_groups == ("infra", "state")
+
+
+def test_row_to_config_preserves_catalog_read_sensitivity():
+    row = _mock_record(_make_row(catalog_read_sensitivity="internal"))
+
+    config = _row_to_config(row)
+
+    assert config.catalog_read_sensitivity == "internal"
+
+
+def test_row_to_config_missing_catalog_authority_fails_closed_normal():
+    row_data = _make_row()
+    del row_data["catalog_read_sensitivity"]
+
+    config = _row_to_config(_mock_record(row_data))
+
+    assert config.catalog_read_sensitivity == "normal"

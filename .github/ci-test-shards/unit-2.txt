@@ -144,6 +144,7 @@ tests/core_tools/test_delegation.py
 tests/core_tools/test_domain_event_incomplete_receiver.py
 tests/core_tools/test_infra_correct.py
 tests/core_tools/test_memory_access.py
+tests/core_tools/test_memory_catalog.py
 tests/core_tools/test_shutdown.py
 tests/daemon/test_butler_migrations.py
 tests/daemon/test_chronicler_job_registration.py

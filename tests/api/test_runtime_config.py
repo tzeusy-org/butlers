@@ -21,6 +21,8 @@ pytestmark = pytest.mark.unit
 def _mock_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
+    catalog_read_sensitivity: str = "normal",
+    include_catalog_read_sensitivity: bool = True,
     max_concurrent: int = 3,
     max_queued: int = 10,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
@@ -34,6 +36,8 @@ def _mock_row(
         "seeded_at": seeded_at,
         "updated_at": updated_at,
     }
+    if include_catalog_read_sensitivity:
+        data["catalog_read_sensitivity"] = catalog_read_sensitivity
     row = MagicMock()
     row.__getitem__ = lambda self, key: data[key]
     row.keys = lambda: data.keys()
@@ -75,9 +79,21 @@ def test_get_success_returns_field_tiers():
     assert data["butler_name"] == "test"
     assert "field_tiers" in data
     assert data["field_tiers"]["core_groups"] == "cold"
+    assert data["field_tiers"]["catalog_read_sensitivity"] == "hot"
     # Hot runtime-selection fields removed from this endpoint
     for field in ("model", "runtime_type", "args", "session_timeout_s"):
         assert field not in data
+
+
+def test_get_legacy_row_missing_catalog_authority_fails_closed_normal():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=_mock_row(include_catalog_read_sensitivity=False))
+    app = _make_app(_make_db_manager(pool=pool))
+
+    resp = TestClient(app).get("/api/butlers/test/runtime-config")
+
+    assert resp.status_code == 200
+    assert resp.json()["catalog_read_sensitivity"] == "normal"
 
 
 # ---------------------------------------------------------------------------
@@ -101,13 +117,27 @@ def test_get_success_returns_field_tiers():
         (
             "PATCH",
             "/api/butlers/test/runtime-config",
+            {"catalog_read_sensitivity": "caller-invented"},
+            "test",
+            True,
+            422,
+        ),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
             {"session_timeout_s": 1200},
             "test",
             True,
             422,
         ),
     ],
-    ids=["get-404-unknown", "patch-422-bad-group", "patch-422-negative", "patch-422-removed-field"],
+    ids=[
+        "get-404-unknown",
+        "patch-422-bad-group",
+        "patch-422-negative",
+        "patch-422-bad-catalog-authority",
+        "patch-422-removed-field",
+    ],
 )
 def test_runtime_config_error_paths(method, path, body, butler_name, known, expected):
     pool = AsyncMock()
@@ -139,6 +169,12 @@ def test_patch_cold_field_returns_restart_required():
     resp_concurrent = client.patch("/api/butlers/test/runtime-config", json={"max_concurrent": 5})
     assert resp_concurrent.status_code == 200
     assert "max_concurrent" in resp_concurrent.json()["restart_required"]
+
+    resp_authority = client.patch(
+        "/api/butlers/test/runtime-config", json={"catalog_read_sensitivity": "internal"}
+    )
+    assert resp_authority.status_code == 200
+    assert resp_authority.json()["restart_required"] == []
 
     # bu-27dxl.5.3: "delegation" is a known group — PATCH accepts it like any
     # other, instead of the 422 unknown-group rejection it got previously.

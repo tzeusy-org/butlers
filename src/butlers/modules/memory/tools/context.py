@@ -102,6 +102,7 @@ async def _fetch_fleet_knowledge(
     trigger_prompt: str,
     butler: str,
     tenant_id: str,
+    read_policy,
     *,
     limit: int = _FLEET_KNOWLEDGE_QUERY_LIMIT,
 ) -> list[dict[str, Any]]:
@@ -124,7 +125,7 @@ async def _fetch_fleet_knowledge(
             memory_type=None,
             limit=limit,
             mode="hybrid",
-            max_sensitivity="normal",
+            read_policy=read_policy,
         )
     except Exception:
         logger.debug("Fleet knowledge catalog search failed", exc_info=True)
@@ -222,6 +223,7 @@ async def memory_context(
     token_budget: int = 3000,
     include_recent_episodes: bool = False,
     include_fleet_knowledge: bool = False,
+    catalog_read_policy=None,
     request_context: dict[str, Any] | None = None,
 ) -> str:
     """Build a deterministic, sectioned memory context block for CC system prompt injection.
@@ -246,6 +248,8 @@ async def memory_context(
             surfacing relevant cross-butler catalog entries. Best-effort —
             a catalog search failure degrades to an empty section rather
             than failing context assembly.
+        catalog_read_policy: Server-held catalog policy. Module entry points
+            pass the policy from the owning runtime-config pool.
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             trace correlation and tenant scoping.
 
@@ -321,8 +325,9 @@ async def memory_context(
     # --- 5. Optionally fetch cross-butler fleet knowledge ---
     fleet_knowledge: list[dict[str, Any]] = []
     if include_fleet_knowledge:
+        read_policy = catalog_read_policy or await _search.load_catalog_read_policy(pool)
         fleet_knowledge = await _fetch_fleet_knowledge(
-            pool, embedding_engine, trigger_prompt, butler, tenant_id
+            pool, embedding_engine, trigger_prompt, butler, tenant_id, read_policy
         )
 
     # --- Assemble sections ---

@@ -1,7 +1,7 @@
 # Runtime Config Table
 
 ## Purpose
-Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning (`core_groups`, concurrency, queue depth), seeded once from `[butler.runtime_seed]` in `butler.toml` on first boot, and managed thereafter via the dashboard. NOTE: migration `core_073` moved `model`, `runtime_type`, `args`, and `session_timeout_s` OFF this table onto `public.model_catalog`; those fields are now resolved per complexity tier by `resolve_model()` and edited via the model-settings surface, not here.
+Defines the per-butler `runtime_config` DB table and the `RuntimeConfigAccessor` that provides TTL-cached read/seed access. The table is the runtime source of truth for operational tuning (`core_groups`, catalog read authority, concurrency, queue depth), seeded once from `[butler.runtime_seed]` in `butler.toml` on first boot, and managed thereafter via the dashboard. NOTE: migration `core_073` moved `model`, `runtime_type`, `args`, and `session_timeout_s` OFF this table onto `public.model_catalog`; those fields are now resolved per complexity tier by `resolve_model()` and edited via the model-settings surface, not here.
 
 ## Requirements
 
@@ -15,12 +15,13 @@ Scope: v1-mandatory
 Schema (after migration `core_073` dropped `model`, `runtime_type`, `args`, and `session_timeout_s`):
 - `butler_name text PRIMARY KEY`
 - `core_groups text[]` (nullable; NULL means all groups enabled)
+- `catalog_read_sensitivity text NOT NULL DEFAULT 'normal'` (one of `normal`, `internal`, `confidential`)
 - `max_concurrent int NOT NULL DEFAULT 3`
 - `max_queued int NOT NULL DEFAULT 10`
 - `seeded_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()`
 
-The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns: `butler_name`, `core_groups`, `max_concurrent`, `max_queued`, `seeded_at`, `updated_at`.
+The `RuntimeConfig` dataclass (`src/butlers/core/runtime_config.py`) mirrors these columns: `butler_name`, `core_groups`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, `seeded_at`, `updated_at`.
 
 #### Scenario: Table creation via migration
 - **WHEN** the Alembic migration runs against a butler database

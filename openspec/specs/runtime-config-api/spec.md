@@ -20,7 +20,7 @@ Scope: v1-mandatory
 
 #### Scenario: Field tiers included in response
 - **WHEN** a GET response is returned
-- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`. As built, all three managed fields are cold: `{"core_groups": "cold", "max_concurrent": "cold", "max_queued": "cold"}`
+- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `max_concurrent`, and `max_queued` are cold
 - **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
 
 ### Requirement: PATCH runtime config endpoint
@@ -32,7 +32,13 @@ Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
-- **THEN** only `core_groups`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+- **THEN** only `core_groups`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+
+#### Scenario: Catalog read sensitivity updates hot
+
+- **WHEN** a PATCH sets `catalog_read_sensitivity` to `normal`, `internal`, or `confidential`
+- **THEN** the DB row SHALL be updated and `restart_required` SHALL remain empty for that field
+- **AND** any other value SHALL return HTTP 422
 
 #### Scenario: Update cold field
 - **WHEN** a PATCH request updates `core_groups`
@@ -41,6 +47,7 @@ Scope: v1-mandatory
 #### Scenario: All managed fields are cold
 - **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
 - **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
+- **AND** the historical no-hot-fields clause is superseded for new fields only: `catalog_read_sensitivity` is hot and MUST NOT appear in `restart_required`
 
 #### Scenario: Invalid field value — negative concurrency
 - **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero
@@ -62,4 +69,3 @@ Scope: v1-mandatory
 #### Scenario: Butler not found
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
-

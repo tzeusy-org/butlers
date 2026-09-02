@@ -2596,10 +2596,12 @@ def _catalog_search_row(
 
 
 def _wire_catalog_search_db(app) -> MagicMock:
-    """Wire app with a minimal mock DB exposing one pool for _any_pool()."""
+    """Wire the authoritative Switchboard runtime-config and catalog pool."""
     db_mock = MagicMock()
-    db_mock.butler_names = ["finance"]
-    db_mock.pool = MagicMock(return_value=AsyncMock())
+    db_mock.butler_names = ["switchboard"]
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value="normal")
+    db_mock.pool = MagicMock(return_value=pool)
     app.dependency_overrides[_get_db_manager] = lambda: db_mock
     return db_mock
 
@@ -2640,8 +2642,52 @@ async def test_catalog_search_returns_normalized_results(app, monkeypatch):
     assert captured["query"] == "budget review"
     assert captured["mode"] == "hybrid"
     assert captured["limit"] == 10
-    assert captured["max_sensitivity"] == "normal"
+    assert captured["read_policy"].authority == "normal"
     assert captured["memory_type"] is None
+
+
+async def test_catalog_search_caller_cannot_raise_switchboard_held_authority(app, monkeypatch):
+    """A public query parameter never becomes catalog read authority."""
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+    captured: dict = {}
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/catalog/search",
+            params={"query": "private plans", "max_sensitivity": "confidential"},
+        )
+
+    assert resp.status_code == 200
+    assert captured["read_policy"].authority == "normal"
+    assert "max_sensitivity" not in captured
+
+
+async def test_catalog_search_without_switchboard_authority_source_fails_closed(app) -> None:
+    db_mock = MagicMock()
+    db_mock.butler_names = ["finance"]
+    db_mock.pool.side_effect = KeyError("switchboard")
+    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/catalog/search", params={"query": "private plans"})
+
+    assert resp.status_code == 503
+    assert "authorization" in resp.json()["detail"]
 
 
 async def test_catalog_search_semantic_mode_uses_similarity_score(app, monkeypatch):

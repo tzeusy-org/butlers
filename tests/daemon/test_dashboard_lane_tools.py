@@ -60,6 +60,7 @@ def _make_runtime_config_row(butler_name: str = "switchboard") -> dict:
     return {
         "butler_name": butler_name,
         "core_groups": None,
+        "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
         "seeded_at": None,

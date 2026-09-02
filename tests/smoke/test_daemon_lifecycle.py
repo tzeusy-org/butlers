@@ -148,6 +148,7 @@ def _make_runtime_config_row() -> dict:
     return {
         "butler_name": "smoke-butler",
         "core_groups": None,
+        "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
         "seeded_at": None,

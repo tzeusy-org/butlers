@@ -118,15 +118,13 @@ async def memory_catalog_search(
     memory_type: str | None = None,
     limit: int = 10,
     mode: str = "hybrid",
-    max_sensitivity: str = "normal",
+    read_policy,
 ) -> list[dict[str, Any]]:
     """Search the shared memory catalog for cross-butler memory discovery.
 
     Delegates to _search.search_catalog() and serializes results for JSON output.
 
-    ``max_sensitivity`` is the highest sensitivity level the caller is authorized
-    to view; results above it are excluded and the default ('normal') returns
-    only non-sensitive entries.
+    MCP callers supply ``read_policy`` loaded from DB-backed runtime config.
     """
     results = await _search.search_catalog(
         pool,
@@ -135,7 +133,7 @@ async def memory_catalog_search(
         memory_type=memory_type,
         limit=limit,
         mode=mode,
-        max_sensitivity=max_sensitivity,
+        read_policy=read_policy,
     )
     return [_serialize_row(r) for r in results]
 

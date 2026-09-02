@@ -1407,13 +1407,6 @@ async def search_memory_catalog(
     mode: str = Query(
         "hybrid", description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."
     ),
-    max_sensitivity: str = Query(
-        "normal",
-        description=(
-            "Highest sensitivity level to view: 'normal' (default), 'pii', or "
-            "'confidential'. Unknown values fail closed to 'normal'-only."
-        ),
-    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[MemoryCatalogSearchResult]]:
     """Fleet-knowledge search across all butlers via public.memory_catalog.
@@ -1421,8 +1414,9 @@ async def search_memory_catalog(
     Queries the shared discovery index directly. Unlike the other endpoints
     in this router, this is deliberately NOT a per-butler fan-out:
     ``public.memory_catalog`` already aggregates every butler's write-behind
-    entries into one table reachable from any butler's connection pool, so a
-    single query answers the whole fleet. A pool failure here is a genuine
+    entries into one table. The Switchboard pool is deliberately authoritative
+    because its runtime-config row holds the dashboard catalog ceiling, so a
+    single policy source and query answer the whole fleet. A pool failure here is a genuine
     outage (surfaced as a normal error response), not a per-source
     degradation that needs folding into a degraded-envelope flag — there is
     only one source to begin with.
@@ -1431,12 +1425,19 @@ async def search_memory_catalog(
     ``source_schema``/``source_table``/``source_id`` to fetch the full record
     from the owning butler's own schema if the full item is needed.
     """
-    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.search import load_catalog_read_policy, search_catalog
     from butlers.modules.memory.tools import get_embedding_engine
 
-    pool = _any_pool(db)
+    try:
+        pool = db.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Switchboard runtime config is unavailable for catalog authorization",
+        ) from exc
     engine = get_embedding_engine(_DEFAULT_EMBEDDING_MODEL)
     try:
+        read_policy = await load_catalog_read_policy(pool)
         rows = await search_catalog(
             pool,
             query,
@@ -1444,7 +1445,7 @@ async def search_memory_catalog(
             memory_type=memory_type,
             limit=limit,
             mode=mode,
-            max_sensitivity=max_sensitivity,
+            read_policy=read_policy,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

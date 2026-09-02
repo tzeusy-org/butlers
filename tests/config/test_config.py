@@ -162,12 +162,27 @@ def test_runtime_seed_config(tmp_path: Path):
     assert RuntimeSeedConfig().max_concurrent_sessions == 3
     assert RuntimeSeedConfig().max_queued_sessions == 10
     assert RuntimeSeedConfig().core_groups is None
+    assert RuntimeSeedConfig().catalog_read_sensitivity == "normal"
 
     runtime_toml = (
         '[butler]\nname = "m"\nport = 7010\n[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
     )
     cfg = load_config(_write_toml(tmp_path, runtime_toml))
     assert cfg.runtime_seed.max_concurrent_sessions == 4
+
+    authority_toml = (
+        '[butler]\nname = "m"\nport = 7016\n[butler.runtime_seed]\n'
+        'catalog_read_sensitivity = "internal"\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, authority_toml))
+    assert cfg.runtime_seed.catalog_read_sensitivity == "internal"
+
+    with pytest.raises(ConfigError, match="catalog_read_sensitivity"):
+        invalid_authority_toml = (
+            '[butler]\nname = "m"\nport = 7017\n[butler.runtime_seed]\n'
+            'catalog_read_sensitivity = "caller-invented"\n'
+        )
+        load_config(_write_toml(tmp_path, invalid_authority_toml))
 
     with pytest.raises(ConfigError, match="max_queued_sessions"):
         mqs_toml = (

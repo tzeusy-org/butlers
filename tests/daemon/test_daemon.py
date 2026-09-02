@@ -309,6 +309,7 @@ def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
     return {
         "butler_name": butler_name,
         "core_groups": None,
+        "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
         "seeded_at": None,
@@ -492,6 +493,7 @@ async def test_startup_sequence(butler_dir: Path) -> None:
     assert daemon.config is not None
     assert daemon.config.name == "test-butler"
     assert daemon.config.port == 9100
+    assert daemon.db.runtime_config_accessor is daemon._runtime_config_accessor
 
     # started_at is recorded
     assert daemon._started_at is not None

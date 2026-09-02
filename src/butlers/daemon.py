@@ -150,6 +150,7 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "correct",
         # Added in #1712 and #1714 respectively; always registered on every butler.
         "memory_access",
+        "memory_catalog_fetch",
         "shutdown",
         # bu-p6ey8.1: dashboard chat confirm-loop reply channel; always
         # registered on every butler — any butler can be the classification

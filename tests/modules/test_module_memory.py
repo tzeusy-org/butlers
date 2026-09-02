@@ -195,9 +195,11 @@ class TestLifecycle:
         general = MemoryModule()
         travel = MemoryModule()
         chronicler = MemoryModule()
-        general_domain_pool = object()
-        travel_domain_pool = object()
-        chronicler_domain_pool = object()
+        general_domain_pool = AsyncMock()
+        travel_domain_pool = AsyncMock()
+        chronicler_domain_pool = AsyncMock()
+        for domain_pool in (general_domain_pool, travel_domain_pool, chronicler_domain_pool):
+            domain_pool.fetchval = AsyncMock(return_value="normal")
         general_memory_pool = object()
         travel_memory_pool = object()
         chronicler_memory_pool = object()
@@ -303,10 +305,12 @@ class TestLifecycle:
         """
         mod = MemoryModule()
         fake_db = MagicMock()
-        daemon_pool = MagicMock(name="daemon_pool")
+        daemon_pool = AsyncMock(name="daemon_pool")
+        daemon_pool.fetchval = AsyncMock(return_value="normal")
         memory_pool = MagicMock(name="memory_pool")
         fake_db.pool = daemon_pool
         fake_db.schema = "general"
+        fake_db.runtime_config_accessor = None
 
         captured_hook: dict[str, Any] = {}
 
@@ -342,6 +346,7 @@ class TestLifecycle:
         assert context_mock.call_args.args[0] is memory_pool
         _, kwargs = context_mock.call_args
         assert kwargs.get("include_fleet_knowledge") is True
+        assert kwargs["catalog_read_policy"].authority == "normal"
         await mod.on_shutdown()
 
     async def test_on_startup_episode_hook_uses_private_memory_pool(self, monkeypatch) -> None:
@@ -587,7 +592,12 @@ EXPECTED_TOOL_NAMES = {
 class TestRegisterTools:
     """Verify that register_tools creates the expected MCP tools."""
 
-    async def _register_and_capture(self) -> dict[str, Any]:
+    async def _register_and_capture(
+        self,
+        config: MemoryModuleConfig | None = None,
+        *,
+        reading: MagicMock | None = None,
+    ) -> dict[str, Any]:
         """Helper: register tools with a mock MCP and capture them."""
         mod = MemoryModule()
         mcp = MagicMock()
@@ -602,14 +612,18 @@ class TestRegisterTools:
 
         mcp.tool.side_effect = capture_tool
 
+        reading = reading or MagicMock()
+        memory_package = MagicMock()
+        tools_package = MagicMock()
+        tools_package.reading = reading
         with patch.dict(
             "sys.modules",
             {
-                "butlers.modules.memory": MagicMock(),
+                "butlers.modules.memory": memory_package,
                 "butlers.modules.memory.consolidation": MagicMock(),
-                "butlers.modules.memory.tools": MagicMock(),
+                "butlers.modules.memory.tools": tools_package,
                 "butlers.modules.memory.tools.writing": MagicMock(),
-                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.reading": reading,
                 "butlers.modules.memory.tools.feedback": MagicMock(),
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
@@ -617,9 +631,13 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
-            await mod.register_tools(
-                mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler"
+            fake_db = MagicMock()
+            fake_db.pool = AsyncMock()
+            fake_db.runtime_config_accessor = AsyncMock()
+            fake_db.runtime_config_accessor.get = AsyncMock(
+                return_value=SimpleNamespace(catalog_read_sensitivity="internal")
             )
+            await mod.register_tools(mcp=mcp, config=config, db=fake_db, butler_name="test-butler")
 
         return registered_tools
 
@@ -678,6 +696,23 @@ class TestRegisterTools:
         registered = await self._register_and_capture()
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
+
+    async def test_catalog_search_caller_claim_cannot_raise_held_authority(self):
+        reading = MagicMock()
+        reading.memory_catalog_search = AsyncMock(return_value=[])
+        registered = await self._register_and_capture(reading=reading)
+
+        with pytest.raises(TypeError, match="max_sensitivity"):
+            await registered["memory_catalog_search"](
+                query="private plans",
+                max_sensitivity="confidential",
+            )
+
+        await registered["memory_catalog_search"](query="private plans")
+
+        policy = reading.memory_catalog_search.await_args.kwargs["read_policy"]
+        assert policy.authority == "internal"
+        assert policy.allowed_sensitivities == ("normal", "pii")
 
     async def test_memory_entity_create_duplicate_returns_existing_entity_id(self):
         entities = MagicMock()

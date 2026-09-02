@@ -813,6 +813,42 @@ CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
 DEFAULT_CATALOG_SENSITIVITY = "normal"
 
 
+class CatalogReadPolicy(NamedTuple):
+    """Server-held catalog authority resolved to persisted sensitivity values."""
+
+    authority: str
+    allowed_sensitivities: tuple[str, ...]
+
+
+_CATALOG_READ_AUTHORITIES: dict[str, tuple[str, ...]] = {
+    "normal": ("normal",),
+    # ``internal`` is an authority tier, not a new stored sensitivity value.
+    "internal": ("normal", "pii"),
+    "confidential": CATALOG_SENSITIVITY_LEVELS,
+}
+
+
+def resolve_catalog_read_policy(read_ceiling: str) -> CatalogReadPolicy:
+    """Resolve held read authority without accepting a caller-provided ceiling.
+
+    ``internal`` deliberately maps onto the existing ``pii`` sensitivity tier;
+    the catalog's persisted sensitivity vocabulary remains unchanged. Unknown
+    held values fail closed to normal-only access.
+    """
+    allowed = _CATALOG_READ_AUTHORITIES.get(read_ceiling)
+    if allowed is None:
+        return CatalogReadPolicy("normal", (DEFAULT_CATALOG_SENSITIVITY,))
+    return CatalogReadPolicy(read_ceiling, allowed)
+
+
+async def load_catalog_read_policy(pool: Pool) -> CatalogReadPolicy:
+    """Load the current butler's held catalog authority from runtime_config."""
+    read_ceiling = await pool.fetchval(
+        "SELECT catalog_read_sensitivity FROM runtime_config LIMIT 1"
+    )
+    return resolve_catalog_read_policy(read_ceiling or DEFAULT_CATALOG_SENSITIVITY)
+
+
 def resolve_allowed_sensitivities(max_sensitivity: str) -> list[str]:
     """Return the sensitivity levels a caller authorized up to ``max_sensitivity`` may view.
 
@@ -916,7 +952,7 @@ async def search_catalog(
     memory_type: str | None = None,
     limit: int = 10,
     mode: str = "hybrid",
-    max_sensitivity: str = DEFAULT_CATALOG_SENSITIVITY,
+    read_policy: CatalogReadPolicy,
 ) -> list[dict]:
     """Search ``public.memory_catalog`` for cross-butler memory discovery.
 
@@ -934,11 +970,8 @@ async def search_catalog(
             both types.
         limit: Maximum results to return (default 10).
         mode: Search mode — 'semantic', 'keyword', or 'hybrid' (default).
-        max_sensitivity: Highest sensitivity level the caller is authorized to
-            view. Results above this ceiling are excluded. Defaults to
-            ``'normal'`` (the most restrictive level); unknown values fail
-            closed to ``'normal'``-only. See ``CATALOG_SENSITIVITY_LEVELS``
-            for the ordered hierarchy.
+        read_policy: Server-held policy loaded from the calling butler's
+            runtime config. Callers cannot supply or raise this authority.
 
     Returns:
         List of dicts with catalog row fields plus ``similarity`` (semantic),
@@ -951,7 +984,7 @@ async def search_catalog(
     if mode not in _VALID_SEARCH_MODES:
         raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
 
-    allowed_sensitivities = resolve_allowed_sensitivities(max_sensitivity)
+    allowed_sensitivities = list(read_policy.allowed_sensitivities)
 
     semantic_results: list[dict] = []
     keyword_results: list[dict] = []

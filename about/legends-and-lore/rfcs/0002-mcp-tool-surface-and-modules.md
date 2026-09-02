@@ -45,6 +45,7 @@ Every butler registers these tools regardless of module configuration:
 | `notify(...)` | `-> DeliveryResult` | Send outbound notification via Switchboard. |
 | `remind(...)` | `-> void` | Schedule a future reminder. |
 | `get_attachment(id)` | `-> AttachmentData` | Retrieve an ingested attachment from blob storage. |
+| `memory_catalog_fetch(source_schema, source_table, source_id)` | `-> CatalogFetchResult` | Follow a catalog pointer under server-held authority through Switchboard. |
 | `module.states()` | `-> ModuleStates` | List module enabled/disabled states. |
 | `module.set_enabled(name, enabled)` | `-> void` | Toggle a module at runtime. |
 
@@ -151,7 +152,7 @@ The known core groups are:
 
 | Group | Tools |
 |-------|-------|
-| `infra` | `status`, `trigger`, `tick`, `correct` |
+| `infra` | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch` |
 | `state` | `state_get`, `state_set`, `state_delete`, `state_list` |
 | `scheduling` | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` |
 | `sessions` | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` |

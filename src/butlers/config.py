@@ -12,7 +12,7 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 # Default trusted callers for route.execute authz.
 DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
@@ -94,8 +94,9 @@ class RuntimeSeedConfig:
 
     Fields:
 
-    - ``core_groups`` / ``max_concurrent_sessions`` / ``max_queued_sessions``
-      are the operational tuning knobs that map to the DB-backed
+    - ``core_groups`` / ``catalog_read_sensitivity`` /
+      ``max_concurrent_sessions`` / ``max_queued_sessions`` are the operational
+      tuning knobs that map to the DB-backed
       ``runtime_config`` row. The Spawner prefers the DB row via
       :class:`RuntimeConfigAccessor` and falls back to the values here when
       no accessor is wired.
@@ -110,6 +111,7 @@ class RuntimeSeedConfig:
     """
 
     core_groups: tuple[str, ...] | None = None
+    catalog_read_sensitivity: Literal["normal", "internal", "confidential"] = "normal"
     max_concurrent_sessions: int = 3
     max_queued_sessions: int = 10
     liveness_ttl_seconds: int = 300
@@ -386,6 +388,13 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
             )
 
     # --- numeric fields with validation ---
+    catalog_read_sensitivity = seed_section.get("catalog_read_sensitivity", "normal")
+    if catalog_read_sensitivity not in {"normal", "internal", "confidential"}:
+        raise ConfigError(
+            "Invalid butler.runtime_seed.catalog_read_sensitivity: "
+            f"{catalog_read_sensitivity!r}. Expected normal, internal, or confidential."
+        )
+
     max_concurrent_sessions = int(seed_section.get("max_concurrent_sessions", 3))
     if max_concurrent_sessions <= 0:
         raise ConfigError(
@@ -406,6 +415,7 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
 
     return RuntimeSeedConfig(
         core_groups=core_groups,
+        catalog_read_sensitivity=catalog_read_sensitivity,
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
         liveness_ttl_seconds=liveness_ttl_seconds,

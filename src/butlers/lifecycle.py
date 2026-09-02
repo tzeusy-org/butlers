@@ -342,6 +342,7 @@ async def run_startup(daemon: Any) -> None:
     effective_runtime = await daemon._runtime_config_accessor.seed_if_empty(
         daemon.config.runtime_seed, daemon.config.name
     )
+    daemon.db.runtime_config_accessor = daemon._runtime_config_accessor
     if effective_runtime.seeded_at == effective_runtime.updated_at:
         logger.info("Seeded runtime config from butler.toml for %s", daemon.config.name)
     else:

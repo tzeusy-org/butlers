@@ -95,6 +95,7 @@ safety-critical approval-rule arguments.
 | `memory_run_consolidation` | Maintenance | Trigger episode consolidation |
 | `memory_run_episode_cleanup` | Maintenance | Clean up expired episodes |
 | `memory_catalog_search` | Catalog | Search the shared memory catalog |
+| `memory_catalog_fetch` | Catalog | Follow a catalog pointer under held read authority |
 
 ## Retrieval
 
@@ -198,6 +199,24 @@ IVFFlat-backed discovery index rather than a local production memory table.
 
 When `enable_shared_catalog = true` (the module default), `store_fact`/`store_rule` write a searchable summary row to `public.memory_catalog` — a cross-butler discovery index (see `openspec/specs/memory-discovery-catalog/spec.md`). The catalog is a discovery index, not a canonical store: full retrieval always routes back to the owning butler's schema via the row's `(source_schema, source_table, source_id)` provenance pointer.
 
+**Read authority.** Each butler holds its catalog ceiling in its DB-backed
+`runtime_config.catalog_read_sensitivity` value, seeded on first boot from
+`[butler.runtime_seed].catalog_read_sensitivity`; the default is `normal`. The
+supported authority tiers are `normal`, `internal`, and `confidential`.
+`internal` maps to the existing stored sensitivity values `normal` + `pii`; it
+does not add a new sensitivity value. Both `memory_catalog_search` and the core
+`memory_catalog_fetch` tool load this same server-held policy. Neither tool has
+a caller-controlled sensitivity argument. A fetch above the held ceiling
+returns only `{"status":"withheld","reason":"sensitivity"}`; it does not
+return content, the stored classification, or provenance beyond what the
+caller already supplied.
+
+`memory_catalog_fetch` accepts the three provenance fields returned by search,
+resolves the catalog row's owning butler, and asks that butler's existing
+`memory_get` tool through the Switchboard route. It never grants cross-schema
+database access. Inactive or missing pointers return `{"status":"not_found"}`.
+Both tools are read-only and idempotent.
+
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 
 The owning `source_schema` for a disownment cascade is resolved from the connection's own `current_schema()` rather than threaded through every caller — butler pools connect with `search_path = <schema>, public`, so this reliably matches whatever schema the row was originally cataloged under.
@@ -208,7 +227,7 @@ The owning `source_schema` for a disownment cascade is resolved from the connect
 
 ### IVFFlat filtered-recall measurement
 
-The live semantic retrieval contract is [`_catalog_semantic_search`](../../src/butlers/modules/memory/search.py): it orders `public.memory_catalog` by `embedding <=> query_embedding` after applying `tenant_id`, `invalid_at IS NULL`, optional `memory_type`, and the caller's sensitivity ceiling. In this catalog, the user-facing notion of a category is the persisted `memory_type` filter (`fact` or `rule`); there is no separate category column.
+The live semantic retrieval contract is [`_catalog_semantic_search`](../../src/butlers/modules/memory/search.py): it orders `public.memory_catalog` by `embedding <=> query_embedding` after applying `tenant_id`, `invalid_at IS NULL`, optional `memory_type`, and the server-held sensitivity policy. In this catalog, the user-facing notion of a category is the persisted `memory_type` filter (`fact` or `rule`); there is no separate category column.
 
 An operator can measure possible IVFFlat candidate shortfall without changing the live retrieval path, index, or database settings:
 

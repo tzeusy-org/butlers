@@ -694,7 +694,7 @@ async def _supersede_and_search_catalog(db_url: str) -> dict:
     superseded fact's catalog entry was marked stale and no longer surfaces in
     cross-butler search, while the superseding fact does.
     """
-    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.search import resolve_catalog_read_policy, search_catalog
     from butlers.modules.memory.storage import store_fact
 
     pool = await asyncpg.create_pool(
@@ -728,6 +728,7 @@ async def _supersede_and_search_catalog(db_url: str) -> dict:
             engine,
             tenant_id="shared",
             mode="keyword",
+            read_policy=resolve_catalog_read_policy("normal"),
         )
         before_ids = {r["source_id"] for r in before}
 
@@ -761,6 +762,7 @@ async def _supersede_and_search_catalog(db_url: str) -> dict:
             engine,
             tenant_id="shared",
             mode="keyword",
+            read_policy=resolve_catalog_read_policy("normal"),
         )
         after_ids = {r["source_id"] for r in after}
 
@@ -1097,7 +1099,7 @@ async def _backfill_and_search_catalog(db_url: str) -> dict:
     the ~3,600 pre-flip facts/rules predate write-behind, so the backfill job
     is the only mechanism that ever catalogs them.
     """
-    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.search import resolve_catalog_read_policy, search_catalog
     from butlers.modules.memory.storage import (
         forget_memory,
         run_memory_catalog_backfill,
@@ -1209,7 +1211,12 @@ async def _backfill_and_search_catalog(db_url: str) -> dict:
         )
 
         discovered = await search_catalog(
-            pool, "bob favorite_color", engine, tenant_id="shared", mode="keyword"
+            pool,
+            "bob favorite_color",
+            engine,
+            tenant_id="shared",
+            mode="keyword",
+            read_policy=resolve_catalog_read_policy("normal"),
         )
 
         return {
