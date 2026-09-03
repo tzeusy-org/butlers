@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import logging
@@ -28,6 +29,12 @@ _DESCENDANT_SURVIVAL_HARNESS = (
 )
 _DESCENDANT_SURVIVAL_PAYLOAD_SOURCE = (
     _REPO_ROOT / "tests" / "cli" / "fixtures" / "descendant_survival_payload.c"
+)
+_PEER_ISOLATION_HARNESS = (
+    _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_peer_isolation_harness.py"
+)
+_PEER_ISOLATION_PROBE_SOURCE = (
+    _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_peer_isolation_probe.c"
 )
 _BASE_IMAGE_BUILD_INPUTS = (
     "Dockerfile.base",
@@ -2916,6 +2923,107 @@ def test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persis
         "pid1_terminated": True,
         "stage_discarded": True,
     }
+
+
+def test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other(
+    tmp_path: Path,
+) -> None:
+    """core-credentials spec.md 3.6b: peers cannot cross the stage or PID boundary.
+
+    Launches two real, concurrent Bubblewrap sandboxes under the exact
+    production image. The attacker child attempts, by the victim's exact
+    real stage path and real outer PID, to read the victim's staged
+    secret, write into the victim's stage, list the victim's stage
+    directory, signal-probe the victim's PID, and find that PID in its own
+    /proc view. Every attempt must fail against the real kernel boundary,
+    not a mock.
+    """
+    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
+        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.fail("Docker is required when the exact-image sandbox handshake test is enabled")
+    gcc = shutil.which("gcc")
+    if gcc is None:
+        pytest.fail("gcc is required to build the peer-isolation adversarial probe")
+
+    image = os.environ.get("BUTLERS_RUNTIME_SANDBOX_IMAGE")
+    if not image or not _is_explicit_exact_image_reference(image):
+        pytest.fail(
+            "BUTLERS_RUNTIME_SANDBOX_IMAGE must name the explicitly rebuilt, non-latest app image"
+        )
+    inspect = subprocess.run(
+        [docker, "image", "inspect", "--format", "{{json .Config}}", image],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if inspect.returncode != 0:
+        pytest.fail(f"exact sandbox image is unavailable: {image}")
+    image_config = json.loads(inspect.stdout)
+    image_labels = image_config.get("Labels") or {}
+    assert image_labels.get("butlers.base.input_sha") == _base_input_fingerprint()
+
+    probe_binary = tmp_path / "runtime-cli-sandbox-peer-isolation-probe"
+    compiled = subprocess.run(
+        [
+            gcc,
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-static",
+            "-o",
+            str(probe_binary),
+            str(_PEER_ISOLATION_PROBE_SOURCE),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    os.chmod(probe_binary, 0o755)
+
+    seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
+    completed = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--security-opt",
+            "systempaths=unconfined",
+            "--security-opt",
+            f"seccomp={seccomp_profile}",
+            "--volume",
+            f"{_PEER_ISOLATION_HARNESS}:/tmp/runtime-cli-sandbox-peer-isolation-harness.py:ro",
+            "--volume",
+            f"{probe_binary}:/tmp/runtime-cli-sandbox-peer-isolation-probe:ro",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-c",
+            "PYTHONPATH=/app/src exec python /tmp/runtime-cli-sandbox-peer-isolation-harness.py",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+
+    assert result["read_stage_secret_ok"] is False
+    assert result["read_stage_secret_errno"] == errno.ENOENT
+    assert result["write_stage_ok"] is False
+    assert result["write_stage_errno"] == errno.ENOENT
+    assert result["opendir_stage_ok"] is False
+    assert result["opendir_stage_errno"] == errno.ENOENT
+    assert result["kill_peer_ok"] is False
+    assert result["kill_peer_errno"] in (errno.ESRCH, errno.EPERM)
+    assert result["peer_pid_in_proc"] is False
+    assert result["host_confirms_no_attacker_write"] is True
 
 
 @pytest.mark.parametrize(

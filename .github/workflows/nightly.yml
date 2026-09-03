@@ -243,6 +243,12 @@ jobs:
     # against the same exact image, for the same reason -- task 3.6b's
     # descendant-survival/mutation-after-exit/persistence guarantees had no
     # real-kernel test anywhere in the repo either.
+    #
+    # bu-dq46e: task 3.6b also requires proving concurrent peer isolation --
+    # that one sandboxed child cannot read or write another's stage or
+    # inspect its process state. test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other
+    # runs under the same gate and shares this job's already-built image, so
+    # it is added to the same -k selection below rather than its own job.
     runs-on: ubuntu-latest
 
     steps:
@@ -301,4 +307,5 @@ jobs:
         run: |
           uv run pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
             -k "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled \
-                or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence"
+                or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence \
+                or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other"
