@@ -36,6 +36,15 @@ _PEER_ISOLATION_HARNESS = (
 _PEER_ISOLATION_PROBE_SOURCE = (
     _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_peer_isolation_probe.c"
 )
+_SIGNER_ISOLATION_HARNESS = (
+    _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_exact_image_signer_isolation_harness.py"
+)
+_SIGNER_ISOLATION_PAYLOAD_SOURCE = (
+    _REPO_ROOT / "tests" / "cli" / "fixtures" / "signer_isolation_payload.c"
+)
+_SYNTHETIC_SIGNER_FIXTURE = (
+    _REPO_ROOT / "tests" / "cli" / "fixtures" / "synthetic_signer_fixture.txt"
+)
 _BASE_IMAGE_BUILD_INPUTS = (
     "Dockerfile.base",
     "scripts/runtime_cli_sandbox_init.c",
@@ -3024,6 +3033,86 @@ def test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_othe
     assert result["kill_peer_errno"] in (errno.ESRCH, errno.EPERM)
     assert result["peer_pid_in_proc"] is False
     assert result["host_confirms_no_attacker_write"] is True
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    shutil.which("cc") is None, reason="C compiler is required to build the adversarial payload"
+)
+def test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment(
+    tmp_path: Path,
+) -> None:
+    """core-credentials spec.md: a sandboxed child receives ENOENT opening the
+    absent signer path and cannot read protected parent environment values --
+    proven against a real kernel enforcing a real Bubblewrap mount and PID
+    namespace, not a mock of the isolation boundary."""
+    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
+        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+    docker = _require_docker()
+    image = _require_exact_sandbox_image(docker)
+
+    # The harness runs inside the production image, which does not install
+    # the runtime-probe-control HTTP client's httpx dependency, so it keeps
+    # its own literal copy of the signer path. Assert it here (outside the
+    # image, where the real module imports cleanly) so drift is caught.
+    from butlers.core.runtime_probe_control.keys import SIGNER_PATH
+
+    assert str(SIGNER_PATH) == "/run/secrets/runtime_probe_control_signing_key"
+
+    payload_binary = tmp_path / "bu-xj2gi-signer-isolation-payload"
+    subprocess.run(
+        [
+            "cc",
+            "-static",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-o",
+            str(payload_binary),
+            str(_SIGNER_ISOLATION_PAYLOAD_SOURCE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
+    completed = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--security-opt",
+            "systempaths=unconfined",
+            "--security-opt",
+            f"seccomp={seccomp_profile}",
+            "--volume",
+            f"{_SIGNER_ISOLATION_HARNESS}:/tmp/runtime-cli-sandbox-signer-isolation.py:ro",
+            "--volume",
+            f"{payload_binary}:/tmp/bu-xj2gi-signer-isolation-payload:ro",
+            "--volume",
+            f"{_SYNTHETIC_SIGNER_FIXTURE}:/run/secrets/runtime_probe_control_signing_key:ro",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-c",
+            "PYTHONPATH=/app/src exec python /tmp/runtime-cli-sandbox-signer-isolation.py",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "outer_signer_present": True,
+        "signer_absent_in_sandbox": True,
+        "signer_errno_is_enoent": True,
+        "protected_environment_isolated": True,
+    }
 
 
 @pytest.mark.parametrize(
