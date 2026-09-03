@@ -362,17 +362,28 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
     patches = _make_daemon_patches()
     notify_fn = None
     mock_mcp = MagicMock()
+    registered: dict[str, Any] = {}
+
+    class _FakeTool:
+        def __init__(self, name: str, fn: Any):
+            self.name = name
+            self.fn = fn
 
     def tool_decorator(*_decorator_args, **_decorator_kwargs):
         def decorator(fn):
             nonlocal notify_fn
             if fn.__name__ == "notify":
                 notify_fn = fn
+            registered[fn.__name__] = _FakeTool(fn.__name__, fn)
             return fn
 
         return decorator
 
+    async def list_tools() -> list[Any]:
+        return list(registered.values())
+
     mock_mcp.tool = tool_decorator
+    mock_mcp.list_tools = list_tools
 
     with (
         patches["db_from_env"],
@@ -942,7 +953,11 @@ def _make_mock_mcp() -> MagicMock:
     async def get_tool(name: str) -> Any:
         return _tools.get(name)
 
+    async def list_tools() -> list[Any]:
+        return list(_tools.values())
+
     mock_mcp.get_tool = get_tool
+    mock_mcp.list_tools = list_tools
 
     def tool_decorator(*_a, **_kw):
         def dec(fn):
@@ -1312,10 +1327,18 @@ async def _boot_messenger_with_route_execute(
     patches = _make_daemon_patches()
     route_execute_fn = None
     mock_mcp = MagicMock()
+    registered_names: set[str] = set()
+
+    class _FakeTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
 
     def tool_decorator(*_decorator_args, **_decorator_kwargs):
         def decorator(fn):
             nonlocal route_execute_fn
+            name = _decorator_kwargs.get("name") or getattr(fn, "__name__", "")
+            if name:
+                registered_names.add(name)
             if getattr(fn, "__name__", "") == "route_execute" or (
                 _decorator_kwargs.get("name") == "route.execute"
             ):
@@ -1324,8 +1347,12 @@ async def _boot_messenger_with_route_execute(
 
         return decorator
 
+    async def list_tools() -> list[Any]:
+        return [_FakeTool(name) for name in registered_names]
+
     mock_mcp.tool = tool_decorator
     mock_mcp.get_tool = AsyncMock(return_value=None)
+    mock_mcp.list_tools = list_tools
 
     with (
         patches["db_from_env"],

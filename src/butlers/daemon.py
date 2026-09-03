@@ -61,6 +61,7 @@ import butlers.background as _background
 from butlers.config import (
     ButlerConfig,
     parse_approval_config,
+    validate_approval_config,
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
@@ -1595,6 +1596,19 @@ class ButlerDaemon:
                     return raw_result
 
                 set_executor(_execute_approved_tool)
+
+        # Fail closed before any gate wrapping happens: reject startup if the
+        # approval config names a tool no module registered, or (when modules
+        # declare arg_sensitivities={"_write": True}) leaves a chat-reachable
+        # write tool ungated. All module tools are already registered on
+        # self.mcp by this point (lifecycle.py registers modules before
+        # calling this method). Only butlers with approvals enabled pay for
+        # listing the registered tool set, and this runs after the direct
+        # owner-command registry check above so that check's more specific
+        # handler-drift diagnostics surface first.
+        if approval_config is not None and approval_config.enabled:
+            registered_tools = {tool.name for tool in await self.mcp.list_tools()}
+            validate_approval_config(approval_config, registered_tools, tool_metadata)
 
         if approval_config is None or not approval_config.enabled:
             return originals
