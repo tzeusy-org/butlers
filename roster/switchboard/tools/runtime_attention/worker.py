@@ -6,9 +6,9 @@ transport truth wins*.  It claims durably before sending, rechecks its fence
 before every attempt, retries only an outcome that is **proven** not to have
 been attempted, and treats anything ambiguous as terminal.
 
-It is deliberately inert.  Nothing constructs or schedules it yet — activation
-waits for the producers and grants tracked by the parent epic — so importing
-this module cannot deliver anything.
+``SwitchboardModule.on_startup`` (``roster/switchboard/modules/__init__.py``)
+constructs and schedules this worker at daemon startup, polling the outbox on
+a fixed interval for the lifetime of the process.
 """
 
 from __future__ import annotations

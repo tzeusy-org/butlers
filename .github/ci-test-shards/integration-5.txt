@@ -1,6 +1,7 @@
 roster/relationship/tests/test_tools.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_switchboard_connector_operational_role_migration.py
+tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py
 tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py

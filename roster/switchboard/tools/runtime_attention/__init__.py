@@ -5,9 +5,8 @@ runtime-attention episode in front of the operator.  This package holds the two
 halves of that boundary: the fenced-claim repository over
 ``public.runtime_attention_outbox`` and the delivery worker that drives it.
 
-Nothing here is wired into daemon startup.  Activation waits for producers and
-grants (bu-0uqgo.6 and the epic), and the worker is inert until something
-constructs and runs it.
+``SwitchboardModule.on_startup`` constructs and schedules the delivery worker
+at daemon startup (see ``roster/switchboard/modules/__init__.py``).
 """
 
 from butlers.tools.switchboard.runtime_attention.outbox import (
