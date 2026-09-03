@@ -46,6 +46,14 @@ from butlers.core.runtime_probe_control.coordinator import ProbeResult, ProbeSta
 
 pytestmark = pytest.mark.unit
 
+_OWNER_KEY = "owner-key"
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_owner_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Test route now enforces require_dashboard_owner_control (bu-7y7z2)."""
+    monkeypatch.setenv("DASHBOARD_API_KEY", _OWNER_KEY)
+
 
 class _ScriptedClient:
     """Stands in for the signed control client and records what it was asked.
@@ -86,7 +94,11 @@ def _mount(app, pool: AsyncMock):
 
 
 def _asgi(app) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": _OWNER_KEY},
+    )
 
 
 @pytest.fixture
@@ -106,6 +118,42 @@ def scripted(monkeypatch: pytest.MonkeyPatch, model_settings):
         return client
 
     return _install
+
+
+# ---------------------------------------------------------------------------
+# REQ-dashboard-model-settings-001: owner control precedes the probe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "configured,header,expected", [(False, None, 503), (True, None, 401), (True, "wrong", 401)]
+)
+async def test_test_route_owner_gate_precedes_probe(
+    app,
+    scripted,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    header: str | None,
+    expected: int,
+) -> None:
+    """REQ-dashboard-model-settings-001: no probe is requested before owner auth."""
+    if configured:
+        monkeypatch.setenv("DASHBOARD_API_KEY", _OWNER_KEY)
+    else:
+        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    client = scripted(ProbeResult(ProbeStatus.COMPLETED, ok=True, latency_ms=1))
+    pool = _pool()
+    _mount(app, pool)
+    headers = {"X-API-Key": header} if header is not None else {}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+    ) as http:
+        response = await http.post(f"/api/settings/models/{uuid.uuid4()}/test")
+
+    assert response.status_code == expected
+    assert client.asked == []
+    pool.fetchval.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

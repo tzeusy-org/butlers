@@ -451,19 +451,49 @@ async def test_priority_stepper_404_on_missing(app, audit_append_spy):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "configured,header,expected", [(False, None, 503), (True, None, 401), (True, "wrong", 401)]
+)
+async def test_verify_all_owner_gate_precedes_run(
+    app, monkeypatch: pytest.MonkeyPatch, configured: bool, header: str | None, expected: int
+) -> None:
+    """REQ-dashboard-model-settings-001: no verification run starts before owner auth."""
+    import butlers.api.routers.model_settings as _ms
+
+    monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    if configured:
+        monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
+    else:
+        monkeypatch.delenv("DASHBOARD_API_KEY", raising=False)
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+    headers = {"X-API-Key": header} if header is not None else {}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+    ) as client:
+        response = await client.post("/api/settings/models/verify-all")
+
+    assert response.status_code == expected
+    mock_pool.fetch.assert_not_awaited()
+
+
 async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
     """POST /api/settings/models/verify-all returns 429 on second call within 60s."""
     import butlers.api.routers.model_settings as _ms
 
     # Reset the sentinel to allow the first call
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     # Return an empty enabled-models list so no actual verification is attempted
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         r1 = await client.post("/api/settings/models/verify-all")
         r429 = await client.post("/api/settings/models/verify-all")
@@ -494,6 +524,7 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
     import butlers.api.routers.model_settings as _ms
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     app, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
@@ -501,7 +532,9 @@ async def test_verify_all_pool_failure_does_not_consume_rate_limit(
     mock_db.credential_shared_pool.side_effect = [KeyError("No shared pool"), mock_pool]
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         rejected = await client.post("/api/settings/models/verify-all")
         accepted = await client.post("/api/settings/models/verify-all")
@@ -523,6 +556,7 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
 
     monkeypatch.setattr(_ms, "_verify_all_last_run", 0.0)
     monkeypatch.setattr(_ms, "_verify_all_in_flight", False)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
     _, mock_pool = _app_with_pool(app)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -543,7 +577,9 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
     monkeypatch.setattr(_ms, "run_verify_all_models", blocked_verify_all)
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
         try:
@@ -565,12 +601,15 @@ async def test_verify_all_accepted_after_interval_returns_current_result_shape(
 
     # Simulate last run well in the past
     monkeypatch.setattr(_ms, "_verify_all_last_run", time.monotonic() - 120.0)
+    monkeypatch.setenv("DASHBOARD_API_KEY", "owner-key")
 
     _, mock_pool = _app_with_pool(app)
     mock_pool.fetch = AsyncMock(return_value=[])
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": "owner-key"},
     ) as client:
         resp = await client.post("/api/settings/models/verify-all")
 
