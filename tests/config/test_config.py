@@ -387,6 +387,50 @@ def test_approval_config(tmp_path: Path):
         validate_approval_config(ac4, {"email_send"})
 
 
+def test_validate_approval_config_flags_ungated_chat_reachable_write_tool():
+    """bu-0ynlk.1: a declared write tool (arg_sensitivities={"_write": True},
+    the spotify/steam tool_metadata() convention) that is registered but has
+    no gated_tools entry fails validation, naming the tool. A tool that IS
+    gated, and a tool whose owning module never opted into the "_write"
+    declaration at all, are both unaffected."""
+    from butlers.modules.base import ToolMeta
+
+    approval_config = ApprovalConfig(enabled=True, gated_tools={})
+    tool_metadata = {
+        "spotify_play": ToolMeta(arg_sensitivities={"_write": True}),
+        "spotify_search": ToolMeta(arg_sensitivities={"_write": False}),
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True}),
+    }
+
+    with pytest.raises(ConfigError, match="spotify_play"):
+        validate_approval_config(
+            approval_config,
+            {"spotify_play", "spotify_search", "email_send_message"},
+            tool_metadata,
+        )
+
+    gated_approval_config = ApprovalConfig(
+        enabled=True, gated_tools={"spotify_play": GatedToolConfig()}
+    )
+    validate_approval_config(
+        gated_approval_config,
+        {"spotify_play", "spotify_search", "email_send_message"},
+        tool_metadata,
+    )  # no raise: the declared write tool is gated
+
+    validate_approval_config(
+        approval_config,
+        {"spotify_search", "email_send_message"},
+        tool_metadata,
+    )  # no raise: spotify_play isn't registered by this butler
+
+    validate_approval_config(
+        approval_config,
+        {"spotify_play", "spotify_search", "email_send_message"},
+        None,
+    )  # no raise: no tool_metadata supplied, reverse check skipped
+
+
 # ---------------------------------------------------------------------------
 # Messenger config + Switchboard URL + memory module
 # ---------------------------------------------------------------------------

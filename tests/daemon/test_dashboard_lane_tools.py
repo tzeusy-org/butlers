@@ -278,6 +278,13 @@ async def test_route_to_butler_injects_dashboard_block_deterministically(tmp_pat
     assert "conversation_reply" in envelope.input.context
     # Original classifier-provided context is preserved, not clobbered.
     assert "owner-provided context" in envelope.input.context
+    # bu-0ynlk.1: the injected block carries distinct STATEMENT and ACTION
+    # REQUEST instruction sets — an action request must never be applied
+    # before the approval gate parks it.
+    assert "STATEMENT" in envelope.input.context
+    assert "ACTION REQUEST" in envelope.input.context
+    assert "approval-gated tool" in envelope.input.context
+    assert "FAILURE MODE" in envelope.input.context
 
 
 async def test_route_to_butler_dashboard_injection_works_without_explicit_context(

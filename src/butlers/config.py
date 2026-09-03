@@ -580,7 +580,9 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
 
 
 def validate_approval_config(
-    approval_config: ApprovalConfig | None, registered_tools: set[str]
+    approval_config: ApprovalConfig | None,
+    registered_tools: set[str],
+    tool_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Validate that all gated tools are actually registered.
 
@@ -594,11 +596,24 @@ def validate_approval_config(
         configured.
     registered_tools:
         Set of all tool names registered by the butler's modules.
+    tool_metadata:
+        Optional ``{tool_name: ToolMeta}`` map aggregated from every active
+        module's ``tool_metadata()``. When given, also enforces the reverse
+        direction (bu-0ynlk.1): a chat-reachable write tool — one a module
+        explicitly declared with ``arg_sensitivities={"_write": True, ...}``
+        (the convention ``spotify``/``steam`` already use) — that is
+        registered but missing from ``gated_tools`` fails validation, closing
+        the gap where a butler enables approvals but forgets to gate one of
+        its own write tools. Only tools using this opt-in declaration are
+        checked; tools whose owning module has not declared it are
+        unaffected.
 
     Raises
     ------
     ConfigError
-        If any gated tool names are not in *registered_tools*.
+        If any gated tool names are not in *registered_tools*, or (when
+        *tool_metadata* is given) if a declared write tool is registered but
+        not gated.
     """
     if approval_config is None or not approval_config.enabled:
         return
@@ -611,6 +626,23 @@ def validate_approval_config(
             f"Unknown gated tool(s) in approval config: {tools_str}. "
             f"These tools are not registered by any module."
         )
+
+    if tool_metadata:
+        ungated_write_tools = sorted(
+            tool_name
+            for tool_name, meta in tool_metadata.items()
+            if tool_name in registered_tools
+            and getattr(meta, "arg_sensitivities", {}).get("_write") is True
+            and tool_name not in approval_config.gated_tools
+        )
+        if ungated_write_tools:
+            tools_str = ", ".join(ungated_write_tools)
+            raise ConfigError(
+                f"Chat-reachable write tool(s) not covered by approval config: "
+                f"{tools_str}. These tools are declared as writes via "
+                f"tool_metadata() but have no gated_tools entry — add one or "
+                f"mark the tool read-only."
+            )
 
 
 def _messenger_bot_scope_enabled(module_cfg: dict[str, Any]) -> bool:

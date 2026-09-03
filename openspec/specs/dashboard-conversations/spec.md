@@ -418,3 +418,32 @@ SSE Response Streaming requirement).
 
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
+
+### Requirement: Dashboard Message Intent Lanes
+
+A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done.
+
+#### Scenario: Classifier offers a distinct ACTION lane alongside statement and bug lanes
+
+- **WHEN** the Switchboard's dashboard classification prompt is built for a chat-widget message
+- **THEN** it SHALL present three lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), and LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself)
+
+#### Scenario: The routed envelope carries distinct STATEMENT and ACTION-REQUEST instructions
+
+- **WHEN** `route_to_butler` injects the deterministic dashboard confirm-loop block into a routed envelope's `input.context`
+- **THEN** the block SHALL contain a STATEMENT instruction set (interpret, apply the write, then call `conversation_reply` to confirm) and a distinct ACTION-REQUEST instruction set
+- **AND** the ACTION-REQUEST set SHALL instruct the routed session to route the write through its normal approval-gated tool (never an ungated path) so the gate parks it before anything happens, and to call `conversation_reply` describing the action as proposed and awaiting approval — never as already completed
+- **AND** the block SHALL state the failure mode explicitly: applying an action's write before the gate parks it, or claiming completion for a pending action, is never acceptable
+
+#### Scenario: A parked action request produces zero domain writes and no completion claim
+
+- **WHEN** a routed butler session follows the ACTION-REQUEST instructions for a gated write tool whose target contact is unresolvable or requires review
+- **THEN** exactly one `pending_actions` row is created with `status = 'pending'`
+- **AND** the underlying domain tool function is not invoked
+- **AND** the `conversation_reply` text describes the action as proposed/queued, not completed
+
+#### Scenario: An ambiguous dashboard turn yields a clarifying reply, never a best-guess route
+
+- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, or C
+- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler
+- **AND** the pipeline's existing dashboard dead-letter path (see the Durable Dashboard Turn Control requirement's failure handling) SHALL capture the turn and reply in-thread asking the owner to clarify, with no route to any domain butler

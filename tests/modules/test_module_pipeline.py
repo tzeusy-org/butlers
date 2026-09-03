@@ -2241,6 +2241,27 @@ class TestBuildDashboardLanePrompt:
         assert "Dashboard conversation_id:" not in prompt
         assert "Dashboard page_context" not in prompt
 
+    def test_offers_an_action_lane_for_an_imperative_message(self):
+        """bu-0ynlk.1: the prompt must offer a distinct ACTION lane (LANE C)
+        that still routes via route_to_butler — the propose-don't-apply
+        contract is enforced downstream by the injected confirm block, not
+        by this classifier prompt."""
+        prompt = _build_dashboard_lane_prompt("Send an email to Alice about dinner", _MOCK_BUTLERS)
+
+        assert "LANE C" in prompt
+        assert "action request" in prompt
+
+    def test_does_not_instruct_a_best_guess_route_for_ambiguous_input(self):
+        """bu-0ynlk.1: ambiguity must no longer force a best-guess
+        route_to_butler call — the classifier is instructed to call neither
+        tool and let the dead-letter net surface an in-thread clarifying
+        prompt instead."""
+        prompt = _build_dashboard_lane_prompt("uhh", _MOCK_BUTLERS)
+
+        assert "best-guess" not in prompt
+        assert "do NOT guess" in prompt
+        assert "Do not call `route_to_butler`, `file_bug_report`, or" in prompt
+
 
 class TestExtractBugReportCalls:
     def test_no_bug_report_call(self):
@@ -2520,6 +2541,51 @@ class TestMessagePipelineProcessDashboardLanes:
         assert result.target_butler == "dead_letter"
         assert result.target_butler != "general"
         pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_ambiguous_dashboard_message_yields_clarifying_question_no_route(self, mock_load):
+        """bu-0ynlk.1: an ambiguous message must not be force-routed via a
+        best-guess route_to_butler call. When the classifier follows the
+        updated prompt and calls neither tool, the pipeline must dead-letter
+        (which posts the owner an in-thread clarifying reply) rather than
+        route anywhere — zero route_to_butler calls are made."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="This message is ambiguous — I can't tell what's being asked.",
+                tool_calls=[],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-6", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingResult(
+                target_butler="dead_letter", route_result={"dead_letter_id": "dl-3"}
+            )
+        )
+
+        result = await pipeline.process(
+            "uhh maybe do the thing",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-0000-000000000006",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.routed_targets in (None, [])
+        pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
+        call_kwargs = pipeline._dead_letter_dashboard_unroutable.await_args.kwargs
+        assert call_kwargs["failure_reason"] == (
+            "Dashboard message classification produced no lane "
+            "decision (neither route_to_butler nor file_bug_report was called)"
+        )
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

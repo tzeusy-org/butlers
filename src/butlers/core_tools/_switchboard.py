@@ -75,11 +75,19 @@ def _build_dashboard_confirm_block(
 
     Appended to the routed envelope's ``input.context`` by ``route_to_butler``
     whenever the classification session was itself triggered by a dashboard
-    chat-widget message (Lane A — data statement/correction). This is
-    injected in code, not left to the classification LLM's own prose, so the
-    routed session always receives a valid ``conversation_id`` and concrete
-    instructions to interpret, apply, and confirm via ``conversation_reply``
-    — the entire point of the dashboard confirm-loop design.
+    chat-widget message (Lane A/C — data statement or action request). This
+    is injected in code, not left to the classification LLM's own prose, so
+    the routed session always receives a valid ``conversation_id`` and
+    concrete instructions for both intents it might be handling.
+
+    Per ``about/heart-and-soul/security.md`` ("Approval gates must never be
+    bypassable by the LLM session"), consent must precede effect: a STATEMENT
+    may be applied and then confirmed, but an ACTION REQUEST must never be
+    applied directly — its write goes through the routed butler's normal
+    approval-gated tool (which parks it) before anything happens. Both
+    instruction sets are always present because this block is built before
+    the routed session has classified the message itself; the routed session
+    picks the branch that matches what it is looking at.
     """
     lines = [
         "--- DASHBOARD CONVERSATION CONTEXT (deterministic; always present) ---",
@@ -90,16 +98,39 @@ def _build_dashboard_confirm_block(
     lines.extend(
         [
             "",
-            "This request originated from the owner's dashboard chat widget "
-            "(a statement or correction typed directly by the owner, optionally "
-            "grounded by the page_context above — e.g. the entity or route they "
-            "were viewing).",
+            "This request originated from the owner's dashboard chat widget, "
+            "optionally grounded by the page_context above (e.g. the entity or "
+            "route they were viewing). Decide whether it is a STATEMENT or an "
+            "ACTION REQUEST, then follow only the matching instructions below.",
+            "",
+            "STATEMENT (the owner is asserting or correcting a fact about their "
+            'own data — e.g. "Alice\'s birthday is actually March 3rd", "mark '
+            'this receipt as reimbursed"):',
             "1. Interpret the statement against your own domain schema/predicates.",
             "2. Apply it (write or update the relevant fact/record).",
             "3. Call the `conversation_reply` MCP tool with "
             f'conversation_id="{conversation_id}" and a concise message describing '
             "what you recorded, asking the owner to confirm "
             '(e.g. "Recorded: Alice child-of Bob — correct?").',
+            "",
+            "ACTION REQUEST (the owner is asking you to DO something with a "
+            'real-world or hard-to-reverse effect on their behalf — e.g. "send '
+            'an email to X", "book this flight", "delete this event"):',
+            "1. Do NOT write directly. Call the normal approval-gated tool for "
+            "this action exactly as you always would for any other channel — "
+            "the gate parks it for owner review before anything happens. Never "
+            "call an ungated path that would perform the action immediately.",
+            "2. Call `conversation_reply` with "
+            f'conversation_id="{conversation_id}" describing the action as '
+            "proposed and awaiting the owner's approval (e.g. \"I've queued "
+            'sending that email to X for your approval"). Never phrase this as '
+            "something you already did.",
+            "3. FAILURE MODE: applying an action request's write before the "
+            "approval gate parks it, or telling the owner an action is done "
+            "when it is only pending, bypasses consent-before-effect and is "
+            "never acceptable — not even when you are confident the owner "
+            "would approve.",
+            "",
             "You MUST call `conversation_reply` before finishing this session — the "
             "owner's dashboard chat is waiting on it and has no other way to see "
             "your response.",

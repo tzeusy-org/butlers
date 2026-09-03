@@ -523,11 +523,11 @@ def _build_dashboard_lane_prompt(
     conversation_id: str | None = None,
     page_context: dict[str, Any] | None = None,
 ) -> str:
-    """Build the CC prompt for dashboard chat-widget messages (two lanes).
+    """Build the CC prompt for dashboard chat-widget messages (three lanes).
 
     Unlike :func:`_build_routing_prompt`, this prompt is used only for the
     dashboard channel (the owner's floating chat widget). It teaches the
-    classification session to pick one of two lanes instead of always
+    classification session to pick one of three lanes instead of always
     calling ``route_to_butler``:
 
     - **Lane A (data statement/correction):** call ``route_to_butler`` exactly
@@ -538,6 +538,17 @@ def _build_dashboard_lane_prompt(
       (see ``core_tools/_switchboard.py``), not here.
     - **Lane B (bug/system report):** call ``file_bug_report`` instead. Bug
       reports must NEVER be routed to a domain butler via ``route_to_butler``.
+    - **Lane C (action request):** call ``route_to_butler`` exactly as in
+      Lane A — this classifier's only job is picking the target butler. The
+      deterministic block injected into the routed envelope (see Lane A)
+      carries the propose-don't-apply contract; this prompt does not need to
+      (and must not try to) enforce it itself.
+
+    An input that cannot be confidently placed into any lane is never a
+    best-guess route: the classifier is instructed to call no tool at all,
+    which surfaces to the owner as an in-thread clarifying prompt via the
+    existing dashboard dead-letter net (``_dead_letter_dashboard_unroutable``)
+    rather than risking a wrong domain butler or a silently-applied action.
 
     ``conversation_id``/``page_context`` are surfaced here for the model's
     own reasoning (e.g. to write a grounded ``prompt``/``context`` for
@@ -559,7 +570,7 @@ def _build_dashboard_lane_prompt(
     prompt_parts = [
         "This message was sent from the owner's dashboard chat widget "
         "(a floating chat panel available on every dashboard page). Decide "
-        "which of TWO LANES it belongs to, then call exactly one tool:\n\n"
+        "which of THREE LANES it belongs to, then call at most one tool:\n\n"
         "LANE A — data statement or correction (e.g. 'Alice's birthday is "
         "actually March 3rd', 'mark this receipt as reimbursed'): call the "
         "`route_to_butler` MCP tool exactly as you would for any other "
@@ -573,19 +584,29 @@ def _build_dashboard_lane_prompt(
         "with a concise `summary` of the problem. Do NOT call `route_to_butler` "
         "for a bug/system report — it must never be routed to a domain "
         "butler.\n\n"
-        "If the message is genuinely ambiguous or you cannot classify it "
-        "into either lane, still call `route_to_butler` with the "
-        "best-guess specialist (or `general`) rather than calling nothing — "
-        "an unrouted dashboard message leaves the owner's chat waiting with "
-        "no reply.\n\n"
-        "IMPORTANT: You MUST call exactly one of `route_to_butler` or "
-        "`file_bug_report` at least once. Do NOT call `notify`.\n\n"
+        "LANE C — action request (e.g. 'send an email to Alice about dinner', "
+        "'book this flight', 'delete that reminder'): the owner is asking you "
+        "to DO something with a real-world effect, not just record a fact. "
+        "Call `route_to_butler` exactly as in LANE A — pick the specialist "
+        "butler whose domain owns this action. The routed butler session's "
+        "own deterministic instructions require it to route the actual write "
+        "through its approval-gated tool and reply with a proposal, never a "
+        "completion claim — that enforcement happens downstream; you do not "
+        "need to (and must not try to) apply or confirm anything here.\n\n"
+        "If the message is genuinely ambiguous — you cannot tell which lane "
+        "it belongs to, or whether it is a statement or an action request — "
+        "do NOT guess. Do not call `route_to_butler`, `file_bug_report`, or "
+        "any other tool. Respond only with your brief text summary explaining "
+        "what is unclear; the owner will see an in-thread prompt asking them "
+        "to clarify, and can resend a more specific message.\n\n"
+        "IMPORTANT: For LANE A, B, or C, call exactly one of `route_to_butler` "
+        "or `file_bug_report` at least once. Do NOT call `notify`.\n\n"
         "If `route_to_butler` returns `{status: 'refused', reason: "
         "'dashboard_lane_conflict'}`, `file_bug_report` already handled the "
         "message. Treat that refusal as terminal: Do NOT call either tool again; "
         "respond with your brief text summary.\n\n"
-        "After calling the tool, respond with a brief text summary of your "
-        "decision.\n\n"
+        "After calling the tool (or deciding the message is ambiguous), "
+        "respond with a brief text summary of your decision.\n\n"
     ]
 
     if conversation_id:
