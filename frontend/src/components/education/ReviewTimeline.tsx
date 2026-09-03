@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useListTriage } from "@/hooks/use-list-triage";
 import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import { useTimezone } from "@/components/ui/timezone-context";
@@ -97,7 +98,7 @@ interface ReviewTimelineProps {
 }
 
 export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
-  const { data: mindMapsResponse } = useMindMaps({ status: "active" });
+  const { data: mindMapsResponse, isError: mindMapsError } = useMindMaps({ status: "active" });
   // Stable reference for the data array so the inner useMemo doesn't refire on
   // every render (TanStack Query returns a fresh response object each render).
   const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse?.data]);
@@ -107,6 +108,7 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
   // useQueries so the query count tracks the live map list without violating
   // React's rules of hooks — no arbitrary cap, no map silently dropped.
   const reviewResults = useAllPendingReviews(mapIds);
+  const reviewsError = reviewResults.some((result) => result.isError);
 
   // Owner-configured timezone anchors the Today / This-week boundaries so
   // bucketing is host-timezone independent (bu-fhsph).
@@ -170,6 +172,20 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
       }
     }
   }, [selectedKey]);
+
+  if (mindMapsError || reviewsError) {
+    return (
+      <Card>
+        <CardContent className="flex h-48 items-center justify-center">
+          <SourceDegradedNote
+            label="Review schedule"
+            detail="unavailable"
+            testId="review-timeline-degraded"
+          />
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (allEntries.length === 0) {
     return (

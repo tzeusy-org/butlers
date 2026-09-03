@@ -173,6 +173,39 @@ describe("ReviewTimeline — renders all active mind maps", () => {
 
     expect(screen.getByText(/no reviews scheduled/i)).toBeTruthy();
   });
+
+  it("renders a degraded state when the mind-map fetch fails", () => {
+    mockUseMindMaps.mockReturnValue({
+      data: undefined,
+      isError: true,
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockReturnValue([]);
+
+    renderTimeline();
+
+    expect(screen.getByRole("alert").textContent).toMatch(/review schedule: unavailable/i);
+    expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
+  });
+
+  it("renders a degraded state when a pending-review fetch fails", () => {
+    const maps = [makeMap("map-a", "Alpha")];
+    mockUseMindMaps.mockReturnValue({
+      data: { data: maps },
+      isError: false,
+    } as unknown as ReturnType<typeof useMindMaps>);
+    mockUseAllPendingReviews.mockReturnValue([
+      {
+        data: [],
+        isLoading: false,
+        isError: true,
+      } as unknown as ReviewResult,
+    ]);
+
+    renderTimeline();
+
+    expect(screen.getByRole("alert").textContent).toMatch(/review schedule: unavailable/i);
+    expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
