@@ -1169,6 +1169,7 @@ def test_kind_privileged_sql_is_consequence_allowlist():
         "permission.%",
         "data.%",
         "webhook.%",
+        "spend.%",
     ):
         assert action_family in sql
     assert "result = 'error'" in sql

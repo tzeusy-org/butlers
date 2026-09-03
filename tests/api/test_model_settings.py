@@ -222,6 +222,128 @@ async def test_catalog_create_error_paths(
     assert resp.status_code == expected
 
 
+async def test_catalog_create_writes_audit_on_success(app, audit_append_spy, monkeypatch):
+    """A successful catalog insert records the server-derived model identity."""
+    monkeypatch.setattr(
+        "butlers.api.routers.model_settings.authenticated_principal",
+        lambda: "server-owner",
+    )
+    entry_id = uuid.uuid4()
+    created_row = _make_catalog_row(entry_id=entry_id, alias="new-model")
+    _, mock_pool = _app_with_pool(app, fetchrow_result=created_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/settings/models",
+            json={
+                "alias": "new-model",
+                "runtime_type": "codex",
+                "model_id": "gpt-5",
+                "complexity_tier": "workhorse",
+            },
+        )
+
+    assert resp.status_code == 201
+    route_calls = [
+        call
+        for call in audit_append_spy.call_args_list
+        if len(call.args) >= 3 and call.args[2] == "model.create"
+    ]
+    assert len(route_calls) == 1
+    acquired_connection = mock_pool.acquire.return_value.__aenter__.return_value
+    assert route_calls[0].args[:2] == (acquired_connection, "server-owner")
+    assert route_calls[0].kwargs == {
+        "target": str(entry_id),
+        "note": "new-model",
+        "result": "success",
+    }
+
+
+async def test_catalog_create_failure_does_not_claim_audit_success(app, audit_append_spy):
+    """A failed insert has no successful model.create audit row."""
+
+    async def fail_insert(*_args):
+        raise RuntimeError("catalog unavailable")
+
+    _app_with_pool(app, fetchrow_side_effect=fail_insert)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/settings/models",
+            json={
+                "alias": "failed-model",
+                "runtime_type": "codex",
+                "model_id": "gpt-5",
+                "complexity_tier": "workhorse",
+            },
+        )
+
+    assert resp.status_code == 500
+    assert not [
+        call
+        for call in audit_append_spy.call_args_list
+        if len(call.args) >= 3 and call.args[2] == "model.create"
+    ]
+
+
+async def test_catalog_delete_writes_audit_after_cascade_delete(app, audit_append_spy, monkeypatch):
+    """Deleting a catalog row records the cascade-bearing model mutation."""
+    monkeypatch.setattr(
+        "butlers.api.routers.model_settings.authenticated_principal",
+        lambda: "server-owner",
+    )
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(
+        app,
+        fetchrow_result={"cascade_deleted_overrides": 2},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(f"/api/settings/models/{entry_id}")
+
+    assert resp.status_code == 200
+    delete_sql = mock_pool.fetchrow.await_args.args[0]
+    assert "DELETE FROM public.model_catalog" in delete_sql
+    assert "public.butler_model_overrides" in delete_sql
+    assert mock_pool.fetchrow.await_args.args[1:] == (entry_id,)
+    route_calls = [
+        call
+        for call in audit_append_spy.call_args_list
+        if len(call.args) >= 3 and call.args[2] == "model.delete"
+    ]
+    assert len(route_calls) == 1
+    acquired_connection = mock_pool.acquire.return_value.__aenter__.return_value
+    assert route_calls[0].args[:2] == (acquired_connection, "server-owner")
+    assert route_calls[0].kwargs == {
+        "target": str(entry_id),
+        "metadata": {"cascade_deleted_overrides": 2},
+        "result": "success",
+    }
+
+
+async def test_catalog_delete_failure_does_not_claim_audit_success(app, audit_append_spy):
+    """A missing catalog row does not emit a successful model.delete audit row."""
+    _app_with_pool(app, fetchrow_result=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(f"/api/settings/models/{uuid.uuid4()}")
+
+    assert resp.status_code == 404
+    assert not [
+        call
+        for call in audit_append_spy.call_args_list
+        if len(call.args) >= 3 and call.args[2] == "model.delete"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Resolve-model preview
 # ---------------------------------------------------------------------------
