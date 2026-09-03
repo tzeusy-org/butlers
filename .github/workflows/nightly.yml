@@ -225,3 +225,73 @@ jobs:
             --timeout=300 --timeout-method=thread
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+
+  exact-image-sandbox:
+    # bu-zfmq2: task 3.6b's real-kernel exact-image proof
+    # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
+    # only runs when BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 names an explicitly
+    # rebuilt, non-latest image -- no workflow set that before, so the launch/
+    # pidfd-termination proof against a real Bubblewrap sandbox and the exact
+    # production container never executed anywhere. It rebuilds the exact
+    # base+app image chain (mirroring scripts/compose.sh's fingerprint/label
+    # and GIT_SHA build-arg conventions) and spawns real, unprivileged
+    # Bubblewrap inside it, so this is deliberately its own slower nightly
+    # lane rather than every PR's fast gate.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Free disk space before image builds
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean -q
+          docker image prune -f --filter "until=1h" || true
+
+      - name: Build butlers-base image
+        # Labels mirror scripts/compose.sh's freshness receipt so this stays
+        # provably the same base-image build contract production uses.
+        run: |
+          # shellcheck source=scripts/base-image-input-fingerprint.sh
+          source scripts/base-image-input-fingerprint.sh
+          BASE_DOCKERFILE_SHA=$(sha256sum < Dockerfile.base | awk '{print $1}')
+          BASE_INPUT_SHA=$(butlers_base_image_input_fingerprint \
+            Dockerfile.base \
+            scripts/runtime_cli_sandbox_init.c \
+            scripts/generate_runtime_cli_sandbox_manifest.py)
+          docker build \
+            --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}" \
+            --label "butlers.base.input_sha=${BASE_INPUT_SHA}" \
+            -f Dockerfile.base \
+            -t butlers-base:latest .
+
+      - name: Build butlers-app exact image
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
+            -t "butlers-app:${GIT_SHA}" .
+
+      - name: Exact-image Bubblewrap sandbox proof
+        env:
+          BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
+          BUTLERS_RUNTIME_SANDBOX_IMAGE: butlers-app:${{ github.sha }}
+        run: |
+          uv run pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
+            -k test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled
