@@ -3,4 +3,5 @@ tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_switchboard_connector_operational_role_migration.py
 tests/integration/test_runtime_attention_delivery_worker.py
 tests/migrations/test_runtime_attention_outbox_migration.py
+tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/scripts/test_pg_restore_definer_ownership.py

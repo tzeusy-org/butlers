@@ -192,6 +192,7 @@ afterEach(() => {
   cleanup();
 });
 
+/** REQ-dashboard-model-settings-002; REQ-runtime-attention-outbox-003. */
 describe("SettingsModelsPage — truthful runtime attention", () => {
   const uncertainEpisode = {
     episode_id: "episode-1",

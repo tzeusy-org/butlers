@@ -7,6 +7,7 @@ REQ-dashboard-spend-dashboard-001; REQ-database-security-007.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,6 +28,16 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+
+# Without these this file is invisible to `-m db` / `-m integration` selection
+# and *errors* rather than skips on a host with no Docker, unlike its sibling
+# tests/migrations/test_runtime_attention_outbox_migration.py.
+docker_available = shutil.which("docker") is not None
+pytestmark = [
+    pytest.mark.db,
+    pytest.mark.integration,
+    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+]
 
 
 @pytest.fixture(scope="module")

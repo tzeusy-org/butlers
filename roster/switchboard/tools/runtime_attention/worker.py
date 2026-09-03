@@ -63,6 +63,14 @@ _fenced_total = get_or_create_counter(
     "switchboard_runtime_attention_fenced_total",
     "Runtime-attention transitions refused because the claim was no longer current.",
 )
+_lease_lost_total = get_or_create_counter(
+    "switchboard_runtime_attention_lease_lost_total",
+    "Delivery cycles cut short because the sole service lease was lost mid-cycle.",
+)
+_record_failed_total = get_or_create_counter(
+    "switchboard_runtime_attention_record_failed_total",
+    "Terminal transitions that raised after transport already returned an outcome.",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +122,17 @@ class RuntimeAttentionDeliveryWorker:
                 result = await self._deliver(episode)
                 if result is not None:
                     outcomes.append(str(result.outcome))
-                await self._repository.renew_service_lease(lease)
+                if not await self._repository.renew_service_lease(lease):
+                    # A successor already holds the service lease. Claiming
+                    # again would put a second delivery service on the wire,
+                    # which is the single thing this lease exists to prevent.
+                    _lease_lost_total.inc()
+                    logger.warning(
+                        "runtime-attention delivery lease lost mid-cycle after %d episode(s); "
+                        "stopping before claiming another",
+                        len(outcomes),
+                    )
+                    break
             return DeliveryCycle(lease_acquired=True, recovered=recovered, outcomes=tuple(outcomes))
         finally:
             await self._repository.release_service_lease(lease)
@@ -159,7 +177,22 @@ class RuntimeAttentionDeliveryWorker:
             outcome=str(result.outcome),
             error_detail=str(result.error_detail) if result.error_detail else "none",
         ).inc()
-        await self._record(episode, result)
+        try:
+            await self._record(episode, result)
+        except Exception as exc:  # noqa: BLE001 - reduced to a typed log below
+            # Transport has already returned its outcome; the send either
+            # happened or provably did not.  A bookkeeping failure here must
+            # not abort the cycle or strand the remaining episodes -- recovery
+            # observes the still-``sending`` row and fences it.  The outcome is
+            # still reported so the cycle's counts stay truthful.  Only the
+            # exception *type* is logged, never its message.
+            _record_failed_total.inc()
+            logger.warning(
+                "runtime-attention episode %s outcome %s could not be recorded (%s)",
+                episode.id,
+                result.outcome,
+                type(exc).__name__,
+            )
         return result
 
     async def _attempt(self, episode: OutboxEpisode) -> TransportResult:

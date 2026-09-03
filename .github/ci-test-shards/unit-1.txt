@@ -12,6 +12,7 @@ roster/relationship/tests/test_plex_halo.py
 roster/switchboard/tests/test_contract_models.py
 roster/switchboard/tests/test_deliver_unit.py
 roster/switchboard/tests/test_rule_demotion.py
+roster/switchboard/tests/test_runtime_attention_worker_cycle.py
 roster/switchboard/tests/test_spotify_spoken_policy_bypass.py
 tests/adapters/test_codex_refresh_lock.py
 tests/adapters/test_opencode_adapter.py
@@ -181,7 +182,6 @@ tests/migrations/test_drop_dead_feature_tables.py
 tests/migrations/test_migrate_interaction_subjects.py
 tests/migrations/test_model_catalog_verify_error_migration.py
 tests/migrations/test_model_dispatch_attempts_migration.py
-tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/migrations/test_runtime_probe_control_receipts_migration.py
 tests/migrations/test_seed_long_tail_relational_predicates_migration.py
 tests/migrations/test_seed_works_at_member_of_migration.py

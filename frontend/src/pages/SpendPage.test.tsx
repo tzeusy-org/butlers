@@ -2433,6 +2433,7 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
   });
 });
 
+/** REQ-dashboard-spend-dashboard-001. */
 describe("SpendPage — fleet-halt banner (bu-7o89u.3)", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();

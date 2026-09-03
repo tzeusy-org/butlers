@@ -2,6 +2,8 @@
 /**
  * Tests for useFleetHaltStatus (bu-7o89u.3) -- derives the monthly
  * spend-ceiling fleet-halt state from GET /api/dispatch/attempts.
+ *
+ * REQ-dashboard-spend-dashboard-001.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
