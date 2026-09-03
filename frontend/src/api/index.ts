@@ -716,6 +716,7 @@ export {
   getModelAttention,
   reissueModelAttention,
   deleteModelCatalogEntry,
+  getModelCatalogDeleteImpact,
   listButlerModelOverrides,
   upsertButlerModelOverrides,
   deleteButlerModelOverride,
@@ -730,6 +731,7 @@ export {
 export type {
   ComplexityTier,
   ModelCatalogEntry,
+  ModelDeleteImpact,
   ModelAttentionEpisode,
   ModelAttentionObservation,
   ModelAttentionReissueResult,

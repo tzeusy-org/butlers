@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createModelCatalogEntry,
   deleteModelCatalogEntry,
+  getModelCatalogDeleteImpact,
   deleteButlerModelOverride,
   listModelCatalog,
   listButlerModelOverrides,
@@ -100,6 +101,16 @@ export function useDeleteModelCatalogEntry() {
       // Overrides for all butlers are invalidated since cascade delete could affect them
       queryClient.invalidateQueries({ queryKey: ["butler-model-overrides"] });
     },
+  });
+}
+
+/** Fetch a fresh server-owned cascade count only while the delete dialog is open. */
+export function useModelCatalogDeleteImpact(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["model-catalog", id, "delete-impact"],
+    queryFn: () => getModelCatalogDeleteImpact(id),
+    enabled: enabled && !!id,
+    staleTime: 0,
   });
 }
 

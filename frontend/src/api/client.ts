@@ -209,6 +209,7 @@ import type {
   PriorityContactListParams,
   ContactSearchResponse,
   ModelCatalogEntry,
+  ModelDeleteImpact,
   ModelAttentionObservation,
   ModelAttentionReissueResult,
   FleetHaltAttentionObservation,
@@ -5042,6 +5043,15 @@ export function deleteModelCatalogEntry(
   return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
     `/settings/models/${encodeURIComponent(id)}`,
     { method: "DELETE" },
+  );
+}
+
+/** GET /api/settings/models/{id}/delete-impact — current cascade count */
+export function getModelCatalogDeleteImpact(
+  id: string,
+): Promise<ApiResponse<ModelDeleteImpact>> {
+  return apiFetch<ApiResponse<ModelDeleteImpact>>(
+    `/settings/models/${encodeURIComponent(id)}/delete-impact`,
   );
 }
 

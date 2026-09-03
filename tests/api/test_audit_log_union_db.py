@@ -397,6 +397,46 @@ async def test_model_delete_audits_and_cascade_deletes_overrides(
     assert "gpt-5" not in str(audit_row)
 
 
+async def test_model_delete_impact_counts_live_overrides_without_mutation(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """The confirmation count comes from live FK rows and exposes no override content."""
+    entry_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.model_catalog
+            (id, alias, runtime_type, model_id, complexity_tier)
+        VALUES ($1, $2, 'codex', 'gpt-5', 'workhorse')
+        """,
+        entry_id,
+        f"impact-{entry_id}",
+    )
+    await pool.executemany(
+        """
+        INSERT INTO public.butler_model_overrides
+            (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
+        VALUES ($1, $2, true, 7, 'workhorse')
+        """,
+        [(butler, entry_id) for butler in ("general", "finance", "health")],
+    )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = pool
+    audit_app.dependency_overrides[model_settings_module._get_db_manager] = lambda: mock_db
+
+    response = await _get(audit_app, f"/api/settings/models/{entry_id}/delete-impact")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"id": str(entry_id), "override_count": 3}
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.butler_model_overrides WHERE catalog_entry_id = $1",
+            entry_id,
+        )
+        == 3
+    )
+
+
 async def test_model_create_rolls_back_when_audit_is_unavailable(
     pool: asyncpg.Pool, audit_app: FastAPI
 ) -> None:

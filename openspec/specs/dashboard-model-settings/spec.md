@@ -34,6 +34,15 @@ The dashboard SHALL expose REST endpoints for full CRUD management of the global
 - **THEN** the entry is removed from the catalog
 - **AND** any butler_model_overrides referencing this entry are cascade-deleted
 
+#### Scenario: Read current catalog delete impact
+
+- **WHEN** `GET /api/settings/models/{id}/delete-impact` is called for an existing entry
+- **THEN** the response includes that entry ID and the exact current count of
+  `public.butler_model_overrides` rows whose `catalog_entry_id` references it
+- **AND** the response contains no override arguments, butler configuration, actor identity, or
+  other content-bearing fields
+- **AND** an unknown entry returns 404 rather than a fabricated zero
+
 ### Requirement: Butler Model Override API
 The dashboard SHALL expose REST endpoints for managing per-butler model overrides.
 
@@ -83,8 +92,10 @@ The dashboard settings page SHALL include a model catalog management section wit
 
 #### Scenario: Delete with dependency check
 - **WHEN** the operator clicks "Delete" on a catalog entry
-- **THEN** a confirmation dialog warns if butler overrides reference this entry
-- **AND** confirms that those overrides will be cascade-deleted
+- **THEN** a confirmation dialog fetches the current server-owned delete impact and states the
+  exact number of butler overrides that will be cascade-deleted
+- **AND** the destructive confirmation stays disabled while that count is loading or unavailable
+- **AND** the count is never inferred from client-side catalog data or generic prose
 
 #### Scenario: Toggle enabled inline
 - **WHEN** the operator clicks the enabled toggle on a catalog row

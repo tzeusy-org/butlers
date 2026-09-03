@@ -5035,6 +5035,12 @@ export interface ModelCatalogEntry {
   routing_sample_count: number;
 }
 
+/** Current server-owned cascade impact for one catalog deletion. */
+export interface ModelDeleteImpact {
+  id: string;
+  override_count: number;
+}
+
 export type RuntimeAttentionLifecycle =
   | "pending"
   | "sending"

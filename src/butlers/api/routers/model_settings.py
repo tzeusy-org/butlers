@@ -128,6 +128,13 @@ class ModelPriorityDelta(BaseModel):
     delta: int
 
 
+class ModelDeleteImpact(BaseModel):
+    """Current content-blind blast radius for deleting one catalog entry."""
+
+    id: UUID
+    override_count: int = Field(ge=0)
+
+
 class VerifyAllResult(BaseModel):
     """Response from POST /api/settings/models/verify-all.
 
@@ -801,6 +808,31 @@ async def update_catalog_entry(
 # ---------------------------------------------------------------------------
 # DELETE /api/settings/models/{entry_id} — delete catalog entry with cascade
 # ---------------------------------------------------------------------------
+
+
+@catalog_router.get("/{entry_id}/delete-impact", response_model=ApiResponse[ModelDeleteImpact])
+async def get_catalog_delete_impact(
+    entry_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ModelDeleteImpact]:
+    """Return the current server-owned count of overrides a delete would cascade."""
+    pool = _shared_pool(db)
+    row = await pool.fetchrow(
+        """
+        SELECT mc.id, count(bmo.id)::integer AS override_count
+        FROM public.model_catalog AS mc
+        LEFT JOIN public.butler_model_overrides AS bmo
+          ON bmo.catalog_entry_id = mc.id
+        WHERE mc.id = $1
+        GROUP BY mc.id
+        """,
+        entry_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Catalog entry not found: {entry_id}")
+    return ApiResponse[ModelDeleteImpact](
+        data=ModelDeleteImpact(id=row["id"], override_count=int(row["override_count"]))
+    )
 
 
 @catalog_router.delete("/{entry_id}", response_model=ApiResponse[dict])

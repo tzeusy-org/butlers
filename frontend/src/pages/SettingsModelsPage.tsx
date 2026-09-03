@@ -59,6 +59,7 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelAttention,
+  useModelCatalogDeleteImpact,
   useModelCatalog,
   useModelUsageDetail,
   useResetModelUsage,
@@ -362,6 +363,9 @@ interface DeleteConfirmDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   isPending: boolean;
+  overrideCount: number | null;
+  isImpactLoading: boolean;
+  isImpactError: boolean;
 }
 
 function DeleteConfirmDialog({
@@ -370,7 +374,12 @@ function DeleteConfirmDialog({
   onOpenChange,
   onConfirm,
   isPending,
+  overrideCount,
+  isImpactLoading,
+  isImpactError,
 }: DeleteConfirmDialogProps) {
+  const confirmDisabled =
+    isPending || isImpactLoading || isImpactError || overrideCount === null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[440px]">
@@ -382,9 +391,21 @@ function DeleteConfirmDialog({
             <span className="text-destructive font-medium">
               This action is permanent and cannot be undone.
             </span>{" "}
-            Removing <span className="font-medium">{model.alias}</span> from the catalog will
-            cascade-delete any butler override entries that reference it. Butlers that relied on
-            this entry will revert to their next eligible tier model.
+            {isImpactLoading ? (
+              <span data-testid="model-delete-impact-loading">
+                Checking current butler override usage…
+              </span>
+            ) : isImpactError || overrideCount === null ? (
+              <span role="alert" className="text-destructive">
+                Current override count is unavailable. Delete is disabled.
+              </span>
+            ) : (
+              <span data-testid="model-delete-impact-count">
+                Removing <span className="font-medium">{model.alias}</span> from the catalog will
+                cascade-delete {overrideCount} butler override {overrideCount === 1 ? "entry" : "entries"}.
+                Butlers that relied on this entry will revert to their next eligible tier model.
+              </span>
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -401,7 +422,7 @@ function DeleteConfirmDialog({
             variant="destructive"
             size="sm"
             onClick={onConfirm}
-            disabled={isPending}
+            disabled={confirmDisabled}
             className="font-mono text-[10px] uppercase tracking-widest"
           >
             {isPending ? "Deleting…" : "Delete →"}
@@ -1361,6 +1382,7 @@ function ModelRow({
   const deleteEntry = useDeleteModelCatalogEntry();
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const deleteImpact = useModelCatalogDeleteImpact(model.id, deleteOpen);
   const [reissueOpen, setReissueOpen] = useState(false);
   const [reissueResult, setReissueResult] = useState<string | null>(null);
   const [reissueError, setReissueError] = useState<string | null>(null);
@@ -1621,6 +1643,9 @@ function ModelRow({
         onOpenChange={setDeleteOpen}
         onConfirm={handleDeleteConfirm}
         isPending={deleteEntry.isPending}
+        overrideCount={deleteImpact.data?.data.override_count ?? null}
+        isImpactLoading={deleteImpact.isLoading}
+        isImpactError={deleteImpact.isError}
       />
       <Dialog open={reissueOpen} onOpenChange={setReissueOpen}>
         <DialogContent>

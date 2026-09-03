@@ -327,6 +327,39 @@ async def test_catalog_delete_writes_audit_after_cascade_delete(app, audit_appen
     }
 
 
+async def test_catalog_delete_impact_returns_current_server_override_count(app):
+    entry_id = uuid.uuid4()
+    _, mock_pool = _app_with_pool(
+        app,
+        fetchrow_result={"id": entry_id, "override_count": 7},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/delete-impact")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"id": str(entry_id), "override_count": 7}
+    sql = mock_pool.fetchrow.await_args.args[0]
+    assert "count(bmo.id)::integer AS override_count" in sql
+    assert "public.butler_model_overrides" in sql
+    assert "bmo.catalog_entry_id = mc.id" in sql
+    assert mock_pool.fetchrow.await_args.args[1:] == (entry_id,)
+
+
+async def test_catalog_delete_impact_returns_404_for_missing_model(app):
+    entry_id = uuid.uuid4()
+    _app_with_pool(app, fetchrow_result=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/settings/models/{entry_id}/delete-impact")
+
+    assert resp.status_code == 404
+
+
 async def test_catalog_delete_failure_does_not_claim_audit_success(app, audit_append_spy):
     """A missing catalog row does not emit a successful model.delete audit row."""
     _app_with_pool(app, fetchrow_result=None)

@@ -805,6 +805,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - + Add arg
 - Delete model:
 - This action is permanent and cannot be undone.
+- Checking current butler override usage…
+- Current override count is unavailable. Delete is disabled.
+- Removing
 - Cancel
 - Alias
 - Warning: Changing the alias may break existing butler override references.
@@ -4167,4 +4170,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3266*
+*Total strings: 3269*

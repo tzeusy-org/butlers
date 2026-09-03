@@ -50,6 +50,11 @@ vi.mock("@/hooks/use-model-catalog", () => ({
     mutate: vi.fn(),
     isPending: false,
   })),
+  useModelCatalogDeleteImpact: vi.fn(() => ({
+    data: { data: { id: "model-1", override_count: 2 } },
+    isLoading: false,
+    isError: false,
+  })),
   useUpdateModelPriority: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useVerifyAllModels: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useModelAttention: vi.fn(() => ({
@@ -80,6 +85,7 @@ import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
   useModelCatalog,
+  useModelCatalogDeleteImpact,
   useModelAttention,
   useReissueModelAttention,
   useResetModelUsage,
@@ -1619,6 +1625,42 @@ describe("SettingsModelsPage — delete confirmation dialog (bu-6jxcw)", () => {
       fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
     });
     expect(screen.getByText(/cascade-delete/i)).toBeTruthy();
+  });
+
+  it("shows the exact server-reported override count", async () => {
+    vi.mocked(useModelCatalogDeleteImpact).mockReturnValue({
+      data: { data: { id: "model-1", override_count: 7 } },
+      isLoading: false,
+      isError: false,
+    } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+
+    expect(screen.getByTestId("model-delete-impact-count").textContent).toContain(
+      "cascade-delete 7 butler override entries",
+    );
+  });
+
+  it("fails closed when the current override count is unavailable", async () => {
+    vi.mocked(useModelCatalogDeleteImpact).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as AnyMock);
+
+    mountPage();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText(`Delete ${ALIAS}`));
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Current override count is unavailable",
+    );
+    const deleteBtns = screen.getAllByRole("button", { name: /^delete →$/i });
+    expect((deleteBtns[deleteBtns.length - 1] as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("clicking the Delete button in the dialog calls mutate with the model id", async () => {
