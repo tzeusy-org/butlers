@@ -47,7 +47,7 @@ function render() {
 
 function mockBins(bins: ActivityBin[]) {
   vi.mocked(useEntityActivityBins).mockReturnValue({
-    data: { bins },
+    data: { bins, degraded: false, degraded_reason: null },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useEntityActivityBins>);
@@ -107,6 +107,24 @@ describe("ActivitySparkline", () => {
     expect(container.textContent).toContain("No activity in the last 90 days.");
   });
 
+  it("renders a degraded source note instead of zero activity", () => {
+    vi.mocked(useEntityActivityBins).mockReturnValue({
+      data: {
+        bins: denseSeries([]),
+        degraded: true,
+        degraded_reason: "chronicler_activity_unavailable",
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useEntityActivityBins>);
+
+    render();
+
+    expect(container.querySelector('[data-testid="activity-sparkline-degraded"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="sparkline-empty"]')).toBeNull();
+    expect(container.textContent).toContain("Activity: Chronicler unavailable");
+  });
+
   it("shows a loading placeholder while fetching", () => {
     vi.mocked(useEntityActivityBins).mockReturnValue({
       data: undefined,
@@ -117,13 +135,19 @@ describe("ActivitySparkline", () => {
     expect(container.querySelector('[data-testid="sparkline-loading"]')).not.toBeNull();
   });
 
-  it("renders nothing on error", () => {
+  it("renders a degraded note with retry on query error", () => {
+    const refetch = vi.fn();
     vi.mocked(useEntityActivityBins).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
+      refetch,
     } as unknown as ReturnType<typeof useEntityActivityBins>);
     render();
-    expect(container.innerHTML).toBe("");
+    expect(container.querySelector('[data-testid="activity-sparkline-degraded"]')).not.toBeNull();
+    expect(container.textContent).toContain("Activity: Chronicler unavailable");
+    const retryButton = container.querySelector("button");
+    expect(retryButton).not.toBeNull();
+    expect(retryButton?.textContent).toContain("Retry");
   });
 });

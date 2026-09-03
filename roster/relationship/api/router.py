@@ -6403,6 +6403,12 @@ async def dismiss_pair(
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
 
+# Content-blind API discriminator. Never expose the upstream exception or MCP
+# payload through the entity activity response.
+_CHRONICLER_ACTIVITY_UNAVAILABLE: Literal["chronicler_activity_unavailable"] = (
+    "chronicler_activity_unavailable"
+)
+
 #: Predicate → kind mapping for relationship.entity_facts rows surfaced in activity.
 #: Predicates not listed here are surfaced with kind='fact'.
 _FACT_PREDICATE_KIND: dict[str, str] = {
@@ -6469,7 +6475,7 @@ async def _fetch_relationship_activity(
 async def _fetch_chronicler_activity(
     mcp_manager: MCPClientManager | None,
     entity_id: UUID,
-) -> list[ActivityEntry]:
+) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None]:
     """Fetch episodes from the chronicler butler via MCP.
 
     Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
@@ -6481,13 +6487,15 @@ async def _fetch_chronicler_activity(
     where the requested entity is an organizer or attendee — but not the calendar
     owner — surface in the entity's activity feed.
 
-    Returns an empty list when the chronicler is unreachable, the MCP
-    call fails, or ``mcp_manager`` is None — graceful degrade, never raises.
+    Returns ``(entries, None)`` on a successful read. When Chronicler is
+    unreachable, the MCP call fails, or the response envelope is unreadable,
+    returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
+    missing source evidence with genuine zero activity.
 
     INVARIANT: No direct SQL on chronicler.* tables.
     """
     if mcp_manager is None:
-        return []
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -6506,7 +6514,7 @@ async def _fetch_chronicler_activity(
             entity_id,
             exc,
         )
-        return []
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
 
     raw_text = _extract_mcp_result_text(result)
     payload = _parse_mcp_result_payload(raw_text)
@@ -6517,19 +6525,31 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
             entity_id,
         )
-        return []
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
 
-    episodes: list[dict] = payload.get("data", [])
+    episodes_raw = payload.get("data")
+    if not isinstance(episodes_raw, list):
+        logger.info(
+            "Chronicler activity: missing episode list for entity %s; degrading gracefully",
+            entity_id,
+        )
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+
+    episodes: list[Any] = episodes_raw
     entries: list[ActivityEntry] = []
+    malformed_count = 0
     for ep in episodes:
         if not isinstance(ep, dict):
+            malformed_count += 1
             continue
         episode_id_raw = ep.get("id")
         if not episode_id_raw:
+            malformed_count += 1
             continue
         try:
             episode_uuid = UUID(str(episode_id_raw))
         except (ValueError, AttributeError):
+            malformed_count += 1
             continue
 
         # Use canonical_start_at as the primary timestamp; fall back to start_at.
@@ -6553,7 +6573,14 @@ async def _fetch_chronicler_activity(
                 summary=str(summary) if summary is not None else None,
             )
         )
-    return entries
+    if malformed_count > 0 and len(entries) == 0:
+        logger.info(
+            "Chronicler activity: all %d episode rows were malformed for entity %s; degrading",
+            malformed_count,
+            entity_id,
+        )
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+    return entries, None
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
@@ -6651,8 +6678,10 @@ async def get_entity_activity(
 
     **Chronicler boundary**: the relationship butler MUST NOT query
     ``chronicler.*`` tables directly; this endpoint calls
-    ``chronicler_list_episodes`` via MCP and degrades gracefully when the
-    chronicler is unreachable.
+    ``chronicler_list_episodes`` via MCP. When that contribution cannot be
+    read, every response shape sets ``degraded=true`` with the fixed
+    ``chronicler_activity_unavailable`` reason; a successful zero-row read
+    remains ``degraded=false``.
     """
     pool = _pool(db)
 
@@ -6668,10 +6697,12 @@ async def get_entity_activity(
     await _assert_entity_exists(pool, entity_id)
 
     # Fetch from both sources concurrently.
-    rel_entries, chr_entries = await asyncio.gather(
+    rel_entries, chronicler_result = await asyncio.gather(
         _fetch_relationship_activity(pool, entity_id),
         _fetch_chronicler_activity(mcp_manager, entity_id),
     )
+    chr_entries, degraded_reason = chronicler_result
+    degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
     all_entries: list[ActivityEntry] = rel_entries + chr_entries
@@ -6682,19 +6713,37 @@ async def get_entity_activity(
         window_days = int(window[:-1])
         daily = _build_daily_bins(all_entries, window_days)
         if bins_only:
-            return ActivityBinsResponse(bins=daily)
+            return ActivityBinsResponse(
+                bins=daily,
+                degraded=degraded,
+                degraded_reason=degraded_reason,
+            )
         total = len(all_entries)
         page = all_entries[offset : offset + limit]
         # ActivityResponse with an additional `bins` field. The response_model is
         # omitted on the route so this richer shape is returned verbatim; JSON mode
         # serialises the nested datetimes/UUIDs/dates for the plain-dict return.
-        stream = ActivityResponse(items=page, total=total, limit=limit, offset=offset)
+        stream = ActivityResponse(
+            items=page,
+            total=total,
+            limit=limit,
+            offset=offset,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+        )
         return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
 
     total = len(all_entries)
     page = all_entries[offset : offset + limit]
 
-    return ActivityResponse(items=page, total=total, limit=limit, offset=offset)
+    return ActivityResponse(
+        items=page,
+        total=total,
+        limit=limit,
+        offset=offset,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
+    )
 
 
 # ---------------------------------------------------------------------------

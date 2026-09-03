@@ -105,6 +105,7 @@ vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
 }));
 
 import { useEntity } from "@/hooks/use-memory";
+import { useEntityActivityBins } from "@/hooks/use-entities";
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { DUP_QUEUE, EMPTY_QUEUE, ENTITY } from "@/test-utils/entity-detail-page";
 
@@ -205,6 +206,15 @@ beforeEach(() => {
     isFetching: false,
     error: null,
   });
+  vi.mocked(useEntityActivityBins).mockReturnValue({
+    data: {
+      bins: [{ date: "2025-03-10", count: 3 }],
+      degraded: false,
+      degraded_reason: null,
+    },
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useEntityActivityBins>);
 });
 
 afterEach(() => {
@@ -268,6 +278,24 @@ describe("EntityDetailPage — Workbench KPI strip accuracy", () => {
   // IDENTITY_FACT has predicate "has-email" (a channel fact) from src "general".
   // NARRATIVE_FACT has predicate "discussed" (not a channel) from src "general".
   // Default mock: has_more=false → 1 unique src ("general"), 1 channel fact.
+
+  it("does not render zero touches when activity source is degraded", () => {
+    vi.mocked(useEntityActivityBins).mockReturnValue({
+      data: {
+        bins: [],
+        degraded: true,
+        degraded_reason: "chronicler_activity_unavailable",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivityBins>);
+
+    render();
+
+    expect(container.querySelector("[data-testid='workbench-kpi-strip-error']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='workbench-kpi-strip']")).toBeNull();
+  });
 
   it("shows exact source count when facts window is complete (has_more=false)", () => {
     render();

@@ -8668,6 +8668,10 @@ export interface ActivityBin {
  */
 export interface ActivityBinsResponse {
   bins: ActivityBin[];
+  /** True when the Chronicler contribution could not be read. */
+  degraded: boolean;
+  /** Fixed content-blind failure discriminator; never an upstream error message. */
+  degraded_reason: "chronicler_activity_unavailable" | null;
 }
 
 /** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */

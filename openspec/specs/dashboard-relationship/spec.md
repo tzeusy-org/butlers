@@ -1253,6 +1253,17 @@ renders the aggregator output as the merged stream.
 - **THEN** the test MUST scan the relationship router for `FROM chronicler.` / `JOIN chronicler.`
 - **AND** the test MUST fail if any such string is found
 
+#### Scenario: Chronicler activity failure is not rendered as inactivity
+
+- **WHEN** the Chronicler MCP activity contribution is unavailable, times out, errors, or returns
+  an unreadable response envelope
+- **THEN** every entity-activity response shape MUST set `degraded=true` with the fixed
+  content-blind reason `chronicler_activity_unavailable`
+- **AND** the response MAY retain available Relationship activity but clients MUST NOT render its
+  zero counts as a complete inactivity claim
+- **AND** a successful Chronicler read with zero episodes MUST set `degraded=false` and
+  `degraded_reason=null`
+
 ### Requirement: Detail-page voice gloss source — canned strings only
 
 Detail-page voice glosses SHALL be canned strings selected by `(tier, state, category)`,

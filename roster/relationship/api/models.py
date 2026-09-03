@@ -1486,12 +1486,18 @@ class ActivityResponse(BaseModel):
     ``total`` is the total number of items across both sources before
     pagination (relationship_count + chronicler_count).
     ``limit`` and ``offset`` echo the request parameters.
+
+    ``degraded`` is true when the Chronicler contribution could not be read.
+    ``degraded_reason`` is a fixed content-blind discriminator, never an
+    upstream exception or payload.
     """
 
     items: list[ActivityEntry]
     total: int
     limit: int
     offset: int
+    degraded: bool = False
+    degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1592,6 +1598,8 @@ class ActivityBinsResponse(BaseModel):
     """
 
     bins: list[ActivityBin]
+    degraded: bool = False
+    degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
 
 
 # ---------------------------------------------------------------------------

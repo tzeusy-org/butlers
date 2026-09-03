@@ -1979,11 +1979,12 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   // the facts window was truncated.
   const sources: string | number = truncated ? `${sourcesCount}+` : sourcesCount;
   const channels: string | number = truncated ? `${channelsCount}+` : channelsCount;
+  const binsUnavailable = binsError || binsData?.degraded === true;
 
   // If any of the three upstream queries errored, the KPI numbers would be
   // fabricated zeros (0 relations / 0 touches / 0 sources) — an outage reading
   // as a genuinely inert entity. Surface the degraded source instead (bu-hckjv).
-  if (neighboursError || binsError || factsError) {
+  if (neighboursError || binsUnavailable || factsError) {
     return (
       <SourceDegradedNote
         testId="workbench-kpi-strip-error"
@@ -1993,7 +1994,7 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
           // requests for KPIs that loaded fine (consistent with the other
           // multi-source sections' retry handlers).
           if (neighboursError) void refetchNeighbours();
-          if (binsError) void refetchBins();
+          if (binsUnavailable) void refetchBins();
           if (factsError) void refetchFacts();
         }}
       />

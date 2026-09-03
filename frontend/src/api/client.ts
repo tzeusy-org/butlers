@@ -3116,7 +3116,8 @@ export function getEntityMessageThreads(
  * Hits GET /api/butlers/relationship/entities/{id}/activity?bins=daily — returns
  * a dense, ascending-by-date series (one entry per day including zero-count
  * days) over ``window`` (default 90d). ``bins_only=true`` is always sent so the
- * merged stream is omitted.
+ * merged stream is omitted. ``degraded=true`` means the Chronicler contribution
+ * was unavailable, so zero-count bins are not a complete inactivity claim.
  *
  * Returns owner-only gate 403 when no owner entity is registered.
  */

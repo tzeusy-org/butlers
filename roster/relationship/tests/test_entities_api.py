@@ -1551,8 +1551,8 @@ class TestEntityActivity:
         assert "relationship.entity_facts" in fetch_call_sql
         assert "relationship.facts" not in fetch_call_sql
 
-    async def test_chronicler_unreachable_degrades_gracefully(self):
-        """GET /entities/{id}/activity returns relationship facts only when chronicler offline."""
+    async def test_chronicler_unreachable_is_explicitly_degraded(self):
+        """A failed Chronicler read cannot impersonate complete activity."""
         fact_row = self._make_fact_row(last_seen=_NOW)
         app, _ = self._make_app(fact_rows=[fact_row], chronicler_unreachable=True)
         resp = await _get(app, _ACTIVITY_PATH)
@@ -1560,6 +1560,36 @@ class TestEntityActivity:
         body = resp.json()
         assert body["total"] == 1
         assert body["items"][0]["src"] == "relationship"
+        assert body["degraded"] is True
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
+        assert "offline" not in body["degraded_reason"]
+
+    async def test_genuine_empty_activity_is_healthy(self):
+        """A successful zero-row Chronicler read remains distinct from failure."""
+        app, _ = self._make_app(fact_rows=[], chronicler_episodes=[])
+        resp = await _get(app, _ACTIVITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["degraded"] is False
+        assert body["degraded_reason"] is None
+
+    async def test_chronicler_failure_marks_bins_only_response_degraded(self):
+        """The frontend sparkline envelope carries the same source failure."""
+        app, _ = self._make_app(fact_rows=[], chronicler_unreachable=True)
+        resp = await _get(
+            app,
+            _ACTIVITY_PATH,
+            bins="daily",
+            window="90d",
+            bins_only=True,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["bins"]) == 90
+        assert body["degraded"] is True
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
 
     async def test_merged_stream_sorted_desc(self):
         """Activity items from relationship and chronicler are merged and sorted desc by ts."""
@@ -1596,6 +1626,51 @@ class TestEntityActivity:
         # Newer episode first (chronicler _NOW > relationship _OLDER)
         assert body["items"][0]["src"] == "chronicler"
         assert body["items"][1]["src"] == "relationship"
+
+    async def test_malformed_chronicler_rows_degrade_when_all_rows_bad(self):
+        """All malformed chronicler episode rows cause degraded response."""
+        fact_row = self._make_fact_row(last_seen=_NOW)
+        # All rows are malformed: missing 'id' or non-dict
+        malformed_episodes = [
+            {"title": "No ID"},  # missing 'id'
+            "not-a-dict",  # not a dict at all
+            {"id": None},  # id is None
+            {"id": "not-a-uuid"},  # id is not a valid UUID
+        ]
+        app, _ = self._make_app(fact_rows=[fact_row], chronicler_episodes=malformed_episodes)
+        resp = await _get(app, _ACTIVITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        # Only the relationship fact should be present
+        assert body["total"] == 1
+        assert body["items"][0]["src"] == "relationship"
+        # Response should be degraded because all chronicler rows were malformed
+        assert body["degraded"] is True
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
+
+    async def test_malformed_chronicler_rows_ignored_when_mixed(self):
+        """Some malformed chronicler episode rows are skipped; valid ones are kept."""
+        fact_row = self._make_fact_row(last_seen=_OLDER)
+        ep_id = uuid4()
+        # Mix of valid and malformed episodes
+        episodes = [
+            {"title": "No ID"},  # malformed: missing 'id'
+            {
+                "id": str(ep_id),
+                "canonical_start_at": _NOW.isoformat(),
+                "canonical_title": "Valid Episode",
+            },  # valid
+            "not-a-dict",  # malformed
+        ]
+        app, _ = self._make_app(fact_rows=[fact_row], chronicler_episodes=episodes)
+        resp = await _get(app, _ACTIVITY_PATH)
+        assert resp.status_code == 200
+        body = resp.json()
+        # Should have both the fact and the one valid episode
+        assert body["total"] == 2
+        # Response is healthy because we got at least one valid episode
+        assert body["degraded"] is False
+        assert body["degraded_reason"] is None
 
 
 # ===========================================================================

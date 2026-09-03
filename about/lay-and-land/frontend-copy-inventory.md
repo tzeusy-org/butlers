@@ -3180,6 +3180,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/relationship/ActivitySparkline.tsx`
 
 - No activity in the last 90 days.
+- Activity
 - Activity over the last {} days: {} events across {} days
 
 ## `frontend/src/components/relationship/CirclesPage.tsx`
@@ -4166,4 +4167,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3265*
+*Total strings: 3266*

@@ -137,7 +137,8 @@ export function useEntityMessageThreads(entityId: string | undefined) {
  * Fetch the 90-day daily activity-count series for an entity's sparkline (bu-xzh76).
  *
  * The response ``bins`` array is a dense, ascending-by-date series (one entry
- * per day including zero-count days) over ``window`` (default 90d).
+ * per day including zero-count days) over ``window`` (default 90d). Consumers
+ * must check ``degraded`` before treating those zeroes as complete evidence.
  */
 export function useEntityActivityBins(
   entityId: string | undefined,

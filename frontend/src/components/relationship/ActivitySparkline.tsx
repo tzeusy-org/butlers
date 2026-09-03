@@ -14,6 +14,7 @@
  */
 
 import { useEntityActivityBins } from "@/hooks/use-entities";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 
 /** Stick height floor (px) so even the busiest day stays a quiet hairline bar. */
 const STICK_MAX_HEIGHT = 28;
@@ -21,7 +22,7 @@ const STICK_MAX_HEIGHT = 28;
 const QUIET_OPACITY = 0.04;
 
 export function ActivitySparkline({ entityId }: { entityId: string }) {
-  const { data, isLoading, isError } = useEntityActivityBins(entityId, {
+  const { data, isLoading, isError, refetch } = useEntityActivityBins(entityId, {
     window: "90d",
   });
 
@@ -34,9 +35,28 @@ export function ActivitySparkline({ entityId }: { entityId: string }) {
     );
   }
 
-  // Degrade quietly on error — the sparkline is a quick-refresh affordance, not
-  // load-bearing. Render nothing rather than an error chrome.
-  if (isError || !data) return null;
+  if (data?.degraded) {
+    return (
+      <SourceDegradedNote
+        label="Activity"
+        detail="Chronicler unavailable"
+        testId="activity-sparkline-degraded"
+      />
+    );
+  }
+
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        label="Activity"
+        detail="Chronicler unavailable"
+        onRetry={() => refetch()}
+        testId="activity-sparkline-degraded"
+      />
+    );
+  }
+
+  if (!data) return null;
 
   const bins = data.bins;
   const total = bins.reduce((sum, b) => sum + b.count, 0);
