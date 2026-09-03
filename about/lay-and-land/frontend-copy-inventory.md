@@ -2351,6 +2351,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - No reviews scheduled. Keep learning and reviews will appear here.
 - Open {} in {}
+- Review schedule
 
 ## `frontend/src/components/education/StrugglingNodesCard.tsx`
 
@@ -4167,4 +4168,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3266*
+*Total strings: 3267*

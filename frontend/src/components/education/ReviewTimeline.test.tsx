@@ -176,7 +176,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
 
   it("renders a degraded state when the mind-map fetch fails", () => {
     mockUseMindMaps.mockReturnValue({
-      data: undefined,
+      data: { data: [], meta: {} },
       isError: true,
     } as unknown as ReturnType<typeof useMindMaps>);
     mockUseAllPendingReviews.mockReturnValue([]);
