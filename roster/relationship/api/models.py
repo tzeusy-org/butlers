@@ -329,6 +329,8 @@ class DunbarEntry(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     warmth: float | None = None
     last_interaction_at: datetime | None = None
+    effective_cadence_days: int | None = None
+    stale_contact_state: Literal["present", "absent", "unmeasurable"] = "unmeasurable"
 
 
 class DunbarRankingResponse(BaseModel):
@@ -336,6 +338,27 @@ class DunbarRankingResponse(BaseModel):
 
     entries: list[DunbarEntry]
     owner_entity_id: UUID | None = None
+    cadence_available: bool = False
+    unmeasurable_count: int = 0
+
+
+class OverdueContact(BaseModel):
+    """One measurable contact whose existing cadence has elapsed."""
+
+    contact_id: UUID
+    name: str
+    tier: int
+    owed_days: int
+    last_contact_date: datetime | None
+    target_cadence_days: int
+
+
+class OverdueContactsResponse(BaseModel):
+    """Overdue rows plus aggregate expected-signal availability."""
+
+    contacts: list[OverdueContact]
+    cadence_available: bool
+    unmeasurable_count: int
 
 
 # ---------------------------------------------------------------------------

@@ -128,7 +128,7 @@ paused, or stopped.
 
 | Input | Target expected-signal producer | Current disposition |
 |---|---|---|
-| Server-attested Gmail transaction/renewal evidence | `connector:gmail` plus exact `producer_endpoint_identity` | target-state only; current core is type-only, so Finance remains unadopted/unmeasurable until continued bu-8cdl1.3 lands endpoint enforcement |
+| Server-attested Gmail transaction/renewal evidence | `connector:gmail` plus exact `producer_endpoint_identity` | measurable only while that exact endpoint is healthy; a healthy sibling never substitutes |
 | Server-attested direct owner observation/declaration | `owner` | measurable only with server-derived owner attestation; semantics remain "not recorded by owner" |
 | Current `source_message_id` or `source=manual` row | none | unmeasurable; both values can arise through public tool inputs/defaults |
 | CSV/bulk, API/bank-sync, backfill, or split row | none | unmeasurable without reserved server attestation |
@@ -153,10 +153,9 @@ producer and `producer_endpoint_identity`, then liveness for that exact pair. Do
 Gmail sibling endpoint for a dead account or for SimpleFIN/manual/imported evidence, and do not
 infer authority from a message ID, merchant name, account freshness, or generic source label.
 
-Continued `bu-8cdl1.3` owns that runtime adoption: add the shared expected-signals endpoint field,
-make the helper and liveness query exact-pair-aware, migrate existing Health callers/rows without a
-guessed endpoint or type-only fallback, and add migrated-PostgreSQL two-endpoint coverage. This
-Finance mapping PR changes no runtime schema or evaluator.
+The Finance tab reads a state-only expected-signals surface. Instrumentation failure is rendered
+as incomplete measurability and never as a missed renewal, failed payment, cancellation, or
+all-clear. The registered `track_subscription_fact` property writer remains outside these readers.
 
 ## Verification
 

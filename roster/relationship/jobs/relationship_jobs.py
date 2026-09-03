@@ -452,6 +452,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         compute_dunbar_scores,
         get_tier_ranking,
     )
+    from butlers.tools.relationship.stale_contacts import evaluate_stale_contact_signal
 
     # Build dunbar tier map for entity-linked contacts (for tier-based cadences)
     all_scores = await compute_dunbar_scores(db_pool)
@@ -467,6 +468,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             cem.entity_id,
             e.stay_in_touch_days,
             COALESCE(e.canonical_name, 'Unknown') AS contact_name,
+            MAX(f.valid_at) AS last_interaction_at,
             CASE
                 WHEN MAX(f.valid_at) IS NULL THEN NULL
                 ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
@@ -510,6 +512,17 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
         # Tier 1500 without stay_in_touch_days → excluded per spec
         if effective_cadence is None:
+            continue
+
+        signal = await evaluate_stale_contact_signal(
+            db_pool,
+            contact_id=contact_id,
+            entity_id=entity_id,
+            expected_cadence=timedelta(days=effective_cadence),
+            last_observed_at=row["last_interaction_at"],
+            now=now_utc,
+        )
+        if not signal.is_overdue:
             continue
 
         days_since = row["days_since_last"]
@@ -857,7 +870,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     for recent inbound messages on user-to-person channels
     (``telegram_user_client``, ``whatsapp_user_client``, ``email``).
 
-    Groups by ``(source_thread_identity, source_channel, DATE(received_at))``
+    Groups by ``(source_thread_identity, source_channel,
+    source_endpoint_identity, DATE(received_at))``
     — a chat-centric view — rather than by individual sender.  Per RFC 0013 D4:
 
     1. Messages where ``request_context->>'interaction_eligible'`` is ``'false'``
@@ -905,6 +919,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         calendar_events_scanned, errors.
     """
     from butlers.tools.relationship.interactions import interaction_log
+    from butlers.tools.relationship.stale_contacts import interaction_sync_attestation
 
     logger.info("Running relationship interaction sync job")
 
@@ -1009,6 +1024,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     request_context ->> 'source_sender_identity'
                 )                                              AS thread_identity,
                 request_context ->> 'source_channel'           AS source_channel,
+                request_context ->> 'source_endpoint_identity' AS source_endpoint_identity,
                 (received_at AT TIME ZONE 'UTC')::date         AS interaction_date,
                 array_agg(DISTINCT sender.identity)             AS sender_identities,
                 MAX(request_context ->> 'owner_sender_identity')
@@ -1054,6 +1070,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     request_context ->> 'source_sender_identity'
                 ),
                 request_context ->> 'source_channel',
+                request_context ->> 'source_endpoint_identity',
                 (received_at AT TIME ZONE 'UTC')::date
             ORDER BY interaction_date DESC
             """,
@@ -1131,6 +1148,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     for row in rows:
         source_channel = row["source_channel"]
+        source_endpoint_identity = row.get("source_endpoint_identity")
         thread_identity = row["thread_identity"]
         interaction_date = row["interaction_date"]
         sender_identities: list[str] = [s for s in (row["sender_identities"] or []) if s]
@@ -1229,6 +1247,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 "message_count": message_count,
                 "group_size": group_size,
             }
+            expected_signal_source = interaction_sync_attestation(
+                source_channel=source_channel,
+                source_endpoint_identity=source_endpoint_identity,
+                source_identity=si,
+            )
 
             # --- incoming interaction ---
             incoming_occurred_at = datetime(
@@ -1249,6 +1272,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     occurred_at=incoming_occurred_at,
                     summary=None,
                     metadata=fact_metadata,
+                    _expected_signal_source=expected_signal_source,
                 )
                 if result.get("skipped") == "duplicate":
                     logger.debug(
@@ -1293,6 +1317,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         occurred_at=outgoing_occurred_at,
                         summary=None,
                         metadata=fact_metadata,
+                        _expected_signal_source=expected_signal_source,
                     )
                     if result.get("skipped") == "duplicate":
                         logger.debug(

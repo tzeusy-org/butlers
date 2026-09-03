@@ -15,22 +15,24 @@ from butlers.core.expected_signals import upsert_expected_signal
 
 pytestmark = pytest.mark.integration
 
-_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_210_expected_signals.py"
-)
+_MIGRATION_PATHS = [
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_210_expected_signals.py",
+    Path(__file__).resolve().parents[2]
+    / "alembic/versions/core/core_211_expected_signal_endpoint_identity.py",
+]
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_210_expected_signals", _MIGRATION_PATH)
+def _load_migration(path: Path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-async def _run_migration(pool, direction: str) -> None:
+async def _run_migration(pool, path: Path, direction: str) -> None:
     statements: list[str] = []
-    module = _load_migration()
+    module = _load_migration(path)
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
     with patch.object(module, "op", mocked_op):
@@ -42,11 +44,13 @@ async def _run_migration(pool, direction: str) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_migration_upsert_concurrency_and_downgrade(provisioned_postgres_pool) -> None:
     async with provisioned_postgres_pool() as pool:
-        await _run_migration(pool, "upgrade")
+        for path in _MIGRATION_PATHS:
+            await _run_migration(pool, path, "upgrade")
         await pool.execute(
             """
             CREATE TABLE public._expected_signal_test_liveness (
                 connector_type text NOT NULL,
+                endpoint_identity text NOT NULL,
                 state text NOT NULL,
                 last_heartbeat_at timestamptz
             )
@@ -55,14 +59,15 @@ async def test_migration_upsert_concurrency_and_downgrade(provisioned_postgres_p
         await pool.execute(
             """
             CREATE VIEW public.v_qa_connector_state AS
-            SELECT connector_type, state, last_heartbeat_at
+            SELECT connector_type, endpoint_identity, state, last_heartbeat_at
             FROM public._expected_signal_test_liveness
             """
         )
         now = datetime(2026, 9, 3, 12, tzinfo=UTC)
         await pool.execute(
-            "INSERT INTO public._expected_signal_test_liveness VALUES ($1, 'healthy', $2)",
+            "INSERT INTO public._expected_signal_test_liveness VALUES ($1, $2, 'healthy', $3)",
             "google_health",
+            "google_health:user:owner",
             now,
         )
 
@@ -71,6 +76,7 @@ async def test_migration_upsert_concurrency_and_downgrade(provisioned_postgres_p
                 pool,
                 signal_key="health:measurement-gap:weight",
                 producer="connector:google_health",
+                producer_endpoint_identity="google_health:user:owner",
                 expected_cadence=timedelta(days=14),
                 last_observed_at=observed_at,
                 now=now,
@@ -78,11 +84,13 @@ async def test_migration_upsert_concurrency_and_downgrade(provisioned_postgres_p
 
         await asyncio.gather(write(now), write(now - timedelta(days=20)))
         rows = await pool.fetch(
-            "SELECT signal_key, producer_role, measurability FROM public.expected_signals"
+            "SELECT signal_key, producer_role, producer_endpoint_identity, measurability "
+            "FROM public.expected_signals"
         )
         assert len(rows) == 1
         assert rows[0]["signal_key"] == "health:measurement-gap:weight"
         assert rows[0]["producer_role"]
+        assert rows[0]["producer_endpoint_identity"] == "google_health:user:owner"
         assert rows[0]["measurability"] in {"present", "absent"}
 
         policies = await pool.fetchval(
@@ -133,5 +141,34 @@ async def test_migration_upsert_concurrency_and_downgrade(provisioned_postgres_p
 
         await pool.execute("DROP VIEW public.v_qa_connector_state")
         await pool.execute("DROP TABLE public._expected_signal_test_liveness")
-        await _run_migration(pool, "downgrade")
+        for path in reversed(_MIGRATION_PATHS):
+            await _run_migration(pool, path, "downgrade")
         assert await pool.fetchval("SELECT to_regclass('public.expected_signals')") is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_endpoint_migration_marks_legacy_connector_rows_unmeasurable(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool() as pool:
+        await _run_migration(pool, _MIGRATION_PATHS[0], "upgrade")
+        await pool.execute(
+            """
+            INSERT INTO public.expected_signals (
+                signal_key, producer, expected_cadence_seconds, last_observed_at,
+                measurability, unmeasurable_reason, evaluated_at
+            ) VALUES ('health:measurement-gap:weight', 'connector:google_health',
+                      1209600, now(), 'absent', NULL, now())
+            """
+        )
+
+        await _run_migration(pool, _MIGRATION_PATHS[1], "upgrade")
+
+        row = await pool.fetchrow(
+            "SELECT producer_endpoint_identity, measurability, unmeasurable_reason "
+            "FROM public.expected_signals WHERE signal_key = 'health:measurement-gap:weight'"
+        )
+        assert row is not None
+        assert row["producer_endpoint_identity"] is None
+        assert row["measurability"] == "unmeasurable"
+        assert row["unmeasurable_reason"] == "producer_endpoint_missing"

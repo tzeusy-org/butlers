@@ -19,6 +19,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.tools.finance.expected_signals import sanitized_metadata
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -38,6 +39,8 @@ if _spec is not None and _spec.loader is not None:
     BulkUpdateRequestModel = _models.BulkUpdateRequestModel
     BulkUpdateResponseModel = _models.BulkUpdateResponseModel
     DistinctMerchantModel = _models.DistinctMerchantModel
+    FinanceExpectedSignalModel = _models.FinanceExpectedSignalModel
+    FinanceExpectedSignalsResponse = _models.FinanceExpectedSignalsResponse
     SpendingGroupModel = _models.SpendingGroupModel
     SpendingSummaryModel = _models.SpendingSummaryModel
     SubscriptionModel = _models.SubscriptionModel
@@ -153,6 +156,7 @@ def _overlay_transaction_model(r) -> TransactionModel:
     # Merge overlay edits onto the base metadata blob (overlay wins), then drop
     # the projected keys so they only appear on their dedicated fields.
     merged_meta = {**base_meta, **overlay_meta}
+    merged_meta = sanitized_metadata(merged_meta)
     for key in _OVERLAY_PROJECTED_KEYS:
         merged_meta.pop(key, None)
 
@@ -175,6 +179,51 @@ def _overlay_transaction_model(r) -> TransactionModel:
         metadata=merged_meta,
         created_at=str(r["created_at"]),
         updated_at=str(r["updated_at"]),
+    )
+
+
+@router.get("/expected-signals", response_model=FinanceExpectedSignalsResponse)
+async def get_finance_expected_signals(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> FinanceExpectedSignalsResponse:
+    """Return state-only recurrence truth without implying payment behavior."""
+    pool = _pool(db)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT signal_key, producer, producer_endpoint_identity,
+                   expected_cadence_seconds, last_observed_at, measurability,
+                   unmeasurable_reason, evaluated_at
+            FROM public.expected_signals
+            WHERE signal_key LIKE 'finance:%'
+            ORDER BY signal_key
+            """
+        )
+    except Exception:  # noqa: BLE001 -- explicit degraded envelope is fail-closed
+        logger.warning("Finance expected-signals read is unavailable", exc_info=True)
+        return FinanceExpectedSignalsResponse(
+            signals=None,
+            available=False,
+            degraded_reason="expected_signals_unavailable",
+        )
+
+    return FinanceExpectedSignalsResponse(
+        signals=[
+            FinanceExpectedSignalModel(
+                signal_key=row["signal_key"],
+                producer=row["producer"],
+                producer_endpoint_identity=row["producer_endpoint_identity"],
+                expected_cadence_seconds=int(row["expected_cadence_seconds"]),
+                last_observed_at=(
+                    row["last_observed_at"].isoformat() if row["last_observed_at"] else None
+                ),
+                measurability=row["measurability"],
+                unmeasurable_reason=row["unmeasurable_reason"],
+                evaluated_at=row["evaluated_at"].isoformat(),
+            )
+            for row in rows
+        ],
+        available=True,
     )
 
 
@@ -329,7 +378,7 @@ async def list_subscriptions(
             payment_method=r["payment_method"],
             account_id=str(r["account_id"]) if r["account_id"] else None,
             source_message_id=r["source_message_id"],
-            metadata=dict(r["metadata"]) if r["metadata"] else {},
+            metadata=sanitized_metadata(r["metadata"]),
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),
         )

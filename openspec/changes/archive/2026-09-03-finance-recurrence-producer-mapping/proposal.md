@@ -26,9 +26,9 @@ the owner's payment or subscription state.
   this change creates no new absent-recurrence notification.
 - Amend RFC 0012 and RFC 0029, the Finance capability deltas, and Finance operator/dashboard
   guidance in the same change.
-- Assign continued `bu-8cdl1.3` ownership of the shared `producer_endpoint_identity`
-  schema/helper/API migration, existing Health compatibility/backfill, exact-endpoint liveness,
-  and migrated-PostgreSQL proof; this specification PR does not implement or claim that runtime.
+- Implement the shared `producer_endpoint_identity` schema/helper/API migration, existing Health
+  compatibility, exact-endpoint liveness, and migrated-PostgreSQL proof under continued
+  `bu-8cdl1.3` ownership.
 
 Explicit non-goals:
 
@@ -61,6 +61,5 @@ The contract covers transaction and subscription writers, `detect_recurring()`,
 `subscription_audit()`, the separate `track_subscription_fact` property-fact surface,
 `predict_bills()`, `run_bill_reconciliation_sweep()`, the daily subscription-renewal candidate
 path, RFC 0029 expected-signal adoption, and the Finance dashboard subscription/recurrence
-presentation. Runtime schema and behavior remain unchanged. Continued `bu-8cdl1.3` owns the shared
-endpoint-aware expected-signals migration and Health transition; later Finance apply work consumes
-that prerequisite.
+presentation. Continued `bu-8cdl1.3` owns the shared endpoint-aware expected-signals migration,
+Health transition, and Finance runtime adoption.

@@ -136,6 +136,8 @@ async def interaction_log(
     direction: str | None = None,
     duration_minutes: int | None = None,
     metadata: dict[str, Any] | None = None,
+    *,
+    _expected_signal_source: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Log an interaction with an entity.
 
@@ -151,10 +153,13 @@ async def interaction_log(
             aliases 'inbound' and 'outbound' are accepted and stored as their
             canonical interaction values.
         duration_minutes: Duration of the interaction in minutes.
-        metadata: Arbitrary extra metadata dict.
+        metadata: Arbitrary extra metadata dict. The reserved
+            ``expected_signal_source`` key is rejected.
     """
     if direction is not None:
         direction = _normalize_direction(direction)
+    if metadata is not None and "expected_signal_source" in metadata:
+        raise ValueError("metadata.expected_signal_source is reserved for server writers")
     if type in _RESERVED_INTERACTION_TYPES:
         raise ValueError(
             f"interaction_log type '{type}' is reserved: 'interaction_{type}' is an episodic "
@@ -175,7 +180,31 @@ async def interaction_log(
     # still collide with each other to preserve backward compatibility.
     if occurred_at is not None:
         predicate = f"interaction_{type}"
-        if direction is not None:
+        source_endpoint_identity = (
+            _expected_signal_source.get("source_endpoint_identity")
+            if _expected_signal_source is not None
+            else None
+        )
+        if direction is not None and source_endpoint_identity:
+            existing = await pool.fetchrow(
+                """
+                SELECT id FROM facts
+                WHERE subject = $1
+                  AND predicate = $2
+                  AND scope = 'relationship'
+                  AND validity = 'active'
+                  AND valid_at::date = $3::date
+                  AND metadata->>'direction' = $4
+                  AND metadata #>> '{expected_signal_source,source_endpoint_identity}' = $5
+                LIMIT 1
+                """,
+                f"entity:{entity_id}",
+                predicate,
+                occurred_at,
+                direction,
+                source_endpoint_identity,
+            )
+        elif direction is not None:
             existing = await pool.fetchrow(
                 """
                 SELECT id FROM facts
@@ -223,6 +252,8 @@ async def interaction_log(
         fact_metadata["duration_minutes"] = duration_minutes
     if metadata is not None:
         fact_metadata["extra_metadata"] = metadata
+    if _expected_signal_source is not None:
+        fact_metadata["expected_signal_source"] = dict(_expected_signal_source)
 
     fact_id = (
         await store_fact(
@@ -236,6 +267,14 @@ async def interaction_log(
             entity_id=entity_id,
             valid_at=effective_occurred_at,
             metadata=fact_metadata,
+            idempotency_key=(
+                "relationship-interaction:"
+                f"{entity_id}:{type}:{effective_occurred_at.date().isoformat()}:"
+                f"{direction or 'none'}:{_expected_signal_source['source_endpoint_identity']}"
+                if _expected_signal_source is not None
+                and _expected_signal_source.get("source_endpoint_identity")
+                else None
+            ),
         )
     )["id"]
 

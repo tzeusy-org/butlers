@@ -45,6 +45,7 @@ import { Time } from "@/components/ui/time";
 import {
   useBulkUpdateTransactionMetadata,
   useFinanceAccounts,
+  useFinanceExpectedSignals,
   useFinanceSpendingSummary,
   useFinanceSubscriptions,
   useFinanceTransactions,
@@ -52,6 +53,7 @@ import {
 } from "@/hooks/use-finance";
 import type {
   FinanceAccount,
+  FinanceExpectedSignal,
   FinanceBulkUpdateOp,
   FinanceTransaction,
   FinanceSubscription,
@@ -140,6 +142,33 @@ function LoadingLine() {
     <p className="text-sm text-muted-foreground" data-testid="loading-line">
       Loading...
     </p>
+  );
+}
+
+function RecurrenceSignalPanel({
+  signals,
+  available,
+  isLoading,
+}: {
+  signals: FinanceExpectedSignal[];
+  available: boolean;
+  isLoading: boolean;
+}) {
+  const incomplete = signals.some((signal) => signal.measurability === "unmeasurable");
+  return (
+    <Panel title="Recurrence signal health" span={2} testId="finance-recurrence-signals">
+      {isLoading ? (
+        <LoadingLine />
+      ) : !available || incomplete ? (
+        <p className="text-sm text-[var(--amber-text)]" role="status">
+          Recurrence instrumentation is incomplete. Payment-state claims are paused.
+        </p>
+      ) : signals.length === 0 ? (
+        <EmptyLine>No recurrence cadence has been evaluated yet.</EmptyLine>
+      ) : (
+        <p className="text-sm text-muted-foreground">Recurrence instruments are measurable.</p>
+      )}
+    </Panel>
   );
 }
 
@@ -616,6 +645,11 @@ export default function ButlerFinanceFinancesTab() {
     isFetching: subFetching,
   } = useFinanceSubscriptions();
   const {
+    data: signalResp,
+    isLoading: signalLoading,
+    isFetching: signalFetching,
+  } = useFinanceExpectedSignals();
+  const {
     data: upcomingResp,
     isLoading: upcomingLoading,
     isFetching: upcomingFetching,
@@ -655,11 +689,18 @@ export default function ButlerFinanceFinancesTab() {
   // already renders its own <LoadingLine/> for) so a background refresh
   // reads as "updating", not silently stale.
   const isInitialLoad =
-    txLoading || subLoading || upcomingLoading || monthlyLoading || categoryLoading || accountsLoading;
+    txLoading ||
+    subLoading ||
+    signalLoading ||
+    upcomingLoading ||
+    monthlyLoading ||
+    categoryLoading ||
+    accountsLoading;
   const isRefetching =
     !isInitialLoad &&
     (txFetching ||
       subFetching ||
+      signalFetching ||
       upcomingFetching ||
       monthlyFetching ||
       categoryFetching ||
@@ -889,6 +930,11 @@ export default function ButlerFinanceFinancesTab() {
       {/* Row 4: Subscriptions (span-2) + Accounts (span-2) */}
       <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
       <AccountsPanel accounts={accounts} isLoading={accountsLoading} />
+      <RecurrenceSignalPanel
+        signals={signalResp?.signals ?? []}
+        available={signalResp?.available ?? false}
+        isLoading={signalLoading}
+      />
       </div>
       <ConfirmDialog
         open={pendingBulkOp != null}

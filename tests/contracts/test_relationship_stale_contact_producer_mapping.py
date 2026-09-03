@@ -22,7 +22,10 @@ import pytest
 pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_DESIGN = _REPO_ROOT / "openspec/changes/relationship-stale-contact-producer-mapping/design.md"
+_DESIGN = (
+    _REPO_ROOT
+    / "openspec/changes/archive/2026-09-03-relationship-stale-contact-producer-mapping/design.md"
+)
 _START = "<!-- relationship-stale-contact-producer-map:start -->"
 _END = "<!-- relationship-stale-contact-producer-map:end -->"
 

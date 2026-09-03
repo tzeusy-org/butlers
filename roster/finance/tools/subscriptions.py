@@ -9,6 +9,10 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.finance._helpers import _row_to_dict
+from butlers.tools.finance.expected_signals import (
+    FinanceSignalSource,
+    metadata_with_signal_source,
+)
 
 _VALID_STATUSES = ("active", "cancelled", "paused")
 _VALID_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly", "custom")
@@ -37,6 +41,8 @@ async def track_subscription(
     account_id: str | uuid.UUID | None = None,
     source_message_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    *,
+    _expected_signal_source: FinanceSignalSource | None = None,
 ) -> dict[str, Any]:
     """Create or update a subscription lifecycle record in finance.subscriptions.
 
@@ -82,7 +88,7 @@ async def track_subscription(
         raise ValueError(f"Invalid frequency {frequency!r}. Must be one of {_VALID_FREQUENCIES}")
 
     renewal_date = _normalize_renewal_date(next_renewal)
-    metadata_value: dict[str, Any] = dict(metadata) if metadata is not None else {}
+    metadata_value = metadata_with_signal_source(metadata, _expected_signal_source)
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
 
     # Upsert: look up existing record by (service, frequency)
@@ -105,7 +111,7 @@ async def track_subscription(
                 payment_method    = COALESCE($6, payment_method),
                 account_id        = COALESCE($7, account_id),
                 source_message_id = COALESCE($8, source_message_id),
-                metadata          = metadata || $9,
+                metadata          = (metadata - 'expected_signal_source') || $9,
                 updated_at        = now()
             WHERE id = $10
             RETURNING *

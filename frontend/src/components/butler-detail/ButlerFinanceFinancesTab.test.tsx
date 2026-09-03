@@ -60,6 +60,7 @@ vi.mock("@/hooks/use-finance", () => ({
   useFinanceUpcomingBills: vi.fn(),
   useFinanceSpendingSummary: vi.fn(),
   useFinanceAccounts: vi.fn(),
+  useFinanceExpectedSignals: vi.fn(),
   useBulkUpdateTransactionMetadata: vi.fn(),
 }));
 
@@ -74,6 +75,7 @@ import {
   useFinanceUpcomingBills,
   useFinanceSpendingSummary,
   useFinanceAccounts,
+  useFinanceExpectedSignals,
   useBulkUpdateTransactionMetadata,
 } from "@/hooks/use-finance";
 
@@ -316,6 +318,10 @@ function setupWithData() {
     data: { data: SUBSCRIPTIONS, meta: { total: 3, offset: 0, limit: 50 } },
     isLoading: false,
   } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
 
   vi.mocked(useFinanceUpcomingBills).mockReturnValue({
     data: {
@@ -358,6 +364,10 @@ function setupEmpty() {
     data: { data: [], meta: { total: 0, offset: 0, limit: 50 } },
     isLoading: false,
   } as unknown as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
 
   vi.mocked(useFinanceUpcomingBills).mockReturnValue({
     data: {
@@ -398,6 +408,10 @@ function setupLoading() {
     data: undefined,
     isLoading: true,
   } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
 
   vi.mocked(useFinanceUpcomingBills).mockReturnValue({
     data: undefined,
@@ -435,6 +449,38 @@ describe("ButlerFinanceFinancesTab — five sections present", () => {
   it("renders the transactions section", () => {
     renderTab();
     expect(screen.getByTestId("finance-transactions-section")).toBeDefined();
+  });
+
+  it("renders recurrence instrumentation without claiming payment state", () => {
+    vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+      data: {
+        available: true,
+        degraded_reason: null,
+        signals: [
+          {
+            signal_key: "finance:recurrence:group-1",
+            producer: "connector:gmail",
+            producer_endpoint_identity: "gmail:user:owner@example.invalid",
+            expected_cadence_seconds: 2_592_000,
+            last_observed_at: "2026-05-01T00:00:00Z",
+            measurability: "unmeasurable",
+            unmeasurable_reason: "producer_stale_or_offline",
+            evaluated_at: "2026-06-01T00:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    } as ReturnType<typeof useFinanceExpectedSignals>);
+
+    renderTab();
+
+    expect(screen.getByTestId("finance-recurrence-signals")).toBeDefined();
+    expect(
+      screen.getByText(
+        "Recurrence instrumentation is incomplete. Payment-state claims are paused.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText(/missed renewal/i)).toBeNull();
   });
 
   it("renders the upcoming bills section", () => {
@@ -611,6 +657,10 @@ function setupKpiNoise() {
     data: { data: SUBS_WITH_NOISE, meta: { total: 5, offset: 0, limit: 50 } },
     isLoading: false,
   } as ReturnType<typeof useFinanceSubscriptions>);
+  vi.mocked(useFinanceExpectedSignals).mockReturnValue({
+    data: { signals: [], available: true, degraded_reason: null },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useFinanceExpectedSignals>);
 
   vi.mocked(useFinanceUpcomingBills).mockReturnValue({
     data: {

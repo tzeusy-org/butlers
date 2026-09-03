@@ -3,9 +3,8 @@
 Spec: REQ-finance-supporting-tables-001, REQ-butler-finance-001,
 REQ-finance-alerts-001, and REQ-expected-signals-001.
 
-The specification lane executes a private model of the endpoint-bound RFC 0029 target state against
-its machine-readable source matrix. It does not prove landed runtime enforcement: continued
-bu-8cdl1.3 owns the shared migration/helper/Health implementation and migrated-PostgreSQL tests.
+The specification matrix remains executable alongside the endpoint-bound RFC 0029 runtime
+implementation delivered by continued bu-8cdl1.3.
 """
 
 from __future__ import annotations
@@ -27,7 +26,8 @@ from butlers.core.liveness import is_liveness_stale
 pytestmark = pytest.mark.contract
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_DESIGN = _REPO_ROOT / "openspec/changes/finance-recurrence-producer-mapping/design.md"
+_CHANGE = "openspec/changes/archive/2026-09-03-finance-recurrence-producer-mapping"
+_DESIGN = _REPO_ROOT / _CHANGE / "design.md"
 _START = "<!-- finance-recurrence-producer-map:start -->"
 _END = "<!-- finance-recurrence-producer-map:end -->"
 _NOW = datetime(2026, 9, 3, 12, tzinfo=UTC)
@@ -418,23 +418,22 @@ def test_tracked_renewal_and_inferred_recurrence_policies_remain_bounded() -> No
     assert '"missed renewal"' in design
 
 
-def test_endpoint_contract_is_target_state_with_explicit_runtime_owner() -> None:
-    """Current docs cannot claim enforcement before the shared core migration lands."""
+def test_endpoint_contract_names_implemented_runtime_owner() -> None:
+    """Docs bind endpoint enforcement and migration evidence to continued adoption."""
     paths = [
         "about/legends-and-lore/rfcs/0029-expected-signals-and-honest-absence.md",
         "docs/concepts/expected-signals.md",
         "docs/butlers/finance.md",
-        "openspec/changes/finance-recurrence-producer-mapping/design.md",
-        "openspec/changes/finance-recurrence-producer-mapping/tasks.md",
+        f"{_CHANGE}/design.md",
+        f"{_CHANGE}/tasks.md",
     ]
     normalized = {
         path: " ".join((_REPO_ROOT / path).read_text(encoding="utf-8").split()) for path in paths
     }
 
-    assert "[TARGET-STATE" in normalized[paths[0]]
-    assert "core_210` has no `producer_endpoint_identity` column" in normalized[paths[0]]
-    assert "Current runtime implementation is connector-type-only" in normalized[paths[1]]
-    assert "This Finance mapping PR changes no runtime schema or evaluator" in normalized[paths[2]]
-    assert "continued `bu-8cdl1.3`" in normalized[paths[3]]
+    assert "core_211` adds the endpoint column" in normalized[paths[0]]
+    assert "core_211` migrates legacy connector rows" in normalized[paths[1]]
+    assert "state-only expected-signals surface" in normalized[paths[2]]
+    assert "Continued `bu-8cdl1.3` implements" in normalized[paths[3]]
     assert "existing Health call sites and rows" in normalized[paths[4]]
     assert "migrated-PostgreSQL" in normalized[paths[4]]

@@ -115,24 +115,29 @@ async def _setup_health_schema(pool) -> None:
     await pool.execute(CREATE_MEDICATIONS_SQL)
     await pool.execute(CREATE_MEDICATION_DOSES_SQL)
     await pool.execute(CREATE_SYMPTOMS_SQL)
-    migration_path = (
-        Path(__file__).resolve().parents[3] / "alembic/versions/core/core_210_expected_signals.py"
-    )
-    spec = importlib.util.spec_from_file_location("core_210_expected_signals", migration_path)
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    statements: list[str] = []
-    mocked_op = MagicMock()
-    mocked_op.execute.side_effect = statements.append
-    with patch.object(migration, "op", mocked_op):
-        migration.upgrade()
-    for statement in statements:
-        await pool.execute(statement)
+    for migration_name in (
+        "core_210_expected_signals.py",
+        "core_211_expected_signal_endpoint_identity.py",
+    ):
+        migration_path = (
+            Path(__file__).resolve().parents[3] / "alembic/versions/core" / migration_name
+        )
+        spec = importlib.util.spec_from_file_location(migration_path.stem, migration_path)
+        assert spec is not None and spec.loader is not None
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        statements: list[str] = []
+        mocked_op = MagicMock()
+        mocked_op.execute.side_effect = statements.append
+        with patch.object(migration, "op", mocked_op):
+            migration.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
     await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS public._health_job_test_liveness (
             connector_type text NOT NULL,
+            endpoint_identity text NOT NULL,
             state text NOT NULL,
             last_heartbeat_at timestamptz
         )
@@ -141,7 +146,7 @@ async def _setup_health_schema(pool) -> None:
     await pool.execute(
         """
         CREATE OR REPLACE VIEW public.v_qa_connector_state AS
-        SELECT connector_type, state, last_heartbeat_at
+        SELECT connector_type, endpoint_identity, state, last_heartbeat_at
         FROM public._health_job_test_liveness
         """
     )
@@ -166,6 +171,7 @@ async def _insert_measurement(
     value: dict | None = None,
     measured_at: datetime | None = None,
     source: str = "owner_log",
+    source_endpoint_identity: str | None = None,
 ) -> str:
     """Insert a measurement fact into public.facts and return its UUID string.
 
@@ -184,6 +190,8 @@ async def _insert_measurement(
         "value": value.get("value", value) if isinstance(value, dict) else value,
         "source": source,
     }
+    if source_endpoint_identity is not None:
+        metadata["source_endpoint_identity"] = source_endpoint_identity
 
     # Pass the dict so the pool's JSONB codec serializes it once (no double-encode);
     # otherwise metadata->>'value' would be NULL.
@@ -466,6 +474,12 @@ async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisione
         assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=16)
         assert datetime.fromisoformat(event_window["end"]) >= now
         assert result["candidates_accepted"] == 1
+        signal = await pool.fetchrow(
+            "SELECT producer, producer_endpoint_identity FROM public.expected_signals "
+            "WHERE signal_key = 'health:measurement-gap:blood_pressure'"
+        )
+        assert signal["producer"] == "owner"
+        assert signal["producer_endpoint_identity"] is None
 
 
 async def test_measurement_gap_3x_cadence_generates_critical_candidate(provisioned_postgres_pool):
@@ -494,8 +508,10 @@ async def test_measurement_gap_3x_cadence_generates_critical_candidate(provision
         assert result["candidates_accepted"] == 1
 
 
+@pytest.mark.parametrize("reverse_liveness", [False, True])
 async def test_measurement_gap_dead_connector_is_unmeasurable_without_owner_nudge(
     provisioned_postgres_pool,
+    reverse_liveness: bool,
 ):
     """Elapsed cadence cannot become an owner claim after producer liveness dies."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
@@ -504,10 +520,25 @@ async def test_measurement_gap_dead_connector_is_unmeasurable_without_owner_nudg
         await _setup_health_schema(pool)
         await _setup_insight_tables(pool)
         now = _utcnow()
-        await pool.execute(
-            "INSERT INTO public._health_job_test_liveness VALUES ($1, 'healthy', $2)",
-            "google_health",
-            now - timedelta(minutes=16),
+        rows = [
+            (
+                "google_health",
+                "google_health:user:owner",
+                "offline",
+                now,
+            ),
+            (
+                "google_health",
+                "google_health:user:sibling",
+                "healthy",
+                now,
+            ),
+        ]
+        if reverse_liveness:
+            rows.reverse()
+        await pool.executemany(
+            "INSERT INTO public._health_job_test_liveness VALUES ($1, $2, $3, $4)",
+            rows,
         )
         for i in range(5):
             await _insert_measurement(
@@ -515,6 +546,7 @@ async def test_measurement_gap_dead_connector_is_unmeasurable_without_owner_nudg
                 mtype="weight",
                 measured_at=now - timedelta(days=25 + (i * 7)),
                 source="google_health",
+                source_endpoint_identity="google_health:user:owner",
             )
 
         result = await run_insight_scan(pool)

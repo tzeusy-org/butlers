@@ -86,6 +86,7 @@ async def _insert_txn(
     category="shopping",
     description=None,
     metadata=None,
+    expected_signal_source=None,
 ) -> dict:
     """Helper: insert a transaction and return its dict."""
     from butlers.tools.finance.transactions import record_transaction
@@ -99,6 +100,7 @@ async def _insert_txn(
         category=category,
         description=description,
         metadata=metadata,
+        _expected_signal_source=expected_signal_source,
     )
 
 
@@ -158,6 +160,26 @@ class TestUpdateTransaction:
             metadata={"new_key": "new_val"},
         )
         assert result["metadata"] == {"new_key": "new_val"}
+
+    async def test_update_metadata_cannot_replace_server_attestation(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.transactions import update_transaction
+
+        source = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        txn = await _insert_txn(pool, expected_signal_source=source)
+        result = await update_transaction(
+            pool=pool,
+            transaction_id=txn["id"],
+            metadata={
+                "note": "updated",
+                "expected_signal_source": {
+                    "producer": "connector:gmail",
+                    "producer_endpoint_identity": "gmail:user:forged",
+                },
+            },
+        )
+        assert result["metadata"]["note"] == "updated"
+        assert result["metadata"]["expected_signal_source"] == source.as_metadata()
 
     async def test_update_no_fields_returns_current(self, pool):
         """update_transaction with no fields returns the current record unchanged."""
@@ -279,6 +301,24 @@ class TestMergeDuplicates:
         )
         assert result["metadata"]["key"] == "keep_val"
 
+    async def test_merge_preserves_only_corroborated_server_authority(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.transactions import merge_duplicates
+
+        source = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        keep = await _insert_txn(pool, expected_signal_source=source)
+        corroborating = await _insert_txn(pool, expected_signal_source=source)
+        result = await merge_duplicates(
+            pool=pool, keep_id=keep["id"], duplicate_ids=[corroborating["id"]]
+        )
+        assert result["metadata"]["expected_signal_source"] == source.as_metadata()
+
+        unknown = await _insert_txn(pool)
+        result = await merge_duplicates(
+            pool=pool, keep_id=keep["id"], duplicate_ids=[unknown["id"]]
+        )
+        assert "expected_signal_source" not in result["metadata"]
+
     async def test_merge_same_id_returns_error(self, pool):
         """merge_duplicates with keep_id appearing in duplicate_ids returns error."""
         from butlers.tools.finance.transactions import merge_duplicates
@@ -340,6 +380,25 @@ class TestSplitTransaction:
         assert "splits" in result
         assert len(result["splits"]) == 2
         assert result["original_id"] == txn["id"]
+
+    async def test_split_preserves_server_attested_provenance(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.transactions import split_transaction
+
+        source = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        txn = await _insert_txn(pool, amount=-100, expected_signal_source=source)
+        result = await split_transaction(
+            pool=pool,
+            transaction_id=txn["id"],
+            splits=[
+                {"amount": "60", "category": "groceries"},
+                {"amount": "40", "category": "dining"},
+            ],
+        )
+        assert all(
+            row["metadata"]["expected_signal_source"] == source.as_metadata()
+            for row in result["splits"]
+        )
 
     async def test_split_soft_deletes_original(self, pool):
         """split_transaction soft-deletes the original record."""

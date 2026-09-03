@@ -308,14 +308,12 @@ RFC 0029 adoption, a recurring group derives its expected-signal producer from t
 transactions that contributed to the group. Exactly one reserved, server-attested producer may be
 used; a missing, unsupported, copied, mixed, or unreadable source makes the group unmeasurable.
 
-The **[TARGET-STATE]** Finance mapping recognizes server-attested Gmail ingress as
+The Finance mapping recognizes server-attested Gmail ingress as
 `connector:gmail` bound to the exact server-derived source endpoint, and an explicitly
-server-attested owner entry as `owner`. After continued bu-8cdl1.3 implements the shared RFC 0029
-endpoint migration, the expected-signal row carries the Gmail endpoint as required
+server-attested owner entry as `owner`. The expected-signal row carries the Gmail endpoint as required
 `producer_endpoint_identity`, and liveness matches the exact type/endpoint pair; a healthy sibling
-Gmail account cannot substitute. Current `core_210` rows and the expected-signal evaluator are
-type-only, so this mapping is not runtime-enforced yet and Finance connector signals remain
-unmeasurable. Current `source_message_id`, transaction
+Gmail account cannot substitute. Legacy rows without server attestation remain unmeasurable.
+Current `source_message_id`, transaction
 `source`, import metadata, SimpleFIN `source=aggregator`, account freshness, merchant matching, and
 legacy/backfill metadata do not establish an RFC 0029 producer. In particular, merchant-unique
 groups can span accounts and sources; neither row order nor a healthy Gmail runtime may resolve

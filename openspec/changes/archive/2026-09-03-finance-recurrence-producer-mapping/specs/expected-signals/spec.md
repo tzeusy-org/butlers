@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: [TARGET-STATE] Connector expected signals bind exact endpoint identity
+### Requirement: Connector expected signals bind exact endpoint identity
 
 A connector-backed expected signal MUST carry `producer_endpoint_identity` from server-derived
 source provenance and MUST evaluate liveness against the exact `(connector_type,

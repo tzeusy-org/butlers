@@ -3,6 +3,7 @@ roster/messenger/tests/test_migration_metadata.py
 roster/relationship/tests/test_dunbar_engine_leak_guard.py
 roster/relationship/tests/test_entity_tab_writes.py
 roster/relationship/tests/test_owner_authz_guardrail.py
+roster/relationship/tests/test_stale_contact_expected_signals.py
 roster/switchboard/tests/test_identity_injection.py
 roster/switchboard/tests/test_staffer_routing_exclusion.py
 roster/switchboard/tests/test_thread_affinity.py

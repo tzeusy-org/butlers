@@ -23,7 +23,7 @@ import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
@@ -91,6 +91,8 @@ if _models_path.exists():
         UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
         DunbarEntry = _models_module.DunbarEntry
         DunbarRankingResponse = _models_module.DunbarRankingResponse
+        OverdueContact = _models_module.OverdueContact
+        OverdueContactsResponse = _models_module.OverdueContactsResponse
         EntityNote = _models_module.EntityNote
         EntityInteraction = _models_module.EntityInteraction
         EntityGift = _models_module.EntityGift
@@ -3235,6 +3237,7 @@ async def create_entity_interaction(
     direction.
     """
     from butlers.tools.relationship import interactions as interactions_tools
+    from butlers.tools.relationship.stale_contacts import owner_attestation
 
     pool = _pool(db)
 
@@ -3251,6 +3254,9 @@ async def create_entity_interaction(
             occurred_at=body.occurred_at,
             direction=body.direction,
             duration_minutes=body.duration_minutes,
+            _expected_signal_source=owner_attestation(
+                principal=authenticated_principal(),
+            ),
         )
     except ValueError as exc:
         raise _invalid_input_response("invalid_interaction", exc) from exc
@@ -5709,6 +5715,54 @@ async def forget_entity(
 
 
 # ---------------------------------------------------------------------------
+# GET /contacts/overdue — measurable cadence results
+# ---------------------------------------------------------------------------
+
+
+@router.get("/contacts/overdue", response_model=OverdueContactsResponse)
+async def get_overdue_contacts(
+    days: int | None = Query(None, ge=1),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> OverdueContactsResponse:
+    """Return only measurable overdue contacts and honest aggregate availability.
+
+    ``days`` remains accepted for compatibility with the retired endpoint, but
+    the authoritative threshold is each contact's existing tier/owner cadence.
+    """
+    del days
+    from butlers.tools.relationship.stay_in_touch import contacts_overdue_with_availability
+
+    try:
+        result = await contacts_overdue_with_availability(_pool(db))
+    except Exception:  # noqa: BLE001 -- unavailable evaluation is not an empty all-clear
+        logger.warning("Relationship overdue cadence evaluation unavailable", exc_info=True)
+        return OverdueContactsResponse(
+            contacts=[],
+            cadence_available=False,
+            unmeasurable_count=0,
+        )
+    contacts = [
+        OverdueContact(
+            contact_id=row["id"],
+            name=row["name"],
+            tier=row["dunbar_tier"],
+            owed_days=max(
+                0,
+                int(row["days_since_last_interaction"] - row["effective_cadence"]),
+            ),
+            last_contact_date=row.get("last_interaction_at"),
+            target_cadence_days=row["effective_cadence"],
+        )
+        for row in result["contacts"]
+    ]
+    return OverdueContactsResponse(
+        contacts=contacts,
+        cadence_available=result["cadence_available"],
+        unmeasurable_count=result["unmeasurable_count"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /dunbar/ranking — Dunbar tier ranking for all contacts
 # ---------------------------------------------------------------------------
 
@@ -5744,7 +5798,7 @@ async def get_dunbar_ranking(
     entity_name_rows, owner_row, interaction_30d_rows = await asyncio.gather(
         pool.fetch(
             f"""
-            SELECT e.id, e.canonical_name, e.aliases,
+            SELECT e.id, e.canonical_name, e.aliases, e.stay_in_touch_days,
                    e.metadata->'profile'->>'avatar_url' AS avatar_url
             FROM public.entities e
             WHERE e.id = ANY($1::uuid[])
@@ -5785,11 +5839,17 @@ async def get_dunbar_ranking(
     entity_avatar: dict[UUID, str | None] = {
         row["id"]: row["avatar_url"] for row in entity_name_rows
     }
+    stay_in_touch_days: dict[UUID, int | None] = {
+        row["id"]: row.get("stay_in_touch_days") for row in entity_name_rows
+    }
     interaction_30d: dict[UUID, int] = {
         row["contact_id"]: int(row["interaction_count_30d"]) for row in interaction_30d_rows
     }
 
     entries: list[DunbarEntry] = []
+    unmeasurable_count = 0
+    from butlers.tools.relationship.stale_contacts import evaluate_stale_contact_signal
+
     for r in ranked:
         if r["entity_id"] is None:
             continue
@@ -5812,6 +5872,29 @@ async def get_dunbar_ranking(
         else:
             warmth = None  # Tier 1500 — no cadence target, warmth undefined
 
+        effective_cadence = stay_in_touch_days.get(r["entity_id"])
+        if effective_cadence is None:
+            effective_cadence = tier_cadence
+        stale_contact_state = "unmeasurable"
+        if effective_cadence is not None:
+            try:
+                signal = await evaluate_stale_contact_signal(
+                    pool,
+                    contact_id=cid,
+                    entity_id=r["entity_id"],
+                    expected_cadence=timedelta(days=effective_cadence),
+                    last_observed_at=r.get("last_interaction_at"),
+                )
+                stale_contact_state = signal.evaluation.state.value
+            except Exception:  # noqa: BLE001 -- API must expose incomplete availability
+                logger.warning(
+                    "Relationship cadence evaluation unavailable for contact %s",
+                    cid,
+                    exc_info=True,
+                )
+            if stale_contact_state == "unmeasurable":
+                unmeasurable_count += 1
+
         entries.append(
             DunbarEntry(
                 contact_id=cid,
@@ -5824,12 +5907,19 @@ async def get_dunbar_ranking(
                 aliases=entity_aliases.get(r["entity_id"], []),
                 warmth=warmth,
                 last_interaction_at=r.get("last_interaction_at"),
+                effective_cadence_days=effective_cadence,
+                stale_contact_state=stale_contact_state,
             )
         )
 
     owner_entity_id = owner_row["id"] if owner_row else None
 
-    return DunbarRankingResponse(entries=entries, owner_entity_id=owner_entity_id)
+    return DunbarRankingResponse(
+        entries=entries,
+        owner_entity_id=owner_entity_id,
+        cadence_available=unmeasurable_count == 0,
+        unmeasurable_count=unmeasurable_count,
+    )
 
 
 # ---------------------------------------------------------------------------

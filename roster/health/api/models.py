@@ -446,6 +446,7 @@ class ExpectedSignalResponse(BaseModel):
 
     signal_key: str
     producer: str
+    producer_endpoint_identity: str | None
     expected_cadence_seconds: int
     last_observed_at: str | None
     measurability: Literal["present", "absent", "unmeasurable"]

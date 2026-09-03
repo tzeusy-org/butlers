@@ -130,6 +130,8 @@ const DUNBAR_DATA = {
     },
   ],
   owner_entity_id: null,
+  cadence_available: true,
+  unmeasurable_count: 0,
 };
 
 const OVERDUE_DATA = {
@@ -151,6 +153,8 @@ const OVERDUE_DATA = {
       target_cadence_days: 30,
     },
   ],
+  cadence_available: true,
+  unmeasurable_count: 0,
 };
 
 const INTERACTIONS_DATA = {
@@ -259,13 +263,13 @@ function setupEmpty() {
   } as unknown as ReturnType<typeof useContact>);
 
   vi.mocked(useDunbarRanking).mockReturnValue({
-    data: { entries: [], owner_entity_id: null },
+    data: { entries: [], owner_entity_id: null, cadence_available: true, unmeasurable_count: 0 },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useDunbarRanking>);
 
   vi.mocked(useOverdueContacts).mockReturnValue({
-    data: { contacts: [] },
+    data: { contacts: [], cadence_available: true, unmeasurable_count: 0 },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useOverdueContacts>);
@@ -740,6 +744,19 @@ describe("ButlerRelationshipContactsTab — empty states", () => {
     renderTab();
     expect(screen.queryByTestId("overdue-list")).toBeNull();
     expect(screen.getByText("No overdue contacts. Cadence all clear.")).toBeDefined();
+  });
+
+  it("does not render cadence all-clear when provenance is unavailable", () => {
+    vi.mocked(useOverdueContacts).mockReturnValue({
+      data: { contacts: [], cadence_available: false, unmeasurable_count: 2 },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useOverdueContacts>);
+    renderTab();
+    expect(screen.queryByText("No overdue contacts. Cadence all clear.")).toBeNull();
+    expect(
+      screen.getByText("Cadence instrumentation or provenance unavailable."),
+    ).toBeDefined();
   });
 
   it("shows empty state for watchlist when no T1/T2 entries", () => {

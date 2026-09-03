@@ -1625,3 +1625,51 @@ async def test_bulk_ingest_transactions_value_error_propagates_422():
             )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_expected_signals_exposes_unmeasurable_state_without_payment_claim():
+    app, pool = _make_app(
+        fetch_rows=[
+            {
+                "signal_key": "finance:recurrence:group-1",
+                "producer": "connector:gmail",
+                "producer_endpoint_identity": "gmail:user:owner@example.invalid",
+                "expected_cadence_seconds": 2_592_000,
+                "last_observed_at": _NOW,
+                "measurability": "unmeasurable",
+                "unmeasurable_reason": "producer_stale_or_offline",
+                "evaluated_at": _NOW,
+            }
+        ]
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/expected-signals")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["signals"][0]["measurability"] == "unmeasurable"
+    assert "payment" not in str(body).lower()
+    assert "signal_key LIKE 'finance:%'" in pool.fetch.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_expected_signals_failure_is_degraded_not_empty_all_clear():
+    app, pool = _make_app()
+    pool.fetch.side_effect = RuntimeError("projection unavailable")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/expected-signals")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "signals": None,
+        "available": False,
+        "degraded_reason": "expected_signals_unavailable",
+    }

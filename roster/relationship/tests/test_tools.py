@@ -6,7 +6,7 @@ import shutil
 import sys
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +17,29 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
+
+
+def _mock_contact_signal(monkeypatch: pytest.MonkeyPatch, *, is_overdue: bool) -> None:
+    """Keep cadence/output tests focused on policy after producer admission."""
+    from types import SimpleNamespace
+
+    from butlers.core.expected_signals import ExpectedSignalState
+    from butlers.tools.relationship import stale_contacts
+
+    monkeypatch.setattr(
+        stale_contacts,
+        "evaluate_stale_contact_signal",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                is_overdue=is_overdue,
+                evaluation=SimpleNamespace(
+                    state=(
+                        ExpectedSignalState.ABSENT if is_overdue else ExpectedSignalState.PRESENT
+                    )
+                ),
+            )
+        ),
+    )
 
 
 @pytest.fixture
@@ -2412,7 +2435,7 @@ async def test_stay_in_touch_set_not_found(pool_with_cadence):
 
 
 @pytest.mark.pg_clock
-async def test_contacts_overdue_with_stale_interaction(pool_with_cadence):
+async def test_contacts_overdue_with_stale_interaction(pool_with_cadence, monkeypatch):
     """Contact with last interaction beyond cadence shows as overdue."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2420,6 +2443,8 @@ async def test_contacts_overdue_with_stale_interaction(pool_with_cadence):
         interaction_log,
         stay_in_touch_set,
     )
+
+    _mock_contact_signal(monkeypatch, is_overdue=True)
 
     pool = pool_with_cadence
     contact = await contact_create(pool, "Charlie")
@@ -2439,9 +2464,11 @@ async def test_contacts_overdue_with_stale_interaction(pool_with_cadence):
     assert match["days_since_last_interaction"] >= 10
 
 
-async def test_contacts_overdue_no_interaction(pool_with_cadence):
-    """Contact with cadence but no interactions is always overdue."""
+async def test_contacts_overdue_no_interaction(pool_with_cadence, monkeypatch):
+    """Contact with cadence but no attested observation is not overdue."""
     from butlers.tools.relationship import contact_create, contacts_overdue, stay_in_touch_set
+
+    _mock_contact_signal(monkeypatch, is_overdue=False)
 
     pool = pool_with_cadence
     contact = await contact_create(pool, "Diana")
@@ -2451,14 +2478,10 @@ async def test_contacts_overdue_no_interaction(pool_with_cadence):
 
     overdue = await contacts_overdue(pool)
     overdue_ids = [c["id"] for c in overdue]
-    assert cid in overdue_ids
-    # last_interaction_at should be None
-    match = [c for c in overdue if c["id"] == cid][0]
-    assert match["last_interaction_at"] is None
-    assert match["days_since_last_interaction"] is None
+    assert cid not in overdue_ids
 
 
-async def test_contacts_overdue_recent_interaction(pool_with_cadence):
+async def test_contacts_overdue_recent_interaction(pool_with_cadence, monkeypatch):
     """Contact with recent interaction within cadence does NOT show as overdue."""
     from butlers.tools.relationship import (
         contact_create,
@@ -2466,6 +2489,8 @@ async def test_contacts_overdue_recent_interaction(pool_with_cadence):
         interaction_log,
         stay_in_touch_set,
     )
+
+    _mock_contact_signal(monkeypatch, is_overdue=False)
 
     pool = pool_with_cadence
     contact = await contact_create(pool, "Eve")
@@ -2493,18 +2518,20 @@ async def test_contacts_overdue_no_cadence_excluded(pool_with_cadence):
     assert contact["id"] not in overdue_ids
 
 
-async def test_contacts_overdue_cleared_cadence_excluded(pool_with_cadence):
+async def test_contacts_overdue_cleared_cadence_excluded(pool_with_cadence, monkeypatch):
     """Clearing cadence removes contact from overdue list."""
     from butlers.tools.relationship import contact_create, contacts_overdue, stay_in_touch_set
+
+    _mock_contact_signal(monkeypatch, is_overdue=False)
 
     pool = pool_with_cadence
     contact = await contact_create(pool, "Grace")
     cid = contact["id"]
 
-    # Set cadence — should be overdue (no interactions)
+    # Set cadence — without an attested observation it remains unmeasurable.
     await stay_in_touch_set(pool, cid, 1)
     overdue = await contacts_overdue(pool)
-    assert cid in [c["id"] for c in overdue]
+    assert cid not in [c["id"] for c in overdue]
 
     # Clear cadence — should no longer be overdue
     await stay_in_touch_set(pool, cid, None)
@@ -2777,9 +2804,11 @@ async def test_contact_search_no_interactions_defaults_to_tier_1500(pool):
         assert result["dunbar_tier_override"] is False
 
 
-async def test_contacts_overdue_includes_dunbar_fields(pool_with_cadence):
+async def test_contacts_overdue_includes_dunbar_fields(pool_with_cadence, monkeypatch):
     """contacts_overdue returns dunbar_tier, dunbar_score, effective_cadence fields."""
     from butlers.tools.relationship import contact_create, contacts_overdue, stay_in_touch_set
+
+    _mock_contact_signal(monkeypatch, is_overdue=True)
 
     contact = await contact_create(pool_with_cadence, "Overdue With Dunbar")
     cid = contact["id"]

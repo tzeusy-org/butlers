@@ -1924,7 +1924,7 @@ async def get_measurement_expected_signals(
     try:
         rows = await pool.fetch(
             """
-            SELECT signal_key, producer, expected_cadence_seconds,
+            SELECT signal_key, producer, producer_endpoint_identity, expected_cadence_seconds,
                    last_observed_at, measurability, unmeasurable_reason, evaluated_at
             FROM public.expected_signals
             WHERE signal_key LIKE 'health:measurement-gap:%'
@@ -1944,6 +1944,7 @@ async def get_measurement_expected_signals(
             ExpectedSignalResponse(
                 signal_key=row["signal_key"],
                 producer=row["producer"],
+                producer_endpoint_identity=row["producer_endpoint_identity"],
                 expected_cadence_seconds=int(row["expected_cadence_seconds"]),
                 last_observed_at=(
                     row["last_observed_at"].isoformat() if row["last_observed_at"] else None

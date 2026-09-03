@@ -342,6 +342,18 @@ async def translate_wellness_envelope(
     return {"status": "rejected_unknown_provider"}
 
 
+def _source_endpoint_identity(envelope: dict[str, Any], provider: str) -> str | None:
+    """Return the connector-stamped endpoint, refusing blank or mismatched identities."""
+    source = envelope.get("source")
+    if not isinstance(source, dict):
+        return None
+    endpoint = source.get("endpoint_identity")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        return None
+    normalized = endpoint.strip()
+    return normalized if normalized.startswith(f"{provider}:") else None
+
+
 async def _translate_google_health_envelope(
     pool: Any,
     embedding_engine: Any,
@@ -358,6 +370,9 @@ async def _translate_google_health_envelope(
     # Accept any active, health-scoped account owned by the butler's owner
     # entity.  The identity set is queried once per butler-session and cached.
     # ------------------------------------------------------------------
+    endpoint_identity = _source_endpoint_identity(envelope, "google_health")
+    if endpoint_identity is None:
+        return {"status": "rejected_malformed_payload", "reason": "invalid source endpoint"}
     sender_identity: str = envelope.get("sender", {}).get("identity", "")
     recognised = await _get_recognised_owner_identities(pool)
     if not recognised:
@@ -483,6 +498,7 @@ async def _translate_google_health_envelope(
         # is the single canonical key across both ingest arms; the HA arm writes
         # it too (see below).
         metadata["source"] = "google_health"
+        metadata["source_endpoint_identity"] = endpoint_identity
 
         content = normalized_text or f"wellness:{predicate}:{valid_at}"
 
@@ -571,6 +587,12 @@ async def _translate_home_assistant_envelope(
     # ------------------------------------------------------------------
     # Step 1: Validate the normalized measurement payload shape
     # ------------------------------------------------------------------
+    endpoint_identity = _source_endpoint_identity(envelope, "home_assistant")
+    if endpoint_identity is None:
+        return {
+            "status": "rejected_malformed_payload",
+            "reason": "invalid source endpoint",
+        }
     payload = envelope.get("payload", {})
     raw: dict[str, Any] = payload.get("raw") or {}
     measurement = raw.get("wellness_measurement")
@@ -642,6 +664,7 @@ async def _translate_home_assistant_envelope(
     # ``provider`` key only for facts written before this convention).
     metadata: dict[str, Any] = {
         "source": "home_assistant",
+        "source_endpoint_identity": endpoint_identity,
         "source_entity_id": source_entity_id,
         "unit": unit,
         "value": value,

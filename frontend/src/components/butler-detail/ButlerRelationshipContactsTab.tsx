@@ -120,9 +120,10 @@ interface KpiStripProps {
   totalContacts: number;
   isLoading: boolean;
   isError: boolean;
+  cadenceAvailable: boolean;
 }
 
-function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading, isError }: KpiStripProps) {
+function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading, isError, cadenceAvailable }: KpiStripProps) {
   const kpiSkeleton = (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 px-4 py-3">
       {Array.from({ length: 4 }, (_, i) => (
@@ -200,8 +201,8 @@ function RelationshipKpiStrip({ ranking, overdueCount, totalContacts, isLoading,
           <div data-testid="kpi-item">
             <KpiCell
               label="Overdue"
-              value={String(overdueCount)}
-              tone={overdueCount > 0 ? "amber" : "fg"}
+              value={cadenceAvailable ? String(overdueCount) : "—"}
+              tone={cadenceAvailable && overdueCount > 0 ? "amber" : "fg"}
             />
           </div>
         </div>
@@ -282,15 +283,20 @@ interface OverduePanelProps {
   contacts: OverdueContact[];
   isLoading: boolean;
   isError: boolean;
+  cadenceAvailable: boolean;
 }
 
-function OverduePanel({ contacts, isLoading, isError }: OverduePanelProps) {
+function OverduePanel({ contacts, isLoading, isError, cadenceAvailable }: OverduePanelProps) {
   if (isLoading && contacts.length === 0) {
     return <LoadingRows count={3} />;
   }
 
   if (isError) {
     return <ErrorLine>Could not load overdue contacts.</ErrorLine>;
+  }
+
+  if (!cadenceAvailable) {
+    return <ErrorLine>Cadence instrumentation or provenance unavailable.</ErrorLine>;
   }
 
   if (contacts.length === 0) {
@@ -544,7 +550,7 @@ export default function ButlerRelationshipContactsTab() {
   const { data: contactsData, isLoading: contactsLoading, isError: contactsError } = useContacts({ limit: 1 });
 
   // --- Panel 3: Overdue contacts
-  const { data: overdueData, isLoading: overdueLoading, isError: overdueError } = useOverdueContacts(14);
+  const { data: overdueData, isLoading: overdueLoading, isError: overdueError } = useOverdueContacts();
 
   // --- Panel 5: Interaction thread for selected contact
   const { data: interactionsData, isLoading: interactionsLoading, isError: interactionsError } = useContactInteractions(
@@ -556,6 +562,7 @@ export default function ButlerRelationshipContactsTab() {
   const { data: selectedContact } = useContact(selectedContactId ?? undefined);
 
   const overdueContacts = overdueData?.contacts ?? [];
+  const cadenceAvailable = overdueData?.cadence_available === true;
   const interactions = interactionsData?.interactions ?? [];
 
   function handleSelectContact(id: string, name: string) {
@@ -576,6 +583,7 @@ export default function ButlerRelationshipContactsTab() {
         totalContacts={totalContacts}
         isLoading={kpiLoading}
         isError={kpiError}
+        cadenceAvailable={cadenceAvailable}
       />
 
       {/* Panels 2–3: Tier distribution (2col) + Overdue (2col) */}
@@ -591,10 +599,15 @@ export default function ButlerRelationshipContactsTab() {
 
         <Card className="lg:col-span-2" data-testid="overdue-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Overdue · 14d threshold</CardTitle>
+            <CardTitle className="text-sm font-medium">Overdue · cadence-aware</CardTitle>
           </CardHeader>
           <CardContent>
-            <OverduePanel contacts={overdueContacts} isLoading={overdueLoading} isError={overdueError} />
+            <OverduePanel
+              contacts={overdueContacts}
+              isLoading={overdueLoading}
+              isError={overdueError}
+              cadenceAvailable={cadenceAvailable}
+            />
           </CardContent>
         </Card>
       </div>

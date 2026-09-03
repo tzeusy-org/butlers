@@ -16,10 +16,12 @@ from __future__ import annotations
 import logging
 import math
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
+
+from butlers.core.expected_signals import ExpectedSignalState
 
 logger = logging.getLogger(__name__)
 
@@ -1004,8 +1006,8 @@ async def get_contact_dunbar_with_stale_flag(
 # ---------------------------------------------------------------------------
 
 
-async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]]:
-    """Return overdue contacts using tier-aware cadences.
+async def contacts_overdue_evaluation(pool: asyncpg.Pool) -> dict[str, Any]:
+    """Return overdue contacts plus aggregate cadence measurability.
 
     Effective cadence per contact:
     - If stay_in_touch_days is set: use that value (explicit override)
@@ -1014,11 +1016,15 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
 
     Tier 1500 contacts with no stay_in_touch_days are excluded.
     Archived contacts (listed=false) are excluded.
-    Contacts with no interactions and an effective cadence are always overdue.
+    Contacts with no producer-attested interaction are unmeasurable, not overdue.
 
-    Returns contacts enriched with dunbar_tier, dunbar_score,
-    effective_cadence, and days_since_last_interaction.
+    Every contact with a cadence is persisted through the shared expected-signal
+    helper before it can enter the overdue result.  ``cadence_available`` is
+    false when any requested contact is unmeasurable, preventing an empty
+    filtered list from becoming a false all-clear.
     """
+    from butlers.tools.relationship.stale_contacts import evaluate_stale_contact_signal
+
     contact_rows = await pool.fetch(
         """
         SELECT
@@ -1046,7 +1052,7 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
     )
 
     if not contact_rows:
-        return []
+        return {"contacts": [], "cadence_available": True, "unmeasurable_count": 0}
 
     # Batch-compute Dunbar scores + tiers
     all_scores = await compute_dunbar_scores(pool)
@@ -1057,6 +1063,7 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
     }
 
     results: list[dict[str, Any]] = []
+    unmeasurable_count = 0
     for row in contact_rows:
         contact = dict(row)
         cid = contact["id"]
@@ -1075,12 +1082,23 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
         if effective_cadence is None:
             continue
 
+        signal = await evaluate_stale_contact_signal(
+            pool,
+            contact_id=cid,
+            entity_id=contact["entity_id"],
+            expected_cadence=timedelta(days=effective_cadence),
+            last_observed_at=contact.get("last_interaction_at"),
+        )
+        if signal.evaluation.state is ExpectedSignalState.UNMEASURABLE:
+            unmeasurable_count += 1
+            continue
+
         if days_since is None:
             is_overdue = True
         else:
             is_overdue = float(days_since) > float(effective_cadence)
 
-        if not is_overdue:
+        if not is_overdue or not signal.is_overdue:
             continue
 
         contact["dunbar_tier"] = dunbar_tier
@@ -1091,4 +1109,14 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
         )
         results.append(contact)
 
-    return results
+    return {
+        "contacts": results,
+        "cadence_available": unmeasurable_count == 0,
+        "unmeasurable_count": unmeasurable_count,
+    }
+
+
+async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    """Return only measurable overdue contacts using existing cadence policy."""
+    result = await contacts_overdue_evaluation(pool)
+    return result["contacts"]

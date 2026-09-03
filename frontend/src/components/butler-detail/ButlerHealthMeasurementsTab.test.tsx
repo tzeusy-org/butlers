@@ -148,6 +148,7 @@ const EXPECTED_SIGNALS = {
     {
       signal_key: "health:measurement-gap:weight",
       producer: "connector:google_health",
+      producer_endpoint_identity: "google_health:user:owner",
       expected_cadence_seconds: 1_209_600,
       last_observed_at: "2026-04-01T08:00:00Z",
       measurability: "unmeasurable" as const,

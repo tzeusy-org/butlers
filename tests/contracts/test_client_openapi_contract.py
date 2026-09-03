@@ -123,10 +123,7 @@ KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {
     # unarchiveContact, createContactInfo, deleteContactInfo, patchContactInfo);
     # only the still-referenced dead-path readers remain listed here.
     "getContacts": "/relationship/contacts",
-    "getContact": f"/relationship/contacts/{_WILDCARD}",
-    "patchContact": f"/relationship/contacts/{_WILDCARD}",
     "getContactInteractions": f"/relationship/contacts/{_WILDCARD}/interactions{_WILDCARD}",
-    "getOverdueContacts": f"/relationship/contacts/overdue{_WILDCARD}",
 }
 
 # Pre-existing "sends a query param the backend does not declare" drift,

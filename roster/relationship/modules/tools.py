@@ -816,15 +816,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _sit.stay_in_touch_set(module._get_pool(), contact_id, frequency_days)
 
     @_tool("management")
-    async def contacts_overdue() -> list[dict[str, Any]]:
+    async def contacts_overdue() -> dict[str, Any]:
         """Return contacts whose last interaction exceeds their
         stay-in-touch cadence.
 
-        Contacts with a cadence but no interactions are always overdue.
+        Only contacts whose exact expected producer is measurable may be
+        returned. ``cadence_available=false`` means provenance or exact
+        endpoint liveness is incomplete and an empty list is not an all-clear.
         Contacts with no cadence (NULL) are never returned.
         Archived contacts are excluded.
         """
-        return await _sit.contacts_overdue(module._get_pool())
+        return await _sit.contacts_overdue_with_availability(module._get_pool())
 
     # =================================================================
     # Task tools (group: tracking)

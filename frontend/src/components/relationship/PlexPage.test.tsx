@@ -81,14 +81,19 @@ const daysAgo = (n: number) => new Date(Date.now() - n * DAY_MS).toISOString();
 const OWNER_ID = "ent-owner";
 
 function entry(overrides: Partial<DunbarEntry> & { entity_id: string; canonical_name: string }): DunbarEntry {
-  return {
+  const result: DunbarEntry = {
     contact_id: `contact-${overrides.entity_id}`,
     dunbar_tier: 50,
     dunbar_score: 1,
     dunbar_tier_override: false,
     last_interaction_at: null,
+    stale_contact_state: "absent",
     ...overrides,
   };
+  result.effective_cadence_days ??= ({ 5: 7, 15: 30, 50: 90, 150: 180, 500: 365 })[
+    result.dunbar_tier
+  ];
+  return result;
 }
 
 function neighbour(
@@ -110,6 +115,8 @@ function neighbour(
 /** Owner + one contact per interesting tier; everyone recently seen. */
 const RANKING: DunbarRankingResponse = {
   owner_entity_id: OWNER_ID,
+  cadence_available: true,
+  unmeasurable_count: 0,
   entries: [
     entry({ entity_id: OWNER_ID, canonical_name: "Owen Owner", dunbar_tier: 5, last_interaction_at: daysAgo(999) }),
     entry({ entity_id: "ent-ana", canonical_name: "Ana", dunbar_tier: 5, dunbar_score: 9, last_interaction_at: daysAgo(2) }),
@@ -380,6 +387,8 @@ describe("PlexPage — attention derivation", () => {
     vi.mocked(useDunbarRanking).mockReturnValue(
       loaded({
         owner_entity_id: OWNER_ID,
+        cadence_available: true,
+        unmeasurable_count: 0,
         // Owner is long overdue too — must still be excluded.
         entries: [
           entry({ entity_id: OWNER_ID, canonical_name: "Owen Owner", dunbar_tier: 5, last_interaction_at: daysAgo(100) }),
@@ -412,6 +421,8 @@ describe("PlexPage — attention derivation", () => {
     vi.mocked(useDunbarRanking).mockReturnValue(
       loaded({
         owner_entity_id: OWNER_ID,
+        cadence_available: true,
+        unmeasurable_count: 0,
         entries: [
           entry({ entity_id: OWNER_ID, canonical_name: "Owen Owner", dunbar_tier: 5 }),
           ...overdue,
@@ -448,6 +459,23 @@ describe("PlexPage — attention derivation", () => {
     expect(aside?.textContent).toContain("ranking source unavailable");
     // No fabricated 0/N capacity bars while the ranking source is down.
     expect(aside?.textContent).not.toContain("Layer sizes are cognitive limits");
+  });
+
+  it("shows cadence unavailability instead of a false attention all-clear", () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      loaded({
+        ...RANKING,
+        entries: [],
+        cadence_available: false,
+        unmeasurable_count: 1,
+      }) as ReturnType<typeof useDunbarRanking>,
+    );
+
+    renderPage("/entities");
+
+    const rail = container.querySelector("[data-testid='plex-rail']");
+    expect(rail?.textContent).not.toContain("No one is owed a call.");
+    expect(rail?.textContent).toContain("ranking source unavailable");
   });
 });
 

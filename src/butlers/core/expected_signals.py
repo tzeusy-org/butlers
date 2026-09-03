@@ -23,6 +23,7 @@ class ExpectedSignalState(StrEnum):
 class ExpectedSignalEvaluation:
     signal_key: str
     producer: str
+    producer_endpoint_identity: str | None
     expected_cadence_seconds: int
     last_observed_at: datetime | None
     state: ExpectedSignalState
@@ -41,6 +42,7 @@ def _normalize_timestamp(value: datetime | None) -> datetime | None:
 async def _connector_measurability(
     pool: Any,
     connector_type: str,
+    endpoint_identity: str,
     *,
     now: datetime,
 ) -> tuple[bool, str | None]:
@@ -50,8 +52,10 @@ async def _connector_measurability(
             SELECT state, last_heartbeat_at
             FROM public.v_qa_connector_state
             WHERE connector_type = $1
+              AND endpoint_identity = $2
             """,
             connector_type,
+            endpoint_identity,
         )
     except Exception:  # noqa: BLE001 -- unavailable evidence must fail closed
         logger.warning(
@@ -79,6 +83,7 @@ async def evaluate_expected_signal(
     *,
     signal_key: str,
     producer: str,
+    producer_endpoint_identity: str | None = None,
     expected_cadence: timedelta,
     last_observed_at: datetime | None,
     now: datetime | None = None,
@@ -96,14 +101,26 @@ async def evaluate_expected_signal(
 
     measurable = False
     reason: str | None = None
+    endpoint_identity = (
+        producer_endpoint_identity.strip()
+        if isinstance(producer_endpoint_identity, str) and producer_endpoint_identity.strip()
+        else None
+    )
     if producer == "owner":
-        measurable = True
+        if endpoint_identity is None:
+            measurable = True
+        else:
+            reason = "owner_endpoint_forbidden"
     elif producer.startswith("connector:") and producer.removeprefix("connector:"):
-        measurable, reason = await _connector_measurability(
-            pool,
-            producer.removeprefix("connector:"),
-            now=evaluated_at,
-        )
+        if endpoint_identity is None:
+            reason = "producer_endpoint_missing"
+        else:
+            measurable, reason = await _connector_measurability(
+                pool,
+                producer.removeprefix("connector:"),
+                endpoint_identity,
+                now=evaluated_at,
+            )
     else:
         reason = "producer_unknown"
 
@@ -119,6 +136,7 @@ async def evaluate_expected_signal(
     return ExpectedSignalEvaluation(
         signal_key=signal_key,
         producer=producer,
+        producer_endpoint_identity=endpoint_identity,
         expected_cadence_seconds=cadence_seconds,
         last_observed_at=observed_at,
         state=state,
@@ -132,6 +150,7 @@ async def upsert_expected_signal(
     *,
     signal_key: str,
     producer: str,
+    producer_endpoint_identity: str | None = None,
     expected_cadence: timedelta,
     last_observed_at: datetime | None,
     now: datetime | None = None,
@@ -141,6 +160,7 @@ async def upsert_expected_signal(
         pool,
         signal_key=signal_key,
         producer=producer,
+        producer_endpoint_identity=producer_endpoint_identity,
         expected_cadence=expected_cadence,
         last_observed_at=last_observed_at,
         now=now,
@@ -148,11 +168,13 @@ async def upsert_expected_signal(
     await pool.execute(
         """
         INSERT INTO public.expected_signals (
-            signal_key, producer, expected_cadence_seconds, last_observed_at,
+            signal_key, producer, producer_endpoint_identity,
+            expected_cadence_seconds, last_observed_at,
             measurability, unmeasurable_reason, evaluated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (signal_key) DO UPDATE
         SET producer = EXCLUDED.producer,
+            producer_endpoint_identity = EXCLUDED.producer_endpoint_identity,
             expected_cadence_seconds = EXCLUDED.expected_cadence_seconds,
             last_observed_at = EXCLUDED.last_observed_at,
             measurability = EXCLUDED.measurability,
@@ -162,6 +184,7 @@ async def upsert_expected_signal(
         """,
         evaluation.signal_key,
         evaluation.producer,
+        evaluation.producer_endpoint_identity,
         evaluation.expected_cadence_seconds,
         evaluation.last_observed_at,
         evaluation.state.value,
@@ -198,10 +221,40 @@ def measurement_producer(sources: list[str | None]) -> str:
     return "unknown"
 
 
+def measurement_producer_identity(
+    sources: list[tuple[str | None, str | None]],
+) -> tuple[str, str | None]:
+    """Resolve one exact Health producer identity without guessing legacy endpoints."""
+    if not sources:
+        return "unknown", None
+
+    normalized: list[tuple[str, str | None]] = []
+    for raw_source, raw_endpoint in sources:
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            return "unknown", None
+        source = raw_source.strip()
+        endpoint = raw_endpoint.strip() if isinstance(raw_endpoint, str) else None
+        normalized.append((source, endpoint or None))
+
+    producer = measurement_producer([source for source, _endpoint in normalized])
+    if producer == "owner":
+        if any(endpoint is not None for _source, endpoint in normalized):
+            return "unknown", None
+        return "owner", None
+    if not producer.startswith("connector:"):
+        return "unknown", None
+
+    endpoints = {endpoint for _source, endpoint in normalized}
+    if None in endpoints or len(endpoints) != 1:
+        return "unknown", None
+    return producer, next(iter(endpoints))
+
+
 __all__ = [
     "ExpectedSignalEvaluation",
     "ExpectedSignalState",
     "evaluate_expected_signal",
     "measurement_producer",
+    "measurement_producer_identity",
     "upsert_expected_signal",
 ]

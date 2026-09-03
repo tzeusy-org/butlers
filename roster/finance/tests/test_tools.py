@@ -99,6 +99,195 @@ class TestTrackSubscription:
         assert result["source_message_id"] == "email-msg-001"
         assert result["metadata"]["plan"] == "premium"
 
+    async def test_caller_metadata_cannot_assert_expected_signal_authority(self, pool):
+        from butlers.tools.finance import track_subscription
+
+        result = await track_subscription(
+            pool=pool,
+            service="Forged provenance",
+            amount=9.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+            metadata={
+                "expected_signal_source": {
+                    "producer": "connector:gmail",
+                    "producer_endpoint_identity": "gmail:user:forged",
+                }
+            },
+        )
+
+        assert "expected_signal_source" not in result["metadata"]
+
+    async def test_internal_attestation_persists_exact_gmail_endpoint(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        result = await track_subscription(
+            pool=pool,
+            service="Attested provenance",
+            amount=9.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+            _expected_signal_source=FinanceSignalSource(
+                "connector:gmail", "gmail:user:owner@example.invalid"
+            ),
+        )
+
+        assert result["metadata"]["expected_signal_source"] == {
+            "producer": "connector:gmail",
+            "producer_endpoint_identity": "gmail:user:owner@example.invalid",
+        }
+
+    async def test_unproven_update_removes_prior_gmail_authority_from_renewal_signal(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.overview import subscription_audit
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        gmail = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        first = await track_subscription(
+            pool=pool,
+            service="Rotating provenance",
+            amount=9.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+            metadata={"plan": "old"},
+            _expected_signal_source=gmail,
+        )
+        updated = await track_subscription(
+            pool=pool,
+            service="Rotating provenance",
+            amount=10.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=31),
+            metadata={"plan": "new"},
+        )
+
+        assert updated["id"] == first["id"]
+        assert updated["metadata"]["plan"] == "new"
+        assert "expected_signal_source" not in updated["metadata"]
+
+        await subscription_audit(pool)
+        signal = await pool.fetchrow(
+            "SELECT producer, producer_endpoint_identity, measurability, "
+            "unmeasurable_reason FROM public.expected_signals WHERE signal_key = $1",
+            f"finance:subscription-renewal:{updated['id']}",
+        )
+        assert dict(signal) == {
+            "producer": "unknown",
+            "producer_endpoint_identity": None,
+            "measurability": "unmeasurable",
+            "unmeasurable_reason": "producer_unknown",
+        }
+
+    @pytest.mark.parametrize("endpoint", [None, "", "email:user:owner@example.invalid"])
+    async def test_malformed_gmail_owner_context_clears_prior_authority(
+        self,
+        pool,
+        monkeypatch: pytest.MonkeyPatch,
+        endpoint: str | None,
+    ):
+        from butlers.tools.finance import expected_signals as expected_signals_module
+        from butlers.tools.finance.expected_signals import (
+            FinanceSignalSource,
+            runtime_signal_source,
+        )
+        from butlers.tools.finance.overview import subscription_audit
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        first = await track_subscription(
+            pool=pool,
+            service="Malformed Gmail replacement",
+            amount=9.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+            _expected_signal_source=FinanceSignalSource(
+                "connector:gmail", "gmail:user:owner@example.invalid"
+            ),
+        )
+        monkeypatch.setattr(
+            expected_signals_module,
+            "get_current_runtime_session_routing_context",
+            lambda: {
+                "source_entity_id": "00000000-0000-0000-0000-000000000001",
+                "request_context": {
+                    "source_channel": "email",
+                    "source_endpoint_identity": endpoint,
+                },
+            },
+        )
+        current_source = await runtime_signal_source(pool)
+        assert current_source is None
+        updated = await track_subscription(
+            pool=pool,
+            service="Malformed Gmail replacement",
+            amount=10.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=31),
+            _expected_signal_source=current_source,
+        )
+
+        assert updated["id"] == first["id"]
+        assert "expected_signal_source" not in updated["metadata"]
+        await subscription_audit(pool)
+        signal = await pool.fetchrow(
+            "SELECT producer, producer_endpoint_identity, measurability "
+            "FROM public.expected_signals WHERE signal_key = $1",
+            f"finance:subscription-renewal:{updated['id']}",
+        )
+        assert dict(signal) == {
+            "producer": "unknown",
+            "producer_endpoint_identity": None,
+            "measurability": "unmeasurable",
+        }
+
+    async def test_owner_update_replaces_prior_gmail_authority_for_renewal_signal(self, pool):
+        from butlers.tools.finance.expected_signals import FinanceSignalSource
+        from butlers.tools.finance.overview import subscription_audit
+        from butlers.tools.finance.subscriptions import track_subscription
+
+        gmail = FinanceSignalSource("connector:gmail", "gmail:user:owner@example.invalid")
+        first = await track_subscription(
+            pool=pool,
+            service="Owner replacement",
+            amount=9.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+            _expected_signal_source=gmail,
+        )
+        updated = await track_subscription(
+            pool=pool,
+            service="Owner replacement",
+            amount=11.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=31),
+            _expected_signal_source=FinanceSignalSource("owner"),
+        )
+
+        assert updated["id"] == first["id"]
+        assert updated["metadata"]["expected_signal_source"] == {
+            "producer": "owner",
+            "producer_endpoint_identity": None,
+        }
+
+        await subscription_audit(pool)
+        signal = await pool.fetchrow(
+            "SELECT producer, producer_endpoint_identity, measurability, "
+            "unmeasurable_reason FROM public.expected_signals WHERE signal_key = $1",
+            f"finance:subscription-renewal:{updated['id']}",
+        )
+        assert signal["producer"] == "owner"
+        assert signal["producer_endpoint_identity"] is None
+        assert signal["measurability"] in {"present", "absent"}
+        assert signal["unmeasurable_reason"] is None
+
     async def test_upsert_updates_existing_on_service_frequency_match(self, pool):
         """Calling track_subscription twice with same service+frequency updates in place."""
         from butlers.tools.finance import track_subscription

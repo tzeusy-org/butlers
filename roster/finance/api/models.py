@@ -6,6 +6,8 @@ and spending summaries used by the finance butler's dashboard endpoints.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -102,6 +104,27 @@ class SpendingSummaryModel(BaseModel):
     currency: str
     total_spend: str
     groups: list[SpendingGroupModel] = []
+
+
+class FinanceExpectedSignalModel(BaseModel):
+    """Content-blind Finance recurrence measurability state."""
+
+    signal_key: str
+    producer: str
+    producer_endpoint_identity: str | None
+    expected_cadence_seconds: int
+    last_observed_at: str | None
+    measurability: Literal["present", "absent", "unmeasurable"]
+    unmeasurable_reason: str | None
+    evaluated_at: str
+
+
+class FinanceExpectedSignalsResponse(BaseModel):
+    """Explicitly degraded envelope; unavailable state is never an all-clear."""
+
+    signals: list[FinanceExpectedSignalModel] | None
+    available: bool
+    degraded_reason: str | None = None
 
 
 class UpcomingBillItemModel(BaseModel):

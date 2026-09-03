@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getFinanceAccounts,
+  getFinanceExpectedSignals,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
@@ -44,6 +45,16 @@ export function useFinanceSubscriptions(params?: FinanceSubscriptionListParams) 
   return useQuery({
     queryKey: ["finance", "subscriptions", params],
     queryFn: () => getFinanceSubscriptions(params),
+    refetchInterval: FINANCE_POLL_MS,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+/** Read recurrence instrumentation truth without interpreting absence as payment state. */
+export function useFinanceExpectedSignals() {
+  return useQuery({
+    queryKey: ["finance", "expected-signals"],
+    queryFn: getFinanceExpectedSignals,
     refetchInterval: FINANCE_POLL_MS,
     placeholderData: (previousData) => previousData,
   });

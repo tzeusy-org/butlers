@@ -20,7 +20,9 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.expected_signals import upsert_expected_signal
 from butlers.tools.finance._helpers import _row_to_dict
+from butlers.tools.finance.expected_signals import resolve_complete_signal_source
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +652,8 @@ async def subscription_audit(
         # Fetch all active/paused subscriptions in one query.
         sub_rows = await pool.fetch(
             """
-            SELECT service, amount, currency, frequency, status, next_renewal, updated_at
+            SELECT id, service, amount, currency, frequency, status, next_renewal,
+                   metadata, updated_at
             FROM subscriptions
             WHERE status IN ('active', 'paused')
             ORDER BY service ASC
@@ -683,6 +686,10 @@ async def subscription_audit(
         latest_txn_by_merchant: dict[str, Any] = {
             row["merchant_lower"]: row["posted_at"] for row in txn_rows
         }
+        provenance_rows = await pool.fetch(
+            "SELECT lower(merchant) AS merchant_lower, metadata "
+            "FROM transactions WHERE deleted_at IS NULL"
+        )
 
         for row in sub_rows:
             freq = row["frequency"]
@@ -701,6 +708,33 @@ async def subscription_audit(
                         if last_charge is None or posted_at > last_charge:
                             last_charge = posted_at
 
+            contributing_metadata = [row.get("metadata")]
+            contributing_metadata.extend(
+                provenance["metadata"]
+                for provenance in provenance_rows
+                if len(service_lower) >= _MIN_MERCHANT_MATCH_LEN
+                and service_lower in provenance["merchant_lower"]
+            )
+            source = resolve_complete_signal_source(contributing_metadata)
+            cadence_days = {
+                "weekly": 7,
+                "monthly": 30,
+                "quarterly": 91,
+                "yearly": 365,
+                "custom": 30,
+            }.get(freq, 30)
+            expected_at = datetime.combine(row["next_renewal"], datetime.min.time(), tzinfo=UTC)
+            signal = await upsert_expected_signal(
+                pool,
+                signal_key=f"finance:subscription-renewal:{row.get('id') or service_lower}",
+                producer=source.producer if source is not None else "unknown",
+                producer_endpoint_identity=(
+                    source.producer_endpoint_identity if source is not None else None
+                ),
+                expected_cadence=timedelta(days=cadence_days),
+                last_observed_at=expected_at - timedelta(days=cadence_days),
+            )
+
             entry: dict[str, Any] = {
                 "service": row["service"],
                 "amount": str(amount),
@@ -712,6 +746,8 @@ async def subscription_audit(
                 "next_expected_date": row["next_renewal"].isoformat()
                 if row["next_renewal"]
                 else None,
+                "measurability": signal.state.value,
+                "unmeasurable_reason": signal.unmeasurable_reason,
             }
             entries.append(entry)
             if row["status"] == "active":
@@ -733,9 +769,12 @@ async def subscription_audit(
 
         rg_rows = await pool.fetch(
             """
-            SELECT merchant, estimated_frequency, avg_amount, currency,
-                   last_seen_date, next_expected_date
-            FROM recurring_groups
+            SELECT rg.id, rg.merchant, rg.estimated_frequency, rg.avg_amount, rg.currency,
+                   rg.last_seen_date, rg.next_expected_date,
+                   es.measurability, es.unmeasurable_reason
+            FROM recurring_groups rg
+            LEFT JOIN public.expected_signals es
+              ON es.signal_key = 'finance:recurrence:' || rg.id::text
             WHERE is_active = true
             ORDER BY avg_amount DESC
             """
@@ -761,6 +800,8 @@ async def subscription_audit(
                 "status": "detected_untracked",
                 "last_charge_date": last_seen.isoformat() if last_seen else None,
                 "next_expected_date": next_exp.isoformat() if next_exp else None,
+                "measurability": row["measurability"] or "unmeasurable",
+                "unmeasurable_reason": row["unmeasurable_reason"] or "expected_signal_missing",
             }
             entries.append(entry)
 

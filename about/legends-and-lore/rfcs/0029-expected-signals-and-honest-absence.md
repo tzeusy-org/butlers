@@ -20,7 +20,7 @@ observation, evaluation time, and exactly one state:
 - `absent`: the producer is measurable and the cadence has elapsed;
 - `unmeasurable`: producer liveness or health cannot support an absence claim.
 
-**[TARGET-STATE — continued adoption owned by bu-8cdl1.3.]** Connector producers
+Connector producers
 are written as `connector:<connector_type>` and carry a required
 `producer_endpoint_identity` copied from server-derived source provenance. They
 join the read-only `public.v_qa_connector_state` projection by the exact
@@ -32,13 +32,10 @@ unreadable exact-endpoint liveness is `unmeasurable`. The special `owner`
 producer covers explicitly owner-entered observations, has no external
 instrument dependency, and carries no endpoint.
 
-**Current implementation boundary (2026-09-03):** `core_210` has no
-`producer_endpoint_identity` column and `butlers.core.expected_signals` queries
-liveness by connector type only. Health is the only runtime adopter. Finance
-connector-backed signals MUST remain unadopted/unmeasurable until the continued
-bu-8cdl1.3 lane lands the shared schema/helper/API migration, transitions
-existing Health signals and call sites without a type-only fallback or guessed
-endpoint backfill, and proves exact-endpoint behavior in migrated PostgreSQL.
+`core_211` adds the endpoint column and exact-pair liveness lookup. Legacy
+connector rows without a server-proven endpoint are migrated to
+`unmeasurable`; no sole/sibling endpoint is guessed and there is no type-only
+compatibility fallback. Owner rows carry a null endpoint.
 
 The table is globally keyed and row-level security binds updates to the runtime
 role that first claimed the key. All roles may read the tri-state projection;
@@ -61,9 +58,8 @@ The boundary is inclusive: evaluation exactly at the expected timestamp is
 `absent`. A history containing both connector producers is unknown and therefore
 unmeasurable; row order never selects authority.
 
-**[TARGET-STATE.]** Finance recurrence and tracked-renewal absence use the
-mapping defined by `finance-recurrence-producer-mapping` (bu-4gzka) only after
-continued bu-8cdl1.3 completes the shared endpoint-aware adoption above. A
+Finance recurrence and tracked-renewal absence use the mapping defined by
+`finance-recurrence-producer-mapping` (bu-4gzka). A
 server-attested Gmail source maps to `connector:gmail` plus the exact
 server-derived `producer_endpoint_identity`; an explicitly server-attested owner
 source maps to `owner`. `source_message_id`, generic transaction `source`,
@@ -86,11 +82,13 @@ into missed-renewal, merchant-behavior, payment, cancellation, pause, or stopped
 wording; a healthy elapsed signal may be `absent` in the ledger but has no implicit
 candidate consumer.
 
-Relationship interaction gaps still require their separate provenance decision
-before adoption. Their current rows do not identify one authoritative producer,
-so assigning a connector here would fabricate measurability. RFC 0029 supplies
-the shared primitive but does not introduce a new notification policy or guess a
-producer.
+Relationship stale-contact signals use the reviewed
+`relationship-stale-contact-producer-mapping`: a reserved server attestation
+binds one exact Gmail, Telegram user-client, or WhatsApp user-client endpoint,
+or an authenticated owner observation. Missing, unsupported, legacy, tied,
+mixed, conflicting, or unreadable provenance remains unmeasurable. Existing
+stale-contact policy may consume only `absent`; this adoption adds no outreach
+policy and never guesses a producer.
 
 ## Failure properties
 

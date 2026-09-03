@@ -442,6 +442,7 @@ class TestActivityFanOut:
         assert result["status"] == "ok"
         meta = mock_store.call_args.kwargs.get("metadata")
         assert meta["source"] == "google_health"
+        assert meta["source_endpoint_identity"].startswith("google_health:user:")
 
     async def test_activity_no_top_level_predicate_field(self) -> None:
         """Fan-out result has no top-level 'predicate' key (only single-predicate does)."""
@@ -1285,7 +1286,7 @@ class TestHomeAssistantArm:
         assert call.kwargs.get("valid_at") == "2026-06-12T14:30:00+00:00"
 
     async def test_metadata_shape(self) -> None:
-        """metadata = {source, source_entity_id, unit, value} (canonical source key)."""
+        """Metadata preserves canonical source plus server-stamped endpoint identity."""
         envelope = _make_ha_envelope(
             metric="heart_rate",
             value=72,
@@ -1298,6 +1299,7 @@ class TestHomeAssistantArm:
         meta = mock_store.call_args.kwargs.get("metadata")
         assert meta == {
             "source": "home_assistant",
+            "source_endpoint_identity": "home_assistant:default",
             "source_entity_id": "sensor.oura_heart_rate",
             "unit": "bpm",
             "value": 72,

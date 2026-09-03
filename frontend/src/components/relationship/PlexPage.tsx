@@ -1432,15 +1432,6 @@ interface AttentionItem {
 
 const ATTENTION_LIMIT = 5;
 
-/** Reach-out cadence (days) per Dunbar tier. Tier 1500 is never nagged. */
-const TIER_CADENCE_DAYS: Record<number, number> = {
-  5: 7,
-  15: 30,
-  50: 90,
-  150: 180,
-  500: 365,
-};
-
 /** Tier weight for attention urgency: attention flows inward (manifesto). */
 const TIER_URGENCY_WEIGHT: Record<number, number> = {
   5: 32,
@@ -1534,15 +1525,16 @@ export default function PlexPage() {
     "…";
   const centerType = centerSummary?.entity_type ?? "person";
 
-  // Attention: derived from the ranking itself (the contact-keyed overdue
-  // endpoint was retired with public.contacts). Per-tier cadence vs days
-  // since last interaction, tier-weighted so attention flows inward.
+  // Attention is authorized by the server-persisted expected-signal state.
+  // The client may rank measurable overdue rows, but it never derives absence
+  // from elapsed time alone.
   const attention: AttentionItem[] = useMemo(() => {
     const candidates: (AttentionItem & { urgency: number })[] = [];
     for (const entry of ranking?.entries ?? []) {
       if (entry.entity_id === ownerEntityId) continue;
-      const cadence = TIER_CADENCE_DAYS[entry.dunbar_tier];
-      if (cadence === undefined) continue;
+      if (entry.stale_contact_state !== "absent") continue;
+      const cadence = entry.effective_cadence_days;
+      if (cadence == null || cadence <= 0) continue;
       const sinceDays = daysSince(entry.last_interaction_at);
       if (sinceDays === null || sinceDays <= cadence) continue;
       candidates.push({
@@ -2167,7 +2159,9 @@ export default function PlexPage() {
               onCenter={handleCenter}
               attention={attention}
               attentionLoading={rankingLoading}
-              attentionError={rankingError}
+              attentionError={
+                rankingError || (!rankingLoading && ranking?.cadence_available !== true)
+              }
             />
           )}
 

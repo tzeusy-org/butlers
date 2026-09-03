@@ -1368,6 +1368,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/butler-detail/ButlerFinanceFinancesTab.tsx`
 
 - Loading...
+- Recurrence instrumentation is incomplete. Payment-state claims are paused.
+- No recurrence cadence has been evaluated yet.
+- Recurrence instruments are measurable.
 - No upcoming bills -- you are all clear!
 - No spending data for the last 30 days.
 - Set category
@@ -1379,6 +1382,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Amount
 - No subscriptions tracked yet.
 - No accounts on file yet -- connect or add an account to see net-worth context.
+- Recurrence signal health
 - Upcoming bills
 - Spending by category
 - e.g. groceries
@@ -1661,6 +1665,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Could not load tier distribution.
 - No tier data available.
 - Could not load overdue contacts.
+- Cadence instrumentation or provenance unavailable.
 - No overdue contacts. Cadence all clear.
 - Could not load watchlist.
 - No T1 or T2 contacts yet.
@@ -1673,7 +1678,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Select a contact to see facts.
 - No facts recorded yet.
 - Tier distribution
-- Overdue · 14d threshold
+- Overdue · cadence-aware
 - Watchlist · T1 + T2
 - Known facts
 - Tracked contacts
@@ -4162,4 +4167,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3261*
+*Total strings: 3266*

@@ -43,6 +43,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     from butlers.tools.finance import spending as _spending
     from butlers.tools.finance import subscriptions as _subscriptions
     from butlers.tools.finance import transactions as _transactions
+    from butlers.tools.finance.expected_signals import runtime_signal_source
 
     def _try_import(module_path: str) -> Any:
         """Attempt to import a finance sub-module; return None if not yet implemented.
@@ -111,8 +112,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
           and the recorded amount exceeds its threshold, the response also includes a
           "large_transaction_alert": {threshold, amount, merchant, exceeds_by} flag.
         """
+        pool = module._get_pool()
         return await _transactions.record_transaction(
-            module._get_pool(),
+            pool,
             posted_at=datetime.fromisoformat(posted_at),
             merchant=merchant,
             amount=amount,
@@ -126,6 +128,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             external_ref=external_ref,
             source_message_id=source_message_id,
             metadata=_parse_metadata(metadata),
+            _expected_signal_source=await runtime_signal_source(pool),
         )
 
     @_tool("core")
@@ -218,8 +221,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
         Returns: {id, service, amount, currency, frequency, next_renewal, status, ...}
         """
+        pool = module._get_pool()
         return await _subscriptions.track_subscription(
-            module._get_pool(),
+            pool,
             service=service,
             amount=amount,
             currency=currency,
@@ -231,6 +235,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             account_id=account_id,
             source_message_id=source_message_id,
             metadata=_parse_metadata(metadata),
+            _expected_signal_source=await runtime_signal_source(pool),
         )
 
     # =================================================================
@@ -720,11 +725,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         parsed_txns = _json.loads(transactions)
         if not isinstance(parsed_txns, list):
             raise ValueError("transactions must be a JSON array")
+        pool = module._get_pool()
         return await _transactions.bulk_record_transactions(
-            module._get_pool(),
+            pool,
             parsed_txns,
             account_id=account_id,
             source=source,
+            _expected_signal_source=await runtime_signal_source(pool),
         )
 
     # =================================================================

@@ -14,6 +14,13 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.finance._helpers import _log_activity, _row_to_dict
+from butlers.tools.finance.expected_signals import (
+    FinanceSignalSource,
+    metadata_with_signal_source,
+    resolve_complete_signal_source,
+    sanitized_metadata,
+    signal_source_from_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -590,6 +597,8 @@ async def record_transaction(
     source_message_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     external_id: str | None = None,
+    *,
+    _expected_signal_source: FinanceSignalSource | None = None,
 ) -> dict[str, Any]:
     """Record a transaction through the public Finance tool surface.
 
@@ -613,6 +622,7 @@ async def record_transaction(
         metadata,
         external_id,
         source="manual",
+        expected_signal_source=_expected_signal_source,
     )
 
 
@@ -636,6 +646,7 @@ async def _record_transaction(
     source: str = "manual",
     connection: asyncpg.Connection | None = None,
     include_insert_status: bool = False,
+    expected_signal_source: FinanceSignalSource | None = None,
 ) -> dict[str, Any]:
     """Record a transaction in the finance.transactions ledger.
 
@@ -756,7 +767,7 @@ async def _record_transaction(
             effective_category = "uncategorized"
             category_source = "manual"
 
-    meta_dict = dict(metadata or {})
+    meta_dict = metadata_with_signal_source(metadata, expected_signal_source)
     effective_category, used_category_fallback = await _resolve_category_for_insert(
         executor,
         effective_category,
@@ -1258,6 +1269,20 @@ async def update_transaction(
                 "current_version": current_version,
             }
 
+    current_metadata_raw = current.get("metadata")
+    if isinstance(current_metadata_raw, str):
+        try:
+            current_metadata = json.loads(current_metadata_raw) if current_metadata_raw else {}
+        except (json.JSONDecodeError, ValueError):
+            current_metadata = {}
+    else:
+        current_metadata = (
+            dict(current_metadata_raw) if isinstance(current_metadata_raw, dict) else {}
+        )
+    current_signal_source = signal_source_from_metadata(current_metadata)
+    if metadata is not None:
+        metadata = metadata_with_signal_source(metadata, current_signal_source)
+
     # Resolve a caller-supplied category through the shared taxonomy guard so an
     # out-of-taxonomy value canonicalizes (case-insensitive) or falls back to
     # 'uncategorized' instead of tripping the transactions.category ->
@@ -1277,17 +1302,7 @@ async def update_transaction(
             # string metadata value doesn't collapse to {} and silently drop the
             # transaction's existing metadata when the fallback below writes it
             # back. Mirrors split_transaction's handling of the same column.
-            current_metadata = current.get("metadata")
-            if isinstance(current_metadata, str):
-                try:
-                    parsed_metadata = json.loads(current_metadata) if current_metadata else {}
-                except (json.JSONDecodeError, ValueError):
-                    parsed_metadata = {}
-                category_meta_target = parsed_metadata if isinstance(parsed_metadata, dict) else {}
-            else:
-                category_meta_target = (
-                    dict(current_metadata) if isinstance(current_metadata, dict) else {}
-                )
+            category_meta_target = dict(current_metadata)
         resolved_category, used_category_fallback = await _resolve_category_for_insert(
             pool, category, category_meta_target
         )
@@ -1569,11 +1584,17 @@ async def merge_duplicates(
                     return json.loads(val)
                 return dict(val)
 
-            merged_meta = _parse_row_meta(keep_row["metadata"])
+            source_metadata = [_parse_row_meta(keep_row["metadata"])]
+            source_metadata.extend(_parse_row_meta(row["metadata"]) for row in discard_rows)
+            merged_meta = sanitized_metadata(source_metadata[0])
             for discard_row in discard_rows:
-                discard_meta = _parse_row_meta(discard_row["metadata"])
+                discard_meta = sanitized_metadata(_parse_row_meta(discard_row["metadata"]))
                 # keep's values win: merge discard first, then overlay keep
                 merged_meta = {**discard_meta, **merged_meta}
+            merged_meta = metadata_with_signal_source(
+                merged_meta,
+                resolve_complete_signal_source(source_metadata),
+            )
 
             updated_row = await conn.fetchrow(
                 """
@@ -2066,6 +2087,8 @@ async def bulk_record_transactions(
     transactions: list[dict[str, Any]],
     account_id: str | None = None,
     source: str | None = None,
+    *,
+    _expected_signal_source: FinanceSignalSource | None = None,
 ) -> dict[str, Any]:
     """Bulk-ingest normalized transaction objects.
 
@@ -2155,7 +2178,7 @@ async def bulk_record_transactions(
         receipt_url = txn.get("receipt_url")
         external_ref = txn.get("external_ref")
         external_id = txn.get("external_id")
-        extra_metadata: dict[str, Any] = dict(txn.get("metadata") or {})
+        extra_metadata = sanitized_metadata(txn.get("metadata"))
         if source is not None:
             extra_metadata.setdefault("import_source", source)
 
@@ -2179,6 +2202,7 @@ async def bulk_record_transactions(
                 source_message_id=source_message_id,
                 external_id=external_id,
                 metadata=extra_metadata if extra_metadata else None,
+                _expected_signal_source=_expected_signal_source,
             )
             imported += 1
             _lta = _recorded.get("large_transaction_alert")

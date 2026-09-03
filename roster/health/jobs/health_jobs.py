@@ -24,7 +24,7 @@ import asyncpg
 
 from butlers.core.expected_signals import (
     ExpectedSignalState,
-    measurement_producer,
+    measurement_producer_identity,
     upsert_expected_signal,
 )
 from butlers.tools.health._medication_utils import (
@@ -348,7 +348,8 @@ async def run_insight_scan(
             """
             SELECT
                 valid_at AS measured_at,
-                COALESCE(metadata->>'source', metadata->>'provider') AS source
+                COALESCE(metadata->>'source', metadata->>'provider') AS source,
+                metadata->>'source_endpoint_identity' AS source_endpoint_identity
             FROM facts
             WHERE predicate = $1
               AND scope = 'health'
@@ -394,10 +395,14 @@ async def run_insight_scan(
         # The existing warning threshold is 2x the typical cadence. Persist
         # that exact expectation so the shared tri-state and the candidate
         # decision cannot drift apart.
+        producer, producer_endpoint_identity = measurement_producer_identity(
+            [(row.get("source"), row.get("source_endpoint_identity")) for row in history_rows]
+        )
         expected_signal = await upsert_expected_signal(
             db_pool,
             signal_key=f"health:measurement-gap:{mtype}",
-            producer=measurement_producer([row.get("source") for row in history_rows]),
+            producer=producer,
+            producer_endpoint_identity=producer_endpoint_identity,
             expected_cadence=timedelta(seconds=_GAP_WARNING_MULTIPLIER * median_cadence_seconds),
             last_observed_at=most_recent,
             now=now_utc,

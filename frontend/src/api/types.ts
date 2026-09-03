@@ -2475,6 +2475,7 @@ export interface MeasurementSourcesResponse {
 export interface ExpectedSignal {
   signal_key: string;
   producer: string;
+  producer_endpoint_identity: string | null;
   expected_cadence_seconds: number;
   last_observed_at: string | null;
   measurability: "present" | "absent" | "unmeasurable";
@@ -5383,12 +5384,16 @@ export interface DunbarEntry {
   avatar_url?: string | null;
   aliases?: string[];
   last_interaction_at?: string | null;
+  effective_cadence_days?: number | null;
+  stale_contact_state?: "present" | "absent" | "unmeasurable";
 }
 
 /** Response from GET /api/relationship/dunbar/ranking */
 export interface DunbarRankingResponse {
   entries: DunbarEntry[];
   owner_entity_id: string | null;
+  cadence_available?: boolean;
+  unmeasurable_count?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -5425,6 +5430,8 @@ export interface OverdueContact {
 /** Response from GET /api/relationship/contacts/overdue?days=N */
 export interface OverdueContactsResponse {
   contacts: OverdueContact[];
+  cadence_available: boolean;
+  unmeasurable_count: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -7688,6 +7695,23 @@ export interface FinanceSubscription {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+export interface FinanceExpectedSignal {
+  signal_key: string;
+  producer: string;
+  producer_endpoint_identity: string | null;
+  expected_cadence_seconds: number;
+  last_observed_at: string | null;
+  measurability: "present" | "absent" | "unmeasurable";
+  unmeasurable_reason: string | null;
+  evaluated_at: string;
+}
+
+export interface FinanceExpectedSignalsResponse {
+  signals: FinanceExpectedSignal[] | null;
+  available: boolean;
+  degraded_reason: string | null;
 }
 
 export interface FinanceBill {

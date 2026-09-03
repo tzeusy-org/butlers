@@ -370,6 +370,7 @@ import type {
   ChroniclesKpi,
   FinanceTransaction,
   FinanceSubscription,
+  FinanceExpectedSignalsResponse,
   FinanceAccount,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
@@ -6260,6 +6261,11 @@ export function getFinanceSubscriptions(
   return apiFetch<PaginatedResponse<FinanceSubscription>>(
     qs ? `/finance/subscriptions?${qs}` : "/finance/subscriptions",
   );
+}
+
+/** Read state-only Finance recurrence measurability. */
+export function getFinanceExpectedSignals(): Promise<FinanceExpectedSignalsResponse> {
+  return apiFetch<FinanceExpectedSignalsResponse>("/finance/expected-signals");
 }
 
 /** List upcoming bills with urgency classification. */

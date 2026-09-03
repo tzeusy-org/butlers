@@ -469,6 +469,7 @@ class TestExpectedSignals:
                     {
                         "signal_key": "health:measurement-gap:weight",
                         "producer": "connector:google_health",
+                        "producer_endpoint_identity": "google_health:user:owner",
                         "expected_cadence_seconds": 1_209_600,
                         "last_observed_at": now,
                         "measurability": "unmeasurable",
@@ -489,6 +490,7 @@ class TestExpectedSignals:
         body = response.json()
         assert body["available"] is True
         assert body["signals"][0]["measurability"] == "unmeasurable"
+        assert body["signals"][0]["producer_endpoint_identity"] == "google_health:user:owner"
         assert body["signals"][0]["unmeasurable_reason"] == "producer_stale_or_offline"
 
     async def test_query_failure_is_degraded_not_an_empty_all_clear(self):

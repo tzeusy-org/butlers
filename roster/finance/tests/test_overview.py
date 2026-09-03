@@ -10,9 +10,12 @@ Covers:
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -206,6 +209,26 @@ async def _insert_snapshot(
 # ---------------------------------------------------------------------------
 
 
+async def _apply_expected_signal_migrations(pool) -> None:
+    root = Path(__file__).resolve().parents[3]
+    for filename in (
+        "core_210_expected_signals.py",
+        "core_211_expected_signal_endpoint_identity.py",
+    ):
+        path = root / "alembic/versions/core" / filename
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        statements: list[str] = []
+        mocked_op = MagicMock()
+        mocked_op.execute.side_effect = statements.append
+        with patch.object(module, "op", mocked_op):
+            module.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
+
+
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with finance overview tables."""
@@ -216,6 +239,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_SUBSCRIPTIONS_SQL)
         await p.execute(CREATE_RECURRING_GROUPS_SQL)
         await p.execute(CREATE_CATEGORIES_SQL)
+        await _apply_expected_signal_migrations(p)
         yield p
 
 

@@ -178,7 +178,15 @@ class TestDunbarRankingWarmth:
         async def _fetch(*args, **kwargs):
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
-                return [_row(id=entity_id, canonical_name="Alice", aliases=[], avatar_url=None)]
+                return [
+                    _row(
+                        id=entity_id,
+                        canonical_name="Alice",
+                        aliases=[],
+                        avatar_url=None,
+                        stay_in_touch_days=None,
+                    )
+                ]
             else:
                 # interaction_30d rows (avatar_url query removed — bu-j77a5)
                 return [_row(contact_id=contact_id, interaction_count_30d=2)]
@@ -228,7 +236,15 @@ class TestDunbarRankingWarmth:
         async def _fetch(*args, **kwargs):
             fetch_call_count[0] += 1
             if fetch_call_count[0] == 1:
-                return [_row(id=entity_id, canonical_name="Bob", aliases=[], avatar_url=None)]
+                return [
+                    _row(
+                        id=entity_id,
+                        canonical_name="Bob",
+                        aliases=[],
+                        avatar_url=None,
+                        stay_in_touch_days=None,
+                    )
+                ]
             else:
                 return []  # no 30d interactions (avatar_url query removed — bu-j77a5)
 
@@ -251,3 +267,113 @@ class TestDunbarRankingWarmth:
         assert len(body["entries"]) == 1
         entry = body["entries"][0]
         assert entry["warmth"] is None
+
+
+class TestCadenceAvailability:
+    """Dashboard overdue surfaces distinguish unavailable from an empty result."""
+
+    async def test_ranking_exposes_unmeasurable_cadence(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from butlers.core.expected_signals import ExpectedSignalState
+        from butlers.tools.relationship import dunbar as _dunbar_mod
+        from butlers.tools.relationship import stale_contacts
+
+        contact_id = uuid4()
+        entity_id = uuid4()
+        ranked = [
+            {
+                "contact_id": contact_id,
+                "entity_id": entity_id,
+                "dunbar_tier": 5,
+                "dunbar_score": 1.0,
+                "dunbar_tier_override": False,
+                "last_interaction_at": _NOW - timedelta(days=30),
+            }
+        ]
+        pool = AsyncMock()
+        pool.fetch.side_effect = [
+            [
+                _row(
+                    id=entity_id,
+                    canonical_name="Unavailable",
+                    aliases=[],
+                    avatar_url=None,
+                    stay_in_touch_days=None,
+                )
+            ],
+            [],
+        ]
+        pool.fetchrow.return_value = None
+        monkeypatch.setattr(_dunbar_mod, "compute_tier_ranking", AsyncMock(return_value=ranked))
+        monkeypatch.setattr(
+            stale_contacts,
+            "evaluate_stale_contact_signal",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    evaluation=SimpleNamespace(state=ExpectedSignalState.UNMEASURABLE)
+                )
+            ),
+        )
+
+        response = await _get(_wire_app(_mock_db(pool)), "/api/relationship/dunbar/ranking")
+
+        assert response.status_code == 200
+        assert response.json()["cadence_available"] is False
+        assert response.json()["unmeasurable_count"] == 1
+        assert response.json()["entries"][0]["stale_contact_state"] == "unmeasurable"
+
+    async def test_overdue_endpoint_preserves_incomplete_availability(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from butlers.tools.relationship import stay_in_touch
+
+        monkeypatch.setattr(
+            stay_in_touch,
+            "contacts_overdue_with_availability",
+            AsyncMock(
+                return_value={
+                    "contacts": [],
+                    "cadence_available": False,
+                    "unmeasurable_count": 2,
+                }
+            ),
+        )
+
+        response = await _get(
+            _wire_app(_mock_db(AsyncMock())),
+            "/api/relationship/contacts/overdue",
+            days=14,
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "contacts": [],
+            "cadence_available": False,
+            "unmeasurable_count": 2,
+        }
+
+    async def test_overdue_endpoint_failure_is_not_an_empty_all_clear(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from butlers.tools.relationship import stay_in_touch
+
+        monkeypatch.setattr(
+            stay_in_touch,
+            "contacts_overdue_with_availability",
+            AsyncMock(side_effect=RuntimeError("expected-signals unavailable")),
+        )
+
+        response = await _get(
+            _wire_app(_mock_db(AsyncMock())),
+            "/api/relationship/contacts/overdue",
+        )
+
+        assert response.status_code == 200
+        assert response.json()["contacts"] == []
+        assert response.json()["cadence_available"] is False

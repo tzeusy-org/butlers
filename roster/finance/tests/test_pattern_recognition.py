@@ -21,6 +21,8 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -115,12 +117,13 @@ async def _insert_transaction(
     category: str = "subscriptions",
     posted_at: datetime,
     deleted_at: datetime | None = None,
+    metadata: dict | None = None,
 ) -> None:
     await pool.execute(
         """
         INSERT INTO transactions
-            (merchant, amount, currency, direction, category, posted_at, deleted_at)
-        VALUES ($1, $2::numeric, $3, $4, $5, $6, $7)
+            (merchant, amount, currency, direction, category, posted_at, deleted_at, metadata)
+        VALUES ($1, $2::numeric, $3, $4, $5, $6, $7, $8)
         """,
         merchant,
         Decimal(amount),
@@ -129,6 +132,7 @@ async def _insert_transaction(
         category,
         posted_at,
         deleted_at,
+        metadata or {},
     )
 
 
@@ -180,6 +184,28 @@ def _load_finance_008_upgrade_sql() -> tuple[str, ...]:
     return mod.UPGRADE_SQL
 
 
+async def _apply_core_expected_signal_migrations(pool) -> None:
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[3]
+    for filename in (
+        "core_210_expected_signals.py",
+        "core_211_expected_signal_endpoint_identity.py",
+    ):
+        path = root / "alembic/versions/core" / filename
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        statements: list[str] = []
+        mocked_op = MagicMock()
+        mocked_op.execute.side_effect = statements.append
+        with patch.object(module, "op", mocked_op):
+            module.upgrade()
+        for statement in statements:
+            await pool.execute(statement)
+
+
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with finance pattern recognition tables.
@@ -194,6 +220,20 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_RECURRING_GROUPS_FINANCE_006_SQL)
         for stmt in _load_finance_008_upgrade_sql():
             await p.execute(stmt)
+        await _apply_core_expected_signal_migrations(p)
+        await p.execute(
+            """
+            CREATE TABLE public._finance_test_liveness (
+                connector_type text NOT NULL,
+                endpoint_identity text NOT NULL,
+                state text NOT NULL,
+                last_heartbeat_at timestamptz
+            );
+            CREATE VIEW public.v_qa_connector_state AS
+            SELECT connector_type, endpoint_identity, state, last_heartbeat_at
+            FROM public._finance_test_liveness
+            """
+        )
         yield p
 
 
@@ -227,6 +267,105 @@ class TestDetectRecurringMonthly:
         assert pattern["estimated_frequency"] == "monthly"
         assert float(pattern["avg_amount"]) == pytest.approx(15.99, abs=0.01)
         assert pattern["occurrence_count"] == 4
+
+    @pytest.mark.parametrize("reverse_liveness", [False, True])
+    async def test_dead_gmail_endpoint_is_not_replaced_by_healthy_sibling(
+        self, pool, reverse_liveness: bool
+    ):
+        from butlers.tools.finance.pattern_recognition import detect_recurring
+
+        source = {
+            "expected_signal_source": {
+                "producer": "connector:gmail",
+                "producer_endpoint_identity": "gmail:user:dead@example.invalid",
+            }
+        }
+        base = datetime.now(UTC) - timedelta(days=120)
+        for i in range(4):
+            await _insert_transaction(
+                pool,
+                merchant="Endpoint Bound Merchant",
+                posted_at=base + timedelta(days=30 * i),
+                metadata=source,
+            )
+        liveness = [
+            ("gmail", "gmail:user:dead@example.invalid", "offline"),
+            ("gmail", "gmail:user:healthy@example.invalid", "healthy"),
+        ]
+        if reverse_liveness:
+            liveness.reverse()
+        for connector_type, endpoint_identity, state in liveness:
+            await pool.execute(
+                "INSERT INTO public._finance_test_liveness VALUES ($1, $2, $3, now())",
+                connector_type,
+                endpoint_identity,
+                state,
+            )
+
+        result = await detect_recurring(pool)
+
+        pattern = result["patterns"][0]
+        assert pattern["measurability"] == "unmeasurable"
+        assert pattern["unmeasurable_reason"] == "producer_stale_or_offline"
+        signal = await pool.fetchrow(
+            "SELECT producer_endpoint_identity, measurability FROM public.expected_signals "
+            "WHERE signal_key LIKE 'finance:recurrence:%'"
+        )
+        assert signal["producer_endpoint_identity"] == "gmail:user:dead@example.invalid"
+        assert signal["measurability"] == "unmeasurable"
+
+    async def test_mixed_or_unproven_group_is_persisted_unmeasurable(self, pool):
+        from butlers.tools.finance.pattern_recognition import detect_recurring
+
+        base = datetime.now(UTC) - timedelta(days=120)
+        attested = {
+            "expected_signal_source": {
+                "producer": "owner",
+                "producer_endpoint_identity": None,
+            }
+        }
+        for index in range(4):
+            await _insert_transaction(
+                pool,
+                merchant="Mixed Merchant",
+                posted_at=base + timedelta(days=30 * index),
+                metadata=attested if index != 2 else {},
+            )
+
+        result = await detect_recurring(pool)
+
+        assert result["patterns"][0]["measurability"] == "unmeasurable"
+        assert result["patterns"][0]["unmeasurable_reason"] == "producer_unknown"
+
+    @pytest.mark.parametrize("producer", ["owner", "connector:gmail"])
+    async def test_attested_single_source_persists_runtime_state(self, pool, producer: str):
+        from butlers.tools.finance.pattern_recognition import detect_recurring
+
+        endpoint = "gmail:user:owner@example.invalid" if producer.startswith("connector:") else None
+        metadata = {
+            "expected_signal_source": {
+                "producer": producer,
+                "producer_endpoint_identity": endpoint,
+            }
+        }
+        if endpoint is not None:
+            await pool.execute(
+                "INSERT INTO public._finance_test_liveness VALUES ('gmail', $1, 'healthy', now())",
+                endpoint,
+            )
+        base = datetime.now(UTC) - timedelta(days=120)
+        for index in range(4):
+            await _insert_transaction(
+                pool,
+                merchant="Attested Merchant",
+                posted_at=base + timedelta(days=30 * index),
+                metadata=metadata,
+            )
+
+        result = await detect_recurring(pool)
+
+        assert result["patterns"][0]["measurability"] in {"present", "absent"}
+        assert result["patterns"][0]["unmeasurable_reason"] is None
 
     async def test_monthly_pattern_stored_in_recurring_groups(self, pool):
         """Detected monthly pattern is stored in finance.recurring_groups."""

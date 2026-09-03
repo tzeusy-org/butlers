@@ -10,10 +10,8 @@ Finance has two different kinds of recurrence data:
    `source_message_id`, and free-form metadata. The annual `subscription-renewal` candidate is a
    forward-looking reminder about that declared date; it is not an absence detector.
 
-RFC 0029's landed implementation supplies connector and owner expected-signal producers, but its
-`core_210` schema and helper are connector-type-only. The endpoint-bound contract below is
-**[TARGET-STATE]** and remains owned by continued `bu-8cdl1.3`; this Finance specification does not
-implement it. In that target state, a connector runtime is
+RFC 0029 supplies connector and owner expected-signal producers. Continued `bu-8cdl1.3` implements
+the endpoint-bound contract below: a connector runtime is
 identified by the exact `(connector_type, endpoint_identity)` pair in
 `public.v_qa_connector_state`; `owner` is reserved for an explicitly owner-entered observation.
 Finance must preserve the server-derived source endpoint and establish that full authority before
@@ -64,7 +62,7 @@ expected-signal authority because every public tool can supply `source_message_i
 metadata, `record_transaction()` writes `source=manual` even for routed email, and a merchant group
 can contain more than one account/source.
 
-### 2. [TARGET-STATE] Reserved server attestation
+### 2. Reserved server attestation
 
 Future adoption SHALL use a reserved, server-written provenance object that public MCP/API input
 cannot set or override. For Gmail observations it preserves the exact server-derived

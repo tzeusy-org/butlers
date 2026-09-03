@@ -49,7 +49,7 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
     Tier 1500 contacts with no stay_in_touch_days are excluded.
     Archived contacts (listed=false) are excluded.
-    Contacts with no interactions and an effective cadence are always overdue.
+    Contacts with no producer-attested interaction are unmeasurable, not overdue.
 
     Returns contacts enriched with dunbar_tier, dunbar_score,
     effective_cadence, and days_since_last_interaction.
@@ -57,3 +57,10 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
 
     return await contacts_overdue_with_tiers(pool)
+
+
+async def contacts_overdue_with_availability(pool: asyncpg.Pool) -> dict[str, Any]:
+    """Return measurable overdue contacts with honest aggregate availability."""
+    from butlers.tools.relationship.dunbar import contacts_overdue_evaluation
+
+    return await contacts_overdue_evaluation(pool)

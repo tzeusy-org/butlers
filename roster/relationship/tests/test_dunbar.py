@@ -2068,12 +2068,37 @@ async def test_get_contact_dunbar_with_override(simple_pool):
 # ===========================================================================
 
 
+def _mock_expected_signal(monkeypatch: pytest.MonkeyPatch, *, is_overdue: bool) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core.expected_signals import ExpectedSignalState
+    from butlers.tools.relationship import stale_contacts
+
+    monkeypatch.setattr(
+        stale_contacts,
+        "evaluate_stale_contact_signal",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                is_overdue=is_overdue,
+                evaluation=SimpleNamespace(
+                    state=(
+                        ExpectedSignalState.ABSENT if is_overdue else ExpectedSignalState.PRESENT
+                    )
+                ),
+            )
+        ),
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_contacts_overdue_with_tiers_stay_in_touch_overrides(simple_pool):
+async def test_contacts_overdue_with_tiers_stay_in_touch_overrides(simple_pool, monkeypatch):
     """stay_in_touch_days overrides the tier's default cadence."""
     from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    _mock_expected_signal(monkeypatch, is_overdue=False)
 
     contact = await _make_simple_contact(simple_pool, "Iris")
     cid = uuid.UUID(str(contact["id"]))
@@ -2093,9 +2118,13 @@ async def test_contacts_overdue_with_tiers_stay_in_touch_overrides(simple_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_contacts_overdue_with_tiers_no_interactions_always_overdue(simple_pool):
-    """Contact with stay_in_touch_days and no interactions is always overdue."""
+async def test_contacts_overdue_with_tiers_no_interactions_is_unmeasurable(
+    simple_pool, monkeypatch
+):
+    """A cadence without a producer-attested baseline is not overdue."""
     from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    _mock_expected_signal(monkeypatch, is_overdue=False)
 
     contact = await _make_simple_contact(simple_pool, "Karen")
     cid = uuid.UUID(str(contact["id"]))
@@ -2108,7 +2137,7 @@ async def test_contacts_overdue_with_tiers_no_interactions_always_overdue(simple
 
     results = await contacts_overdue_with_tiers(simple_pool)
     ids = [str(r["id"]) for r in results]
-    assert str(cid) in ids
+    assert str(cid) not in ids
 
 
 @pytest.mark.integration
@@ -2129,9 +2158,11 @@ async def test_contacts_overdue_with_tiers_tier_1500_excluded(simple_pool):
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 @pytest.mark.pg_clock
-async def test_contacts_overdue_with_tiers_enriched_fields(simple_pool):
+async def test_contacts_overdue_with_tiers_enriched_fields(simple_pool, monkeypatch):
     """Overdue contacts include dunbar_tier, dunbar_score, effective_cadence."""
     from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers
+
+    _mock_expected_signal(monkeypatch, is_overdue=True)
 
     contact = await _make_simple_contact(simple_pool, "Nina")
     cid = uuid.UUID(str(contact["id"]))

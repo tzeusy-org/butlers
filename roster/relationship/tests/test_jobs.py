@@ -6,6 +6,7 @@ import json
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -592,9 +593,12 @@ async def test_insight_scan_birthday_message_includes_contact_name(provisioned_p
 @pytest.mark.pg_clock
 async def test_insight_scan_contact_candidates_include_entity_and_event_metadata(
     provisioned_postgres_pool,
+    monkeypatch,
 ):
     """Relationship candidates preserve the contact entity and real occasion date."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -647,12 +651,28 @@ async def test_insight_scan_contact_candidates_include_entity_and_event_metadata
 # ---------------------------------------------------------------------------
 
 
+def _mock_stale_contact_gate(monkeypatch: pytest.MonkeyPatch, *, is_overdue: bool) -> None:
+    """Keep legacy priority tests focused on policy after producer admission."""
+    from types import SimpleNamespace
+
+    from butlers.tools.relationship import stale_contacts
+
+    monkeypatch.setattr(
+        stale_contacts,
+        "evaluate_stale_contact_signal",
+        AsyncMock(return_value=SimpleNamespace(is_overdue=is_overdue)),
+    )
+
+
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
     provisioned_postgres_pool,
+    monkeypatch,
 ):
     """Contact overdue by >2x cadence gets priority 45."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -678,9 +698,12 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
     provisioned_postgres_pool,
+    monkeypatch,
 ):
     """Contact overdue by 1-2x cadence gets priority 35."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -703,9 +726,13 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
         assert rows[0]["priority"] == 35
 
 
-async def test_insight_scan_stale_contact_not_yet_overdue_excluded(provisioned_postgres_pool):
+async def test_insight_scan_stale_contact_not_yet_overdue_excluded(
+    provisioned_postgres_pool, monkeypatch
+):
     """Contact not yet overdue is excluded from stale-contact insights."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=False)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -727,12 +754,42 @@ async def test_insight_scan_stale_contact_not_yet_overdue_excluded(provisioned_p
         assert len(rows) == 0
 
 
+async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Elapsed cadence cannot emit when producer admission is unmeasurable."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=False)
+    async with provisioned_postgres_pool() as pool:
+        await _setup_relationship_schema(pool)
+        await _setup_insight_tables(pool)
+        contact_id = await _insert_contact(pool, first_name="Instrument", stay_in_touch_days=7)
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=30),
+        )
+
+        await run_insight_scan(pool)
+
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM insight_candidates WHERE category = 'stale-contact'"
+            )
+            == 0
+        )
+
+
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
     provisioned_postgres_pool,
+    monkeypatch,
 ):
     """Stale contact dedup_key uses relationship:stale-contact:{id}:{year-week} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -760,9 +817,13 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
 
 
 @pytest.mark.pg_clock
-async def test_insight_scan_stale_contact_expires_7_days_from_now(provisioned_postgres_pool):
+async def test_insight_scan_stale_contact_expires_7_days_from_now(
+    provisioned_postgres_pool, monkeypatch
+):
     """Stale contact candidate expires 7 days from generation."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -1483,6 +1544,8 @@ async def _insert_message_inbox(
     source_channel: str,
     received_at: datetime | None = None,
     direction: str = "inbound",
+    source_endpoint_identity: str | None = None,
+    source_thread_identity: str | None = None,
 ) -> None:
     """Insert a message_inbox row for testing."""
     if received_at is None:
@@ -1491,6 +1554,10 @@ async def _insert_message_inbox(
         "source_sender_identity": sender_identity,
         "source_channel": source_channel,
     }
+    if source_endpoint_identity is not None:
+        request_context["source_endpoint_identity"] = source_endpoint_identity
+    if source_thread_identity is not None:
+        request_context["source_thread_identity"] = source_thread_identity
     await pool.execute(
         """
         INSERT INTO switchboard.message_inbox (received_at, request_context, direction)
@@ -1691,6 +1758,57 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
             meta = _json.loads(meta)
         assert meta.get("type") == "telegram_user_client"
         assert meta.get("direction") == "incoming"
+
+
+async def test_interaction_sync_keeps_sibling_endpoints_separate(
+    provisioned_postgres_pool,
+):
+    """One shared thread/date cannot collapse two exact producer endpoints."""
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+        contact_id = await _insert_public_contact(pool, first_name="Endpoint")
+        entity_id = await pool.fetchval(
+            "SELECT entity_id FROM public.contacts WHERE id = $1::uuid",
+            contact_id,
+        )
+        await _insert_contact_info(
+            pool,
+            contact_id=contact_id,
+            ci_type="email",
+            value="endpoint@example.com",
+        )
+        observed_at = datetime.now(UTC) - timedelta(hours=1)
+        for endpoint in ("gmail:account-a", "gmail:account-b"):
+            await _insert_message_inbox(
+                pool,
+                sender_identity="endpoint@example.com",
+                source_channel="email",
+                source_endpoint_identity=endpoint,
+                source_thread_identity="shared-thread",
+                received_at=observed_at,
+            )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 2
+        rows = await pool.fetch(
+            """
+            SELECT metadata->'expected_signal_source' AS source
+            FROM facts
+            WHERE entity_id = $1
+              AND predicate = 'interaction_email'
+            ORDER BY metadata #>> '{expected_signal_source,source_endpoint_identity}'
+            """,
+            entity_id,
+        )
+        assert [row["source"]["source_endpoint_identity"] for row in rows] == [
+            "gmail:account-a",
+            "gmail:account-b",
+        ]
+        assert all(row["source"]["producer"] == "connector:gmail" for row in rows)
+        assert result["errors"] == 0
 
 
 async def test_interaction_sync_deduplicates_same_sender_same_day(provisioned_postgres_pool):

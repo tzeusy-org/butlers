@@ -16,6 +16,9 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.expected_signals import upsert_expected_signal
+from butlers.tools.finance.expected_signals import resolve_complete_signal_source
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -220,7 +223,7 @@ async def detect_recurring(
     # all transactions for merchants that will never qualify.
     rows = await pool.fetch(
         f"""
-        SELECT merchant, posted_at, amount, currency
+        SELECT merchant, posted_at, amount, currency, metadata
         FROM transactions
         WHERE direction = 'debit'
           {deleted_filter}
@@ -253,6 +256,7 @@ async def detect_recurring(
                 "posted_at": row["posted_at"],
                 "amount": Decimal(str(row["amount"])),
                 "currency": row["currency"],
+                "metadata": row["metadata"],
             }
         )
 
@@ -345,7 +349,7 @@ async def detect_recurring(
                 break
 
         # Upsert into finance.recurring_groups.
-        await pool.execute(
+        recurring_group_id = await pool.fetchval(
             """
             INSERT INTO recurring_groups (
                 merchant, estimated_frequency, avg_amount, currency,
@@ -361,6 +365,7 @@ async def detect_recurring(
                 next_expected_date  = EXCLUDED.next_expected_date,
                 is_active           = true,
                 updated_at          = now()
+            RETURNING id
             """,
             merchant,
             estimated_frequency,
@@ -368,6 +373,18 @@ async def detect_recurring(
             currency,
             last_seen_date,
             next_expected_date,
+        )
+
+        source = resolve_complete_signal_source([charge["metadata"] for charge in charges])
+        signal = await upsert_expected_signal(
+            pool,
+            signal_key=f"finance:recurrence:{recurring_group_id}",
+            producer=source.producer if source is not None else "unknown",
+            producer_endpoint_identity=(
+                source.producer_endpoint_identity if source is not None else None
+            ),
+            expected_cadence=timedelta(days=median_interval),
+            last_observed_at=last_seen,
         )
 
         patterns.append(
@@ -382,6 +399,8 @@ async def detect_recurring(
                 "price_change_detected": price_change_detected,
                 "last_seen_date": last_seen_date.isoformat(),
                 "next_expected_date": next_expected_date.isoformat(),
+                "measurability": signal.state.value,
+                "unmeasurable_reason": signal.unmeasurable_reason,
             }
         )
 
