@@ -2630,7 +2630,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - status:
 - channels:
 - Clear
-- Connector issues:
 - = minuteMs && ts
 - &scopedBucketMinutes=
 - Save current view
@@ -2660,7 +2659,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Replay selected events
 - Copy selected event IDs to clipboard
 - Remove the email/replay-unsafe events from the selection
-- Connectors requiring attention
 - Select event
 - Filter by {}
 - {} session cost unavailable
@@ -4168,4 +4166,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3267*
+*Total strings: 3265*
