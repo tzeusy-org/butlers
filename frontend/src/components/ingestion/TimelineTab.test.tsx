@@ -20,7 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { IngestionEventStatus, IngestionEventSummary } from "@/api/index.ts";
@@ -94,6 +94,11 @@ function makeQueryClient() {
       mutations: { retry: false },
     },
   });
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-path">{location.pathname}</output>;
 }
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
@@ -1421,6 +1426,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     queryClient = makeQueryClient();
+    setupDefaultMocks();
 
     vi.mocked(useIngestionEventRollup).mockReturnValue({
       data: undefined,
@@ -1463,7 +1469,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       );
     });
 
-    expect(container.querySelector("[data-testid='connector-attention-strip']")).toBeNull();
+    expect(container.querySelector("[data-testid='attention-strip']")).toBeNull();
   });
 
   it("strip is hidden when connector list is empty", () => {
@@ -1483,7 +1489,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       );
     });
 
-    expect(container.querySelector("[data-testid='connector-attention-strip']")).toBeNull();
+    expect(container.querySelector("[data-testid='attention-strip']")).toBeNull();
   });
 
   it("strip renders for connectors with state=error", () => {
@@ -1508,7 +1514,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       );
     });
 
-    const strip = container.querySelector("[data-testid='connector-attention-strip']");
+    const strip = container.querySelector("[data-testid='attention-strip']");
     expect(strip).not.toBeNull();
     expect(strip!.textContent).toContain("telegram");
     expect(strip!.textContent).toContain("bot@t.me");
@@ -1535,9 +1541,9 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       );
     });
 
-    const strip = container.querySelector("[data-testid='connector-attention-strip']");
+    const strip = container.querySelector("[data-testid='attention-strip']");
     expect(strip).not.toBeNull();
-    const items = strip!.querySelectorAll("[data-testid='connector-attention-item']");
+    const items = strip!.querySelectorAll("[data-testid^='attention-item-']");
     expect(items.length).toBe(1);
   });
 
@@ -1564,8 +1570,48 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
       );
     });
 
-    const items = container.querySelectorAll("[data-testid='connector-attention-item']");
+    const items = container.querySelectorAll("[data-testid^='attention-item-']");
     expect(items.length).toBe(2);
+  });
+
+  it("navigates an attention item to the connector detail route", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: [
+          makeConnector({
+            connector_type: "google_health",
+            endpoint_identity: "owner@example.com",
+            state: "error",
+          }),
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/ingestion"]}>
+            <TimelineTab isActive={true} />
+            <LocationProbe />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const link = container.querySelector(
+      "[data-testid='attention-item-google_health']",
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe(
+      "/ingestion/connectors/google_health/owner%40example.com",
+    );
+
+    act(() => link.click());
+
+    expect(container.querySelector("[data-testid='location-path']")?.textContent).toBe(
+      "/ingestion/connectors/google_health/owner%40example.com",
+    );
   });
 });
 

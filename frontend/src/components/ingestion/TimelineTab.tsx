@@ -102,6 +102,7 @@ import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { DispatchTicksCell } from "./timeline/DispatchTicksCell";
 import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
+import { AttentionStrip } from "./connectors/AttentionStrip";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { formatCostUsdPrecise } from "@/lib/format-cost";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -852,35 +853,8 @@ function BulkActionBar({
 function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
   const connectors = connectorsResp?.data ?? [];
-  const attentionConnectors = connectors.filter(
-    (c) => c.state !== "healthy" || c.liveness === "offline",
-  );
 
-  if (attentionConnectors.length === 0) return null;
-
-  return (
-    <div
-      className="flex flex-wrap gap-2 px-3 py-2 border-b border-border"
-      data-testid="connector-attention-strip"
-      role="alert"
-      aria-label="Connectors requiring attention"
-    >
-      <div className="flex items-center gap-1.5 shrink-0 text-muted-foreground">
-        <AlertTriangle className="size-3.5" aria-hidden />
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em]">Connector issues:</span>
-      </div>
-      {attentionConnectors.map((c) => (
-        <span
-          key={`${c.connector_type}/${c.endpoint_identity}`}
-          className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground underline"
-          title={c.error_message ?? `${c.liveness} / ${c.state}`}
-          data-testid="connector-attention-item"
-        >
-          {c.connector_type}/{c.endpoint_identity} · {c.state !== "healthy" ? c.state : c.liveness}
-        </span>
-      ))}
-    </div>
-  );
+  return <AttentionStrip connectors={connectors} />;
 }
 
 // ---------------------------------------------------------------------------
