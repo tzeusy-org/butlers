@@ -37,6 +37,7 @@ import { Time, formatRelativeCompact } from "@/components/ui/time"
 import { Tip } from "@/components/ui/tip"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import type { StatusBoardRow, ActivityVerb, EligibilityState } from "@/hooks/use-butler-status-board"
+import { formatCostUsd } from "@/lib/format-cost"
 
 // ---------------------------------------------------------------------------
 // Activity chip
@@ -313,7 +314,7 @@ export function StatusBoardCell({
             )
           }
         />
-        <KpiCell label="SPEND" value={costToday !== null ? `$${costToday.toFixed(2)}` : "—"} />
+        <KpiCell label="SPEND" value={costToday !== null ? formatCostUsd(costToday) : "—"} />
         <KpiCell label="LOAD" value={loadPct != null ? `${loadPct}%` : "—"} />
         <KpiCell
           label="LAST"

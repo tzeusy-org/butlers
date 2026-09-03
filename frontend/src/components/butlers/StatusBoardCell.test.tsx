@@ -33,6 +33,7 @@ vi.mock("react-router", async (importOriginal) => {
 
 import { StatusBoardCell } from "./StatusBoardCell"
 import type { StatusBoardRow } from "@/hooks/use-butler-status-board"
+import { formatCostUsd } from "@/lib/format-cost"
 
 afterEach(() => { cleanup() })
 
@@ -569,6 +570,17 @@ describe("StatusBoardCell: KPI values", () => {
       <StatusBoardCell row={makeRow({ costToday: 2.5 })} />,
     )
     expect(html).toContain("$2.50")
+  })
+
+  it("uses the shared formatter for sub-cent SPEND values", () => {
+    const costToday = 0.004
+    const { getByText } = render(
+      <StatusBoardCell row={makeRow({ costToday })} />,
+    )
+    const spendValue = getByText(formatCostUsd(costToday), { exact: true })
+
+    expect(spendValue.textContent).toBe(formatCostUsd(costToday))
+    expect(spendValue.textContent).not.toBe("$0.00")
   })
 
   it("renders loadPct with percent sign", () => {
