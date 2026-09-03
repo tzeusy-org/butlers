@@ -23,6 +23,12 @@ from butlers.cli_auth.registry import PROVIDERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXACT_IMAGE_HARNESS = _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_exact_image_harness.py"
+_DESCENDANT_SURVIVAL_HARNESS = (
+    _REPO_ROOT / "tests" / "cli" / "runtime_cli_sandbox_exact_image_descendant_survival_harness.py"
+)
+_DESCENDANT_SURVIVAL_PAYLOAD_SOURCE = (
+    _REPO_ROOT / "tests" / "cli" / "fixtures" / "descendant_survival_payload.c"
+)
 _BASE_IMAGE_BUILD_INPUTS = (
     "Dockerfile.base",
     "scripts/runtime_cli_sandbox_init.c",
@@ -2763,15 +2769,15 @@ async def test_bubblewrap_startup_cancellation_after_release_terminates_pid1_and
     await pool.release(reused_identity)
 
 
-@pytest.mark.integration
-def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() -> None:
-    """REQ-core-credentials-002: the real image forwards the shim gate before exec."""
-    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
-        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+def _require_docker() -> str:
     docker = shutil.which("docker")
     if docker is None:
-        pytest.fail("Docker is required when the exact-image sandbox handshake test is enabled")
+        pytest.fail("Docker is required when the exact-image sandbox test is enabled")
+    return docker
 
+
+def _require_exact_sandbox_image(docker: str) -> str:
+    """Validate and return an explicitly rebuilt, provenance-matched app image."""
     image = os.environ.get("BUTLERS_RUNTIME_SANDBOX_IMAGE")
     if not image or not _is_explicit_exact_image_reference(image):
         pytest.fail(
@@ -2801,6 +2807,16 @@ def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() ->
         if "=" in item
     }
     assert image_environment.get("GIT_SHA") == expected_git_sha
+    return image
+
+
+@pytest.mark.integration
+def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() -> None:
+    """REQ-core-credentials-002: the real image forwards the shim gate before exec."""
+    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
+        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+    docker = _require_docker()
+    image = _require_exact_sandbox_image(docker)
 
     seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
     completed = subprocess.run(
@@ -2829,6 +2845,77 @@ def test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled() ->
     )
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"launch": "ok", "termination": "proven"}
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    shutil.which("cc") is None, reason="C compiler is required to build the adversarial payload"
+)
+def test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence(
+    tmp_path: Path,
+) -> None:
+    """REQ-core-credentials-002: a child that forks, double-forks, or calls
+    setsid cannot survive the direct child's exit, mutate staged output
+    afterward, or persist -- proven against a real kernel PID namespace, not
+    process-group/setsid bookkeeping."""
+    if os.environ.get("BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST") != "1":
+        pytest.skip("set BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 with an explicit rebuilt image tag")
+    docker = _require_docker()
+    image = _require_exact_sandbox_image(docker)
+
+    payload_binary = tmp_path / "bu-q6vjl-descendant-survival-payload"
+    subprocess.run(
+        [
+            "cc",
+            "-static",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-o",
+            str(payload_binary),
+            str(_DESCENDANT_SURVIVAL_PAYLOAD_SOURCE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    seccomp_profile = _REPO_ROOT / "deploy" / "seccomp" / "dashboard-runtime-cli-sandbox.json"
+    completed = subprocess.run(
+        [
+            docker,
+            "run",
+            "--rm",
+            "--security-opt",
+            "apparmor=unconfined",
+            "--security-opt",
+            "systempaths=unconfined",
+            "--security-opt",
+            f"seccomp={seccomp_profile}",
+            "--volume",
+            f"{_DESCENDANT_SURVIVAL_HARNESS}:/tmp/runtime-cli-sandbox-descendant-survival.py:ro",
+            "--volume",
+            f"{payload_binary}:/tmp/bu-q6vjl-descendant-survival-payload:ro",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-c",
+            "PYTHONPATH=/app/src exec python /tmp/runtime-cli-sandbox-descendant-survival.py",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "descendant_started": True,
+        "descendant_survived": False,
+        "lingering_process": False,
+        "pid1_terminated": True,
+        "stage_discarded": True,
+    }
 
 
 @pytest.mark.parametrize(

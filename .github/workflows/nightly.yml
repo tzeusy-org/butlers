@@ -237,6 +237,12 @@ jobs:
     # and GIT_SHA build-arg conventions) and spawns real, unprivileged
     # Bubblewrap inside it, so this is deliberately its own slower nightly
     # lane rather than every PR's fast gate.
+    # bu-q6vjl: also runs the adversarial fork/double-fork/setsid
+    # descendant-survival proof
+    # (test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence)
+    # against the same exact image, for the same reason -- task 3.6b's
+    # descendant-survival/mutation-after-exit/persistence guarantees had no
+    # real-kernel test anywhere in the repo either.
     runs-on: ubuntu-latest
 
     steps:
@@ -294,4 +300,5 @@ jobs:
           BUTLERS_RUNTIME_SANDBOX_IMAGE: butlers-app:${{ github.sha }}
         run: |
           uv run pytest tests/cli/test_runtime_cli_sandbox.py -v --tb=short \
-            -k test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled
+            -k "test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled \
+                or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence"
