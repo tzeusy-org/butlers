@@ -12,7 +12,6 @@ at daemon startup (see ``roster/switchboard/modules/__init__.py``).
 from butlers.tools.switchboard.runtime_attention.outbox import (
     CLAIM_LEASE_SECONDS,
     DELIVERY_LEASE_NAME,
-    LEASE_HEARTBEAT_SECONDS,
     MAX_TRANSPORT_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
     SERVICE_LEASE_TTL_SECONDS,
@@ -32,7 +31,6 @@ from butlers.tools.switchboard.runtime_attention.worker import (
 __all__ = [
     "CLAIM_LEASE_SECONDS",
     "DELIVERY_LEASE_NAME",
-    "LEASE_HEARTBEAT_SECONDS",
     "MAX_TRANSPORT_ATTEMPTS",
     "RETRY_BACKOFF_SECONDS",
     "SERVICE_LEASE_TTL_SECONDS",
