@@ -42,6 +42,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Time } from "@/components/ui/time";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   useBulkUpdateTransactionMetadata,
   useFinanceAccounts,
@@ -230,10 +231,14 @@ function UpcomingBillsPanel({
 function CategorySpendPanel({
   groups,
   currency,
+  byCurrency,
+  legacyAggregateDegraded,
   isLoading,
 }: {
   groups: FinanceSpendingGroup[];
-  currency: string;
+  currency: string | null;
+  byCurrency: Array<{ currency: string; total_spend: string }>;
+  legacyAggregateDegraded: boolean;
   isLoading: boolean;
 }) {
   const chartData = useMemo(
@@ -251,6 +256,20 @@ function CategorySpendPanel({
     <Panel title="Spending by category" sub="30d" span={2} testId="finance-category-chart-section">
       {isLoading ? (
         <LoadingLine />
+      ) : legacyAggregateDegraded ? (
+        <div className="space-y-2" data-testid="category-spend-by-currency">
+          <SourceDegradedNote
+            label="Combined category chart"
+            detail="multiple currencies are shown separately; no FX conversion is configured"
+          />
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
+            {byCurrency.map((item) => (
+              <li key={item.currency}>
+                {formatCurrency(item.total_spend, item.currency)}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : chartData.length === 0 ? (
         <EmptyLine>No spending data for the last 30 days.</EmptyLine>
       ) : (
@@ -266,7 +285,7 @@ function CategorySpendPanel({
                 tickFormatter={(v: number) =>
                   new Intl.NumberFormat("en-US", {
                     style: "currency",
-                    currency,
+                    currency: currency ?? "USD",
                     notation: "compact",
                     maximumFractionDigits: 0,
                   }).format(v)
@@ -279,8 +298,12 @@ function CategorySpendPanel({
                 width={90}
                 tick={{ fontSize: 11 }}
               />
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              <Tooltip formatter={(value: any) => [formatCurrency(String(value), currency), "Spend"]} />
+              <Tooltip
+                formatter={(value: number | string | undefined) => [
+                  formatCurrency(String(value ?? 0), currency ?? "USD"),
+                  "Spend",
+                ]}
+              />
               <Bar dataKey="amount" fill={chartColor()} radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -600,6 +623,21 @@ function AccountsPanel({
                     {formatAccountType(acct.type)}
                     {acct.last_four ? ` ····${acct.last_four}` : ""}
                   </p>
+                  <p
+                    className="text-[11px] text-muted-foreground"
+                    data-testid="account-feed-freshness"
+                  >
+                    {acct.feed_degraded_reason === "never_synced"
+                      ? "Feed never synced"
+                      : acct.feed_degraded_reason === "stale"
+                        ? "Feed stale"
+                        : acct.last_synced_at
+                          ? "Feed synced "
+                          : "Feed status unavailable"}
+                    {acct.last_synced_at ? (
+                      <Time value={acct.last_synced_at} mode="relative-compact" />
+                    ) : null}
+                  </p>
                 </div>
                 <Badge variant="outline" className="text-xs font-mono shrink-0">
                   {acct.currency}
@@ -827,13 +865,17 @@ export default function ButlerFinanceFinancesTab() {
       return parseFloat(item.bill.amount) > 0;
     }) ?? null;
   const totalSpend = monthlySummary?.total_spend ?? "0";
-  const currency = monthlySummary?.currency ?? "USD";
+  const currency = monthlySummary?.currency ?? null;
+  const monthlyCurrencyTotals = monthlySummary?.by_currency ?? [];
+  const monthlyCurrencyDegraded = monthlySummary?.legacy_aggregate_degraded ?? false;
   // Sort once at the parent so children receive a stable, ordered reference.
   const categoryGroups = useMemo(() => {
     const groups = categorySummary?.groups ?? [];
     return [...groups].sort((a, b) => parseFloat(b.amount) - parseFloat(a.amount));
   }, [categorySummary]);
-  const chartCurrency = categorySummary?.currency ?? "USD";
+  const chartCurrency = categorySummary?.currency ?? null;
+  const categoryCurrencyTotals = categorySummary?.by_currency ?? [];
+  const categoryCurrencyDegraded = categorySummary?.legacy_aggregate_degraded ?? false;
 
   // Top category (4th KPI cell): first element of the pre-sorted array.
   const topCategory = categoryGroups[0] ?? null;
@@ -841,7 +883,20 @@ export default function ButlerFinanceFinancesTab() {
   const kpiLoading = txLoading || subLoading || upcomingLoading || monthlyLoading || categoryLoading;
 
   // KPI cell values
-  const monthlySpendValue = kpiLoading ? "..." : formatCurrency(totalSpend, currency);
+  const monthlySpendValue = kpiLoading
+    ? "..."
+    : monthlyCurrencyDegraded
+      ? "By currency"
+      : currency
+        ? formatCurrency(totalSpend, currency)
+        : "—";
+  const monthlySpendSub = monthlyCurrencyDegraded
+    ? monthlyCurrencyTotals
+        .map((item) => formatCurrency(item.total_spend, item.currency))
+        .join(" · ")
+    : monthlySummary && currency === null
+      ? "No spending data"
+      : undefined;
 
   const nextBillValue = kpiLoading
     ? "..."
@@ -852,10 +907,18 @@ export default function ButlerFinanceFinancesTab() {
 
   const topCategoryValue = kpiLoading
     ? "..."
+    : categoryCurrencyDegraded
+      ? "By currency"
     : topCategory
-      ? formatCurrency(topCategory.amount, chartCurrency)
+      ? formatCurrency(topCategory.amount, chartCurrency ?? "USD")
       : "—";
-  const topCategorySub = topCategory ? titleCase(topCategory.key) : undefined;
+  const topCategorySub = categoryCurrencyDegraded
+    ? categoryCurrencyTotals
+        .map((item) => formatCurrency(item.total_spend, item.currency))
+        .join(" · ")
+    : topCategory
+      ? titleCase(topCategory.key)
+      : undefined;
 
   return (
     // Never-blank floor (bu-nhcp5): dims the whole panel grid during any
@@ -877,6 +940,7 @@ export default function ButlerFinanceFinancesTab() {
             <KpiCell
               label="Monthly spend"
               value={monthlySpendValue}
+              sub={monthlySpendSub}
             />
           </div>
         </Panel>
@@ -913,6 +977,8 @@ export default function ButlerFinanceFinancesTab() {
       <CategorySpendPanel
         groups={categoryGroups}
         currency={chartCurrency}
+        byCurrency={categoryCurrencyTotals}
+        legacyAggregateDegraded={categoryCurrencyDegraded}
         isLoading={categoryLoading}
       />
 

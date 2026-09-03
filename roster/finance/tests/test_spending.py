@@ -365,7 +365,16 @@ async def test_spending_summary_return_shape(pool):
 
     result = await spending_summary(pool, group_by="category")
 
-    assert set(result.keys()) == {"start_date", "end_date", "currency", "total_spend", "groups"}
+    assert set(result.keys()) == {
+        "start_date",
+        "end_date",
+        "currency",
+        "total_spend",
+        "groups",
+        "by_currency",
+        "legacy_aggregate_degraded",
+        "degraded_reason",
+    }
     assert isinstance(result["groups"], list)
     for g in result["groups"]:
         assert "key" in g
@@ -445,6 +454,33 @@ async def test_spending_summary_excludes_soft_deleted(pool):
     grocery_group = next(g for g in result["groups"] if g["key"] == "groceries")
     assert Decimal(grocery_group["amount"]) == Decimal("100.00")
     assert grocery_group["count"] == 1
+
+
+async def test_spending_summary_keeps_mixed_currencies_separate(pool):
+    """Mixed currencies expose honest buckets and mark legacy totals degraded."""
+    from butlers.tools.finance.spending import spending_summary
+
+    posted = _this_month_mid()
+    await _insert_tx(pool, amount="100.00", currency="USD", posted_at=posted)
+    await _insert_tx(pool, amount="80.00", currency="EUR", posted_at=posted)
+
+    result = await spending_summary(pool, group_by="category")
+
+    assert result["currency"] is None
+    assert result["legacy_aggregate_degraded"] is True
+    assert result["degraded_reason"] == "multiple_currencies_unconverted"
+    assert result["by_currency"] == [
+        {
+            "currency": "EUR",
+            "total_spend": "80.00",
+            "groups": [{"key": "general", "amount": "80.00", "count": 1}],
+        },
+        {
+            "currency": "USD",
+            "total_spend": "100.00",
+            "groups": [{"key": "general", "amount": "100.00", "count": 1}],
+        },
+    ]
 
 
 # ---------------------------------------------------------------------------

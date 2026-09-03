@@ -408,6 +408,24 @@ class TestNetWorthHistory:
         assert Decimal(period["total_liabilities"]) == Decimal("3000.00")
         assert Decimal(period["net_worth"]) == Decimal("7000.00")
 
+    async def test_mixed_currency_net_worth_is_bucketed_and_legacy_is_degraded(self, pool):
+        from butlers.tools.finance.overview import net_worth_history, net_worth_snapshot
+
+        await net_worth_snapshot(
+            pool, account="Checking", institution="Chase", balance=1000, currency="USD"
+        )
+        await net_worth_snapshot(
+            pool, account="Current", institution="Wise", balance=800, currency="EUR"
+        )
+
+        period = (await net_worth_history(pool, months=1))["snapshots"][0]
+
+        assert period["currency"] is None
+        assert period["legacy_aggregate_degraded"] is True
+        assert [row["currency"] for row in period["by_currency"]] == ["EUR", "USD"]
+        assert Decimal(period["by_currency"][0]["net_worth"]) == Decimal("800")
+        assert Decimal(period["by_currency"][1]["net_worth"]) == Decimal("1000")
+
     async def test_carry_forward_for_missing_month(self, pool):
         """When a month has no snapshot for an account, carry forward from prior month."""
         from butlers.tools.finance.overview import net_worth_history
@@ -522,6 +540,44 @@ class TestCashFlow:
         period = result["periods"][0]
         # net = 1000, income = 2000 → savings_rate = 50%
         assert Decimal(period["savings_rate"]) == Decimal("50.00")
+
+    async def test_cash_flow_excludes_transfers_and_separates_currencies(self, pool):
+        from butlers.tools.finance.overview import cash_flow
+
+        posted = datetime.now(UTC)
+        await _insert_transaction(
+            pool, amount="2000", direction="credit", category="income", posted_at=posted
+        )
+        await _insert_transaction(
+            pool, amount="1000", direction="debit", category="housing", posted_at=posted
+        )
+        await _insert_transaction(
+            pool, amount="5000", direction="credit", category="transfer", posted_at=posted
+        )
+        await _insert_transaction(
+            pool, amount="5000", direction="debit", category="transfer", posted_at=posted
+        )
+        await _insert_transaction(
+            pool,
+            amount="400",
+            currency="EUR",
+            direction="credit",
+            category="income",
+            posted_at=posted,
+        )
+
+        result = await cash_flow(pool, period="monthly", months=1)
+        period = result["periods"][0]
+
+        assert Decimal(period["income"]) == Decimal("2400")
+        assert Decimal(period["expenses"]) == Decimal("1000")
+        assert period["legacy_aggregate_degraded"] is True
+        assert period["currency"] is None
+        assert [row["currency"] for row in period["by_currency"]] == ["EUR", "USD"]
+        usd = next(row for row in period["by_currency"] if row["currency"] == "USD")
+        assert Decimal(usd["income"]) == Decimal("2000")
+        assert Decimal(usd["expenses"]) == Decimal("1000")
+        assert usd["savings_rate"] == "50.00"
 
     async def test_savings_rate_null_when_no_income(self, pool):
         """savings_rate is None when income is zero."""
@@ -789,6 +845,27 @@ class TestSubscriptionAudit:
         # 15 * 12 = 180
         assert Decimal(result["total_annual_cost"]) == Decimal("180.00")
 
+    async def test_total_annual_cost_separates_currencies(self, pool):
+        from butlers.tools.finance.overview import subscription_audit
+
+        renewal = date.today() + timedelta(days=30)
+        await pool.execute(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('USD plan', 10, 'USD', 'monthly', $1, 'active'),
+                   ('EUR plan', 8, 'EUR', 'monthly', $1, 'active')
+            """,
+            renewal,
+        )
+
+        result = await subscription_audit(pool)
+        assert result["currency"] is None
+        assert result["legacy_aggregate_degraded"] is True
+        assert result["by_currency"] == [
+            {"currency": "EUR", "total_annual_cost": "96.00"},
+            {"currency": "USD", "total_annual_cost": "120.00"},
+        ]
+
     async def test_return_shape(self, pool):
         """Response has required top-level keys."""
         from butlers.tools.finance.overview import subscription_audit
@@ -957,6 +1034,34 @@ class TestSubscriptionAudit:
 
 
 class TestFlagTaxDeductible:
+    async def test_summary_separates_currencies(self, pool):
+        from butlers.tools.finance.overview import flag_tax_deductible
+
+        now = datetime.now(UTC)
+        await _insert_transaction(
+            pool,
+            merchant="US clinic",
+            amount="100",
+            currency="USD",
+            direction="debit",
+            category="medical",
+            posted_at=now,
+        )
+        await _insert_transaction(
+            pool,
+            merchant="EU clinic",
+            amount="80",
+            currency="EUR",
+            direction="debit",
+            category="medical",
+            posted_at=now,
+        )
+
+        summary = (await flag_tax_deductible(pool, year=now.year))["summary"]
+        assert summary["currency"] is None
+        assert summary["legacy_aggregate_degraded"] is True
+        assert [row["currency"] for row in summary["by_currency"]] == ["EUR", "USD"]
+
     async def test_empty_returns_no_transactions(self, pool):
         """With no transactions, returns empty result."""
         from butlers.tools.finance.overview import flag_tax_deductible

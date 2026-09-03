@@ -2114,6 +2114,8 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
                 {"service": "Unknown Merchant", "status": "detected_untracked"},
             ],
             "total_annual_cost": "150.00",
+            "currency": "USD",
+            "by_currency": [{"currency": "USD", "total_annual_cost": "150.00"}],
             "changes_since_last_audit": [],
         }
 

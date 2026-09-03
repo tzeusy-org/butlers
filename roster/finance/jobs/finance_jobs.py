@@ -33,6 +33,7 @@ from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
+from butlers.tools.finance.spending import spending_summary
 from butlers.tools.finance.transactions import _record_transaction
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
@@ -1602,7 +1603,8 @@ async def _month_over_month_trend(
         rows = await conn.fetch(
             """
             SELECT
-                category,
+                currency,
+                COALESCE(metadata->>'inferred_category', category) AS category,
                 COALESCE(
                     SUM(ABS(amount)) FILTER (WHERE posted_at >= $1 AND posted_at < $2),
                     0
@@ -1613,14 +1615,20 @@ async def _month_over_month_trend(
                 ) AS last_total
             FROM finance.transactions
             WHERE direction = 'debit'
+              AND deleted_at IS NULL
+              AND COALESCE(metadata->>'inferred_category', category)
+                  NOT IN ('transfer', 'uncategorized')
               AND posted_at >= $1
               AND posted_at < $3
-            GROUP BY category
+            GROUP BY currency, COALESCE(metadata->>'inferred_category', category)
             """,
             prior_month_start,
             prior_month_end,
             last_month_end,
         )
+
+    if len({str(row["currency"]) for row in rows}) > 1:
+        return None
 
     prior_grand = Decimal("0.00")
     last_grand = Decimal("0.00")
@@ -1696,41 +1704,28 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     last_month_start = (first_of_this_month - timedelta(days=1)).replace(day=1)
     period_label = last_month_start.strftime("%Y-%m")
 
-    async with db_pool.acquire() as conn:
-        category_rows = await conn.fetch(
-            """
-            SELECT category, SUM(ABS(amount)) AS total
-            FROM finance.transactions
-            WHERE direction = 'debit'
-              AND posted_at >= $1
-              AND posted_at < $2
-            GROUP BY category
-            ORDER BY total DESC
-            LIMIT 3
-            """,
-            last_month_start,
-            last_month_end,
+    async with _finance_scoped_connection(db_pool) as conn:
+        spend_result = await spending_summary(
+            conn,
+            start_date=last_month_start,
+            end_date=last_month_end - timedelta(days=1),
+            group_by="category",
         )
 
-    total_spend = Decimal("0.00")
-    async with db_pool.acquire() as conn:
-        total_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(ABS(amount)), 0) AS total
-            FROM finance.transactions
-            WHERE direction = 'debit'
-              AND posted_at >= $1
-              AND posted_at < $2
-            """,
-            last_month_start,
-            last_month_end,
-        )
-    if total_row:
-        total_spend = Decimal(str(total_row["total"]))
-
-    top_categories = ", ".join(
-        f"{row['category']} (${Decimal(str(row['total'])):.2f})" for row in category_rows
+    spend_by_currency = spend_result.get("by_currency", [])
+    spend_totals = " · ".join(
+        f"{bucket['currency']} {Decimal(str(bucket['total_spend'])):.2f}"
+        for bucket in spend_by_currency
     )
+    spend_summary_text = spend_totals or "no recorded spend"
+    category_labels: list[str] = []
+    for bucket in spend_by_currency:
+        currency = bucket["currency"]
+        category_labels.extend(
+            f"{group['key']} ({currency} {Decimal(str(group['amount'])):.2f})"
+            for group in bucket.get("groups", [])[:3]
+        )
+    top_categories = ", ".join(category_labels)
 
     async with _finance_scoped_connection(db_pool) as conn:
         budget_result = await budget_status(conn)
@@ -1751,7 +1746,12 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     untracked_count = sum(
         1 for e in audit_result.get("entries", []) if e.get("status") == "detected_untracked"
     )
-    total_annual_cost = audit_result.get("total_annual_cost", "0")
+    subscription_by_currency = audit_result.get("by_currency", [])
+    subscription_costs = " · ".join(
+        f"{bucket['currency']} {Decimal(str(bucket['total_annual_cost'])):.2f}/yr"
+        for bucket in subscription_by_currency
+    )
+    subscription_cost_text = subscription_costs or "annual cost unavailable"
 
     # bu-7hogl: restore the month-over-month "notable changes" trend content.
     # Never let a trend computation failure block the digest — degrade to omitting
@@ -1787,10 +1787,10 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     message = (
         f"Monthly finance digest for {period_label}: "
-        f"total spend ${total_spend:.2f}"
+        f"total spend {spend_summary_text}"
         + (f", top categories: {top_categories}" if top_categories else "")
         + f". Budget status: {budget_summary}. "
-        f"Subscriptions: {active_count} active (${total_annual_cost}/yr projected)"
+        f"Subscriptions: {active_count} active ({subscription_cost_text})"
         + (f", {untracked_count} untracked pattern(s) detected" if untracked_count else "")
         + "."
         + trend_segment
@@ -1807,7 +1807,9 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
         cooldown_days=25,
         metadata={
             "period": period_label,
-            "total_spend": str(total_spend),
+            "total_spend": spend_result.get("total_spend", "0"),
+            "spend_by_currency": spend_by_currency,
+            "spend_legacy_aggregate_degraded": spend_result.get("legacy_aggregate_degraded", False),
             "budget_flagged_count": len(flagged),
             "subscription_active_count": active_count,
             "subscription_untracked_count": untracked_count,

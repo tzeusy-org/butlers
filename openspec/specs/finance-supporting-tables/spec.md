@@ -19,6 +19,14 @@ The `finance.accounts` table SHALL be enhanced with lifecycle and sync tracking 
 - **WHEN** data is imported for an account
 - **THEN** `last_synced_at TIMESTAMPTZ` SHALL be updated to the current timestamp
 
+#### Scenario: Account readers surface feed freshness
+
+- **WHEN** the accounts API and Accounts panel render an active account
+- **THEN** they SHALL surface its persisted `last_synced_at`
+- **AND** a null value SHALL be named `never_synced`, a value older than the established 24-hour
+  feed threshold SHALL be named `stale`, and a recent value SHALL be non-degraded
+- **AND** absence or staleness SHALL NOT be rendered as a healthy feed
+
 #### Scenario: Extended account types
 - **WHEN** an account is created
 - **THEN** the `type` CHECK constraint SHALL accept: `'checking'`, `'savings'`, `'credit'`, `'investment'`, `'loan'`, `'other'`

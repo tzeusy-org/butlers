@@ -216,20 +216,15 @@ async def test_spending_summary_update_and_edge_cases():
 
     pool = _make_pool()
     pool.fetchval = AsyncMock(return_value=0)
-    pool.fetchrow = AsyncMock(
-        side_effect=[
-            _mock_row(total=Decimal("100.00")),
-            _mock_row(currency="USD", cnt=1),
-            _mock_row(cnt=3),
-        ]
+    pool.fetch = AsyncMock(
+        return_value=[_mock_row(currency="USD", total=Decimal("100.00"), count=3)]
     )
-    pool.fetch = AsyncMock(return_value=[])
 
     summary = await spending_summary(pool, start_date=date(2024, 1, 1), end_date=date(2024, 1, 31))
     assert all(
         k in summary for k in ("start_date", "end_date", "currency", "total_spend", "groups")
     )
-    assert "direction = 'debit'" in pool.fetchrow.call_args_list[0].args[0]
+    assert "direction = 'debit'" in pool.fetch.call_args_list[0].args[0]
 
     with pytest.raises(ValueError, match="Unsupported group_by"):
         await spending_summary(pool, group_by="invalid_group")

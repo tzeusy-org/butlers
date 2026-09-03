@@ -601,8 +601,9 @@ class TestCurrencyEdgeCases:
         )
         assert result["currency"] == "GBP"
 
-    async def test_spending_summary_currency_most_frequent_wins(self, pool):
-        """spending_summary reports the most-frequent currency in the result set."""
+    async def test_spending_summary_mixed_currency_degrades_to_by_currency(self, pool):
+        """spending_summary never blends currencies: mixed input degrades the legacy
+        scalar and reports honest per-currency buckets instead of picking a winner."""
         from butlers.tools.finance import record_transaction, spending_summary
 
         today = _today()
@@ -628,7 +629,11 @@ class TestCurrencyEdgeCases:
         )
 
         result = await spending_summary(pool, start_date=today.replace(day=1), end_date=today)
-        assert result["currency"] == "USD"
+        assert result["currency"] is None
+        assert result["legacy_aggregate_degraded"] is True
+        assert result["degraded_reason"] == "multiple_currencies_unconverted"
+        by_currency = {item["currency"]: item["total_spend"] for item in result["by_currency"]}
+        assert by_currency == {"USD": "30.00", "EUR": "20.00"}
 
     async def test_list_transactions_multi_currency_coexist(self, pool):
         """Transactions in different currencies are all stored and retrievable."""

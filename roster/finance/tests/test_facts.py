@@ -1137,7 +1137,16 @@ class TestSpendingSummaryFacts:
         from butlers.tools.finance.facts import spending_summary_facts
 
         result = await spending_summary_facts(pool=seeded, group_by="category")
-        assert set(result.keys()) == {"start_date", "end_date", "currency", "total_spend", "groups"}
+        assert set(result.keys()) == {
+            "start_date",
+            "end_date",
+            "currency",
+            "total_spend",
+            "groups",
+            "by_currency",
+            "legacy_aggregate_degraded",
+            "degraded_reason",
+        }
         assert isinstance(result["groups"], list)
 
     async def test_group_by_week(self, pool_with_owner):
@@ -1190,6 +1199,116 @@ class TestSpendingSummaryFacts:
         )
         # Should not raise; total should include the seeded debit transactions
         assert Decimal(result["total_spend"]) >= Decimal("0")
+
+    async def test_single_currency_not_degraded(self, seeded):
+        """A single-currency result reports a scalar currency and is never degraded."""
+        from butlers.tools.finance.facts import spending_summary_facts
+
+        result = await spending_summary_facts(pool=seeded)
+
+        assert result["currency"] == "USD"
+        assert result["legacy_aggregate_degraded"] is False
+        assert result["degraded_reason"] is None
+        assert [b["currency"] for b in result["by_currency"]] == ["USD"]
+        assert Decimal(result["by_currency"][0]["total_spend"]) == Decimal("165.49")
+
+    async def test_empty_result_has_no_currency(self, pool_with_owner):
+        """An empty result never invents a currency — no rows means no denomination."""
+        from butlers.tools.finance.facts import spending_summary_facts
+
+        result = await spending_summary_facts(pool=pool_with_owner)
+
+        assert result["currency"] is None
+        assert result["legacy_aggregate_degraded"] is False
+        assert result["by_currency"] == []
+
+    async def test_keeps_mixed_currencies_separate(self, pool_with_owner):
+        """Mixed currencies expose honest per-currency buckets, never a blended total."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import record_transaction_fact, spending_summary_facts
+
+            now = _utcnow()
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="US Store",
+                amount=-100.00,
+                currency="USD",
+                category="misc",
+            )
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="EU Store",
+                amount=-80.00,
+                currency="EUR",
+                category="misc",
+            )
+
+        result = await spending_summary_facts(pool=pool_with_owner)
+
+        assert result["currency"] is None
+        assert result["legacy_aggregate_degraded"] is True
+        assert result["degraded_reason"] == "multiple_currencies_unconverted"
+        by_currency = {b["currency"]: b["total_spend"] for b in result["by_currency"]}
+        assert by_currency == {"USD": "100.00", "EUR": "80.00"}
+
+    async def test_excludes_transfer_and_uncategorized(self, pool_with_owner):
+        """Effective category (inferred_category overlay, else category) excludes
+        transfer and uncategorized rows from spend — same contract as spending_summary."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import record_transaction_fact, spending_summary_facts
+
+            now = _utcnow()
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="Groceries",
+                amount=-100.00,
+                currency="USD",
+                category="groceries",
+            )
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="Wire",
+                amount=-500.00,
+                currency="USD",
+                category="transfer",
+            )
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="Unknown",
+                amount=-42.00,
+                currency="USD",
+                category="uncategorized",
+            )
+            # Raw category benign but inferred_category overlay says transfer.
+            await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="Overlay Transfer",
+                amount=-300.00,
+                currency="USD",
+                category="general",
+                metadata={"inferred_category": "transfer"},
+            )
+
+        result = await spending_summary_facts(pool=pool_with_owner, group_by="category")
+
+        assert Decimal(result["total_spend"]) == Decimal("100.00")
+        keys = {g["key"] for g in result["groups"]}
+        assert "transfer" not in keys
+        assert "uncategorized" not in keys
+        assert "general" not in keys
+        assert "groceries" in keys
 
 
 # ---------------------------------------------------------------------------

@@ -1388,6 +1388,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Recurrence signal health
 - Upcoming bills
 - Spending by category
+- Combined category chart
 - e.g. groceries
 - e.g. Whole Foods Market
 - Recent transactions
@@ -4170,4 +4171,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3269*
+*Total strings: 3270*

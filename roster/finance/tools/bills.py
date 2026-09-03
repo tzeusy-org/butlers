@@ -402,6 +402,7 @@ async def upcoming_bills(
     suppressed_placeholders = 0
     needs_action_amount = Decimal("0.00")
     autopay_amount = Decimal("0.00")
+    totals_by_currency: dict[str, dict[str, Decimal]] = {}
 
     for row in rows:
         bill = _row_to_dict(row)
@@ -426,13 +427,35 @@ async def upcoming_bills(
         }
 
         if row["autopay"]:
+            currency = str(row["currency"])
+            currency_totals = totals_by_currency.setdefault(
+                currency,
+                {"needs_action_amount": Decimal("0"), "autopay_amount": Decimal("0")},
+            )
             autopay_items.append(item)
             autopay_amount += amount
+            currency_totals["autopay_amount"] += amount
         elif row["predicted"]:
             predicted_items.append(item)
         else:
+            currency = str(row["currency"])
+            currency_totals = totals_by_currency.setdefault(
+                currency,
+                {"needs_action_amount": Decimal("0"), "autopay_amount": Decimal("0")},
+            )
             needs_action.append(item)
             needs_action_amount += amount
+            currency_totals["needs_action_amount"] += amount
+
+    by_currency = [
+        {
+            "currency": currency,
+            "needs_action_amount": str(totals_by_currency[currency]["needs_action_amount"]),
+            "autopay_amount": str(totals_by_currency[currency]["autopay_amount"]),
+        }
+        for currency in sorted(totals_by_currency)
+    ]
+    degraded = len(by_currency) > 1
 
     return {
         "as_of": datetime.now(UTC).isoformat(),
@@ -447,6 +470,10 @@ async def upcoming_bills(
             "autopay_count": len(autopay_items),
             "autopay_amount": str(autopay_amount),
             "predicted_count": len(predicted_items),
+            "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+            "by_currency": by_currency,
+            "legacy_aggregate_degraded": degraded,
+            "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
         },
     }
 
@@ -514,7 +541,17 @@ def compose_upcoming_bills_digest(
             )
 
     if needs_action:
-        needs_action_amount = totals.get("needs_action_amount", "0.00")
+        if totals.get("legacy_aggregate_degraded"):
+            needs_action_amount = " · ".join(
+                f"{item['currency']} {item['needs_action_amount']}"
+                for item in totals.get("by_currency", [])
+                if Decimal(str(item.get("needs_action_amount", "0"))) != 0
+            )
+        else:
+            needs_action_amount = str(totals.get("needs_action_amount", "0.00"))
+            currency = totals.get("currency")
+            if currency:
+                needs_action_amount = f"{currency} {needs_action_amount}"
         sections.append(f"\n⚠️ Needs action ({len(needs_action)}) — {needs_action_amount}")
         sorted_items = sorted(
             needs_action,

@@ -83,6 +83,9 @@ class AccountModel(BaseModel):
     name: str | None = None
     last_four: str | None = None
     currency: str
+    last_synced_at: str | None = None
+    feed_degraded: bool
+    feed_degraded_reason: Literal["never_synced", "stale"] | None = None
     metadata: dict = {}
     created_at: str
     updated_at: str
@@ -96,14 +99,25 @@ class SpendingGroupModel(BaseModel):
     count: int
 
 
+class CurrencySpendingSummaryModel(BaseModel):
+    """One non-converted spending aggregate for a single ISO currency."""
+
+    currency: str
+    total_spend: str
+    groups: list[SpendingGroupModel] = []
+
+
 class SpendingSummaryModel(BaseModel):
     """Aggregated spending summary over a date range."""
 
     start_date: str
     end_date: str
-    currency: str
+    currency: str | None
     total_spend: str
     groups: list[SpendingGroupModel] = []
+    by_currency: list[CurrencySpendingSummaryModel] = []
+    legacy_aggregate_degraded: bool = False
+    degraded_reason: Literal["multiple_currencies_unconverted"] | None = None
 
 
 class FinanceExpectedSignalModel(BaseModel):

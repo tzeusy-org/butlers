@@ -11,7 +11,8 @@ import importlib.util
 import json
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -500,7 +501,7 @@ async def list_accounts(
     total = await pool.fetchval(f"SELECT count(*) FROM finance.accounts{where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, institution, type, name, last_four, currency, metadata,"
+        f"SELECT id, institution, type, name, last_four, currency, last_synced_at, metadata,"
         f" created_at, updated_at"
         f" FROM finance.accounts{where}"
         f" ORDER BY institution ASC"
@@ -510,6 +511,7 @@ async def list_accounts(
         limit,
     )
 
+    freshness_cutoff = datetime.now(UTC) - timedelta(hours=24)
     data = [
         AccountModel(
             id=str(r["id"]),
@@ -518,6 +520,17 @@ async def list_accounts(
             name=r["name"],
             last_four=r["last_four"],
             currency=r["currency"],
+            last_synced_at=(
+                str(r.get("last_synced_at")) if r.get("last_synced_at") is not None else None
+            ),
+            feed_degraded=(
+                r.get("last_synced_at") is None or r.get("last_synced_at") < freshness_cutoff
+            ),
+            feed_degraded_reason=(
+                "never_synced"
+                if r.get("last_synced_at") is None
+                else ("stale" if r.get("last_synced_at") < freshness_cutoff else None)
+            ),
             metadata=dict(r["metadata"]) if r["metadata"] else {},
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),
@@ -600,29 +613,56 @@ async def get_spending_summary(
         group_expr = "to_char(t.posted_at, 'YYYY-MM')"
 
     total_row = await pool.fetchrow(
-        f"SELECT COALESCE(SUM(t.amount), 0) AS total, COALESCE(MAX(t.currency), 'USD') AS currency"
+        f"SELECT COALESCE(SUM(t.amount), 0) AS total,"
+        f" CASE WHEN COUNT(DISTINCT t.currency) = 1 THEN MIN(t.currency) ELSE NULL END AS currency,"
+        f" COUNT(DISTINCT t.currency) AS currency_count"
         f" FROM finance.transactions t{_OVERLAY_JOIN}{where}",
         *args,
     )
     total_spend = str(total_row["total"])
     currency = total_row["currency"]
+    currency_count = int(total_row.get("currency_count", 1 if currency else 0))
 
     group_rows = await pool.fetch(
-        f"SELECT {group_expr} AS key, SUM(t.amount) AS amount, COUNT(*) AS count"
+        f"SELECT t.currency, {group_expr} AS key, SUM(t.amount) AS amount, COUNT(*) AS count"
         f" FROM finance.transactions t{_OVERLAY_JOIN}{where}"
-        f" GROUP BY {group_expr}"
-        f" ORDER BY SUM(t.amount) DESC",
+        f" GROUP BY t.currency, {group_expr}"
+        f" ORDER BY t.currency, SUM(t.amount) DESC",
         *args,
     )
 
-    groups = [
-        SpendingGroupModel(
-            key=str(r["key"]),
-            amount=str(r["amount"]),
-            count=int(r["count"]),
+    currency_groups: dict[str, list[SpendingGroupModel]] = {}
+    legacy_groups: dict[str, dict[str, object]] = {}
+    for r in group_rows:
+        row_currency = str(r.get("currency") or currency or "")
+        group = SpendingGroupModel(
+            key=str(r["key"]), amount=str(r["amount"]), count=int(r["count"])
         )
-        for r in group_rows
+        currency_groups.setdefault(row_currency, []).append(group)
+        legacy = legacy_groups.setdefault(group.key, {"amount": Decimal("0"), "count": 0})
+        legacy["amount"] = Decimal(str(legacy["amount"])) + Decimal(group.amount)
+        legacy["count"] = int(legacy["count"]) + group.count
+
+    groups = [
+        SpendingGroupModel(key=key, amount=str(value["amount"]), count=int(value["count"]))
+        for key, value in legacy_groups.items()
     ]
+    if group_by in {"week", "month"}:
+        groups.sort(key=lambda group: group.key)
+    else:
+        groups.sort(key=lambda group: Decimal(group.amount), reverse=True)
+    by_currency = [
+        {
+            "currency": code,
+            "total_spend": str(
+                sum((Decimal(group.amount) for group in currency_groups[code]), Decimal("0"))
+            ),
+            "groups": currency_groups[code],
+        }
+        for code in sorted(currency_groups)
+        if code
+    ]
+    degraded = currency_count > 1
 
     return SpendingSummaryModel(
         start_date=str(start),
@@ -630,6 +670,9 @@ async def get_spending_summary(
         currency=currency,
         total_spend=total_spend,
         groups=groups,
+        by_currency=by_currency,
+        legacy_aggregate_degraded=degraded,
+        degraded_reason="multiple_currencies_unconverted" if degraded else None,
     )
 
 
@@ -673,7 +716,8 @@ async def get_upcoming_bills(
         )
 
     items = []
-    total_amount = 0.0
+    total_amount = Decimal("0")
+    totals_by_currency: dict[str, Decimal] = {}
 
     for r in rows:
         due = r["due_date"]
@@ -718,11 +762,24 @@ async def get_upcoming_bills(
         )
         item = UpcomingBillItemModel(bill=bill, urgency=urgency, days_until_due=days_until)
         items.append(item.model_dump())
-        total_amount += float(r["amount"])
+        amount = Decimal(str(r["amount"]))
+        total_amount += amount
+        currency = str(r["currency"])
+        totals_by_currency[currency] = totals_by_currency.get(currency, Decimal("0")) + amount
+
+    by_currency = [
+        {"currency": currency, "total_amount": str(totals_by_currency[currency])}
+        for currency in sorted(totals_by_currency)
+    ]
+    degraded = len(by_currency) > 1
 
     return {
         "items": items,
-        "total_amount": str(round(total_amount, 2)),
+        "total_amount": str(total_amount),
+        "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+        "by_currency": by_currency,
+        "legacy_aggregate_degraded": degraded,
+        "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
         "count": len(items),
         "days_ahead": days_ahead,
         "include_overdue": include_overdue,

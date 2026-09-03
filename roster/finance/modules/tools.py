@@ -600,7 +600,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     ) -> dict[str, Any]:
         """Aggregate outflow (debit) spending from SPO transaction facts over a date range.
 
-        Returns the same shape as spending_summary() but reads from the fact store.
+        Returns the same currency-honest shape as spending_summary() but reads
+        from the fact store, including canonical by_currency buckets and the
+        legacy scalar degradation marker.
         Amounts in groups are string-encoded for NUMERIC precision.
         group_by: category | merchant | week | month, or None (single bucket).
         Defaults to the current calendar month when start_date/end_date are omitted.

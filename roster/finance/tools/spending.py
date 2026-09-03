@@ -141,115 +141,139 @@ async def spending_summary(
 
     where_clause = " AND ".join(conditions)
 
-    # --- Total spend (across all matching rows) ---
-    total_row = await pool.fetchrow(
-        f"SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE {where_clause}",
-        *params,
-    )
-    total_spend: Decimal = total_row["total"]
-
-    # --- Determine representative currency ---
-    # Use the currency that appears most frequently among matching rows.
-    currency_row = await pool.fetchrow(
+    currency_rows = await pool.fetch(
         f"""
-        SELECT currency, COUNT(*) AS cnt
+        SELECT currency, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
         FROM transactions
         WHERE {where_clause}
         GROUP BY currency
-        ORDER BY cnt DESC
-        LIMIT 1
+        ORDER BY currency
         """,
         *params,
     )
-    currency: str = currency_row["currency"] if currency_row else "USD"
+    totals_by_currency = {
+        str(row["currency"]): {
+            "currency": str(row["currency"]),
+            "total_spend": str(Decimal(str(row["total"]))),
+            "groups": [],
+        }
+        for row in currency_rows
+    }
 
-    # --- Grouping ---
-    groups: list[dict[str, Any]] = []
+    grouped_rows: list[Any]
 
     if group_by is None:
         # No grouping — single bucket covering the whole range
-        count_row = await pool.fetchrow(
-            f"SELECT COUNT(*) AS cnt FROM transactions WHERE {where_clause}",
-            *params,
-        )
-        groups.append(
+        grouped_rows = [
             {
+                "currency": row["currency"],
                 "key": "total",
-                "amount": str(total_spend),
-                "count": count_row["cnt"] if count_row else 0,
+                "amount": row["total"],
+                "count": row["count"],
             }
-        )
+            for row in currency_rows
+        ]
 
     elif group_by == "category":
         # Overlay-aware category, matching the dashboard API group expression.
         group_expr = "COALESCE(metadata->>'inferred_category', category)"
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT {group_expr} AS key,
+            SELECT currency, {group_expr} AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY {group_expr}
-            ORDER BY amount DESC
+            GROUP BY currency, {group_expr}
+            ORDER BY currency, amount DESC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "merchant":
         # Overlay-aware merchant, matching the dashboard API group expression.
         group_expr = "COALESCE(metadata->>'normalized_merchant', merchant)"
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT {group_expr} AS key,
+            SELECT currency, {group_expr} AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY {group_expr}
-            ORDER BY amount DESC
+            GROUP BY currency, {group_expr}
+            ORDER BY currency, amount DESC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "week":
         # ISO week bucket: "YYYY-Www" e.g. "2026-W08"
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT TO_CHAR(DATE_TRUNC('week', posted_at), 'IYYY-"W"IW') AS key,
+            SELECT currency,
+                   TO_CHAR(DATE_TRUNC('week', posted_at), 'IYYY-"W"IW') AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY DATE_TRUNC('week', posted_at)
-            ORDER BY DATE_TRUNC('week', posted_at) ASC
+            GROUP BY currency, DATE_TRUNC('week', posted_at)
+            ORDER BY currency, DATE_TRUNC('week', posted_at) ASC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "month":
         # Calendar month bucket: "YYYY-MM" e.g. "2026-02"
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT TO_CHAR(DATE_TRUNC('month', posted_at), 'YYYY-MM') AS key,
+            SELECT currency,
+                   TO_CHAR(DATE_TRUNC('month', posted_at), 'YYYY-MM') AS key,
                    SUM(amount) AS amount,
                    COUNT(*) AS count
             FROM transactions
             WHERE {where_clause}
-            GROUP BY DATE_TRUNC('month', posted_at)
-            ORDER BY DATE_TRUNC('month', posted_at) ASC
+            GROUP BY currency, DATE_TRUNC('month', posted_at)
+            ORDER BY currency, DATE_TRUNC('month', posted_at) ASC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
+
+    legacy_groups: dict[str, dict[str, Any]] = {}
+    for row in grouped_rows:
+        currency_key = str(row["currency"])
+        group = {
+            "key": str(row["key"]),
+            "amount": str(Decimal(str(row["amount"]))),
+            "count": int(row["count"]),
+        }
+        totals_by_currency[currency_key]["groups"].append(group)
+        legacy = legacy_groups.setdefault(
+            group["key"], {"key": group["key"], "amount": Decimal("0"), "count": 0}
+        )
+        legacy["amount"] += Decimal(group["amount"])
+        legacy["count"] += group["count"]
+
+    currencies = list(totals_by_currency)
+    degraded = len(currencies) > 1
+    total_spend = sum(
+        (Decimal(item["total_spend"]) for item in totals_by_currency.values()), Decimal("0")
+    )
+    groups = [
+        {"key": item["key"], "amount": str(item["amount"]), "count": item["count"]}
+        for item in legacy_groups.values()
+    ]
+    if group_by in {"week", "month"}:
+        groups.sort(key=lambda item: item["key"])
+    else:
+        groups.sort(key=lambda item: Decimal(item["amount"]), reverse=True)
 
     return {
         "start_date": _iso(start_date),
         "end_date": _iso(end_date),
-        "currency": currency,
+        "currency": currencies[0] if len(currencies) == 1 else None,
         "total_spend": str(total_spend),
         "groups": groups,
+        "by_currency": list(totals_by_currency.values()),
+        "legacy_aggregate_degraded": degraded,
+        "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
     }

@@ -7747,6 +7747,9 @@ export interface FinanceAccount {
   name: string | null;
   last_four: string | null;
   currency: string;
+  last_synced_at?: string | null;
+  feed_degraded?: boolean;
+  feed_degraded_reason?: "never_synced" | "stale" | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -7762,10 +7765,17 @@ export interface FinanceSpendingGroup {
 export interface FinanceSpendingSummary {
   start_date: string;
   end_date: string;
-  currency: string;
+  currency: string | null;
   /** Numeric total as string. */
   total_spend: string;
   groups: FinanceSpendingGroup[];
+  by_currency?: Array<{
+    currency: string;
+    total_spend: string;
+    groups: FinanceSpendingGroup[];
+  }>;
+  legacy_aggregate_degraded?: boolean;
+  degraded_reason?: "multiple_currencies_unconverted" | null;
 }
 
 export interface FinanceUpcomingBillItem {
@@ -7778,6 +7788,10 @@ export interface FinanceUpcomingBillsResponse {
   items: FinanceUpcomingBillItem[];
   /** Numeric total as string. */
   total_amount: string;
+  currency?: string | null;
+  by_currency?: Array<{ currency: string; total_amount: string }>;
+  legacy_aggregate_degraded?: boolean;
+  degraded_reason?: "multiple_currencies_unconverted" | null;
   count: number;
   days_ahead: number;
   include_overdue: boolean;

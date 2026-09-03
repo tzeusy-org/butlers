@@ -182,6 +182,7 @@ def _account_row(
     name: str | None = "Sapphire",
     last_four: str | None = "4242",
     currency: str = "USD",
+    last_synced_at: Any = None,
     metadata: dict | None = None,
     created_at: Any = None,
     updated_at: Any = None,
@@ -193,6 +194,7 @@ def _account_row(
         "name": name,
         "last_four": last_four,
         "currency": currency,
+        "last_synced_at": last_synced_at,
         "metadata": metadata or {},
         "created_at": created_at or _NOW,
         "updated_at": updated_at or _NOW,
@@ -732,6 +734,27 @@ async def test_list_accounts_with_results():
 
 
 @pytest.mark.asyncio
+async def test_list_accounts_surfaces_feed_staleness():
+    rows = [
+        _account_row(institution="Never", last_synced_at=None),
+        _account_row(institution="Fresh", last_synced_at=datetime.now(UTC)),
+        _account_row(institution="Stale", last_synced_at=datetime.now(UTC) - timedelta(hours=25)),
+    ]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=3)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/accounts")
+
+    by_name = {row["institution"]: row for row in response.json()["data"]}
+    assert by_name["Never"]["feed_degraded_reason"] == "never_synced"
+    assert by_name["Stale"]["feed_degraded_reason"] == "stale"
+    assert by_name["Fresh"]["feed_degraded"] is False
+    assert by_name["Fresh"]["last_synced_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_list_accounts_excludes_inactive():
     """GET /api/finance/accounts filters out inactive accounts (is_active = true).
 
@@ -833,6 +856,28 @@ async def test_spending_summary_basic_shape():
     assert "total_spend" in body
     assert "groups" in body
     assert isinstance(body["groups"], list)
+
+
+@pytest.mark.asyncio
+async def test_spending_summary_mixed_currency_is_explicitly_degraded():
+    total = {"total": Decimal("180.00"), "currency": None, "currency_count": 2}
+    rows = [
+        {"currency": "EUR", "key": "groceries", "amount": Decimal("80"), "count": 1},
+        {"currency": "USD", "key": "groceries", "amount": Decimal("100"), "count": 1},
+    ]
+    app, mock_pool = _make_app(fetchrow_return=total)
+    mock_pool.fetch = AsyncMock(return_value=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/spending-summary")
+
+    body = response.json()
+    assert body["currency"] is None
+    assert body["legacy_aggregate_degraded"] is True
+    assert body["degraded_reason"] == "multiple_currencies_unconverted"
+    assert [item["currency"] for item in body["by_currency"]] == ["EUR", "USD"]
 
 
 @pytest.mark.asyncio

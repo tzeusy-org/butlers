@@ -234,6 +234,9 @@ const ACCOUNTS = [
     name: "Everyday Checking",
     last_four: "4321",
     currency: "USD",
+    last_synced_at: null,
+    feed_degraded: true,
+    feed_degraded_reason: "never_synced",
     metadata: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-05-01T00:00:00Z",
@@ -245,6 +248,9 @@ const ACCOUNTS = [
     name: null,
     last_four: "1009",
     currency: "USD",
+    last_synced_at: "2026-05-10T00:00:00Z",
+    feed_degraded: false,
+    feed_degraded_reason: null,
     metadata: {},
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-05-01T00:00:00Z",
@@ -525,6 +531,64 @@ describe("ButlerFinanceFinancesTab — KPI strip", () => {
   it("renders 'Monthly spend' label", () => {
     renderTab();
     expect(screen.getByText("Monthly spend")).toBeDefined();
+  });
+
+  it("does not present mixed-currency legacy totals as one amount", () => {
+    const mixed = {
+      start_date: "2026-05-01",
+      end_date: "2026-05-10",
+      currency: null,
+      total_spend: "180.00",
+      groups: [{ key: "groceries", amount: "180.00", count: 2 }],
+      by_currency: [
+        {
+          currency: "EUR",
+          total_spend: "80.00",
+          groups: [{ key: "groceries", amount: "80.00", count: 1 }],
+        },
+        {
+          currency: "USD",
+          total_spend: "100.00",
+          groups: [{ key: "groceries", amount: "100.00", count: 1 }],
+        },
+      ],
+      legacy_aggregate_degraded: true,
+      degraded_reason: "multiple_currencies_unconverted" as const,
+    };
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: mixed,
+      isLoading: false,
+    } as ReturnType<typeof useFinanceSpendingSummary>);
+
+    renderTab();
+
+    expect(screen.getAllByText("By currency").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("category-spend-by-currency").textContent).toContain("€80.00");
+    expect(screen.getByTestId("category-spend-by-currency").textContent).toContain("$100.00");
+    expect(screen.queryByText("$180.00")).toBeNull();
+  });
+
+  it("does not invent USD for an empty spending result", () => {
+    const empty = {
+      start_date: "2026-05-01",
+      end_date: "2026-05-10",
+      currency: null,
+      total_spend: "0",
+      groups: [],
+      by_currency: [],
+      legacy_aggregate_degraded: false,
+      degraded_reason: null,
+    };
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: empty,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useFinanceSpendingSummary>);
+
+    renderTab();
+
+    expect(screen.queryByText("$0.00")).toBeNull();
+    const kpiStrip = screen.getByTestId("finance-kpi-strip");
+    expect(kpiStrip.textContent).toContain("No spending data");
   });
 
   it("renders 'Active subscriptions' label", () => {
@@ -849,6 +913,43 @@ describe("ButlerFinanceFinancesTab — accounts panel", () => {
     setupWithData();
     renderTab();
     expect(screen.getByTestId("accounts-summary").textContent).toContain("2 accounts");
+  });
+
+  it("surfaces per-account feed freshness", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+
+    const states = screen.getAllByTestId("account-feed-freshness");
+    expect(states[0].textContent).toContain("Feed never synced");
+    expect(states[1].textContent).toContain("Feed synced");
+  });
+
+  it("shows the relative sync timestamp for a stale account", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    const staleSyncedAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: {
+        data: [
+          {
+            ...ACCOUNTS[1],
+            id: "acct-stale",
+            last_synced_at: staleSyncedAt,
+            feed_degraded: true,
+            feed_degraded_reason: "stale",
+          },
+        ],
+        meta: { total: 1, offset: 0, limit: 50 },
+      },
+      isLoading: false,
+    } as ReturnType<typeof useFinanceAccounts>);
+    renderTab();
+
+    const state = screen.getByTestId("account-feed-freshness");
+    expect(state.textContent).toContain("Feed stale");
+    // Stale is still evidence-bearing: the relative timestamp must render, not be hidden.
+    expect(state.textContent).not.toBe("Feed stale");
   });
 
   it("shows an honest empty state when no accounts exist", () => {

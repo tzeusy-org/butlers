@@ -402,6 +402,7 @@ async def net_worth_history(
         period_accounts: list[dict[str, Any]] = []
         total_assets = Decimal("0")
         total_liabilities = Decimal("0")
+        currency_totals: dict[str, dict[str, Any]] = {}
 
         for account_id in sorted(account_ids):
             acct_periods = snapshots_by_account_period.get(account_id, {})
@@ -420,10 +421,21 @@ async def net_worth_history(
                     continue
 
             balance = entry["balance"]
+            currency = str(entry["currency"])
+            currency_total = currency_totals.setdefault(
+                currency,
+                {
+                    "currency": currency,
+                    "total_assets": Decimal("0"),
+                    "total_liabilities": Decimal("0"),
+                },
+            )
             if balance >= 0:
                 total_assets += balance
+                currency_total["total_assets"] += balance
             else:
                 total_liabilities += abs(balance)
+                currency_total["total_liabilities"] += abs(balance)
 
             period_accounts.append(
                 {
@@ -435,6 +447,20 @@ async def net_worth_history(
                 }
             )
 
+        by_currency = []
+        for currency in sorted(currency_totals):
+            totals = currency_totals[currency]
+            assets = totals["total_assets"]
+            liabilities = totals["total_liabilities"]
+            by_currency.append(
+                {
+                    "currency": currency,
+                    "total_assets": str(assets),
+                    "total_liabilities": str(liabilities),
+                    "net_worth": str(assets - liabilities),
+                }
+            )
+        degraded = len(by_currency) > 1
         result_snapshots.append(
             {
                 "period": period,
@@ -442,6 +468,10 @@ async def net_worth_history(
                 "total_assets": str(total_assets),
                 "total_liabilities": str(total_liabilities),
                 "net_worth": str(total_assets - total_liabilities),
+                "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+                "by_currency": by_currency,
+                "legacy_aggregate_degraded": degraded,
+                "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
             }
         )
 
@@ -524,14 +554,17 @@ async def cash_flow(
         f"""
         SELECT
             {period_expr}                                             AS period_key,
+            currency,
             COALESCE(SUM(amount) FILTER (WHERE direction = 'credit'), 0) AS income,
             COALESCE(SUM(amount) FILTER (WHERE direction = 'debit'),  0) AS expenses
         FROM transactions
         WHERE posted_at::date >= $1
           AND posted_at::date <= $2
+          AND COALESCE(metadata->>'inferred_category', category)
+              NOT IN ('transfer', 'uncategorized')
           {deleted_filter}
-        GROUP BY period_key
-        ORDER BY period_key ASC
+        GROUP BY period_key, currency
+        ORDER BY period_key ASC, currency ASC
         """,
         start_date,
         end_date,
@@ -545,13 +578,42 @@ async def cash_flow(
         savings_rate = None
         if income > 0:
             savings_rate = str(round((net / income) * 100, 2))
-        period_data[row["period_key"]] = {
-            "period": row["period_key"],
-            "income": str(income),
-            "expenses": str(expenses),
-            "net": str(net),
-            "savings_rate": savings_rate,
-        }
+        period_entry = period_data.setdefault(
+            row["period_key"],
+            {
+                "period": row["period_key"],
+                "income": Decimal("0"),
+                "expenses": Decimal("0"),
+                "by_currency": [],
+            },
+        )
+        period_entry["income"] += income
+        period_entry["expenses"] += expenses
+        period_entry["by_currency"].append(
+            {
+                "currency": str(row["currency"]),
+                "income": str(income),
+                "expenses": str(expenses),
+                "net": str(net),
+                "savings_rate": savings_rate,
+            }
+        )
+
+    for data in period_data.values():
+        income = data["income"]
+        expenses = data["expenses"]
+        net = income - expenses
+        data["income"] = str(income)
+        data["expenses"] = str(expenses)
+        data["net"] = str(net)
+        data["savings_rate"] = str(round((net / income) * 100, 2)) if income > 0 else None
+        data["currency"] = (
+            data["by_currency"][0]["currency"] if len(data["by_currency"]) == 1 else None
+        )
+        data["legacy_aggregate_degraded"] = len(data["by_currency"]) > 1
+        data["degraded_reason"] = (
+            "multiple_currencies_unconverted" if len(data["by_currency"]) > 1 else None
+        )
 
     # Category breakdown (optional).
     if breakdown:
@@ -559,27 +621,39 @@ async def cash_flow(
             f"""
             SELECT
                 {period_expr}                                             AS period_key,
+                currency,
                 category,
                 COALESCE(SUM(amount) FILTER (WHERE direction = 'credit'), 0) AS income,
                 COALESCE(SUM(amount) FILTER (WHERE direction = 'debit'),  0) AS expenses
             FROM transactions
             WHERE posted_at::date >= $1
               AND posted_at::date <= $2
+              AND COALESCE(metadata->>'inferred_category', category)
+                  NOT IN ('transfer', 'uncategorized')
               {deleted_filter}
-            GROUP BY period_key, category
-            ORDER BY period_key ASC, expenses DESC
+            GROUP BY period_key, currency, category
+            ORDER BY period_key ASC, currency ASC, expenses DESC
             """,
             start_date,
             end_date,
         )
-        cat_by_period: dict[str, list[dict[str, Any]]] = {}
+        cat_by_period: dict[str, dict[str, dict[str, Any]]] = {}
         for row in cat_rows:
             pk = row["period_key"]
-            if pk not in cat_by_period:
-                cat_by_period[pk] = []
             income = Decimal(str(row["income"]))
             expenses = Decimal(str(row["expenses"]))
-            cat_by_period[pk].append(
+            category_entry = cat_by_period.setdefault(pk, {}).setdefault(
+                row["category"],
+                {"category": row["category"], "income": Decimal("0"), "expenses": Decimal("0")},
+            )
+            category_entry["income"] += income
+            category_entry["expenses"] += expenses
+            currency_entry = next(
+                item
+                for item in period_data[pk]["by_currency"]
+                if item["currency"] == str(row["currency"])
+            )
+            currency_entry.setdefault("categories", []).append(
                 {
                     "category": row["category"],
                     "income": str(income),
@@ -588,7 +662,15 @@ async def cash_flow(
                 }
             )
         for pk, data in period_data.items():
-            data["categories"] = cat_by_period.get(pk, [])
+            data["categories"] = [
+                {
+                    "category": item["category"],
+                    "income": str(item["income"]),
+                    "expenses": str(item["expenses"]),
+                    "net": str(item["income"] - item["expenses"]),
+                }
+                for item in cat_by_period.get(pk, {}).values()
+            ]
 
     # Compute averages.
     period_list = list(period_data.values())
@@ -601,10 +683,37 @@ async def cash_flow(
         avg_net = "0"
         avg_savings_rate = None
 
+    currency_periods: dict[str, list[dict[str, Any]]] = {}
+    for item in period_list:
+        for currency_item in item["by_currency"]:
+            currency_periods.setdefault(currency_item["currency"], []).append(
+                {"period": item["period"], **currency_item}
+            )
+    by_currency = []
+    for currency in sorted(currency_periods):
+        entries = currency_periods[currency]
+        total_net = sum((Decimal(entry["net"]) for entry in entries), Decimal("0"))
+        rates = [
+            Decimal(entry["savings_rate"]) for entry in entries if entry["savings_rate"] is not None
+        ]
+        by_currency.append(
+            {
+                "currency": currency,
+                "periods": entries,
+                "avg_net": str(round(total_net / len(entries), 2)),
+                "avg_savings_rate": (str(round(sum(rates) / len(rates), 2)) if rates else None),
+            }
+        )
+    degraded = len(by_currency) > 1
+
     return {
         "periods": period_list,
         "avg_net": avg_net,
         "avg_savings_rate": avg_savings_rate,
+        "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+        "by_currency": by_currency,
+        "legacy_aggregate_degraded": degraded,
+        "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
         "as_of": datetime.now(UTC).isoformat(),
     }
 
@@ -637,6 +746,7 @@ async def subscription_audit(
     """
     entries: list[dict[str, Any]] = []
     total_annual_cost = Decimal("0")
+    annual_cost_by_currency: dict[str, Decimal] = {}
 
     # --- Tracked subscriptions ---
     has_subscriptions = await pool.fetchval(
@@ -752,6 +862,10 @@ async def subscription_audit(
             entries.append(entry)
             if row["status"] == "active":
                 total_annual_cost += annual_cost
+                currency = str(row["currency"])
+                annual_cost_by_currency[currency] = (
+                    annual_cost_by_currency.get(currency, Decimal("0")) + annual_cost
+                )
 
     # --- Detected but untracked recurring charges ---
     has_recurring = await pool.fetchval(
@@ -788,6 +902,10 @@ async def subscription_audit(
             amount = Decimal(str(row["avg_amount"]))
             annual_cost = amount * _ANNUAL_MULTIPLIER.get(freq, 12)
             total_annual_cost += annual_cost
+            currency = str(row["currency"] or "USD")
+            annual_cost_by_currency[currency] = (
+                annual_cost_by_currency.get(currency, Decimal("0")) + annual_cost
+            )
 
             last_seen = row["last_seen_date"]
             next_exp = row["next_expected_date"]
@@ -805,9 +923,18 @@ async def subscription_audit(
             }
             entries.append(entry)
 
+    by_currency = [
+        {"currency": currency, "total_annual_cost": str(annual_cost_by_currency[currency])}
+        for currency in sorted(annual_cost_by_currency)
+    ]
+    degraded = len(by_currency) > 1
     return {
         "entries": entries,
         "total_annual_cost": str(total_annual_cost),
+        "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+        "by_currency": by_currency,
+        "legacy_aggregate_degraded": degraded,
+        "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
         "changes_since_last_audit": [],  # Populated by the LLM runtime using memory facts.
         "last_audit_date": None,  # Stored as memory fact with predicate='subscription_audit_date'.
         "as_of": datetime.now(UTC).isoformat(),
@@ -921,6 +1048,7 @@ async def flag_tax_deductible(
 
     flagged: list[dict[str, Any]] = []
     by_tax_category: dict[str, Decimal] = {}
+    tax_by_currency: dict[str, dict[str, Any]] = {}
     total_flagged = Decimal("0")
 
     for row in rows:
@@ -932,6 +1060,15 @@ async def flag_tax_deductible(
         amount = Decimal(str(row["amount"]))
         total_flagged += amount
         by_tax_category[tax_cat] = by_tax_category.get(tax_cat, Decimal("0")) + amount
+        currency = str(row["currency"])
+        currency_summary = tax_by_currency.setdefault(
+            currency,
+            {"currency": currency, "total_flagged_amount": Decimal("0"), "by_tax_category": {}},
+        )
+        currency_summary["total_flagged_amount"] += amount
+        currency_summary["by_tax_category"][tax_cat] = (
+            currency_summary["by_tax_category"].get(tax_cat, Decimal("0")) + amount
+        )
 
         flagged.append(
             {
@@ -946,12 +1083,28 @@ async def flag_tax_deductible(
             }
         )
 
+    by_currency = [
+        {
+            "currency": currency,
+            "total_flagged_amount": str(tax_by_currency[currency]["total_flagged_amount"]),
+            "by_tax_category": {
+                key: str(value)
+                for key, value in tax_by_currency[currency]["by_tax_category"].items()
+            },
+        }
+        for currency in sorted(tax_by_currency)
+    ]
+    degraded = len(by_currency) > 1
     return {
         "transactions": flagged,
         "summary": {
             "total_flagged_amount": str(total_flagged),
             "flagged_count": len(flagged),
             "by_tax_category": {k: str(v) for k, v in by_tax_category.items()},
+            "currency": by_currency[0]["currency"] if len(by_currency) == 1 else None,
+            "by_currency": by_currency,
+            "legacy_aggregate_degraded": degraded,
+            "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
         },
         "year": year,
         "disclaimer": _TAX_DISCLAIMER,

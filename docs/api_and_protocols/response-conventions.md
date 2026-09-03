@@ -89,6 +89,16 @@ Gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDeg
 vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline
 (colon-separated source and reason), never suppress it.
 
+### Currency-honest money aggregates
+
+An endpoint without an owner-sourced FX rate must aggregate monetary rows by their stored ISO
+currency. Additive `by_currency` buckets are the canonical totals. A retained legacy scalar may
+remain numeric for wire compatibility, but when more than one currency contributed it must carry
+`legacy_aggregate_degraded: true`, `degraded_reason: "multiple_currencies_unconverted"`, and a null
+`currency`. Frontends must render the per-currency buckets rather than format that degraded scalar
+as if it had one denomination. A single-currency result carries that real currency; an empty result
+does not invent USD.
+
 ## Related Pages
 
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming

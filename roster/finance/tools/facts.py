@@ -788,9 +788,10 @@ async def spending_summary_facts(
 ) -> dict[str, Any]:
     """Aggregate outflow (debit) spending from transaction facts over a date range.
 
-    Returns the same shape as the original spending_summary():
-        {start_date, end_date, currency, total_spend, groups}
-    where amounts in groups are string-encoded for NUMERIC precision.
+    Returns the same currency-honest shape as ``spending_summary()``:
+    ``{start_date, end_date, currency, total_spend, groups, by_currency,
+    legacy_aggregate_degraded, degraded_reason}``. Amounts are string-encoded
+    for NUMERIC precision; no FX conversion or default currency is inferred.
 
     group_by values: 'category', 'merchant', 'week', 'month', or None (single bucket).
     """
@@ -817,6 +818,8 @@ async def spending_summary_facts(
         f"predicate = '{_PREDICATE_TRANSACTION_DEBIT}'",
         "validity = 'active'",
         "scope = 'finance'",
+        "COALESCE(metadata->>'inferred_category', metadata->>'category') "
+        "NOT IN ('transfer', 'uncategorized')",
         "valid_at::date >= $1",
         "valid_at::date <= $2",
     ]
@@ -824,7 +827,9 @@ async def spending_summary_facts(
     idx = 3
 
     if category_filter is not None:
-        conditions.append(f"metadata->>'category' = ${idx}")
+        conditions.append(
+            f"COALESCE(metadata->>'inferred_category', metadata->>'category') = ${idx}"
+        )
         params.append(category_filter)
         idx += 1
 
@@ -835,113 +840,144 @@ async def spending_summary_facts(
 
     where_clause = " AND ".join(conditions)
 
-    # Total spend
-    total_row = await pool.fetchrow(
+    currency_expr = "metadata->>'currency'"
+    currency_rows = await pool.fetch(
         f"""
-        SELECT COALESCE(SUM((metadata->>'amount')::numeric), 0) AS total
+        SELECT {currency_expr} AS currency,
+               COALESCE(SUM((metadata->>'amount')::numeric), 0) AS total,
+               COUNT(*) AS count
         FROM facts
         WHERE {where_clause}
+        GROUP BY {currency_expr}
+        ORDER BY {currency_expr}
         """,
         *params,
     )
-    total_spend: Decimal = total_row["total"]
+    totals_by_currency = {
+        str(row["currency"]): {
+            "currency": str(row["currency"]),
+            "total_spend": str(Decimal(str(row["total"]))),
+            "groups": [],
+        }
+        for row in currency_rows
+        if row["currency"]
+    }
 
-    # Representative currency (most frequent)
-    currency_row = await pool.fetchrow(
-        f"""
-        SELECT metadata->>'currency' AS currency, COUNT(*) AS cnt
-        FROM facts
-        WHERE {where_clause}
-        GROUP BY metadata->>'currency'
-        ORDER BY cnt DESC
-        LIMIT 1
-        """,
-        *params,
-    )
-    currency: str = currency_row["currency"] if currency_row and currency_row["currency"] else "USD"
-
-    # Grouping
-    groups: list[dict[str, Any]] = []
+    grouped_rows: list[Any]
 
     if group_by is None:
-        count_row = await pool.fetchrow(
-            f"SELECT COUNT(*) AS cnt FROM facts WHERE {where_clause}",
-            *params,
-        )
-        groups.append(
+        grouped_rows = [
             {
+                "currency": row["currency"],
                 "key": "total",
-                "amount": str(total_spend),
-                "count": count_row["cnt"] if count_row else 0,
+                "amount": row["total"],
+                "count": row["count"],
             }
-        )
+            for row in currency_rows
+            if row["currency"]
+        ]
 
     elif group_by == "category":
-        rows = await pool.fetch(
+        group_expr = "COALESCE(metadata->>'inferred_category', metadata->>'category')"
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT COALESCE(metadata->>'inferred_category', metadata->>'category') AS key,
+            SELECT {currency_expr} AS currency, {group_expr} AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY COALESCE(metadata->>'inferred_category', metadata->>'category')
-            ORDER BY SUM((metadata->>'amount')::numeric) DESC
+            GROUP BY {currency_expr}, {group_expr}
+            ORDER BY {currency_expr}, amount DESC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "merchant":
-        rows = await pool.fetch(
+        group_expr = "COALESCE(metadata->>'normalized_merchant', metadata->>'merchant')"
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT COALESCE(metadata->>'normalized_merchant', metadata->>'merchant') AS key,
+            SELECT {currency_expr} AS currency, {group_expr} AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY COALESCE(metadata->>'normalized_merchant', metadata->>'merchant')
-            ORDER BY SUM((metadata->>'amount')::numeric) DESC
+            GROUP BY {currency_expr}, {group_expr}
+            ORDER BY {currency_expr}, amount DESC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "week":
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT TO_CHAR(DATE_TRUNC('week', valid_at), 'IYYY-"W"IW') AS key,
+            SELECT {currency_expr} AS currency,
+                   TO_CHAR(DATE_TRUNC('week', valid_at), 'IYYY-"W"IW') AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY DATE_TRUNC('week', valid_at)
-            ORDER BY DATE_TRUNC('week', valid_at) ASC
+            GROUP BY {currency_expr}, DATE_TRUNC('week', valid_at)
+            ORDER BY {currency_expr}, DATE_TRUNC('week', valid_at) ASC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
 
     elif group_by == "month":
-        rows = await pool.fetch(
+        grouped_rows = await pool.fetch(
             f"""
-            SELECT TO_CHAR(DATE_TRUNC('month', valid_at), 'YYYY-MM') AS key,
+            SELECT {currency_expr} AS currency,
+                   TO_CHAR(DATE_TRUNC('month', valid_at), 'YYYY-MM') AS key,
                    SUM((metadata->>'amount')::numeric) AS amount,
                    COUNT(*) AS count
             FROM facts
             WHERE {where_clause}
-            GROUP BY DATE_TRUNC('month', valid_at)
-            ORDER BY DATE_TRUNC('month', valid_at) ASC
+            GROUP BY {currency_expr}, DATE_TRUNC('month', valid_at)
+            ORDER BY {currency_expr}, DATE_TRUNC('month', valid_at) ASC
             """,
             *params,
         )
-        groups = [{"key": r["key"], "amount": str(r["amount"]), "count": r["count"]} for r in rows]
+
+    legacy_groups: dict[str, dict[str, Any]] = {}
+    for row in grouped_rows:
+        currency = str(row["currency"])
+        if currency not in totals_by_currency:
+            continue
+        group = {
+            "key": str(row["key"]),
+            "amount": str(Decimal(str(row["amount"]))),
+            "count": int(row["count"]),
+        }
+        totals_by_currency[currency]["groups"].append(group)
+        legacy = legacy_groups.setdefault(
+            group["key"], {"key": group["key"], "amount": Decimal("0"), "count": 0}
+        )
+        legacy["amount"] += Decimal(group["amount"])
+        legacy["count"] += group["count"]
+
+    groups = [
+        {"key": item["key"], "amount": str(item["amount"]), "count": item["count"]}
+        for item in legacy_groups.values()
+    ]
+    if group_by in {"week", "month"}:
+        groups.sort(key=lambda item: item["key"])
+    else:
+        groups.sort(key=lambda item: Decimal(item["amount"]), reverse=True)
+
+    currencies = list(totals_by_currency)
+    degraded = len(currencies) > 1
+    total_spend = sum(
+        (Decimal(item["total_spend"]) for item in totals_by_currency.values()), Decimal("0")
+    )
 
     return {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-        "currency": currency,
+        "currency": currencies[0] if len(currencies) == 1 else None,
         "total_spend": str(total_spend),
         "groups": groups,
+        "by_currency": list(totals_by_currency.values()),
+        "legacy_aggregate_degraded": degraded,
+        "degraded_reason": "multiple_currencies_unconverted" if degraded else None,
     }
 
 
