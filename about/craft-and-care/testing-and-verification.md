@@ -63,6 +63,17 @@ For a final backend claim, use the CI-shaped unit and integration targets in
 `AGENTS.md` only when local reproduction is needed; otherwise push the exact
 head after focused evidence and use terminal hosted CI as the one broad result.
 
+That one broad result is the merge queue's `merge_group` run, which validates
+the exact tree about to land. A pull request's own CI run is narrower on
+purpose: a docs/spec-only diff skips the backend shards and frontend jobs, and
+a push to `main` skips the shards because the queue already ran them. The
+suite also has a size budget: `scripts/check_test_budget.py` fails
+`check-preflight` when a lane collects more tests than
+`scripts/test-budget-baseline.json` allows, so a change that grows the suite
+past its headroom condenses tests in the same PR or raises the budget with a
+stated net test delta and reason. Tests are production code with a run-time
+cost on every merge; more of them is not free.
+
 Use `make test-qg-serial` when debugging order-dependent failures.
 
 Both targets run pytest through `scripts/pytest_gate.py` and end on a `PASS` / `FAILED` / `UNKNOWN`

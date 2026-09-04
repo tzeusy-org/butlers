@@ -107,9 +107,23 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    refuses dirty state; any edit or rebase invalidates its receipt. Reviewers
    reuse only that matching clean receipt and run focused tests for their
    findings; they do not repeat an already-valid broad gate. A targeted PASS
-   proves only its named scope; terminal hosted CI is the broad merge evidence,
-   even though this repository's branch protection does not technically enforce
-   it.
+   proves only its named scope; terminal hosted CI is the broad merge evidence.
+
+   The merge queue's `merge_group` run is that terminal broad gate: it runs
+   every shard, `guards`, and `frontend` against the exact tree about to land
+   (enforced by the `main-merge-queue` ruleset from
+   `scripts/setup_main_ruleset.sh`). A PR's own CI run is deliberately
+   narrower: the `changes` job classifies the diff fail-closed, and a
+   docs/spec-only PR skips the backend shards and frontend jobs on purpose,
+   while `push` to `main` skips the shards because the queue already validated
+   that tree. Do not rebase a clean PR onto `main` to "refresh" it; the queue
+   does that validation. `check-preflight` also runs
+   `scripts/check_test_budget.py`, a per-lane collected-test budget
+   (`scripts/test-budget-baseline.json`): a PR that pushes a lane over budget
+   condenses tests in the same PR, or raises the budget with
+   `--update-baseline` and states the net test delta (`Tests: +a ~b -c`) and
+   why in the PR body. `make check-guards` runs every `guards` step locally
+   before you push.
 
 ### Scope names are not interchangeable
 
