@@ -23,10 +23,11 @@ import asyncpg
 import pytest
 
 from butlers.context_bus import ContextSignal
+from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.jobs.context_producers import (
     classify_calendar_signal,
-    resolve_presence,
+    resolve_owner_presence,
     run_calendar_context_producer,
     run_home_presence_context_producer,
     run_sleep_window_context_producer,
@@ -60,52 +61,82 @@ def test_classify_calendar_signal(title, expected):
     assert classify_calendar_signal(title) is expected
 
 
-def test_resolve_presence():
+def test_resolve_owner_presence():
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     fresh = now - timedelta(minutes=5)
     stale = now - timedelta(hours=2)
+    owner_ids = frozenset({"person.owner", "device_tracker.owner_phone"})
 
-    # A fresh presence entity reading "home" -> True
+    # A fresh owner-linked entity reading "home" -> True
     assert (
-        resolve_presence(
-            [{"entity_id": "person.owner", "state": "home", "captured_at": fresh}],
+        resolve_owner_presence(
+            [{"entity_id": "person.owner", "state": "home", "last_updated": fresh}],
+            owner_entity_ids=owner_ids,
             now=now,
         )
         is True
     )
-    # Fresh entities, none home -> False (explicit away)
+    # Fresh owner-linked entities, none home -> False (explicit away)
     assert (
-        resolve_presence(
-            [{"entity_id": "device_tracker.phone", "state": "not_home", "captured_at": fresh}],
+        resolve_owner_presence(
+            [
+                {
+                    "entity_id": "device_tracker.owner_phone",
+                    "state": "not_home",
+                    "last_updated": fresh,
+                }
+            ],
+            owner_entity_ids=owner_ids,
             now=now,
         )
         is False
     )
     # Only a stale "home" reading -> unknown (never assert on a dead feed)
     assert (
-        resolve_presence(
-            [{"entity_id": "person.owner", "state": "home", "captured_at": stale}],
+        resolve_owner_presence(
+            [{"entity_id": "person.owner", "state": "home", "last_updated": stale}],
+            owner_entity_ids=owner_ids,
             now=now,
         )
         is None
     )
-    # Non-presence entities are ignored -> unknown
+    # A fresh, non-owner entity (housemate/guest) reading "home" is ignored -> unknown,
+    # never asserts at_home on the owner's behalf.
     assert (
-        resolve_presence(
-            [{"entity_id": "sensor.kitchen_temp", "state": "home", "captured_at": fresh}],
+        resolve_owner_presence(
+            [{"entity_id": "person.housemate", "state": "home", "last_updated": fresh}],
+            owner_entity_ids=owner_ids,
             now=now,
         )
         is None
+    )
+    # Owner absent while a housemate is fresh-and-home -> still False, not True: the
+    # housemate's presence must never stand in for the owner's.
+    assert (
+        resolve_owner_presence(
+            [
+                {"entity_id": "person.housemate", "state": "home", "last_updated": fresh},
+                {"entity_id": "person.owner", "state": "not_home", "last_updated": fresh},
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        is False
     )
     # Empty -> unknown
-    assert resolve_presence([], now=now) is None
-    # A fresh home reading wins even when another entity is away
+    assert resolve_owner_presence([], owner_entity_ids=owner_ids, now=now) is None
+    # A fresh home reading wins even when another owner entity is away
     assert (
-        resolve_presence(
+        resolve_owner_presence(
             [
-                {"entity_id": "device_tracker.phone", "state": "not_home", "captured_at": fresh},
-                {"entity_id": "person.owner", "state": "home", "captured_at": fresh},
+                {
+                    "entity_id": "device_tracker.owner_phone",
+                    "state": "not_home",
+                    "last_updated": fresh,
+                },
+                {"entity_id": "person.owner", "state": "home", "last_updated": fresh},
             ],
+            owner_entity_ids=owner_ids,
             now=now,
         )
         is True
@@ -506,10 +537,34 @@ class TestContextProducersIntegration:
         finally:
             await pool.close()
 
+    async def _mark_ha_source_healthy(self, pool: asyncpg.Pool) -> None:
+        await pool.execute(
+            """
+            INSERT INTO ha_source_health (source, status, last_success_at, updated_at)
+            VALUES ('home_assistant', 'healthy', now(), now())
+            ON CONFLICT (source) DO UPDATE SET
+                status = 'healthy', last_success_at = now(), updated_at = now()
+            """
+        )
+
+    async def _mark_ha_source_error(self, pool: asyncpg.Pool) -> None:
+        await pool.execute(
+            """
+            INSERT INTO ha_source_health (source, status, last_error_at, last_error, updated_at)
+            VALUES ('home_assistant', 'error', now(), 'simulated outage', now())
+            ON CONFLICT (source) DO UPDATE SET
+                status = 'error', last_error_at = now(), last_error = 'simulated outage',
+                updated_at = now()
+            """
+        )
+
     async def test_home_presence_producer_sets_and_clears(self, home_db_url):
         pool = await _pool(home_db_url)
         try:
-            # Build captured_at from the Python clock (the same clock the
+            await self._mark_ha_source_healthy(pool)
+            await state_set(pool, "home:presence:owner_entities", ["person.owner"])
+
+            # Build last_updated from the Python clock (the same clock the
             # producer reads via datetime.now(UTC)) rather than PG now(): under
             # libfaketime the Python process clock is shifted +45d/+120d but the
             # testcontainer Postgres clock is not, so a PG-now() row would look
@@ -518,7 +573,7 @@ class TestContextProducersIntegration:
             # faketime coverage of the 30-min freshness gate.
             await pool.execute("TRUNCATE ha_entity_snapshot")
             await pool.execute(
-                "INSERT INTO ha_entity_snapshot (entity_id, state, captured_at) "
+                "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
                 "VALUES ('person.owner', 'home', $1)",
                 datetime.now(UTC),
             )
@@ -532,7 +587,7 @@ class TestContextProducersIntegration:
 
             # Owner leaves: producer clears at_home.
             await pool.execute(
-                "UPDATE ha_entity_snapshot SET state = 'not_home', captured_at = $1",
+                "UPDATE ha_entity_snapshot SET state = 'not_home', last_updated = $1",
                 datetime.now(UTC),
             )
             result2 = await run_home_presence_context_producer(pool)
@@ -544,11 +599,81 @@ class TestContextProducersIntegration:
 
             # Stale feed: producer leaves state untouched (unknown).
             await pool.execute(
-                "UPDATE ha_entity_snapshot SET state = 'home', captured_at = $1",
+                "UPDATE ha_entity_snapshot SET state = 'home', last_updated = $1",
                 datetime.now(UTC) - timedelta(hours=2),
             )
             result3 = await run_home_presence_context_producer(pool)
             assert result3["presence"] == "unknown"
+        finally:
+            await pool.close()
+
+    async def test_home_presence_producer_ignores_housemate_when_owner_absent(self, home_db_url):
+        """bu-8cdl1.11 slice 1: a fresh housemate/guest entity must never assert at_home."""
+        pool = await _pool(home_db_url)
+        try:
+            await self._mark_ha_source_healthy(pool)
+            await state_set(pool, "home:presence:owner_entities", ["person.owner"])
+
+            await pool.execute("TRUNCATE ha_entity_snapshot")
+            now = datetime.now(UTC)
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) VALUES "
+                "('person.owner', 'not_home', $1), ('person.housemate', 'home', $1)",
+                now,
+            )
+            result = await run_home_presence_context_producer(pool)
+            assert result["presence"] == "away"
+            assert not await pool.fetchval(
+                "SELECT count(*) FROM public.user_context "
+                "WHERE signal_type = 'at_home' AND superseded_at IS NULL AND expires_at > now()"
+            )
+        finally:
+            await pool.close()
+
+    async def test_home_presence_producer_reports_unmeasurable_on_ha_outage(self, home_db_url):
+        """bu-8cdl1.11 slice 1: an unhealthy HA source reports unmeasurable, never a guess."""
+        pool = await _pool(home_db_url)
+        try:
+            await state_set(pool, "home:presence:owner_entities", ["person.owner"])
+            await self._mark_ha_source_healthy(pool)
+            await pool.execute("TRUNCATE ha_entity_snapshot")
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
+                "VALUES ('person.owner', 'home', $1)",
+                datetime.now(UTC),
+            )
+            # Owner is fresh-and-home while the source is healthy.
+            result = await run_home_presence_context_producer(pool)
+            assert result["presence"] == "home"
+
+            # HA outage: even though ha_entity_snapshot still shows a fresh
+            # "home" row, the producer must not keep asserting on it.
+            await self._mark_ha_source_error(pool)
+            result2 = await run_home_presence_context_producer(pool)
+            assert result2["presence"] == "unmeasurable"
+        finally:
+            await pool.close()
+
+    async def test_home_presence_producer_reports_unconfigured_without_owner_mapping(
+        self, home_db_url
+    ):
+        """bu-8cdl1.11 slice 1: no owner mapping -> explicit unconfigured, not everyone-is-home."""
+        pool = await _pool(home_db_url)
+        try:
+            await self._mark_ha_source_healthy(pool)
+            await pool.execute("DELETE FROM state WHERE key = 'home:presence:owner_entities'")
+            await pool.execute("TRUNCATE ha_entity_snapshot")
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
+                "VALUES ('person.housemate', 'home', $1)",
+                datetime.now(UTC),
+            )
+            result = await run_home_presence_context_producer(pool)
+            assert result["presence"] == "unconfigured"
+            assert not await pool.fetchval(
+                "SELECT count(*) FROM public.user_context "
+                "WHERE signal_type = 'at_home' AND superseded_at IS NULL AND expires_at > now()"
+            )
         finally:
             await pool.close()
 

@@ -24,8 +24,14 @@ Producers and their sources
   maps to ``focused``; everything else maps to ``meeting``. Expiry is the
   event's own end time.
 - **home → at_home** (writer ``home``): fresh ``person.*`` / ``device_tracker.*``
-  presence rows in ``ha_entity_snapshot``. A stale snapshot never asserts
-  presence (freshness gate); once presence reads away, the signal is cleared.
+  presence rows in ``ha_entity_snapshot`` belonging to the *owner* (per the
+  ``home:presence:owner_entities`` state-store mapping) — a housemate's or
+  guest's device never asserts or clears this signal. Freshness is judged on
+  each row's HA-owned ``last_updated`` clock, not the connector's
+  writer-stamped ``captured_at``. When ``ha_source_health`` shows HA itself is
+  not confirmed reachable, or no owner presence entities are configured, the
+  producer reports ``unmeasurable`` / ``unconfigured`` respectively and
+  leaves the signal untouched rather than guessing (bu-8cdl1.11 slice 1).
 - **travel → traveling** (writer ``travel``): a currently-underway trip in
   ``travel.trips`` (an active trip is the container for its legs). Cleared when
   no trip is underway.
@@ -54,7 +60,9 @@ from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
     policy_quiet_hours_deliver_at,
 )
+from butlers.core.state import state_get
 from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
+from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
 
@@ -155,42 +163,74 @@ async def run_calendar_context_producer(
 # Home-presence producer (writer: home) — at_home
 # ---------------------------------------------------------------------------
 
-# HA entity_id prefixes that carry owner presence.
-_PRESENCE_ENTITY_PREFIXES: tuple[str, ...] = ("person.", "device_tracker.")
-# A presence snapshot older than this is ignored — a dead HA feed must never
-# assert (or hold) presence.
+# State-store key holding the owner's HA presence entity ids (a JSON list of
+# ``person.*`` / ``device_tracker.*`` entity ids). Absent, malformed, or empty
+# means "unconfigured" — at_home must never fall back to treating every
+# person/device_tracker entity (housemates, guests) as the owner.
+_OWNER_PRESENCE_ENTITIES_KEY = "home:presence:owner_entities"
+# A presence entity whose HA-owned last_updated clock is older than this is
+# ignored — a device tracker that stopped reporting must never assert (or
+# hold) presence.
 _PRESENCE_FRESHNESS = timedelta(minutes=30)
 # Bounded refresh window: if the producer stops, at_home self-heals within
 # roughly two run cadences rather than lingering the full 12h default TTL.
 _AT_HOME_REFRESH_TTL = timedelta(minutes=25)
 
 
-def resolve_presence(
+async def _load_owner_presence_entity_ids(pool: asyncpg.Pool) -> frozenset[str] | None:
+    """Load the owner's HA presence entity ids from the state store.
+
+    Returns ``None`` when unconfigured — no key, a non-list value, or an empty
+    list — so the caller can report an explicit ``unconfigured`` presence
+    state instead of silently treating any fresh person/device_tracker entity
+    as the owner (bu-8cdl1.11 slice 1: the fleet-wide-any-entity defect this
+    producer fixes).
+    """
+    raw = await state_get(pool, _OWNER_PRESENCE_ENTITIES_KEY)
+    if not isinstance(raw, list):
+        return None
+    entity_ids = frozenset(item for item in raw if isinstance(item, str) and item)
+    if not entity_ids:
+        return None
+    return entity_ids
+
+
+def resolve_owner_presence(
     rows: list[dict[str, Any]] | list[asyncpg.Record],
     *,
+    owner_entity_ids: frozenset[str],
     now: datetime,
     freshness: timedelta = _PRESENCE_FRESHNESS,
 ) -> bool | None:
-    """Decide owner presence from HA snapshot rows.
+    """Decide owner presence from HA snapshot rows, scoped to the owner's entities.
 
-    Returns ``True`` if any *fresh* presence entity reads ``home``, ``False`` if
-    fresh presence entities exist but none read ``home``, and ``None`` when
-    there is no fresh presence data at all (unknown — neither assert nor clear).
+    Returns ``True`` if any *fresh*, owner-linked entity reads ``home``,
+    ``False`` if fresh owner-linked entities exist but none read ``home``, and
+    ``None`` when there is no fresh owner-linked data at all (unknown —
+    neither assert nor clear).
 
-    Each row must expose ``entity_id``, ``state`` and ``captured_at``.
+    Only rows whose ``entity_id`` is a member of *owner_entity_ids* are
+    considered — a housemate's or guest's device must never assert or clear
+    ``at_home``. Freshness is judged against each row's HA-owned
+    ``last_updated`` clock rather than the connector's writer-stamped
+    ``captured_at``: the poll cycle re-stamps ``captured_at`` every run
+    regardless of whether the entity itself changed, so a ``captured_at``-based
+    cutoff cannot detect a genuinely stale presence feed.
+
+    Each row must expose ``entity_id``, ``state`` and ``last_updated``.
     """
     cutoff = now - freshness
     saw_fresh = False
     for row in rows:
         entity_id = row["entity_id"] or ""
-        if not entity_id.startswith(_PRESENCE_ENTITY_PREFIXES):
+        if entity_id not in owner_entity_ids:
             continue
-        captured_at = row["captured_at"]
-        if captured_at is None:
+        last_updated = row["last_updated"]
+        if last_updated is None:
             continue
-        if captured_at.tzinfo is None:
-            captured_at = captured_at.replace(tzinfo=UTC)
-        if captured_at < cutoff:
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=UTC)
+        if last_updated < cutoff:
             continue
         saw_fresh = True
         if (row["state"] or "").strip().lower() == "home":
@@ -204,23 +244,42 @@ async def run_home_presence_context_producer(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Publish ``at_home`` from fresh Home Assistant presence entities.
+    """Publish ``at_home`` from the owner's fresh Home Assistant presence entities.
 
-    Sets ``at_home`` when a fresh ``person.*``/``device_tracker.*`` snapshot
-    reads ``home``; clears it when fresh presence reads away; leaves the signal
-    untouched when there is no fresh presence data (avoids flapping on a stale
-    feed — the existing signal expires on its own TTL).
+    Sets ``at_home`` when a fresh owner-linked ``person.*``/``device_tracker.*``
+    entity reads ``home``; clears it when fresh owner-linked presence reads
+    away; leaves the signal untouched when there is no fresh owner-linked
+    data (avoids flapping on a stale feed — the existing signal expires on its
+    own TTL). Non-owner entities (housemates, guests) never assert or clear
+    this signal.
+
+    Reports ``unmeasurable`` instead of guessing when the HA source itself is
+    not confirmed healthy (``ha_source_health`` — bu-8cdl1.12 slice 1's guard,
+    reused rather than reimplemented), and ``unconfigured`` when no owner
+    presence entities are on file — neither case touches the signal, so a
+    prior assertion self-heals via its bounded TTL instead of a producer
+    guessing in either direction.
     """
     del job_args
     now = datetime.now(UTC)
+
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError:
+        return {"signal": None, "presence": "unmeasurable"}
+
+    owner_entity_ids = await _load_owner_presence_entity_ids(pool)
+    if owner_entity_ids is None:
+        return {"signal": None, "presence": "unconfigured"}
+
     rows = await pool.fetch(
         """
-        SELECT entity_id, state, captured_at
+        SELECT entity_id, state, last_updated
         FROM ha_entity_snapshot
         WHERE entity_id LIKE 'person.%' OR entity_id LIKE 'device_tracker.%'
         """
     )
-    presence = resolve_presence(rows, now=now)
+    presence = resolve_owner_presence(rows, owner_entity_ids=owner_entity_ids, now=now)
 
     if presence is True:
         await set_context(
@@ -382,7 +441,7 @@ async def run_sleep_window_context_producer(
 
 __all__ = [
     "classify_calendar_signal",
-    "resolve_presence",
+    "resolve_owner_presence",
     "run_calendar_context_producer",
     "run_home_presence_context_producer",
     "run_sleep_window_context_producer",
