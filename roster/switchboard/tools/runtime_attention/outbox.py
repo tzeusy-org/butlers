@@ -456,12 +456,21 @@ class RuntimeAttentionOutbox:
         may have handed the message to the provider before dying, so the only
         honest terminal state is ``uncertain`` — replaying it would be exactly
         the double delivery this lane exists to prevent.
+
+        ``delivery_error_class``/``delivery_error_detail`` are set to the
+        fixed ``('transport_uncertain', 'worker_recovery')`` pair
+        ``ck_runtime_attention_outbox_delivery_evidence`` reserves for exactly
+        this recovery-fenced path (mirrors ``routing.transport.WORKER_RECOVERY``).
+        ``notification_ref`` stays NULL: no delivery was observed here, so
+        there is no notification to link.
         """
         async with self._switchboard_tx() as connection:
             row = await connection.fetchrow(
                 """
                 UPDATE public.runtime_attention_outbox
-                SET lifecycle_state = 'uncertain'
+                SET lifecycle_state = 'uncertain',
+                    delivery_error_class = 'transport_uncertain',
+                    delivery_error_detail = 'worker_recovery'
                 WHERE id = $1
                   AND lifecycle_state = 'sending'
                   AND claim_token = $2
