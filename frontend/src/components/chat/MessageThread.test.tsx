@@ -4,8 +4,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { MessageThread, type StreamingState } from "./MessageThread.tsx";
+import type { Message } from "@/api/types.ts";
 
 afterEach(() => cleanup());
+
+function makeAssistantMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: "message-1",
+    conversation_id: "conversation-1",
+    role: "assistant",
+    content: "Recorded — correct?",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    created_at: "2026-09-05T00:00:00Z",
+    ...overrides,
+  };
+}
 
 describe("MessageThread — pending conversation activity", () => {
   it("announces submission before a new conversation has received its server id", () => {
@@ -130,5 +150,78 @@ describe("MessageThread — pending conversation activity", () => {
     } finally {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     }
+  });
+});
+
+describe("MessageThread — session link (bu-0ynlk.5)", () => {
+  // openspec/specs/dashboard-chat-ui/spec.md:282-291
+  // Requirement: Session Linkage Navigation
+  // Scenario: Session link on assistant message
+  it("renders the View session link when the message carries a session_id", () => {
+    const message = makeAssistantMessage({ session_id: "11111111-1111-1111-1111-111111111111" });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    const link = screen.getByTitle("View session");
+    expect(link.getAttribute("href")).toBe(`/sessions/${message.session_id}`);
+  });
+
+  it("omits the View session link when session_id is absent", () => {
+    const message = makeAssistantMessage({ session_id: null });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    expect(screen.queryByTitle("View session")).toBeNull();
+  });
+});
+
+describe("MessageThread — tool call visibility (bu-0ynlk.5)", () => {
+  // openspec/specs/dashboard-chat-ui/spec.md:80-86
+  // Requirement: Message Thread Display
+  // Scenario: Tool call visibility
+  it("renders a collapsible tool calls section when the message carries tool_calls", () => {
+    const message = makeAssistantMessage({
+      tool_calls: [{ id: null, name: "finance.get_budget", arguments: { month: "2026-09" } }],
+    });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    expect(screen.getByText("1 tool call")).toBeTruthy();
+  });
+
+  it("omits the tool calls section when tool_calls is null", () => {
+    const message = makeAssistantMessage({ tool_calls: null });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    expect(screen.queryByText(/tool call/)).toBeNull();
   });
 });

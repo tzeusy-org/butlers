@@ -261,6 +261,11 @@ export interface SessionDetail {
   parent_session_id: string | null;
   complexity?: string | null;
   resolution_source?: string | null;
+  /** The dashboard chat message this session was invoked from, if any. */
+  linked_message?: {
+    conversation_id: string;
+    message_id: string;
+  } | null;
   process_log?: {
     pid?: number | null;
     exit_code?: number | null;

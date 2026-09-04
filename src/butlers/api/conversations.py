@@ -155,6 +155,31 @@ async def conversation_get(
     return dict(row) if row else None
 
 
+async def conversation_get_by_id_any_butler(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+) -> dict[str, Any] | None:
+    """Fetch a conversation by id only, regardless of owning ``butler_name``.
+
+    A dashboard-routed turn's ``source_thread_identity`` names the
+    conversation the owner is looking at, not the butler currently
+    processing the turn (classification may route it to a different
+    butler than the one the row was created under). ``id`` is a UUID7
+    primary key -- globally unique -- so this lookup is mount-boundary
+    safe without a butler-scoped filter. Returns ``None`` if not found.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id, butler_name, title, status, created_at, updated_at,
+               message_count, routed_butler, source_channel, source_thread_identity
+        FROM public.dashboard_conversations
+        WHERE id = $1
+        """,
+        conversation_id,
+    )
+    return dict(row) if row else None
+
+
 async def conversation_list(
     pool: asyncpg.Pool,
     *,
@@ -738,6 +763,31 @@ async def message_get_by_id(
     return dict(row) if row else None
 
 
+async def message_set_session_id_if_null(
+    pool: asyncpg.Pool,
+    message_id: UUID,
+    *,
+    session_id: UUID,
+) -> None:
+    """Backfill a message's ``session_id`` when it was absent at write time.
+
+    ``conversation_reply`` best-effort-stamps the ambient runtime session id
+    at write time; when that ambient context was unavailable, the SSE poller
+    resolves the session after the fact (via ``request_id``) and calls this
+    to fill the gap. A no-op if the row already carries a ``session_id`` --
+    never overwrites an existing value.
+    """
+    await pool.execute(
+        """
+        UPDATE public.dashboard_messages
+        SET session_id = $2
+        WHERE id = $1 AND session_id IS NULL
+        """,
+        message_id,
+        session_id,
+    )
+
+
 async def conversation_reply_create(
     pool: asyncpg.Pool,
     conversation_id: UUID,
@@ -745,6 +795,8 @@ async def conversation_reply_create(
     message: str,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    session_id: UUID | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Persist the ``conversation_reply`` confirm-loop message for a conversation.
 
@@ -756,6 +808,10 @@ async def conversation_reply_create(
 
     ``sources`` carries an answer-lane reply's citations (see the
     ``conversation_reply`` MCP tool); ``None`` for every other lane.
+
+    ``session_id``/``tool_calls`` are the ambient runtime session id and the
+    executed tool calls captured for this turn (best-effort — ``None`` when
+    the runtime context is unavailable, e.g. a session that never bound one).
     """
     exists = await pool.fetchval(
         "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
@@ -770,6 +826,8 @@ async def conversation_reply_create(
         content=message,
         request_id=request_id,
         sources=sources,
+        session_id=session_id,
+        tool_calls=tool_calls,
     )
     await pool.execute(
         """

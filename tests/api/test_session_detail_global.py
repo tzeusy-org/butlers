@@ -110,6 +110,53 @@ async def test_global_session_detail_resolves_across_schemas() -> None:
     assert data["prompt"] == "test prompt"
 
 
+async def test_global_session_detail_includes_linked_message_when_present() -> None:
+    """bu-0ynlk.5: a session invoked from dashboard chat carries the reverse
+    link — the conversation/message it was asked in."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    mock_db = app.dependency_overrides[_sessions_get_db]()
+    owning_pool = mock_db.pool.return_value
+    conversation_id = uuid4()
+    message_id = uuid4()
+
+    async def _fetchrow(sql, *_args):
+        if "dashboard_messages" in sql:
+            return {"conversation_id": conversation_id, "id": message_id}
+        return None
+
+    owning_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["linked_message"] == {
+        "conversation_id": str(conversation_id),
+        "message_id": str(message_id),
+    }
+
+
+async def test_global_session_detail_omits_linked_message_when_absent() -> None:
+    """A session never invoked from dashboard chat has no linked message —
+    never fabricated."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["linked_message"] is None
+
+
 async def test_global_session_detail_ignores_legacy_butler_query_hint() -> None:
     """A preserved legacy link still performs the global cross-butler lookup."""
     session_id = uuid4()

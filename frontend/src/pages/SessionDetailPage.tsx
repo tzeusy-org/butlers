@@ -49,10 +49,23 @@ export default function SessionDetailPage() {
         <>
           <p className="text-xs font-mono text-muted-foreground">{session.id}</p>
           <SessionDossier session={session} />
-          <div>
+          <div className="flex items-center gap-4">
             <Link to="/sessions" className="text-xs text-muted-foreground hover:underline">
               &larr; Back to sessions
             </Link>
+            {/* Reverse of MessageThread.tsx's forward "View session" link
+                (bu-0ynlk.5) -- only rendered once conversation_reply has
+                actually stamped a session_id on a dashboard message, and
+                only when the owning butler is known to link to. Never
+                fabricated: no linked_message means no affordance. */}
+            {session.linked_message && session.butler && (
+              <Link
+                to={`/butlers/${session.butler}`}
+                className="text-xs text-muted-foreground hover:underline"
+              >
+                Asked in chat &rarr;
+              </Link>
+            )}
           </div>
         </>
       )}

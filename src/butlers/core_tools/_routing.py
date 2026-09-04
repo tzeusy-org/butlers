@@ -1014,22 +1014,52 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             _conversation_id: uuid.UUID | None = None
                             if source_thread_identity:
                                 try:
-                                    from butlers.api.conversations import (
-                                        conversation_get_or_create_by_thread,
-                                    )
+                                    if source_channel == "dashboard":
+                                        # A dashboard turn's source_thread_identity IS
+                                        # the dashboard_conversations.id the owner is
+                                        # already looking at (see
+                                        # build_dashboard_envelope's external_thread_id),
+                                        # not a channel key to upsert against.
+                                        # get_or_create_by_thread would otherwise treat
+                                        # it as a novel (butler_name, source_channel,
+                                        # source_thread_identity) key and fork a second,
+                                        # invisible "ghost" anchor every turn (bu-0ynlk.5)
+                                        # -- resolve the existing row by id instead,
+                                        # regardless of which butler classification
+                                        # routed this turn to.
+                                        from butlers.api.conversations import (
+                                            conversation_get_by_id_any_butler,
+                                        )
 
-                                    _conversation, _ = await conversation_get_or_create_by_thread(
-                                        _pool,
-                                        butler_name=butler_name,
-                                        source_channel=source_channel,
-                                        source_thread_identity=source_thread_identity,
-                                        # The raw, un-fenced prompt -- _prompt is the
-                                        # <routed_message>-wrapped text (_wrap_routed_
-                                        # message), which would otherwise pollute the
-                                        # conversation's auto-generated title.
-                                        first_message=parsed_route.input.prompt,
-                                    )
-                                    _conversation_id = _conversation["id"]
+                                        _existing_conversation = (
+                                            await conversation_get_by_id_any_butler(
+                                                _pool,
+                                                uuid.UUID(source_thread_identity),
+                                            )
+                                        )
+                                        if _existing_conversation is not None:
+                                            _conversation_id = _existing_conversation["id"]
+                                    else:
+                                        from butlers.api.conversations import (
+                                            conversation_get_or_create_by_thread,
+                                        )
+
+                                        (
+                                            _conversation,
+                                            _,
+                                        ) = await conversation_get_or_create_by_thread(
+                                            _pool,
+                                            butler_name=butler_name,
+                                            source_channel=source_channel,
+                                            source_thread_identity=source_thread_identity,
+                                            # The raw, un-fenced prompt -- _prompt is
+                                            # the <routed_message>-wrapped text
+                                            # (_wrap_routed_message), which would
+                                            # otherwise pollute the conversation's
+                                            # auto-generated title.
+                                            first_message=parsed_route.input.prompt,
+                                        )
+                                        _conversation_id = _conversation["id"]
                                 except Exception as exc:
                                     logger.debug(
                                         "conversation anchor lookup/create failed for "
