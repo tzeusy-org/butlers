@@ -29,15 +29,14 @@ the trust-fix defect only: failure must never impersonate health.
   keyed upsert — never grows past one row per source.
 - **Write-side instrumentation** in `HomeAssistantModule`
   (`roster/home/modules/__init__.py`): `_record_ha_source_success()` /
-  `_record_ha_source_error(error)` upsert the row. Wired into the two
-  "successful contact" points (WS auth completing, REST `/api/states` fetch
-  completing) and the two swallow points that previously only logged a
-  warning (WS connect failure at startup, REST poll failure in the polling
-  fallback loop).
+  `_record_ha_source_error(error)` upsert the row. Successful WebSocket pongs
+  and REST `/api/states` fetches renew the health lease. Connect, keepalive,
+  disconnect, post-authentication setup, reconnect, and REST polling failures
+  revoke it immediately rather than waiting for a later poll.
 - **Read-side guard** in `src/butlers/jobs/home.py`: new
   `HASourceUnmeasurableError` and `_require_ha_source_healthy(pool)`. Fails
-  closed — a missing `ha_source_health` row (no successful contact ever
-  recorded) is treated the same as an explicit `'error'` status. Wired into
+  closed when the row is missing, explicitly in error, lacks a successful
+  contact timestamp, or its five-minute healthy lease has expired. Wired into
   the generic `_read_entity_snapshot` reader and the three job entry points
   that read `ha_entity_snapshot` directly (`run_energy_digest`,
   `run_device_health_check`, `run_environment_report`): each now checks HA
@@ -62,9 +61,9 @@ the trust-fix defect only: failure must never impersonate health.
 - Affected code: `roster/home/migrations/003_ha_source_health.py` (new),
   `roster/home/modules/__init__.py`, `src/butlers/jobs/home.py`.
 - Affected tests: `tests/modules/test_module_home_assistant.py` (extended —
-  success/error upsert idempotence, wiring at the four instrumentation
-  points), `tests/jobs/test_home_shared_helpers.py` (extended —
-  `_require_ha_source_healthy` happy/outage/missing-row paths,
+  success/error upsert idempotence plus transport-liveness renewal and
+  revocation), `tests/jobs/test_home_shared_helpers.py` (extended —
+  `_require_ha_source_healthy` happy/outage/missing/stale-row paths,
   `_read_entity_snapshot` guard), `tests/jobs/test_home_energy_digest.py`,
   `tests/jobs/test_home.py`, `tests/jobs/test_home_environment_report.py`
   (each extended — outage path returns `ha_source_unmeasurable` before

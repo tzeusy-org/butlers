@@ -6,6 +6,7 @@ _build_digest_message, run_energy_digest, and daemon registry.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,7 +52,11 @@ def _make_pool(
         if "ha_source_health" in q:
             if ha_status is None:
                 return None
-            return {"status": ha_status, "last_success_at": None}
+            return {
+                "status": ha_status,
+                "last_success_at": datetime.now(UTC) if ha_status == "healthy" else None,
+                "lease_current": ha_status == "healthy",
+            }
         if "state" in q and "key" in q and args:
             for row in state_rows or []:
                 if row.get("key") == args[0]:

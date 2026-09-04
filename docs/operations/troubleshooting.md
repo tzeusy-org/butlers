@@ -132,6 +132,40 @@ docker compose logs <service> --tail=100
 
 ## Butler Communication Failures
 
+### Symptom: Home dashboard says Home Assistant is unavailable
+
+The dashboard may still show last-known devices with
+`ha_source_available=false`. Those rows are intentionally retained for
+context, but their counts and states are not current-state evidence.
+
+**Diagnosis:**
+
+```bash
+psql -h "$POSTGRES_HOST" -p "${POSTGRES_PORT:-5432}" \
+  -U "${POSTGRES_USER:-butlers}" -d "${POSTGRES_DB:-butlers}" \
+  -c "SELECT source, status, last_success_at, last_error_at, updated_at
+      FROM home.ha_source_health WHERE source = 'home_assistant';"
+
+curl -s http://localhost:41200/api/home/snapshot-status | \
+  jq '{ha_source_available, newest_captured_at, total_entities}'
+
+docker compose logs --tail=100 butlers-up butlers-up-hotreload
+```
+
+A missing row, `status='error'`, or a `last_success_at` older than five minutes
+means the source is unmeasurable. Keep the probe content-blind: timestamps and
+status are enough; do not select `last_error`, credentials, or entity payloads.
+
+**Resolution:**
+
+1. Restore Home Assistant network reachability and its configured credential
+   path.
+2. If the Home daemon is not running, restart or redeploy `butlers-up` through
+   the normal Compose workflow.
+3. Wait for a REST refresh or WebSocket pong, then rerun both probes above.
+4. Confirm `ha_source_available=true` and advancing snapshot timestamps. HTTP
+   200 by itself is only transport evidence and does not prove recovery.
+
 ### Symptom: "Butler unreachable" (502) in dashboard
 
 **Cause:** A butler's MCP server is down or not responding.

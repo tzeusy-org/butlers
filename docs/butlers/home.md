@@ -75,6 +75,42 @@ and never supersedes the Home-owned receipt.
 
 **Device Health Monitoring.** The weekly health check surveys all connected devices for offline status, low batteries, and available firmware updates. Issues are recorded as volatile memory facts for trend tracking.
 
+### Home Assistant source health and cached reads
+
+`home.ha_entity_snapshot` is a last-known-state cache, not proof that Home
+Assistant is reachable. The Home module therefore maintains the single
+`home.ha_source_health` row for `home_assistant`. Successful REST contact or a
+WebSocket pong renews a five-minute health lease; connection, keepalive,
+polling, or post-authentication setup failures mark the row `error`
+immediately. PostgreSQL evaluates lease age against its own timestamp. A
+missing row, an error row, or an expired healthy lease makes snapshot-backed
+reads unmeasurable.
+
+Dashboard list/count endpoints retain useful last-known rows where their
+response envelope can carry `ha_source_available=false`. Missing single-item
+reads, empty bare area lists, and the energy endpoints return 503 during that
+state because they cannot honestly distinguish absence from an outage. The
+presence producer leaves `at_home` untouched, and the Home briefing emits an
+explicit high-priority unmeasurable highlight instead of a nominal all-clear.
+
+Operators should verify both the source ledger and a reader response without
+selecting the stored error text:
+
+```bash
+psql -h "$POSTGRES_HOST" -p "${POSTGRES_PORT:-5432}" \
+  -U "${POSTGRES_USER:-butlers}" -d "${POSTGRES_DB:-butlers}" \
+  -c "SELECT source, status, last_success_at, last_error_at, updated_at
+      FROM home.ha_source_health WHERE source = 'home_assistant';"
+
+curl -s http://localhost:41200/api/home/snapshot-status | \
+  jq '{ha_source_available, newest_captured_at, total_entities}'
+```
+
+Do not treat HTTP 200 or a stored `status='healthy'` alone as recovery. The
+reader response must report `ha_source_available=true`, the health timestamp
+must be within the lease, and snapshot timestamps should advance after live HA
+contact resumes.
+
 **Destructive Action Confirmation.** The butler always asks for explicit confirmation before deleting scenes, disabling automations, or disarming security systems. It never automatically executes potentially destructive changes.
 
 **Discover Before Acting.** The butler uses `ha_list_entities` and `ha_list_services` to confirm entity IDs before calling services, since Home Assistant entity IDs are case-sensitive and vary by installation.

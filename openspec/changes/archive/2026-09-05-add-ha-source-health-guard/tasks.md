@@ -10,16 +10,17 @@
 - [x] 2.1 `_record_ha_source_success()` / `_record_ha_source_error(error)` on
       `HomeAssistantModule` — idempotent keyed upsert (`ON CONFLICT (source)
       DO UPDATE`).
-- [x] 2.2 Wire success recording into `_ws_connect()` (WS auth completing)
-      and `_seed_entity_cache_from_rest()` (REST fetch completing).
-- [x] 2.3 Wire error recording into `_ws_connect_and_seed()`'s WS-connect
-      failure branch and `_poll_loop()`'s REST poll failure branch (the
-      previously-swallowed failure).
+- [x] 2.2 Wire success recording into `_ws_connect()` (WS auth completing),
+      `_dispatch_ws_message()` (WebSocket pong), and
+      `_seed_entity_cache_from_rest()` (REST fetch completing).
+- [x] 2.3 Wire error recording into connect, post-authentication setup,
+      disconnect, keepalive, reconnect, and REST poll failure branches.
 
 ## 3. Read-side guard
 
 - [x] 3.1 `HASourceUnmeasurableError` + `_require_ha_source_healthy(pool)` in
-      `src/butlers/jobs/home.py` — fails closed on a missing health row.
+      `src/butlers/jobs/home.py` — fails closed on a missing/error row, a
+      missing successful-contact timestamp, or an expired five-minute lease.
 - [x] 3.2 Wire into `_read_entity_snapshot`.
 - [x] 3.3 Wire into `run_energy_digest`, `run_device_health_check`,
       `run_environment_report` — each returns
@@ -29,11 +30,12 @@
 ## 4. Tests
 
 - [x] 4.1 Module tests: success/error upsert idempotence (keyed upsert,
-      repeated calls converge on one row), wiring at each instrumentation
-      point (mocked pool).
+      repeated calls converge on one row), liveness renewal on pong, and
+      immediate revocation on transport/setup failure (mocked pool).
 - [x] 4.2 Job-handler tests: happy path (healthy row present), simulated
       outage (`status='error'`) returns `ha_source_unmeasurable` before
-      querying `ha_entity_snapshot`, missing-row fail-closed path.
+      querying `ha_entity_snapshot`, missing-row and expired-lease fail-closed
+      paths.
 
 ## 5. Contract and verification
 

@@ -8036,6 +8036,8 @@ export interface HomeSnapshotStatus {
   domains: Record<string, number>;
   oldest_captured_at: string | null;
   newest_captured_at: string | null;
+  /** False during an HA outage: counts/timestamps below may be stale, not a truthful current read. */
+  ha_source_available: boolean;
 }
 
 /** Saved location and feed health used by the Home atmosphere refresh job. */
@@ -8071,6 +8073,8 @@ export interface HomeDevicePaginationMeta {
   page_size: number;
   total_count: number;
   total_pages: number;
+  /** False during an HA outage: the listed devices below may be stale, not a truthful current read. */
+  ha_source_available: boolean;
 }
 
 /** Paginated response for the device inventory endpoint. */

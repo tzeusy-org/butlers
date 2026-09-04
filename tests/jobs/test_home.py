@@ -112,7 +112,15 @@ def _make_health_pool(*, state_value=None, entity_rows=None, ha_status="healthy"
 
     async def _fetchrow(query, *args, **kwargs):
         if "ha_source_health" in query.lower():
-            return {"status": ha_status, "last_success_at": None} if ha_status else None
+            return (
+                {
+                    "status": ha_status,
+                    "last_success_at": datetime.now(UTC) if ha_status == "healthy" else None,
+                    "lease_current": ha_status == "healthy",
+                }
+                if ha_status
+                else None
+            )
         return None
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)

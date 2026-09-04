@@ -101,6 +101,7 @@ class EmptyEntitySnapshotError(Exception):
 
 
 _HA_SOURCE_ID = "home_assistant"
+_HA_SOURCE_HEALTH_MAX_AGE_MINUTES = 5
 
 
 class HASourceUnmeasurableError(Exception):
@@ -123,14 +124,21 @@ class HASourceUnmeasurableError(Exception):
 
 
 async def _require_ha_source_healthy(pool: asyncpg.Pool) -> None:
-    """Raise ``HASourceUnmeasurableError`` unless HA source health is 'healthy'.
+    """Raise unless HA source health is both ``healthy`` and recent.
 
     Fails closed: a missing ``ha_source_health`` row (no successful contact
-    ever recorded) is treated the same as an explicit error state.
+    ever recorded), a healthy row without a successful-contact timestamp, or
+    a timestamp older than the bounded source-health lease is treated the same
+    as an explicit error state. The lease prevents a dead module process from
+    leaving a durable ``healthy`` verdict behind indefinitely.
     """
     row = await pool.fetchrow(
-        "SELECT status, last_success_at FROM ha_source_health WHERE source = $1",
+        "SELECT status, last_success_at, "
+        "last_success_at IS NOT NULL "
+        "AND last_success_at >= now() - make_interval(mins => $2) AS lease_current "
+        "FROM ha_source_health WHERE source = $1",
         _HA_SOURCE_ID,
+        _HA_SOURCE_HEALTH_MAX_AGE_MINUTES,
     )
     if row is None:
         raise HASourceUnmeasurableError(
@@ -143,6 +151,19 @@ async def _require_ha_source_healthy(pool: asyncpg.Pool) -> None:
             f"Home Assistant source is in {row['status']!r} state; snapshot reads "
             "are unmeasurable until contact is restored",
             last_success_at=row["last_success_at"],
+        )
+    last_success_at = row["last_success_at"]
+    if last_success_at is None:
+        raise HASourceUnmeasurableError(
+            "Home Assistant source is marked healthy without a successful-contact "
+            "timestamp; snapshot reads are unmeasurable",
+            last_success_at=None,
+        )
+    if not row["lease_current"]:
+        raise HASourceUnmeasurableError(
+            "Home Assistant source health lease expired; snapshot reads are "
+            "unmeasurable until contact is restored",
+            last_success_at=last_success_at,
         )
 
 

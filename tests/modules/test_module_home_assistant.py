@@ -789,7 +789,7 @@ class TestHASourceHealthRecording:
     async def test_ws_connect_and_seed_failure_records_error(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """A WebSocket connect failure at startup records the outage, not just a log line."""
+        """Connect and post-auth setup failures both record the outage."""
         ha_module._config = HomeAssistantConfig()
         ha_module._ws_connect = AsyncMock(side_effect=RuntimeError("ws down"))
         ha_module._record_ha_source_error = AsyncMock()
@@ -801,6 +801,40 @@ class TestHASourceHealthRecording:
 
         ha_module._record_ha_source_error.assert_awaited_once()
         assert "ws down" in ha_module._record_ha_source_error.await_args.args[0]
+
+        ha_module._ws_connect = AsyncMock(return_value=None)
+        ha_module._seed_entity_cache_from_rest = AsyncMock(side_effect=RuntimeError("seed down"))
+        ha_module._start_ws_message_loop = MagicMock()
+        ha_module._start_ws_ping_task = MagicMock()
+        ha_module._ws_close = AsyncMock()
+        ha_module._record_ha_source_error.reset_mock()
+
+        await ha_module._ws_connect_and_seed()
+
+        ha_module._record_ha_source_error.assert_awaited_once()
+        assert "seed down" in ha_module._record_ha_source_error.await_args.args[0]
+        ha_module._ws_close.assert_awaited_once()
+
+    async def test_ws_liveness_refreshes_and_revokes_source_health(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """A pong renews the lease; transport loss revokes it before fallback polling."""
+        ha_module._record_ha_source_success = AsyncMock()
+        await ha_module._dispatch_ws_message({"type": "pong"})
+        ha_module._record_ha_source_success.assert_awaited_once()
+
+        ha_module._shutdown = False
+        ha_module._ws_connected = True
+        ha_module._ws_connection = MagicMock(closed=True)
+        ha_module._record_ha_source_error = AsyncMock()
+        ha_module._start_poll_fallback = MagicMock()
+        ha_module._schedule_reconnect = MagicMock()
+
+        await ha_module._ws_message_loop()
+
+        ha_module._record_ha_source_error.assert_awaited_once()
+        ha_module._start_poll_fallback.assert_called_once()
+        ha_module._schedule_reconnect.assert_called_once()
 
     async def test_poll_loop_failure_records_error(self, ha_module: HomeAssistantModule) -> None:
         """A REST poll failure in the fallback loop records the outage (previously swallowed)."""

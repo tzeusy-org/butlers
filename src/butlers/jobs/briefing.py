@@ -30,6 +30,7 @@ from butlers.config import ButlerType, list_butlers
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
+from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
 
@@ -1238,74 +1239,101 @@ async def run_home_briefing_contribution(
 
     highlights: list[BriefingHighlight] = []
 
-    # --- Active device alerts (unavailable / unknown entities) ---
-    device_alert_rows = await pool.fetch(
-        """
-        SELECT entity_id, state, attributes
-        FROM ha_entity_snapshot
-        WHERE state IN ('unavailable', 'unknown')
-        ORDER BY entity_id
-        """,
-    )
+    # --- Confirm the HA source is actually healthy before trusting the snapshot ---
+    # ha_entity_snapshot's captured_at is re-stamped on every connector run
+    # regardless of whether HA was actually reached, so a stale-but-plausible
+    # snapshot from before an outage would otherwise report a truthful-looking
+    # "no device alerts" / "no temperature outliers" during that outage
+    # (bu-8cdl1.12 slice 1's trust-fix defect; bu-8t4sc extends the guard here).
+    ha_source_unmeasurable = False
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError as exc:
+        ha_source_unmeasurable = True
+        logger.warning("run_home_briefing_contribution: HA source unmeasurable: %s", exc)
 
-    device_alert_count = len(device_alert_rows)
-    for row in device_alert_rows[:5]:  # limit to top 5 alerts in highlights
-        entity = row["entity_id"]
-        attrs = row["attributes"] or {}
-        friendly = attrs.get("friendly_name", entity) if isinstance(attrs, dict) else entity
+    device_alert_count = 0
+    outlier_count = 0
+
+    if ha_source_unmeasurable:
         highlights.append(
             {
                 "category": "device-alerts",
-                "text": f"Device offline/unavailable: {friendly} ({entity})",
+                "text": (
+                    "Home Assistant is unmeasurable (outage or unconfirmed connection); "
+                    "device and environment status omitted from today's briefing."
+                ),
                 "priority": "high",
             }
         )
-
-    if device_alert_count > 5:
-        highlights.append(
-            {
-                "category": "device-alerts",
-                "text": f"...and {device_alert_count - 5} more device(s) offline",
-                "priority": "medium",
-            }
+    else:
+        # --- Active device alerts (unavailable / unknown entities) ---
+        device_alert_rows = await pool.fetch(
+            """
+            SELECT entity_id, state, attributes
+            FROM ha_entity_snapshot
+            WHERE state IN ('unavailable', 'unknown')
+            ORDER BY entity_id
+            """,
         )
 
-    # --- Environment sensor outliers ---
-    # Check temperature sensors for values outside 16-30°C (broad indoor tolerance range)
-    temp_rows = await pool.fetch(
-        """
-        SELECT entity_id, state, attributes
-        FROM ha_entity_snapshot
-        WHERE entity_id LIKE 'sensor.%temperature%'
-          AND state ~ '^[0-9]+\\.?[0-9]*$'
-        ORDER BY entity_id
-        """,
-    )
-
-    outlier_count = 0
-    for row in temp_rows:
-        try:
-            temp_val = float(row["state"])
-        except (ValueError, TypeError):
-            continue
-        attrs = row["attributes"] or {}
-        unit = attrs.get("unit_of_measurement", "°C") if isinstance(attrs, dict) else "°C"
-        friendly = (
-            attrs.get("friendly_name", row["entity_id"])
-            if isinstance(attrs, dict)
-            else row["entity_id"]
-        )
-        # Flag outliers: below 16°C or above 30°C
-        if temp_val < 16.0 or temp_val > 30.0:
-            outlier_count += 1
-            priority = "high" if temp_val < 10.0 or temp_val > 35.0 else "medium"
+        device_alert_count = len(device_alert_rows)
+        for row in device_alert_rows[:5]:  # limit to top 5 alerts in highlights
+            entity = row["entity_id"]
+            attrs = row["attributes"] or {}
+            friendly = attrs.get("friendly_name", entity) if isinstance(attrs, dict) else entity
             highlights.append(
                 {
-                    "category": "environment",
-                    "text": f"Temperature outlier: {friendly} at {temp_val}{unit}",
-                    "priority": priority,
+                    "category": "device-alerts",
+                    "text": f"Device offline/unavailable: {friendly} ({entity})",
+                    "priority": "high",
                 }
             )
+
+        if device_alert_count > 5:
+            highlights.append(
+                {
+                    "category": "device-alerts",
+                    "text": f"...and {device_alert_count - 5} more device(s) offline",
+                    "priority": "medium",
+                }
+            )
+
+        # --- Environment sensor outliers ---
+        # Check temperature sensors for values outside 16-30°C (broad indoor tolerance range)
+        temp_rows = await pool.fetch(
+            """
+            SELECT entity_id, state, attributes
+            FROM ha_entity_snapshot
+            WHERE entity_id LIKE 'sensor.%temperature%'
+              AND state ~ '^[0-9]+\\.?[0-9]*$'
+            ORDER BY entity_id
+            """,
+        )
+
+        for row in temp_rows:
+            try:
+                temp_val = float(row["state"])
+            except (ValueError, TypeError):
+                continue
+            attrs = row["attributes"] or {}
+            unit = attrs.get("unit_of_measurement", "°C") if isinstance(attrs, dict) else "°C"
+            friendly = (
+                attrs.get("friendly_name", row["entity_id"])
+                if isinstance(attrs, dict)
+                else row["entity_id"]
+            )
+            # Flag outliers: below 16°C or above 30°C
+            if temp_val < 16.0 or temp_val > 30.0:
+                outlier_count += 1
+                priority = "high" if temp_val < 10.0 or temp_val > 35.0 else "medium"
+                highlights.append(
+                    {
+                        "category": "environment",
+                        "text": f"Temperature outlier: {friendly} at {temp_val}{unit}",
+                        "priority": priority,
+                    }
+                )
 
     # --- Energy anomalies from state store ---
     energy_anomaly_keys: list[str] = await state_list(  # type: ignore[assignment]
@@ -1324,6 +1352,8 @@ async def run_home_briefing_contribution(
     has_updates = len(highlights) > 0
 
     parts: list[str] = []
+    if ha_source_unmeasurable:
+        parts.append("Home Assistant status unmeasurable.")
     if device_alert_count:
         parts.append(f"{device_alert_count} device(s) offline/unavailable.")
     if outlier_count:
@@ -1348,6 +1378,7 @@ async def run_home_briefing_contribution(
         "device_alerts": device_alert_count,
         "temp_outliers": outlier_count,
         "energy_anomalies": energy_anomaly_count,
+        "ha_source_unmeasurable": ha_source_unmeasurable,
     }
 
 

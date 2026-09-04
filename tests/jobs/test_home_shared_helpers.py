@@ -18,6 +18,7 @@ All tests use mocked asyncpg pools — no real database or network required.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -47,7 +48,11 @@ pytestmark = pytest.mark.unit
 
 def _healthy_row() -> dict[str, Any]:
     """A healthy ``ha_source_health`` row — the default across these tests."""
-    return {"status": "healthy", "last_success_at": None}
+    return {
+        "status": "healthy",
+        "last_success_at": datetime.now(UTC),
+        "lease_current": True,
+    }
 
 
 def _make_pool(
@@ -275,15 +280,32 @@ async def test_read_entity_snapshot_unmeasurable_on_outage():
 
 
 async def test_require_ha_source_healthy_happy_path():
-    """A healthy status row passes without raising."""
-    pool = _make_pool(fetchrow_return={"status": "healthy", "last_success_at": None})
+    """Only a recent healthy status row passes without raising."""
+    pool = _make_pool(
+        fetchrow_return={
+            "status": "healthy",
+            "last_success_at": datetime.now(UTC),
+            "lease_current": True,
+        }
+    )
     await _require_ha_source_healthy(pool)  # does not raise
+    assert "now() - make_interval(mins => $2)" in pool.fetchrow.await_args.args[0]
+    assert pool.fetchrow.await_args.args[2] == 5
+
+    for last_success_at in (None, datetime.now(UTC) - timedelta(minutes=6)):
+        stale_pool = _make_pool(
+            fetchrow_return={
+                "status": "healthy",
+                "last_success_at": last_success_at,
+                "lease_current": False,
+            }
+        )
+        with pytest.raises(HASourceUnmeasurableError):
+            await _require_ha_source_healthy(stale_pool)
 
 
 async def test_require_ha_source_healthy_outage_carries_last_good_timestamp():
     """An error-status row raises HASourceUnmeasurableError with the last-good timestamp."""
-    from datetime import UTC, datetime
-
     last_good = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
     pool = _make_pool(fetchrow_return={"status": "error", "last_success_at": last_good})
     with pytest.raises(HASourceUnmeasurableError) as exc_info:

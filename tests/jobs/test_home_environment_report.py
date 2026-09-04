@@ -7,6 +7,7 @@ _NoOpEmbeddingEngine, and daemon registry.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,7 +49,15 @@ def _make_pool(
 
     async def _fetchrow_side_effect(query, *args, **kwargs):
         if "ha_source_health" in query.lower():
-            return {"status": ha_status, "last_success_at": None} if ha_status else None
+            return (
+                {
+                    "status": ha_status,
+                    "last_success_at": datetime.now(UTC) if ha_status == "healthy" else None,
+                    "lease_current": ha_status == "healthy",
+                }
+                if ha_status
+                else None
+            )
         return facts_row
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)

@@ -54,12 +54,27 @@ const configured: HomeAtmosphereCurrentResponse = {
 
 function setupHomeData(atmosphere: HomeAtmosphereCurrentResponse = unconfigured) {
   homeMocks.useHomeSnapshotStatus.mockReturnValue({
-    data: { total_entities: 0, domains: {}, oldest_captured_at: null, newest_captured_at: null },
+    data: {
+      total_entities: 0,
+      domains: {},
+      oldest_captured_at: null,
+      newest_captured_at: null,
+      ha_source_available: true,
+    },
     isLoading: false,
     isError: false,
   });
   homeMocks.useHomeDevices.mockReturnValue({
-    data: { data: [], meta: { page: 1, page_size: 50, total_count: 0, total_pages: 0 } },
+    data: {
+      data: [],
+      meta: {
+        page: 1,
+        page_size: 50,
+        total_count: 0,
+        total_pages: 0,
+        ha_source_available: true,
+      },
+    },
     isLoading: false,
     isError: false,
   });

@@ -572,6 +572,15 @@ class TestContextProducersIntegration:
             # Python-relative timestamps stay fresh under both clocks, keeping
             # faketime coverage of the 30-min freshness gate.
             await pool.execute("TRUNCATE ha_entity_snapshot")
+            # The reader guard (bu-8cdl1.12 slice 1, extended to this producer
+            # by bu-8t4sc) requires a healthy ha_source_health row before it
+            # will trust ha_entity_snapshot at all.
+            await pool.execute(
+                "INSERT INTO ha_source_health (source, status, last_success_at, updated_at) "
+                "VALUES ('home_assistant', 'healthy', now(), now()) "
+                "ON CONFLICT (source) DO UPDATE SET status = 'healthy', "
+                "last_success_at = now(), updated_at = now()"
+            )
             await pool.execute(
                 "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
                 "VALUES ('person.owner', 'home', $1)",
@@ -604,6 +613,25 @@ class TestContextProducersIntegration:
             )
             result3 = await run_home_presence_context_producer(pool)
             assert result3["presence"] == "unknown"
+
+            # HA outage: even a fresh-looking row (re-stamped captured_at, as
+            # the real connector always does regardless of contact success)
+            # must not assert or clear presence -- this is the trust-fix
+            # defect itself (bu-8cdl1.12 slice 1).
+            await pool.execute(
+                "UPDATE ha_entity_snapshot SET state = 'home', captured_at = $1",
+                datetime.now(UTC),
+            )
+            await pool.execute(
+                "UPDATE ha_source_health SET status = 'error', updated_at = now() "
+                "WHERE source = 'home_assistant'"
+            )
+            result4 = await run_home_presence_context_producer(pool)
+            assert result4 == {"signal": None, "presence": "unmeasurable"}
+            assert not await pool.fetchval(
+                "SELECT count(*) FROM public.user_context "
+                "WHERE signal_type = 'at_home' AND superseded_at IS NULL AND expires_at > now()"
+            )
         finally:
             await pool.close()
 

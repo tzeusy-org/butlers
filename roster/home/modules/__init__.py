@@ -786,30 +786,38 @@ class HomeAssistantModule(Module):
             self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
             return
 
-        # Start the message loop immediately after auth so that _ws_command()
-        # futures are resolved as WS responses arrive.  Without this, registry
-        # fetches and event subscriptions time out because nobody is reading
-        # from the socket (asyncio.TimeoutError has an empty str(), which
-        # produced misleading ": " log lines at startup).
-        self._start_ws_message_loop()
-        self._start_ws_ping_task()
-
-        # Seed entity cache from REST (faster than WS for initial bulk load)
-        await self._seed_entity_cache_from_rest()
-
-        # Persist the freshly-seeded cache immediately so dashboard/job reads
-        # are populated without waiting a full snapshot interval.
         try:
-            await self._persist_entity_snapshot()
+            # Start the message loop immediately after auth so that _ws_command()
+            # futures are resolved as WS responses arrive. Without this, registry
+            # fetches and event subscriptions time out because nobody is reading
+            # from the socket.
+            self._start_ws_message_loop()
+            self._start_ws_ping_task()
+
+            # Seed entity cache from REST (faster than WS for initial bulk load).
+            await self._seed_entity_cache_from_rest()
+
+            # Persist the freshly-seeded cache immediately so dashboard/job reads
+            # are populated without waiting a full snapshot interval.
+            try:
+                await self._persist_entity_snapshot()
+            except Exception as exc:
+                logger.warning("HomeAssistantModule: initial snapshot persist failed: %s", exc)
+
+            # Fetch registries and subscribe to live state changes.
+            await self._fetch_area_registry()
+            await self._fetch_entity_registry()
+            await self._ws_subscribe_events()
         except Exception as exc:
-            logger.warning("HomeAssistantModule: initial snapshot persist failed: %s", exc)
-
-        # Fetch registries via WebSocket
-        await self._fetch_area_registry()
-        await self._fetch_entity_registry()
-
-        # Subscribe to state_changed and registry events
-        await self._ws_subscribe_events()
+            logger.warning(
+                "HomeAssistantModule: setup after WebSocket auth failed (%s); "
+                "marking source unavailable and scheduling reconnect.",
+                exc,
+            )
+            await self._record_ha_source_error(f"WebSocket setup failed: {exc}")
+            await self._ws_close()
+            self._start_poll_fallback()
+            self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
 
     async def _ws_connect(self) -> None:
         """Open WebSocket connection and complete the HA auth handshake.
@@ -925,6 +933,7 @@ class HomeAssistantModule(Module):
         """
         import aiohttp
 
+        failure_reason = "WebSocket connection closed"
         try:
             while not self._shutdown:
                 if self._ws_connection is None or self._ws_connection.closed:
@@ -961,16 +970,19 @@ class HomeAssistantModule(Module):
                         "Scheduling reconnect.",
                         raw.type,
                     )
+                    failure_reason = f"WebSocket closed/error message type {raw.type}"
                     break
 
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.warning("HomeAssistantModule: WebSocket message loop error: %s", exc)
+            failure_reason = f"WebSocket message loop failed: {exc}"
 
         # Connection dropped — trigger reconnect unless shutting down
         if not self._shutdown:
             self._ws_connected = False
+            await self._record_ha_source_error(failure_reason)
             self._start_poll_fallback()
             self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
 
@@ -1009,6 +1021,7 @@ class HomeAssistantModule(Module):
 
         elif msg_type == "pong":
             self._last_pong_time = asyncio.get_running_loop().time()
+            await self._record_ha_source_success()
             logger.debug("HomeAssistantModule: received pong")
 
         else:
@@ -1186,6 +1199,7 @@ class HomeAssistantModule(Module):
         """
         assert self._config is not None
 
+        failure_reason: str | None = None
         try:
             while not self._shutdown:
                 await asyncio.sleep(self._config.websocket_ping_interval)
@@ -1204,6 +1218,7 @@ class HomeAssistantModule(Module):
                     logger.debug("HomeAssistantModule: ping sent (id=%d)", self._ws_cmd_id)
                 except Exception as exc:
                     logger.warning("HomeAssistantModule: failed to send ping: %s", exc)
+                    failure_reason = f"WebSocket ping failed: {exc}"
                     break
 
                 # Wait for pong — check after _WS_PONG_TIMEOUT
@@ -1214,6 +1229,7 @@ class HomeAssistantModule(Module):
                         "closing connection and reconnecting.",
                         _WS_PONG_TIMEOUT,
                     )
+                    failure_reason = "WebSocket keepalive pong timed out"
                     # Close and let the message loop or reconnect handle recovery
                     await self._ws_close()
                     break
@@ -1222,9 +1238,12 @@ class HomeAssistantModule(Module):
             return
         except Exception as exc:
             logger.warning("HomeAssistantModule: ping loop error: %s", exc)
+            failure_reason = f"WebSocket ping loop failed: {exc}"
 
         if not self._shutdown:
             self._ws_connected = False
+            if failure_reason is not None:
+                await self._record_ha_source_error(failure_reason)
             self._start_poll_fallback()
             self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
 
@@ -1282,6 +1301,7 @@ class HomeAssistantModule(Module):
                         attempt + 1,
                         exc,
                     )
+                    await self._record_ha_source_error(f"WebSocket reconnect attempt failed: {exc}")
                     delay = min(delay * 2, _WS_RECONNECT_MAX)
                     attempt += 1
                     continue
@@ -1309,6 +1329,12 @@ class HomeAssistantModule(Module):
                         "HomeAssistantModule: error rehydrating state after reconnect: %s",
                         exc,
                     )
+                    await self._record_ha_source_error(f"WebSocket reconnect setup failed: {exc}")
+                    await self._ws_close()
+                    self._start_poll_fallback()
+                    delay = min(delay * 2, _WS_RECONNECT_MAX)
+                    attempt += 1
+                    continue
                 break
 
         except asyncio.CancelledError:

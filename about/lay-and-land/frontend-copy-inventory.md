@@ -1488,6 +1488,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No energy data available.
 - Failed to load top consumers.
 - No consumer data available.
+- Home Assistant
 - Total devices
 - Offline
 - Overdue maintenance
@@ -4171,4 +4172,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3270*
+*Total strings: 3271*
