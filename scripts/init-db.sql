@@ -3394,10 +3394,10 @@ BEGIN
         v_active_role TEXT := COALESCE(current_setting('role', true), '');
     BEGIN
         IF v_active_role = ANY (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) AND COALESCE(
             current_setting('butlers.runtime_attention_producer_abi', true), ''
         ) <> '2' THEN
@@ -3482,10 +3482,10 @@ BEGIN
         v_activated_at TIMESTAMPTZ;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -3762,8 +3762,8 @@ BEGIN
           AND acl.privilege_type = 'EXECUTE'
           AND role_row.rolname <> ALL (ARRAY[
               'runtime_attention_outbox_owner',
-              'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-              'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+              'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+              'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
               'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
               'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
           ]::name[])
@@ -3807,6 +3807,7 @@ BEGIN
     -- insufficient proof of a producer or Switchboard identity.
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -3848,6 +3849,7 @@ BEGIN
 
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -3923,10 +3925,10 @@ BEGIN
         EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE '
             || 'public.runtime_attention_producer_control FROM PUBLIC';
         FOREACH v_runtime_role IN ARRAY ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw',
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw',
             'connector_writer'
         ]::name[] LOOP
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_runtime_role) THEN
@@ -4387,10 +4389,10 @@ BEGIN
         v_episode_id UUID;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -4493,10 +4495,10 @@ BEGIN
         v_episode_id UUID;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
@@ -4621,10 +4623,10 @@ BEGIN
         v_enabled BOOLEAN;
     BEGIN
         IF COALESCE(current_setting('role', true), '') <> ALL (ARRAY[
-            'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-            'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
-            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
-            'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+            'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+            'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+            'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw', 'butler_relationship_rw',
+            'butler_switchboard_rw', 'butler_travel_rw'
         ]) THEN
             RAISE EXCEPTION 'runtime-attention producer requires an active canonical SET ROLE'
                 USING ERRCODE = '42501';
