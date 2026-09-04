@@ -25,11 +25,13 @@ import asyncpg
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
+    policy_quiet_hours_deliver_at,
 )
 from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     record_attention_event,
 )
+from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 
 logger = logging.getLogger(__name__)
 
@@ -1084,15 +1086,16 @@ _CONTEXT_MAX_HOLD: dict[str, timedelta] = {
 }
 
 
-async def get_suppressing_context_signal(
+async def _get_suppressing_context_signal_detail(
     pool: asyncpg.Pool | None, *, now: datetime | None = None
-) -> str | None:
-    """Return the active context-bus signal type currently holding routine
-    (sub-urgent) insight delivery, or None.
+) -> tuple[str, datetime] | None:
+    """Return ``(signal_type, set_at)`` for the context-bus signal currently
+    holding routine (sub-urgent) insight delivery, or None.
 
-    Deterministic, zero-LLM read of ``public.user_context`` via the existing
-    context-bus module. Fails open (returns None) on any error, matching
-    every other context-bus reader in this codebase.
+    Same selection as :func:`get_suppressing_context_signal`, but also
+    surfaces the winning signal's ``set_at`` so a caller can compute its
+    max-hold suppression-end instant (bu-kqnum.3 slice 3's broker catch-up
+    cycle) without a second context-bus read.
     """
     if pool is None:
         return None
@@ -1116,9 +1119,24 @@ async def get_suppressing_context_signal(
         return None
 
     for signal_type in _CONTEXT_SUPPRESSING_SIGNALS:
-        if any(s.signal_type == signal_type for s in held):
-            return signal_type
+        for s in held:
+            if s.signal_type == signal_type:
+                return signal_type, s.set_at
     return None  # pragma: no cover - `held` is filtered to these signals above.
+
+
+async def get_suppressing_context_signal(
+    pool: asyncpg.Pool | None, *, now: datetime | None = None
+) -> str | None:
+    """Return the active context-bus signal type currently holding routine
+    (sub-urgent) insight delivery, or None.
+
+    Deterministic, zero-LLM read of ``public.user_context`` via the existing
+    context-bus module. Fails open (returns None) on any error, matching
+    every other context-bus reader in this codebase.
+    """
+    detail = await _get_suppressing_context_signal_detail(pool, now=now)
+    return detail[0] if detail is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1167,88 @@ def _daily_hold_fallback_reached(now: datetime) -> bool:
     branch in :func:`delivery_cycle` for the travel-day skip/defer rationale.
     """
     return now.hour >= _DAILY_HOLD_FALLBACK_UTC_HOUR
+
+
+# ---------------------------------------------------------------------------
+# Broker catch-up cycle at suppression end (bu-kqnum.3 slice 3)
+# ---------------------------------------------------------------------------
+
+# Today the only way a fully suppressed cycle resumes is the next regularly
+# scheduled cron tick (the daily digest's windowed cron, 06:15-11:45 UTC
+# only, or tomorrow if the hold outlasts that window). Rather than wait on
+# that polling cadence, every fully-suppressed skip reconciles a one-shot
+# catch-up task timed to the suppression's own computed end instant, so the
+# next non-quiet delivery the spec already promises (see
+# openspec/specs/proactive-insight-engine/spec.md "Quiet Hours Suppression")
+# happens close to when the hold actually ends.
+
+
+def _compute_catchup_deliver_at(
+    *,
+    suppression_signal: str | None,
+    policy: dict[str, Any] | None,
+    context_signal_set_at: datetime | None,
+    now: datetime,
+) -> datetime | None:
+    """Return the suppression's own computed end instant, or None when it
+    cannot be determined (no usable policy/signal data — fails open to "no
+    catch-up scheduled", matching every other fail-open path in this
+    module).
+    """
+    if suppression_signal == "quiet_hours":
+        return policy_quiet_hours_deliver_at(policy, now=now)
+    if suppression_signal in _CONTEXT_MAX_HOLD and context_signal_set_at is not None:
+        return context_signal_set_at + _CONTEXT_MAX_HOLD[suppression_signal]
+    return None
+
+
+async def _schedule_insight_catchup(
+    pool: asyncpg.Pool,
+    *,
+    suppression_signal: str | None,
+    suppression_reason: str,
+    policy: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Best-effort reconciliation of the insight-catchup task for the current
+    suppression. Never raises: a scheduling hiccup must not abort the
+    suppressed-cycle return it is attached to (mirrors
+    ``record_attention_event``'s degraded-honesty contract elsewhere in this
+    module).
+
+    Resolves a context-bus signal's ``set_at`` with its own fresh read rather
+    than threading it through from the suppression consult above: that
+    consult goes through the mockable, type-only ``get_suppressing_context_
+    signal`` (the public entry point tests patch), which doesn't carry
+    ``set_at``. A second read here costs nothing extra on the hot
+    (non-suppressed) path since this function is only ever called once a
+    cycle is already fully suppressed, and fails open to "no catch-up
+    scheduled" like every other path in this module if the signal cannot be
+    re-resolved (e.g. it cleared between the two reads).
+    """
+    context_signal_set_at: datetime | None = None
+    if suppression_signal in _CONTEXT_MAX_HOLD:
+        detail = await _get_suppressing_context_signal_detail(pool, now=now)
+        if detail is not None and detail[0] == suppression_signal:
+            context_signal_set_at = detail[1]
+    deliver_at = _compute_catchup_deliver_at(
+        suppression_signal=suppression_signal,
+        policy=policy,
+        context_signal_set_at=context_signal_set_at,
+        now=now,
+    )
+    if deliver_at is None:
+        return
+    try:
+        await reconcile_catchup_task(pool, deliver_at=deliver_at, reason=suppression_reason)
+    except Exception:
+        logger.warning(
+            "insight-delivery-cycle: could not reconcile the catch-up task for "
+            "suppression %r ending at %s",
+            suppression_reason,
+            deliver_at.isoformat(),
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1284,6 +1384,7 @@ async def delivery_cycle(
     # attention-ledger telemetry (bu-ep4ks.9 slice 2) so "held by <signal>"
     # is queryable without parsing `reason`.
     _suppression_signal: str | None = None
+    policy: dict[str, Any] | None = None
     if not urgent_only:
         policy = await get_approvals_policy_quiet_hours(pool)
         _quiet_hours_active = is_policy_quiet_now(policy, now=now)
@@ -1404,6 +1505,13 @@ async def delivery_cycle(
                 reason="travel_day_defer",
                 metadata={"held_by": "traveling"},
             )
+            await _schedule_insight_catchup(
+                pool,
+                suppression_signal=_suppression_signal,
+                suppression_reason=_suppression_reason,
+                policy=policy,
+                now=now,
+            )
             result["skipped"] = True
             return result
         elif daily_hold_mode and _daily_hold_fallback_reached(now):
@@ -1432,6 +1540,13 @@ async def delivery_cycle(
                 intent="insight",
                 reason=_suppression_reason,
                 metadata={"held_by": _suppression_signal},
+            )
+            await _schedule_insight_catchup(
+                pool,
+                suppression_signal=_suppression_signal,
+                suppression_reason=_suppression_reason,
+                policy=policy,
+                now=now,
             )
             result["skipped"] = True
             return result

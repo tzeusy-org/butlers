@@ -203,6 +203,7 @@ tests/modules/test_calendar_projection_source_butler.py
 tests/modules/test_contact_backfill_child_tables.py
 tests/modules/test_conversation_history.py
 tests/modules/test_general_context_tools.py
+tests/modules/test_insight_catchup.py
 tests/modules/test_insight_context_bus_suppression.py
 tests/modules/test_insight_engine.py
 tests/modules/test_module_google_drive.py

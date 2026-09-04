@@ -1045,3 +1045,205 @@ class TestDailyHoldMode:
 
         assert result["skipped"] is False
         notify_mock.assert_awaited_once()
+
+
+# ===========================================================================
+# Broker catch-up cycle at suppression end (bu-kqnum.3 slice 3)
+# ===========================================================================
+
+
+class TestBrokerCatchupCycle:
+    """A fully-suppressed skip (no urgent candidate pending) reconciles a
+    one-shot catch-up task at the suppression's own computed end instant,
+    instead of relying solely on the next regularly scheduled cron tick.
+    ``reconcile_catchup_task`` itself (SQL, deterministic-name reconciliation)
+    is covered by tests/modules/test_insight_catchup.py against a mocked
+    pool; this class proves delivery_cycle's *wiring* into it — which
+    suppression branches call it, with what computed boundary, and that a
+    scheduling failure never escapes the suppressed-cycle return."""
+
+    async def _seed(self, pool, *, dedup_key: str = "health:routine:cu1:2026"):
+        await pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
+        """)
+        await _insert_candidate(pool, dedup_key=dedup_key, priority=70)
+
+    async def test_quiet_hours_suppression_schedules_catchup_at_quiet_end(self, insight_pool):
+        from butlers.core.approvals_policy import policy_quiet_hours_deliver_at
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed(insight_pool, dedup_key="health:routine:cu1:2026")
+        # The fixture's seeded policy is 23:00-08:00 Asia/Singapore, i.e.
+        # 15:00-24:00 UTC (see the file-level comment on _DEFAULT_QUIET_*
+        # above) — unlike _PINNED_NOW (20:00 SGT, deliberately awake so the
+        # context-bus tests elsewhere in this file can isolate their own
+        # signal), this instant must actually fall inside that window.
+        quiet_now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+        expected_deliver_at = policy_quiet_hours_deliver_at(
+            {
+                "quiet_start_hour": _DEFAULT_QUIET_START_HOUR,
+                "quiet_end_hour": _DEFAULT_QUIET_END_HOUR,
+                "timezone": _DEFAULT_QUIET_TIMEZONE,
+            },
+            now=quiet_now,
+        )
+        assert expected_deliver_at is not None, "fixture instant must actually be quiet"
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+            new=AsyncMock(return_value={"status": "ok", "state": "task_created"}),
+        ) as catchup_mock:
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=quiet_now)
+
+        assert result["skipped"] is True
+        catchup_mock.assert_awaited_once()
+        _, kwargs = catchup_mock.call_args
+        assert kwargs["deliver_at"] == expected_deliver_at
+        assert kwargs["reason"] == "quiet_hours"
+
+    async def test_context_bus_signal_schedules_catchup_at_max_hold_end(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import _CONTEXT_MAX_HOLD, delivery_cycle
+
+        await self._seed(insight_pool, dedup_key="health:routine:cu2:2026")
+        set_at = _PINNED_NOW - timedelta(hours=1)
+        expected_deliver_at = set_at + _CONTEXT_MAX_HOLD["dnd"]
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="dnd"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker._get_suppressing_context_signal_detail",
+                new=AsyncMock(return_value=("dnd", set_at)),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(return_value={"status": "ok", "state": "task_created"}),
+            ) as catchup_mock,
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        assert result["skipped"] is True
+        catchup_mock.assert_awaited_once()
+        _, kwargs = catchup_mock.call_args
+        assert kwargs["deliver_at"] == expected_deliver_at
+        assert kwargs["reason"] == "context_bus:dnd"
+
+    async def test_travel_day_defer_also_schedules_catchup(self, insight_pool):
+        """The travel-day defer branch is a suppressed skip too — it must
+        reconcile a catch-up for `traveling`'s own max-hold end, not defer
+        indefinitely until tomorrow's windowed cron."""
+        from butlers.tools.switchboard.insight.broker import (
+            _CONTEXT_MAX_HOLD,
+            _DAILY_HOLD_FALLBACK_UTC_HOUR,
+            delivery_cycle,
+        )
+
+        await self._seed(insight_pool, dedup_key="health:routine:cu3:2026")
+        set_at = _PINNED_NOW - timedelta(hours=1)
+        expected_deliver_at = set_at + _CONTEXT_MAX_HOLD["traveling"]
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="traveling"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker._get_suppressing_context_signal_detail",
+                new=AsyncMock(return_value=("traveling", set_at)),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(return_value={"status": "ok", "state": "task_created"}),
+            ) as catchup_mock,
+        ):
+            result = await delivery_cycle(
+                insight_pool,
+                notify_fn=notify_mock,
+                daily_hold_mode=True,
+                # Past the hard fallback deadline: proves travel-day defer
+                # schedules a catch-up even though it deliberately never
+                # force-delivers via that same deadline.
+                now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR + 2, 0, tzinfo=UTC),
+            )
+
+        assert result["skipped"] is True
+        catchup_mock.assert_awaited_once()
+        _, kwargs = catchup_mock.call_args
+        assert kwargs["deliver_at"] == expected_deliver_at
+        assert kwargs["reason"] == "context_bus:traveling"
+
+    async def test_urgent_bypass_does_not_schedule_catchup(self, insight_pool):
+        """A cycle that delivers an urgent candidate this tick was never
+        fully suppressed — no catch-up is needed (Slices 1-2 regression
+        guard: the urgent-bypass path stays untouched by this change)."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed(insight_pool, dedup_key="health:routine:cu4:2026")
+        await _insert_candidate(insight_pool, dedup_key="health:urgent:cu4:2026", priority=95)
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="dnd"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(return_value={"status": "ok", "state": "task_created"}),
+            ) as catchup_mock,
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        assert result["skipped"] is False
+        catchup_mock.assert_not_awaited()
+
+    async def test_catchup_scheduling_failure_does_not_abort_suppressed_return(self, insight_pool):
+        """reconcile_catchup_task is best-effort/fail-open: a scheduling
+        hiccup must not raise out of delivery_cycle or change its result."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed(insight_pool, dedup_key="health:routine:cu5:2026")
+        set_at = _PINNED_NOW - timedelta(hours=1)
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                new=AsyncMock(return_value="dnd"),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker._get_suppressing_context_signal_detail",
+                new=AsyncMock(return_value=("dnd", set_at)),
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(side_effect=RuntimeError("scheduler unavailable")),
+            ) as catchup_mock,
+        ):
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
+        catchup_mock.assert_awaited_once()
+
+    async def test_no_pending_candidates_does_not_schedule_catchup(self, insight_pool):
+        """Nothing to catch up on when there are no pending candidates at
+        all — delivery_cycle's early return before the suppression consult
+        must not reconcile a stray catch-up task."""
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+            new=AsyncMock(return_value={"status": "ok", "state": "task_created"}),
+        ) as catchup_mock:
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=_PINNED_NOW)
+
+        assert result["skipped"] is False
+        catchup_mock.assert_not_awaited()
