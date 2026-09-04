@@ -119,9 +119,9 @@ def fetch_required_checks(repo: str, pr_number: int) -> list[dict[str, Any]]:
         stderr=subprocess.PIPE,
     )
     stderr_text = proc.stderr.decode("utf-8", "replace")
-    # gh exits non-zero with this message when the branch has no required
-    # checks configured (no branch protection). That is a vacuously-satisfied
-    # required-checks gate, not an error: treat it as an empty required set.
+    # gh exits non-zero with this message when no required-check rule applies to
+    # the target ref. Preserve that transport result; repository policy decides
+    # whether an empty required set is acceptable.
     if proc.returncode != 0 and "no required checks reported" in stderr_text:
         return []
     if proc.returncode not in (0, 8):

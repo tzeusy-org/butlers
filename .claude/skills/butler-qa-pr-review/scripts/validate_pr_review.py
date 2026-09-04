@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
             "that all required GitHub checks are passing."
         )
     )
-    parser.add_argument("--repo", default="https://github.com/Tzeusy/butlers")
+    parser.add_argument("--repo", default="https://github.com/tzeusy-org/butlers")
     parser.add_argument("--pr", type=int, required=True)
     return parser
 

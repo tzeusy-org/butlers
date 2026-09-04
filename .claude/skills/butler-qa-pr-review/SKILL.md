@@ -28,13 +28,13 @@ Review one PR end-to-end: scrub personal information, resolve the outstanding re
 
 ## Inputs
 
-- `repo`: GitHub URL or `owner/repo`. Default `https://github.com/Tzeusy/butlers` (`Tzeusy/butlers`).
+- `repo`: GitHub URL or `owner/repo`. Default `https://github.com/tzeusy-org/butlers` (`tzeusy-org/butlers`).
 - `pr_number`: required.
 - `attempt_id`: optional. Include when this PR came from a QA investigation and you want handoff tied back to the `healing_attempts` row.
 - `fingerprint`: optional. Include when available so replies and commits can stay correlated to the QA finding.
 - `dashboard_base_url`: optional. Include when you want the review handoff to link back to `/qa/investigations/<attempt_id>`.
 
-If the user gives only a PR number, assume `Tzeusy/butlers`.
+If the user gives only a PR number, assume `tzeusy-org/butlers`.
 
 ## When To Use
 
@@ -72,7 +72,7 @@ Use the script, not ad hoc API calls:
 python3 scripts/review_threads.py list --pr <pr-number>
 ```
 
-Pass `--repo <owner/repo-or-url>` when not working against `Tzeusy/butlers`.
+Pass `--repo <owner/repo-or-url>` when not working against `tzeusy-org/butlers`.
 
 Treat unresolved non-outdated review threads as the required closure set. Keep
 the resulting thread IDs and top-level comment IDs around while you work.

@@ -169,8 +169,9 @@ Before marking a bead complete:
   shards retain Docker/testcontainers.
 - The legacy `check` job is a fail-closed fan-in over preflight and every shard,
   and combines their coverage artifacts.
-- `frontend`, `frontend-e2e`, and `check` are not required by branch protection.
-  Do not rely on that configuration; wait for every hosted check to be green.
+- The active merge-queue ruleset requires `check`, `guards`, and `frontend`;
+  `frontend-e2e` remains advisory. PR jobs are path-filtered, while the queue's
+  `merge_group` run is the terminal broad gate against the exact tree to land.
 - Local pre-merge gate = ruff + the non-integration subset + `--collect-only`.
 
 **Verifying in a worktree** (a fresh worktree has no `.venv`): give it a **real**

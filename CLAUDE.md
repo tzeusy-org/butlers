@@ -34,11 +34,11 @@ Do branch work in a dedicated worktree outside the repo:
 git worktree add /home/tze/.butlers-worktrees/<branch-name> -b <branch-name> origin/main
 ```
 
-Commit, push, and open PRs from the worktree; `git worktree remove <path>` when done. Use the
-worktree + PR flow for anything sizeable or risky (features, migrations, broad refactors,
-architectural work). **Small, low-regression-risk changes may be committed directly to `main`** from
-the root (still without moving HEAD), after a format/lint pass on the touched files. When in doubt,
-use a worktree.
+Commit, push, and open PRs from the worktree; every tracked change goes through this worktree + PR
+flow, including small documentation fixes. After review and the PR-head gates complete, add the PR
+to the sole merge route with `gh pr merge <n> --squash --auto`. The non-strict queue validates the
+current `merge_group` tree, so do not rebase a clean PR merely to refresh it. Remove the worktree
+before using `--delete-branch`.
 
 ## Project Overview
 

@@ -5,7 +5,7 @@ commit messages.
 
 ## No-PII Rule
 
-For `Tzeusy/butlers`, align with
+For `tzeusy-org/butlers`, align with
 [src/butlers/core/healing/anonymizer.py](../../../src/butlers/core/healing/anonymizer.py).
 
 Block at minimum:

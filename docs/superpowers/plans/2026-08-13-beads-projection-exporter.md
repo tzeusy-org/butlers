@@ -656,9 +656,10 @@ allocation from the new exact rebased core-chain head at implementation time.
   `--force-with-lease` only when its history was rebased. Do not use broad
   staging or push directly to `main`.
 
-  Open a non-draft PR, keep session links out of all PR metadata, wait for all
-  hosted checks, resolve every review thread, and use the repository exact-base
-  merge helper only after independent exact-head review.
+  Open a non-draft PR, keep session links out of all PR metadata, wait for the
+  applicable PR-head gates, resolve every review thread, and add the reviewed
+  PR to the merge queue with `gh pr merge <n> --squash --auto`. The queue's
+  `merge_group` run is the terminal merged-tree gate.
 
 ## Plan Self-Review
 

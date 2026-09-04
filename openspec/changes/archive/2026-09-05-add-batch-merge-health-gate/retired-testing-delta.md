@@ -1,3 +1,10 @@
+# Retired Testing Delta
+
+This is the non-normative historical snapshot of the testing delta that was
+implemented by the former manual merge route. It never entered the baseline and
+was retired when ruleset 22281319 made the GitHub merge queue authoritative.
+
+```markdown
 ## ADDED Requirements
 
 ### Requirement: Post-Merge Integrity Gate Consumption
@@ -47,3 +54,4 @@ no protection.
 - **WHEN** an operator acknowledges one specific red workflow by name
 - **THEN** the merge route proceeds despite that workflow being red
 - **AND** any other red workflow still halts the batch
+```

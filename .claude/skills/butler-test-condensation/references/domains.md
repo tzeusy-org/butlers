@@ -37,7 +37,7 @@ commands in [discovery.md](discovery.md) after pulling a newer head.
   into `check-preflight`, five `check-unit-N` shards, and five
   `check-integration-N` shards; `check` is their fail-closed coverage fan-in.
   Enumerate current per-step timings with
-  `gh api repos/Tzeusy/butlers/actions/jobs/<job_id> --jq '.steps[]'`.
+  `gh api repos/tzeusy-org/butlers/actions/jobs/<job_id> --jq '.steps[]'`.
   Durations, not collection measurements.
 
 ## Historical 2026-08-24 Observations

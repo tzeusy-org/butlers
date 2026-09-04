@@ -218,13 +218,14 @@ fallback for order-dependent debugging.
 (`~/gt/butlers`) off `main`. Agents and humans both rely on the root checkout
 staying on `main` at all times.
 
-- Small, low-regression-risk changes may be committed directly to `main` from
-  the root checkout (after a best-effort format/lint pass on the touched files),
-  without ever moving HEAD off `main`.
-- Anything larger or riskier (features, migrations, broad refactors,
-  architectural work) uses a dedicated git worktree branched off `origin/main`,
+- Every tracked change uses a dedicated git worktree branched off `origin/main`,
   with commits, pushes, and PRs all coming from the worktree. Open PRs against
-  `--base main`. When in doubt, use a worktree.
+  `--base main`; never push a change directly to `main`.
+- After review and the PR-head gates complete, enqueue the PR with
+  `gh pr merge <n> --squash --auto`. The non-strict `main-merge-queue` ruleset
+  runs required `check`, `guards`, and `frontend` contexts on the current
+  `merge_group` tree. Do not rebase a clean PR merely to refresh it; rebase only
+  to resolve a real conflict or when review requires it.
 
 See the root `CLAUDE.md` for the exact worktree commands and the full discipline.
 

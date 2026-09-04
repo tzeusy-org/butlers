@@ -5,24 +5,23 @@ reproduce the expected gates locally before calling the PR done.
 
 ## CI Gates In This Repo
 
-From [.github/workflows/ci.yml](../../../.github/workflows/ci.yml), the primary
-checks are:
+The active `main-merge-queue` ruleset (id 22281319) requires three contexts:
+`check`, `guards`, and `frontend`. From
+[.github/workflows/ci.yml](../../../.github/workflows/ci.yml):
 
-1. `Lint`
-2. `Format check`
-3. `Unit tests`
-4. `Integration tests (testcontainers)`
-5. `session-link-guard` (bu-mr5t5): fails the PR when a tool-session link or
-   footer (see [scripts/session_link_guard.py](../../../../scripts/session_link_guard.py))
-   leaks into the PR body or a commit message on the current head; review
-   comments are covered best-effort. Runs on `pull_request` events only.
-   Not currently a GitHub-required check on this repo's branch protection —
-   same advisory-but-visible standing as the other checks below — so a PR
-   can still merge over it red; treat a red run the same way you'd treat any
-   other failing gate here and fix it before calling review done.
+1. `guards` runs the repository-wide structural and privacy gates, including
+   `session-link-guard` (bu-mr5t5).
+2. `check` is the fail-closed fan-in over `check-preflight`, five unit shards,
+   and five integration shards.
+3. `frontend` runs its lint, copy/coercion guards, knip, build, and unit tests
+   when the diff touches its path-filtered surface.
 
-Treat these as the default required gates for this repository unless the PR
-shows a different required-check set in GitHub.
+The pull-request run is path-filtered, so skipped jobs are expected and a fixed
+job count is not a completeness test. `frontend-e2e` remains advisory. After
+review and the PR-head gates complete, the sole merge route is
+`gh pr merge <n> --squash --auto`; the queue reruns the required contexts on the
+exact `merge_group` tree before landing. Do not rebase a clean PR merely to
+refresh it.
 
 ## Local Reproduction Commands
 

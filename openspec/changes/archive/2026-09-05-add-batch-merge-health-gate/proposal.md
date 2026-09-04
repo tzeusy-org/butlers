@@ -1,3 +1,14 @@
+## Retirement
+
+Archived on 2026-09-05 with `--skip-specs`. The change implemented a manual
+exact-base and between-merges health route that is now superseded by the live
+GitHub merge queue. Ruleset 22281319 runs required `check`, `guards`, and
+`frontend` contexts on the `merge_group` tree and uses SQUASH/ALLGREEN, so
+syncing this delta would make the baseline require an obsolete mechanism. The
+incident and implementation details below remain as historical rationale. The
+unapplied delta is preserved, explicitly non-normative, in
+`retired-testing-delta.md` rather than under `specs/`.
+
 ## Why
 
 The `Migration Chain Integrity (main)` workflow is already specified: a push to

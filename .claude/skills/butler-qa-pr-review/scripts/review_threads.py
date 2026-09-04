@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser(
         "list", help="List PR review threads as JSON."
     )
-    list_parser.add_argument("--repo", default="https://github.com/Tzeusy/butlers")
+    list_parser.add_argument("--repo", default="https://github.com/tzeusy-org/butlers")
     list_parser.add_argument("--pr", type=int, required=True)
     list_parser.add_argument(
         "--all",
@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     reply_parser = subparsers.add_parser(
         "reply", help="Reply to a top-level PR review comment."
     )
-    reply_parser.add_argument("--repo", default="https://github.com/Tzeusy/butlers")
+    reply_parser.add_argument("--repo", default="https://github.com/tzeusy-org/butlers")
     reply_parser.add_argument("--pr", type=int, required=True)
     reply_parser.add_argument("--comment-id", type=int, required=True)
     body_group = reply_parser.add_mutually_exclusive_group(required=True)
