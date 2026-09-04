@@ -14,8 +14,10 @@ a fixed interval for the lifetime of the process.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -211,13 +213,27 @@ class RuntimeAttentionDeliveryWorker:
     async def _record(self, episode: OutboxEpisode, result: TransportResult) -> None:
         """Apply the terminal transition the outcome implies."""
         if result.outcome is TransportOutcome.CONFIRMED:
-            applied = await self._repository.mark_sent(episode)
+            applied = await self._repository.mark_sent(
+                episode, notification_ref=result.notification_ref
+            )
         elif result.outcome is TransportOutcome.UNCERTAIN:
-            applied = await self._repository.mark_uncertain(episode)
+            # Non-CONFIRMED outcomes always carry error evidence
+            # (TransportResult.__post_init__ enforces this).
+            applied = await self._repository.mark_uncertain(
+                episode,
+                error_class=str(result.error_class),
+                error_detail=str(result.error_detail),
+                notification_ref=result.notification_ref,
+            )
         else:
             # Proven not-attempted (retries exhausted) and provider-rejected are
             # both terminal *and* known not to have delivered.
-            applied = await self._repository.mark_failed(episode)
+            applied = await self._repository.mark_failed(
+                episode,
+                error_class=str(result.error_class),
+                error_detail=str(result.error_detail),
+                notification_ref=result.notification_ref,
+            )
 
         if not applied:
             _fenced_total.inc()
@@ -302,10 +318,18 @@ def build_messenger_transport(
             source_butler="switchboard",
         )
         transport = transport_result_from_envelope(result)
-        if transport is not None:
+        if transport is None:
+            # A pre-vocabulary envelope (a validation refusal, say) never
+            # reached the wire, so it is safely not-attempted.
+            transport = CONFIRMED if result.get("status") == "sent" else RECIPIENT_UNAVAILABLE
+
+        # deliver() always logs a notification row (best-effort) and returns
+        # its id at the top level, separate from the "transport" envelope
+        # fragment -- attach it here so the terminal transition can record the
+        # same optional scalar linkage the outbox schema allows.
+        notification_id = result.get("notification_id")
+        if notification_id is None:
             return transport
-        # A pre-vocabulary envelope (a validation refusal, say) never reached
-        # the wire, so it is safely not-attempted.
-        return CONFIRMED if result.get("status") == "sent" else RECIPIENT_UNAVAILABLE
+        return dataclasses.replace(transport, notification_ref=uuid.UUID(str(notification_id)))
 
     return _transport

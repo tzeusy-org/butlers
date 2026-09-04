@@ -401,13 +401,13 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
           AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'claim_token', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'delivery_error_class', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'delivery_error_detail', 'UPDATE'
           )
-          AND NOT has_column_privilege(
+          AND has_column_privilege(
               switchboard_runtime.oid, outbox.oid, 'notification_ref', 'UPDATE'
           )
           AND has_table_privilege(switchboard_runtime.oid, delivery_lease.oid, 'SELECT')

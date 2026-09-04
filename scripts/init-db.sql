@@ -3867,7 +3867,16 @@ BEGIN
         );
     END LOOP;
 
-    EXECUTE 'GRANT SELECT, UPDATE (lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance, claimed_at, claim_expires_at, next_attempt_at, delivered_at) '
+    -- The delivery worker is activated (roster/switchboard/modules/__init__.py
+    -- constructs and schedules it at startup), so the REQ-database-security-007
+    -- carve-out that kept the finite terminal-error vocabulary and the optional
+    -- notification reference ungranted no longer applies: Switchboard needs
+    -- write access to record a proven terminal outcome. The
+    -- ck_runtime_attention_outbox_delivery_evidence CHECK constraint remains the
+    -- enforcement boundary -- only the fixed non-secret
+    -- (delivery_error_class, delivery_error_detail) pairs are accepted, and
+    -- notification_ref stays a plain scalar UUID with no cross-schema FK.
+    EXECUTE 'GRANT SELECT, UPDATE (lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch, claimed_by_instance, claimed_at, claim_expires_at, next_attempt_at, delivered_at, delivery_error_class, delivery_error_detail, notification_ref) '
         || 'ON TABLE public.runtime_attention_outbox TO butler_switchboard_rw';
     EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.runtime_attention_delivery_lease TO butler_switchboard_rw';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.runtime_attention_active_switchboard_role() TO butler_switchboard_rw';
@@ -4046,9 +4055,10 @@ BEGIN
         claim_expires_at TIMESTAMPTZ,
         next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         delivered_at TIMESTAMPTZ,
-        -- Dormant worker-stage evidence: only fixed, non-secret codes can
-        -- ever be persisted.  Core_198 does not grant these fields to any
-        -- runtime role or activate a producer/worker that writes them.
+        -- Terminal delivery evidence: only fixed, non-secret codes can ever
+        -- be persisted (ck_runtime_attention_outbox_delivery_evidence below).
+        -- Producer functions never write these; only the activated
+        -- Switchboard delivery worker does, via mark_failed/mark_uncertain.
         delivery_error_class TEXT,
         delivery_error_detail TEXT,
         -- Optional scalar linkage only.  Do not add a switchboard-schema FK:
