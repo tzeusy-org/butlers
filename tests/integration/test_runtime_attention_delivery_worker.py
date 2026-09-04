@@ -22,10 +22,13 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
+from butlers.api.routers.model_settings import _attention_episode
 from butlers.tools.switchboard.routing.transport import (
     CONFIRMED,
     PROVIDER_REJECTED,
     RECIPIENT_UNAVAILABLE,
+    TransportErrorClass,
+    TransportErrorDetail,
     TransportOutcome,
     TransportResult,
 )
@@ -107,7 +110,8 @@ async def _row(pool: asyncpg.Pool, episode_id: uuid.UUID) -> asyncpg.Record:
         "butler_switchboard_rw",
         """
         SELECT lifecycle_state, claim_token, claim_epoch, delivery_lease_epoch,
-               claimed_by_instance, delivered_at
+               claimed_by_instance, delivered_at,
+               delivery_error_class, delivery_error_detail, notification_ref
         FROM public.runtime_attention_outbox
         WHERE id = $1
         """,
@@ -387,7 +391,14 @@ async def test_fenced_claimant_cannot_mutate_the_recovered_row(
         # Worker A wakes up believing it still owns the episode.
         assert await repo_a.claim_is_current(episode) is False
         assert await repo_a.mark_sent(episode) is False
-        assert await repo_a.mark_failed(episode) is False
+        assert (
+            await repo_a.mark_failed(
+                episode,
+                error_class="transport_rejected",
+                error_detail="provider_rejected",
+            )
+            is False
+        )
         assert (await _row(pool, episode_id))["lifecycle_state"] == "uncertain"
 
         # And a slow claimant that reaches the worker's own send path stops
@@ -563,13 +574,61 @@ async def test_switchboard_role_alone_can_inspect_and_claim(
         assert lease is not None
         assert await repository.claim_next_pending(lease) is not None
 
-        # Even Switchboard may not write the dormant evidence columns.
-        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+        # Switchboard now holds the UPDATE grant on the delivery-evidence
+        # columns (REQ-database-security-007's carve-out is lifted once the
+        # delivery worker is activated), but the CHECK constraint remains the
+        # real boundary: a value outside the closed vocabulary, or evidence on
+        # a row that is not in a terminal state, is still rejected.
+        with pytest.raises(asyncpg.exceptions.CheckViolationError, match="delivery_evidence"):
             await _as_role(
                 pool,
                 "butler_switchboard_rw",
                 "UPDATE public.runtime_attention_outbox SET delivery_error_class = 'pre_transport'",
             )
+
+
+async def test_terminal_delivery_evidence_reaches_the_safe_reason_projection(
+    migrated_core_postgres_pool,
+) -> None:
+    """The grant fix closes REQ-database-security-007's C5 gap end to end.
+
+    Before the grant covered ``delivery_error_class``/``delivery_error_detail``/
+    ``notification_ref``, ``mark_uncertain`` could never persist them, so
+    ``ck_runtime_attention_outbox_delivery_evidence``, the API's
+    ``_attention_safe_reason`` projection, and the UI's ``safe_reason``
+    rendering were permanently unreachable. This proves the real write path
+    (worker -> ``mark_uncertain`` -> the Switchboard grant) lands evidence
+    that the real read path (``observe_runtime_attention_models()``, the same
+    SECURITY DEFINER function the dashboard API calls) reads back, and that
+    the API's own mapping renders the expected operator-facing text.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=2, max_pool_size=4) as pool:
+        episode_id = await _seed_pending_episode(pool, "safe-reason-chain")
+        repository = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        notification_ref = uuid.uuid4()
+        scripted = TransportResult(
+            TransportOutcome.UNCERTAIN,
+            TransportErrorClass.TRANSPORT_UNCERTAIN,
+            TransportErrorDetail.TRANSPORT_TIMEOUT,
+            notification_ref=notification_ref,
+        )
+        cycle = await _worker(repository, _Spy(scripted)).run_once()
+        assert cycle.outcomes == (TransportOutcome.UNCERTAIN,)
+
+        row = await _row(pool, episode_id)
+        assert row["lifecycle_state"] == "uncertain"
+        assert row["delivery_error_class"] == "transport_uncertain"
+        assert row["delivery_error_detail"] == "transport_timeout"
+        assert row["notification_ref"] == notification_ref
+
+        # No SET ROLE: this is the same access path the dashboard API uses.
+        observed = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
+        observed_row = next(r for r in observed if r["episode_id"] == episode_id)
+        assert observed_row["delivery_error_class"] == "transport_uncertain"
+        assert observed_row["delivery_error_detail"] == "transport_timeout"
+
+        projected = _attention_episode(observed_row)
+        assert projected.safe_reason == "Delivery timed out; outcome is uncertain"
 
 
 # ---------------------------------------------------------------------------

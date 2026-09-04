@@ -299,7 +299,7 @@ class RuntimeAttentionOutbox:
 
     # -- terminal transitions ------------------------------------------------
 
-    async def _finish(self, episode: OutboxEpisode, statement: str) -> bool:
+    async def _finish(self, episode: OutboxEpisode, statement: str, *extra: Any) -> bool:
         async with self._switchboard_tx() as connection:
             row = await connection.fetchrow(
                 statement,
@@ -307,16 +307,24 @@ class RuntimeAttentionOutbox:
                 episode.claim_token,
                 episode.claim_epoch,
                 episode.delivery_lease_epoch,
+                *extra,
             )
         return row is not None
 
-    async def mark_sent(self, episode: OutboxEpisode) -> bool:
-        """Record a confirmed delivery. ``False`` means the claim was fenced."""
+    async def mark_sent(
+        self, episode: OutboxEpisode, *, notification_ref: uuid.UUID | None = None
+    ) -> bool:
+        """Record a confirmed delivery. ``False`` means the claim was fenced.
+
+        ``notification_ref`` is the optional scalar linkage to the logged
+        ``switchboard.notifications`` row the CHECK constraint permits for a
+        ``sent`` episode; it carries no delivery-error evidence of its own.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'sent', delivered_at = now()
+            SET lifecycle_state = 'sent', delivered_at = now(), notification_ref = $5
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -324,15 +332,31 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            notification_ref,
         )
 
-    async def mark_failed(self, episode: OutboxEpisode) -> bool:
-        """Record a terminal failure that is *proven* not to have delivered."""
+    async def mark_failed(
+        self,
+        episode: OutboxEpisode,
+        *,
+        error_class: str,
+        error_detail: str,
+        notification_ref: uuid.UUID | None = None,
+    ) -> bool:
+        """Record a terminal failure that is *proven* not to have delivered.
+
+        ``error_class``/``error_detail`` must be one of the fixed pairs
+        ``ck_runtime_attention_outbox_delivery_evidence`` accepts; anything
+        else is rejected at the database, never at this layer.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'failed'
+            SET lifecycle_state = 'failed',
+                delivery_error_class = $5,
+                delivery_error_detail = $6,
+                notification_ref = $7
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -340,15 +364,33 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            error_class,
+            error_detail,
+            notification_ref,
         )
 
-    async def mark_uncertain(self, episode: OutboxEpisode) -> bool:
-        """Record an ambiguous send. Terminal: it is never reclaimed."""
+    async def mark_uncertain(
+        self,
+        episode: OutboxEpisode,
+        *,
+        error_class: str,
+        error_detail: str,
+        notification_ref: uuid.UUID | None = None,
+    ) -> bool:
+        """Record an ambiguous send. Terminal: it is never reclaimed.
+
+        ``error_class``/``error_detail`` must be one of the fixed pairs
+        ``ck_runtime_attention_outbox_delivery_evidence`` accepts; anything
+        else is rejected at the database, never at this layer.
+        """
         return await self._finish(
             episode,
             """
             UPDATE public.runtime_attention_outbox
-            SET lifecycle_state = 'uncertain'
+            SET lifecycle_state = 'uncertain',
+                delivery_error_class = $5,
+                delivery_error_detail = $6,
+                notification_ref = $7
             WHERE id = $1
               AND lifecycle_state = 'sending'
               AND claim_token = $2
@@ -356,6 +398,9 @@ class RuntimeAttentionOutbox:
               AND delivery_lease_epoch = $4
             RETURNING id
             """,
+            error_class,
+            error_detail,
+            notification_ref,
         )
 
     # -- recovery ------------------------------------------------------------
