@@ -98,7 +98,7 @@
     - `uv run ruff format --check src/butlers/api/routers/conversations.py tests/api/test_conversations.py`
     - `openspec validate durable-dashboard-terminal-action-recovery --strict`
     - `git diff --check`
-  - Inspect the staged file list and diff for only the listed reconciliation scope; obtain an independent task review before the parent performs exact-base push/merge validation.
+  - Inspect the staged file list and diff for only the listed reconciliation scope; obtain an independent task review before the parent pushes and uses the merge queue's `merge_group` validation.
   - Commit with a concise reconciliation message on the isolated branch and hand the commit to the parent; do not push or modify PR metadata from this worker.
 
 ## Plan Self-Review

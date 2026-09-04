@@ -213,7 +213,6 @@ tests/scripts/test_backfill_transitory_entities.py
 tests/scripts/test_check_spec_overwrites.py
 tests/scripts/test_conftest_container_leak_warning.py
 tests/scripts/test_dev_sh_contacts_contract.py
-tests/scripts/test_main_health_gate.py
 tests/scripts/test_session_link_guard.py
 tests/scripts/test_setup_worktree.py
 tests/telemetry/test_domain_event_delivery_observability.py

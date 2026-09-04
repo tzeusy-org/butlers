@@ -31,5 +31,6 @@
 - [x] 4.1 Add URL-backed From and To audit inputs and typed API parameters,
   retaining the `?noise=all` opt-out.
 - [x] 4.2 Run focused Python, migration, frontend, formatting, lint, and
-  OpenSpec validation gates; rebase on fresh `origin/main` and repeat the
-  migration-frontier check before publishing.
+  OpenSpec validation gates; fetch fresh `origin/main` and repeat the
+  migration-frontier check before publishing. Rebase only if that check
+  demonstrates a migration conflict.

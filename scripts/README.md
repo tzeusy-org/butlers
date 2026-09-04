@@ -197,139 +197,32 @@ Removes old log files and prunes empty directories under `logs/`.
 Optional environment variable:
 - `RETENTION_DAYS` (default: `3`)
 
-## merge_pr_exact_base.py
+## setup_main_ruleset.sh and the merge queue
 
-Performs the final REST squash merge for a reviewed pull request without
-silently accepting a target-branch retarget or base-branch advance. GitHub's
-REST merge endpoint can condition only on the pull request head SHA; it cannot
-atomically require the reviewed target ref or base SHA. This helper therefore:
+`setup_main_ruleset.sh` installs the `main-merge-queue` ruleset for
+`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, and
+non-strict required contexts `check`, `guards`, and `frontend`.
 
-1. confirms the currently open PR still has the final reviewed head, target
-   branch name, and live target-branch SHA,
-2. keeps the supported head-SHA pin on the REST squash request, and
-3. re-reads the merged PR's retained target branch name through GraphQL, and
-4. verifies that the resulting squash commit has exactly the reviewed base as
-   its sole parent and the same immutable result tree as the reviewed head.
-
-It is the sole final merge route, not a substitute for terminal hosted CI,
-independent review, or resolved review threads. Every hosted check must be
-terminal green before invoking it; branch-protection required-check settings do
-not relax that gate. Do not use bare REST merge requests, `gh pr merge`, or
-automatic merge. Capture `headRefOid`, `baseRefName`, and the *live target
-branch tip* from the same final revalidation. Do not use a PR's `baseRefOid` as
-the expected base: it can remain stale while the target branch has advanced.
+After review and the PR-head gates are complete, add the PR to the queue:
 
 ```bash
-HEAD_SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
-BASE_REF=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)
-BASE_SHA=$(gh api "repos/Tzeusy/butlers/git/ref/heads/$BASE_REF" --jq .object.sha)
+gh pr merge "$PR" --repo tzeusy-org/butlers --squash --auto
 ```
 
-Then pass all three exact values to the helper:
+The queue creates a `merge_group` and reruns the required contexts against the
+exact combined tree it will land. Do not rebase a clean PR merely to refresh it;
+rebase only to resolve a real conflict or when review requires it. A queued PR
+remains `OPEN` until the queue succeeds, so verify the completed squash merge
+before closing source or review Beads:
 
 ```bash
-python3 scripts/merge_pr_exact_base.py \
-  --pr "$PR" \
-  --expected-head "$HEAD_SHA" \
-  --expected-base-ref "$BASE_REF" \
-  --expected-base "$BASE_SHA"
+gh pr view "$PR" --repo tzeusy-org/butlers --json state,mergedAt
 ```
 
-Only `merged-exact-base` (exit `0`) permits the coordinator to close the source
-Bead. A `premerge-head-drift`, `premerge-base-ref-drift`, or
-`premerge-base-drift` result sends no merge request; rebase onto current
-`origin/main`, then repeat the full exact-head review and CI gates.
-`postmerge-base-drift` means GitHub merged the SHA-pinned head on a newer base
-during the unavoidable API race: leave the source Bead open and record/run the
-required post-merge race audit instead of treating it as exact-current-base
-evidence. `postmerge-base-ref-drift` means the post-merge GraphQL lookup either
-could not verify the retained target ref or found a different ref name. It is
-also exit `4` and blocks closure even if the squash commit's sole parent still
-matches the reviewed base SHA.
-`postmerge-patch-drift` is likewise exit `4`: it means the helper could not
-obtain immutable commit-tree evidence for both commits, or their result trees
-differed. With the verified sole parent equal to the reviewed base, matching
-tree IDs are an authoritative proof that the landed squash has the reviewed
-net patch, including binary, rename, and empty changes. The JSON audit records
-`expected_patch_tree_sha`, `landed_patch_tree_sha`, and
-`patch_identity_matches`; no nonmatching or unavailable evidence permits
-source-Bead closure.
-`postmerge-unexpected-squash-parent-shape` is also exit `4`: GitHub has already
-merged the PR, but the result did not have exactly one parent. Its audit retains
-the parent evidence; leave the source Bead open and run the documented
-post-merge audit/investigation rather than treating it as exact-base evidence.
-
-### Target-branch health gate
-
-Before it sends the merge request, the helper reads the target branch's own
-post-merge detectors for the exact base SHA it is about to merge onto, via
-`main_health_gate.py`. Two new outcomes come from that gate and neither issues a
-merge request:
-
-- `premerge-target-branch-red` (exit `6`) means a push-triggered workflow on the
-  target branch concluded red for that base SHA. Halt the batch and repair the
-  branch; do not merge the next PR onto it.
-- `premerge-target-branch-health-unknown` (exit `7`) means there is no
-  trustworthy verdict yet: the run has not been created, is still in flight, or
-  was cancelled. Wait for it to settle (`main_health_gate.py --wait-seconds`)
-  and repeat, rather than reading the absence as green.
-
-`--acknowledge-target-red <workflow-filename>` (repeatable) merges despite one
-named workflow being red, which is how the fix for a red target branch lands. It
-is deliberately not a blanket override: any *other* red still halts the batch.
-
-## main_health_gate.py
-
-Decides whether `main` is healthy enough for the next merge in a batch, and is
-the reader the post-merge detectors never had (bu-vul8u). A pull request's CI can
-only see its own branch, so two PRs can each be green and still collide once both
-have landed. When that happened, the "Migration Chain Integrity (main)" workflow
-went red on the merged tree exactly as designed, and several more PRs were merged
-onto that red main because nothing consumed the result.
-
-It answers `proceed` / `wait` / `halt` for one SHA, from two halves.
-
-**Hosted half.** Polls the push-triggered workflow runs for that exact SHA. Four
-situations look like the same absence on the wire and must not be conflated:
-
-| observed | meaning | action |
-| --- | --- | --- |
-| no run, and the merged commit touched no path the workflow's `paths:` filter covers | legitimately excluded | proceed |
-| no run, and the commit did touch a covered path | webhook lag | wait |
-| run exists, `conclusion` is the empty string (not null) | still in flight | wait |
-| run exists, `conclusion` is `cancelled` | UNKNOWN | wait, never green |
-
-Only workflows that can earn a per-SHA verdict are polled. A workflow whose
-concurrency group is keyed on the branch ref with `cancel-in-progress` cannot
-settle mid-batch, because every push to main cancels the previous run, so `ci.yml`
-is excluded and the local half covers it instead. A tag-only push workflow such as
-`release.yml` never fires on a branch push and is excluded for the same reason.
-Runs are looked up by workflow FILENAME (`migration-chain-main.yml`), never by
-display name.
-
-**Local half.** Runs the repository's repo-wide guards against a checkout of the
-merged tree. This is where a green verdict actually comes from during a batch.
-The guards are enumerated from the tree under test (its own workflow definitions
-and `Makefile` recipes), not from a list frozen in this script: a new repo-wide
-guard is absent from every branch cut before it, and an absent check is invisible
-to both a fail-scan and a required-name list. The sweep also fails if any guard
-leaves the tree dirty, which is how the frontend copy inventory reports staleness.
-
-```bash
-# between merges, against a dedicated scratch worktree (never the repo root)
-python3 scripts/main_health_gate.py \
-  --tree /path/to/scratch-worktree --sync-tree-to origin/main --wait-seconds 300
-
-# hosted verdicts only, no local checkout needed
-python3 scripts/main_health_gate.py --sha "$SHA" --no-local-guards
-```
-
-Exit codes: `0` proceed, `1` definitively red, `2` unresolved (wait and re-run),
-`3` usage or transport error. An exhausted wait budget halts, but still reports
-`2`: it halts for want of evidence, not because something failed.
-
-`--sync-tree-to` refuses to reset anything that is not a linked git worktree, so
-a mistyped path cannot touch the repository root.
+The former exact-base merge and between-merges target-health helpers were
+deleted when the queue became the sole merge route. Their incident rationale is
+preserved in the archived OpenSpec change
+`2026-09-05-add-batch-merge-health-gate`.
 
 ## fix_beads_dependency_timestamps.py
 

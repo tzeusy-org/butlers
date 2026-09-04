@@ -212,9 +212,9 @@ tests/scripts/test_check_archived_requirements_landed.py
 tests/scripts/test_compose_dashboard_url.py
 tests/scripts/test_compose_sysctls.py
 tests/scripts/test_generate_runtime_cli_sandbox_manifest.py
-tests/scripts/test_merge_pr_exact_base.py
 tests/scripts/test_pg_dump_backup.py
 tests/scripts/test_restore_drill_tcp_proxy.py
+tests/scripts/test_validate_pr_review.py
 tests/smoke/test_daemon_lifecycle.py
 tests/smoke/test_route_inbox_recovery.py
 tests/test_benchmark_orchestration.py

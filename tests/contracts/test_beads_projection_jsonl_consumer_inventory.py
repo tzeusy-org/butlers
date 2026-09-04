@@ -53,8 +53,8 @@ def _assert_contiguous_traceability(
     )
 
 
-def test_projection_plan_allocates_its_core_revision_from_the_exact_rebased_head() -> None:
-    """The planning packet cannot reserve a migration revision before implementation."""
+def test_projection_plan_allocates_its_core_revision_from_the_fetched_head() -> None:
+    """Allocate from the live frontier without requiring a refresh rebase."""
     implementation_plan = _read("docs/superpowers/plans/2026-08-13-beads-projection-exporter.md")
     tasks = _read("openspec/changes/beads-projection-exporter/tasks.md")
     core_head = get_chain_head("core")
@@ -63,8 +63,11 @@ def test_projection_plan_allocates_its_core_revision_from_the_exact_rebased_head
     next_revision = f"core_{int(match.group(1)) + 1}"
 
     for text in map(_normalise, (implementation_plan, tasks)):
-        assert "exact rebased core-chain head at implementation time" in text
+        assert "fetch the target branch" in text
+        assert "inspect the core chain's single head" in text
         assert "allocate the next core Alembic revision" in text
+        assert "later fetch demonstrates a migration conflict" in text
+        assert "do not refresh-rebase an otherwise clean PR" in text
 
     assert not re.search(r"core_\d+_beads_projection\.py", implementation_plan)
     assert f"{core_head}_beads_projection.py" not in implementation_plan

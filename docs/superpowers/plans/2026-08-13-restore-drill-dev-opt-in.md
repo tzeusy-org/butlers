@@ -282,4 +282,6 @@ git commit -m "fix: make restore drill opt-in for dev"
 git push -u origin agent/bu-kqnum.8.9
 ```
 
-Then open a draft PR, obtain independent engineering review, satisfy hosted CI, and merge only with `scripts/merge_pr_exact_base.py` after exact current-base verification.
+Then open a draft PR, obtain independent engineering review, satisfy the applicable PR-head gates,
+mark it ready, and add it to the merge queue with `gh pr merge <n> --squash --auto`. The queue's
+`merge_group` run supplies the terminal current-tree verification.
