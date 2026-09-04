@@ -19,6 +19,20 @@ owner-approved retain-all reconciliation of its truthful dispatch receipt,
 current-stream accountability, and non-destructive read recovery; it remains
 pending final independent review, terminal CI, and exact-base merge validation.
 
+## Subsequent status (2026-09-02)
+
+The 2026-09-02 owner directive (dashboard chat pursuit run 10,
+`2026-09-02-dashboard-chat-pursuit.md`, `lens:question-lane-tools`)
+**supersedes** the "Generic questions: intentionally absent" verdict recorded
+in the table below (line 45 as of this audit) for this run. A genuine
+question is no longer left to fall through to General or to a domain
+butler's statement/action contract: two new terminal classifier tools,
+`answer_question` and `cannot_answer`, give the dashboard a fourth lane
+(bu-0ynlk.2) while keeping this dossier's truthfulness constraints —
+no silent General routing, no fabricated receipts, honest Stop — binding on
+the new lanes. The historical evidence and verdict below are preserved
+unchanged as observed on 2026-07-28; only this decision is overridden.
+
 ## North star
 
 Talk to Butlers is a specialist-roster front door: an owner statement reaches a

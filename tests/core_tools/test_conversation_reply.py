@@ -139,6 +139,61 @@ async def test_conversation_reply_errors_when_persistence_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# sources — answer-lane citation requirement (bu-0ynlk.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sources", [[], [""], ["   "]])
+async def test_empty_or_blank_sources_are_rejected_with_guidance(sources):
+    """An answer-lane reply claiming sources but providing none must error —
+    an unsourced 'answer' is indistinguishable from a fabricated one."""
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="The answer is 42", sources=sources)
+
+    assert result["status"] == "error"
+    assert "sources must contain only non-empty names" in result["error"]
+    assert "decline" in result["error"]
+
+
+async def test_omitted_sources_is_unaffected(monkeypatch):
+    """Confirm-loop/action-proposal replies never pass sources — the default
+    None must not trigger the answer-lane citation requirement."""
+    fake_create = AsyncMock(return_value={"id": uuid4(), "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(conversation_id=str(uuid4()), message="Recorded — correct?")
+
+    assert result["status"] == "ok"
+    assert fake_create.await_args.kwargs["sources"] is None
+
+
+async def test_non_empty_sources_persists(monkeypatch):
+    conv_id = uuid4()
+    message_id = uuid4()
+    fake_create = AsyncMock(return_value={"id": message_id, "role": "assistant"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_create)
+
+    tool = _register_and_grab(pool=AsyncMock())
+
+    result = await tool(
+        conversation_id=str(conv_id),
+        message="You spent $312 on groceries this month.",
+        sources=["finance.get_budget", "transaction#a1b2c3"],
+    )
+
+    assert result == {
+        "status": "ok",
+        "message_id": str(message_id),
+        "conversation_id": str(conv_id),
+    }
+    fake_create.assert_awaited_once()
+    assert fake_create.await_args.kwargs["sources"] == ["finance.get_budget", "transaction#a1b2c3"]
+
+
+# ---------------------------------------------------------------------------
 # _best_effort_request_id — ambient routing-context recovery, best-effort only
 # ---------------------------------------------------------------------------
 

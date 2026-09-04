@@ -730,6 +730,70 @@ async def test_create_conversation_streams_conversation_reply_message(app):
     assert '"model_name": null' in resp.text
 
 
+async def test_create_conversation_streams_sources_on_the_message_complete_event(app):
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row(
+        content="You spent $412 on groceries this month.",
+        sources=["finance:transactions (category=groceries, month=2026-09)"],
+    )
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "how much did I spend on groceries this month?"},
+        )
+
+    assert resp.status_code == 200
+    assert "event: message_complete" in resp.text
+    assert '"sources": ["finance:transactions (category=groceries, month=2026-09)"]' in resp.text
+
+
+async def test_create_conversation_defaults_sources_to_empty_list_when_absent(app):
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row()
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert '"sources": []' in resp.text
+
+
 async def test_create_conversation_retry_reuses_original_conversation_for_message_id(app):
     """A lost initial SSE response retries against its original thread.
 

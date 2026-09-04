@@ -39,7 +39,9 @@ from butlers.modules.pipeline import (
     _build_dashboard_lane_prompt,
     _build_decomposition_prompt,
     _build_routing_prompt,
+    _extract_answer_question_calls,
     _extract_bug_report_calls,
+    _extract_cannot_answer_calls,
     _extract_routed_butlers,
     _format_decomp_conversation_history,
     _infer_fallback_target_from_cc_output,
@@ -2224,7 +2226,7 @@ class TestBuildDashboardLanePrompt:
 
         assert "status: 'refused'" in prompt
         assert "reason: 'dashboard_lane_conflict'" in prompt
-        assert "Do NOT call either tool again" in prompt
+        assert "do NOT call any of these tools again" in prompt
 
     def test_surfaces_conversation_id_and_page_context(self):
         prompt = _build_dashboard_lane_prompt(
@@ -2260,7 +2262,35 @@ class TestBuildDashboardLanePrompt:
 
         assert "best-guess" not in prompt
         assert "do NOT guess" in prompt
-        assert "Do not call `route_to_butler`, `file_bug_report`, or" in prompt
+        assert (
+            "Do not call `route_to_butler`, `file_bug_report`, "
+            "`answer_question`, `cannot_answer`, or" in prompt
+        )
+
+    def test_offers_a_question_lane_with_answer_question_and_cannot_answer(self):
+        prompt = _build_dashboard_lane_prompt(
+            "How much did I spend on groceries this month?", _MOCK_BUTLERS
+        )
+
+        assert "LANE D" in prompt
+        assert "answer_question" in prompt
+        assert "cannot_answer" in prompt
+        assert "scope='domain'" in prompt
+        assert "scope='system'" in prompt
+
+    def test_question_lane_never_instructs_a_general_fallback_route(self):
+        """bu-0ynlk.2 AC1: the rendered prompt contains no instruction to
+        route ambiguous/unowned input to a general/best-guess butler — an
+        unowned question resolves via `cannot_answer`, never a route."""
+        prompt = _build_dashboard_lane_prompt("What is the meaning of life?", _MOCK_BUTLERS)
+
+        lowered = prompt.lower()
+        assert "default to general" not in lowered
+        assert "fall back to general" not in lowered
+        assert "falls back to general" not in lowered
+        assert "route to general" not in lowered
+        assert "route ambiguous" not in lowered
+        assert "cannot_answer" in prompt
 
 
 class TestExtractBugReportCalls:
@@ -2288,6 +2318,134 @@ class TestExtractBugReportCalls:
         assert attempted is False
         assert succeeded is False
         assert case_ref is None
+
+
+def _answer_question_call(
+    scope: str = "domain",
+    target: str | None = "finance",
+    status: str = "accepted",
+    butler: str | None = "finance",
+) -> dict:
+    result: dict[str, Any] = {"status": status}
+    if butler is not None:
+        result["butler"] = butler
+    args: dict[str, Any] = {"scope": scope, "question": "How much did I spend?"}
+    if target is not None:
+        args["target"] = target
+    return {"name": "answer_question", "args": args, "result": result}
+
+
+def _cannot_answer_call(status: str = "ok", dead_letter_id: str | None = "dl-1") -> dict:
+    result: dict[str, Any] = {"status": status, "answered": False}
+    if dead_letter_id is not None:
+        result["dead_letter_id"] = dead_letter_id
+    return {
+        "name": "cannot_answer",
+        "args": {
+            "question_summary": "hi?",
+            "scope_checked": ["finance"],
+            "reason": "no owner",
+        },
+        "result": result,
+    }
+
+
+class TestExtractAnswerQuestionCalls:
+    def test_no_answer_question_call(self):
+        routed, acked, failed = _extract_answer_question_calls([_route_call("health")])
+        assert routed == []
+        assert acked == []
+        assert failed == []
+
+    def test_successful_domain_call(self):
+        routed, acked, failed = _extract_answer_question_calls([_answer_question_call()])
+        assert routed == ["finance"]
+        assert acked == ["finance"]
+        assert failed == []
+
+    def test_failed_domain_call(self):
+        routed, acked, failed = _extract_answer_question_calls(
+            [_answer_question_call(status="error")]
+        )
+        assert routed == ["finance"]
+        assert acked == []
+        assert failed == ["finance"]
+
+    def test_system_scope_is_excluded(self):
+        """scope="system" is never a domain dispatch — handled by
+        _extract_cannot_answer_calls instead."""
+        routed, acked, failed = _extract_answer_question_calls(
+            [_answer_question_call(scope="system", target=None, butler=None)]
+        )
+        assert routed == []
+        assert acked == []
+        assert failed == []
+
+    def test_empty_tool_calls(self):
+        routed, acked, failed = _extract_answer_question_calls([])
+        assert routed == []
+        assert acked == []
+        assert failed == []
+
+
+class TestExtractCannotAnswerCalls:
+    def test_no_cannot_answer_call(self):
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls([_route_call("health")])
+        assert attempted is False
+        assert succeeded is False
+        assert dead_letter_id is None
+
+    def test_successful_cannot_answer_call(self):
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls([_cannot_answer_call()])
+        assert attempted is True
+        assert succeeded is True
+        assert dead_letter_id == "dl-1"
+
+    def test_failed_cannot_answer_call(self):
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls(
+            [_cannot_answer_call(status="error", dead_letter_id=None)]
+        )
+        assert attempted is True
+        assert succeeded is False
+        assert dead_letter_id is None
+
+    def test_refused_cannot_answer_does_not_override_the_claimed_lane(self):
+        refused = _cannot_answer_call(status="refused", dead_letter_id=None)
+        refused["result"]["reason"] = "dashboard_lane_conflict"
+
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls([refused])
+
+        assert attempted is False
+        assert succeeded is False
+        assert dead_letter_id is None
+
+    def test_system_scope_answer_question_fallback_is_detected(self):
+        """answer_question(scope="system") is the same terminal decline as
+        cannot_answer — both must be caught by this one extractor."""
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls(
+            [
+                _answer_question_call(
+                    scope="system",
+                    target=None,
+                    butler=None,
+                    status="ok",
+                )
+            ]
+        )
+        assert attempted is True
+        assert succeeded is True
+
+    def test_domain_scope_answer_question_is_not_a_decline(self):
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls(
+            [_answer_question_call(scope="domain")]
+        )
+        assert attempted is False
+
+    def test_empty_tool_calls(self):
+        attempted, succeeded, dead_letter_id = _extract_cannot_answer_calls([])
+        assert attempted is False
+        assert succeeded is False
+        assert dead_letter_id is None
 
 
 class TestMessagePipelineProcessDashboardLanes:
@@ -2757,6 +2915,251 @@ class TestMessagePipelineProcessDashboardLanes:
         assert result.target_butler == "finance"
         assert result.acked_targets == ["finance"]
         pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_refused_cannot_answer_does_not_override_accepted_route(self, mock_load):
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to finance; later decline call was refused.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance", "prompt": "Log $50 expense"},
+                        "result": {"status": "ok", "butler": "finance"},
+                    },
+                    {
+                        "name": "cannot_answer",
+                        "args": {
+                            "question_summary": "Log $50 expense",
+                            "scope_checked": ["finance"],
+                            "reason": "Conflicting second decision.",
+                        },
+                        "result": {
+                            "status": "refused",
+                            "reason": "dashboard_lane_conflict",
+                            "dead_letter_id": None,
+                        },
+                    },
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-accepted-route", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "Log $50 expense",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-0000-000000000017",
+        )
+
+        assert result.target_butler == "finance"
+        assert result.routed_targets == ["finance"]
+        assert result.acked_targets == ["finance"]
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_d_domain_question_routes_to_domain_butler(self, mock_load):
+        """Lane D (domain scope): answer_question dispatches to the target
+        butler and merges into the same routed/acked bookkeeping route_to_butler
+        uses (bu-0ynlk.2)."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Answering from finance.",
+                tool_calls=[
+                    {
+                        "name": "answer_question",
+                        "args": {
+                            "scope": "domain",
+                            "question": "How much did I spend on groceries?",
+                            "target": "finance",
+                        },
+                        "result": {"status": "accepted", "butler": "finance"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-8", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "How much did I spend on groceries?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-0000-000000000008",
+        )
+
+        assert result.target_butler == "finance"
+        assert result.routed_targets == ["finance"]
+        assert result.acked_targets == ["finance"]
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_d_cannot_answer_dead_letters_without_double_capture(self, mock_load):
+        """cannot_answer already performed its own dead-letter capture and
+        in-thread reply — the generic 'no lane decision' dead-letter net must
+        NEVER fire again for the same turn (bu-0ynlk.2 AC3)."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Declining — no owner found.",
+                tool_calls=[
+                    {
+                        "name": "cannot_answer",
+                        "args": {
+                            "question_summary": "What is the meaning of life?",
+                            "scope_checked": ["finance", "health", "system"],
+                            "reason": "No butler owns this question.",
+                        },
+                        "result": {
+                            "status": "ok",
+                            "answered": False,
+                            "dead_letter_id": "dl-cannot-answer-1",
+                            "filed": True,
+                        },
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-9", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "What is the meaning of life?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-0000-000000000009",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.route_result["dead_letter_id"] == "dl-cannot-answer-1"
+        assert result.target_butler != "general"
+        # The generic unroutable net must not have double-fired.
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_d_system_scope_answer_question_dead_letters_via_fallback(self, mock_load):
+        """bu-0ynlk.3 (Concierge) does not exist yet — a scope="system"
+        answer_question resolves through the same dead-letter path as
+        cannot_answer, never routes to any domain butler."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="System question — declining.",
+                tool_calls=[
+                    {
+                        "name": "answer_question",
+                        "args": {"scope": "system", "question": "Which model does finance use?"},
+                        "result": {
+                            "status": "ok",
+                            "answered": False,
+                            "dead_letter_id": "dl-system-1",
+                            "filed": True,
+                        },
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-10", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "Which model does finance use?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000010",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.route_result["dead_letter_id"] == "dl-system-1"
+        assert result.routed_targets == []
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_ambiguous_question_fixture_yields_cannot_answer_not_general_route(
+        self, mock_load
+    ):
+        """bu-0ynlk.2 AC1: an ambiguous question fixture resolves via
+        cannot_answer, never a route_to_butler('general') best-guess."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="I don't know who owns this.",
+                tool_calls=[
+                    {
+                        "name": "cannot_answer",
+                        "args": {
+                            "question_summary": "What's the best restaurant nearby?",
+                            "scope_checked": ["finance", "health"],
+                            "reason": "No butler tracks restaurant recommendations.",
+                        },
+                        "result": {
+                            "status": "ok",
+                            "answered": False,
+                            "dead_letter_id": "dl-ambiguous-1",
+                            "filed": True,
+                        },
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-11", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "What's the best restaurant nearby?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000011",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.target_butler != "general"
+        assert "general" not in result.routed_targets
+        assert "general" not in result.acked_targets
 
 
 class TestDeadLetterDashboardUnroutable:

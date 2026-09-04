@@ -59,9 +59,10 @@ SSE event types
 ``message_complete``
     The routed butler's ``conversation_reply`` message, with attribution.
     Data: ``{message_id, model_name, input_tokens, output_tokens,
-    duration_ms, tool_calls}``. ``model_name``/token/duration fields are
-    ``null`` — the reply is persisted mid-session, before the spawned
+    duration_ms, tool_calls, sources}``. ``model_name``/token/duration fields
+    are ``null`` — the reply is persisted mid-session, before the spawned
     session's own accounting is known (see ``_stream_conversation_response``).
+    ``sources`` is ``[]`` outside the answer lane.
 ``error``
     Session failure. Data: ``{code, message}`` (``SESSION_TIMEOUT`` also
     carries ``session_id``, non-null when the routed session could be
@@ -805,6 +806,7 @@ async def _stream_conversation_response(
                 "output_tokens": reply_row.get("output_tokens"),
                 "duration_ms": reply_row.get("duration_ms"),
                 "tool_calls": reply_row.get("tool_calls") or [],
+                "sources": reply_row.get("sources") or [],
             },
         )
         yield _sse_done()

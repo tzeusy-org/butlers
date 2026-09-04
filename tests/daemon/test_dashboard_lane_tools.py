@@ -84,7 +84,15 @@ def _patch_infra():
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
-    mock_pool = AsyncMock()
+    # MagicMock, not AsyncMock: `.acquire` must be a plain sync call returning
+    # an async-context-manager double (see TestDeadLetterDashboardUnroutable
+    # in test_module_pipeline.py for the same pattern) — every attribute this
+    # helper actually needs awaited is explicitly assigned AsyncMock below, so
+    # the base class choice only affects unconfigured attributes like
+    # `.acquire`. An AsyncMock base made `pool.acquire()` return a coroutine
+    # (no `__aenter__`), breaking `async with pool.acquire() as conn:` call
+    # sites such as `cannot_answer`'s dead-letter capture.
+    mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
@@ -788,3 +796,515 @@ async def test_dashboard_lane_guard_does_not_affect_non_dashboard_sessions(
     assert "dashboard_lane_conflict" not in bug_result
 
     assert route_result["status"] == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# answer_question — question lane (bu-0ynlk.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_answer_question_domain_injects_answer_block_not_confirm_block(
+    tmp_path: Path, monkeypatch
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def _capture(*_args, **kwargs):
+        captured.update(kwargs["args"])
+        return {"result": {"status": "accepted"}}
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=AsyncMock(side_effect=_capture)
+    )
+    fn = tools["answer_question"]
+    fake_stamp = AsyncMock()
+    monkeypatch.setattr("butlers.api.conversations.conversation_set_routed_butler", fake_stamp)
+
+    _set_dashboard_routing_context(page_context={"route": "/entities/concentration"})
+    try:
+        result = await fn(
+            scope="domain", question="How much did I spend on groceries?", target="finance"
+        )
+    finally:
+        _clear_routing_context()
+
+    assert result == {"status": "accepted", "butler": "finance"}
+    payload = {k: v for k, v in captured.items() if k != "__switchboard_route_context"}
+    envelope = parse_route_envelope(payload)
+    assert "c1c1c1c1-0000-7000-8000-000000000001" in envelope.input.context
+    assert "How much did I spend on groceries?" in envelope.input.context
+    assert "READ-ONLY" in envelope.input.context
+    assert "sources" in envelope.input.context
+    assert "STATEMENT" not in envelope.input.context
+    assert "ACTION REQUEST" not in envelope.input.context
+    assert envelope.target.butler == "finance"
+    fake_stamp.assert_not_awaited()
+
+
+async def test_answer_question_domain_requires_target(tmp_path: Path) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    fn = tools["answer_question"]
+
+    _set_dashboard_routing_context()
+    try:
+        result = await fn(scope="domain", question="How much did I spend?", target=None)
+    finally:
+        _clear_routing_context()
+
+    assert result["status"] == "error"
+    assert "target is required" in result["error"]
+    mock_route.assert_not_awaited()
+
+
+async def test_answer_question_rejects_unknown_scope(tmp_path: Path) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
+    fn = tools["answer_question"]
+
+    result = await fn(scope="galaxy", question="hi?")
+
+    assert result["status"] == "error"
+    assert "scope must be" in result["error"]
+
+
+async def test_answer_question_system_falls_back_to_cannot_answer_dead_letter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """bu-0ynlk.3 (Concierge) does not exist yet — scope="system" must fall
+    back to the same honest-decline dead-letter path as cannot_answer, never
+    fabricate a system answer or route to a domain butler."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock()
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    fn = tools["answer_question"]
+
+    # Force a real import so the module object exists (register_all_butler_tools()
+    # injects the switchboard tools namespace into sys.modules without setting
+    # parent attributes, which breaks monkeypatch's dotted-string resolution —
+    # patch the imported module object directly instead).
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    fake_capture = AsyncMock(return_value="dl-system-1")
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", fake_capture)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_reply)
+
+    _set_dashboard_routing_context()
+    try:
+        result = await fn(scope="system", question="Which model does finance use?")
+    finally:
+        _clear_routing_context()
+
+    assert result["status"] == "ok"
+    assert result["answered"] is False
+    assert result["dead_letter_id"] == "dl-system-1"
+
+    fake_capture.assert_awaited_once()
+    assert fake_capture.await_args.kwargs["failure_category"] == "unanswerable"
+
+    fake_reply.assert_awaited_once()
+    assert "system" in fake_reply.await_args.kwargs["message"]
+
+    # Never routed to any domain butler.
+    mock_route.assert_not_awaited()
+
+
+async def test_answer_question_propagates_turn_id_and_obeys_a_prior_stop(
+    tmp_path: Path,
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def _capture(*_args, **kwargs):
+        captured.update(kwargs["args"])
+        return {"result": {"status": "accepted"}}
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=AsyncMock(side_effect=_capture)
+    )
+    fn = tools["answer_question"]
+    message_id = "d1d1d1d1-0000-7000-8000-000000000001"
+
+    with patch(
+        "butlers.core.dashboard_turns.dispatch_status",
+        new_callable=AsyncMock,
+        return_value=_turn_result("active"),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id=message_id)
+        try:
+            result = await fn(scope="domain", question="What's my budget?", target="finance")
+        finally:
+            _clear_routing_context()
+
+    assert result["status"] == "accepted"
+
+    blocked_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    patches2 = _patch_infra()
+    (tmp_path / "blocked-answer").mkdir()
+    _, blocked_tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path / "blocked-answer"),
+        patches2,
+        mock_route=blocked_route,
+    )
+    with patch(
+        "butlers.core.dashboard_turns.dispatch_status",
+        new_callable=AsyncMock,
+        return_value=_turn_result("cancelled"),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id=message_id)
+        try:
+            blocked = await blocked_tools["answer_question"](
+                scope="domain", question="What's my budget?", target="finance"
+            )
+        finally:
+            _clear_routing_context()
+
+    assert blocked == {"status": "cancelled", "butler": "finance", "cancelled": True}
+    blocked_route.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# cannot_answer — terminal decline (bu-0ynlk.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_cannot_answer_writes_one_dead_letter_and_replies_naming_scope_checked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock()
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    fn = tools["cannot_answer"]
+
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    fake_capture = AsyncMock(return_value="dl-1")
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", fake_capture)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_reply)
+
+    _set_dashboard_routing_context()
+    try:
+        result = await fn(
+            question_summary="What is the meaning of life?",
+            scope_checked=["finance", "health", "system"],
+            reason="No butler owns this question.",
+        )
+    finally:
+        _clear_routing_context()
+
+    assert result["status"] == "ok"
+    assert result["answered"] is False
+    assert result["filed"] is True
+    assert result["dead_letter_id"] == "dl-1"
+
+    fake_capture.assert_awaited_once()
+    capture_kwargs = fake_capture.await_args.kwargs
+    assert capture_kwargs["failure_category"] == "unanswerable"
+    assert capture_kwargs["original_payload"]["scope_checked"] == [
+        "finance",
+        "health",
+        "system",
+    ]
+
+    fake_reply.assert_awaited_once()
+    reply_message = fake_reply.await_args.kwargs["message"]
+    assert "finance" in reply_message
+    assert "health" in reply_message
+    assert "system" in reply_message
+    assert fake_reply.await_args.kwargs["request_id"] == capture_kwargs["original_request_id"]
+
+    # Never files a bug report or routes to a domain butler.
+    mock_route.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failed_effect", ["capture", "reply"])
+async def test_cannot_answer_reports_partial_effect_failure_truthfully(
+    tmp_path: Path, monkeypatch, failed_effect: str
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
+
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    fake_capture = AsyncMock(return_value="dl-1")
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    if failed_effect == "capture":
+        fake_capture.side_effect = RuntimeError("capture failed")
+    else:
+        fake_reply.side_effect = RuntimeError("reply failed")
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", fake_capture)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_reply)
+    terminal = AsyncMock(return_value=_turn_result("finished"))
+
+    with (
+        patch(
+            "butlers.core.dashboard_turns.claim_dead_letter",
+            AsyncMock(return_value=_turn_result("claimed")),
+        ),
+        patch("butlers.core.dashboard_turns.mark_terminal", terminal),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id="d1d1d1d1-0000-7000-8000-000000000001")
+        try:
+            result = await tools["cannot_answer"](
+                question_summary="What is the meaning of life?",
+                scope_checked=["finance", "health"],
+                reason="No owning scope.",
+            )
+        finally:
+            _clear_routing_context()
+
+    assert result["status"] == "error"
+    assert result["filed"] is (failed_effect != "capture")
+    terminal.assert_awaited_once()
+    assert terminal.await_args.kwargs["state"] == "failed"
+    if failed_effect == "capture":
+        assert "couldn't file it" in fake_reply.await_args.kwargs["message"]
+        assert "has been filed" not in fake_reply.await_args.kwargs["message"]
+
+
+async def test_cannot_answer_claims_turn_before_capture_and_honors_stop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
+    fn = tools["cannot_answer"]
+
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", fake_reply)
+    claim = AsyncMock(return_value=_turn_result("claimed"))
+    terminal = AsyncMock(return_value=_turn_result("finished"))
+    fake_capture = AsyncMock(return_value="dl-2")
+
+    with (
+        patch("butlers.core.dashboard_turns.claim_dead_letter", claim),
+        patch("butlers.core.dashboard_turns.mark_terminal", terminal),
+        patch("butlers.tools.switchboard.dead_letter.capture.capture_to_dead_letter", fake_capture),
+    ):
+        _set_dashboard_routing_context(dashboard_message_id="d1d1d1d1-0000-7000-8000-000000000001")
+        try:
+            result = await fn(question_summary="hi?", scope_checked=["finance"], reason="no owner")
+        finally:
+            _clear_routing_context()
+
+    assert result["status"] == "ok"
+    claim.assert_awaited_once()
+    assert claim.await_args.kwargs["message_id"] == UUID("d1d1d1d1-0000-7000-8000-000000000001")
+    terminal.assert_awaited_once()
+    assert terminal.await_args.kwargs["state"] == "completed"
+
+    stopped_claim = AsyncMock(return_value=_turn_result("cancelled"))
+    patches2 = _patch_infra()
+    (tmp_path / "stopped-cannot-answer").mkdir()
+    _, stopped_tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path / "stopped-cannot-answer"), patches2
+    )
+    with patch("butlers.core.dashboard_turns.claim_dead_letter", stopped_claim):
+        _set_dashboard_routing_context(dashboard_message_id="d1d1d1d1-0000-7000-8000-000000000001")
+        try:
+            stopped = await stopped_tools["cannot_answer"](
+                question_summary="hi?", scope_checked=["finance"], reason="no owner"
+            )
+        finally:
+            _clear_routing_context()
+
+    assert stopped == {"status": "cancelled", "answered": False, "cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Lane exclusivity across all four terminal tools (bu-0ynlk.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_answer_question_refused_after_route_to_butler_claims_lane(tmp_path: Path) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    route_fn = tools["route_to_butler"]
+    answer_fn = tools["answer_question"]
+
+    _set_dashboard_routing_context()
+    try:
+        route_result = await route_fn(butler="relationship", prompt="hello")
+        answer_result = await answer_fn(scope="domain", question="hi?", target="finance")
+    finally:
+        _clear_routing_context()
+
+    assert route_result["status"] == "accepted"
+    assert answer_result["status"] == "refused"
+    assert answer_result["reason"] == "dashboard_lane_conflict"
+    assert mock_route.await_count == 1
+
+
+async def test_route_to_butler_refused_after_answer_question_claims_lane(tmp_path: Path) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    answer_fn = tools["answer_question"]
+    route_fn = tools["route_to_butler"]
+
+    _set_dashboard_routing_context()
+    try:
+        answer_result = await answer_fn(scope="domain", question="hi?", target="finance")
+        route_result = await route_fn(butler="relationship", prompt="hello")
+    finally:
+        _clear_routing_context()
+
+    assert answer_result["status"] == "accepted"
+    assert route_result["status"] == "refused"
+    assert route_result["reason"] == "dashboard_lane_conflict"
+    assert "answer_question" in route_result["error"]
+    assert mock_route.await_count == 1
+
+
+async def test_route_to_butler_refused_after_cannot_answer_claims_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    cannot_answer_fn = tools["cannot_answer"]
+    route_fn = tools["route_to_butler"]
+
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    monkeypatch.setattr(
+        "butlers.api.conversations.conversation_reply_create",
+        AsyncMock(return_value={"id": "msg-1"}),
+    )
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", AsyncMock(return_value="dl-3"))
+
+    _set_dashboard_routing_context()
+    try:
+        cannot_answer_result = await cannot_answer_fn(
+            question_summary="hi?", scope_checked=["finance"], reason="no owner"
+        )
+        route_result = await route_fn(butler="relationship", prompt="hello")
+    finally:
+        _clear_routing_context()
+
+    assert cannot_answer_result["status"] == "ok"
+    assert route_result["status"] == "refused"
+    assert route_result["reason"] == "dashboard_lane_conflict"
+    assert "cannot_answer" in route_result["error"]
+    mock_route.assert_not_awaited()
+
+
+async def test_second_answer_question_call_in_same_turn_is_refused(tmp_path: Path) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    fn = tools["answer_question"]
+
+    _set_dashboard_routing_context()
+    try:
+        first = await fn(scope="domain", question="hi?", target="finance")
+        second = await fn(scope="domain", question="hi again?", target="health")
+    finally:
+        _clear_routing_context()
+
+    assert first["status"] == "accepted"
+    assert second["status"] == "refused"
+    assert second["reason"] == "dashboard_lane_conflict"
+    assert mock_route.await_count == 1
+
+
+async def test_second_cannot_answer_call_in_same_turn_is_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    _, tools = await _start_switchboard_and_capture_tools(butler_dir, patches)
+    fn = tools["cannot_answer"]
+
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    fake_capture = AsyncMock(return_value="dl-4")
+    monkeypatch.setattr(
+        "butlers.api.conversations.conversation_reply_create",
+        AsyncMock(return_value={"id": "msg-1"}),
+    )
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", fake_capture)
+
+    _set_dashboard_routing_context()
+    try:
+        first = await fn(question_summary="hi?", scope_checked=["finance"], reason="no owner")
+        second = await fn(question_summary="hi?", scope_checked=["finance"], reason="no owner")
+    finally:
+        _clear_routing_context()
+
+    assert first["status"] == "ok"
+    assert second["status"] == "refused"
+    assert second["reason"] == "dashboard_lane_conflict"
+    assert fake_capture.await_count == 1
+
+
+async def test_question_lane_tools_refuse_non_dashboard_sessions(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    answer_fn = tools["answer_question"]
+    cannot_answer_fn = tools["cannot_answer"]
+
+    import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+    fake_capture = AsyncMock(return_value="dl-1")
+    monkeypatch.setattr(capture_mod, "capture_to_dead_letter", fake_capture)
+    sensitive_question = "private-question-sentinel"
+
+    answer = await answer_fn(scope="domain", question=sensitive_question, target="finance")
+    decline = await cannot_answer_fn(
+        question_summary=sensitive_question,
+        scope_checked=["finance"],
+        reason="No owning scope.",
+    )
+    captured = capsys.readouterr()
+
+    assert answer["status"] == "error"
+    assert answer["reason"] == "dashboard_context_required"
+    assert decline["status"] == "error"
+    assert decline["reason"] == "dashboard_context_required"
+    mock_route.assert_not_awaited()
+    fake_capture.assert_not_awaited()
+    assert sensitive_question not in captured.err

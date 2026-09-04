@@ -35,12 +35,41 @@ _BUG_REPORT_SEVERITY_HINT: dict[int, str] = {
 
 #: ``_routing_ctx`` dict keys used to enforce lane exclusivity within a single
 #: dashboard chat-widget classification session (bu-j5jqv gen-1 reconciliation
-#: gap G4). Only meaningful when the session's ``dashboard_context`` carries a
-#: ``conversation_id`` — non-dashboard switchboard flows never read or write
-#: these keys and are unaffected. Bug reports are terminal and always file;
-#: only ``route_to_butler`` can be refused by this guard.
+#: gap G4; extended to four lanes by bu-0ynlk.2). Only meaningful when the
+#: session's ``dashboard_context`` carries a ``conversation_id`` — non-dashboard
+#: switchboard flows never read or write these keys and are unaffected.
+#: Values: ``"route"`` (route_to_butler), ``"bug"`` (file_bug_report),
+#: ``"answer"`` (answer_question), ``"cannot_answer"`` (cannot_answer). Bug
+#: reports are terminal and always file — never refused by this guard, only
+#: surfaced as a co-occurrence — but they still refuse a *later* route_to_butler
+#: (and, by the same rule, a later answer_question/cannot_answer). The
+#: question-lane tools (answer_question, cannot_answer) are strict single-shot
+#: per turn: either refuses if the lane was already claimed by anything at all,
+#: including a repeat call to themselves.
 _DASHBOARD_LANE_CLAIM_KEY = "_dashboard_lane_claimed"
 _DASHBOARD_LANE_TARGET_KEY = "_dashboard_lane_claim_target"
+_DASHBOARD_LANE_CONFLICT_KEYS_FOR_ROUTE = frozenset({"bug", "answer", "cannot_answer"})
+_DASHBOARD_LANE_CLAIM_TOOL_NAME: dict[str, str] = {
+    "route": "route_to_butler",
+    "bug": "file_bug_report",
+    "answer": "answer_question",
+    "cannot_answer": "cannot_answer",
+}
+
+
+def _dashboard_conversation_id_from_context(
+    dashboard_context: dict[str, Any] | None,
+) -> str | None:
+    """Return a normalized dashboard conversation UUID, or ``None``."""
+    if not isinstance(dashboard_context, dict):
+        return None
+    raw_conversation_id = dashboard_context.get("conversation_id")
+    if raw_conversation_id in (None, ""):
+        return None
+    try:
+        return str(UUID(str(raw_conversation_id)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _dashboard_turn_id_from_context(
@@ -130,6 +159,54 @@ def _build_dashboard_confirm_block(
             "when it is only pending, bypasses consent-before-effect and is "
             "never acceptable — not even when you are confident the owner "
             "would approve.",
+            "",
+            "You MUST call `conversation_reply` before finishing this session — the "
+            "owner's dashboard chat is waiting on it and has no other way to see "
+            "your response.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_dashboard_answer_block(
+    *,
+    conversation_id: str,
+    page_context: dict[str, Any] | None,
+    question: str,
+) -> str:
+    """Build the deterministic dashboard read-only answer-loop instruction block.
+
+    Appended to the routed envelope's ``input.context`` by ``answer_question``
+    (scope="domain") — the sibling of ``_build_dashboard_confirm_block`` for
+    the question lane (bu-0ynlk.2). Unlike the confirm block, this session
+    must never write: it answers strictly from its own read tools and cites
+    them, or declines honestly rather than fabricating a citation.
+    """
+    lines = [
+        "--- DASHBOARD CONVERSATION CONTEXT (deterministic; always present) ---",
+        f"conversation_id: {conversation_id}",
+    ]
+    if page_context:
+        lines.append(f"page_context: {json.dumps(page_context, ensure_ascii=False)}")
+    lines.extend(
+        [
+            "",
+            f'The owner asked a QUESTION from the dashboard chat widget: "{question}"',
+            "",
+            "This is a READ-ONLY answer turn — you MUST NOT write, create, update, "
+            "or delete anything in this session, even if the question sounds like "
+            "it invites an action. Use only your own read tools to find a grounded "
+            "answer.",
+            "",
+            "1. Answer strictly from what your own tools return — never from memory or assumption.",
+            "2. If you find a grounded answer, call `conversation_reply` with "
+            f'conversation_id="{conversation_id}", a concise answer message, and a '
+            "non-empty `sources` list naming exactly what you consulted (tool names "
+            "and/or record identifiers).",
+            "3. If you cannot find a grounded answer after checking your available "
+            "read tools, do NOT guess and do NOT fabricate a source to satisfy the "
+            "citation requirement — call `conversation_reply` with an honest decline "
+            "explaining what you checked, and omit `sources` entirely.",
             "",
             "You MUST call `conversation_reply` before finishing this session — the "
             "owner's dashboard chat is waiting on it and has no other way to see "
@@ -468,141 +545,70 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         return result.model_dump(mode="json")
 
-    @_core_tool("switchboard_routing")
-    @tool_span("route_to_butler", butler_name=butler_name)
-    async def route_to_butler(
-        butler: str,
+    async def _dispatch_dashboard_target(
+        *,
+        tool_label: str,
+        target_butler: str,
         prompt: str,
-        context: str | None = None,
-        complexity: str | None = None,
+        context: str | None,
+        complexity: str | None,
+        dashboard_block_builder: Callable[[dict[str, Any] | None], str],
+        claim_value: str,
+        stamp_routed_butler_on_accept: bool,
+        routing_ctx: dict[str, Any],
+        dashboard_context: dict[str, Any] | None,
+        dashboard_conversation_id: str | None,
     ) -> dict[str, Any]:
-        """ROUTING TOOL — call this to send a message to a specialist butler.
+        """Shared route.execute dispatch tail for ``route_to_butler`` and
+        ``answer_question`` (scope="domain") — bu-0ynlk.2.
 
-        This is the primary routing tool for the Switchboard. You MUST call
-        this tool (not a shell command) to route messages. It may also appear
-        in your tool list as ``mcp__switchboard__route_to_butler``.
-
-        Dashboard chat-widget bug/system reports (e.g. "this chart is empty",
-        "the page is broken") must NOT be routed here — use ``file_bug_report``
-        instead so they reach QA rather than a domain butler.
-
-        Args:
-            butler: Target butler name — one of: "finance", "health",
-                "relationship", "travel", "education", "lifestyle", "general".
-            prompt: Self-contained prompt for the target butler. Must be
-                independently understandable without conversation history.
-            context: Optional — key details and context the target butler
-                needs to act on this request.
-            complexity: Task complexity tier — one of "reasoning",
-                "workhorse", "cheap", "specialty", "local", "legacy".
-                Defaults to "workhorse" when omitted or unrecognized. Retired
-                pre-core_092 values (e.g. "medium", "high") are remapped to
-                their canonical equivalent.
+        Both tools resolve a target butler, inject a deterministic dashboard
+        instruction block into the routed envelope's ``input.context``, claim
+        the dashboard lane, dispatch via ``route.execute``, and parse the
+        result identically. They differ in which block is injected
+        (confirm-loop vs. read-only answer), which claim value is recorded,
+        and whether acceptance makes the target sticky for later turns.
         """
         from datetime import UTC, datetime
 
         from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 
-        # --- Permissions-matrix enforcement (public.permissions: cross_butler) ---
-        # route_to_butler is the cross-butler dispatch path: the Switchboard
-        # invokes another butler on this butler's behalf. The matrix governs
-        # whether this butler may invoke other butlers via the Switchboard. A
-        # cell flipped to granted=false blocks the cross-butler call outright
-        # (an authorization decision). Mirrors the spawn gate: consult the matrix
-        # at the decision point, return an observable denial. check_permission
-        # fails open, so a DB error never wedges routing.
-        _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
-        if not _cb_perm.allowed:
-            _cb_msg = (
-                f"Permission denied: butler '{butler_name}' is not granted "
-                f"'{CROSS_BUTLER_PERMISSION}'"
-            )
-            if _cb_perm.reason:
-                _cb_msg += f" (reason: {_cb_perm.reason})"
-            logger.warning(
-                "route_to_butler blocked by permissions matrix for butler=%s: %s",
-                butler_name,
-                _cb_msg,
-            )
-            return {"status": "error", "butler": butler, "error": _cb_msg}
-
-        _routing_ctx = _routing_ctx_var.get() or {}
-        if not isinstance(_routing_ctx, dict):
-            _routing_ctx = {}
-
-        # Dashboard lane exclusivity guard (bu-j5jqv): once file_bug_report has
-        # claimed this dashboard classification session, route_to_butler must
-        # refuse to dispatch to a domain butler — bug/system reports are never
-        # routed there. Scoped to dashboard-source sessions only (a
-        # dashboard_context with a conversation_id); non-dashboard switchboard
-        # flows never populate this key and are unaffected.
-        _dashboard_context = _routing_ctx.get("dashboard_context")
-        _dashboard_conversation_id = (
-            str(_dashboard_context["conversation_id"])
-            if isinstance(_dashboard_context, dict) and _dashboard_context.get("conversation_id")
-            else None
-        )
-        if _dashboard_conversation_id and _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) == "bug":
-            logger.warning(
-                "Dashboard lane conflict: route_to_butler(butler=%s) refused — "
-                "file_bug_report already claimed conversation_id=%s in this "
-                "classification session; bug reports are never routed to a "
-                "domain butler.",
-                butler,
-                _dashboard_conversation_id,
-            )
-            return {
-                "status": "refused",
-                "butler": butler,
-                "error": (
-                    "This dashboard message was already filed as a bug/system "
-                    "report via file_bug_report — bug reports are never routed "
-                    "to a domain butler. route_to_butler is not permitted for "
-                    "this message."
-                ),
-                "reason": "dashboard_lane_conflict",
-            }
-
         runtime_routing_ctx = get_current_runtime_session_routing_context()
         if isinstance(runtime_routing_ctx, dict):
-            if not _routing_ctx:
-                _routing_ctx = dict(runtime_routing_ctx)
+            if not routing_ctx:
+                routing_ctx = dict(runtime_routing_ctx)
             else:
-                for key in (
-                    "source_metadata",
-                    "request_context",
-                    "request_id",
-                ):
-                    if _routing_ctx.get(key) in (None, "", {}):
-                        _routing_ctx[key] = runtime_routing_ctx.get(key)
-        source_metadata = _routing_ctx.get("source_metadata", {})
+                for key in ("source_metadata", "request_context", "request_id"):
+                    if routing_ctx.get(key) in (None, "", {}):
+                        routing_ctx[key] = runtime_routing_ctx.get(key)
+        source_metadata = routing_ctx.get("source_metadata", {})
         if not isinstance(source_metadata, dict):
             source_metadata = {}
         normalized_source_metadata: dict[str, Any] = {
             "channel": str(source_metadata.get("channel", "mcp")),
             "identity": str(source_metadata.get("identity", "unknown")),
-            "tool_name": str(source_metadata.get("tool_name", "route_to_butler")),
+            "tool_name": str(source_metadata.get("tool_name", tool_label)),
         }
         if source_metadata.get("source_id") not in (None, ""):
             normalized_source_metadata["source_id"] = str(source_metadata["source_id"])
         try:
             dashboard_turn_id = _dashboard_turn_id_from_context(
                 source_metadata,
-                _dashboard_context if isinstance(_dashboard_context, dict) else None,
+                dashboard_context if isinstance(dashboard_context, dict) else None,
             )
         except ValueError as exc:
-            logger.warning("route_to_butler refused invalid dashboard turn id: %s", exc)
+            logger.warning("%s refused invalid dashboard turn id: %s", tool_label, exc)
             return {
                 "status": "error",
-                "butler": butler,
+                "butler": target_butler,
                 "error": "Dashboard turn control identity is invalid.",
             }
         if dashboard_turn_id is not None:
             normalized_source_metadata["dashboard_message_id"] = str(dashboard_turn_id)
-        request_context = _routing_ctx.get("request_context")
+        request_context = routing_ctx.get("request_context")
         if not isinstance(request_context, dict):
             request_context = None
-        raw_request_id = _routing_ctx.get("request_id")
+        raw_request_id = routing_ctx.get("request_id")
         if raw_request_id in (None, "") and isinstance(request_context, dict):
             raw_request_id = request_context.get("request_id")
         request_id = _coerce_request_id(raw_request_id)
@@ -634,24 +640,25 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 dashboard_status = await dispatch_status(pool, message_id=dashboard_turn_id)
             except Exception:
                 logger.exception(
-                    "route_to_butler could not inspect dashboard Stop state for message %s",
+                    "%s could not inspect dashboard Stop state for message %s",
+                    tool_label,
                     dashboard_turn_id,
                 )
                 return {
                     "status": "error",
-                    "butler": butler,
+                    "butler": target_butler,
                     "error": "Dashboard turn control is unavailable.",
                 }
             if dashboard_status.outcome in {"cancelled", "cancelling"}:
                 return {
                     "status": "cancelled",
-                    "butler": butler,
+                    "butler": target_butler,
                     "cancelled": True,
                 }
             if dashboard_status.outcome in {"finished", "external_action_in_progress"}:
                 return {
                     "status": "refused",
-                    "butler": butler,
+                    "butler": target_butler,
                     "error": (
                         "This dashboard turn is already terminal or has an external "
                         "action still being reconciled."
@@ -660,7 +667,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 }
 
         # Prepend identity preamble to prompt if present in routing context.
-        identity_preamble = _routing_ctx.get("identity_preamble")
+        identity_preamble = routing_ctx.get("identity_preamble")
         effective_prompt = f"{identity_preamble}\n{prompt}" if identity_preamble else prompt
 
         # Normalize complexity: accept canonical tier values, gracefully remap
@@ -672,22 +679,18 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         # Forward attachment metadata from routing context so target
         # butlers know what attachments exist and can fetch on demand.
-        _route_attachments = _routing_ctx.get("attachments")
+        _route_attachments = routing_ctx.get("attachments")
 
-        # Dashboard confirm-loop (bu-p6ey8.2): deterministically append the
-        # conversation_id/page_context + interpret-apply-confirm instructions
-        # regardless of what the classification session itself wrote into
-        # `context` — the routed session must not depend on the classifier's
-        # prose fidelity to learn its conversation_id.
+        # Deterministically append the conversation_id/page_context +
+        # instruction block regardless of what the classification session
+        # itself wrote into `context` — the routed session must not depend on
+        # the classifier's prose fidelity to learn its conversation_id.
         _effective_context = context
-        if _dashboard_conversation_id:
-            _dashboard_block = _build_dashboard_confirm_block(
-                conversation_id=_dashboard_conversation_id,
-                page_context=(
-                    _dashboard_context.get("page_context")
-                    if isinstance(_dashboard_context, dict)
-                    else None
-                ),
+        if dashboard_conversation_id:
+            _dashboard_block = dashboard_block_builder(
+                dashboard_context.get("page_context")
+                if isinstance(dashboard_context, dict)
+                else None
             )
             _effective_context = f"{context}\n\n{_dashboard_block}" if context else _dashboard_block
 
@@ -709,8 +712,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "source_thread_identity": source_thread_identity,
             "trace_context": {},
         }
-        _src_contact_id = _routing_ctx.get("source_contact_id")
-        _src_entity_id = _routing_ctx.get("source_entity_id")
+        _src_contact_id = routing_ctx.get("source_contact_id")
+        _src_entity_id = routing_ctx.get("source_entity_id")
         if _src_contact_id:
             rc["source_sender_contact_id"] = _src_contact_id
         if _src_entity_id:
@@ -720,12 +723,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "schema_version": "route.v1",
             "request_context": rc,
             "input": _input,
-            "target": {"butler": butler, "tool": "route.execute"},
+            "target": {"butler": target_butler, "tool": "route.execute"},
             "source_metadata": normalized_source_metadata,
             "__switchboard_route_context": {
                 "request_id": request_id,
                 "fanout_mode": "tool_routed",
-                "segment_id": f"route-{butler}",
+                "segment_id": f"{claim_value}-{target_butler}",
                 "attempt": 1,
             },
         }
@@ -734,16 +737,16 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # domain butler invocation below is the side effect that must never
         # co-occur invisibly with a bug-report filing (bu-j5jqv). Claiming
         # happens regardless of the eventual accepted/error outcome, since the
-        # invocation itself (not just its ack) is what a later file_bug_report
+        # invocation itself (not just its ack) is what a later terminal-tool
         # call in the same session needs to know about.
-        if _dashboard_conversation_id:
-            _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "route"
-            _routing_ctx[_DASHBOARD_LANE_TARGET_KEY] = butler
+        if dashboard_conversation_id:
+            routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = claim_value
+            routing_ctx[_DASHBOARD_LANE_TARGET_KEY] = target_butler
 
         try:
             result = await _switchboard_route(
                 pool,
-                target_butler=butler,
+                target_butler=target_butler,
                 tool_name="route.execute",
                 args=envelope,
                 source_butler="switchboard",
@@ -751,7 +754,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if isinstance(result, dict) and result.get("error"):
                 return {
                     "status": "error",
-                    "butler": butler,
+                    "butler": target_butler,
                     "error": str(result["error"]),
                 }
             # Pass through 'accepted' or 'error' status from the target butler so
@@ -762,18 +765,20 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                     if inner.get("cancelled"):
                         return {
                             "status": "cancelled",
-                            "butler": butler,
+                            "butler": target_butler,
                             "cancelled": True,
                         }
-                    if isinstance(_dashboard_context, dict) and _dashboard_context.get(
-                        "conversation_id"
+                    if (
+                        stamp_routed_butler_on_accept
+                        and isinstance(dashboard_context, dict)
+                        and dashboard_context.get("conversation_id")
                     ):
                         await _stamp_routed_butler_best_effort(
                             pool,
-                            conversation_id=str(_dashboard_context["conversation_id"]),
-                            routed_butler=butler,
+                            conversation_id=str(dashboard_context["conversation_id"]),
+                            routed_butler=target_butler,
                         )
-                    return {"status": "accepted", "butler": butler}
+                    return {"status": "accepted", "butler": target_butler}
                 if inner.get("status") == "error":
                     error_detail = inner.get("error", {})
                     error_msg = (
@@ -782,45 +787,519 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                         else str(error_detail)
                     )
                     logger.warning(
-                        "route_to_butler: target %s returned error: %s",
-                        butler,
+                        "%s: target %s returned error: %s",
+                        tool_label,
+                        target_butler,
                         error_msg,
                     )
                     return {
                         "status": "error",
-                        "butler": butler,
+                        "butler": target_butler,
                         "error": error_msg,
                     }
             # Unexpected response shape — log and surface as error so
             # the failure is visible instead of silently swallowed.
             logger.warning(
-                "route_to_butler: target %s returned unexpected response "
-                "(type=%s, inner_type=%s): %s",
-                butler,
+                "%s: target %s returned unexpected response (type=%s, inner_type=%s): %s",
+                tool_label,
+                target_butler,
                 type(result).__name__,
                 type(inner).__name__ if inner is not None else "None",
                 str(result)[:500],
             )
             return {
                 "status": "error",
-                "butler": butler,
+                "butler": target_butler,
                 "error": (
-                    f"Unexpected response from {butler}: "
+                    f"Unexpected response from {target_butler}: "
                     f"expected dict with status 'accepted', "
                     f"got {type(inner).__name__}"
                 ),
             }
         except Exception as exc:
-            logger.warning(
-                "route_to_butler failed for %s: %s",
-                butler,
-                exc,
-            )
+            logger.warning("%s failed for %s: %s", tool_label, target_butler, exc)
             return {
                 "status": "error",
-                "butler": butler,
+                "butler": target_butler,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+
+    @_core_tool("switchboard_routing")
+    @tool_span("route_to_butler", butler_name=butler_name)
+    async def route_to_butler(
+        butler: str,
+        prompt: str,
+        context: str | None = None,
+        complexity: str | None = None,
+    ) -> dict[str, Any]:
+        """ROUTING TOOL — call this to send a message to a specialist butler.
+
+        This is the primary routing tool for the Switchboard. You MUST call
+        this tool (not a shell command) to route messages. It may also appear
+        in your tool list as ``mcp__switchboard__route_to_butler``.
+
+        Dashboard chat-widget bug/system reports (e.g. "this chart is empty",
+        "the page is broken") must NOT be routed here — use ``file_bug_report``
+        instead so they reach QA rather than a domain butler. A dashboard
+        QUESTION (the owner is asking something, not asserting a fact or
+        requesting an action) must NOT be routed here either — use
+        ``answer_question`` instead.
+
+        Args:
+            butler: Target butler name — one of: "finance", "health",
+                "relationship", "travel", "education", "lifestyle", "general".
+            prompt: Self-contained prompt for the target butler. Must be
+                independently understandable without conversation history.
+            context: Optional — key details and context the target butler
+                needs to act on this request.
+            complexity: Task complexity tier — one of "reasoning",
+                "workhorse", "cheap", "specialty", "local", "legacy".
+                Defaults to "workhorse" when omitted or unrecognized. Retired
+                pre-core_092 values (e.g. "medium", "high") are remapped to
+                their canonical equivalent.
+        """
+        # --- Permissions-matrix enforcement (public.permissions: cross_butler) ---
+        # route_to_butler is the cross-butler dispatch path: the Switchboard
+        # invokes another butler on this butler's behalf. The matrix governs
+        # whether this butler may invoke other butlers via the Switchboard. A
+        # cell flipped to granted=false blocks the cross-butler call outright
+        # (an authorization decision). Mirrors the spawn gate: consult the matrix
+        # at the decision point, return an observable denial. check_permission
+        # fails open, so a DB error never wedges routing.
+        _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
+        if not _cb_perm.allowed:
+            _cb_msg = (
+                f"Permission denied: butler '{butler_name}' is not granted "
+                f"'{CROSS_BUTLER_PERMISSION}'"
+            )
+            if _cb_perm.reason:
+                _cb_msg += f" (reason: {_cb_perm.reason})"
+            logger.warning(
+                "route_to_butler blocked by permissions matrix for butler=%s: %s",
+                butler_name,
+                _cb_msg,
+            )
+            return {"status": "error", "butler": butler, "error": _cb_msg}
+
+        _routing_ctx = _routing_ctx_var.get() or {}
+        if not isinstance(_routing_ctx, dict):
+            _routing_ctx = {}
+
+        # Dashboard lane exclusivity guard (bu-j5jqv; extended to the question
+        # lane by bu-0ynlk.2): once file_bug_report, answer_question, or
+        # cannot_answer has claimed this dashboard classification session,
+        # route_to_butler must refuse to dispatch to a domain butler. Scoped to
+        # dashboard-source sessions only (a dashboard_context with a
+        # conversation_id); non-dashboard switchboard flows never populate this
+        # key and are unaffected.
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        _dashboard_conversation_id = _dashboard_conversation_id_from_context(_dashboard_context)
+        _prior_claim_for_route = (
+            _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) if _dashboard_conversation_id else None
+        )
+        if _prior_claim_for_route in _DASHBOARD_LANE_CONFLICT_KEYS_FOR_ROUTE:
+            _prior_tool_name = _DASHBOARD_LANE_CLAIM_TOOL_NAME[_prior_claim_for_route]
+            logger.warning(
+                "Dashboard lane conflict: route_to_butler(butler=%s) refused — "
+                "%s already claimed conversation_id=%s in this classification "
+                "session; route_to_butler is not permitted for this message.",
+                butler,
+                _prior_tool_name,
+                _dashboard_conversation_id,
+            )
+            return {
+                "status": "refused",
+                "butler": butler,
+                "error": (
+                    f"This dashboard message was already handled via "
+                    f"{_prior_tool_name} in this same classification session — "
+                    "route_to_butler is not permitted for this message."
+                ),
+                "reason": "dashboard_lane_conflict",
+            }
+
+        return await _dispatch_dashboard_target(
+            tool_label="route_to_butler",
+            target_butler=butler,
+            prompt=prompt,
+            context=context,
+            complexity=complexity,
+            dashboard_block_builder=lambda page_context: _build_dashboard_confirm_block(
+                conversation_id=_dashboard_conversation_id, page_context=page_context
+            ),
+            claim_value="route",
+            stamp_routed_butler_on_accept=True,
+            routing_ctx=_routing_ctx,
+            dashboard_context=_dashboard_context,
+            dashboard_conversation_id=_dashboard_conversation_id,
+        )
+
+    @_core_tool("switchboard_routing")
+    @tool_span("answer_question", butler_name=butler_name)
+    async def answer_question(
+        scope: str,
+        question: str,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        """QUESTION TOOL — call this for a dashboard question with an
+        identifiable owning butler or scope.
+
+        Never route a question via ``route_to_butler`` and never guess a
+        target — if you cannot identify one, call ``cannot_answer`` instead.
+
+        Args:
+            scope: "domain" — a specialist butler's own data owns the answer
+                (requires ``target``). "system" — the question is about the
+                butler ecosystem/infrastructure itself, not one butler's data.
+            question: Self-contained restatement of the owner's question —
+                must be independently understandable without conversation
+                history.
+            target: Required when scope="domain" — the butler whose domain
+                owns the answer. Omit for scope="system".
+        """
+        if scope not in ("domain", "system"):
+            return {
+                "status": "error",
+                "error": f"scope must be 'domain' or 'system', got {scope!r}.",
+            }
+
+        _routing_ctx = _routing_ctx_var.get() or {}
+        if not isinstance(_routing_ctx, dict):
+            _routing_ctx = {}
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        _dashboard_conversation_id = _dashboard_conversation_id_from_context(_dashboard_context)
+        if _dashboard_conversation_id is None:
+            logger.warning("answer_question requires a valid dashboard conversation context")
+            return {
+                "status": "error",
+                "error": "answer_question requires a valid dashboard conversation context.",
+                "reason": "dashboard_context_required",
+            }
+        _prior_claim = (
+            _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) if _dashboard_conversation_id else None
+        )
+        if _prior_claim is not None:
+            _prior_tool_name = _DASHBOARD_LANE_CLAIM_TOOL_NAME.get(_prior_claim, _prior_claim)
+            logger.warning(
+                "Dashboard lane conflict: answer_question(scope=%s) refused — "
+                "%s already claimed conversation_id=%s in this classification "
+                "session.",
+                scope,
+                _prior_tool_name,
+                _dashboard_conversation_id,
+            )
+            return {
+                "status": "refused",
+                "error": (
+                    f"This dashboard message was already handled via "
+                    f"{_prior_tool_name} in this same classification session — "
+                    "answer_question is not permitted for this message."
+                ),
+                "reason": "dashboard_lane_conflict",
+            }
+        if _dashboard_conversation_id:
+            _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "answer"
+
+        if scope == "system":
+            # Concierge / dashboard_read tools do not exist yet (bu-0ynlk.3) —
+            # fall back to an honest decline rather than guessing or routing.
+            return await _dashboard_cannot_answer(
+                routing_ctx=_routing_ctx,
+                question_summary=question,
+                scope_checked=["system"],
+                reason=(
+                    "System-scope questions are not yet supported (no Concierge tools available)."
+                ),
+            )
+
+        if not isinstance(target, str) or not target.strip():
+            return {
+                "status": "error",
+                "error": "target is required when scope='domain'.",
+            }
+
+        # --- Permissions-matrix enforcement, mirrors route_to_butler. ---
+        _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
+        if not _cb_perm.allowed:
+            _cb_msg = (
+                f"Permission denied: butler '{butler_name}' is not granted "
+                f"'{CROSS_BUTLER_PERMISSION}'"
+            )
+            if _cb_perm.reason:
+                _cb_msg += f" (reason: {_cb_perm.reason})"
+            logger.warning(
+                "answer_question blocked by permissions matrix for butler=%s: %s",
+                butler_name,
+                _cb_msg,
+            )
+            return {"status": "error", "butler": target, "error": _cb_msg}
+
+        return await _dispatch_dashboard_target(
+            tool_label="answer_question",
+            target_butler=target,
+            prompt=question,
+            context=None,
+            complexity=None,
+            dashboard_block_builder=lambda page_context: _build_dashboard_answer_block(
+                conversation_id=_dashboard_conversation_id,
+                page_context=page_context,
+                question=question,
+            ),
+            claim_value="answer",
+            # A question's owner is per-turn evidence, not a conversation-wide
+            # routing pin. Follow-ups must re-enter four-lane classification so
+            # they cannot bypass the read-only/citation contract or change
+            # domains under a stale answer target.
+            stamp_routed_butler_on_accept=False,
+            routing_ctx=_routing_ctx,
+            dashboard_context=_dashboard_context,
+            dashboard_conversation_id=_dashboard_conversation_id,
+        )
+
+    @_core_tool("switchboard_routing")
+    @tool_span("cannot_answer", butler_name=butler_name)
+    async def cannot_answer(
+        question_summary: str,
+        scope_checked: list[str],
+        reason: str,
+    ) -> dict[str, Any]:
+        """TERMINAL DECLINE TOOL — dead-letter a dashboard question with no
+        identifiable owning butler or scope.
+
+        Call this instead of guessing a target or calling ``route_to_butler``
+        when you cannot identify who/what owns the answer. Dead-letters the
+        request for review and replies in-thread with an honest decline
+        naming what you checked — never files a bug report, never routes to
+        a domain butler.
+
+        Args:
+            question_summary: Concise restatement of the owner's question.
+            scope_checked: Butlers/scopes you considered and ruled out before
+                declining (e.g. ["finance", "health", "system"]).
+            reason: Why no owning butler/scope could be identified.
+        """
+        _routing_ctx = _routing_ctx_var.get() or {}
+        if not isinstance(_routing_ctx, dict):
+            _routing_ctx = {}
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        _dashboard_conversation_id = _dashboard_conversation_id_from_context(_dashboard_context)
+        if _dashboard_conversation_id is None:
+            logger.warning("cannot_answer requires a valid dashboard conversation context")
+            return {
+                "status": "error",
+                "answered": False,
+                "error": "cannot_answer requires a valid dashboard conversation context.",
+                "reason": "dashboard_context_required",
+            }
+        _prior_claim = (
+            _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) if _dashboard_conversation_id else None
+        )
+        if _prior_claim is not None:
+            _prior_tool_name = _DASHBOARD_LANE_CLAIM_TOOL_NAME.get(_prior_claim, _prior_claim)
+            logger.warning(
+                "Dashboard lane conflict: cannot_answer refused — %s already "
+                "claimed conversation_id=%s in this classification session.",
+                _prior_tool_name,
+                _dashboard_conversation_id,
+            )
+            return {
+                "status": "refused",
+                "answered": False,
+                "error": (
+                    f"This dashboard message was already handled via "
+                    f"{_prior_tool_name} in this same classification session — "
+                    "cannot_answer is not permitted for this message."
+                ),
+                "reason": "dashboard_lane_conflict",
+            }
+        if _dashboard_conversation_id:
+            _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "cannot_answer"
+
+        return await _dashboard_cannot_answer(
+            routing_ctx=_routing_ctx,
+            question_summary=question_summary,
+            scope_checked=list(scope_checked) if scope_checked else [],
+            reason=reason,
+        )
+
+    async def _dashboard_cannot_answer(
+        *,
+        routing_ctx: dict[str, Any],
+        question_summary: str,
+        scope_checked: list[str],
+        reason: str,
+    ) -> dict[str, Any]:
+        """Shared dead-letter + honest-decline implementation for
+        ``cannot_answer`` and ``answer_question``'s scope="system" fallback
+        (Concierge not yet available — bu-0ynlk.3).
+        """
+        from butlers.core.dashboard_turns import claim_dead_letter, mark_terminal
+        from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+
+        _dashboard_context = routing_ctx.get("dashboard_context")
+        conversation_id: str | None = None
+        if isinstance(_dashboard_context, dict):
+            _conv_id = _dashboard_context.get("conversation_id")
+            conversation_id = str(_conv_id) if _conv_id else None
+        _source_metadata = routing_ctx.get("source_metadata")
+        if not isinstance(_source_metadata, dict):
+            _source_metadata = {}
+        try:
+            dashboard_turn_id = _dashboard_turn_id_from_context(
+                _source_metadata,
+                _dashboard_context if isinstance(_dashboard_context, dict) else None,
+            )
+        except ValueError as exc:
+            logger.warning("cannot_answer refused invalid dashboard turn id: %s", exc)
+            return {
+                "status": "error",
+                "answered": False,
+                "error": "Dashboard turn control identity is invalid.",
+            }
+
+        raw_request_id = routing_ctx.get("request_id")
+        if raw_request_id in (None, "") and isinstance(routing_ctx.get("request_context"), dict):
+            raw_request_id = routing_ctx["request_context"].get("request_id")
+        request_uuid = UUID(_coerce_request_id(raw_request_id))
+
+        dashboard_action_claimed = False
+        if dashboard_turn_id is not None:
+            try:
+                dashboard_control = await claim_dead_letter(
+                    pool,
+                    message_id=dashboard_turn_id,
+                    request_id=request_uuid,
+                )
+            except Exception:
+                logger.exception(
+                    "cannot_answer could not claim dashboard action for message %s",
+                    dashboard_turn_id,
+                )
+                return {
+                    "status": "error",
+                    "answered": False,
+                    "error": "Dashboard turn control is unavailable.",
+                }
+            if dashboard_control.outcome == "cancelled":
+                return {"status": "cancelled", "answered": False, "cancelled": True}
+            if dashboard_control.outcome == "external_action_in_progress":
+                return {
+                    "status": "error",
+                    "answered": False,
+                    "error": (
+                        "A prior dashboard dead-letter action is still being "
+                        "reconciled; it cannot be reported as filed yet."
+                    ),
+                }
+            if dashboard_control.outcome != "claimed":
+                return {
+                    "status": "error",
+                    "answered": False,
+                    "error": (
+                        f"Dashboard dead-letter action was not authorized: "
+                        f"{dashboard_control.outcome}."
+                    ),
+                }
+            dashboard_action_claimed = True
+
+        dead_letter_id: str | None = None
+        filed = False
+        try:
+            async with pool.acquire() as conn:
+                dl_id = await capture_to_dead_letter(
+                    conn,
+                    original_request_id=request_uuid,
+                    source_table="message_inbox",
+                    failure_reason=f"Dashboard question could not be answered: {reason}",
+                    failure_category="unanswerable",
+                    retry_count=0,
+                    last_retry_at=None,
+                    original_payload={
+                        "question_summary": question_summary,
+                        "scope_checked": scope_checked,
+                    },
+                    request_context=(
+                        routing_ctx.get("request_context")
+                        if isinstance(routing_ctx.get("request_context"), dict)
+                        else {}
+                    ),
+                    error_details={"reason": reason},
+                    replay_eligible=False,
+                )
+            dead_letter_id = str(dl_id)
+            filed = True
+        except Exception:
+            logger.exception(
+                "Failed to capture unanswerable dashboard question to dead_letter_queue"
+            )
+
+        reply_persisted = False
+        if conversation_id:
+            _scope_note = ", ".join(scope_checked) if scope_checked else "no identifiable scope"
+            _case_note = f" (case {dead_letter_id[:8]})" if dead_letter_id else ""
+            if filed:
+                reply_message = (
+                    f"I don't have an answer to that — I checked {_scope_note} and "
+                    f"couldn't find one ({reason}). This has been filed for manual "
+                    f"review{_case_note}."
+                )
+            else:
+                reply_message = (
+                    f"I don't have an answer to that — I checked {_scope_note} and "
+                    f"couldn't find one ({reason}). I also couldn't file it for "
+                    "manual review; please try again."
+                )
+            try:
+                from butlers.api.conversations import conversation_reply_create
+
+                reply = await conversation_reply_create(
+                    pool,
+                    UUID(conversation_id),
+                    message=reply_message,
+                    request_id=request_uuid,
+                )
+                reply_persisted = reply is not None
+                if not reply_persisted:
+                    logger.warning(
+                        "cannot_answer: conversation no longer exists for request_id=%s",
+                        request_uuid,
+                    )
+            except Exception:
+                logger.warning(
+                    "cannot_answer: failed to post conversation_reply for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "cannot_answer: no conversation_id in routing context — owner not "
+                "notified in-thread (request_id=%s)",
+                request_uuid,
+            )
+
+        completed = filed and reply_persisted
+        if dashboard_action_claimed and dashboard_turn_id is not None:
+            try:
+                await mark_terminal(
+                    pool,
+                    message_id=dashboard_turn_id,
+                    state="completed" if completed else "failed",
+                )
+            except Exception:
+                # At least one terminal effect may already have happened.
+                # Preserve that truth and let operational reconciliation repair
+                # only the terminal marker rather than replaying either effect.
+                logger.exception(
+                    "cannot_answer could not mark dashboard terminal for message %s",
+                    dashboard_turn_id,
+                )
+
+        return {
+            "status": "ok" if completed else "error",
+            "answered": False,
+            "dead_letter_id": dead_letter_id,
+            "filed": filed,
+        }
 
     @_core_tool("switchboard_routing")
     @tool_span("file_bug_report", butler_name=butler_name)

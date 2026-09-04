@@ -145,7 +145,84 @@ FILE_BUG_REPORT_TOOL: dict[str, Any] = {
     },
 }
 
-_KNOWN_TOOL_NAMES = frozenset({"route_to_butler", "file_bug_report"})
+#: Mirrors ``core_tools._switchboard.register_switchboard_tools.answer_question``.
+ANSWER_QUESTION_TOOL: dict[str, Any] = {
+    "name": "answer_question",
+    "description": (
+        "QUESTION TOOL — call this for a dashboard question with an "
+        "identifiable owning butler or scope. scope='domain' routes a "
+        "read-only answer turn to the named `target` butler; scope='system' "
+        "is for questions about the butler ecosystem itself. Never guess a "
+        "target — if you cannot identify one, call cannot_answer instead."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["domain", "system"],
+                "description": (
+                    "'domain' — a specialist butler's own data owns the answer "
+                    "(requires `target`). 'system' — the question is about the "
+                    "butler ecosystem/infrastructure itself, not one butler's data."
+                ),
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "Self-contained restatement of the owner's question — must be "
+                    "independently understandable without conversation history."
+                ),
+            },
+            "target": {
+                "type": "string",
+                "description": (
+                    "Required when scope='domain' — the butler whose domain owns "
+                    "the answer. Omit for scope='system'."
+                ),
+            },
+        },
+        "required": ["scope", "question"],
+    },
+}
+
+#: Mirrors ``core_tools._switchboard.register_switchboard_tools.cannot_answer``.
+CANNOT_ANSWER_TOOL: dict[str, Any] = {
+    "name": "cannot_answer",
+    "description": (
+        "TERMINAL DECLINE TOOL — call this for a dashboard question when you "
+        "cannot identify an owning butler or scope at all. Do NOT guess a "
+        "target and do NOT call route_to_butler for a question — an honest "
+        "decline (dead-lettered for review) is always preferred over a "
+        "best-guess route or a fabricated answer."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "question_summary": {
+                "type": "string",
+                "description": "Concise restatement of the owner's question.",
+            },
+            "scope_checked": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Butlers/scopes you considered and ruled out before declining "
+                    "(e.g. ['finance', 'health', 'system'])."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why no owning butler/scope could be identified.",
+            },
+        },
+        "required": ["question_summary", "scope_checked", "reason"],
+    },
+}
+
+_KNOWN_TOOL_NAMES = frozenset(
+    {"route_to_butler", "file_bug_report", "answer_question", "cannot_answer"}
+)
 _VALID_COMPLEXITY = frozenset({"reasoning", "workhorse", "cheap", "specialty", "local", "legacy"})
 
 
@@ -196,6 +273,35 @@ def _validate_tool_call(call: dict[str, Any]) -> bool:
             return False
         context = raw_input.get("context")
         if context is not None and not isinstance(context, str):
+            return False
+        return True
+
+    if name == "answer_question":
+        scope = raw_input.get("scope")
+        if scope not in ("domain", "system"):
+            return False
+        question = raw_input.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return False
+        target = raw_input.get("target")
+        if scope == "domain":
+            if not isinstance(target, str) or not target.strip():
+                return False
+        elif target is not None and not isinstance(target, str):
+            return False
+        return True
+
+    if name == "cannot_answer":
+        question_summary = raw_input.get("question_summary")
+        if not isinstance(question_summary, str) or not question_summary.strip():
+            return False
+        scope_checked = raw_input.get("scope_checked")
+        if not isinstance(scope_checked, list) or not all(
+            isinstance(item, str) for item in scope_checked
+        ):
+            return False
+        reason = raw_input.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
             return False
         return True
 
@@ -284,6 +390,7 @@ async def try_structured_classification(
     prompt: str,
     system_prompt: str = "",
     include_bug_report: bool,
+    include_question_lane: bool = False,
     butler_name: str = "switchboard",
     credential_store: Any | None = None,
 ) -> StructuredClassificationResult | None:
@@ -311,12 +418,19 @@ async def try_structured_classification(
         the user message, unchanged from the CLI classification path.
     include_bug_report:
         Whether ``file_bug_report`` should be offered alongside
-        ``route_to_butler`` (dashboard two-lane classification).
+        ``route_to_butler`` (dashboard bug lane).
+    include_question_lane:
+        Whether ``answer_question``/``cannot_answer`` should be offered
+        alongside ``route_to_butler`` (dashboard question lane).
     """
     if mcp_server is None:
         return None
 
-    tools = [ROUTE_TO_BUTLER_TOOL] + ([FILE_BUG_REPORT_TOOL] if include_bug_report else [])
+    tools = (
+        [ROUTE_TO_BUTLER_TOOL]
+        + ([FILE_BUG_REPORT_TOOL] if include_bug_report else [])
+        + ([ANSWER_QUESTION_TOOL, CANNOT_ANSWER_TOOL] if include_question_lane else [])
+    )
 
     catalog_result = await resolve_model_with_effective_tier(pool, butler_name, Complexity.CHEAP)
     if catalog_result is None:

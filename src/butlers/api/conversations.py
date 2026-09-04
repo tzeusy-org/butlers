@@ -613,6 +613,7 @@ async def message_create(
     tool_calls: list[dict[str, Any]] | None = None,
     error: str | None = None,
     request_id: UUID | None = None,
+    sources: list[str] | None = None,
 ) -> dict[str, Any]:
     """Insert a new message row.  Returns the full message dict."""
     msg_id = _generate_uuid7()
@@ -622,8 +623,8 @@ async def message_create(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             duration_ms, tool_calls, error, request_id, sources)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         """,
         msg_id,
         conversation_id,
@@ -638,6 +639,7 @@ async def message_create(
         tool_calls,
         error,
         request_id,
+        sources,
     )
 
     return {
@@ -654,6 +656,7 @@ async def message_create(
         "tool_calls": tool_calls,
         "error": error,
         "request_id": request_id,
+        "sources": sources,
     }
 
 
@@ -678,12 +681,12 @@ async def message_create_idempotent(
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id)
-        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+             duration_ms, tool_calls, error, request_id, sources)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         ON CONFLICT (id) DO NOTHING
         RETURNING id, conversation_id, role, content, created_at,
                   session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id
+                  duration_ms, tool_calls, error, request_id, sources
         """,
         message_id,
         conversation_id,
@@ -698,7 +701,7 @@ async def message_create_idempotent(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -726,7 +729,7 @@ async def message_get_by_id(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -741,6 +744,7 @@ async def conversation_reply_create(
     *,
     message: str,
     request_id: UUID | None = None,
+    sources: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Persist the ``conversation_reply`` confirm-loop message for a conversation.
 
@@ -749,6 +753,9 @@ async def conversation_reply_create(
     not reference an existing conversation (the caller — the ``conversation_reply``
     MCP tool — surfaces this as an actionable error to the calling model rather
     than raising, since a stale/hallucinated id is a model-correctable mistake).
+
+    ``sources`` carries an answer-lane reply's citations (see the
+    ``conversation_reply`` MCP tool); ``None`` for every other lane.
     """
     exists = await pool.fetchval(
         "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
@@ -762,6 +769,7 @@ async def conversation_reply_create(
         role="assistant",
         content=message,
         request_id=request_id,
+        sources=sources,
     )
     await pool.execute(
         """
@@ -797,7 +805,7 @@ async def message_list(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id
+               duration_ms, tool_calls, error, request_id, sources
         FROM public.dashboard_messages
         WHERE conversation_id = $1
         ORDER BY created_at ASC
@@ -838,7 +846,7 @@ async def message_find_reply_since(
     row = await pool.fetchrow(
         """
         SELECT id, content, created_at, session_id, model_name,
-               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id
+               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id, sources
         FROM public.dashboard_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC
