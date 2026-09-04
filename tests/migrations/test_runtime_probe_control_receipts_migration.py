@@ -111,18 +111,21 @@ def test_grants_are_revoked_before_switchboard_gets_its_own() -> None:
     assert "UPDATE ON TABLE" not in sql
 
 
-def test_row_security_is_enabled_but_deliberately_not_forced() -> None:
-    """Row security survives an init-db re-grant; FORCE would break the backup.
+def test_row_security_is_enabled_but_not_yet_forced_by_this_revision() -> None:
+    """core_201 installs the policy; core_212 is what FORCEs it.
 
     ENABLE is what makes the fence durable: ``scripts/init-db.sql`` re-grants
     public-schema DML to every runtime role on each run, and a policy is not a
     grant, so it is not re-granted away.
 
-    FORCE is deliberately absent.  It would also fence the table OWNER, and the
-    owner is the identity ``deploy/backup/pg_dump.sh`` dumps as -- see
-    ``test_forcing_row_security_would_break_that_backup``.  The owner is
-    therefore NOT fenced by this migration; owner-fencing needs a mechanism
-    that does not sit in the backup path.
+    core_201 alone does not FORCE the policy onto the table OWNER, because at
+    the time it landed FORCE would have broken ``deploy/backup/pg_dump.sh``,
+    which dumps as that same owner identity.  core_212
+    (test_runtime_probe_control_receipts_owner_fence_migration.py) closes that
+    gap: it FORCEs the policy and pairs it with a ``pg_dump.sh`` exclusion, so
+    the live boundary this table actually ships with fences the owner too.
+    This test pins core_201's own statements in isolation; it says nothing
+    about the table's live-database behaviour once core_212 has also run.
     """
     sql = _executed_sql("upgrade")
 
@@ -340,57 +343,34 @@ async def test_no_other_runtime_role_can_touch_receipts(core_db_url: str, role: 
 
 @_integration
 @_asyncio_session
-async def test_the_nightly_backup_can_still_read_the_table(core_db_url: str) -> None:
-    """``pg_dump`` must not trip over row security on this table.
+async def test_the_owner_is_fenced_once_core_212_has_also_run(core_db_url: str) -> None:
+    """``core_db_url`` migrates the whole ``core`` chain, so this is the live shape.
 
-    ``deploy/backup/pg_dump.sh`` dumps as ``POSTGRES_USER`` (default
-    ``butlers``), which is the migration user and therefore this table's OWNER,
-    and ``scripts/init-db.sql`` forces that role ``NOSUPERUSER`` with no
-    ``BYPASSRLS``.  ``pg_dump`` issues ``SET row_security = off`` before it
-    copies anything, and in that mode PostgreSQL raises rather than silently
-    returning a filtered result whenever a policy would apply to the reader.
+    core_201 alone leaves the table OWNER exempt from row security; core_212
+    (bu-jcym4) FORCEs the policy so the owner -- the same identity the
+    Dashboard API pool connects as, per ``src/butlers/api/deps.py``'s ``SET
+    ROLE``-disabled comment -- is fenced too.  ``pg_dump`` issues ``SET
+    row_security = off`` before it copies anything, and in that mode
+    PostgreSQL raises rather than silently returning a filtered result
+    whenever a policy would apply to the reader; asserting on that setting
+    directly is the same mechanism as a real ``pg_dump`` run without needing a
+    client binary matching the server major version.
 
-    Under ``FORCE ROW LEVEL SECURITY`` policies apply to the owner too, so the
-    dump would abort -- and because ``pg_dump.sh`` runs under ``set -o
-    pipefail``, that aborts the WHOLE nightly backup, not just this table.
-
-    This asserts on ``row_security = off`` rather than shelling out to
-    ``pg_dump`` deliberately: it is the same mechanism, it needs no client
-    binary matching the server major version, and a real ``pg_dump`` run
-    against a freshly bootstrapped database currently fails earlier for an
-    unrelated pre-existing reason (``init-db.sql`` revokes the migration
-    user's access to the restore-drill boundary objects, which ``pg_dump``
-    locks before dumping).  That is tracked separately; it must not silently
-    become this table's problem later.
+    This is why ``deploy/backup/pg_dump.sh`` now excludes this table (see its
+    header and ``BACKUP_EXCLUDE_TABLES``): a nightly dump that ran as this
+    owner would abort on this table otherwise, and because the script runs
+    under an explicit exit-status check equivalent to ``pipefail``, that would
+    abort the WHOLE backup, not just this table.
+    ``tests/scripts/test_pg_dump_backup.py::test_exclusion_set_matches_the_fenced_objects_exactly``
+    proves the exclusion set covers exactly what this test proves is fenced.
     """
     owner = await _connect(core_db_url)
     try:
         await owner.execute("SET row_security = off")
-        # The value does not matter; not raising is the whole assertion.
-        assert await owner.fetchval(f"SELECT count(*) FROM {_TABLE}") is not None
-    finally:
-        await owner.close()
-
-
-@_integration
-@_asyncio_session
-async def test_forcing_row_security_would_break_that_backup(core_db_url: str) -> None:
-    """Pin the trap itself, so nobody re-adds FORCE without seeing the cost.
-
-    Everything happens inside a rolled-back transaction, so the table keeps the
-    settings the migration gave it.
-    """
-    owner = await _connect(core_db_url)
-    transaction = owner.transaction()
-    await transaction.start()
-    try:
-        await owner.execute(f"ALTER TABLE {_TABLE} FORCE ROW LEVEL SECURITY")
-        await owner.execute("SET LOCAL row_security = off")
         with pytest.raises(asyncpg.PostgresError) as raised:
             await owner.fetchval(f"SELECT count(*) FROM {_TABLE}")
         assert "row-level security" in str(raised.value).lower()
     finally:
-        await transaction.rollback()
         await owner.close()
 
 
