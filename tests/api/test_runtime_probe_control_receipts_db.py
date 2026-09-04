@@ -61,6 +61,14 @@ pytestmark = [
 ]
 
 _KID = "probe-db-current"
+_SWITCHBOARD = "butler_switchboard_rw"
+
+
+async def _as_switchboard(connection: asyncpg.Connection) -> None:
+    """asyncpg pool ``setup`` callback: every acquired connection runs as
+    Switchboard, the only role this table's core_201/core_212 RLS policy
+    admits (per-connection, since a pool hands out different connections)."""
+    await connection.execute(f'SET ROLE "{_SWITCHBOARD}"')
 
 
 @pytest.fixture(scope="module")
@@ -74,10 +82,42 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str):
+    """The migration/owner identity: fixture data setup and cleanup only.
+
+    core_212 (bu-jcym4) FORCEs row security on the receipts table, so the
+    owner is no longer an effective stand-in for Switchboard there -- see the
+    ``switchboard_pool`` fixture below, which is what every receipts-table
+    read, write, and coordinator run in this file actually goes through.
+    """
     p = await asyncpg.create_pool(
         migrated_db_url, min_size=2, max_size=6, init=register_jsonb_codec
     )
-    await p.execute(f"TRUNCATE TABLE {RECEIPTS_TABLE}")
+    # core_212 also blocks TRUNCATE on this table outright, owner included, so
+    # per-test isolation has to step around that guard explicitly rather than
+    # rely on TRUNCATE being unguarded -- the table owner can still disable its
+    # own trigger, which is the same "not an unforgeable principal" caveat
+    # REQ-database-security-007 already records for this shared-login topology.
+    async with p.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute(f"ALTER TABLE {RECEIPTS_TABLE} DISABLE TRIGGER USER")
+            await connection.execute(f"TRUNCATE TABLE {RECEIPTS_TABLE}")
+            await connection.execute(f"ALTER TABLE {RECEIPTS_TABLE} ENABLE TRIGGER USER")
+    yield p
+    await p.close()
+
+
+@pytest.fixture
+async def switchboard_pool(migrated_db_url: str):
+    """The identity every receipts-table operation in production runs as.
+
+    core_212 fenced the table owner out of this table's RLS policy, so the
+    owner pool above can no longer stand in for Switchboard here; using it
+    would either raise (INSERT/UPDATE) or silently read/delete zero rows
+    (SELECT/DELETE) instead of exercising the real boundary.
+    """
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=2, max_size=6, init=register_jsonb_codec, setup=_as_switchboard
+    )
     yield p
     await p.close()
 
@@ -145,8 +185,14 @@ async def _seed_entry(pool: asyncpg.Pool) -> UUID:
     )
 
 
-def _coordinator(pool: asyncpg.Pool, keyring, persistence, *, launches: list[str]):
-    """A coordinator whose only fake is the runtime launch itself."""
+def _coordinator(switchboard_pool: asyncpg.Pool, keyring, persistence, *, launches: list[str]):
+    """A coordinator whose only fake is the runtime launch itself.
+
+    Takes the Switchboard-role pool, not the owner one: every real Switchboard
+    daemon connection SETs ROLE once for the whole pool (``src/butlers/db.py``),
+    so the coordinator's catalog reads, its receipts, and its persistence path
+    all run as the same principal here too.
+    """
 
     class _Adapter:
         async def invoke(self, **_kwargs: Any):
@@ -159,9 +205,9 @@ def _coordinator(pool: asyncpg.Pool, keyring, persistence, *, launches: list[str
         return _Adapter()
 
     return RuntimeProbeCoordinator(
-        pool,
+        switchboard_pool,
         verifier=lambda: VerifierSnapshot(keyring=keyring),
-        receipts=RuntimeProbeControlReceipts(pool),
+        receipts=RuntimeProbeControlReceipts(switchboard_pool),
         persistence=persistence,
         adapter_factory=_factory,
     )
@@ -182,13 +228,15 @@ async def _verification(pool: asyncpg.Pool, entry_id: UUID) -> asyncpg.Record:
 # ---------------------------------------------------------------------------
 
 
-async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(pool, keys):
+async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(
+    pool, switchboard_pool, keys
+):
     """Criterion 2: one receipt, one lookup-launch-persist path, one loser."""
     signer, keyring = keys
     entry_id = await _seed_entry(pool)
-    persistence = _CountingPersistence(pool)
+    persistence = _CountingPersistence(switchboard_pool)
     launches: list[str] = []
-    coordinator = _coordinator(pool, keyring, persistence, launches=launches)
+    coordinator = _coordinator(switchboard_pool, keyring, persistence, launches=launches)
 
     compact = _sign_dashboard_capability(signer, entry_id)
 
@@ -199,7 +247,7 @@ async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(p
     assert launches == ["launch"], "the replayed capability reached the runtime"
     assert len(persistence.records) == 1
 
-    receipts = await pool.fetchval(f"SELECT count(*) FROM {RECEIPTS_TABLE}")
+    receipts = await switchboard_pool.fetchval(f"SELECT count(*) FROM {RECEIPTS_TABLE}")
     assert receipts == 1
 
     row = await _verification(pool, entry_id)
@@ -207,11 +255,13 @@ async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(p
     assert row["last_verified_error"] is None
 
 
-async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, keys):
+async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, switchboard_pool, keys):
     """A leaked receipt table must not be reconstructible into a capability."""
     signer, keyring = keys
     entry_id = await _seed_entry(pool)
-    coordinator = _coordinator(pool, keyring, _CountingPersistence(pool), launches=[])
+    coordinator = _coordinator(
+        switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=[]
+    )
 
     compact = _sign_dashboard_capability(signer, entry_id)
     # live-clock: read back at the same real clock the capability was signed at,
@@ -219,7 +269,7 @@ async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, keys):
     verified = cap.verify_capability(compact, keyring=keyring, now=datetime.now(UTC))
     await coordinator.run(compact)
 
-    row = await pool.fetchrow(f"SELECT * FROM {RECEIPTS_TABLE}")
+    row = await switchboard_pool.fetchrow(f"SELECT * FROM {RECEIPTS_TABLE}")
     assert row["nonce_digest"] == nonce_digest(verified.nonce)
     assert row["kid"] == _KID
 
@@ -231,7 +281,9 @@ async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, keys):
         assert segment not in stored
 
 
-async def test_a_replay_is_still_denied_after_a_restart(pool, keys, migrated_db_url):
+async def test_a_replay_is_still_denied_after_a_restart(
+    pool, switchboard_pool, keys, migrated_db_url
+):
     """Criterion 2: the receipt is durable, not process state.
 
     The second coordinator runs on a brand-new pool with no shared memory ---
@@ -240,13 +292,19 @@ async def test_a_replay_is_still_denied_after_a_restart(pool, keys, migrated_db_
     signer, keyring = keys
     entry_id = await _seed_entry(pool)
     launches: list[str] = []
-    first = _coordinator(pool, keyring, _CountingPersistence(pool), launches=launches)
+    first = _coordinator(
+        switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=launches
+    )
 
     compact = _sign_dashboard_capability(signer, entry_id)
     assert (await first.run(compact)).status is ProbeStatus.COMPLETED
 
     restarted_pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
+        migrated_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        setup=_as_switchboard,
     )
     try:
         persistence = _CountingPersistence(restarted_pool)
@@ -260,11 +318,15 @@ async def test_a_replay_is_still_denied_after_a_restart(pool, keys, migrated_db_
     assert persistence.records == []
 
 
-async def test_a_replay_leaves_existing_verification_history_unchanged(pool, keys):
+async def test_a_replay_leaves_existing_verification_history_unchanged(
+    pool, switchboard_pool, keys
+):
     """Criterion 7: a rejected request writes no failure and no success."""
     signer, keyring = keys
     entry_id = await _seed_entry(pool)
-    coordinator = _coordinator(pool, keyring, _CountingPersistence(pool), launches=[])
+    coordinator = _coordinator(
+        switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=[]
+    )
 
     compact = _sign_dashboard_capability(signer, entry_id)
     await coordinator.run(compact)
@@ -281,21 +343,21 @@ async def test_a_replay_leaves_existing_verification_history_unchanged(pool, key
 # ---------------------------------------------------------------------------
 
 
-async def test_cleanup_refuses_to_delete_a_receipt_inside_the_replay_window(pool):
+async def test_cleanup_refuses_to_delete_a_receipt_inside_the_replay_window(switchboard_pool):
     """The trigger, not the caller's predicate, is what keeps the window closed."""
-    receipts = RuntimeProbeControlReceipts(pool)
+    receipts = RuntimeProbeControlReceipts(switchboard_pool)
     now = datetime.now(UTC)
     nonce = b"\x01" * 32
     assert await receipts.claim(nonce=nonce, kid=_KID, expires_at=now + timedelta(seconds=30))
 
     with pytest.raises(asyncpg.PostgresError):
-        await pool.execute(f"DELETE FROM {RECEIPTS_TABLE}")
+        await switchboard_pool.execute(f"DELETE FROM {RECEIPTS_TABLE}")
 
     assert await receipts.is_consumed(nonce=nonce)
 
 
 @pytest.mark.pg_clock
-async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
+async def test_the_retention_bound_is_expiry_plus_five_seconds(switchboard_pool):
     """Criterion 2: retained through ``exp + 5s``, deletable only after.
 
     Both offsets are real-clock offsets because the trigger is: it compares
@@ -304,7 +366,7 @@ async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
     the bound underneath it.  Four and six seconds sit a full second either
     side of the boundary, which no plausible round-trip delay closes.
     """
-    receipts = RuntimeProbeControlReceipts(pool)
+    receipts = RuntimeProbeControlReceipts(switchboard_pool)
     now = datetime.now(UTC)
     inside, outside = b"\x02" * 32, b"\x05" * 32
     assert await receipts.claim(nonce=inside, kid=_KID, expires_at=now - timedelta(seconds=4))
@@ -318,15 +380,15 @@ async def test_the_retention_bound_is_expiry_plus_five_seconds(pool):
     # And the trigger holds that same line against a caller who asks directly,
     # which is what stops a wrong cleanup predicate reopening a replay window.
     with pytest.raises(asyncpg.PostgresError):
-        await pool.execute(
+        await switchboard_pool.execute(
             f"DELETE FROM {RECEIPTS_TABLE} WHERE nonce_digest = $1", nonce_digest(inside)
         )
     assert await receipts.is_consumed(nonce=inside)
 
 
 @pytest.mark.pg_clock
-async def test_purging_an_expired_receipt_does_not_free_a_live_one(pool):
-    receipts = RuntimeProbeControlReceipts(pool)
+async def test_purging_an_expired_receipt_does_not_free_a_live_one(switchboard_pool):
+    receipts = RuntimeProbeControlReceipts(switchboard_pool)
     # live-clock: the retention trigger refuses a DELETE before capability_exp
     # + 5s using Postgres now(), so the claimed expiries have to straddle that
     # same real instant for the purge predicate to be under test at all.

@@ -76,6 +76,13 @@
 #   - public.expected_signals                 rebuildable liveness-qualified
 #         cadence state. Source observations and connector heartbeats remain in
 #         the dump; the next detector run recreates this projection.
+#   - public.runtime_probe_control_receipts    replay-guard receipts for
+#         runtime-probe control capabilities (core_212). FORCE ROW LEVEL
+#         SECURITY fences even the table owner -- the identity this script
+#         dumps as -- down to butler_switchboard_rw, on purpose (bu-jcym4).
+#         Nothing here outlives its 5-second retention skew, so nothing here
+#         is worth restoring: the next capability use regenerates the receipt
+#         a live replay window would need.
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
@@ -109,7 +116,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.expected_signals public.runtime_probe_control_receipts"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
