@@ -74,7 +74,7 @@ async def resolve_provider_config(
     if not base_url.endswith("/v1"):
         base_url = f"{base_url}/v1"
 
-    ollama_model = model_id.split("/", 1)[1]
+    ollama_model = model_id.removeprefix(f"{provider_type}/")
     return {
         provider_type: {
             "npm": "@ai-sdk/openai-compatible",

@@ -141,6 +141,7 @@ tests/core/test_scheduler_legacy_schema.py
 tests/core/test_spawner_failover_verification.py
 tests/core/test_spawner_mcp_config.py
 tests/core/test_spawner_merge_tool_calls.py
+tests/core/test_spawner_provider.py
 tests/core/test_spawner_quota_ceiling_fold.py
 tests/core/test_spawner_situational_context.py
 tests/core/test_spawner_speculative_prewarm.py

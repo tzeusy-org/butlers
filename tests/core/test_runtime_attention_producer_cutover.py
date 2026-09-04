@@ -65,6 +65,13 @@ _FORBIDDEN_PRODUCER_SINKS = (
     "maybe_push_breaker_open_attention",
     "maybe_push_fleet_halt_attention",
     "debounce",
+    # Call-shaped (not bare "deliver"/"notify") so this does not trip on the
+    # legitimate prose word "delivery" already used elsewhere in this module
+    # (e.g. "direct-delivery binary"). Guards against the idiomatic
+    # function-local import: `from ...notification.deliver import deliver`
+    # then `deliver(...)`, which none of the sinks above would catch.
+    "deliver(",
+    "notify(",
 )
 
 
