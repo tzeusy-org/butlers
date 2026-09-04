@@ -271,8 +271,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               WHERE acl.privilege_type = 'EXECUTE'
                 AND acl.grantee <> outbox_owner.oid
                 AND COALESCE(granted_role.rolname, '') <> ALL (ARRAY[
-                    'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                    'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                    'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                    'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                     'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                     'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
                 ]::name[])
@@ -286,8 +286,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               WHERE acl.privilege_type = 'EXECUTE'
                 AND acl.grantee <> outbox_owner.oid
                 AND COALESCE(granted_role.rolname, '') <> ALL (ARRAY[
-                    'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                    'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                    'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                    'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                     'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                     'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
                 ]::name[])
@@ -298,18 +298,18 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               SELECT count(*)
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
               ]::name[])
-          ) = 12
+          ) = 13
           AND NOT EXISTS (
               SELECT 1
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
               ]::name[])
@@ -353,8 +353,8 @@ _TRUSTED_FINALIZED_INTERFACE_SQL_TEMPLATE = """
               SELECT 1
               FROM pg_roles AS producer_runtime
               WHERE producer_runtime.rolname = ANY (ARRAY[
-                  'butler_chronicler_rw', 'butler_education_rw', 'butler_finance_rw',
-                  'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+                  'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+                  'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
                   'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
                   'butler_relationship_rw', 'butler_travel_rw'
               ]::name[])
