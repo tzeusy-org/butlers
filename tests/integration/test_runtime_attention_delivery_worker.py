@@ -333,6 +333,51 @@ async def test_dead_claim_becomes_uncertain_after_sole_lease_and_fencing(
         assert (await _row(pool, episode_id))["lifecycle_state"] == "uncertain"
 
 
+async def test_fenced_claim_evidence_reaches_the_safe_reason_projection(
+    migrated_core_postgres_pool,
+) -> None:
+    """Same gap as bu-zwpzo's ``mark_uncertain`` fix, for ``fence_stale_claim``.
+
+    A stale-claim recovery episode is fenced to ``uncertain`` without ever
+    calling ``mark_uncertain`` — the CHECK constraint and
+    ``routing.transport.WORKER_RECOVERY`` reserve the
+    ``('transport_uncertain', 'worker_recovery')`` pair for exactly this path,
+    but ``fence_stale_claim`` previously left the evidence columns NULL, so a
+    recovery-driven uncertain episode showed no ``safe_reason`` in the API/UI.
+    """
+    async with migrated_core_postgres_pool(min_pool_size=3, max_pool_size=6) as pool:
+        episode_id = await _seed_pending_episode(pool, "recovery-safe-reason")
+        repo_a = RuntimeAttentionOutbox(pool, instance_id="worker-a")
+        repo_b = RuntimeAttentionOutbox(pool, instance_id="worker-b")
+
+        lease_a = await repo_a.acquire_service_lease()
+        assert lease_a is not None
+        episode = await repo_a.claim_next_pending(lease_a)
+        assert episode is not None
+        await repo_a.release_service_lease(lease_a)
+
+        lease_b = await repo_b.acquire_service_lease()
+        assert lease_b is not None
+        claims = await repo_b.list_recoverable(lease_b, stale_after_seconds=0.0)
+        assert [claim.id for claim in claims] == [episode_id]
+        assert await repo_b.fence_stale_claim(claims[0], lease_b) is True
+
+        row = await _row(pool, episode_id)
+        assert row["lifecycle_state"] == "uncertain"
+        assert row["delivery_error_class"] == "transport_uncertain"
+        assert row["delivery_error_detail"] == "worker_recovery"
+        assert row["notification_ref"] is None
+
+        # No SET ROLE: this is the same access path the dashboard API uses.
+        observed = await pool.fetch("SELECT * FROM public.observe_runtime_attention_models()")
+        observed_row = next(r for r in observed if r["episode_id"] == episode_id)
+        assert observed_row["delivery_error_class"] == "transport_uncertain"
+        assert observed_row["delivery_error_detail"] == "worker_recovery"
+
+        projected = _attention_episode(observed_row)
+        assert projected.safe_reason == "A dead delivery claim was fenced as uncertain"
+
+
 async def test_row_age_alone_never_authorizes_a_transition(
     migrated_core_postgres_pool,
 ) -> None:
