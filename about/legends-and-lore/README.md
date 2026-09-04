@@ -48,6 +48,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | **Accepted.** Adds a runtime-neutral LLM tool-list projection, verified native deferred discovery, eager cross-CLI fallback, content-blind receipts, and measured rollout gates without changing MCP handler authority. |
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | **Accepted.** Defines the fail-closed HA risk map, approval boundary, per-attempt receipt, live post-condition proof, rollback hints, and minimized domain event for LLM-to-physical-world actions. |
 | [0029](rfcs/0029-expected-signals-and-honest-absence.md) | Expected Signals and Honest Absence | **Accepted.** Defines the shared present/absent/unmeasurable ledger, producer-liveness join, producer-owned upserts, and degraded rendering contract. |
+| [0030](rfcs/0030-system-plane-read-exception.md) | System-Plane Read Exception | **Accepted.** Extends RFC 0010's cross-butler briefing exception to fleet operational telemetry: the Concierge staffer answers dashboard-chat system-plane questions via two column-allowlisted, read-only UNION views instead of Switchboard fan-out, adding a sixth guardrail (a view-enforced column allowlist) that keeps free-text session content from crossing the schema boundary. |
 
 ## Related
 

@@ -1,3 +1,4 @@
+roster/concierge/tests/test_dashboard_read.py
 roster/relationship/tests/test_tools.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_switchboard_connector_operational_role_migration.py
