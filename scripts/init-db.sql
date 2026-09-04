@@ -78,6 +78,7 @@ DO $$
 DECLARE
     _butler_schemas TEXT[] := ARRAY[
         'chronicler',
+        'concierge',
         'education',
         'finance',
         'general',
@@ -94,6 +95,7 @@ DECLARE
     _switchboard_schema TEXT := 'switchboard';
     _managed_schemas TEXT[] := ARRAY[
         'chronicler',
+        'concierge',
         'education',
         'finance',
         'general',
@@ -109,6 +111,7 @@ DECLARE
     ];
     _butler_roles TEXT[] := ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -124,6 +127,7 @@ DECLARE
     _connector_role TEXT := 'connector_writer';
     _all_runtime_roles TEXT[] := ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -1037,6 +1041,7 @@ BEGIN
     );
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -1754,6 +1759,7 @@ BEGIN
 
     FOREACH v_runtime_role IN ARRAY ARRAY[
         'butler_chronicler_rw',
+        'butler_concierge_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
