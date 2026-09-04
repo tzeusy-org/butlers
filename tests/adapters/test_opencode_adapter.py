@@ -71,10 +71,15 @@ def test_generated_config_has_no_selected_model_field(tmp_path: Path):
 
 def test_selected_model_translation_has_one_named_boundary_mapper():
     """REQ-runtime-opencode-001: adapter and health paths converge on one mapper."""
-    from butlers.api.routers.cli_auth import _run_provider_test
+    from butlers.api.routers.cli_auth import (
+        _run_provider_test,
+        _substitute_opencode_go_test_model,
+    )
 
     adapter_source = getsource(OpenCodeAdapter.invoke)
-    health_source = getsource(_run_provider_test)
+    health_source = (
+        getsource(_run_provider_test) + "\n" + getsource(_substitute_opencode_go_test_model)
+    )
     assert "canonical_to_execution_model(" in adapter_source
     assert "canonical_to_execution_model(" in health_source
     for source in (adapter_source, health_source):
