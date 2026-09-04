@@ -35,6 +35,13 @@ Shared helpers
     by domain prefix).  Raises ``EmptyEntitySnapshotError`` when the table has no
     matching rows.
 
+``_require_ha_source_healthy(pool)``
+    Checks ``ha_source_health`` (upserted by ``HomeAssistantModule`` on every WS
+    connect / REST poll) and raises ``HASourceUnmeasurableError`` unless the
+    connector's last recorded contact succeeded — a snapshot taken during an
+    outage still looks freshly captured, so job entry points call this before
+    trusting ``ha_entity_snapshot`` (bu-8cdl1.12 slice 1).
+
 ``_send_notify(pool, message)``
     Canonical notify helper for Home butler job handlers (bu-tdd4k.3). Routes
     every owner-facing push through the notify boundary — the same
@@ -91,6 +98,52 @@ class EmptyEntitySnapshotError(Exception):
     Job handlers catch this to send an owner alert and return early with
     ``{"error": "no_entity_snapshot"}``.
     """
+
+
+_HA_SOURCE_ID = "home_assistant"
+
+
+class HASourceUnmeasurableError(Exception):
+    """Raised when the Home Assistant source is not confirmed healthy.
+
+    ``ha_entity_snapshot`` alone cannot tell a reader whether HA is actually
+    reachable right now — the Home Assistant module's snapshot-persistence
+    cycle re-stamps ``captured_at = now()`` every run regardless of whether
+    HA was actually contacted, so a snapshot taken during an outage still
+    looks freshly observed. This is raised instead of returning that
+    stale-but-plausible-looking snapshot whenever ``ha_source_health`` shows
+    the connector in an error state, or has no row at all (no successful
+    contact has ever been recorded) — both cases mean "unmeasurable", not
+    "healthy" (bu-8cdl1.12 slice 1: failure must never impersonate health).
+    """
+
+    def __init__(self, message: str, *, last_success_at: datetime | None) -> None:
+        super().__init__(message)
+        self.last_success_at = last_success_at
+
+
+async def _require_ha_source_healthy(pool: asyncpg.Pool) -> None:
+    """Raise ``HASourceUnmeasurableError`` unless HA source health is 'healthy'.
+
+    Fails closed: a missing ``ha_source_health`` row (no successful contact
+    ever recorded) is treated the same as an explicit error state.
+    """
+    row = await pool.fetchrow(
+        "SELECT status, last_success_at FROM ha_source_health WHERE source = $1",
+        _HA_SOURCE_ID,
+    )
+    if row is None:
+        raise HASourceUnmeasurableError(
+            "ha_source_health has no record for home_assistant; HA contact has "
+            "never been confirmed successful",
+            last_success_at=None,
+        )
+    if row["status"] != "healthy":
+        raise HASourceUnmeasurableError(
+            f"Home Assistant source is in {row['status']!r} state; snapshot reads "
+            "are unmeasurable until contact is restored",
+            last_success_at=row["last_success_at"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +235,16 @@ async def _read_entity_snapshot(
         ``entity_id``, ``state``, ``attributes``.
 
     Raises:
+        HASourceUnmeasurableError: If ``ha_source_health`` shows the HA
+            connector in an outage/error state, or has never recorded a
+            successful contact — the snapshot cannot be trusted regardless
+            of whether it has rows.
         EmptyEntitySnapshotError: If the filtered (or full) result set is
             empty — the connector has not yet populated the table or was
             recently reset.
     """
+    await _require_ha_source_healthy(pool)
+
     if domain_filter is not None:
         rows = await pool.fetch(
             "SELECT entity_id, state, attributes, last_updated "
@@ -1715,6 +1774,21 @@ async def run_energy_digest(
     del job_args  # reserved for future parameterisation
 
     # ------------------------------------------------------------------
+    # 0. Confirm the HA source is actually healthy (not just cache-populated)
+    # ------------------------------------------------------------------
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError as exc:
+        logger.warning("run_energy_digest: HA source unmeasurable: %s", exc)
+        last_good = exc.last_success_at.isoformat() if exc.last_success_at else "never"
+        await _send_notify(
+            pool,
+            "⚠️ Energy digest skipped: Home Assistant is unmeasurable (outage or "
+            f"unconfirmed connection). Last good contact: {last_good}.",
+        )
+        return {"error": "ha_source_unmeasurable", "last_good_at": exc.last_success_at}
+
+    # ------------------------------------------------------------------
     # 1. Check entity snapshot is populated
     # ------------------------------------------------------------------
     try:
@@ -2000,6 +2074,21 @@ async def run_device_health_check(
     del job_args  # reserved for future parameterisation
 
     # ------------------------------------------------------------------
+    # 0. Confirm the HA source is actually healthy (not just cache-populated)
+    # ------------------------------------------------------------------
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError as exc:
+        logger.warning("device_health_check: HA source unmeasurable: %s", exc)
+        last_good = exc.last_success_at.isoformat() if exc.last_success_at else "never"
+        await _send_notify(
+            pool,
+            "⚠️ Device Health Check skipped: Home Assistant is unmeasurable "
+            f"(outage or unconfirmed connection). Last good contact: {last_good}.",
+        )
+        return {"error": "ha_source_unmeasurable", "last_good_at": exc.last_success_at}
+
+    # ------------------------------------------------------------------
     # 1. Load thresholds
     # ------------------------------------------------------------------
     battery_thresholds = await _load_battery_thresholds(pool)
@@ -2219,6 +2308,21 @@ async def run_environment_report(
         or ``{"error": "no_entity_snapshot"}`` when the snapshot table is empty.
     """
     del job_args  # reserved for future parameterisation
+
+    # ------------------------------------------------------------------
+    # 0. Confirm the HA source is actually healthy (not just cache-populated)
+    # ------------------------------------------------------------------
+    try:
+        await _require_ha_source_healthy(pool)
+    except HASourceUnmeasurableError as exc:
+        logger.warning("run_environment_report: HA source unmeasurable: %s", exc)
+        last_good = exc.last_success_at.isoformat() if exc.last_success_at else "never"
+        await _send_notify(
+            pool,
+            "⚠️ Environment report skipped: Home Assistant is unmeasurable (outage or "
+            f"unconfirmed connection). Last good contact: {last_good}.",
+        )
+        return {"error": "ha_source_unmeasurable", "last_good_at": exc.last_success_at}
 
     # ------------------------------------------------------------------
     # 1. Verify snapshot is populated

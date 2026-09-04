@@ -31,7 +31,9 @@ _DEFAULTS = dict(_DEFAULT_COMFORT_DEFAULTS)
 _DEVIATIONS = dict(_DEFAULT_COMFORT_DEVIATION)
 
 
-def _make_pool(*, snapshot_count=3, snapshot_rows=None, facts_row=None) -> MagicMock:
+def _make_pool(
+    *, snapshot_count=3, snapshot_rows=None, facts_row=None, ha_status="healthy"
+) -> MagicMock:
     pool = MagicMock()
 
     def _fetchval_side_effect(query, *args):
@@ -43,7 +45,13 @@ def _make_pool(*, snapshot_count=3, snapshot_rows=None, facts_row=None) -> Magic
         return snapshot_rows or [] if "ha_entity_snapshot" in query.lower() else []
 
     pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-    pool.fetchrow = AsyncMock(return_value=facts_row)
+
+    async def _fetchrow_side_effect(query, *args, **kwargs):
+        if "ha_source_health" in query.lower():
+            return {"status": ha_status, "last_success_at": None} if ha_status else None
+        return facts_row
+
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
     pool.execute = AsyncMock()
     return pool
 
@@ -267,6 +275,17 @@ def test_tropical_defaults_do_not_flag_ordinary_singapore_readings():
 # ---------------------------------------------------------------------------
 # run_environment_report
 # ---------------------------------------------------------------------------
+
+
+async def test_run_environment_report_unmeasurable_on_ha_outage():
+    """A simulated HA outage (unhealthy source) short-circuits before the snapshot check."""
+    pool = _make_pool(snapshot_count=3, ha_status="error")
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as notify:
+        result = await run_environment_report(pool, None)
+    assert result == {"error": "ha_source_unmeasurable", "last_good_at": None}
+    notify.assert_awaited_once()
+    assert "unmeasurable" in notify.await_args.args[1].lower()
+    pool.fetchval.assert_not_called()
 
 
 async def test_run_environment_report_empty_snapshot():

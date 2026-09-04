@@ -781,6 +781,7 @@ class HomeAssistantModule(Module):
                 exc,
             )
             self._ws_connected = False
+            await self._record_ha_source_error(f"WebSocket connect failed: {exc}")
             self._start_poll_fallback()
             self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
             return
@@ -889,6 +890,7 @@ class HomeAssistantModule(Module):
 
         self._ws_connected = True
         self._last_pong_time = asyncio.get_running_loop().time()
+        await self._record_ha_source_success()
         logger.info("HomeAssistantModule: WebSocket connected and authenticated.")
 
     async def _ws_close(self) -> None:
@@ -1349,6 +1351,7 @@ class HomeAssistantModule(Module):
                     logger.debug("HomeAssistantModule: REST poll refreshed entity cache.")
                 except Exception as exc:
                     logger.warning("HomeAssistantModule: REST poll failed: %s", exc)
+                    await self._record_ha_source_error(f"REST poll failed: {exc}")
         except asyncio.CancelledError:
             return
 
@@ -1381,6 +1384,7 @@ class HomeAssistantModule(Module):
             )
 
         self._entity_cache = new_cache
+        await self._record_ha_source_success()
         logger.debug("HomeAssistantModule: seeded entity cache with %d entities.", len(new_cache))
 
     async def _fetch_area_registry(self) -> None:
@@ -2405,6 +2409,66 @@ class HomeAssistantModule(Module):
             target={"entity_id": entity_id},
             data=call_data if call_data else None,
         )
+
+    # ------------------------------------------------------------------
+    # Source health tracking (bu-8cdl1.12 slice 1)
+    # ------------------------------------------------------------------
+    #
+    # ``ha_entity_snapshot`` alone cannot tell a reader whether HA is
+    # actually reachable right now: ``_persist_entity_snapshot`` re-stamps
+    # ``captured_at = now()`` every cycle regardless of whether the
+    # underlying cache was refreshed from a live HA contact, so a snapshot
+    # taken during an outage still looks freshly observed. ``ha_source_health``
+    # is this module's own memory of its HA connection health, upserted on
+    # every successful WS auth / REST poll and every connect/poll failure, so
+    # readers can render "unmeasurable" instead of impersonating a healthy
+    # house.
+
+    _HA_SOURCE_ID = "home_assistant"
+
+    async def _record_ha_source_success(self) -> None:
+        """Upsert ``ha_source_health``: HA contact just succeeded."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            await pool.execute(
+                """
+                INSERT INTO ha_source_health (source, status, last_success_at, updated_at)
+                VALUES ($1, 'healthy', now(), now())
+                ON CONFLICT (source) DO UPDATE SET
+                    status = 'healthy',
+                    last_success_at = now(),
+                    updated_at = now()
+                """,
+                self._HA_SOURCE_ID,
+            )
+        except Exception as exc:
+            logger.warning(
+                "HomeAssistantModule: failed to record HA source health success: %s", exc
+            )
+
+    async def _record_ha_source_error(self, error: str) -> None:
+        """Upsert ``ha_source_health``: HA contact just failed."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            await pool.execute(
+                """
+                INSERT INTO ha_source_health (source, status, last_error_at, last_error, updated_at)
+                VALUES ($1, 'error', now(), $2, now())
+                ON CONFLICT (source) DO UPDATE SET
+                    status = 'error',
+                    last_error_at = now(),
+                    last_error = EXCLUDED.last_error,
+                    updated_at = now()
+                """,
+                self._HA_SOURCE_ID,
+                error[:2000],
+            )
+        except Exception as exc:
+            logger.warning("HomeAssistantModule: failed to record HA source health error: %s", exc)
 
     # ------------------------------------------------------------------
     # Snapshot persistence

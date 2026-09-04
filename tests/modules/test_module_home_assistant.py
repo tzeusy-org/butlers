@@ -12,6 +12,9 @@ Covers:
 - WebSocket URL derivation (http→ws, https→wss)
 - Entity cache state_changed event (update + removal)
 - Key tool behaviors (entity_id validation, list_areas, get_entity_state)
+- HA source health recording: keyed upsert (success/error), no-DB no-op,
+  upsert-failure swallowed, wiring from WS-connect and REST-poll failure paths
+  (bu-8cdl1.12 slice 1)
 
 [bu-7sd7a]
 """
@@ -711,3 +714,122 @@ class TestToolBehaviors:
         result = await ha_module._get_entity_state("sensor.temp")
         assert result is not None
         assert result["state"] == "22.5"
+
+
+# ---------------------------------------------------------------------------
+# HA source health recording (bu-8cdl1.12 slice 1)
+# ---------------------------------------------------------------------------
+
+
+class TestHASourceHealthRecording:
+    async def test_record_success_upserts_healthy_row(self, ha_module: HomeAssistantModule) -> None:
+        pool = AsyncMock()
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+
+        await ha_module._record_ha_source_success()
+
+        pool.execute.assert_awaited_once()
+        query = pool.execute.await_args.args[0]
+        assert "ON CONFLICT (source) DO UPDATE" in query
+        assert "'healthy'" in query
+        assert pool.execute.await_args.args[1] == "home_assistant"
+
+    async def test_record_error_upserts_error_row_with_message(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        pool = AsyncMock()
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+
+        await ha_module._record_ha_source_error("connection refused")
+
+        pool.execute.assert_awaited_once()
+        args = pool.execute.await_args.args
+        assert "'error'" in args[0]
+        assert args[1] == "home_assistant"
+        assert args[2] == "connection refused"
+
+    async def test_record_success_then_error_is_a_keyed_upsert(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Repeated calls target the same source key — no unbounded row growth."""
+        pool = AsyncMock()
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+
+        await ha_module._record_ha_source_success()
+        await ha_module._record_ha_source_error("boom")
+        await ha_module._record_ha_source_success()
+
+        assert pool.execute.await_count == 3
+        for call in pool.execute.await_args_list:
+            assert call.args[1] == "home_assistant"
+
+    async def test_record_is_noop_without_a_pool(self, ha_module: HomeAssistantModule) -> None:
+        ha_module._db = None
+        # Neither call should raise when no DB pool is available.
+        await ha_module._record_ha_source_success()
+        await ha_module._record_ha_source_error("boom")
+
+    async def test_record_failure_is_swallowed(self, ha_module: HomeAssistantModule) -> None:
+        """A health-upsert failure logs a warning and never propagates to the caller."""
+        pool = AsyncMock()
+        pool.execute.side_effect = RuntimeError("db down")
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+
+        await ha_module._record_ha_source_success()  # does not raise
+        await ha_module._record_ha_source_error("boom")  # does not raise
+
+    async def test_ws_connect_and_seed_failure_records_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """A WebSocket connect failure at startup records the outage, not just a log line."""
+        ha_module._config = HomeAssistantConfig()
+        ha_module._ws_connect = AsyncMock(side_effect=RuntimeError("ws down"))
+        ha_module._record_ha_source_error = AsyncMock()
+        ha_module._start_snapshot_task = MagicMock()
+        ha_module._start_poll_fallback = MagicMock()
+        ha_module._schedule_reconnect = MagicMock()
+
+        await ha_module._ws_connect_and_seed()
+
+        ha_module._record_ha_source_error.assert_awaited_once()
+        assert "ws down" in ha_module._record_ha_source_error.await_args.args[0]
+
+    async def test_poll_loop_failure_records_error(self, ha_module: HomeAssistantModule) -> None:
+        """A REST poll failure in the fallback loop records the outage (previously swallowed)."""
+        ha_module._config = HomeAssistantConfig(poll_interval_seconds=0)
+        ha_module._shutdown = False
+        ha_module._ws_connected = False
+        ha_module._record_ha_source_error = AsyncMock()
+
+        async def _raise_and_stop(*_args: Any, **_kwargs: Any) -> None:
+            ha_module._shutdown = True
+            raise RuntimeError("poll boom")
+
+        ha_module._seed_entity_cache_from_rest = AsyncMock(side_effect=_raise_and_stop)
+
+        await asyncio.wait_for(ha_module._poll_loop(), timeout=5.0)
+
+        ha_module._record_ha_source_error.assert_awaited_once()
+        assert "poll boom" in ha_module._record_ha_source_error.await_args.args[0]
+
+    async def test_seed_entity_cache_from_rest_success_records_health(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json = MagicMock(return_value=[{"entity_id": "light.kitchen", "state": "on"}])
+        ha_module._client = AsyncMock()
+        ha_module._client.get = AsyncMock(return_value=resp)
+        ha_module._record_ha_source_success = AsyncMock()
+
+        await ha_module._seed_entity_cache_from_rest()
+
+        ha_module._record_ha_source_success.assert_awaited_once()

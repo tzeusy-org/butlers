@@ -103,13 +103,19 @@ def _make_entity_row(
     return row
 
 
-def _make_health_pool(*, state_value=None, entity_rows=None) -> MagicMock:
+def _make_health_pool(*, state_value=None, entity_rows=None, ha_status="healthy") -> MagicMock:
     pool = MagicMock()
     # The asyncpg JSONB codec returns Python objects directly (no JSON string).
     pool.fetchval = AsyncMock(return_value=state_value)
     pool.fetch = AsyncMock(return_value=entity_rows or [])
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
+
+    async def _fetchrow(query, *args, **kwargs):
+        if "ha_source_health" in query.lower():
+            return {"status": ha_status, "last_success_at": None} if ha_status else None
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=None)
     conn.__aenter__ = AsyncMock(return_value=conn)
@@ -470,6 +476,17 @@ def test_build_health_check_notification():
 # ---------------------------------------------------------------------------
 # run_device_health_check
 # ---------------------------------------------------------------------------
+
+
+async def test_run_device_health_check_unmeasurable_on_ha_outage():
+    """A simulated HA outage (unhealthy source) short-circuits before the snapshot query."""
+    pool = _make_health_pool(entity_rows=[_make_entity_row("sensor.temp")], ha_status="error")
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as notify:
+        result = await run_device_health_check(pool, None)
+    assert result == {"error": "ha_source_unmeasurable", "last_good_at": None}
+    notify.assert_awaited_once()
+    assert "unmeasurable" in notify.await_args.args[1].lower()
+    pool.fetch.assert_not_called()
 
 
 async def test_run_device_health_check_empty_and_healthy():

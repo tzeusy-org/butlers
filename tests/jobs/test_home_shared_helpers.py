@@ -4,7 +4,10 @@ Covers:
 - HomeJobContext.create: credential resolution from contact info
 - HomeJobContext async context manager: client lifecycle, Authorization header
 - _load_thresholds: stored values, fallbacks, per-key fallback, type casting, key prefix
-- _read_entity_snapshot: populated table, domain filter, empty raises
+- _read_entity_snapshot: populated table, domain filter, empty raises,
+  unmeasurable on outage/missing health row
+- _require_ha_source_healthy: healthy passes, outage/missing row raises
+  HASourceUnmeasurableError
 - _send_notify: routes through the notify boundary (quiet-hours/context-bus
   suppression, missing recipient, missing switchboard client, deliver()
   success/failure) with an attention_ledger row on every terminal branch
@@ -27,8 +30,10 @@ from butlers.jobs.home import (
     _DEFAULT_ENERGY_THRESHOLDS,
     _DEFAULT_OFFLINE_HOURS_THRESHOLDS,
     EmptyEntitySnapshotError,
+    HASourceUnmeasurableError,
     _load_thresholds,
     _read_entity_snapshot,
+    _require_ha_source_healthy,
     _send_notify,
 )
 
@@ -40,15 +45,28 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
+def _healthy_row() -> dict[str, Any]:
+    """A healthy ``ha_source_health`` row — the default across these tests."""
+    return {"status": "healthy", "last_success_at": None}
+
+
 def _make_pool(
     *,
     fetchval_return: Any = None,
-    fetchrow_return: Any = None,
+    fetchrow_return: Any = "__default__",
     fetch_return: list[Any] | None = None,
 ) -> MagicMock:
+    """Mocked asyncpg pool.
+
+    ``fetchrow_return`` defaults to a healthy ``ha_source_health`` row so
+    tests unrelated to source-health gating are unaffected; pass ``None`` or
+    an error-status row explicitly to exercise the unmeasurable path.
+    """
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=fetchval_return)
-    pool.fetchrow = AsyncMock(return_value=fetchrow_return)
+    pool.fetchrow = AsyncMock(
+        return_value=_healthy_row() if fetchrow_return == "__default__" else fetchrow_return
+    )
     pool.fetch = AsyncMock(return_value=fetch_return or [])
     pool.execute = AsyncMock()
     return pool
@@ -225,6 +243,60 @@ async def test_read_entity_snapshot():
     pool4 = _make_pool(fetch_return=[])
     with pytest.raises(EmptyEntitySnapshotError, match="sensor"):
         await _read_entity_snapshot(pool4, domain_filter="sensor")
+
+
+async def test_read_entity_snapshot_unmeasurable_on_outage():
+    """An unhealthy or missing ha_source_health row raises before querying the snapshot."""
+    rows = [
+        _FakeRecord(
+            {"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None}
+        )
+    ]
+
+    # Simulated outage: an explicit error status short-circuits before the
+    # snapshot table (which may well have rows) is even queried.
+    pool = _make_pool(
+        fetchrow_return={"status": "error", "last_success_at": None}, fetch_return=rows
+    )
+    with pytest.raises(HASourceUnmeasurableError):
+        await _read_entity_snapshot(pool)
+    pool.fetch.assert_not_called()
+
+    # No health record at all (never contacted) fails closed the same way.
+    pool2 = _make_pool(fetchrow_return=None, fetch_return=rows)
+    with pytest.raises(HASourceUnmeasurableError):
+        await _read_entity_snapshot(pool2)
+    pool2.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _require_ha_source_healthy
+# ---------------------------------------------------------------------------
+
+
+async def test_require_ha_source_healthy_happy_path():
+    """A healthy status row passes without raising."""
+    pool = _make_pool(fetchrow_return={"status": "healthy", "last_success_at": None})
+    await _require_ha_source_healthy(pool)  # does not raise
+
+
+async def test_require_ha_source_healthy_outage_carries_last_good_timestamp():
+    """An error-status row raises HASourceUnmeasurableError with the last-good timestamp."""
+    from datetime import UTC, datetime
+
+    last_good = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
+    pool = _make_pool(fetchrow_return={"status": "error", "last_success_at": last_good})
+    with pytest.raises(HASourceUnmeasurableError) as exc_info:
+        await _require_ha_source_healthy(pool)
+    assert exc_info.value.last_success_at == last_good
+
+
+async def test_require_ha_source_healthy_missing_row_fails_closed():
+    """No ha_source_health row at all (never contacted) is treated as unmeasurable."""
+    pool = _make_pool(fetchrow_return=None)
+    with pytest.raises(HASourceUnmeasurableError) as exc_info:
+        await _require_ha_source_healthy(pool)
+    assert exc_info.value.last_success_at is None
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,14 @@ from butlers.jobs.home import (
 pytestmark = pytest.mark.unit
 
 
-def _make_pool(*, snapshot_count=5, snapshot_rows=None, state_rows=None, facts_rows=None) -> Any:
+def _make_pool(
+    *,
+    snapshot_count=5,
+    snapshot_rows=None,
+    state_rows=None,
+    facts_rows=None,
+    ha_status="healthy",
+) -> Any:
     pool = MagicMock()
 
     async def _fetchval(query, *args, **kwargs):
@@ -41,6 +48,10 @@ def _make_pool(*, snapshot_count=5, snapshot_rows=None, state_rows=None, facts_r
 
     async def _fetchrow(query, *args, **kwargs):
         q = query.lower()
+        if "ha_source_health" in q:
+            if ha_status is None:
+                return None
+            return {"status": ha_status, "last_success_at": None}
         if "state" in q and "key" in q and args:
             for row in state_rows or []:
                 if row.get("key") == args[0]:
@@ -364,6 +375,17 @@ def test_build_digest_message():
 # ---------------------------------------------------------------------------
 # run_energy_digest
 # ---------------------------------------------------------------------------
+
+
+async def test_run_energy_digest_unmeasurable_on_ha_outage():
+    """A simulated HA outage (unhealthy source) short-circuits before the snapshot check."""
+    pool = _make_pool(snapshot_count=5, ha_status="error")
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as notify:
+        result = await run_energy_digest(pool, None)
+    assert result == {"error": "ha_source_unmeasurable", "last_good_at": None}
+    notify.assert_awaited_once()
+    assert "unmeasurable" in notify.await_args.args[1].lower()
+    pool.fetchval.assert_not_called()
 
 
 async def test_run_energy_digest_early_exits():
