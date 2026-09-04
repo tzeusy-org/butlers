@@ -657,6 +657,29 @@ async def test_cost_summary_prices_tiered_executed_ledger_models(app):
     assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
 
+async def test_cost_summary_prices_opencode_go_canonical_identifier(app):
+    """REQ-model-catalog-002: an `opencode-go/<native-id>` ledger row prices under
+    that exact canonical identifier — the spend surface must not require rewriting
+    the provider-qualified id to resolve pricing."""
+    pricing = PricingConfig(models={"opencode-go/minimax-m2.7": ModelPricing(0.0000003, 0.0000012)})
+    rows = [
+        _ledger_row(
+            model_id="opencode-go/minimax-m2.7",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+    ]
+    _wire_db(
+        _wire(app, MagicMock(spec=MCPClientManager), [], pricing),
+        _mock_db({"switchboard": _mock_ledger_pool(rows)}),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        response = await c.get("/api/spend")
+    assert response.json()["data"]["total_cost_usd"] == pytest.approx(1.5, abs=1e-4)
+
+
 async def test_cost_summary_invalid_period_422(app):
     _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
     async with httpx.AsyncClient(

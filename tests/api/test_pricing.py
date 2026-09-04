@@ -333,3 +333,28 @@ class TestPricingDependency:
                 cache_creation_tokens=1_000_000,
                 context_tokens=272_001,
             ) == pytest.approx(expected_cost)
+
+    def test_repo_default_opencode_go_canonical_identifier_resolves(self):
+        # REQ-model-catalog-002: a provider-qualified `opencode-go/<native-id>`
+        # catalog row must remain priced under that exact canonical string —
+        # flat and context-tiered OpenCode Go entries both included.
+        cfg = load_pricing()
+
+        flat = cfg.get_model_pricing("opencode-go/minimax-m2.7")
+        assert isinstance(flat, ModelPricing)
+        assert cfg.billing_class_for("opencode-go/minimax-m2.7") == "metered"
+        assert (flat.input_price_per_token, flat.output_price_per_token) == pytest.approx(
+            (0.0000003, 0.0000012)
+        )
+        assert cfg.estimate_cost("opencode-go/minimax-m2.7", 1_000_000, 1_000_000) == pytest.approx(
+            1.5
+        )
+
+        tiered = cfg.get_model_pricing("opencode-go/qwen3.7-plus")
+        assert isinstance(tiered, TieredModelPricing)
+        assert cfg.estimate_cost(
+            "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=0
+        ) == pytest.approx(2.0)
+        assert cfg.estimate_cost(
+            "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=256_000
+        ) == pytest.approx(6.0)

@@ -801,3 +801,148 @@ class TestStep8cBlobStorageDegradation:
         assert daemon.blob_store is None
         assert "S3 blob storage unavailable; blob operations will fail at runtime" in caplog.text
         assert all(env_fallback is False for _, env_fallback in store.resolve_calls)
+
+
+# ===========================================================================
+# Step 8c2 — codex_authority wiring and degraded-evidence on authority loss
+# ===========================================================================
+
+
+class _StopAfterCliAuthRestore(Exception):
+    """Sentinel raised right after step 8c2 to prove startup reached the next phase."""
+
+
+class _AuthorityLostCredentialStore:
+    """Fake CredentialStore: validates as a codex authority but fails to read it.
+
+    Mirrors a real system-global authority that is selected (wiring succeeds)
+    but whose value is unavailable at read time (authority loss) — as opposed
+    to ``codex_authority=None``, which fails validation before any read is
+    attempted. Non-Codex providers use the ordinary ``load`` local-first path.
+    """
+
+    def __init__(self) -> None:
+        self.shared_pool = None
+        self.require_system_global_pool_calls = 0
+        self.load_codex_cli_auth_calls = 0
+
+    def require_system_global_pool(self) -> None:
+        self.require_system_global_pool_calls += 1
+
+    async def load_codex_cli_auth(self) -> str | None:
+        self.load_codex_cli_auth_calls += 1
+        raise RuntimeError("codex system-global authority unavailable")
+
+    async def load(self, key: str) -> str | None:
+        return None
+
+    async def resolve(self, key: str, *, env_fallback: bool = True) -> str | None:
+        return None  # S3 blob storage stays unconfigured; step 8c no-ops.
+
+
+class TestStep8c2CodexAuthorityWiring:
+    """Step 8c2: run_startup wires credential_store through as codex_authority,
+    and a lost/unavailable authority degrades CLI-auth restoration (logged,
+    non-fatal) instead of silently continuing as if codex were healthy."""
+
+    async def test_codex_authority_wired_and_authority_loss_degrades_without_crashing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from contextlib import ExitStack
+
+        from butlers import lifecycle
+        from butlers.cli_auth.registry import PROVIDERS
+
+        pool = AsyncMock()
+        daemon = MagicMock()
+        daemon.config = SimpleNamespace(
+            name="test-butler",
+            logging=SimpleNamespace(log_root=None, level="INFO", format="text"),
+            modules={},
+            env_required=[],
+            env_optional=[],
+            db_name="butlers",
+            db_schema="test_butler",
+        )
+        daemon.db = SimpleNamespace(pool=pool)
+        daemon._registry.load_all.return_value = []
+        daemon._select_startup_modules.return_value = []
+        daemon._validate_module_configs.return_value = {}
+        daemon._collect_module_credentials.return_value = {}
+        daemon._module_statuses = {}
+        daemon._cascade_module_failures.return_value = None
+        daemon._build_db_url.return_value = "postgresql://example/butlers"
+        daemon._db_log_handler = None
+
+        store = _AuthorityLostCredentialStore()
+        daemon._build_credential_store = AsyncMock(return_value=store)
+
+        record_baseline = MagicMock()
+
+        caplog.set_level(logging.WARNING)
+        with ExitStack() as stack:
+            stack.enter_context(patch("butlers.core.logging.configure_logging"))
+            stack.enter_context(patch.object(lifecycle, "resolve_log_root", return_value=None))
+            stack.enter_context(patch.object(lifecycle, "init_telemetry"))
+            stack.enter_context(patch.object(lifecycle, "init_metrics"))
+            stack.enter_context(
+                patch.object(lifecycle, "_flatten_config_for_secret_scan", return_value={})
+            )
+            stack.enter_context(patch.object(lifecycle, "detect_secrets", return_value=[]))
+            stack.enter_context(patch.object(lifecycle, "validate_credentials"))
+            stack.enter_context(
+                patch.object(
+                    lifecycle, "validate_module_credentials_async", new=AsyncMock(return_value={})
+                )
+            )
+            stack.enter_context(patch.object(lifecycle, "run_migrations", new=AsyncMock()))
+            stack.enter_context(patch.object(lifecycle, "has_butler_chain", return_value=False))
+            stack.enter_context(
+                patch("butlers.core.butler_logging.ButlerLogger", return_value=MagicMock())
+            )
+            stack.enter_context(
+                patch(
+                    "butlers.core.butler_logging.ButlerDBLogHandler",
+                    return_value=logging.NullHandler(),
+                )
+            )
+            # Isolate PROVIDERS to a single synthetic codex entry so restore_tokens
+            # exercises only the codex-authority path, never a real home-dir file.
+            codex_only = {"codex": PROVIDERS["codex"]}
+            stack.enter_context(patch("butlers.cli_auth.persistence.PROVIDERS", codex_only))
+            stack.enter_context(
+                patch(
+                    "butlers.core.runtimes._codex_auth_sync.record_auth_baseline",
+                    record_baseline,
+                )
+            )
+            stack.enter_context(
+                patch.object(
+                    lifecycle,
+                    "_ensure_owner_entity",
+                    new=AsyncMock(side_effect=_StopAfterCliAuthRestore),
+                )
+            )
+
+            with pytest.raises(_StopAfterCliAuthRestore):
+                await lifecycle.run_startup(daemon)
+
+        if daemon._db_log_handler is not None:
+            logging.getLogger().removeHandler(daemon._db_log_handler)
+
+        # Wiring: run_startup passed the same credential_store through as
+        # codex_authority — proven because a validated (non-None) authority
+        # reached require_system_global_pool() before the read was attempted.
+        assert store.require_system_global_pool_calls == 1
+        assert store.load_codex_cli_auth_calls == 1
+
+        # Degraded-evidence: the authority loss is reported, not swallowed —
+        # and no baseline is recorded for a restore that never succeeded.
+        assert (
+            "CLI auth restore: Codex system-global authority unavailable; "
+            "skipping local credential fallback" in caplog.text
+        )
+        record_baseline.assert_not_called()
+
+        # Non-fatal: startup proceeded past CLI-auth restoration to the next step.
+        assert "CLI auth token restoration skipped safely" not in caplog.text
