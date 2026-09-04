@@ -21,11 +21,37 @@ from session_link_guard import scan_sources  # noqa: E402
 
 _ACCEPTED_RE = re.compile(r"^Accepted in [0-9a-f]{7,40}\.\s*$", re.MULTILINE)
 _WONTFIX_RE = re.compile(r"^Wontfix\.\s*$", re.MULTILINE)
+_SATISFIED_REQUIRED_CHECK_BUCKETS = frozenset({"pass", "skipping"})
+_BUTLERS_REQUIRED_CHECKS = frozenset({"check", "guards", "frontend"})
+_BUTLERS_REPOSITORIES = frozenset({"tzeusy-org/butlers", "tzeusy/butlers"})
 
 
 def _is_terminal_reply(body: str) -> bool:
     text = (body or "").strip()
     return bool(_ACCEPTED_RE.search(text) or _WONTFIX_RE.search(text))
+
+
+def _classify_required_checks(
+    repo: str, checks: list[dict[str, Any]]
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Return missing policy contexts and checks not accepted by GitHub.
+
+    GitHub reports a path-filtered required context as ``skipping`` and treats
+    it as satisfied. For the canonical Butlers repository, an absent or partial
+    required-check result must still fail closed against the live ruleset's
+    three named contexts.
+    """
+    required_names = (
+        _BUTLERS_REQUIRED_CHECKS
+        if normalize_repo(repo).lower() in _BUTLERS_REPOSITORIES
+        else frozenset()
+    )
+    reported_names = {str(check.get("name", "")) for check in checks}
+    missing = sorted(required_names - reported_names)
+    unsatisfied = [
+        check for check in checks if check.get("bucket") not in _SATISFIED_REQUIRED_CHECK_BUCKETS
+    ]
+    return missing, unsatisfied
 
 
 def _thread_summary(thread: dict[str, Any]) -> dict[str, Any]:
@@ -105,15 +131,16 @@ def main() -> int:
     ]
 
     required_checks = fetch_required_checks(args.repo, args.pr)
-    failing_or_pending_checks = [
-        check for check in required_checks if check.get("bucket") != "pass"
-    ]
+    missing_required_checks, failing_or_pending_checks = _classify_required_checks(
+        args.repo, required_checks
+    )
 
     session_link_findings = scan_sources(_session_link_sources(pr, active_threads))
 
     ok = (
         not unresolved
         and not missing_terminal_reply
+        and not missing_required_checks
         and not failing_or_pending_checks
         and not session_link_findings
     )
@@ -129,6 +156,7 @@ def main() -> int:
         "unresolved_threads": unresolved,
         "threads_missing_terminal_reply": missing_terminal_reply,
         "required_checks": required_checks,
+        "missing_required_checks": missing_required_checks,
         "failing_or_pending_required_checks": failing_or_pending_checks,
         "session_link_findings": [finding.to_dict() for finding in session_link_findings],
     }
