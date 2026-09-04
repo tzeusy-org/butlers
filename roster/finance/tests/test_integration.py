@@ -158,6 +158,20 @@ async def pool(provisioned_postgres_pool):
     async with provisioned_postgres_pool() as p:
         await _provision_all_tables(p)
         yield p
+        # track_bill() schedules a fire-and-forget SPO-mirror write via
+        # asyncio.create_task (bills._background_tasks). This DDL doesn't
+        # provision public.facts/predicate_registry, so that write always
+        # fails -- but it still round-trips a real query first. If it is
+        # still in flight when provisioned_postgres_pool's `finally: await
+        # db.close()` runs after this fixture returns, the query races pool
+        # teardown and can surface as pool-closed/CancelledError instead of
+        # the swallowed UndefinedTableError (bu-1qt3r). Drain before yielding
+        # control back so the mirror always finishes against a live pool.
+        from butlers.tools.finance import bills as _bills_module
+
+        pending = [t for t in _bills_module._background_tasks if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
