@@ -93,8 +93,9 @@ links.
 ## Risks / Trade-offs
 
 - **A core revision collides with another worker's migration** → defer number
-  selection, inspect the shared frontier before committing, then rebase and
-  rerun migration tests after the final chain is chosen.
+  selection, fetch and inspect the shared frontier before committing, then
+  rebase and rerun migration tests only if that inspection demonstrates a
+  collision. Do not refresh-rebase an otherwise clean PR.
 - **A probe message contains sensitive material** → pass the existing
   user-facing probe diagnostic only; do not serialize a credential value or
   raw exception object.

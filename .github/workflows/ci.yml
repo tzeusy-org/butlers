@@ -95,8 +95,10 @@ jobs:
     # the comment block that explains why it exists; those comments are
     # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
     # guard never hides the findings of the others; the last step fails the job
-    # if any guard step failed. Runs on every event. Advisory like every other
-    # check in this workflow: see docs note below on required-check status.
+    # if any guard step failed. Runs on every event. The active
+    # `main-merge-queue` ruleset requires `guards` alongside `check` and
+    # `frontend` on the exact `merge_group` tree; unlike path-filtered
+    # `frontend`, this job never skips.
     runs-on: ubuntu-latest
     permissions:
       contents: read
