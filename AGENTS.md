@@ -562,34 +562,32 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 ### QA doctrine doc drift
 - `about/heart-and-soul/architecture.md` still describes QA as a future staffer, while `about/README.md`, `roster/qa/`, and the live daemon topology treat QA as a current third staffer; when reconciling doctrine, prefer roster + spec state over that stale paragraph until the pillar doc is corrected.
 
-### PR merge from worktree contract
-- The exact-base helper is the sole final merge route. Do not use bare REST merge requests, `gh pr merge`, or `--auto`; these bypass its exact-base audit. After a `merged-exact-base` result, delete the head ref separately when needed.
-
-### Exact-base REST merge contract
-- GitHub's REST merge endpoint conditionally accepts only the PR head `sha`; it has no atomic expected-base-SHA parameter. A SHA-pinned REST merge can therefore land on a base that advanced after final exact-head revalidation.
-- Capture `headRefOid`, the live target-branch ref name, and its live ref SHA (not the PR's potentially stale `baseRefOid`) together during final terminal-green hosted CI / independent-review revalidation. Every hosted check must be terminal green, regardless of branch-protection required-check configuration. Then use `python3 scripts/merge_pr_exact_base.py --pr <n> --expected-head <head> --expected-base-ref <ref> --expected-base <base>` rather than a bare REST request, `gh pr merge`, or `--auto`. The helper keeps SHA pinning, rejects pre-request head/target-ref/base drift without issuing a merge, then re-reads the merged PR's retained `baseRefName` through GraphQL before auditing the resulting squash commit's sole parent and immutable result tree.
-- Only `merged-exact-base` (`source_bead_closure_allowed: true`) permits source/review Bead closure. `premerge-head-drift`, `premerge-base-ref-drift`, or `premerge-base-drift` requires a rebase onto current `origin/main` followed by fresh CI and independent exact-head review. `postmerge-base-ref-drift` (including a failed post-merge GraphQL lookup), `postmerge-base-drift`, `postmerge-patch-drift`, and `postmerge-unexpected-squash-parent-shape` are nonzero, already-merged classifications: keep the source Bead open and run the documented post-merge audit/investigation; never portray any as exact-current-base evidence. The last classification records parent evidence but found a non-squash parent shape. For patch proof, the audit must record matching `expected_patch_tree_sha` / `landed_patch_tree_sha`: coupled with the verified sole parent equal to the reviewed base, immutable tree equality proves the same net patch without relying on local Git state.
-
-### Batch merge target-branch health contract
-- A pull request's CI can only see its own branch, so a batch that checks each PR and never reads
-  main between merges will happily land PR N+1 on a main that PR N already broke. That is bu-vul8u:
-  two PRs each numbered a migration `core_204`, both green, and the post-merge "Migration Chain
-  Integrity (main)" workflow went red on the merged tree exactly as designed while nothing read it.
-- `scripts/merge_pr_exact_base.py` now consumes `scripts/main_health_gate.py` before it sends the
-  merge request. `premerge-target-branch-red` (exit `6`) halts the batch; `premerge-target-branch-
-  health-unknown` (exit `7`) means wait and repeat. `--acknowledge-target-red <workflow-filename>`
-  merges past one named red so the fix for a red main can land; any other red still halts.
-- Between merges, run `python3 scripts/main_health_gate.py --tree <scratch worktree>
-  --sync-tree-to origin/main --wait-seconds 300`. Use a dedicated scratch worktree, never the repo
-  root; the script refuses to reset anything that is not a linked worktree.
-- Four absences look identical on the wire and mean different things: path-filter excluded
-  (proceed), run not created yet (wait), run in flight (`gh --json conclusion` returns the empty
-  string, not null -- wait), and cancelled (UNKNOWN, never green). "No run" is UNKNOWN, not pass.
-- Main structurally cannot earn a green CI verdict mid-batch: `ci.yml`'s concurrency group is keyed
-  on the branch ref with `cancel-in-progress`, so every push cancels the previous run. The gate
-  therefore never asks `ci.yml` for a verdict and computes green locally instead, from guards
-  enumerated out of the tree under test rather than a hardcoded list that would go stale the moment
-  a new repo-wide guard lands.
+### Merge route: the GitHub merge queue is the sole final route
+- The repo is `tzeusy-org/butlers` (org-owned) and the `main-merge-queue` ruleset
+  (`scripts/setup_main_ruleset.sh`, ruleset id 22281319) is active on `refs/heads/main`.
+  Merge a reviewed, terminal-green PR by adding it to the queue:
+  `gh pr merge <n> --squash --auto`. The queue builds a `merge_group`, runs
+  `check` + `guards` + `frontend` against the exact tree about to land, and squash-merges
+  only on green (ALLGREEN grouping, batches of up to 5). That merge is the point at which
+  the reviewed change becomes final; source/review Bead closure keys off the completed
+  squash merge, not off any local audit.
+- Required checks are **non-strict** on purpose: a clean PR does NOT have to be rebased onto
+  current `main` before it merges, because the queue revalidates the merged tree itself. Do
+  not rebase a clean PR to "refresh" it. Rebase only to resolve a real textual conflict
+  (`git merge-tree --write-tree` reports one) or because a reviewer asked.
+- `scripts/merge_pr_exact_base.py` and `scripts/main_health_gate.py` are **SUPERSEDED** by the
+  queue. They were a hand-rolled substitute for it: the exact-base helper existed because a
+  SHA-pinned REST merge could land on a base that advanced after revalidation, and the batch
+  health gate existed because a batch that never re-read `main` between merges could land PR
+  N+1 on a `main` that PR N already broke (bu-vul8u: two PRs each numbering a migration
+  `core_204`, both green alone, red on the merged tree). The queue solves BOTH structurally:
+  it tests the actual merged tree, and ALLGREEN grouping will not merge a batch whose combined
+  tree is red. Do not reintroduce a manual merge route or a between-merges main-health poll.
+- The owner keeps a ruleset bypass (repository admin), so a direct push to `main` is still
+  physically possible; it skips the queue's merged-tree validation, so reserve it for
+  emergencies and treat the queue as the route for everything reviewed.
+- Removing the worktree before merging still matters: see the `gh pr merge --delete-branch`
+  note below.
 
 ### Calendar projection linkage schema contract
 - Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
@@ -1158,7 +1156,7 @@ command's name is not a claim about scope.
 - Merge-blocker worker runs can leave the blocker bead `in_progress` after successfully unblocking/merging a PR; coordinator should normalize by closing the blocker bead and, when applicable, closing related `pr-review`/original beads for merged PRs.
 
 ### PR merge + worktree cleanup guardrail
-- After the exact-base helper reports `merged-exact-base`, verify the merge via `gh pr view --json state,mergedAt` before deciding blocked vs merged, then remove the checked-out worktree and delete the local branch separately.
+- After adding a PR to the merge queue with `gh pr merge <n> --squash --auto`, the merge is not instant: the queue builds and tests the `merge_group` first. Verify the outcome via `gh pr view <n> --json state,mergedAt` before deciding blocked vs merged (queued-but-unmerged still reads `OPEN`), then remove the checked-out worktree and delete the local branch separately.
 
 ### Beads lint template contract
 - `bd lint` enforces section headers in issue descriptions, not only structured fields.
@@ -1647,7 +1645,7 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - `tests/config/test_migrations.py` should derive the current core Alembic head from `alembic/versions/core/` instead of pinning a `CORE_HEAD_REVISION` constant; new core migrations land often enough that static head expectations rot immediately.
 - Fresh `bd worktree create` checkouts ship without `node_modules`; frontend workers must run `cd frontend && npm install` before `tsc`/`eslint`/`vitest` or commands fail with module-resolution errors.
 - `npx tsc --noEmit -p .` does not traverse project references — use `npx tsc -b` (matches `npm run build` in CI) to surface TS errors in test files; many errors are invisible to the `-p` form and only fail in CI.
-- Branch protection may classify `frontend` as non-blocking, but that is insufficient for final merge: `frontend`, `frontend-e2e`, and `check` must all be terminal green before the exact-base helper is invoked. Do not use automatic merge to bypass this gate.
+- `frontend` and `check` are required checks in the merge-queue ruleset, so the queue enforces them; `--auto` (adding the PR to the queue) is the correct route, not a way to "bypass" a gate. On a backend-only PR the `changes` path filter legitimately SKIPS `frontend`/`frontend-e2e`, and that neutral skip satisfies the required `frontend` context; do not read the skip as a missing gate or force those jobs to run.
 - Frontend test files mocking `localStorage.getItem` should type the backing store as `Record<string, string | null>` (not `Record<string, string>`); otherwise `vi.fn` infers the mock signature too narrowly and `mockImplementation((k) => k === "..." ? "x" : null)` fails `tsc -b`.
 - Partial TanStack Query mocks in test files must use `as unknown as ReturnType<typeof useFoo>` (existing convention in `ConnectorDetailPage.test.tsx`, `SecretsTable.test.tsx`); `UseQueryResult<T, Error>` is a discriminated union that requires fields like `isPending`, `isLoadingError` that mocks omit, so a direct cast fails.
 - `.claude/skills/butler-qa-pr-review/scripts/_github.py::fetch_required_checks` currently treats `gh pr checks --required` exit code 1 as fatal when a PR has no branch-protection required checks configured, so `validate_pr_review.py` can crash even though `statusCheckRollup` still exposes actual CI results.
@@ -1782,13 +1780,16 @@ Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-sta
 - **A baseline spec that contradicts the code is NOT drift while its OpenSpec change is open.** `openspec/` is delta-based: proposals live in `openspec/changes/<change>/specs/<capability>/spec.md` as `## ADDED` / `## MODIFIED` / `## REMOVED` blocks, and `openspec archive` is what rewrites the baselines under `openspec/specs/`. So a baseline lagging an in-flight PR is the *normal* mid-change state, not a defect — before filing spec drift or blocking a merge on it, grep `openspec/changes/` for a staged delta that already covers it (observed 2026-08-22: a fleet-halt requirement flagged as drift was already retracted verbatim in the open change's `## MODIFIED` block). Two corollaries: hand-editing a baseline while a change is open risks colliding at archive, so only do it for a requirement that change does not touch; and never "refresh" a superseded baseline requirement cosmetically — repointing a module name without correcting the THEN clauses makes a stale guarantee look freshly verified, which is worse than leaving it visibly stale.
 - **`cmd 2>&1 > file` does NOT capture stderr** — it points stderr at the *terminal* and only stdout at the file. Redirection is evaluated left to right, so the correct form is `cmd > file 2>&1`. This bites hardest with tools that report on stderr (`openspec validate` among them): a before/after comparison written the wrong way diffs two empty files and returns a confident, entirely vacuous "identical". Same shape as the killed-gate-with-no-summary trap above — absence of output read as a clean result. When a check's value depends on its output, assert the output is non-empty before trusting what it says.
 
-### CI is advisory: `main` is not branch-protected
+### CI is enforced: `main` is protected by the merge-queue ruleset
 
-`gh api repos/Tzeusy/butlers/branches/main/protection` returns 404 "Branch not protected", and
-`ci.yml` contains no `continue-on-error` anywhere. So no check in `ci.yml` actually blocks a merge --
-a red `check` will not stop `gh pr merge`. Waiting for green is a discipline, not an enforced gate.
-Do not describe a CI job as "required" or "blocking"; when adding a new job, "advisory like every
-other check here" is the accurate phrasing.
+The `main-merge-queue` ruleset (id 22281319) on `tzeusy-org/butlers` makes `check`, `guards`, and
+`frontend` **required** status checks and routes every merge through the merge queue, so a red
+required check now genuinely blocks a merge: the queue will not squash a `merge_group` that is not
+green. `check`, `guards`, and `frontend` are the required contexts, so those three are "required";
+every other job (the individual shards, `frontend-e2e`) is a component the required jobs depend on
+or an advisory extra. The one escape hatch is the owner's repository-admin ruleset bypass, which is
+for emergencies, not routine merges. When adding a new job, do not make claims about whether CI is
+enforced from an assumption; the enforced set is exactly the ruleset's required contexts above.
 
 ### CI's Python jobs run named commands, NOT `make check`
 
@@ -1829,10 +1830,12 @@ file. Also beware timing: "no such file" answers "had it launched by the instant
 anything out, so it respects Repo Root Discipline. Exit 0 plus a tree hash means clean; on a clean
 merge the file list is empty. Use it to check two live branches against each other before merging.
 
-Ordering that avoids rework: rebase onto current `main` **before** running the gate. Division of
-labour -- the local gate attests *the worker's change*; PR CI attests *the merged tree*.
-`gh pr merge --squash --delete-branch` fails while a worktree still holds the branch; remove the
-worktree first.
+Division of labour: the local gate attests *the worker's change*; the queue's `merge_group` run
+attests *the merged tree*. Because required checks are non-strict (see the merge-route note), you do
+NOT need to rebase a clean PR onto `main` before merging to make CI meaningful; the queue rebuilds
+and tests the merged tree. Rebase only to clear a real conflict this probe reports, or on reviewer
+request. `gh pr merge --squash --auto --delete-branch` fails while a worktree still holds the branch;
+remove the worktree first.
 
 ### `check_spec_overwrites.py` cannot see baseline hand-edits
 
@@ -2445,9 +2448,9 @@ Two boundaries that are easy to get wrong in both directions (bu-5m67e):
 - **`ruff` cannot see a duplicate module-level name when the first definition is used in between.** F811 fires only on redefinition of an *unused* name, and a merge of two branches that each added the same helper to one file always has uses in between, so `ruff check` stays green while the later definition silently shadows the earlier one for every caller (bu-ayrbg: a security guard handed a `str` instead of `list[str]` iterated its characters and returned `[]` for every input). Per-PR CI is blind to it too, since each branch is green alone. `scripts/check_duplicate_toplevel_names.py` (CI job `duplicate-name-guard`, `make check-duplicate-names`) is the gate: it reads `ast.Module.body` only, so `if TYPE_CHECKING:` / `try: import` / version-gated rebinding is out of scope by construction, `@overload` stubs and `_` are exempt, and imports are not counted. Its ratchet ships empty and has no `--update-baseline` flag.
 - `roster/finance/tools/facts.py::_TRANSACTION_PREDICATES` **must stay a `list`**: `list_distinct_merchants` interpolates it with `!r` into `ARRAY{...}::text[]`, and a tuple's repr renders `ARRAY(...)`, a Postgres syntax error that fails 9 tests in `roster/finance/tests/test_facts.py::TestListDistinctMerchants`.
 - **A pre-merge union gate must prove the merge actually applied before it judges the result.** A local "merge main + PR, then run every repo-wide guard" script reported UNION-OK for a merge that never happened: the branch was `agent/fix-secrets-probe-state` and it was invoked with `fix-secrets-probe-state`, so `git fetch origin <branch>` failed with `couldn't find remote ref`, the silenced `git merge` failed, no conflict files appeared, and all six guards then ran against plain `origin/main` and passed. A gate that cannot distinguish "the PR is clean" from "the PR was never applied" is not a gate. Hard-fail on fetch failure, hard-fail when the merge produces no change against the base, and print the SHAs actually merged so the OK line carries its own evidence.
-- **A CONFLICTING PR runs zero CI, so its rollup is frozen at the pre-conflict head and still reads green.** When main moves under an open PR, GitHub marks it CONFLICTING and cancels/skips new runs — `gh pr view --json statusCheckRollup` keeps returning the last full 22/22 SUCCESS from the head before the conflict. A settle-monitor that only scans for failures called such a PR SETTLED-GREEN mid-rebase. Never settle a PR that is not `MERGEABLE`, and separately flag `n < 22` as SETTLED-INCOMPLETE: an **absent** required check is invisible to a fail-scan, because there is no non-SUCCESS conclusion to find. (The 22 baseline: `check-preflight`, `check-unit-1`, `check-unit-2`, `check-unit-3`, `check-unit-4`, `check-unit-5`, `check-integration-1`, `check-integration-2`, `check-integration-3`, `check-integration-4`, `check-integration-5`, `check`, `frontend`, `frontend-e2e`, `em-dash-guard`, `session-link-guard`, `spec-overwrite-guard`, `archived-requirements-guard`, `countable-tasks-guard`, `frontend-copy-inventory-guard`, `cited-requirements-guard`, `duplicate-name-guard`.)
+- **A CONFLICTING PR runs zero CI, so its rollup is frozen at the pre-conflict head and still reads green.** When main moves under an open PR, GitHub marks it CONFLICTING and cancels/skips new runs, so `gh pr view --json statusCheckRollup` keeps returning the last full SUCCESS from the head before the conflict. A monitor that only scans for failures reads such a PR as green mid-conflict. Never treat a PR that is not `MERGEABLE` as settled, and remember an **absent** required check is invisible to a fail-scan, because there is no non-SUCCESS conclusion to find. Under the merge queue this is mostly the queue's problem now (it will not merge a non-`MERGEABLE` entry), but the frozen-rollup trap still fools any human monitor. Do NOT gate on a fixed job count: the job set is now variable by design (the `changes` path filter legitimately SKIPS the backend shards on a docs-only PR and `frontend`/`frontend-e2e` on a backend-only PR, and those skips report as neutral, not SUCCESS). The real completeness test is that the ruleset's required contexts (`check`, `guards`, `frontend`) each resolved to success-or-legitimate-skip, not that N jobs all ran. The full current job set is 16: `changes`, `guards`, `check-preflight`, `check-unit-1..5`, `check-integration-1..5`, `check`, `frontend`, `frontend-e2e` (the nine former standalone guard jobs are now steps inside `guards`).
 - **A change to a generator invalidates every PR queued behind it.** #3854 changed `scripts/extract-frontend-copy.py` itself, so every open branch carrying an inventory generated by the OLD generator was green on its own CI and wrong after merge. Resolving a conflict in `about/lay-and-land/frontend-copy-inventory.md` by taking either side is only a way to get the rebase to *complete* — the resolution is to finish the rebase, **re-run the current generator**, and commit its output. The same reasoning applies to any generated artefact whose producer is itself under review: a PR green before the producer landed proves nothing about the artefact it will produce after.
-- **`merge_pr_exact_base.py` compares TREE SHAs, so `patch_identity_matches: false` is EXPECTED whenever main moved between merges** and is not by itself evidence of drift. The real verdict is `git patch-id --stable` equality between the PR's diff and the landed squash's diff; equal ids mean diff-identical regardless of the tree comparison. It also requires the full argument set (`--pr --expected-head --expected-base --expected-base-ref`) and the FULL 40-char SHAs — a bare `merge_pr_exact_base.py <N>` errors out.
+- **`merge_pr_exact_base.py` is SUPERSEDED by the merge queue (see the merge-route note); do not use it as the merge path.** The one technique from it still worth keeping when you need to prove two commits carry the same net change: `git patch-id --stable` equality between two diffs means diff-identical regardless of tree-SHA differences, so a differing tree SHA after `main` moved is not by itself evidence of patch drift.
 - **During a `git merge --no-commit`, use `git diff` (worktree vs index), never `git status --porcelain`**, to ask whether a regenerated artefact drifted: merged files are already *staged*, so `status --porcelain` reports them as changed whether or not the generator moved anything, and a drift check built on it fires on every merge.
 - **`out=$(cmd | head -1); rc=$?` captures `head`'s exit status, not `cmd`'s.** This made all four `pytest_gate.py verdict` classifications appear to return 0 while probing the gate's own PASS/FAILED/UNKNOWN contract. Re-measure without the pipe (or set `pipefail` and read `PIPESTATUS`) before believing an exit code taken through a pipeline — same defect class as everything else here: a check credited with an answer it was never positioned to give.
 - **A red test that fails on a missing patch target is not a behavioural demonstration.** Reverting the production files and re-running a PR's new tests against the old code is the right falsification, but the resulting reds must be read individually: `assert True is False` is genuine evidence the old code was wrong, while `AttributeError: <module> does not have the attribute '<new_helper>'` only says the test patches a symbol that does not exist yet. The second is a legitimate test of a new code path and no evidence at all about the old defect. Isolate each red before counting it.
