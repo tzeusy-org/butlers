@@ -5,23 +5,99 @@ on:
     branches:
       - main
   pull_request:
+  # The merge queue (bu-r5mnn) runs this workflow against the exact tree it
+  # is about to land; that run is the terminal broad gate. The concurrency
+  # group below already keys on github.ref, which is unique per queue entry.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  session-link-guard:
-    # Fast, dependency-free gate (bu-mr5t5): fails the PR when a tool-session
-    # link/footer (see scripts/session_link_guard.py) leaks into the PR title,
-    # body, review comments, or non-trailer commit text on the current head.
-    # Review-comment coverage is best-effort (falls back to an empty set on
-    # any API hiccup) so a GitHub API blip never blocks the mandatory
-    # title/body/commit checks. Advisory like
-    # every other check in this workflow: see docs note below on required-check
-    # status.
+  changes:
+    # Path classification for pull_request gating (bu-r5mnn). Docs/spec-only
+    # PRs skip the backend shards and the frontend jobs; everything else runs
+    # them. Fail-closed rule: `backend` is true unless EVERY changed file
+    # matches the `docs` filter, so an unknown path (a new top-level dir, a
+    # dotfile, a binary, an empty file list from an API hiccup) always runs the
+    # shards. `frontend` is true when anything under frontend/ changed.
+    # merge_group and push events get `true` for both without consulting the
+    # filter: the consumers decide per event what to do with that (merge_group
+    # runs everything; push:main skips the shards by design because the merge
+    # queue already validated this exact tree).
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.classify.outputs.backend }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          list-files: json
+          filters: |
+            docs:
+              - 'about/**'
+              - 'openspec/**'
+              - 'docs/**'
+              - '*.md'
+              - '.beads/**'
+              - 'LICENSE'
+            all:
+              - '**'
+
+      - name: Classify the diff (fail closed)
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ALL_FILES: ${{ steps.filter.outputs.all_files }}
+          DOCS_FILES: ${{ steps.filter.outputs.docs_files }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          event = os.environ["EVENT_NAME"]
+          if event != "pull_request":
+              backend = frontend = True
+              reason = f"{event} event: no path filtering"
+          else:
+              all_files = json.loads(os.environ.get("ALL_FILES") or "[]")
+              docs_files = set(json.loads(os.environ.get("DOCS_FILES") or "[]"))
+              non_docs = sorted(path for path in all_files if path not in docs_files)
+              if not all_files:
+                  backend = frontend = True
+                  reason = "empty changed-file list: failing closed"
+              else:
+                  backend = bool(non_docs)
+                  frontend = any(path.startswith("frontend/") for path in all_files)
+                  reason = (
+                      f"{len(all_files)} changed file(s), {len(non_docs)} outside the docs filter"
+                      + (f": {', '.join(non_docs[:10])}" if non_docs else "")
+                  )
+          print(f"backend={str(backend).lower()} frontend={str(frontend).lower()} ({reason})")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"backend={str(backend).lower()}\n")
+              handle.write(f"frontend={str(frontend).lower()}\n")
+          PY
+
+  guards:
+    # Every fast, dependency-free gate in one job (bu-r5mnn): one checkout, one
+    # Python, one Node. The nine former jobs each paid their own runner spin-up
+    # and checkout to run a script that takes seconds. Each guard step keeps
+    # the comment block that explains why it exists; those comments are
+    # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
+    # guard never hides the findings of the others; the last step fails the job
+    # if any guard step failed. Runs on every event. Advisory like every other
+    # check in this workflow: see docs note below on required-check status.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
@@ -36,7 +112,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install OpenSpec 1.9.0
+        run: npm install --global @fission-ai/openspec@1.9.0
+
+      # Session-link guard (bu-mr5t5): fails the PR when a tool-session
+      # link/footer (see scripts/session_link_guard.py) leaks into the PR title,
+      # body, review comments, or non-trailer commit text on the current head.
+      # Review-comment coverage is best-effort (falls back to an empty set on
+      # any API hiccup) so a GitHub API blip never blocks the mandatory
+      # title/body/commit checks. PR-only: the inputs do not exist on other events.
       - name: Write PR title and body to files
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -45,6 +136,7 @@ jobs:
           printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
 
       - name: Fetch review comments (best-effort)
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -68,6 +160,8 @@ jobs:
             --input review "${RUNNER_TEMP}/rc_reviews.json"
 
       - name: Scan for tool-session links
+        id: session_links
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
         run: |
           python3 scripts/session_link_guard.py \
             --pr-title-file "${RUNNER_TEMP}/pr_title.txt" \
@@ -75,220 +169,186 @@ jobs:
             --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --review-comments-file "${RUNNER_TEMP}/review_comments.json"
 
-  em-dash-guard:
-    # Fast, dependency-free gate (bu-370uj): enforces non-negotiable #6 ("no
-    # em-dashes in doctrine or dashboard copy") over the doctrine markdown
-    # corpus (about/ essays + roster/*/MANIFESTO.md + roster/*/AGENTS.md). A
-    # per-file baseline (scripts/em-dash-baseline.json) freezes pre-existing
-    # debt so the gate lands green today while blocking any net-new em-dash and
-    # any new dirty file. Frontend user-facing copy is enforced by the eslint
-    # rule in the `frontend` job instead. Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Em-dash guard (bu-370uj): enforces non-negotiable #6 ("no em-dashes in
+      # doctrine or dashboard copy") over the doctrine markdown corpus (about/
+      # essays + roster/*/MANIFESTO.md + roster/*/AGENTS.md). A per-file
+      # baseline (scripts/em-dash-baseline.json) freezes pre-existing debt so
+      # the gate lands green today while blocking any net-new em-dash and any
+      # new dirty file. Frontend user-facing copy is enforced by the eslint
+      # rule in the `frontend` job instead.
       - name: Check for em-dashes in doctrine + dashboard copy
+        id: em_dashes
+        if: ${{ !cancelled() }}
         run: python3 scripts/check-no-em-dashes.py
 
-  spec-overwrite-guard:
-    # Fast, dependency-free gate (bu-s9uv3): `openspec archive` writes the WHOLE
-    # requirement block from a change into openspec/specs/, so an unarchived
-    # `## MODIFIED Requirements` block authored against an older ancestor
-    # silently deletes whatever the baseline gained in between. OpenSpec 1.9.0
-    # guards only scenario NAMES, so a block that keeps every name and rewrites
-    # the bodies validates clean and still destroys baseline content -- which has
-    # happened three times on the same axis. This compares bodies. A digest-keyed
-    # ratchet (scripts/spec-overwrite-baseline.json) freezes today's debt and
-    # re-fires as soon as an archive moves a requirement under an unarchived
-    # block. Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Spec-overwrite guard (bu-s9uv3): `openspec archive` writes the WHOLE
+      # requirement block from a change into openspec/specs/, so an unarchived
+      # `## MODIFIED Requirements` block authored against an older ancestor
+      # silently deletes whatever the baseline gained in between. OpenSpec 1.9.0
+      # guards only scenario NAMES, so a block that keeps every name and rewrites
+      # the bodies validates clean and still destroys baseline content -- which has
+      # happened three times on the same axis. This compares bodies. A digest-keyed
+      # ratchet (scripts/spec-overwrite-baseline.json) freezes today's debt and
+      # re-fires as soon as an archive moves a requirement under an unarchived
+      # block.
       - name: Check unarchived MODIFIED spec blocks against the live baseline
+        id: spec_overwrites
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_spec_overwrites.py
 
-  openspec-strict-validation:
-    # Strict OpenSpec validation gate for bu-n58sv. The repository carries
-    # both canonical specs and active deltas; validating both prevents
-    # RFC-2119/prose and scenario-loss debt from accumulating behind scoped
-    # per-change checks. Pin the CLI version so local and hosted results use
-    # the same parser and strictness rules.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Node 24
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Install OpenSpec 1.9.0
-        run: npm install --global @fission-ai/openspec@1.9.0
-
+      # Strict OpenSpec validation gate for bu-n58sv. The repository carries
+      # both canonical specs and active deltas; validating both prevents
+      # RFC-2119/prose and scenario-loss debt from accumulating behind scoped
+      # per-change checks. The CLI version is pinned above so local and hosted
+      # results use the same parser and strictness rules.
       - name: Validate all OpenSpec artifacts in strict mode
+        id: openspec_strict
+        if: ${{ !cancelled() }}
         run: make check-openspec-strict
 
-  archived-requirements-guard:
-    # Fast, dependency-free gate (bu-966by): the other side of the ledger from
-    # spec-overwrite-guard. Archiving a change is supposed to write its
-    # requirements into openspec/specs/, and 488 of them across 44 changes never
-    # got there while every check stayed green -- `openspec validate` reads delta
-    # syntax, `openspec archive` reports what it wrote and not what it skipped,
-    # and check_spec_overwrites.py never looks at the baseline side at all. This
-    # asserts each archived `## ADDED` requirement exists in the baseline by name
-    # and each `## MODIFIED` block's content reached it, failing per requirement
-    # so a half-applied archive cannot look green. A digest-keyed ratchet
-    # (scripts/archived-requirements-baseline.json) freezes today's debt for
-    # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose,
-    # and a `## REMOVED` block excuses an absence only once its own change
-    # has archived, so a pending proposal cannot mute a gap off-ratchet.
-    # Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Archived-requirements guard (bu-966by): the other side of the ledger from
+      # the spec-overwrite guard. Archiving a change is supposed to write its
+      # requirements into openspec/specs/, and 488 of them across 44 changes never
+      # got there while every check stayed green -- `openspec validate` reads delta
+      # syntax, `openspec archive` reports what it wrote and not what it skipped,
+      # and check_spec_overwrites.py never looks at the baseline side at all. This
+      # asserts each archived `## ADDED` requirement exists in the baseline by name
+      # and each `## MODIFIED` block's content reached it, failing per requirement
+      # so a half-applied archive cannot look green. A digest-keyed ratchet
+      # (scripts/archived-requirements-baseline.json) freezes today's debt for
+      # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose,
+      # and a `## REMOVED` block excuses an absence only once its own change
+      # has archived, so a pending proposal cannot mute a gap off-ratchet.
       - name: Check archived change requirements reached the baseline
+        id: archived_requirements
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_archived_requirements_landed.py
 
-  countable-tasks-guard:
-    # Fast, dependency-free gate (bu-h7igs): `openspec archive`'s incomplete-task
-    # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
-    # sections with per-task acceptance bullets -- richer than most checkbox files
-    # here, not lazier -- matches zero of them, so archive reports
-    # `Task status: No tasks`, cannot be incomplete, and archives unprompted. The
-    # defect is not the missing warning but that the gate's silence is
-    # indistinguishable from its pass: "archived with no task warning" reads as
-    # evidence the tasks were done. This fails on any unarchived change the gate
-    # cannot see, so the difference is restored before the change reaches archive.
-    # Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Countable-tasks guard (bu-h7igs): `openspec archive`'s incomplete-task
+      # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
+      # sections with per-task acceptance bullets -- richer than most checkbox files
+      # here, not lazier -- matches zero of them, so archive reports
+      # `Task status: No tasks`, cannot be incomplete, and archives unprompted. The
+      # defect is not the missing warning but that the gate's silence is
+      # indistinguishable from its pass: "archived with no task warning" reads as
+      # evidence the tasks were done. This fails on any unarchived change the gate
+      # cannot see, so the difference is restored before the change reaches archive.
       - name: Check every change's tasks.md is countable by the archive gate
+        id: countable_tasks
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_countable_tasks.py
-  cited-requirements-guard:
-    # Fast, dependency-free gate (bu-lpwjc): the third side of the ledger. The
-    # two guards above read the spec tree against itself and have never opened a
-    # test file, so nothing ever checked that a REQ id cited by a test docstring
-    # resolves to a definition at all. Measured at introduction: 39 distinct ids
-    # are cited, 30 resolve only to a change that has not archived yet, and
-    # REQ-cli-runtime-auth-003 resolves nowhere -- there is no cli-runtime-auth
-    # capability in the repo. openspec/specs/ and unarchived changes are the two
-    # definition sources; openspec/changes/archive/** deliberately is NOT one,
-    # because an archived change has already had its chance to write the
-    # requirement into the baseline. Counting it would make this blind to
-    # exactly the case it exists for (`openspec archive --skip-specs` moves the
-    # delta and writes no baseline) and would hide a half-applied archive, since
-    # the ids that landed and the ids that did not would read the same.
-    # Pending-only citations pass but are printed with the change they lean on:
-    # that is the state that rots. A ratchet
-    # (scripts/cited-requirements-baseline.json) freezes today's one dangling
-    # citation per (test file, id); there is no re-freeze flag on purpose.
-    # Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Cited-requirements guard (bu-lpwjc): the third side of the ledger. The
+      # two guards above read the spec tree against itself and have never opened a
+      # test file, so nothing ever checked that a REQ id cited by a test docstring
+      # resolves to a definition at all. Measured at introduction: 39 distinct ids
+      # are cited, 30 resolve only to a change that has not archived yet, and
+      # REQ-cli-runtime-auth-003 resolves nowhere -- there is no cli-runtime-auth
+      # capability in the repo. openspec/specs/ and unarchived changes are the two
+      # definition sources; openspec/changes/archive/** deliberately is NOT one,
+      # because an archived change has already had its chance to write the
+      # requirement into the baseline. Counting it would make this blind to
+      # exactly the case it exists for (`openspec archive --skip-specs` moves the
+      # delta and writes no baseline) and would hide a half-applied archive, since
+      # the ids that landed and the ids that did not would read the same.
+      # Pending-only citations pass but are printed with the change they lean on:
+      # that is the state that rots. A ratchet
+      # (scripts/cited-requirements-baseline.json) freezes today's one dangling
+      # citation per (test file, id); there is no re-freeze flag on purpose.
       - name: Check REQ ids cited by tests resolve to a definition
+        id: cited_requirements
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_cited_requirements_resolve.py
 
-  frontend-copy-inventory-guard:
-    # Fast, dependency-free gate (bu-erfdj): about/lay-and-land/frontend-copy-inventory.md
-    # is generated by scripts/extract-frontend-copy.py, is committed so copy changes
-    # surface in review, and tells readers not to edit it by hand -- but nothing ever
-    # regenerated it, so it drifted silently while presenting itself as authoritative.
-    # Committing the inventory only pays off if it is guaranteed current, so this
-    # regenerates it from the checked-out frontend sources and fails on any diff.
-    # The generator parses .tsx files directly (no node_modules, no npm install) and
-    # its output is a pure function of those files with no timestamp or other
-    # nondeterministic field, so this gate cannot flap. Advisory like every other
-    # check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Frontend-copy-inventory guard (bu-erfdj): about/lay-and-land/frontend-copy-inventory.md
+      # is generated by scripts/extract-frontend-copy.py, is committed so copy changes
+      # surface in review, and tells readers not to edit it by hand -- but nothing ever
+      # regenerated it, so it drifted silently while presenting itself as authoritative.
+      # Committing the inventory only pays off if it is guaranteed current, so this
+      # regenerates it from the checked-out frontend sources and fails on any diff.
+      # The generator parses .tsx files directly (no node_modules, no npm install) and
+      # its output is a pure function of those files with no timestamp or other
+      # nondeterministic field, so this gate cannot flap.
       - name: Regenerate the frontend copy inventory
+        id: frontend_copy_regenerate
+        if: ${{ !cancelled() }}
         run: python3 scripts/extract-frontend-copy.py
 
       - name: Check the committed inventory matches the regenerated one
+        id: frontend_copy
+        if: ${{ !cancelled() }}
         run: |
           if ! git diff --exit-code -- about/lay-and-land/frontend-copy-inventory.md; then
             echo "::error file=about/lay-and-land/frontend-copy-inventory.md::Frontend copy inventory is stale. Regenerate it with 'python3 scripts/extract-frontend-copy.py' and commit the result."
             exit 1
           fi
 
-  duplicate-name-guard:
-    # Fast, dependency-free gate (bu-ayrbg): two branches each added a
-    # module-level `_fenced_code_blocks` to one test file with incompatible
-    # return types. The definitions were far apart, git auto-merged them, and
-    # the later one silently shadowed the earlier one for every caller --
-    # including a security guard that then iterated the characters of a string
-    # and returned [] for every input, so a runnable pg_restore.sh in a fenced
-    # block would have passed REQ-database-security-006 unnoticed.
-    #
-    # The non-obvious part is that `ruff check` is green on that tree. F811
-    # (redefinition of unused name) does not fire when the FIRST definition is
-    # USED between the two definitions -- the name is not "unused" at the point
-    # of redefinition. That intervening-use condition is F811's blind spot, and
-    # it is exactly what a merge produces, since each branch defines the name
-    # and uses it. Per-PR CI cannot see it either: both PRs are green alone and
-    # CI never builds the union of open PRs.
-    #
-    # This asserts each module-level name is bound once per file, independent of
-    # use. It scans the lint gate's own scope (src/, tests/, roster/,
-    # conftest.py) and fails if it finds zero Python files, so it cannot go
-    # quiet the way the shadowed guard did. Ratchet:
-    # scripts/duplicate-toplevel-names-baseline.json, shipped empty, with no
-    # re-freeze flag on purpose. Advisory like every other check here.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
+      # Duplicate-name guard (bu-ayrbg): two branches each added a
+      # module-level `_fenced_code_blocks` to one test file with incompatible
+      # return types. The definitions were far apart, git auto-merged them, and
+      # the later one silently shadowed the earlier one for every caller --
+      # including a security guard that then iterated the characters of a string
+      # and returned [] for every input, so a runnable pg_restore.sh in a fenced
+      # block would have passed REQ-database-security-006 unnoticed.
+      #
+      # The non-obvious part is that `ruff check` is green on that tree. F811
+      # (redefinition of unused name) does not fire when the FIRST definition is
+      # USED between the two definitions -- the name is not "unused" at the point
+      # of redefinition. That intervening-use condition is F811's blind spot, and
+      # it is exactly what a merge produces, since each branch defines the name
+      # and uses it. Per-PR CI cannot see it either: both PRs are green alone and
+      # CI never builds the union of open PRs.
+      #
+      # This asserts each module-level name is bound once per file, independent of
+      # use. It scans the lint gate's own scope (src/, tests/, roster/,
+      # conftest.py) and fails if it finds zero Python files, so it cannot go
+      # quiet the way the shadowed guard did. Ratchet:
+      # scripts/duplicate-toplevel-names-baseline.json, shipped empty, with no
+      # re-freeze flag on purpose.
       - name: Check for duplicate module-level names
+        id: duplicate_names
+        if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
+
+      - name: Fail if any guard failed
+        if: ${{ !cancelled() }}
+        env:
+          GUARD_OUTCOMES: |
+            session_links=${{ steps.session_links.outcome }}
+            em_dashes=${{ steps.em_dashes.outcome }}
+            spec_overwrites=${{ steps.spec_overwrites.outcome }}
+            openspec_strict=${{ steps.openspec_strict.outcome }}
+            archived_requirements=${{ steps.archived_requirements.outcome }}
+            countable_tasks=${{ steps.countable_tasks.outcome }}
+            cited_requirements=${{ steps.cited_requirements.outcome }}
+            frontend_copy_regenerate=${{ steps.frontend_copy_regenerate.outcome }}
+            frontend_copy=${{ steps.frontend_copy.outcome }}
+            duplicate_names=${{ steps.duplicate_names.outcome }}
+        run: |
+          failed=0
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+              *=success) ;;
+              *=skipped) echo "skipped: $line" ;;
+              *)
+                echo "::error::guard failed: $line"
+                failed=1
+                ;;
+            esac
+          done <<< "$GUARD_OUTCOMES"
+          exit "$failed"
 
   # Preserve the historic `check` status as a fail-closed fan-in. The
   # one-time preflight and ten duration-balanced file shards all begin
   # independently; no broad lane serializes the backend critical path.
   check-preflight:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -435,6 +495,11 @@ jobs:
 
   check-unit-1:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -507,6 +572,11 @@ jobs:
 
   check-unit-2:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -579,6 +649,11 @@ jobs:
 
   check-unit-3:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -651,6 +726,11 @@ jobs:
 
   check-unit-4:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -723,6 +803,11 @@ jobs:
 
   check-unit-5:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -795,6 +880,11 @@ jobs:
 
   check-integration-1:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -900,6 +990,11 @@ jobs:
 
   check-integration-2:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -1005,6 +1100,11 @@ jobs:
 
   check-integration-3:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -1110,6 +1210,11 @@ jobs:
 
   check-integration-4:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -1214,6 +1319,11 @@ jobs:
 
   check-integration-5:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group: always. pull_request: only when the diff reaches beyond the
+    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
+    # the merge queue already validated this exact tree.
+    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
 
     services:
       postgres:
@@ -1318,16 +1428,25 @@ jobs:
 
   check:
     # Do not allow a green historic check status when a preflight or any shard
-    # failed, was skipped, or was cancelled. The fan-in also requires all ten
-    # coverage files. `always()` is deliberate: a skipped historical check can
-    # read as green to branch protection after a cancelled prerequisite.
-    needs: [check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5]
+    # failed, was skipped for an unexpected reason, or was cancelled. `always()`
+    # is deliberate: a skipped historical check can read as green to branch
+    # protection after a cancelled prerequisite. Two skips are accepted, and
+    # only these two: (a) a pull_request whose `changes` job succeeded and
+    # classified the diff as docs-only (`backend == 'false'`), and (b) a
+    # push to main, where the merge queue's merge_group run already validated
+    # this exact tree. Everything else that is not `success` fails the fan-in.
+    # Coverage aggregation and the badge only run when the shards actually ran.
+    needs: [changes, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5]
     if: ${{ always() }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Require preflight and every test shard to pass
+      - name: Require preflight and every test shard to pass (or be skipped by the path filter)
+        id: gate
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGES_BACKEND: ${{ needs.changes.outputs.backend }}
           CHECK_PREFLIGHT_RESULT: ${{ needs.check-preflight.result }}
           CHECK_UNIT_1_RESULT: ${{ needs.check-unit-1.result }}
           CHECK_UNIT_2_RESULT: ${{ needs.check-unit-2.result }}
@@ -1340,7 +1459,19 @@ jobs:
           CHECK_INTEGRATION_4_RESULT: ${{ needs.check-integration-4.result }}
           CHECK_INTEGRATION_5_RESULT: ${{ needs.check-integration-5.result }}
         run: |
+          skip_allowed=0
+          skip_reason=""
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_RESULT" = "success" ] && [ "$CHANGES_BACKEND" = "false" ]; then
+            skip_allowed=1
+            skip_reason="docs-only pull request: backend shards skipped by the path filter"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            skip_allowed=1
+            skip_reason="push to main: backend shards skipped by design, the merge queue validated this tree"
+          fi
+
           failed=0
+          ran=0
+          skipped=0
           for named_result in \
             "check-preflight=$CHECK_PREFLIGHT_RESULT" \
             "check-unit-1=$CHECK_UNIT_1_RESULT" \
@@ -1354,89 +1485,126 @@ jobs:
             "check-integration-4=$CHECK_INTEGRATION_4_RESULT" \
             "check-integration-5=$CHECK_INTEGRATION_5_RESULT"; do
             case "$named_result" in
-              *=success) ;;
+              *=success) ran=1 ;;
+              *=skipped)
+                if [ "$skip_allowed" -eq 1 ]; then
+                  skipped=1
+                else
+                  echo "::error::$named_result (skipped, but this event requires the shards to run)"
+                  failed=1
+                fi
+                ;;
               *)
                 echo "::error::$named_result"
                 failed=1
                 ;;
             esac
           done
+
+          if [ "$ran" -eq 1 ] && [ "$skipped" -eq 1 ]; then
+            echo "::error::inconsistent shard state: some shards ran and some were skipped"
+            failed=1
+          fi
+          if [ "$skipped" -eq 1 ] && [ "$failed" -eq 0 ]; then
+            echo "::notice::$skip_reason"
+          fi
+
+          if [ "$ran" -eq 1 ] && [ "$failed" -eq 0 ]; then
+            echo "shards_ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "shards_ran=false" >> "$GITHUB_OUTPUT"
+          fi
           exit "$failed"
 
       - uses: actions/checkout@v6
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
 
       - name: Set up Python 3.12
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install uv
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: astral-sh/setup-uv@v8.1.0
 
       - name: Install dependencies for coverage aggregation
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         run: uv sync --frozen --dev
 
       - name: Download unit shard 1 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-1
 
       - name: Download unit shard 2 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-2
 
       - name: Download unit shard 3 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-3
 
       - name: Download unit shard 4 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-4
 
       - name: Download unit shard 5 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-unit-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/unit-5
 
       - name: Download integration shard 1 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-1-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-1
 
       - name: Download integration shard 2 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-2-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-2
 
       - name: Download integration shard 3 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-3-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-3
 
       - name: Download integration shard 4 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-4-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-4
 
       - name: Download integration shard 5 coverage data
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/download-artifact@v4
         with:
           name: ci-integration-5-coverage-data
           path: ${{ runner.temp }}/ci-coverage/integration-5
 
       - name: Combine coverage from all independent test shards
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         id: coverage
         env:
           UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
@@ -1492,7 +1660,7 @@ jobs:
           fi
 
       - name: Upload combined coverage report
-        if: always()
+        if: ${{ steps.gate.outputs.shards_ran == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: ci-combined-coverage-report
@@ -1502,7 +1670,11 @@ jobs:
           overwrite: true
 
       - name: Update coverage badge
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # Shards no longer run on push:main, so the merge queue's merge_group run
+        # is the lane that still has coverage data for the tree about to land.
+        # merge_group runs execute in the repository context and see repository
+        # secrets; dynamic-badges-action needs only the gist secrets, not the ref.
+        if: ${{ steps.gate.outputs.shards_ran == 'true' && github.event_name == 'merge_group' }}
         uses: schneegans/dynamic-badges-action@v1.7.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -1514,6 +1686,10 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group and push:main: always (cheap, no coverage dependency).
+    # pull_request: only when frontend/ changed (fail-closed, see `changes`).
+    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
 
     defaults:
       run:
@@ -1552,6 +1728,10 @@ jobs:
 
   frontend-e2e:
     runs-on: ubuntu-latest
+    needs: [changes]
+    # merge_group and push:main: always (cheap, no coverage dependency).
+    # pull_request: only when frontend/ changed (fail-closed, see `changes`).
+    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
 
     defaults:
       run:
