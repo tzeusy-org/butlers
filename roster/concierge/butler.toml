@@ -1,0 +1,20 @@
+[butler]
+name = "concierge"
+port = 41112
+description = "System-plane read staffer: answers fleet status, spend, and session questions for the dashboard chat"
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["*"]
+
+[butler.runtime_seed]
+max_concurrent_sessions = 3
+
+[butler.switchboard]
+url = "http://localhost:41100/mcp"
+
+[butler.db]
+name = "butlers"
+schema = "concierge"
+
+[modules.dashboard_read]
