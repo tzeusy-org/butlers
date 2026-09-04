@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -163,9 +163,18 @@ check-for-update-joins:
 check-ci-test-shards:
 	uv run --no-sync python scripts/check_ci_test_shards.py
 
+# Per-lane collected-test budget ratchet (bu-r5mnn). Fails when a CI lane
+# collects more tests than scripts/test-budget-baseline.json allows: condense
+# tests in the same PR, or raise the budget with
+# `uv run --no-sync python scripts/check_test_budget.py --update-baseline` and
+# state the net test delta and why in the PR body. Mirrors the CI
+# check-preflight step.
+check-test-budget:
+	uv run --no-sync python scripts/check_test_budget.py
+
 # Non-negotiable #6: no em-dashes in doctrine or dashboard copy. Ratchets a
 # per-file baseline (scripts/em-dash-baseline.json) so pre-existing debt is
-# frozen while any net-new em-dash fails. Mirrors the CI `em-dash-guard` job.
+# frozen while any net-new em-dash fails. Mirrors the em-dash step of the CI `guards` job.
 check-em-dashes:
 	python3 scripts/check-no-em-dashes.py
 
@@ -176,7 +185,7 @@ check-em-dashes:
 # the bodies validates clean. This compares bodies. A digest-keyed ratchet
 # (scripts/spec-overwrite-baseline.json) freezes today's debt; it re-fires the
 # moment an archive moves a baseline requirement under an unarchived block.
-# Mirrors the CI `spec-overwrite-guard` job.
+# Mirrors the spec-overwrite step of the CI `guards` job.
 check-spec-overwrites:
 	python3 scripts/check_spec_overwrites.py
 
@@ -191,8 +200,8 @@ check-openspec-strict:
 # markdown checkboxes only, so a `### N.` heading-style tasks.md reports
 # `Task status: No tasks`, cannot be incomplete, and archives unprompted -- and
 # that silence reads as evidence the tasks were done. Fails on any unarchived
-# change whose tasks.md the gate cannot see. Mirrors the CI
-# `countable-tasks-guard` job.
+# change whose tasks.md the gate cannot see. Mirrors the countable-tasks
+# step of the CI `guards` job.
 check-countable-tasks:
 	python3 scripts/check_countable_tasks.py
 
@@ -201,14 +210,30 @@ check-countable-tasks:
 # definition silently shadowed the earlier one for every caller. `ruff` stays
 # green -- F811 skips a redefinition whose earlier definition is used in
 # between, which is exactly the shape a merge produces. Scans the lint gate's
-# own scope and fails on a zero-file scan so it cannot go quiet. Mirrors the CI
-# `duplicate-name-guard` job.
+# own scope and fails on a zero-file scan so it cannot go quiet. Mirrors the duplicate-name
+# step of the CI `guards` job.
 check-duplicate-names:
 	python3 scripts/check_duplicate_toplevel_names.py
 
-check: lint check-for-update-joins check-ci-test-shards check-em-dashes check-spec-overwrites check-openspec-strict check-countable-tasks check-duplicate-names test
+# Every guard the CI `guards` job runs, locally, before you push (bu-r5mnn).
+# check-openspec-strict is skipped with a message when `openspec` is not on
+# PATH; everything else is a plain python3 script. The frontend-copy inventory
+# check regenerates the committed file and fails on any diff, exactly as CI
+# does, so run it on a clean worktree or expect the diff to be yours.
+check-guards: check-em-dashes check-spec-overwrites check-countable-tasks check-duplicate-names check-session-links
+	python3 scripts/check_archived_requirements_landed.py
+	python3 scripts/check_cited_requirements_resolve.py
+	python3 scripts/extract-frontend-copy.py
+	git diff --exit-code -- about/lay-and-land/frontend-copy-inventory.md
+	@if command -v openspec >/dev/null 2>&1; then \
+		$(MAKE) check-openspec-strict; \
+	else \
+		echo "check-guards: openspec not on PATH, skipping check-openspec-strict (CI runs it)"; \
+	fi
 
-# Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
+check: lint check-for-update-joins check-ci-test-shards check-test-budget check-guards test
+
+# Local dry run of the session-link step of the CI `guards` job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage
 # before you push. No PR title/body or review comments to check locally, so
 # this is a strict subset of what CI enforces — treat it as a pre-push sanity
