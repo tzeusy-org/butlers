@@ -212,6 +212,7 @@ tests/relationship/test_relationship_assert_fact_unit.py
 tests/relationship/test_relationship_lookup.py
 tests/scripts/test_backfill_entity_fact_observed_at.py
 tests/scripts/test_check_ci_test_shards.py
+tests/scripts/test_check_test_budget.py
 tests/scripts/test_combine_review_comment_sources.py
 tests/scripts/test_compose_frontend_dev_lockfile_guard.py
 tests/scripts/test_dockerfile_base_runtime_tools.py
