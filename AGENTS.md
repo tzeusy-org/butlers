@@ -303,20 +303,16 @@ Run this after creating a worktree:
 ./scripts/setup_worktree.sh
 ```
 
-**Verify the symlink actually resolves to a populated directory.** As of 2026-08-22 the main repo's
-`frontend/node_modules` on this machine is an EMPTY, root-owned directory, so the script happily
-creates a symlink to nothing and the frontend toolchain (tsc, vitest, knip) fails in the worktree
-with errors that look like missing source, not missing packages. `test -e` and `ln -s` both report
-success on this, which is why nothing catches it. Check the count, not the path:
+**The script detects a broken cache and falls back automatically.** If the main repo's
+`frontend/node_modules` exists but is empty (e.g. an empty root-owned directory left by a container
+mount, per bu-87osw) or otherwise unreadable, `test -e` and `ln -s` would both report success against
+it and silently produce a dead symlink. The script checks content, not just existence: on an empty
+source it prints a loud warning to stderr and runs a local `npm install` inside the worktree instead
+(gitignored, costs disk per worktree — this is the tradeoff for not propagating a dead link). If no
+`package.json` or `npm` is available to fall back with, it fails loudly with a non-zero exit instead
+of leaving a dead symlink in place.
 
-```bash
-ls -A frontend/node_modules | wc -l   # 0 means the symlink is dead; run npm install in the worktree
-```
-
-Filed as bu-87osw. Until it is fixed, a plain `npm install` inside the worktree is the working
-fallback (gitignored, costs disk per worktree).
-
-The script symlinks `frontend/node_modules` and silently skips if the main repo hasn't run `npm install` yet. It is safe to run multiple times (idempotent).
+The script symlinks `frontend/node_modules` and silently skips if the main repo hasn't run `npm install` yet. It is safe to run multiple times (idempotent) — a worktree that already has a real, populated `node_modules` from a previous fallback run is reused rather than reinstalled.
 
 ### Worktree `.venv` must be real, never a symlink (bu-1redj)
 
