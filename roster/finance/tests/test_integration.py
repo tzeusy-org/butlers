@@ -99,6 +99,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     payment_method    TEXT,
     account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
     source_message_id TEXT,
+    cancellation_url    TEXT,
+    notice_period_days  INTEGER
+                            CHECK (notice_period_days IS NULL OR notice_period_days >= 0),
+    cancel_by           DATE,
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()

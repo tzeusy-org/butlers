@@ -28,6 +28,15 @@ def _normalize_renewal_date(next_renewal: str | date) -> date:
     return date.fromisoformat(str(next_renewal))
 
 
+def _normalize_optional_date(value: str | date | None) -> date | None:
+    """Normalize an optional date value. Accepts ISO date strings, date objects, or None."""
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
 async def track_subscription(
     pool: asyncpg.Pool,
     service: str,
@@ -40,6 +49,9 @@ async def track_subscription(
     payment_method: str | None = None,
     account_id: str | uuid.UUID | None = None,
     source_message_id: str | None = None,
+    cancellation_url: str | None = None,
+    notice_period_days: int | None = None,
+    cancel_by: str | date | None = None,
     metadata: dict[str, Any] | None = None,
     *,
     _expected_signal_source: FinanceSignalSource | None = None,
@@ -74,6 +86,16 @@ async def track_subscription(
         UUID of linked financial account in finance.accounts.
     source_message_id:
         Source email or provider message ID for provenance.
+    cancellation_url:
+        URL where the subscription can be cancelled. Optional; may be
+        populated later by owner enrichment.
+    notice_period_days:
+        Number of days' notice the provider requires before cancellation
+        takes effect. Optional.
+    cancel_by:
+        Latest date by which cancellation must be initiated to avoid the
+        next renewal charge. Accepts ISO date strings (YYYY-MM-DD), date
+        objects, or None.
     metadata:
         Arbitrary JSON metadata for extended attributes.
 
@@ -88,6 +110,7 @@ async def track_subscription(
         raise ValueError(f"Invalid frequency {frequency!r}. Must be one of {_VALID_FREQUENCIES}")
 
     renewal_date = _normalize_renewal_date(next_renewal)
+    cancel_by_date = _normalize_optional_date(cancel_by)
     metadata_value = metadata_with_signal_source(metadata, _expected_signal_source)
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
 
@@ -103,17 +126,20 @@ async def track_subscription(
             """
             UPDATE subscriptions
             SET
-                amount            = $1,
-                currency          = $2,
-                next_renewal      = $3,
-                status            = $4,
-                auto_renew        = $5,
-                payment_method    = COALESCE($6, payment_method),
-                account_id        = COALESCE($7, account_id),
-                source_message_id = COALESCE($8, source_message_id),
-                metadata          = (metadata - 'expected_signal_source') || $9,
-                updated_at        = now()
-            WHERE id = $10
+                amount              = $1,
+                currency            = $2,
+                next_renewal        = $3,
+                status              = $4,
+                auto_renew          = $5,
+                payment_method      = COALESCE($6, payment_method),
+                account_id          = COALESCE($7, account_id),
+                source_message_id   = COALESCE($8, source_message_id),
+                cancellation_url    = COALESCE($9, cancellation_url),
+                notice_period_days  = COALESCE($10, notice_period_days),
+                cancel_by           = COALESCE($11, cancel_by),
+                metadata            = (metadata - 'expected_signal_source') || $12,
+                updated_at          = now()
+            WHERE id = $13
             RETURNING *
             """,
             amount,
@@ -124,6 +150,9 @@ async def track_subscription(
             payment_method,
             account_uuid,
             source_message_id,
+            cancellation_url,
+            notice_period_days,
+            cancel_by_date,
             metadata_value,
             existing["id"],
         )
@@ -132,9 +161,10 @@ async def track_subscription(
             """
             INSERT INTO subscriptions (
                 service, amount, currency, frequency, next_renewal, status,
-                auto_renew, payment_method, account_id, source_message_id, metadata
+                auto_renew, payment_method, account_id, source_message_id,
+                cancellation_url, notice_period_days, cancel_by, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
             """,
             service,
@@ -147,6 +177,9 @@ async def track_subscription(
             payment_method,
             account_uuid,
             source_message_id,
+            cancellation_url,
+            notice_period_days,
+            cancel_by_date,
             metadata_value,
         )
 

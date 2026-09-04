@@ -356,7 +356,8 @@ async def list_subscriptions(
 
     rows = await pool.fetch(
         f"SELECT id, service, amount, currency, frequency, next_renewal, status,"
-        f" auto_renew, payment_method, account_id, source_message_id, metadata,"
+        f" auto_renew, payment_method, account_id, source_message_id,"
+        f" cancellation_url, notice_period_days, cancel_by, metadata,"
         f" created_at, updated_at"
         f" FROM finance.subscriptions{where}"
         f" ORDER BY next_renewal ASC"
@@ -379,6 +380,9 @@ async def list_subscriptions(
             payment_method=r["payment_method"],
             account_id=str(r["account_id"]) if r["account_id"] else None,
             source_message_id=r["source_message_id"],
+            cancellation_url=r["cancellation_url"],
+            notice_period_days=r["notice_period_days"],
+            cancel_by=str(r["cancel_by"]) if r["cancel_by"] else None,
             metadata=sanitized_metadata(r["metadata"]),
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),

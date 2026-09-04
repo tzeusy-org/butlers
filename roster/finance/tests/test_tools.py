@@ -99,6 +99,76 @@ class TestTrackSubscription:
         assert result["source_message_id"] == "email-msg-001"
         assert result["metadata"]["plan"] == "premium"
 
+    async def test_create_with_cancellation_door_fields(self, pool):
+        """Cancellation door fields (URL, notice period, cancel-by) persist."""
+        from butlers.tools.finance import track_subscription
+
+        renewal = date.today() + timedelta(days=30)
+        cancel_by = renewal - timedelta(days=7)
+        result = await track_subscription(
+            pool=pool,
+            service="Netflix",
+            amount=15.49,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=renewal,
+            cancellation_url="https://netflix.com/cancelplan",
+            notice_period_days=7,
+            cancel_by=cancel_by,
+        )
+
+        assert result["cancellation_url"] == "https://netflix.com/cancelplan"
+        assert result["notice_period_days"] == 7
+        assert result["cancel_by"] == cancel_by
+
+    async def test_create_without_cancellation_door_fields_is_null_not_error(self, pool):
+        """Missing cancellation door metadata is a valid null state, not an error."""
+        from butlers.tools.finance import track_subscription
+
+        result = await track_subscription(
+            pool=pool,
+            service="Legacy Gym Membership",
+            amount=29.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=date.today() + timedelta(days=30),
+        )
+
+        assert result["cancellation_url"] is None
+        assert result["notice_period_days"] is None
+        assert result["cancel_by"] is None
+
+    async def test_update_preserves_cancellation_door_fields_when_omitted(self, pool):
+        """Re-upserting without door fields keeps the previously-set values (COALESCE)."""
+        from butlers.tools.finance import track_subscription
+
+        renewal_1 = date.today() + timedelta(days=30)
+        first = await track_subscription(
+            pool=pool,
+            service="Hulu",
+            amount=7.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=renewal_1,
+            cancellation_url="https://hulu.com/cancel",
+            notice_period_days=14,
+        )
+        assert first["cancellation_url"] == "https://hulu.com/cancel"
+
+        renewal_2 = date.today() + timedelta(days=31)
+        second = await track_subscription(
+            pool=pool,
+            service="Hulu",
+            amount=8.99,
+            currency="USD",
+            frequency="monthly",
+            next_renewal=renewal_2,
+        )
+
+        assert second["id"] == first["id"]
+        assert second["cancellation_url"] == "https://hulu.com/cancel"
+        assert second["notice_period_days"] == 14
+
     async def test_caller_metadata_cannot_assert_expected_signal_authority(self, pool):
         from butlers.tools.finance import track_subscription
 

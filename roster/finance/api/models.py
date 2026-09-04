@@ -48,6 +48,9 @@ class SubscriptionModel(BaseModel):
     payment_method: str | None = None
     account_id: str | None = None
     source_message_id: str | None = None
+    cancellation_url: str | None = None
+    notice_period_days: int | None = None
+    cancel_by: str | None = None
     metadata: dict = {}
     created_at: str
     updated_at: str

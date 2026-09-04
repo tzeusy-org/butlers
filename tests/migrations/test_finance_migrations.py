@@ -484,3 +484,135 @@ class TestTransactionDedupIndexCleanupMigration:
             "SELECT COUNT(*) FROM transactions WHERE merchant = 'Manual Merchant'"
         )
         assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# finance_013 — subscriptions.{cancellation_url,notice_period_days,cancel_by}
+# ---------------------------------------------------------------------------
+
+_MIGRATION_013 = _FINANCE_MIGRATIONS / "013_subscription_cancellation_door.py"
+
+
+@pytest.fixture
+async def subscriptions_pool(provisioned_postgres_pool):
+    """Pool with a minimal finance schema (accounts + subscriptions) at the
+    finance_001 state, for testing the additive finance_013 column migration.
+    """
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                institution TEXT NOT NULL,
+                type        TEXT NOT NULL
+                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
+                name        TEXT,
+                last_four   CHAR(4),
+                currency    CHAR(3) NOT NULL DEFAULT 'USD',
+                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                service           TEXT NOT NULL,
+                amount            NUMERIC(14, 2) NOT NULL,
+                currency          CHAR(3) NOT NULL,
+                frequency         TEXT NOT NULL
+                                      CHECK (frequency IN (
+                                          'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
+                                      )),
+                next_renewal      DATE NOT NULL,
+                status            TEXT NOT NULL
+                                      CHECK (status IN ('active', 'cancelled', 'paused')),
+                auto_renew        BOOLEAN NOT NULL DEFAULT true,
+                payment_method    TEXT,
+                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
+                source_message_id TEXT,
+                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        yield pool
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSubscriptionCancellationDoorMigration:
+    """Integration tests for finance_013: subscription cancellation door fields."""
+
+    @pytest.mark.integration
+    async def test_upgrade_adds_nullable_columns_defaulting_null(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        """After upgrade the three door columns exist, are nullable, have no
+        explicit default, and a bare INSERT leaves them NULL.
+        """
+        pool = subscriptions_pool
+        mod = _load_migration("finance_013", _MIGRATION_013)
+        await _apply(pool, mod, "upgrade")
+
+        cols = {
+            row["column_name"]: row
+            for row in await pool.fetch(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_name = 'subscriptions' "
+                "  AND column_name IN ('cancellation_url', 'notice_period_days', 'cancel_by')"
+            )
+        }
+        assert set(cols) == {"cancellation_url", "notice_period_days", "cancel_by"}
+        assert cols["cancellation_url"]["data_type"] == "text"
+        assert cols["notice_period_days"]["data_type"] == "integer"
+        assert cols["cancel_by"]["data_type"] == "date"
+        for col in cols.values():
+            assert col["is_nullable"] == "YES"
+            assert col["column_default"] is None
+
+        row = await pool.fetchrow(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('Netflix', 15.49, 'USD', 'monthly', '2026-10-01', 'active')
+            RETURNING cancellation_url, notice_period_days, cancel_by
+            """
+        )
+        assert row is not None
+        assert row["cancellation_url"] is None
+        assert row["notice_period_days"] is None
+        assert row["cancel_by"] is None
+
+    @pytest.mark.integration
+    async def test_upgrade_rejects_negative_notice_period(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        """notice_period_days must be non-negative when present."""
+        pool = subscriptions_pool
+        mod = _load_migration("finance_013", _MIGRATION_013)
+        await _apply(pool, mod, "upgrade")
+
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                """
+                INSERT INTO subscriptions (
+                    service, amount, currency, frequency, next_renewal, status,
+                    notice_period_days
+                )
+                VALUES ('Netflix', 15.49, 'USD', 'monthly', '2026-10-01', 'active', -1)
+                """
+            )
+
+    @pytest.mark.integration
+    async def test_downgrade_drops_columns(self, subscriptions_pool: asyncpg.Pool) -> None:
+        """After upgrade then downgrade, all three door columns are absent."""
+        pool = subscriptions_pool
+        mod = _load_migration("finance_013", _MIGRATION_013)
+        await _apply(pool, mod, "upgrade")
+        await _apply(pool, mod, "downgrade")
+
+        cols = await pool.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'subscriptions' "
+            "  AND column_name IN ('cancellation_url', 'notice_period_days', 'cancel_by')"
+        )
+        assert cols == []

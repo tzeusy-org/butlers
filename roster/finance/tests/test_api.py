@@ -113,6 +113,9 @@ def _sub_row(
     payment_method: str | None = None,
     account_id: Any = None,
     source_message_id: str | None = None,
+    cancellation_url: str | None = None,
+    notice_period_days: int | None = None,
+    cancel_by: Any = None,
     metadata: dict | None = None,
     created_at: Any = None,
     updated_at: Any = None,
@@ -129,6 +132,9 @@ def _sub_row(
         "payment_method": payment_method,
         "account_id": uuid.UUID(account_id) if account_id else None,
         "source_message_id": source_message_id,
+        "cancellation_url": cancellation_url,
+        "notice_period_days": notice_period_days,
+        "cancel_by": cancel_by,
         "metadata": metadata or {},
         "created_at": created_at or _NOW,
         "updated_at": updated_at or _NOW,
@@ -540,6 +546,48 @@ async def test_list_subscriptions_with_results():
     item = body["data"][0]
     for field in ("id", "service", "amount", "currency", "frequency", "next_renewal", "status"):
         assert field in item
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_cancellation_door_fields_roundtrip():
+    """GET /api/finance/subscriptions surfaces the cancellation door fields."""
+    rows = [
+        _sub_row(
+            service="Netflix",
+            cancellation_url="https://netflix.com/cancel",
+            notice_period_days=30,
+            cancel_by=_TODAY + timedelta(days=1),
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/subscriptions")
+
+    item = response.json()["data"][0]
+    assert item["cancellation_url"] == "https://netflix.com/cancel"
+    assert item["notice_period_days"] == 30
+    assert item["cancel_by"] == str(_TODAY + timedelta(days=1))
+
+
+@pytest.mark.asyncio
+async def test_list_subscriptions_cancellation_door_fields_missing_is_valid():
+    """A subscription with no cancellation door metadata renders nulls, not an error."""
+    rows = [_sub_row(service="Netflix")]
+    app, _ = _make_app(fetch_rows=rows, fetchval_return=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/subscriptions")
+
+    assert response.status_code == 200
+    item = response.json()["data"][0]
+    assert item["cancellation_url"] is None
+    assert item["notice_period_days"] is None
+    assert item["cancel_by"] is None
 
 
 @pytest.mark.asyncio
