@@ -46,6 +46,22 @@ def test_required_check_gate_rejects_unsatisfied_contexts(bucket: str) -> None:
     assert unsatisfied == [failing]
 
 
+@pytest.mark.parametrize("name", ["check", "guards"])
+def test_required_check_gate_rejects_skipped_unconditional_contexts(name: str) -> None:
+    skipped = _check(name, "skipping")
+    checks = [
+        _check("check", "pass"),
+        _check("guards", "pass"),
+        _check("frontend", "skipping"),
+    ]
+    checks[[check["name"] for check in checks].index(name)] = skipped
+
+    missing, unsatisfied = validator._classify_required_checks("tzeusy-org/butlers", checks)
+
+    assert missing == []
+    assert unsatisfied == [skipped]
+
+
 def test_required_check_gate_fails_closed_for_partial_butlers_policy() -> None:
     missing, unsatisfied = validator._classify_required_checks(
         "Tzeusy/butlers",

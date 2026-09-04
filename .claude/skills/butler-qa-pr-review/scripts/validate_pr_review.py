@@ -21,9 +21,9 @@ from session_link_guard import scan_sources  # noqa: E402
 
 _ACCEPTED_RE = re.compile(r"^Accepted in [0-9a-f]{7,40}\.\s*$", re.MULTILINE)
 _WONTFIX_RE = re.compile(r"^Wontfix\.\s*$", re.MULTILINE)
-_SATISFIED_REQUIRED_CHECK_BUCKETS = frozenset({"pass", "skipping"})
 _BUTLERS_REQUIRED_CHECKS = frozenset({"check", "guards", "frontend"})
 _BUTLERS_REPOSITORIES = frozenset({"tzeusy-org/butlers", "tzeusy/butlers"})
+_SKIPPABLE_REQUIRED_CHECKS = frozenset({"frontend"})
 
 
 def _is_terminal_reply(body: str) -> bool:
@@ -48,9 +48,12 @@ def _classify_required_checks(
     )
     reported_names = {str(check.get("name", "")) for check in checks}
     missing = sorted(required_names - reported_names)
-    unsatisfied = [
-        check for check in checks if check.get("bucket") not in _SATISFIED_REQUIRED_CHECK_BUCKETS
-    ]
+    unsatisfied = []
+    for check in checks:
+        name = str(check.get("name", ""))
+        bucket = check.get("bucket")
+        if bucket != "pass" and not (bucket == "skipping" and name in _SKIPPABLE_REQUIRED_CHECKS):
+            unsatisfied.append(check)
     return missing, unsatisfied
 
 
