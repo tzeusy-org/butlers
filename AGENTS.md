@@ -2204,17 +2204,19 @@ obvious field does not. `audit_grouping.py:435` builds `Issue.type` as
 similar-looking `group_key` (:394) is a `sha256[:16]` digest and never was a vector. Read the
 construction, not the assertion diff.
 
-### `scripts/emit_worker_report.py` deadlocks any worker that must not push
+### Coordinator mutation authority vs. worker push authority — do not conflate
 
-The script hard-requires a `Branch-Pushed: yes` header for every `completed-*` status. Under the
-beads-coordinator protocol the coordinator is the sole mutation authority and dispatched workers are
-forbidden to push, so a worker following its contract can never produce a valid report: the script
-rejects it, the worker has no other reporting channel wired up, and it goes **silent** rather than
-erroring visibly. From the coordinator's side this is indistinguishable from a worker that hung.
-
-Until that is fixed (`bu-1ajs6`), dispatch prompts must tell workers to skip the script and report
-via `SendMessage` instead. Four workers were lost to this before it was diagnosed, each one looking
-like a different incident.
+Under the beads-coordinator protocol the coordinator alone owns Beads/tracker lifecycle mutations
+(`bd create/update/dep/close`) — dispatched workers never call these. That is a *tracker* mutation
+authority, separate from *git* push authority: the canonical worker contract
+(`beads-worker/SKILL.md`) requires a worker to push its own `agent/<id>` branch (and open the PR, or
+push for a direct-merge candidate) as part of completing the assigned issue.
+`scripts/emit_worker_report.py`'s hard requirement of `Branch-Pushed: yes` for every `completed-*`
+status is therefore correct, not a bug. An earlier version of this note claimed dispatched workers
+were "forbidden to push" and that the script deadlocked them; that claim was investigated and
+disproven under `bu-1ajs6` (closed 2026-09-02) — it conflated tracker mutation authority with
+git/GitHub push authority. If a worker genuinely cannot push (auth/network/protected-branch policy),
+report `blocked-awaiting-coordinator` with the failing command, not a `completed-*` status.
 
 ### httpx logs every request URL at INFO, so a query parameter is a log leak
 
