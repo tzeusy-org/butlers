@@ -398,6 +398,13 @@ jobs:
         # duplicates, stale files, and zero-selected manifests.
         run: uv run python scripts/check_ci_test_shards.py
 
+      - name: Check test budget per lane
+        # Ratchet (bu-r5mnn): each lane's collected-test count must stay under
+        # scripts/test-budget-baseline.json. Growth past the headroom is fixed
+        # in the same PR by condensing, or raised deliberately with
+        # --update-baseline plus a stated net test delta in the PR body.
+        run: uv run python scripts/check_test_budget.py
+
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
         env:
