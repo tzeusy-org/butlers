@@ -711,8 +711,38 @@ def _estimate_monthly_runs(cron: str, *, reference: datetime = _CADENCE_ANCHOR) 
     return count / cycle_days * AVERAGE_MONTH_DAYS
 
 
+#: Deterministic error-marker classification for ``sessions_summary``'s
+#: ``by_error_marker`` breakdown. Pure substring/pattern matching against the
+#: same guardrail/timeout signatures the spawner and switchboard pipeline
+#: already emit (see ``spawner_guardrails.py`` and
+#: ``qa/sources/session_records.py::_is_switchboard_classification_timeout``)
+#: — no LLM judgment, evaluated in SQL at query time.
+#:
+#: The classification_timeout branch mirrors
+#: ``_is_switchboard_classification_timeout`` exactly: a plain switchboard
+#: timeout is not enough, since ``spawner.py`` emits the identical
+#: "Session timed out after {N}s (model=..., butler=...)" message for every
+#: session on a butler, not just classification dispatch. Classification
+#: sessions specifically use a "mini" model with a <=60s cap, so both must
+#: hold or a genuine (non-classification) switchboard timeout — e.g. a
+#: route-dispatch session — would be misclassified.
+_ERROR_MARKER_CASE_SQL = """
+    CASE
+        WHEN error ILIKE '%degenerate_tool_loop%' THEN 'degenerate_tool_loop'
+        WHEN error ILIKE '%tool_call_budget_exceeded%' THEN 'tool_call_budget_exceeded'
+        WHEN error ILIKE '%token_budget_exceeded%' THEN 'token_budget_exceeded'
+        WHEN error ILIKE '%TimeoutError%'
+            AND error ILIKE '%butler=switchboard%'
+            AND model ILIKE '%mini%'
+            AND substring(error from 'Session timed out after (\\d+)s')::bigint <= 60
+            THEN 'classification_timeout'
+        ELSE 'other'
+    END
+"""
+
+
 async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
-    """Return aggregate session/token stats grouped by model for a period."""
+    """Return aggregate session/token/outcome stats grouped by model for a period."""
     if period not in _SUMMARY_PERIODS:
         raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
 
@@ -724,7 +754,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
             COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
             COALESCE(SUM(cached_input_tokens), 0)::bigint AS total_cached_input_tokens,
-            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens,
+            COUNT(*) FILTER (WHERE success IS TRUE)::bigint AS succeeded,
+            COUNT(*) FILTER (WHERE success IS FALSE)::bigint AS failed
         FROM sessions
         WHERE started_at >= $1
         """,
@@ -756,6 +788,20 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             "cache_creation_tokens": int(row["cache_creation_tokens"]),
         }
 
+    by_marker_rows = await pool.fetch(
+        f"""
+        SELECT {_ERROR_MARKER_CASE_SQL} AS marker, COUNT(*)::bigint AS count
+        FROM sessions
+        WHERE started_at >= $1 AND success IS FALSE
+        GROUP BY marker
+        ORDER BY marker
+        """,
+        since,
+    )
+    by_error_marker: dict[str, int] = {
+        str(row["marker"]): int(row["count"]) for row in by_marker_rows
+    }
+
     if totals is None:
         return {
             "period": period,
@@ -764,6 +810,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             "total_output_tokens": 0,
             "total_cached_input_tokens": 0,
             "total_cache_creation_tokens": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "by_error_marker": by_error_marker,
             "by_model": by_model,
         }
 
@@ -774,6 +823,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         "total_output_tokens": int(totals["total_output_tokens"]),
         "total_cached_input_tokens": int(totals["total_cached_input_tokens"]),
         "total_cache_creation_tokens": int(totals["total_cache_creation_tokens"]),
+        "succeeded": int(totals["succeeded"]),
+        "failed": int(totals["failed"]),
+        "by_error_marker": by_error_marker,
         "by_model": by_model,
     }
 

@@ -228,10 +228,105 @@ async def test_sessions_list_and_summary(pool):
     summary = await sessions_summary(pool, period="7d")
     assert summary["total_sessions"] >= 3
     assert "by_model" in summary
+    # A clean run of successful sessions produces zero failures and an empty
+    # error-marker breakdown (bu-8cdl1.9 slice 1).
+    assert summary["succeeded"] >= 3
+    assert summary["failed"] == 0
+    assert summary["by_error_marker"] == {}
 
     # Invalid period raises
     with pytest.raises((ValueError, Exception)):
         await sessions_summary(pool, period="invalid_period")
+
+
+@pytest.mark.pg_clock
+@_asyncio_session
+async def test_sessions_summary_error_marker_breakdown(pool):
+    """A guardrail-marker failure increments failed + by_error_marker deterministically."""
+    from butlers.core.sessions import session_complete, session_create, sessions_summary
+
+    guardrail_sid = await session_create(
+        pool,
+        prompt="task guardrail",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        guardrail_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: 5 consecutive identical calls to foo",
+    )
+
+    other_sid = await session_create(
+        pool,
+        prompt="task other",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+        model="claude-3",
+    )
+    await session_complete(
+        pool,
+        other_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="ValueError: something unrelated broke",
+    )
+
+    # Genuine switchboard classification timeout: "mini" model, <=60s bound.
+    classification_sid = await session_create(
+        pool,
+        prompt="classify inbound message",
+        trigger_source="classification",
+        request_id=str(uuid.uuid4()),
+        model="claude-haiku-4-5-mini",
+    )
+    await session_complete(
+        pool,
+        classification_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="TimeoutError: Session timed out after 45s (model=claude-haiku-4-5-mini, "
+        "butler=switchboard)",
+    )
+
+    # A non-classification switchboard timeout (e.g. a route-dispatch session)
+    # emits the identical message template but with a non-"mini" model. This
+    # must NOT be misclassified as classification_timeout (bu-ixqo6 review
+    # finding on PR #4004).
+    route_sid = await session_create(
+        pool,
+        prompt="dispatch to butler",
+        trigger_source="route",
+        request_id=str(uuid.uuid4()),
+        model="claude-sonnet-4-6",
+    )
+    await session_complete(
+        pool,
+        route_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=100,
+        success=False,
+        error="TimeoutError: Session timed out after 30s (model=claude-sonnet-4-6, "
+        "butler=switchboard)",
+    )
+
+    summary = await sessions_summary(pool, period="7d")
+    assert summary["failed"] >= 4
+    assert summary["by_error_marker"]["degenerate_tool_loop"] == 1
+    assert summary["by_error_marker"]["classification_timeout"] == 1
+    # ValueError plus the non-classification switchboard timeout both bucket
+    # under "other".
+    assert summary["by_error_marker"]["other"] == 2
 
 
 # ---------------------------------------------------------------------------
