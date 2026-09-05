@@ -69,8 +69,10 @@ TERMINAL_REACTION_STATUSES = frozenset({"acted", "ignored", "deferred", "failed"
 REPORTABLE_REACTION_STATUSES = frozenset({"acted", "ignored", "deferred", "failed"})
 
 #: Closed vocabulary of evidence reference kinds, each naming a subsystem a
-#: reader can actually open.
-EVIDENCE_KINDS = frozenset({"task", "session", "event", "delegation", "memory"})
+#: reader can actually open. ``case`` (bu-8cdl1.7 Slice 3) points at a
+#: ``public.fleet_cases`` row -- a reaction can cite the fleet case it filed
+#: evidence into as what it did about a multi-butler situation.
+EVIDENCE_KINDS = frozenset({"task", "session", "event", "delegation", "memory", "case"})
 
 _EVIDENCE_KEYS = frozenset({"kind", "ref", "label"})
 
