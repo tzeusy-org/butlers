@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 from butlers.testing import scoped_runner
-from butlers.testing.scoped_runner import ScopedTestPlan, plan_worktree_tests
+from butlers.testing.scoped_runner import (
+    FULL_SUITE_FALLBACK_ALLOWLIST,
+    ScopedTestPlan,
+    plan_worktree_tests,
+)
 from butlers.testing.source_test_map import FULL_SUITE
 
 pytestmark = pytest.mark.unit
@@ -124,6 +128,31 @@ def test_full_scope_uses_the_requested_worktree_testpaths(tmp_path: Path) -> Non
 
     assert plan.scope == "full"
     assert plan.test_paths == ["custom_tests/"]
+
+
+def test_default_allowlist_scopes_a_direct_e2e_test_edit(tmp_path: Path) -> None:
+    repo, base = _repo(tmp_path)
+    _write(repo, "tests/e2e/test_new.py", "def test_new():\n    assert True\n")
+
+    plan = plan_worktree_tests(base, repo_dir=repo)
+
+    assert plan.scope == "scoped"
+    assert plan.test_paths == ["tests/e2e/test_new.py"]
+
+
+def test_custom_fallback_allowlist_escalates_a_path_the_default_allowlist_ignores(
+    tmp_path: Path,
+) -> None:
+    repo, base = _repo(tmp_path)
+    _write(repo, "tests/e2e/test_new.py", "def test_new():\n    assert True\n")
+    widened_allowlist = FULL_SUITE_FALLBACK_ALLOWLIST + ("tests/e2e/",)
+
+    plan = plan_worktree_tests(base, repo_dir=repo, fallback_allowlist=widened_allowlist)
+
+    assert plan.scope == "full"
+    assert plan.test_paths == FULL_SUITE
+    assert "tests/e2e/test_new.py" in plan.reason
+    assert "'tests/e2e/'" in plan.reason
 
 
 def test_cli_main_is_plan_only_and_never_calls_legacy_runner(

@@ -88,6 +88,54 @@ jobs:
               handle.write(f"frontend={str(frontend).lower()}\n")
           PY
 
+  plan:
+    # Affected-test lane planner (bu-v28ho, follow-up to bu-r5mnn). Computes
+    # whether this PR's diff can be safely scoped to only the tests
+    # `butlers.testing.scoped_runner` maps to the changed files, via
+    # `scripts/ci_test_plan.py`. Runs only for a pull_request whose diff
+    # already reached beyond the docs filter (see `changes`); merge_group and
+    # push:main are untouched by this job and keep running (or skipping, per
+    # their own existing rules) the full shard matrix. Any planner
+    # uncertainty -- an escalation trigger, an empty plan, or a plan reaching
+    # into tests/e2e/ -- reports mode=full, which check-unit-*/
+    # check-integration-* treat exactly like today: this job only ever
+    # recommends narrowing FROM the existing full-matrix default, never
+    # widens or replaces it on its own say-so. See
+    # about/craft-and-care/testing-and-verification.md for the measured
+    # planner precision that justified shipping this lane.
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true'
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      test_paths: ${{ steps.plan.outputs.test_paths }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Plan affected tests
+        id: plan
+        env:
+          # The base branch's commit SHA at trigger time, not the symbolic
+          # `origin/<branch>` ref: precise even if the base branch moves
+          # again before this job finishes, and it needs no assumption about
+          # which remote-tracking refs `fetch-depth: 0` populated.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: uv run python scripts/ci_test_plan.py --base "$BASE_SHA"
+
   guards:
     # Every fast, dependency-free gate in one job (bu-r5mnn): one checkout, one
     # Python, one Node. The nine former jobs each paid their own runner spin-up
@@ -504,11 +552,23 @@ jobs:
 
   check-unit-1:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -581,11 +641,23 @@ jobs:
 
   check-unit-2:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -658,11 +730,23 @@ jobs:
 
   check-unit-3:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -735,11 +819,23 @@ jobs:
 
   check-unit-4:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -812,11 +908,23 @@ jobs:
 
   check-unit-5:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -889,11 +997,23 @@ jobs:
 
   check-integration-1:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -999,11 +1119,23 @@ jobs:
 
   check-integration-2:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -1109,11 +1241,23 @@ jobs:
 
   check-integration-3:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -1219,11 +1363,23 @@ jobs:
 
   check-integration-4:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -1328,11 +1484,23 @@ jobs:
 
   check-integration-5:
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [changes, plan]
     # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+    # docs filter (fail-closed, see `changes`) and the affected-test planner
+    # (bu-v28ho) did not select a scoped plan -- a scoped plan means
+    # check-affected is this shard's evidence instead. push:main: skipped by
+    # design, the merge queue already validated this exact tree.
+    # `plan` is conditionally skipped (it only runs on a backend-touching
+    # pull_request), and GitHub Actions auto-skips a job whose `needs` were
+    # skipped/failed UNLESS the job's `if:` uses always() -- a plain boolean
+    # `if:` here would never even be evaluated on merge_group, silently
+    # skipping every shard there. `always()` opts out of that implicit gate,
+    # so `needs.changes.result == 'success'` re-implements the "changes must
+    # have succeeded" half of it manually. Deliberately no equivalent check
+    # on `plan`: a plan that failed (as opposed to being cleanly skipped)
+    # must still fall through to the full matrix, which `mode != 'scoped'`
+    # already guarantees since a failed/skipped plan's output is empty.
+    if: always() && needs.changes.result == 'success' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' && needs.plan.outputs.mode != 'scoped'))
 
     services:
       postgres:
@@ -1435,17 +1603,103 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  check-affected:
+    # Affected-test lane (bu-v28ho): the `plan` job's evidence when it
+    # selected a scoped plan. Runs the planner-selected test paths directly
+    # instead of the full ten-shard matrix. Not part of the coverage-combine
+    # pipeline in `check` -- this lane trades combined coverage for wall
+    # time on the PRs where the planner's selection is precise, and the
+    # merge queue's merge_group run still exercises every shard with
+    # coverage before anything lands on main.
+    runs-on: ubuntu-latest
+    needs: [changes, plan]
+    # `plan` is conditionally skipped, so this job's `if:` must use always()
+    # for the same reason the ten shards do (see their comment): a plain
+    # boolean `if:` here would never even be evaluated when `plan` was
+    # skipped or failed, and would happen to still be correct today only
+    # because `plan` cannot succeed without `changes` having succeeded first
+    # -- a chain of implication too fragile to rely on silently.
+    if: always() && needs.changes.result == 'success' && github.event_name == 'pull_request' && needs.plan.outputs.mode == 'scoped'
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Affected tests (scoped plan)
+        env:
+          TEST_PATHS_JSON: ${{ needs.plan.outputs.test_paths }}
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
+          # The scoped selection may include integration/db-marked tests
+          # (testcontainers), same as the check-integration-* shards.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: |
+          mkdir -p "$TEST_EVIDENCE_DIR"
+          mapfile -t TEST_PATHS < <(python3 -c "import json, os; print('\n'.join(json.loads(os.environ['TEST_PATHS_JSON'])))")
+          echo "Running affected-test lane over: ${TEST_PATHS[*]}"
+          uv run pytest "${TEST_PATHS[@]}" -q --tb=short -n auto --dist loadfile \
+            --junitxml="$TEST_EVIDENCE_DIR/raw-junit.xml"
+
+      - name: Prepare affected-test duration evidence
+        if: always()
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/affected/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/affected/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/affected/top-durations.txt" \
+            --limit 25
+
+      - name: Upload affected-test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-affected-test-evidence
+          path: |
+            ${{ runner.temp }}/ci-artifacts/affected/junit.xml
+            ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+
   check:
     # Do not allow a green historic check status when a preflight or any shard
     # failed, was skipped for an unexpected reason, or was cancelled. `always()`
     # is deliberate: a skipped historical check can read as green to branch
-    # protection after a cancelled prerequisite. Two skips are accepted, and
-    # only these two: (a) a pull_request whose `changes` job succeeded and
-    # classified the diff as docs-only (`backend == 'false'`), and (b) a
-    # push to main, where the merge queue's merge_group run already validated
-    # this exact tree. Everything else that is not `success` fails the fan-in.
-    # Coverage aggregation and the badge only run when the shards actually ran.
-    needs: [changes, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5]
+    # protection after a cancelled prerequisite. Three skips are accepted, and
+    # only these three: (a) a pull_request whose `changes` job succeeded and
+    # classified the diff as docs-only (`backend == 'false'`); (b) a push to
+    # main, where the merge queue's merge_group run already validated this
+    # exact tree; and (c) a pull_request where the affected-test planner
+    # (bu-v28ho) selected a scoped plan, in which case `check-affected` is
+    # required to be the shards' evidence instead. Everything else that is
+    # not `success` fails the fan-in. Coverage aggregation and the badge only
+    # run when the ten-shard matrix actually ran.
+    needs: [changes, plan, check-preflight, check-unit-1, check-unit-2, check-unit-3, check-unit-4, check-unit-5, check-integration-1, check-integration-2, check-integration-3, check-integration-4, check-integration-5, check-affected]
     if: ${{ always() }}
     runs-on: ubuntu-latest
 
@@ -1456,6 +1710,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHANGES_BACKEND: ${{ needs.changes.outputs.backend }}
+          PLAN_MODE: ${{ needs.plan.outputs.mode }}
           CHECK_PREFLIGHT_RESULT: ${{ needs.check-preflight.result }}
           CHECK_UNIT_1_RESULT: ${{ needs.check-unit-1.result }}
           CHECK_UNIT_2_RESULT: ${{ needs.check-unit-2.result }}
@@ -1467,15 +1722,21 @@ jobs:
           CHECK_INTEGRATION_3_RESULT: ${{ needs.check-integration-3.result }}
           CHECK_INTEGRATION_4_RESULT: ${{ needs.check-integration-4.result }}
           CHECK_INTEGRATION_5_RESULT: ${{ needs.check-integration-5.result }}
+          CHECK_AFFECTED_RESULT: ${{ needs.check-affected.result }}
         run: |
           skip_allowed=0
           skip_reason=""
+          require_check_affected=0
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_RESULT" = "success" ] && [ "$CHANGES_BACKEND" = "false" ]; then
             skip_allowed=1
             skip_reason="docs-only pull request: backend shards skipped by the path filter"
           elif [ "$EVENT_NAME" = "push" ]; then
             skip_allowed=1
             skip_reason="push to main: backend shards skipped by design, the merge queue validated this tree"
+          elif [ "$EVENT_NAME" = "pull_request" ] && [ "$CHANGES_BACKEND" = "true" ] && [ "$PLAN_MODE" = "scoped" ]; then
+            skip_allowed=1
+            require_check_affected=1
+            skip_reason="affected-test lane selected a scoped plan: heavy shards skipped, check-affected is the evidence"
           fi
 
           failed=0
@@ -1514,6 +1775,33 @@ jobs:
             echo "::error::inconsistent shard state: some shards ran and some were skipped"
             failed=1
           fi
+          if [ "$ran" -eq 1 ] && [ "$require_check_affected" -eq 1 ]; then
+            echo "::error::heavy shards ran but the plan selected a scoped mode; inconsistent state"
+            failed=1
+          fi
+
+          # check-affected has the inverse requirement: required exactly when
+          # the plan selected scoped mode, skipped every other time (docs-only,
+          # push:main, merge_group, or a full/escalated plan).
+          case "$CHECK_AFFECTED_RESULT" in
+            success)
+              if [ "$require_check_affected" -ne 1 ]; then
+                echo "::error::check-affected=success but this event/plan did not select the scoped lane"
+                failed=1
+              fi
+              ;;
+            skipped)
+              if [ "$require_check_affected" -eq 1 ]; then
+                echo "::error::check-affected=skipped but the plan selected a scoped mode"
+                failed=1
+              fi
+              ;;
+            *)
+              echo "::error::check-affected=$CHECK_AFFECTED_RESULT"
+              failed=1
+              ;;
+          esac
+
           if [ "$skipped" -eq 1 ] && [ "$failed" -eq 0 ]; then
             echo "::notice::$skip_reason"
           fi

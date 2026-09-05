@@ -116,14 +116,23 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    narrower: the `changes` job classifies the diff fail-closed, and a
    docs/spec-only PR skips the backend shards and frontend jobs on purpose,
    while `push` to `main` skips the shards because the queue already validated
-   that tree. Do not rebase a clean PR onto `main` to "refresh" it; the queue
-   does that validation. `check-preflight` also runs
-   `scripts/check_test_budget.py`, a per-lane collected-test budget
-   (`scripts/test-budget-baseline.json`): a PR that pushes a lane over budget
-   condenses tests in the same PR, or raises the budget with
-   `--update-baseline` and states the net test delta (`Tests: +a ~b -c`) and
-   why in the PR body. `make check-guards` runs every `guards` step locally
-   before you push.
+   that tree. On a backend-touching PR, a third narrowing can apply: the
+   `plan` job (`scripts/ci_test_plan.py`, bu-v28ho) runs
+   `butlers.testing.scoped_runner` against the diff, and when it returns a
+   clean scoped plan, `check-affected` runs only those test paths instead of
+   the ten-shard matrix. Any planner uncertainty (an escalation trigger, an
+   empty plan, or a plan reaching into `tests/e2e/`) reports `mode=full` and
+   the ten shards run exactly as before -- this lane only ever narrows away
+   from the existing default, never replaces it on its own say-so. Measured
+   precision and the wall-time effect are recorded in
+   `about/craft-and-care/testing-and-verification.md`. Do not rebase a clean
+   PR onto `main` to "refresh" it; the queue does that validation.
+   `check-preflight` also runs `scripts/check_test_budget.py`, a per-lane
+   collected-test budget (`scripts/test-budget-baseline.json`): a PR that
+   pushes a lane over budget condenses tests in the same PR, or raises the
+   budget with `--update-baseline` and states the net test delta
+   (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
+   `guards` step locally before you push.
 
 ### Scope names are not interchangeable
 
