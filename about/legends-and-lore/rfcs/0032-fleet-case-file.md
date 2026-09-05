@@ -1,6 +1,7 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slices 1-3 landed — schema, read API, contribution tools)
+**Status:** Draft (Slices 1-4 landed — schema, read API, contribution tools,
+situation-scoped attention)
 **Date:** 2026-09-05
 
 ## Context
@@ -87,7 +88,7 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; Slices 1-3 have landed.
+This RFC is written for the whole feature; Slices 1-4 have landed.
 
 - **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
@@ -102,8 +103,17 @@ This RFC is written for the whole feature; Slices 1-3 have landed.
   `fleet_cases` core group). Adds `case` to `EVIDENCE_KINDS`. Still no broker
   wiring — the insight broker does not call these tools yet — and no
   dashboard write surface.
-- **S4:** situation-scoped attention — one urgent bypass per case per
-  quiet-hours window, keyed by case rather than by candidate.
+- **S4 (landed):** situation-scoped attention — one urgent bypass per case
+  per quiet-hours window, keyed by case rather than by candidate
+  (`fleet_cases.evaluate_case_attention`). Any number of
+  `propose_case_posture`/`contribute_case_evidence` calls against the same
+  `correlation_key` while a case is `posture='urgent'` collapse to at most one
+  recorded bypass (a `public.attention_ledger` row, `dedup_key=` the case's
+  correlation key) per quiet-hours window; outside quiet hours, or once the
+  case steps down from urgent or closes, there is nothing to bypass. Still no
+  broker wiring — the insight broker's own per-candidate bypass is untouched;
+  this is the case-scoped primitive a later slice's three-ledger binding
+  (S7) can connect it to.
 - **S5:** lapse sweep — may only transition a case to `closed` with
   `outcome = 'lapsed'`; never resurrects.
 - **S6:** backfill — creates only `closed`/`lapsed` historical cases from
