@@ -186,6 +186,18 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # conversation_recall above.
         "entity_graph_walk",
         "entity_graph_path",
+        # bu-8cdl1.7 Slice 3: fleet case file contribution tools (RFC 0032).
+        # Registered fleet-wide for every butler type, including STAFFER
+        # (Switchboard is the sole write authority for open_case/
+        # propose_case_posture/close_case and needs them on its own daemon to
+        # perform writes forwarded from other butlers) — unlike delegate_*/
+        # publish_event above, this group has no ButlerType.STAFFER exclusion.
+        "find_open_case",
+        "open_case",
+        "contribute_case_evidence",
+        "propose_case_posture",
+        "close_case",
+        "read_case",
     }
 )
 
