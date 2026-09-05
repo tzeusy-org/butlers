@@ -14,13 +14,13 @@ Detail belongs in the destinations below — add it there, not here.
 | Beads workflow in depth: worktrees, session protocol, commands | `AGENTS.md` (§ Beads Workflow Integration), `bd prime` |
 | WHY (scope, non-negotiables) · WHAT (specs) · HOW (RFCs) · WHERE (topology) · engineering bar | `doctrine` skill — routes to one pillar navigator under `about/` or `openspec/` |
 | Architecture / runtime / modules / connectors reference | `docs/index.md` |
-| Adding a butler, module, or connector | `adding-butlers-to-roster`, `adding-connectors-and-modules` skills |
+| Adding a butler, module, or connector | `butlers-development` skill → `adding-butlers-to-roster` / `adding-connectors-and-modules` subskills |
 | Dashboard API conventions (mount boundary, cursor pagination, degraded envelopes) | `docs/api_and_protocols/response-conventions.md` |
 | Model / runtime / session-timeout config ownership (catalog vs `runtime_config`) | `docs/runtime/model-routing.md` |
 | Identity & entity resolution (`public.entities`, `relationship.entity_facts`, `notify()`) | `docs/concepts/identity-model.md` |
 | Butler daemon internals, runtime config seeding | `docs/architecture/butler-daemon.md`, `docs/concepts/butler-lifecycle.md` |
 | Memory subsystem design | `docs/modules/memory.md` |
-| Debugging a dev-stack session/routing failure | `butler-dev-debug` skill |
+| Debugging a dev-stack session/routing failure | `butlers-tooling` skill → `butler-dev-debug` subskill |
 
 ## Repo Root Discipline (NON-NEGOTIABLE)
 

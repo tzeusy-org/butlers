@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 SKILL_SCRIPTS = (
-    Path(__file__).resolve().parents[2] / ".claude" / "skills" / "butler-qa-pr-review" / "scripts"
+    Path(__file__).resolve().parents[2]
+    / ".claude"
+    / "skills"
+    / "butlers-tooling"
+    / "subskills"
+    / "butler-qa-pr-review"
+    / "scripts"
 )
 sys.path.insert(0, str(SKILL_SCRIPTS))
 import validate_pr_review as validator  # noqa: E402
