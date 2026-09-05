@@ -14,6 +14,7 @@ import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
 import { type EventBusHealth } from '../hooks/use-event-stream'
 import { EventBusProvider, useEventBus } from '../lib/event-bus'
+import { type ClientLinkStatus, useClientLink } from '../hooks/use-client-link'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
 
@@ -65,7 +66,12 @@ function RootLayoutInner() {
 
   // `status` is threaded down into PageHeader so the shell's Live indicator
   // reflects actual socket health.
-  const { health: eventBusHealth } = useEventBus()
+  const { health: eventBusHealth, lastEventAt } = useEventBus()
+
+  // This browser's own network link (bu-8cdl1.13), separate from fleet
+  // health above -- lets the shell tell a client-side connection drop apart
+  // from an actual fleet outage instead of reporting both as "offline".
+  const { status: clientLinkStatus } = useClientLink()
 
   // Announce stream-state edges only after the first valid envelope has made
   // the stream healthy. Before then, down -> late is the ordinary cold-start
@@ -79,11 +85,32 @@ function RootLayoutInner() {
       prevEdgeRef.current !== null &&
       prevEdgeRef.current !== edge
     ) {
-      announce(STREAM_EDGE_LABEL[edge])
+      // A client-side network loss drops this socket exactly like a real
+      // fleet outage does. Blaming the fleet for the owner's own dropped
+      // LTE link would be dishonest -- the dedicated client-link effect
+      // below announces that edge instead (bu-8cdl1.13).
+      const isClientCaused = edge === 'down' && clientLinkStatus !== 'online'
+      if (!isClientCaused) announce(STREAM_EDGE_LABEL[edge])
     }
     if (edge === 'connected') hasEstablishedStreamRef.current = true
     prevEdgeRef.current = edge
-  }, [eventBusHealth])
+  }, [eventBusHealth, clientLinkStatus])
+
+  // Client-link edges get their own honest announcement. Only the drop is
+  // announced -- "reconnect: silent recovery" (bu-8cdl1.13) means the return
+  // to "online" stays quiet, matching how the fleet-edge effect above never
+  // announced the ordinary cold-start handshake either.
+  const prevClientLinkRef = useRef<ClientLinkStatus | null>(null)
+  useEffect(() => {
+    if (
+      prevClientLinkRef.current !== null &&
+      prevClientLinkRef.current !== clientLinkStatus &&
+      clientLinkStatus === 'offline'
+    ) {
+      announce('Your connection is offline')
+    }
+    prevClientLinkRef.current = clientLinkStatus
+  }, [clientLinkStatus])
 
   return (
     <BreadcrumbsControlProvider>
@@ -106,7 +133,15 @@ function RootLayoutInner() {
             >
               Skip to main content
             </a>
-            <Shell header={<PageHeader liveStatus={eventBusHealth} />}>
+            <Shell
+              header={
+                <PageHeader
+                  liveStatus={eventBusHealth}
+                  clientLink={clientLinkStatus}
+                  lastEventAt={lastEventAt}
+                />
+              }
+            >
               <ErrorBoundary>
                 <Outlet />
               </ErrorBoundary>

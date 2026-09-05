@@ -2943,6 +2943,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/layout/LiveIndicator.tsx`
 
+- Your device lost its network connection.
+- Your connection is reconnecting.
 - Fleet event stream: {}
 
 ## `frontend/src/components/layout/PageHeader.tsx`
@@ -4182,4 +4184,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3278*
+*Total strings: 3280*
