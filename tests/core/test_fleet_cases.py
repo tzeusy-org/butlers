@@ -1,15 +1,17 @@
-"""Unit tests for butlers.core.fleet_cases (bu-8cdl1.7 Slice 3, RFC 0032).
+"""Unit tests for butlers.core.fleet_cases (bu-8cdl1.7 Slices 3-6, RFC 0032).
 
 Mocked-pool style mirroring tests/core/test_domain_event_reactions.py: this
 module's job is translating asyncpg constraint outcomes (UniqueViolation,
 ForeignKeyViolation, a `WHERE ... RETURNING` miss) into typed
 FleetCaseError messages or idempotent results, not re-proving the
 constraints themselves -- those are already covered against real Postgres in
-tests/migrations/test_fleet_case_file_migration.py.
+tests/migrations/test_fleet_case_file_migration.py and (for Slice 6's
+backfill) tests/integration/test_fleet_case_contribution_roundtrip.py.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -18,11 +20,15 @@ import pytest
 
 import butlers.core.fleet_cases as fleet_cases_module
 from butlers.core.fleet_cases import (
+    BACKFILL_CORRELATION_KEY_PREFIX,
     CASE_POSTURES,
     CASE_STATES,
+    DEFAULT_BACKFILL_OUTCOME,
     DEFAULT_LAPSE_STALENESS_WINDOW,
     LAPSE_ELIGIBLE_POSTURES,
     FleetCaseError,
+    backfill_from_owner_conditions,
+    backfill_historical_case,
     case_attention_dedup_key,
     close_case,
     contribute_evidence,
@@ -461,3 +467,223 @@ class TestRunLapseSweep:
         result = await run_lapse_sweep(pool, now=self._NOW)
 
         assert result == {"lapsed_case_ids": [_CASE_ID], "lapsed_count": 1}
+
+
+class TestBackfillHistoricalCase:
+    """RFC 0032 Slice 6's single write path. Every backfill source must go
+    through this function -- these tests pin that its SQL text cannot write
+    anything but a closed row, regardless of what a caller passes it."""
+
+    _OPENED = datetime(2026, 1, 1, tzinfo=UTC)
+    _CLOSED = datetime(2026, 1, 10, tzinfo=UTC)
+
+    async def test_rejects_blank_correlation_key(self) -> None:
+        with pytest.raises(FleetCaseError, match="correlation_key"):
+            await backfill_historical_case(
+                _pool(),
+                correlation_key="   ",
+                outcome="resolved",
+                opened_at=self._OPENED,
+                closed_at=self._CLOSED,
+            )
+
+    async def test_rejects_blank_outcome(self) -> None:
+        with pytest.raises(FleetCaseError, match="outcome"):
+            await backfill_historical_case(
+                _pool(),
+                correlation_key="backfill:owner_condition:finance:bill-overdue:x:1",
+                outcome="",
+                opened_at=self._OPENED,
+                closed_at=self._CLOSED,
+            )
+
+    async def test_rejects_closed_at_before_opened_at(self) -> None:
+        with pytest.raises(FleetCaseError, match="precedes"):
+            await backfill_historical_case(
+                _pool(),
+                correlation_key="backfill:owner_condition:finance:bill-overdue:x:1",
+                outcome="resolved",
+                opened_at=self._CLOSED,
+                closed_at=self._OPENED,
+            )
+
+    async def test_insert_sql_hard_codes_closed_state_and_no_other_state_literal(self) -> None:
+        """Requirement (1): the backfill only ever writes state=closed rows.
+
+        Pinned at the SQL-text level: 'closed' is the only CASE_STATES value
+        that appears anywhere in the statement -- there is no code path, no
+        parameter, and no branch that could substitute 'open', 'watching', or
+        'closing' for it."""
+        row = {
+            **_CASE_ROW,
+            "correlation_key": "backfill:owner_condition:finance:bill-overdue:x:1",
+            "state": "closed",
+            "outcome": "resolved",
+            "opened_at": self._OPENED,
+            "closed_at": self._CLOSED,
+        }
+        pool = _pool(fetchrow=row)
+
+        result = await backfill_historical_case(
+            pool,
+            correlation_key=row["correlation_key"],
+            outcome="resolved",
+            opened_at=self._OPENED,
+            closed_at=self._CLOSED,
+        )
+
+        assert result == row
+        sql, correlation_key, outcome, opened_at, closed_at = pool.fetchrow.call_args.args
+        assert "SELECT $1, 'closed', 'silent', $2, $3, $4, $4" in sql
+        for other_state in CASE_STATES - {"closed"}:
+            assert f"'{other_state}'" not in sql
+        assert correlation_key == row["correlation_key"]
+        assert outcome == "resolved"
+        assert opened_at == self._OPENED
+        assert closed_at == self._CLOSED
+
+    async def test_no_op_when_correlation_key_already_backfilled(self) -> None:
+        """Requirement (3), idempotence half: WHERE NOT EXISTS means a
+        rerun over an already-backfilled correlation_key returns None
+        instead of inserting a duplicate row."""
+        pool = _pool(fetchrow=None)
+
+        result = await backfill_historical_case(
+            pool,
+            correlation_key="backfill:owner_condition:finance:bill-overdue:x:1",
+            outcome="resolved",
+            opened_at=self._OPENED,
+            closed_at=self._CLOSED,
+        )
+
+        assert result is None
+
+    async def test_never_touches_the_active_correlation_key_unique_index_scope(self) -> None:
+        """Requirement (3), non-collision half: the WHERE-NOT-EXISTS insert
+        writes state='closed' unconditionally, so it can never fall inside
+        uq_fleet_cases_active_correlation_key's scope (state <> 'closed').
+        Real-Postgres proof that this actually holds against the live index
+        lives in test_never_collides_with_an_existing_active_case's_key in
+        tests/integration/test_fleet_case_contribution_roundtrip.py."""
+        pool = _pool(fetchrow=_CASE_ROW)
+        await backfill_historical_case(
+            pool,
+            correlation_key="backfill:owner_condition:finance:bill-overdue:x:1",
+            outcome="resolved",
+            opened_at=self._OPENED,
+            closed_at=self._CLOSED,
+        )
+        sql = pool.fetchrow.call_args.args[0]
+        assert "state <> 'closed'" not in sql
+
+
+class TestBackfillFromOwnerConditions:
+    """RFC 0032 Slice 6's historical source: resolved public.owner_conditions
+    episodes. See backfill_from_owner_conditions's docstring for why this
+    table (not the insight broker's discarded-every-cycle clustering) is the
+    chosen source."""
+
+    _FIRST_DETECTED = datetime(2026, 1, 1, tzinfo=UTC)
+    _RESOLVED = datetime(2026, 1, 10, tzinfo=UTC)
+
+    @staticmethod
+    def _owner_condition_row(**overrides):
+        row = {
+            "source": "finance:bill-overdue",
+            "fingerprint": "electric-bill",
+            "episode": 1,
+            "first_detected_at": TestBackfillFromOwnerConditions._FIRST_DETECTED,
+            "resolved_at": TestBackfillFromOwnerConditions._RESOLVED,
+            "metadata": None,
+        }
+        row.update(overrides)
+        return row
+
+    async def test_creates_a_closed_case_with_outcome_from_resolution_reason(self) -> None:
+        source_row = self._owner_condition_row(
+            metadata={"resolution_reason": "bill_paid"},
+        )
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-1"})
+
+        result = await backfill_from_owner_conditions(pool)
+
+        assert result == {"created_case_ids": ["case-1"], "created_count": 1, "skipped_count": 0}
+        _sql, correlation_key, outcome, opened_at, closed_at = pool.fetchrow.call_args.args
+        assert correlation_key == (
+            f"{BACKFILL_CORRELATION_KEY_PREFIX}finance:bill-overdue:electric-bill:1"
+        )
+        assert outcome == "bill_paid"
+        assert opened_at == self._FIRST_DETECTED
+        assert closed_at == self._RESOLVED
+
+    async def test_falls_back_to_default_outcome_without_a_resolution_reason(self) -> None:
+        source_row = self._owner_condition_row(metadata=None)
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-2"})
+
+        await backfill_from_owner_conditions(pool)
+
+        outcome = pool.fetchrow.call_args.args[2]
+        assert outcome == DEFAULT_BACKFILL_OUTCOME
+
+    async def test_decodes_text_encoded_jsonb_metadata(self) -> None:
+        """A pool without a registered JSONB codec returns metadata as text,
+        as the rest of the condition-ledger family already accounts for
+        (see butlers.core.condition_ledger._metadata_object)."""
+        source_row = self._owner_condition_row(
+            metadata=json.dumps({"resolution_reason": "bill_paid"}),
+        )
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-3"})
+
+        await backfill_from_owner_conditions(pool)
+
+        outcome = pool.fetchrow.call_args.args[2]
+        assert outcome == "bill_paid"
+
+    async def test_counts_an_already_backfilled_episode_as_skipped_not_created(self) -> None:
+        """Requirement (3): rerunning the backfill is idempotent -- no
+        duplicate rows. backfill_historical_case returning None (already
+        backfilled) must not be miscounted as a creation."""
+        source_row = self._owner_condition_row()
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        result = await backfill_from_owner_conditions(pool)
+
+        assert result == {"created_case_ids": [], "created_count": 0, "skipped_count": 1}
+
+    async def test_pages_through_owner_conditions_until_an_empty_batch(self) -> None:
+        row_a = self._owner_condition_row(fingerprint="a")
+        row_b = self._owner_condition_row(fingerprint="b")
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[row_a], [row_b], []])
+        pool.fetchrow = AsyncMock(
+            side_effect=[{**_CASE_ROW, "id": "case-a"}, {**_CASE_ROW, "id": "case-b"}]
+        )
+
+        result = await backfill_from_owner_conditions(pool, page_size=1)
+
+        assert result == {
+            "created_case_ids": ["case-a", "case-b"],
+            "created_count": 2,
+            "skipped_count": 0,
+        }
+        assert pool.fetch.await_count == 3
+
+    async def test_never_writes_to_fleet_case_links(self) -> None:
+        """Three-ledger binding through fleet_case_links is RFC 0032 Slice
+        7's job, not this slice's -- the backfill never touches that table."""
+        source_row = self._owner_condition_row()
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-1"})
+
+        await backfill_from_owner_conditions(pool)
+
+        pool.execute.assert_not_awaited()
