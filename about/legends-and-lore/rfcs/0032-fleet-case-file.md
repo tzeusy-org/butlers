@@ -1,7 +1,7 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slices 1-4 landed — schema, read API, contribution tools,
-situation-scoped attention)
+**Status:** Draft (Slices 1-5 landed — schema, read API, contribution tools,
+situation-scoped attention, lapse sweep)
 **Date:** 2026-09-05
 
 ## Context
@@ -88,7 +88,7 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; Slices 1-4 have landed.
+This RFC is written for the whole feature; Slices 1-5 have landed.
 
 - **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
@@ -114,8 +114,15 @@ This RFC is written for the whole feature; Slices 1-4 have landed.
   broker wiring — the insight broker's own per-candidate bypass is untouched;
   this is the case-scoped primitive a later slice's three-ledger binding
   (S7) can connect it to.
-- **S5:** lapse sweep — may only transition a case to `closed` with
-  `outcome = 'lapsed'`; never resurrects.
+- **S5 (landed):** lapse sweep (`fleet_cases.run_lapse_sweep`, registered as
+  the Switchboard-owned scheduled job `fleet_case_lapse_sweep`, daily at
+  04:10 UTC). Closes a case with `outcome = 'lapsed'` only when it is
+  `posture` in `{silent, routine}`, `state <> 'closed'`, and has gone 7 days
+  (`DEFAULT_LAPSE_STALENESS_WINDOW`) without a fresh `contribute_evidence`
+  row or a `propose_case_posture`/`close_case` update. `active`/`urgent`
+  cases are never auto-lapsed regardless of age, and the eligibility check
+  and the write are one atomic `UPDATE`, so a case can never be resurrected
+  and an already-closed case is never touched again.
 - **S6:** backfill — creates only `closed`/`lapsed` historical cases from
   existing data, never resurrects an inferred case as open.
 - **S7:** three-ledger binding through `fleet_case_links`.
