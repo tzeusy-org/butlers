@@ -20,6 +20,8 @@ import butlers.core.fleet_cases as fleet_cases_module
 from butlers.core.fleet_cases import (
     CASE_POSTURES,
     CASE_STATES,
+    DEFAULT_LAPSE_STALENESS_WINDOW,
+    LAPSE_ELIGIBLE_POSTURES,
     FleetCaseError,
     case_attention_dedup_key,
     close_case,
@@ -30,6 +32,7 @@ from butlers.core.fleet_cases import (
     open_case,
     propose_posture,
     read_case,
+    run_lapse_sweep,
 )
 
 pytestmark = pytest.mark.unit
@@ -421,3 +424,40 @@ class TestEvaluateCaseAttention:
 
         assert result == {"bypass": False, "reason": "already_bypassed_this_window"}
         record_mock.assert_not_awaited()
+
+
+class TestRunLapseSweep:
+    """The eligibility filtering itself lives entirely in one atomic SQL
+    ``UPDATE ... WHERE ...`` (only real Postgres can prove which rows match --
+    see ``tests/integration/test_fleet_case_contribution_roundtrip.py``); these
+    mocked-pool tests pin the query's parameters and the return-shape mapping."""
+
+    _NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+
+    async def test_defaults_to_the_module_staleness_window_and_eligible_postures(self) -> None:
+        pool = _pool(fetch=[])
+        result = await run_lapse_sweep(pool, now=self._NOW)
+
+        assert result == {"lapsed_case_ids": [], "lapsed_count": 0}
+        args = pool.fetch.call_args.args
+        _sql, outcome, passed_now, postures, cutoff = args
+        assert outcome == "lapsed"
+        assert passed_now == self._NOW
+        assert set(postures) == LAPSE_ELIGIBLE_POSTURES
+        assert cutoff == self._NOW - DEFAULT_LAPSE_STALENESS_WINDOW
+
+    async def test_honors_an_explicit_staleness_window(self) -> None:
+        pool = _pool(fetch=[])
+        window = DEFAULT_LAPSE_STALENESS_WINDOW / 2
+        await run_lapse_sweep(pool, now=self._NOW, staleness_window=window)
+
+        cutoff = pool.fetch.call_args.args[-1]
+        assert cutoff == self._NOW - window
+
+    async def test_returns_the_ids_and_count_of_every_lapsed_row(self) -> None:
+        lapsed_row = {**_CASE_ROW, "state": "closed", "outcome": "lapsed"}
+        pool = _pool(fetch=[lapsed_row])
+
+        result = await run_lapse_sweep(pool, now=self._NOW)
+
+        assert result == {"lapsed_case_ids": [_CASE_ID], "lapsed_count": 1}

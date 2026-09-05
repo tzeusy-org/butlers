@@ -166,3 +166,14 @@ name = "domain-event-reconciliation-sweep"
 cron = "3,13,23,33,43,53 * * * *"
 dispatch_mode = "job"
 job_name = "domain_event_reconciliation_sweep"
+
+# Fleet case lapse sweep (bu-8cdl1.7 Slice 5, RFC 0032) -- closes silent/
+# routine fleet_cases rows that have gone 7 days without fresh evidence or a
+# posture/state change, writing outcome="lapsed". Daily at 04:10 UTC, ahead
+# of spend-rule-savings (04:15) and off the other single-daily/hourly ticks
+# (commitment-escalation 05:40, rule-promotion-trigger :50).
+[[butler.schedule]]
+name = "fleet-case-lapse-sweep"
+cron = "10 4 * * *"
+dispatch_mode = "job"
+job_name = "fleet_case_lapse_sweep"
