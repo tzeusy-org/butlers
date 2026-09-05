@@ -1581,6 +1581,118 @@ class TestMessagePipelineRoutingVerdictLog:
 
 
 # ---------------------------------------------------------------------------
+# bu-0ynlk.4: the pinned/sticky policy bypass must inject the same
+# deterministic conversation_id/page_context confirm-loop block that
+# route_to_butler injects for a classification-routed message — previously
+# this fast path (control.pinned_target -> triage_rule_type="pinned_target")
+# skipped it entirely, so every per-butler dashboard conversation and every
+# sticky follow-up silently lost page context.
+# ---------------------------------------------------------------------------
+
+
+class TestMessagePipelineDashboardPolicyBypassContext:
+    async def test_pinned_bypass_injects_deterministic_dashboard_context_block(self):
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "conversation_id": "11111111-1111-1111-1111-111111111111",
+                "message_id": "d1d1d1d1-0000-7000-8000-000000000001",
+                "page_context": {"route": "/spend", "visible_summary": "Spend — this week"},
+            }
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new_callable=AsyncMock,
+            return_value={"status": "ok"},
+        ) as mock_route:
+            await pipeline.process(
+                "why is this so expensive",
+                tool_args=_dashboard_tool_args(
+                    request_context={
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_type": "pinned_target",
+                    },
+                ),
+                message_inbox_id="00000000-0000-0000-0000-000000000003",
+            )
+
+        mock_route.assert_awaited_once()
+        envelope = mock_route.await_args.kwargs["args"]
+        context = envelope["input"]["context"]
+        assert "DASHBOARD CONVERSATION CONTEXT" in context
+        assert "conversation_id: 11111111-1111-1111-1111-111111111111" in context
+        assert '"route": "/spend"' in context
+        assert '"visible_summary": "Spend — this week"' in context
+
+    async def test_pinned_bypass_omits_context_block_when_not_a_dashboard_conversation(self):
+        """No conversation_id resolved (e.g. dashboard_context load failed) —
+        the bypass must dispatch exactly as before, with no context block."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+        pipeline._load_dashboard_context = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new_callable=AsyncMock,
+            return_value={"status": "ok"},
+        ) as mock_route:
+            await pipeline.process(
+                "why is this so expensive",
+                tool_args=_dashboard_tool_args(
+                    request_context={
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_type": "pinned_target",
+                    },
+                ),
+                message_inbox_id="00000000-0000-0000-0000-000000000004",
+            )
+
+        envelope = mock_route.await_args.kwargs["args"]
+        assert "context" not in envelope["input"]
+
+    async def test_non_dashboard_pinned_bypass_never_calls_load_dashboard_context(self):
+        """A non-dashboard channel's policy bypass (e.g. email) must not pay
+        the dashboard-context lookup cost or attempt injection."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+        pipeline._load_dashboard_context = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.route",
+            new_callable=AsyncMock,
+            return_value={"status": "ok"},
+        ):
+            await pipeline.process(
+                "some finance email",
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "gmail:acct-1",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_type": "sender_domain",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000005",
+            )
+
+        pipeline._load_dashboard_context.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Demotion via spot-check sampling [bu-x55k3, rule-promotion bead 5 of 7]
 # ---------------------------------------------------------------------------
 

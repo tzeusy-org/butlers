@@ -94,10 +94,11 @@ function RootLayoutInner() {
             routed underneath — same one-registry-many-scopes shape as
             CommandRegistryProvider above. */}
         <ShortcutRegistryProvider>
-          {/* PageContextProvider (bu-p6ey8.4): wraps both the routed page
-              content (which may enrich via usePageContext().set(...)) and the
-              floating chat widget (which snapshots route/query/entity_ref at
-              send time via usePageContextCapture()). */}
+          {/* PageContextProvider (bu-p6ey8.4, typed by bu-0ynlk.4): wraps both
+              the routed page content (which may enrich via
+              usePageSubject().set(...)) and the chat surfaces (which snapshot
+              route/query/visible_resource at send time via
+              usePageContextCapture()). */}
           <PageContextProvider>
             <a
               href="#main-content"

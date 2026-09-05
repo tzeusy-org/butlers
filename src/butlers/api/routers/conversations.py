@@ -842,8 +842,17 @@ async def _persist_dashboard_user_message(
     conversation_id: UUID,
     message: str,
     message_id: UUID | None,
+    page_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Persist a dashboard user message, reusing a retry's stable identity."""
+    """Persist a dashboard user message, reusing a retry's stable identity.
+
+    ``page_context`` is only captured on the message's first (winning)
+    write; a retry of an already-persisted ``message_id`` reuses the stored
+    snapshot regardless of what this call passes (bu-0ynlk.4) -- callers
+    must build the outgoing ingest envelope from the returned dict's
+    ``page_context``, not from the request body, so a retry never re-sends a
+    stale or since-changed page context.
+    """
     if message_id is None:
         return (
             await message_create(
@@ -851,6 +860,7 @@ async def _persist_dashboard_user_message(
                 conversation_id=conversation_id,
                 role="user",
                 content=message,
+                page_context=page_context,
             ),
             True,
         )
@@ -862,6 +872,7 @@ async def _persist_dashboard_user_message(
             conversation_id=conversation_id,
             role="user",
             content=message,
+            page_context=page_context,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1462,6 +1473,7 @@ async def create_conversation(
             conversation_id=conversation_id,
             message=body.message,
             message_id=body.message_id,
+            page_context=body.page_context.model_dump() if body.page_context else None,
         )
 
     if user_message_is_new:
@@ -1473,13 +1485,17 @@ async def create_conversation(
         conversation_id=conversation_id,
     )
 
-    # Build ingest envelope
+    # Build ingest envelope from the persisted message row's own
+    # page_context, not body.page_context directly -- a retry of an
+    # already-persisted message_id must forward the originally-captured
+    # snapshot even if the retried request body carries a different one
+    # (bu-0ynlk.4).
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=None,
-        page_context=body.page_context.model_dump() if body.page_context else None,
+        page_context=user_msg.get("page_context"),
         pinned_target=None if name == _SWITCHBOARD_BUTLER else name,
     )
 
@@ -1606,6 +1622,7 @@ async def send_message(
         conversation_id=conversation_id,
         message=body.message,
         message_id=body.message_id,
+        page_context=body.page_context.model_dump() if body.page_context else None,
     )
 
     if user_message_is_new:
@@ -1626,13 +1643,15 @@ async def send_message(
     else:
         pinned_target = name
 
-    # Build ingest envelope with conversation context
+    # Build ingest envelope with conversation context. As in create_conversation,
+    # the persisted message row's own page_context is the source of truth so a
+    # retry forwards the originally-captured snapshot (bu-0ynlk.4).
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=history_rows,
-        page_context=body.page_context.model_dump() if body.page_context else None,
+        page_context=user_msg.get("page_context"),
         pinned_target=pinned_target,
     )
 

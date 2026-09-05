@@ -48,7 +48,7 @@ import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionS
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
-import { usePageContext } from "@/lib/page-context.tsx";
+import { usePageSubject } from "@/lib/page-context.tsx";
 import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -2374,9 +2374,9 @@ export default function EntityDetailPage() {
   // This attaches the entity currently in view as `entity_ref` (falling
   // back to the raw id while the name is still loading) so a message sent
   // from this page arrives grounded. Cleared automatically on unmount by
-  // usePageContext(), so navigating away never leaves a stale entity_ref
+  // usePageSubject(), so navigating away never leaves a stale entity_ref
   // attached to messages sent from a later, unrelated page.
-  const setPageContext = usePageContext().set;
+  const setPageContext = usePageSubject().set;
   useEffect(() => {
     if (!entityId || mergedSurvivorId) return;
     setPageContext({ entity_ref: entity?.canonical_name ?? entityId });

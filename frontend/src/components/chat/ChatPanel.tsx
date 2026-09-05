@@ -31,7 +31,7 @@ import {
   createConversation,
   sendMessage,
 } from "@/api/index.ts";
-import type { Message, ConversationSummary } from "@/api/types.ts";
+import type { CreateConversationRequest, Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
@@ -57,6 +57,25 @@ import {
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
+import { usePageContextCapture, type PageContextSnapshot } from "@/lib/page-context.tsx";
+
+/**
+ * Builds the outgoing message body — mirrors FloatingChatWidget.tsx's
+ * `buildMessagePayload` (bu-0ynlk.4). `page_context` is omitted entirely
+ * (not sent as an empty object) whenever the ContextChip is detached for
+ * this message or the route's contextPolicy resolves to "none".
+ */
+function buildMessagePayload(
+  message: string,
+  messageId: string,
+  snapshot: PageContextSnapshot,
+  included: boolean,
+): CreateConversationRequest {
+  if (included && snapshot.context) {
+    return { message, message_id: messageId, page_context: snapshot.context };
+  }
+  return { message, message_id: messageId };
+}
 
 // ---------------------------------------------------------------------------
 // ChatPanel inner content (mounted once Sheet is open)
@@ -71,6 +90,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
+  // Per-message opt-out for the ContextChip (bu-0ynlk.4) — resets to true
+  // after every send so removal only ever applies to the one message it was
+  // clicked on.
+  const [includeContext, setIncludeContext] = useState(true);
+  const capturePageContext = usePageContextCapture();
+  const contextPreview = capturePageContext();
 
   // Local streaming state
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
@@ -361,17 +386,37 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         stopReady: false,
       });
 
+      // Snapshot page context NOW, not before — this is the exact moment of
+      // send, so a page navigation or usePageSubject().set() call happening
+      // after this point never mutates the payload already built below.
+      const pageContextSnapshot = capturePageContext();
+      const contextIncludedForThisSend = includeContext;
+      // The chip's opt-out only ever applies to the message it was clicked
+      // on — reset immediately so the next composition defaults back to
+      // attached (behavior matrix: "next send re-attaches").
+      setIncludeContext(true);
+
       try {
         const response = isNew
           ? await createConversation(
               butlerName,
-              { message: trimmed, message_id: messageId },
+              buildMessagePayload(
+                trimmed,
+                messageId,
+                pageContextSnapshot,
+                contextIncludedForThisSend,
+              ),
               controller.signal,
             )
           : await sendMessage(
               butlerName,
               activeConversationId!,
-              { message: trimmed, message_id: messageId },
+              buildMessagePayload(
+                trimmed,
+                messageId,
+                pageContextSnapshot,
+                contextIncludedForThisSend,
+              ),
               controller.signal,
             );
 
@@ -510,7 +555,14 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         }
       }
     },
-    [activeConversationId, butlerName, confirmStoppedTurn, queryClient],
+    [
+      activeConversationId,
+      butlerName,
+      capturePageContext,
+      confirmStoppedTurn,
+      includeContext,
+      queryClient,
+    ],
   );
 
   function handleSend() {
@@ -698,6 +750,13 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           }
           disabled={isLoadingConversations}
           isStreaming={hasActiveRuntime}
+          contextChip={{
+            label: contextPreview.label,
+            policy: contextPreview.policy,
+            payload: contextPreview.context,
+            included: includeContext,
+            onToggleIncluded: () => setIncludeContext((prev) => !prev),
+          }}
         />
       </div>
     </div>

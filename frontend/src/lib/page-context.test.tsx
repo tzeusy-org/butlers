@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 /**
- * Tests for PageContextProvider / usePageContext / usePageContextCapture
- * (bu-p6ey8.4 — "Page context capture").
+ * Tests for PageContextProvider / usePageSubject / usePageContextCapture
+ * (bu-p6ey8.4 — "Page context capture"; typed visible_resource + per-route
+ * contextPolicy added by bu-0ynlk.4).
  *
  * Covers:
  *  - default capture: route path + query params, no enrichment
- *  - enrichment via usePageContext().set({ entity_ref })
+ *  - enrichment via usePageSubject().set({ entity_ref | visible_resource })
  *  - snapshot-at-send: a page-context change AFTER a capture() call never
  *    mutates the already-returned snapshot
  *  - enrichment clears when the enriching page unmounts (no stale entity_ref
  *    bleeding into a later, unrelated page)
  *  - stale cleanup from an old page cannot clear a newer page's enrichment
+ *  - registry-driven contextPolicy: "none" yields a null context, "ref-only"
+ *    yields a route-only context regardless of query params/enrichment
  */
 
 import { useEffect, useState } from "react";
@@ -18,7 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-import { PageContextProvider, usePageContext, usePageContextCapture } from "./page-context.tsx";
+import { PageContextProvider, usePageSubject, usePageContextCapture } from "./page-context.tsx";
 
 afterEach(() => cleanup());
 
@@ -42,14 +45,14 @@ function CaptureHarness() {
 
 /** A page that enriches with `entity_ref` while `entityRef` is non-null. */
 function EnrichingPage({ entityRef }: { entityRef: string | null }) {
-  const { set } = usePageContext();
+  const { set } = usePageSubject();
   useEffect(() => {
     if (entityRef != null) set({ entity_ref: entityRef });
   }, [entityRef, set]);
   return <div data-testid="enriching-page">{entityRef}</div>;
 }
 
-function readCaptured(): Record<string, unknown> {
+function readCaptured(): { policy: string; label: string; context: Record<string, unknown> | null } {
   return JSON.parse(screen.getByTestId("captured-json").textContent ?? "{}");
 }
 
@@ -68,7 +71,9 @@ describe("PageContextProvider / usePageContextCapture — default capture", () =
     );
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({ route: "/entities" });
+    const snapshot = readCaptured();
+    expect(snapshot.policy).toBe("snapshot");
+    expect(snapshot.context).toEqual({ route: "/entities" });
   });
 
   it("captures route + query params from the current URL", () => {
@@ -81,14 +86,14 @@ describe("PageContextProvider / usePageContextCapture — default capture", () =
     );
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({
+    expect(readCaptured().context).toEqual({
       route: "/entities/concentration",
       query_params: { predicate: "child-of" },
     });
   });
 });
 
-describe("PageContextProvider / usePageContext — enrichment", () => {
+describe("PageContextProvider / usePageSubject — enrichment", () => {
   it("includes entity_ref set by the mounted page (reference implementation pattern)", () => {
     render(
       <MemoryRouter initialEntries={["/entities/e-123"]}>
@@ -100,7 +105,38 @@ describe("PageContextProvider / usePageContext — enrichment", () => {
     );
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({ route: "/entities/e-123", entity_ref: "alice" });
+    expect(readCaptured().context).toEqual({ route: "/entities/e-123", entity_ref: "alice" });
+  });
+
+  it("includes a typed visible_resource + visible_summary set by the mounted page", () => {
+    function EnrichingResourcePage() {
+      const { set } = usePageSubject();
+      useEffect(() => {
+        set({
+          visible_resource: { kind: "session", id: "sess-1" },
+          visible_summary: "Session sess-1",
+        });
+      }, [set]);
+      return null;
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/sessions/sess-1"]}>
+        <PageContextProvider>
+          <EnrichingResourcePage />
+          <CaptureHarness />
+        </PageContextProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    const snapshot = readCaptured();
+    expect(snapshot.label).toBe("Session sess-1");
+    expect(snapshot.context).toEqual({
+      route: "/sessions/sess-1",
+      visible_resource: { kind: "session", id: "sess-1" },
+      visible_summary: "Session sess-1",
+    });
   });
 
   it("clears enrichment when the enriching page unmounts", () => {
@@ -126,13 +162,13 @@ describe("PageContextProvider / usePageContext — enrichment", () => {
     );
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured().entity_ref).toBe("alice");
+    expect(readCaptured().context?.entity_ref).toBe("alice");
 
     fireEvent.click(screen.getByTestId("unmount-btn"));
     expect(screen.queryByTestId("enriching-page")).toBeNull();
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({ route: "/entities/e-123" });
+    expect(readCaptured().context).toEqual({ route: "/entities/e-123" });
   });
 
   it("keeps a successor page enrichment when the prior page unmounts later", () => {
@@ -164,16 +200,16 @@ describe("PageContextProvider / usePageContext — enrichment", () => {
     );
 
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured().entity_ref).toBe("page-a");
+    expect(readCaptured().context?.entity_ref).toBe("page-a");
 
     // Page B claims the slot before A's cleanup runs.
     fireEvent.click(screen.getByTestId("mount-page-b-btn"));
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured().entity_ref).toBe("page-b");
+    expect(readCaptured().context?.entity_ref).toBe("page-b");
 
     fireEvent.click(screen.getByTestId("unmount-page-a-btn"));
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({ route: "/entities/e-123", entity_ref: "page-b" });
+    expect(readCaptured().context).toEqual({ route: "/entities/e-123", entity_ref: "page-b" });
   });
 });
 
@@ -203,7 +239,7 @@ describe("PageContextProvider / usePageContextCapture — snapshot at send time"
     // Capture BEFORE any enrichment.
     fireEvent.click(screen.getByTestId("capture-btn"));
     const beforeEnrich = readCaptured();
-    expect(beforeEnrich).toEqual({ route: "/entities/e-123" });
+    expect(beforeEnrich.context).toEqual({ route: "/entities/e-123" });
 
     // Enrich the page context AFTER that capture.
     act(() => {
@@ -216,6 +252,47 @@ describe("PageContextProvider / usePageContextCapture — snapshot at send time"
 
     // A fresh capture() call now reflects the enrichment.
     fireEvent.click(screen.getByTestId("capture-btn"));
-    expect(readCaptured()).toEqual({ route: "/entities/e-123", entity_ref: "bob" });
+    expect(readCaptured().context).toEqual({ route: "/entities/e-123", entity_ref: "bob" });
+  });
+});
+
+describe("PageContextProvider / usePageContextCapture — registry contextPolicy", () => {
+  it("policy 'none' (/secrets) captures a null context regardless of query params", () => {
+    render(
+      <MemoryRouter initialEntries={["/secrets?foo=bar"]}>
+        <PageContextProvider>
+          <CaptureHarness />
+        </PageContextProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    const snapshot = readCaptured();
+    expect(snapshot.policy).toBe("none");
+    expect(snapshot.context).toBeNull();
+  });
+
+  it("policy 'ref-only' (/settings/models) captures only the route, dropping query params and enrichment", () => {
+    function EnrichingResourcePage() {
+      const { set } = usePageSubject();
+      useEffect(() => {
+        set({ visible_resource: { kind: "connector", id: "should-not-leak" } });
+      }, [set]);
+      return null;
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/settings/models?tab=advanced"]}>
+        <PageContextProvider>
+          <EnrichingResourcePage />
+          <CaptureHarness />
+        </PageContextProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    const snapshot = readCaptured();
+    expect(snapshot.policy).toBe("ref-only");
+    expect(snapshot.context).toEqual({ route: "/settings/models" });
   });
 });

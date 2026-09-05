@@ -18,8 +18,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 
 import { ChatContent } from "./ChatPanel";
+import { PageContextProvider } from "@/lib/page-context.tsx";
 import type { Message } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -88,12 +90,16 @@ function mockHooksEmpty() {
   } as unknown as ReturnType<typeof useConversationSearch>);
 }
 
-function renderChatContent() {
+function renderChatContent(initialPath = "/") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const content = () => (
-    <QueryClientProvider client={queryClient}>
-      <ChatContent butlerName="switchboard" />
-    </QueryClientProvider>
+    <MemoryRouter initialEntries={[initialPath]}>
+      <QueryClientProvider client={queryClient}>
+        <PageContextProvider>
+          <ChatContent butlerName="switchboard" />
+        </PageContextProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
   );
   const view = render(content());
   return {
@@ -223,18 +229,26 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { rerender } = render(
-      <QueryClientProvider client={queryClient}>
-        <ChatContent butlerName="finance" />
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <PageContextProvider>
+            <ChatContent butlerName="finance" />
+          </PageContextProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
 
     // Auto-resumed to finance's thread (sidebar entry + header title).
     expect(screen.getAllByText("finance thread")).toHaveLength(2);
 
     rerender(
-      <QueryClientProvider client={queryClient}>
-        <ChatContent butlerName="calendar" />
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <PageContextProvider>
+            <ChatContent butlerName="calendar" />
+          </PageContextProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
 
     // Must re-resume to calendar's own thread (sidebar + header), not get
@@ -641,9 +655,13 @@ describe("ChatContent — send-error classification", () => {
     });
     expect(sendMessageMock).toHaveBeenCalledTimes(1);
     expect(sendMessageMock.mock.calls[0][1]).toBe("conv-retry-1");
+    // page_context is now attached (bu-0ynlk.4 fixes ChatPanel's previous
+    // "sends no context at all" bypass) — default capture (route only, no
+    // query params on "/").
     expect(sendMessageMock.mock.calls[0][2]).toEqual({
       message: "hello switchboard",
       message_id: firstPayload.message_id,
+      page_context: { route: "/" },
     });
     // A retry is the same logical message, so it must retain the first
     // optimistic bubble rather than append a duplicate alongside it.
@@ -1064,5 +1082,69 @@ describe("ChatContent — Stop button", () => {
       queryKey: ["conversation-messages", "switchboard", "conv-finished-1"],
     });
     expect(useConversationMessages).toHaveBeenLastCalledWith("switchboard", "conv-finished-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page-context capture / ContextChip (bu-0ynlk.4)
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — page-context capture", () => {
+  it("attaches route + query params captured at send time (fixes the prior 'no context at all' bypass)", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/entities/concentration?predicate=child-of");
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        message: "Alice is child-of Bob",
+        page_context: {
+          route: "/entities/concentration",
+          query_params: { predicate: "child-of" },
+        },
+      }),
+    );
+  });
+
+  it("omits the page_context key entirely when the ContextChip is detached", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/entities/concentration?predicate=child-of");
+    fireEvent.click(screen.getByTestId("context-chip-remove"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const payload = createConversationMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("page_context");
+  });
+
+  it("never attaches page_context on a policy 'none' route (/secrets)", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderChatContent("/secrets");
+
+    expect(screen.getByTestId("context-chip").getAttribute("data-policy")).toBe("none");
+    expect(screen.queryByTestId("context-chip-remove")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "what's my API key" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).not.toHaveProperty("page_context");
   });
 });

@@ -88,6 +88,7 @@ import { formatCostUsd } from "@/lib/format-cost";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";
 import { announce } from "@/lib/shell-announcer";
+import { usePageSubject } from "@/lib/page-context.tsx";
 import {
   useRegisterCommands,
   type PaletteCommand,
@@ -2735,6 +2736,22 @@ export default function SpendPage() {
   const spendDateKeyTimezone = usesImplicitUtcWindow
     ? SPEND_UTC_DATE_KEY_TIMEZONE
     : undefined;
+
+  // Page-context enrichment (bu-0ynlk.4): the active window is already
+  // auto-captured via query_params for an explicit range, but a typed
+  // visible_resource lets a routed butler ground a correction ("that total
+  // looks wrong") on the exact [from, to] window shown, including the
+  // implicit default.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    const windowLabel = `${spendWindow.from.toISOString().slice(0, 10)}..${spendWindow.to
+      .toISOString()
+      .slice(0, 10)}`;
+    setPageSubject({
+      visible_resource: { kind: "spend_window", window: windowLabel },
+      visible_summary: `Spend: ${windowLabel}`,
+    });
+  }, [spendWindow.from, spendWindow.to, setPageSubject]);
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
   // Reuses TimeWindowPicker's own preset setters -- "change window" from the

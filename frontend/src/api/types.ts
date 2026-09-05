@@ -5472,6 +5472,10 @@ export interface Message {
   session_id: string | null;
   request_id: string | null;
   created_at: string;
+  /** Compact page-context snapshot captured with this user message, or null. */
+  page_context?: PageContext | null;
+  /** When `page_context` was captured; null whenever `page_context` is null. */
+  captured_at?: string | null;
 }
 
 /** Summary of a dashboard conversation (list view). */
@@ -5506,18 +5510,37 @@ export interface ConversationListParams {
 }
 
 /**
- * Dashboard route/query/entity context captured at message send time.
- *
- * Seam for bu-p6ey8.4 (PageContextProvider): this type mirrors the backend's
- * `PageContext` model. No caller populates it yet — the floating chat widget
- * (bu-p6ey8.3) builds outgoing message payloads through a single
- * `buildMessagePayload` choke point specifically so a future page-context
- * capture layer can attach this without touching call sites.
+ * Typed pointer to the specific resource a stateful page is showing (e.g.
+ * the session id on SessionDetailPage, the active predicate filters on
+ * ConcentrationPage). Set via `usePageSubject()` (see `@/lib/page-context.tsx`)
+ * on top of the auto-captured `route`/`query_params`. `kind` must be one of
+ * the values in `frontend/src/lib/page-context-registry.ts`'s vocabulary —
+ * the backend's `PageContext` model enforces the same closed set.
+ */
+export interface PageContextVisibleResource {
+  kind: string;
+  id?: string | null;
+  filters?: Record<string, string>;
+  window?: string | null;
+}
+
+/**
+ * Dashboard route/query/entity/resource context captured at message send
+ * time (bu-p6ey8.4, extended by bu-0ynlk.4). Mirrors the backend's
+ * `PageContext` model. Built by `usePageContextCapture()`
+ * (`@/lib/page-context.tsx`) and shown to the owner pre-send via
+ * `ContextChip` before either surface (`ChatPanel.tsx`,
+ * `FloatingChatWidget.tsx`) attaches it through their shared
+ * `buildMessagePayload` choke point.
  */
 export interface PageContext {
   route: string;
   query_params?: Record<string, string>;
   entity_ref?: string | null;
+  visible_resource?: PageContextVisibleResource | null;
+  visible_summary?: string | null;
+  /** Server-set: true when the payload exceeded the size budget and was trimmed. */
+  truncated?: boolean;
 }
 
 /** Request body for POST /api/butlers/{name}/conversations. */

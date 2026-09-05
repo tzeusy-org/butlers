@@ -507,6 +507,75 @@ describe("FloatingChatWidget — page-context capture", () => {
       }),
     );
   });
+
+  it("omits the page_context key entirely (not an empty object) when the ContextChip is detached", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderWidget("/entities/concentration?predicate=child-of");
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    fireEvent.click(screen.getByTestId("context-chip-remove"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const payload = createConversationMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("page_context");
+    expect(payload.message).toBe("Alice is child-of Bob");
+  });
+
+  it("re-attaches context for the next message after a detached send", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderWidget("/entities/concentration?predicate=child-of");
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    fireEvent.click(screen.getByTestId("context-chip-remove"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "first message" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+    expect(createConversationMock.mock.calls[0][1]).not.toHaveProperty("page_context");
+
+    // The chip must have reset to "attached" for the next composition.
+    expect(screen.getByTestId("context-chip").getAttribute("data-included")).toBe("true");
+
+    fireEvent.change(input, { target: { value: "second message" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+    expect(createConversationMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({ page_context: expect.any(Object) }),
+    );
+  });
+
+  it("never attaches page_context on a policy 'none' route (/secrets)", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderWidget("/secrets");
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    expect(screen.getByTestId("context-chip").getAttribute("data-policy")).toBe("none");
+    expect(screen.queryByTestId("context-chip-remove")).toBeNull();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "what's my API key" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).not.toHaveProperty("page_context");
+  });
 });
 
 // ---------------------------------------------------------------------------

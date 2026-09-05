@@ -25,6 +25,12 @@ NEVER file a QA bug report.
 - **WHEN** `route_to_butler` for a dashboard-originated message receives an `accepted` status from the target butler
 - **THEN** the Switchboard SHALL stamp `routed_butler` on the conversation (best-effort; a stamping failure SHALL NOT fail the route call)
 
+#### Scenario: Pinned/sticky policy bypass also carries the deterministic context block
+
+- **WHEN** a dashboard-originated message is dispatched via the ingestion policy bypass (`control.pinned_target` from a per-butler conversation, or sticky `routed_butler` follow-up pinning) rather than through the classification session's `route_to_butler` call
+- **THEN** the bypass SHALL load the same `conversation_id`/`page_context` dashboard turn context and inject the identical deterministic confirm-loop instruction block into the routed envelope's `input.context`
+- **AND** a dashboard turn with no resolvable `conversation_id` (e.g. the dashboard context could not be loaded) SHALL dispatch with no context block, exactly as a non-dashboard policy bypass does
+
 #### Scenario: Lane B — bug/system report is filed to QA, never routed to a domain butler
 
 - **WHEN** a dashboard message is classified as a bug or system report (e.g. "the concentration chart is empty for child-of")

@@ -639,17 +639,27 @@ async def message_create(
     error: str | None = None,
     request_id: UUID | None = None,
     sources: list[str] | None = None,
+    page_context: dict[str, Any] | None = None,
+    captured_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Insert a new message row.  Returns the full message dict."""
+    """Insert a new message row.  Returns the full message dict.
+
+    ``page_context``/``captured_at`` carry the dashboard ContextChip snapshot
+    for a user-role message (bu-0ynlk.4); ``captured_at`` defaults to now()
+    whenever ``page_context`` is supplied and the caller omits it.
+    """
     msg_id = _generate_uuid7()
     now = datetime.now(UTC)
+    if page_context is not None and captured_at is None:
+        captured_at = now
     await pool.execute(
         """
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             duration_ms, tool_calls, error, request_id, sources,
+             page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         """,
         msg_id,
         conversation_id,
@@ -665,6 +675,8 @@ async def message_create(
         error,
         request_id,
         sources,
+        page_context,
+        captured_at,
     )
 
     return {
@@ -682,6 +694,8 @@ async def message_create(
         "error": error,
         "request_id": request_id,
         "sources": sources,
+        "page_context": page_context,
+        "captured_at": captured_at,
     }
 
 
@@ -692,6 +706,7 @@ async def message_create_idempotent(
     conversation_id: UUID,
     role: str,
     content: str,
+    page_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create a client-identified message once, returning ``(message, is_new)``.
 
@@ -699,25 +714,35 @@ async def message_create_idempotent(
     persists that message and later identical submissions recover the original
     row, so the Switchboard sees the same external event identity rather than
     relying on its content-hash fallback.
+
+    ``page_context`` is only ever written on the first (winning) insert -- a
+    retry's own ``page_context`` argument is ignored on conflict, so a retried
+    message deterministically reuses the originally-captured snapshot rather
+    than re-capturing a possibly-stale one (bu-0ynlk.4).
     """
     now = datetime.now(UTC)
+    captured_at = now if page_context is not None else None
     inserted = await pool.fetchrow(
         """
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
-             duration_ms, tool_calls, error, request_id, sources)
-        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+             duration_ms, tool_calls, error, request_id, sources,
+             page_context, captured_at)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $6, $7)
         ON CONFLICT (id) DO NOTHING
         RETURNING id, conversation_id, role, content, created_at,
                   session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id, sources
+                  duration_ms, tool_calls, error, request_id, sources,
+                  page_context, captured_at
         """,
         message_id,
         conversation_id,
         role,
         content,
         now,
+        page_context,
+        captured_at,
     )
     if inserted is not None:
         return dict(inserted), True
@@ -726,7 +751,8 @@ async def message_create_idempotent(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -754,7 +780,8 @@ async def message_get_by_id(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE id = $1
         """,
@@ -863,7 +890,8 @@ async def message_list(
         """
         SELECT id, conversation_id, role, content, created_at,
                session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources
+               duration_ms, tool_calls, error, request_id, sources,
+               page_context, captured_at
         FROM public.dashboard_messages
         WHERE conversation_id = $1
         ORDER BY created_at ASC
@@ -877,12 +905,19 @@ async def message_list(
     messages = []
     for row in rows:
         d = dict(row)
-        # Deserialize tool_calls JSONB
+        # Deserialize tool_calls/page_context JSONB (defensive: the shared
+        # pool registers a dict<->jsonb codec, but a pool that does not
+        # would otherwise hand back a raw JSON string here).
         if isinstance(d.get("tool_calls"), str):
             try:
                 d["tool_calls"] = json.loads(d["tool_calls"])
             except (json.JSONDecodeError, TypeError):
                 d["tool_calls"] = None
+        if isinstance(d.get("page_context"), str):
+            try:
+                d["page_context"] = json.loads(d["page_context"])
+            except (json.JSONDecodeError, TypeError):
+                d["page_context"] = None
         messages.append(d)
 
     return messages, total

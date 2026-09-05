@@ -15,6 +15,7 @@ import { ENTITY_DETAIL_INITIAL_PARAMS } from "@/lib/entity-detail-query";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { fetchSpendForecast } from "@/lib/spend-forecast";
 import type { NavIconName } from "@/components/layout/NavIcon";
+import { PAGE_CONTEXT_REGISTRY, type ContextPolicy } from "@/lib/page-context-registry";
 
 export type ShellDiscoverability = "global" | "contextual" | "context-only";
 export type ShellFamily =
@@ -50,6 +51,14 @@ export interface ShellCapability {
   loader: ShellPageLoader;
   /** Resolves the exact query cache entry the destination consumes. */
   queryWarmup?: (to: string) => ShellQueryWarmup | null;
+  /**
+   * How much of this route's page context the ContextChip may attach to an
+   * outgoing chat message (bu-0ynlk.4). Sourced from
+   * `page-context-registry.ts`, keyed by `path` — every capability below
+   * must have a matching registry entry, enforced by
+   * `shell-capability.context.test.ts`.
+   */
+  contextPolicy: ContextPolicy;
 }
 
 export interface ShellPlacement {
@@ -117,8 +126,9 @@ const ingestionEventWarmup: ShellCapability["queryWarmup"] = (to) => {
 
 const page = (loader: () => Promise<{ default: ComponentType }>) => loader;
 
-/** One typed source for all shell projections. */
-export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
+type ShellCapabilityInput = Omit<ShellCapability, "contextPolicy">;
+
+const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/", label: "Overview", keywords: ["home", "dashboard"], family: "overview", placement: { section: "Main", order: 0, icon: "overview", end: true }, chord: "o", discoverability: "global", loader: page(() => import("@/pages/DashboardPage.tsx")) },
   { path: "/butlers", label: "Butlers", keywords: ["staff", "agents"], family: "butler", placement: { section: "Main", order: 1, icon: "butlers" }, chord: "b", discoverability: "global", loader: page(() => import("@/pages/ButlersPage.tsx")) },
   { path: "/qa", label: "QA", keywords: ["quality", "patrol"], family: "operations", placement: { section: "Main", order: 2, butler: "qa", badgeKey: "qa-escalations", badgeVariant: "red", icon: "qa" }, discoverability: "global", loader: page(() => import("@/pages/QaOverviewPage.tsx")) },
@@ -180,6 +190,16 @@ export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
   { path: "/qa/patrols/:patrolId", label: "QA patrol detail", keywords: ["qa", "patrol"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaPatrolDetailPage.tsx")) },
   { path: "/qa/investigations/:attemptId", label: "QA investigation detail", keywords: ["qa", "investigation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaInvestigationDetailPage.tsx")) },
 ];
+
+/** One typed source for all shell projections. `contextPolicy` is derived
+ * from `page-context-registry.ts` so the two never drift independently —
+ * every entry above must have a matching registry descriptor. */
+export const SHELL_CAPABILITIES: readonly ShellCapability[] = _SHELL_CAPABILITIES_INPUT.map(
+  (capability) => ({
+    ...capability,
+    contextPolicy: PAGE_CONTEXT_REGISTRY[capability.path]?.policy ?? "snapshot",
+  }),
+);
 
 export function getShellCapability(path: string): ShellCapability | undefined {
   return SHELL_CAPABILITIES.find((capability) => capability.path === path);

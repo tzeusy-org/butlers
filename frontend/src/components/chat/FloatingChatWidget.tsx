@@ -58,7 +58,6 @@ import type {
   ConversationSummary,
   CreateConversationRequest,
   Message,
-  PageContext,
 } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
@@ -86,7 +85,7 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
-import { usePageContextCapture } from "@/lib/page-context.tsx";
+import { usePageContextCapture, type PageContextSnapshot } from "@/lib/page-context.tsx";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
 
 // ---------------------------------------------------------------------------
@@ -104,17 +103,24 @@ const WIDGET_BUTLER = "switchboard";
 
 /**
  * Builds the outgoing message body for both `createConversation` and
- * `sendMessage`. `pageContext` is a snapshot from `usePageContextCapture()`
- * taken at the moment of send (see `sendText` below) — the single choke
- * point the widget uses to submit a message, so no call site needed to
- * change when page-context capture was added.
+ * `sendMessage`. `snapshot` is captured from `usePageContextCapture()` at
+ * the moment of send (see `sendText` below) — the single choke point the
+ * widget uses to submit a message, so no call site needed to change when
+ * page-context capture was added. `included` is the ContextChip's current
+ * state for this message; when false (or the route's contextPolicy is
+ * "none", i.e. `snapshot.context === null`), `page_context` is omitted
+ * entirely from the payload rather than sent as an empty object.
  */
 function buildMessagePayload(
   message: string,
   messageId: string,
-  pageContext: PageContext,
+  snapshot: PageContextSnapshot,
+  included: boolean,
 ): CreateConversationRequest {
-  return { message, message_id: messageId, page_context: pageContext };
+  if (included && snapshot.context) {
+    return { message, message_id: messageId, page_context: snapshot.context };
+  }
+  return { message, message_id: messageId };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +144,11 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   const [viewMode, setViewMode] = useState<"thread" | "history">("thread");
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
+  // Per-message opt-out for the ContextChip (bu-0ynlk.4) — resets to true
+  // after every send so removal only ever applies to the one message it was
+  // clicked on.
+  const [includeContext, setIncludeContext] = useState(true);
+  const contextPreview = capturePageContext();
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const localMessagesConversationIdRef = useRef<string | null>(null);
@@ -333,21 +344,36 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       });
 
       // Snapshot page context NOW, not before — this is the exact moment of
-      // send, so a page navigation or usePageContext().set() call happening
+      // send, so a page navigation or usePageSubject().set() call happening
       // after this point never mutates the payload already built below.
-      const pageContext = capturePageContext();
+      const pageContextSnapshot = capturePageContext();
+      const contextIncludedForThisSend = includeContext;
+      // The chip's opt-out only ever applies to the message it was clicked
+      // on — reset immediately so the next composition defaults back to
+      // attached (behavior matrix: "next send re-attaches").
+      setIncludeContext(true);
 
       try {
         const response = isNew
           ? await createConversation(
               WIDGET_BUTLER,
-              buildMessagePayload(trimmed, messageId, pageContext),
+              buildMessagePayload(
+                trimmed,
+                messageId,
+                pageContextSnapshot,
+                contextIncludedForThisSend,
+              ),
               controller.signal,
             )
           : await sendMessage(
               WIDGET_BUTLER,
               activeConversationId!,
-              buildMessagePayload(trimmed, messageId, pageContext),
+              buildMessagePayload(
+                trimmed,
+                messageId,
+                pageContextSnapshot,
+                contextIncludedForThisSend,
+              ),
               controller.signal,
             );
 
@@ -481,7 +507,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         }
       }
     },
-    [activeConversationId, capturePageContext, confirmStoppedTurn, queryClient],
+    [activeConversationId, capturePageContext, confirmStoppedTurn, includeContext, queryClient],
   );
 
   function handleSendClick() {
@@ -741,6 +767,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             }
             disabled={isLoadingConversations}
             isStreaming={hasActiveRuntime}
+            contextChip={{
+              label: contextPreview.label,
+              policy: contextPreview.policy,
+              payload: contextPreview.context,
+              included: includeContext,
+              onToggleIncluded: () => setIncludeContext((prev) => !prev),
+            }}
           />
         </div>
       )}

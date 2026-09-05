@@ -1988,6 +1988,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - conversation history
 
+## `frontend/src/components/chat/ContextChip.tsx`
+
+- Context not attached on this page.
+- Context removed, click to re-attach
+- Page context attached: {}. Press Backspace or Delete to remove.
+- Remove page context from this message
+
 ## `frontend/src/components/chat/ConversationList.tsx`
 
 - New
@@ -4173,4 +4180,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3272*
+*Total strings: 3276*

@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { Link, useParams } from "react-router";
 
 import { Page } from "@/components/ui/page";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { SessionDossier } from "@/components/sessions/SessionDossier";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
+import { usePageSubject } from "@/lib/page-context.tsx";
 
 // ---------------------------------------------------------------------------
 // SessionDetailPage — the one session dossier on the trace spine
@@ -24,6 +26,18 @@ export default function SessionDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const { data: response, isLoading, isError, error } = useGlobalSessionDetail(id || null);
   const session = response?.data;
+
+  // Page-context enrichment (bu-0ynlk.4): attaches the session id currently
+  // in view so a chat message sent from this page (e.g. "why did this fail")
+  // arrives grounded without the owner having to repeat the id.
+  const setPageSubject = usePageSubject().set;
+  useEffect(() => {
+    if (!id) return;
+    setPageSubject({
+      visible_resource: { kind: "session", id },
+      visible_summary: `Session ${id.slice(0, 8)}`,
+    });
+  }, [id, setPageSubject]);
 
   if (!id) {
     return (

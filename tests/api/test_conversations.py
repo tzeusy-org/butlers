@@ -35,6 +35,7 @@ from butlers.api.conversations import (
     conversation_reply_create,
     conversation_search,
     conversation_set_routed_butler,
+    message_create,
     message_create_idempotent,
     message_find_reply_since,
     message_set_session_id_if_null,
@@ -46,6 +47,7 @@ from butlers.api.routers import conversations as conversations_router
 from butlers.api.routers.conversations import (
     _SWITCHBOARD_BUTLER,
     _get_db_manager,
+    _persist_dashboard_user_message,
     _resolve_session_id,
     _stream_conversation_response,
     _submit_to_switchboard,
@@ -461,6 +463,100 @@ async def test_message_create_idempotent_returns_existing_message_without_increm
     assert is_new is False
     assert message == existing
     assert pool.fetchrow.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# page_context / captured_at persistence (bu-0ynlk.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_message_create_persists_page_context_and_defaults_captured_at():
+    pool = AsyncMock()
+    page_context = {"route": "/spend", "query_params": {"window": "week"}}
+
+    result = await message_create(
+        pool,
+        conversation_id=_CONV_ID,
+        role="user",
+        content="why is this so expensive",
+        page_context=page_context,
+    )
+
+    insert_sql, *insert_args = pool.execute.await_args.args
+    assert "page_context" in insert_sql
+    assert "captured_at" in insert_sql
+    assert page_context in insert_args
+    assert result["page_context"] == page_context
+    assert result["captured_at"] is not None
+
+
+async def test_message_create_leaves_captured_at_null_without_page_context():
+    pool = AsyncMock()
+
+    result = await message_create(pool, conversation_id=_CONV_ID, role="user", content="hello")
+
+    assert result["page_context"] is None
+    assert result["captured_at"] is None
+
+
+async def test_message_create_idempotent_retry_reuses_the_originally_captured_page_context():
+    """A retry must never re-capture: the first (winning) write's page_context
+    is what a later retry sees, even if the retry call itself passes a
+    different one (bu-0ynlk.4 — the router builds the ingest envelope from
+    this returned dict, not from the retry request body)."""
+    message_id = uuid4()
+    original_page_context = {"route": "/spend", "query_params": {"window": "week"}}
+    existing = {
+        "id": message_id,
+        "conversation_id": _CONV_ID,
+        "role": "user",
+        "content": "why is this so expensive",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+        "sources": None,
+        "page_context": original_page_context,
+        "captured_at": _NOW,
+    }
+    pool = AsyncMock()
+    # First fetchrow call is the INSERT ... ON CONFLICT DO NOTHING RETURNING —
+    # simulate a conflict (None), then the fallback SELECT returns the
+    # originally-persisted row regardless of this call's own page_context arg.
+    pool.fetchrow = AsyncMock(side_effect=[None, existing])
+
+    message, is_new = await message_create_idempotent(
+        pool,
+        message_id=message_id,
+        conversation_id=_CONV_ID,
+        role="user",
+        content="why is this so expensive",
+        page_context={"route": "/spend", "query_params": {"window": "different-retry-value"}},
+    )
+
+    assert is_new is False
+    assert message["page_context"] == original_page_context
+
+
+async def test_persist_dashboard_user_message_forwards_page_context_on_first_write():
+    pool = AsyncMock()
+    page_context = {"route": "/entities/concentration", "query_params": {"predicate": "child-of"}}
+
+    message, is_new = await _persist_dashboard_user_message(
+        pool,
+        conversation_id=_CONV_ID,
+        message="Alice is child-of Bob",
+        message_id=None,
+        page_context=page_context,
+    )
+
+    assert is_new is True
+    assert message["page_context"] == page_context
 
 
 async def test_conversation_set_routed_butler_scopes_to_null_column():

@@ -2590,9 +2590,43 @@ class MessagePipeline:
                                     exc_info=True,
                                 )
 
+                        # Dashboard channel: the policy bypass (sticky/pinned
+                        # routing via control.pinned_target) skips the
+                        # classification session entirely, so it must inject
+                        # the same deterministic conversation_id/page_context
+                        # confirm-loop block that route_to_butler would have
+                        # (see core_tools/_switchboard.py) -- otherwise a
+                        # pinned dashboard turn silently loses page context
+                        # (bu-0ynlk.4).
+                        _bypass_dashboard_context_block: str | None = None
+                        if source == "dashboard":
+                            from butlers.core_tools._switchboard import (
+                                _build_dashboard_confirm_block,
+                                _dashboard_conversation_id_from_context,
+                            )
+
+                            if dashboard_context is None:
+                                dashboard_context = await self._load_dashboard_context(
+                                    message_inbox_id
+                                )
+                            _bypass_conversation_id = _dashboard_conversation_id_from_context(
+                                dashboard_context
+                            )
+                            if _bypass_conversation_id:
+                                _bypass_dashboard_context_block = _build_dashboard_confirm_block(
+                                    conversation_id=_bypass_conversation_id,
+                                    page_context=(
+                                        dashboard_context.get("page_context")
+                                        if isinstance(dashboard_context, dict)
+                                        else None
+                                    ),
+                                )
+
                         _bypass_input: dict[str, Any] = {"prompt": message_text}
                         if _bypass_input_context is not None:
                             _bypass_input["context"] = _bypass_input_context
+                        elif _bypass_dashboard_context_block is not None:
+                            _bypass_input["context"] = _bypass_dashboard_context_block
 
                         bypass_envelope: dict[str, Any] = {
                             "schema_version": "route.v1",
