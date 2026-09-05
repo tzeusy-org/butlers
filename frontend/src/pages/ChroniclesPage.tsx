@@ -345,6 +345,19 @@ export default function ChroniclesPage() {
     : (briefing?.voice_paragraph ?? UNAVAILABLE_FALLBACK.voiceParagraph);
   const headlineLines = deriveHeadlineLines(stateClass, headline, subject);
   const isStale = isKnownContentState && briefing?.voice_source === "stale";
+  const availability = briefing?.subquery_availability;
+  const isRecoverableCoverageGap =
+    hasKnownState &&
+    stateClass === "unavailable" &&
+    availability != null &&
+    availability.some(
+      (entry) => entry.subquery === "coverage_floor" && entry.state === "available",
+    ) &&
+    availability.some(
+      (entry) => entry.subquery === "coverage_witness" && entry.state === "available",
+    ) &&
+    !availability.some((entry) => entry.state === "unavailable");
+  const canRegenerateDayClose = isStale || isRecoverableCoverageGap;
   const regenerateDayClose = useMutation<
     ChroniclerDayCloseRefreshResult,
     Error,
@@ -366,6 +379,14 @@ export default function ChroniclesPage() {
     isCurrentDayCloseRegeneration && regenerateDayClose.isPending;
   const isCurrentDayCloseRegenerationError =
     isCurrentDayCloseRegeneration && regenerateDayClose.isError;
+  const isCurrentDayCloseRegenerationInvalid =
+    isCurrentDayCloseRegeneration &&
+    regenerateDayClose.data != null &&
+    "invalid" in regenerateDayClose.data &&
+    regenerateDayClose.data.invalid;
+  const regenerationErrorStatus = (
+    regenerateDayClose.error as (Error & { status?: number }) | null
+  )?.status;
   const attentionItems = adaptAttention(
     isUnknownState ? [] : (briefing?.attention_items ?? []),
     () => void refetch(),
@@ -419,33 +440,13 @@ export default function ChroniclesPage() {
               <ChevronRight aria-hidden />
             </Button>
             {isStale ? (
-              <>
-                <span
-                  style={{ ...EYEBROW_STYLE, fontSize: "9px", letterSpacing: "0.08em" }}
-                  title="The day-close summary may be out of date."
-                  aria-label="Day-close summary may be out of date"
-                >
-                  stale
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  disabled={isCurrentDayCloseRegenerationPending}
-                  aria-busy={isCurrentDayCloseRegenerationPending}
-                  aria-label="Regenerate day-close summary"
-                  onClick={() =>
-                    regenerateDayClose.mutate({ date: selectedDate, tz: ownerTz })
-                  }
-                >
-                  {isCurrentDayCloseRegenerationPending ? "Regenerating" : "Regenerate"}
-                </Button>
-                {isCurrentDayCloseRegenerationError ? (
-                  <span role="alert" style={{ ...EYEBROW_STYLE, color: "var(--destructive)" }}>
-                    Regeneration failed.
-                  </span>
-                ) : null}
-              </>
+              <span
+                style={{ ...EYEBROW_STYLE, fontSize: "9px", letterSpacing: "0.08em" }}
+                title="The day-close summary may be out of date."
+                aria-label="Day-close summary may be out of date"
+              >
+                stale
+              </span>
             ) : null}
             {isNonContentState ? (
               <span
@@ -459,6 +460,31 @@ export default function ChroniclesPage() {
                 aria-label="Coverage or availability for this day could not be affirmed"
               >
                 {stateClass.replace("_", " ")}
+              </span>
+            ) : null}
+            {canRegenerateDayClose ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                disabled={isCurrentDayCloseRegenerationPending}
+                aria-busy={isCurrentDayCloseRegenerationPending}
+                aria-label="Regenerate day-close summary"
+                onClick={() => regenerateDayClose.mutate({ date: selectedDate, tz: ownerTz })}
+              >
+                {isCurrentDayCloseRegenerationPending ? "Regenerating" : "Regenerate"}
+              </Button>
+            ) : null}
+            {isCurrentDayCloseRegenerationError ? (
+              <span role="alert" style={{ ...EYEBROW_STYLE, color: "var(--destructive)" }}>
+                {regenerationErrorStatus === 429
+                  ? "Regenerated recently. Try again later."
+                  : "Regeneration failed. Try again later."}
+              </span>
+            ) : null}
+            {isCurrentDayCloseRegenerationInvalid ? (
+              <span role="alert" style={{ ...EYEBROW_STYLE, color: "var(--destructive)" }}>
+                Regeneration produced no usable summary.
               </span>
             ) : null}
           </div>

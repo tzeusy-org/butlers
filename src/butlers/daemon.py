@@ -206,9 +206,15 @@ DOMAIN_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Backwards-compatible alias: all core tools across all butler types.
+# Server-to-server control tools registered only on the owning butler.
+CHRONICLER_CORE_TOOL_NAMES: frozenset[str] = frozenset({"chronicler_day_close_refresh"})
+
+# Backwards-compatible alias: every core tool registered on any butler type.
 CORE_TOOL_NAMES: frozenset[str] = (
-    UNIVERSAL_CORE_TOOL_NAMES | MESSENGER_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
+    UNIVERSAL_CORE_TOOL_NAMES
+    | MESSENGER_CORE_TOOL_NAMES
+    | DOMAIN_CORE_TOOL_NAMES
+    | CHRONICLER_CORE_TOOL_NAMES
 )
 
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"

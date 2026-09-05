@@ -8,6 +8,7 @@ per RFC 0014 §D7.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import logging
@@ -27,6 +28,7 @@ from opentelemetry import trace
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiResponse,
     ErrorDetail,
@@ -60,7 +62,6 @@ from butlers.chronicler.day_close_cache import (
     day_close_cache_key,
     resolve_day_close_timezone,
 )
-from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
@@ -2850,7 +2851,7 @@ async def get_day_close_cache(
 
 # ── POST /api/chronicler/aggregate/day-close/refresh ─────────────────────────
 
-_REFRESH_RATE_LIMIT_HOURS = 24
+_DAY_CLOSE_REFRESH_MCP_TIMEOUT_SECONDS = 110.0
 
 
 def _today_in_timezone(
@@ -2871,7 +2872,7 @@ async def refresh_day_close(
     request: Request,
     body: DayCloseRefreshRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
-    dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> DayCloseRefreshResponse | DayCloseRefreshQuietResponse | JSONResponse:
     """Re-invoke the day-close Tier-2 path on demand (rate-limited per local-day tuple).
 
@@ -2879,11 +2880,9 @@ async def refresh_day_close(
     tuple was built within the last 24 hours. If so, returns 429 with
     ``code=day_close_rate_limited`` and ``details.retry_after_seconds``.
 
-    Otherwise, re-dispatches the ``chronicler_day_close`` scheduled prompt via the
-    injected dispatch callable and writes a fresh ``tier2_cache`` row via
-    ``write_day_close_cache()``.
-
-    Returns 503 when no dispatch callable is wired (standalone/test mode without spawner).
+    Otherwise, proxies the request to the running Chronicler daemon's dedicated
+    infrastructure tool. The daemon owns dispatch, cache admission, and witness
+    persistence; this split-process dashboard API never holds an in-process spawner.
     """
     # ── Validate timezone ─────────────────────────────────────────────────────
     try:
@@ -2929,138 +2928,150 @@ async def refresh_day_close(
             ).model_dump(exclude_none=True),
         )
 
-    pool = _pool(db)
-    cache_key = day_close_cache_key(body.date, timezone_name)
-    now = datetime.now(UTC)
+    try:
+        client = await mcp_manager.get_client("chronicler")
+        mcp_result = await asyncio.wait_for(
+            client.call_tool(
+                "chronicler_day_close_refresh",
+                {"date_label": body.date.isoformat(), "timezone": timezone_name},
+            ),
+            timeout=_DAY_CLOSE_REFRESH_MCP_TIMEOUT_SECONDS,
+        )
+    except ButlerUnreachableError:
+        payload: dict[str, Any] = {
+            "status": "error",
+            "code": "dispatch_unavailable",
+            "message": "The Chronicler daemon is unavailable for day-close regeneration.",
+        }
+    except TimeoutError:
+        payload = {
+            "status": "error",
+            "code": "dispatch_timeout",
+            "message": "Day-close regeneration exceeded its execution deadline.",
+        }
+    except Exception:
+        logger.exception("Chronicler day-close refresh MCP call failed")
+        payload = {
+            "status": "error",
+            "code": "dispatch_unavailable",
+            "message": "Day-close regeneration could not reach the Chronicler daemon.",
+        }
+    else:
+        payload = {}
+        raw_blocks = getattr(
+            mcp_result,
+            "content",
+            mcp_result if isinstance(mcp_result, list) else None,
+        )
+        blocks = raw_blocks if isinstance(raw_blocks, list | tuple) else []
+        if not getattr(mcp_result, "is_error", False):
+            for block in blocks:
+                text = getattr(block, "text", None)
+                if not text:
+                    continue
+                try:
+                    decoded = json.loads(text)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(decoded, dict):
+                    payload = decoded
+                    break
+        if not payload:
+            payload = {
+                "status": "error",
+                "code": "invalid_refresh_response",
+                "message": "The Chronicler daemon returned an invalid regeneration response.",
+            }
 
-    # ── Rate-limit check ──────────────────────────────────────────────────────
-    existing_row = await pool.fetchrow(
-        """
-        SELECT cache_built_at
-        FROM tier2_cache
-        WHERE cache_key = $1
-          AND superseded_at IS NULL
-        """,
-        cache_key,
-    )
-
-    if existing_row is not None:
-        cache_built_at: datetime = existing_row["cache_built_at"]
-        age = now - cache_built_at
-        if age < timedelta(hours=_REFRESH_RATE_LIMIT_HOURS):
-            retry_after = int((timedelta(hours=_REFRESH_RATE_LIMIT_HOURS) - age).total_seconds())
-            return JSONResponse(
-                status_code=429,
-                content=ErrorResponse(
-                    error=ErrorDetail(
-                        code="day_close_rate_limited",
-                        message=(
-                            f"A day-close refresh for {cache_key!r} was performed recently. "
-                            f"Retry after {retry_after} seconds."
-                        ),
-                        butler="chronicler",
-                        details={"retry_after_seconds": retry_after},
-                    )
-                ).model_dump(exclude_none=True),
+    if payload.get("status") != "success":
+        requested_code = str(payload.get("code") or "invalid_refresh_response")
+        error_contract = {
+            "missing_parameter": (400, "The regeneration timezone is required."),
+            "invalid_date": (400, "The regeneration date is invalid."),
+            "invalid_timezone": (400, "The regeneration timezone is invalid."),
+            "day_close_not_settled": (400, "The regeneration date is not settled yet."),
+            "refresh_context_forbidden": (403, "The regeneration context is not permitted."),
+            "day_close_rate_limited": (429, "This day was regenerated recently."),
+            "task_not_found": (503, "The Chronicler day-close task is unavailable."),
+            "dispatch_unavailable": (503, "The Chronicler daemon is unavailable."),
+            "dispatch_failed": (502, "Day-close regeneration failed during execution."),
+            "dispatch_timeout": (504, "Day-close regeneration exceeded its execution deadline."),
+            "cache_write_failed": (502, "Day-close regeneration produced no usable cache."),
+            "coverage_witness_write_failed": (
+                502,
+                "Day-close regeneration produced no durable coverage witness.",
+            ),
+            "invalid_refresh_response": (
+                502,
+                "The Chronicler daemon returned an invalid response.",
+            ),
+        }
+        code = requested_code if requested_code in error_contract else "invalid_refresh_response"
+        error_status, error_message = error_contract[code]
+        details = None
+        if code == "day_close_rate_limited":
+            raw_details = payload.get("details")
+            retry_after = (
+                raw_details.get("retry_after_seconds") if isinstance(raw_details, dict) else None
             )
-
-    # ── Dispatch guard ────────────────────────────────────────────────────────
-    if dispatch_fn is None:
+            if (
+                isinstance(retry_after, int)
+                and not isinstance(retry_after, bool)
+                and retry_after > 0
+            ):
+                details = {"retry_after_seconds": retry_after}
+            else:
+                code = "invalid_refresh_response"
+                error_status, error_message = error_contract[code]
         return JSONResponse(
-            status_code=503,
+            status_code=error_status,
             content=ErrorResponse(
                 error=ErrorDetail(
-                    code="dispatch_unavailable",
-                    message="Day-close dispatch is not available in this deployment mode.",
+                    code=code,
+                    message=error_message,
                     butler="chronicler",
+                    details=details,
                 )
             ).model_dump(exclude_none=True),
         )
 
-    # ── Look up the chronicler_day_close prompt from scheduled_tasks ──────────
-    task_row = await pool.fetchrow(
-        "SELECT prompt FROM scheduled_tasks WHERE name = $1 AND enabled = true",
-        DAY_CLOSE_TASK_NAME,
-    )
-    if task_row is None or not task_row["prompt"]:
-        return JSONResponse(
-            status_code=503,
-            content=ErrorResponse(
-                error=ErrorDetail(
-                    code="task_not_found",
-                    message=f"Scheduled task {DAY_CLOSE_TASK_NAME!r} not found or has no prompt.",
-                    butler="chronicler",
-                )
-            ).model_dump(exclude_none=True),
-        )
-
-    # ── Dispatch — re-uses the same prompt as the cron schedule ───────────────
-    # The request target is trusted API input, not an LLM inference. Append it
-    # to the scheduled prompt so the existing Tier-2 path receives an explicit
-    # date/timezone bundle target for historical refreshes.
-    refresh_prompt = (
-        f"{task_row['prompt']}\n\n"
-        "Trusted refresh target: call chronicler_day_close_bundle exactly once "
-        f"with date_label={body.date.isoformat()} and timezone={timezone_name}. "
-        "Use this exact closed local day; do not substitute another date or timezone."
-    )
-    result = await dispatch_fn(
-        prompt=refresh_prompt,
-        trigger_source=f"api:day_close_refresh:{body.date.isoformat()}",
-    )
-
-    # ── Write the fresh cache row ─────────────────────────────────────────────
-    # Anchor run_at to the requested date so _compute_day_window targets body.date.
-    # _compute_day_window closes yesterday-in-tz, so we pass local noon of
-    # body.date + 1 day (in the validated timezone) to ensure the computed local window covers
-    # body.date regardless of the timezone's UTC offset (#2681).
-    run_at = datetime.combine(
-        body.date + timedelta(days=1),
-        datetime.min.time().replace(hour=12),
-        tzinfo=timezone,
-    ).astimezone(UTC)
-    write_outcome = await write_day_close_cache(
-        pool,
-        task_name=DAY_CLOSE_TASK_NAME,
-        result=result,
-        run_at=run_at,
-        tz=timezone_name,
-        target_date=body.date,
-    )
-
-    if write_outcome is None:
-        # A blank/malformed or otherwise unproven result must not reuse an
-        # older cache row as if this invocation had produced it.
+    try:
+        cache_key = payload["cache_key"]
+        expected_cache_key = day_close_cache_key(body.date, timezone_name)
+        if not isinstance(cache_key, str) or cache_key != expected_cache_key:
+            raise ValueError("refresh response cache identity mismatch")
+        if payload.get("quiet") is True:
+            response_body: DayCloseRefreshResponse | DayCloseRefreshQuietResponse = (
+                DayCloseRefreshQuietResponse(cache_key=cache_key)
+            )
+        else:
+            invalid = payload["invalid"]
+            invalid_reason = payload["invalid_reason"]
+            if type(invalid) is not bool or invalid_reason not in {
+                None,
+                "inadmissible_prose",
+                "date_mismatch",
+            }:
+                raise ValueError("refresh response admission state is invalid")
+            if invalid != (invalid_reason is not None):
+                raise ValueError("refresh response admission state is incoherent")
+            response_body = DayCloseRefreshResponse(
+                cache_key=cache_key,
+                cache_built_at=payload["cache_built_at"],
+                invalid=invalid,
+                invalid_reason=invalid_reason,
+            )
+    except (KeyError, TypeError, ValueError):
         return JSONResponse(
             status_code=502,
             content=ErrorResponse(
                 error=ErrorDetail(
-                    code="cache_write_failed",
-                    message="Day-close dispatch completed but no cache outcome was written.",
+                    code="invalid_refresh_response",
+                    message="The Chronicler daemon returned an invalid response.",
                     butler="chronicler",
                 )
             ).model_dump(exclude_none=True),
         )
-
-    quiet = write_outcome.quiet
-    new_row = None
-    if not quiet:
-        # Fetch the freshly-written row to return the authoritative cache_built_at.
-        new_row = await pool.fetchrow(
-            "SELECT cache_built_at FROM tier2_cache WHERE cache_key = $1 AND superseded_at IS NULL",
-            cache_key,
-        )
-        if new_row is None:
-            return JSONResponse(
-                status_code=502,
-                content=ErrorResponse(
-                    error=ErrorDetail(
-                        code="cache_write_failed",
-                        message="Day-close dispatch completed but no cache row was written.",
-                        butler="chronicler",
-                    )
-                ).model_dump(exclude_none=True),
-            )
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -3073,17 +3084,7 @@ async def refresh_day_close(
         response_status=200,
         request=request,
     )
-
-    if quiet:
-        return DayCloseRefreshQuietResponse(cache_key=cache_key)
-
-    assert new_row is not None
-    return DayCloseRefreshResponse(
-        cache_key=cache_key,
-        cache_built_at=new_row["cache_built_at"],
-        invalid=bool(write_outcome and write_outcome.invalid_reason),
-        invalid_reason=write_outcome.invalid_reason if write_outcome else None,
-    )
+    return response_body
 
 
 # ── Editorial endpoints (bu-i29ix) ────────────────────────────────────────

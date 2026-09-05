@@ -38,6 +38,10 @@ from pydantic import BaseModel
 from starlette.requests import ClientDisconnect
 from starlette.testclient import TestClient
 
+from butlers.core.tool_call_capture import (
+    reset_current_runtime_trigger_source,
+    set_current_runtime_trigger_source,
+)
 from butlers.credentials import CredentialError
 from butlers.daemon import (
     DOMAIN_CORE_TOOL_NAMES,
@@ -1526,6 +1530,40 @@ async def test_notify_delivery_and_failures(butler_dir: Path) -> None:
     r_conn = await notify_fn(channel="email", message="Hello")
     assert r_conn["status"] == "error"
     assert "unreachable" in r_conn["error"].lower()
+
+
+async def test_manual_chronicler_refresh_suppresses_notify_without_affecting_schedule(
+    tmp_path: Path,
+) -> None:
+    """Historical regeneration is silent; the normal scheduled close still delivers."""
+    butler_dir = _make_butler_toml(tmp_path, butler_name="chronicler")
+    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra())
+    assert notify_fn is not None
+    mock_result = MagicMock(is_error=False, data={"notification_id": "n-1", "status": "sent"})
+    daemon.switchboard_client = AsyncMock()
+    daemon.switchboard_client.call_tool = AsyncMock(return_value=mock_result)
+
+    manual_token = set_current_runtime_trigger_source("api:day_close_refresh:2026-09-03")
+    try:
+        manual_result = await notify_fn(channel="email", message="Historical summary")
+    finally:
+        reset_current_runtime_trigger_source(manual_token)
+
+    assert manual_result == {
+        "status": "suppressed",
+        "reason": "manual_day_close_refresh_tool_policy",
+        "retryable": False,
+    }
+    daemon.switchboard_client.call_tool.assert_not_awaited()
+
+    scheduled_token = set_current_runtime_trigger_source("schedule:chronicler_day_close")
+    try:
+        scheduled_result = await notify_fn(channel="email", message="Scheduled summary")
+    finally:
+        reset_current_runtime_trigger_source(scheduled_token)
+
+    assert scheduled_result["status"] == "ok"
+    daemon.switchboard_client.call_tool.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

@@ -165,6 +165,29 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
   };
 }
 
+const HEALTHY_COVERAGE_GAP_LEDGER: NonNullable<
+  ChroniclesBriefing["subquery_availability"]
+> = [
+  { subquery: "coverage_floor", state: "available" },
+  { subquery: "coverage_witness", state: "available" },
+  { subquery: "episodes", state: "not_requested" },
+];
+
+function buildRegeneratableBriefing(
+  date: string,
+  kind: "stale" | "coverage-gap",
+): ChroniclesBriefing {
+  if (kind === "stale") return buildBriefing({ date, voice_source: "stale" });
+  return buildBriefing({
+    date,
+    state_class: "unavailable",
+    headline: "Coverage for this day could not be confirmed.",
+    voice_paragraph: "Chronicler could not confirm whether this day was chronicled.",
+    voice_source: "templated",
+    subquery_availability: HEALTHY_COVERAGE_GAP_LEDGER,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -248,8 +271,20 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("stale");
   });
 
-  it("regenerates a stale summary for the selected exact date and timezone", async () => {
-    _briefing = buildBriefing({ voice_source: "stale" });
+  it.each([
+    ["stale cache", { voice_source: "stale" as const }],
+    [
+      "missing coverage witness",
+      {
+        state_class: "unavailable" as const,
+        voice_source: "templated" as const,
+        headline: "Coverage for this day could not be confirmed.",
+        voice_paragraph: "Chronicler could not confirm whether this day was chronicled.",
+        subquery_availability: HEALTHY_COVERAGE_GAP_LEDGER,
+      },
+    ],
+  ])("regenerates a %s for the selected exact date and timezone", async (_label, overrides) => {
+    _briefing = buildBriefing(overrides);
     postChroniclerDayCloseRefresh.mockResolvedValue({
       cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
       quiet: true,
@@ -261,6 +296,10 @@ describe("ChroniclesPage editorial archetype", () => {
         'button[aria-label="Regenerate day-close summary"]',
       ) as HTMLButtonElement;
       expect(regenerate).toBeTruthy();
+      if (_label === "missing coverage witness") {
+        expect(container.textContent).toContain("unavailable");
+        expect(container.textContent).not.toContain("stale");
+      }
 
       await act(async () => {
         regenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -277,96 +316,192 @@ describe("ChroniclesPage editorial archetype", () => {
     }
   });
 
-  it("keeps a newly selected stale tuple regeneratable while a prior tuple refresh is pending", async () => {
-    _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
-    let resolvePriorRefresh: ((result: { cache_key: string; quiet: boolean }) => void) | undefined;
-    postChroniclerDayCloseRefresh.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolvePriorRefresh = resolve;
-        }),
-    );
+  it.each([
+    [
+      "coverage floor read failed",
+      "unavailable",
+      [
+        { subquery: "coverage_floor", state: "unavailable" },
+        { subquery: "coverage_witness", state: "available" },
+      ],
+    ],
+    [
+      "coverage witness read failed",
+      "unavailable",
+      [
+        { subquery: "coverage_floor", state: "available" },
+        { subquery: "coverage_witness", state: "unavailable" },
+      ],
+    ],
+    [
+      "another owned read failed",
+      "unavailable",
+      [
+        ...HEALTHY_COVERAGE_GAP_LEDGER,
+        { subquery: "source_health", state: "unavailable" },
+      ],
+    ],
+    ["availability ledger is absent", "unavailable", undefined],
+    ["state is no_data", "no_data", HEALTHY_COVERAGE_GAP_LEDGER],
+    ["state is degraded", "degraded", HEALTHY_COVERAGE_GAP_LEDGER],
+    [
+      "state is unknown",
+      "mystery" as ChroniclesBriefing["state_class"],
+      HEALTHY_COVERAGE_GAP_LEDGER,
+    ],
+  ] as const)("does not offer regeneration when %s", (_label, stateClass, ledger) => {
+    _briefing = buildBriefing({
+      state_class: stateClass,
+      voice_source: "templated",
+      subquery_availability: ledger ? [...ledger] : undefined,
+    });
 
-    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
-    try {
-      const priorRegenerate = container.querySelector(
-        'button[aria-label="Regenerate day-close summary"]',
-      ) as HTMLButtonElement;
+    const html = renderPage();
 
-      await act(async () => {
-        priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-      expect(priorRegenerate.disabled).toBe(true);
-      expect(priorRegenerate.textContent).toContain("Regenerating");
-
-      _briefing = buildBriefing({ date: "2026-05-07", voice_source: "stale" });
-      navigate("/chronicles?date=2026-05-07");
-
-      const selectedRegenerate = container.querySelector(
-        'button[aria-label="Regenerate day-close summary"]',
-      ) as HTMLButtonElement;
-      expect(selectedRegenerate.disabled).toBe(false);
-      expect(selectedRegenerate.getAttribute("aria-busy")).toBe("false");
-      expect(selectedRegenerate.textContent).toContain("Regenerate");
-
-      await act(async () => {
-        resolvePriorRefresh?.({
-          cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
-          quiet: true,
-        });
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    } finally {
-      unmount();
-    }
+    expect(html).not.toContain('aria-label="Regenerate day-close summary"');
   });
 
-  it("keeps a failed refresh visible only for the tuple that requested it", async () => {
-    _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
-    let rejectPriorRefresh: ((error: Error) => void) | undefined;
-    postChroniclerDayCloseRefresh.mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectPriorRefresh = reject;
-        }),
-    );
+  it.each(["stale", "coverage-gap"] as const)(
+    "keeps a newly selected %s tuple regeneratable while a prior tuple refresh is pending",
+    async (kind) => {
+      _briefing = buildRegeneratableBriefing("2026-05-08", kind);
+      let resolvePriorRefresh:
+        | ((result: { cache_key: string; quiet: boolean }) => void)
+        | undefined;
+      postChroniclerDayCloseRefresh.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvePriorRefresh = resolve;
+          }),
+      );
 
-    const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+      const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+      try {
+        const priorRegenerate = container.querySelector(
+          'button[aria-label="Regenerate day-close summary"]',
+        ) as HTMLButtonElement;
+
+        await act(async () => {
+          priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          await Promise.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+
+        expect(priorRegenerate.disabled).toBe(true);
+        expect(priorRegenerate.textContent).toContain("Regenerating");
+        if (kind === "coverage-gap") {
+          expect(container.textContent).toContain("Coverage for this day could not be confirmed.");
+        }
+
+        _briefing = buildRegeneratableBriefing("2026-05-07", kind);
+        navigate("/chronicles?date=2026-05-07");
+
+        const selectedRegenerate = container.querySelector(
+          'button[aria-label="Regenerate day-close summary"]',
+        ) as HTMLButtonElement;
+        expect(selectedRegenerate.disabled).toBe(false);
+        expect(selectedRegenerate.getAttribute("aria-busy")).toBe("false");
+        expect(selectedRegenerate.textContent).toContain("Regenerate");
+
+        await act(async () => {
+          resolvePriorRefresh?.({
+            cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
+            quiet: true,
+          });
+          await Promise.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+      } finally {
+        unmount();
+      }
+    },
+  );
+
+  it.each([
+    ["stale", new Error("refresh failed"), "Regeneration failed. Try again later."],
+    [
+      "coverage-gap",
+      Object.assign(new Error("rate limited"), { status: 429 }),
+      "Regenerated recently. Try again later.",
+    ],
+  ] as const)(
+    "keeps a failed %s refresh visible only for the tuple that requested it",
+    async (kind, refreshError, expectedMessage) => {
+      _briefing = buildRegeneratableBriefing("2026-05-08", kind);
+      let rejectPriorRefresh: ((error: Error) => void) | undefined;
+      postChroniclerDayCloseRefresh.mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectPriorRefresh = reject;
+          }),
+      );
+
+      const { container, navigate, unmount } = mountPage("/chronicles?date=2026-05-08");
+      try {
+        const priorRegenerate = container.querySelector(
+          'button[aria-label="Regenerate day-close summary"]',
+        ) as HTMLButtonElement;
+        await act(async () => {
+          priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          await Promise.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+
+        _briefing = buildRegeneratableBriefing("2026-05-07", kind);
+        navigate("/chronicles?date=2026-05-07");
+
+        await act(async () => {
+          rejectPriorRefresh?.(refreshError);
+          await Promise.resolve();
+          await vi.advanceTimersByTimeAsync(0);
+        });
+
+        const selectedRegenerate = container.querySelector(
+          'button[aria-label="Regenerate day-close summary"]',
+        ) as HTMLButtonElement;
+        expect(selectedRegenerate.disabled).toBe(false);
+        expect(selectedRegenerate.textContent).toContain("Regenerate");
+        expect(container.querySelector('[role="alert"]')).toBeNull();
+
+        _briefing = buildRegeneratableBriefing("2026-05-08", kind);
+        navigate("/chronicles?date=2026-05-08");
+
+        const failedRegenerate = container.querySelector(
+          'button[aria-label="Regenerate day-close summary"]',
+        ) as HTMLButtonElement;
+        expect(failedRegenerate.disabled).toBe(false);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(expectedMessage);
+        if (kind === "coverage-gap") {
+          expect(container.textContent).toContain("Coverage for this day could not be confirmed.");
+        }
+      } finally {
+        unmount();
+      }
+    },
+  );
+
+  it("announces an invalid regeneration outcome after refetching the selected tuple", async () => {
+    _briefing = buildBriefing({ voice_source: "stale" });
+    postChroniclerDayCloseRefresh.mockResolvedValue({
+      cache_key: "day_close:2026-05-08:tz:Asia/Singapore",
+      cache_built_at: "2026-05-09T00:00:00Z",
+      invalid: true,
+      invalid_reason: "inadmissible_prose",
+    });
+    const { container, unmount } = mountPage("/chronicles?date=2026-05-08");
     try {
-      const priorRegenerate = container.querySelector(
+      const regenerate = container.querySelector(
         'button[aria-label="Regenerate day-close summary"]',
       ) as HTMLButtonElement;
       await act(async () => {
-        priorRegenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        regenerate.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(0);
       });
 
-      _briefing = buildBriefing({ date: "2026-05-07", voice_source: "stale" });
-      navigate("/chronicles?date=2026-05-07");
-
-      await act(async () => {
-        rejectPriorRefresh?.(new Error("refresh failed"));
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-      const selectedRegenerate = container.querySelector(
-        'button[aria-label="Regenerate day-close summary"]',
-      ) as HTMLButtonElement;
-      expect(selectedRegenerate.disabled).toBe(false);
-      expect(selectedRegenerate.textContent).toContain("Regenerate");
-      expect(container.querySelector('[role="alert"]')).toBeNull();
-
-      _briefing = buildBriefing({ date: "2026-05-08", voice_source: "stale" });
-      navigate("/chronicles?date=2026-05-08");
-
+      expect(_refetch).toHaveBeenCalledOnce();
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "Regeneration failed.",
+        "Regeneration produced no usable summary.",
       );
     } finally {
       unmount();

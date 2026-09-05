@@ -354,6 +354,7 @@ class TestButlerStartupIntegration:
         from unittest.mock import MagicMock
 
         from butlers.daemon import (
+            CHRONICLER_CORE_TOOL_NAMES,
             CORE_TOOL_NAMES,
             MESSENGER_CORE_TOOL_NAMES,
             ButlerDaemon,
@@ -396,7 +397,7 @@ class TestButlerStartupIntegration:
 
         daemon._register_core_tools()
 
-        expected_tools = CORE_TOOL_NAMES - MESSENGER_CORE_TOOL_NAMES
+        expected_tools = CORE_TOOL_NAMES - MESSENGER_CORE_TOOL_NAMES - CHRONICLER_CORE_TOOL_NAMES
         assert set(registered_tools) == expected_tools
 
 

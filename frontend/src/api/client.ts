@@ -5832,6 +5832,10 @@ export function postChroniclerDayCloseRefresh(
   return apiFetch("/chronicler/aggregate/day-close/refresh", {
     method: "POST",
     body: JSON.stringify(body),
+    // The endpoint awaits the existing reasoning-tier day-close session. Keep
+    // the browser aligned with the dashboard's 120s butler-trigger budget
+    // instead of aborting at the generic 15s read-request timeout.
+    timeoutMs: 120_000,
   });
 }
 
