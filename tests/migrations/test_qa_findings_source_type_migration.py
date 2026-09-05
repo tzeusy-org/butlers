@@ -13,10 +13,15 @@ import asyncpg
 import pytest
 
 from alembic import command
-from butlers.migrations import _build_alembic_config
+from butlers.migrations import (
+    _build_alembic_config,
+    get_chain_head,
+    run_migrations,
+)
 from butlers.modules.qa import _KNOWN_SOURCES
 from butlers.testing.migration import (
     create_migrated_test_db,
+    create_migration_db,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -97,6 +102,93 @@ def test_core_migrations_accept_known_qa_sources(
             await pool.close()
 
     asyncio.run(_exercise())
+
+
+def test_new_schema_replay_preserves_newer_public_source_types(postgres_container) -> None:
+    """A late schema can replay core after shared QA data reached a later vocabulary."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    tool_call_migration = _load_migration("core_139_replay", _TOOL_CALL_MIGRATION_PATH)
+
+    async def _seed() -> uuid.UUID:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
+            patrol_id = await pool.fetchval(
+                """
+                INSERT INTO public.qa_patrols (status, started_at, completed_at)
+                VALUES ('running', now(), now())
+                RETURNING id
+                """
+            )
+            now = datetime.now(UTC)
+            for source_type in sorted(_KNOWN_SOURCES):
+                await pool.execute(
+                    """
+                    INSERT INTO public.qa_findings (
+                        patrol_id, fingerprint, source_type, source_butler,
+                        severity, exception_type, event_summary, call_site,
+                        occurrence_count, first_seen, last_seen
+                    )
+                    VALUES ($1, $2, $3, 'switchboard',
+                            1, 'QaSourceFinding', 'QA source finding', 'qa:discovery',
+                            1, $4, $4)
+                    """,
+                    patrol_id,
+                    uuid.uuid4().hex + uuid.uuid4().hex,
+                    source_type,
+                    now,
+                )
+            return patrol_id
+        finally:
+            await pool.close()
+
+    patrol_id = asyncio.run(_seed())
+    config = _build_alembic_config(db_url, ["core"], target_schema="concierge")
+    command.upgrade(config, f"core@{tool_call_migration.revision}")
+    command.downgrade(config, tool_call_migration.down_revision)
+
+    async def _verify_downgrade() -> None:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
+            persisted_sources = {
+                row["source_type"]
+                for row in await pool.fetch(
+                    "SELECT source_type FROM public.qa_findings WHERE patrol_id = $1",
+                    patrol_id,
+                )
+            }
+            assert persisted_sources == _KNOWN_SOURCES
+            constraint = await pool.fetchval(
+                """
+                SELECT pg_get_constraintdef(oid, true)
+                FROM pg_constraint
+                WHERE conrelid = 'public.qa_findings'::regclass
+                  AND conname = 'ck_qa_findings_source_type'
+                """
+            )
+            assert constraint is not None
+            assert all(source in constraint for source in _KNOWN_SOURCES)
+            assert {
+                row["version_num"]
+                for row in await pool.fetch("SELECT version_num FROM concierge.alembic_version")
+            } == {tool_call_migration.down_revision}
+        finally:
+            await pool.close()
+
+    asyncio.run(_verify_downgrade())
+    asyncio.run(run_migrations(db_url, chain="core", schema="concierge"))
+
+    async def _verify_head() -> None:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
+            assert {
+                row["version_num"]
+                for row in await pool.fetch("SELECT version_num FROM concierge.alembic_version")
+            } == {get_chain_head("core")}
+        finally:
+            await pool.close()
+
+    asyncio.run(_verify_head())
 
 
 def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) -> None:
