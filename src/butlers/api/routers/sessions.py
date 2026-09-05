@@ -45,6 +45,7 @@ from butlers.api.models import (
 from butlers.api.models.session import (
     DailyActivity,
     DailyActivityBucket,
+    FrictionSummary,
     HourlyActivity,
     HourlyActivityBucket,
     LatencyStats,
@@ -70,6 +71,8 @@ from butlers.api.read_models.sessions_v1 import (
     row_to_summary,
 )
 from butlers.core.pricing import PricingConfig, estimate_session_cost
+from butlers.core.sessions import friction_summary as _friction_summary
+from butlers.core.sessions import sessions_summary as _sessions_summary
 
 logger = logging.getLogger(__name__)
 
@@ -975,5 +978,53 @@ async def get_butler_latency_stats(
             mean_ms=float(mean) if mean is not None else None,
             count=int(row["count"]),
             model=row["model"],
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Butler-scoped analytics: GET /api/butlers/{name}/analytics/friction
+# ---------------------------------------------------------------------------
+
+
+@butler_sessions_router.get(
+    "/{name}/analytics/friction",
+    response_model=ApiResponse[FrictionSummary],
+)
+async def get_butler_friction_summary(
+    name: str,
+    period: Literal["today", "7d", "30d"] = Query(
+        "today", description="Summary period: 'today', '7d', or '30d'"
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[FrictionSummary]:
+    """Return typed friction-episode counts and session outcomes for a butler.
+
+    Combines the ``sessions_friction`` ledger (bu-8cdl1.9 S2 --
+    ``degenerate_tool_loop``, ``guardrail_termination``,
+    ``classification_timeout``, ``recovered_error``, ``dead_end``) with
+    ``sessions_summary``'s ``succeeded``/``failed``/``by_error_marker``
+    outcome fields, both windowed identically by ``period``. Powers the
+    butler console's friction/outcome panel (bu-8cdl1.9 S3).
+    """
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        )
+
+    friction = await _friction_summary(pool, period)
+    outcomes = await _sessions_summary(pool, period)
+
+    return ApiResponse[FrictionSummary](
+        data=FrictionSummary(
+            period=period,
+            total=friction["total"],
+            by_kind=friction["by_kind"],
+            succeeded=outcomes["succeeded"],
+            failed=outcomes["failed"],
+            by_error_marker=outcomes["by_error_marker"],
         )
     )

@@ -112,6 +112,18 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
 _FRICTION_GUARDRAIL_MARKERS = ("tool_call_budget_exceeded", "token_budget_exceeded")
 _FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE = re.compile(r"Session timed out after (\d+)s")
 
+#: Every kind ``sessions_friction.kind`` accepts (mirrors the CHECK constraint
+#: in ``alembic/versions/core/core_220_sessions_friction.py``). Used to
+#: zero-fill ``friction_summary``'s ``by_kind`` breakdown so a console panel
+#: can render a stable set of counters instead of a sparse dict.
+_FRICTION_KINDS = (
+    "degenerate_tool_loop",
+    "guardrail_termination",
+    "classification_timeout",
+    "recovered_error",
+    "dead_end",
+)
+
 
 def _is_friction_classification_timeout(error: str | None, model: str | None) -> bool:
     """Mirror the ``classification_timeout`` branch of ``_ERROR_MARKER_CASE_SQL``."""
@@ -914,6 +926,42 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         "failed": int(totals["failed"]),
         "by_error_marker": by_error_marker,
         "by_model": by_model,
+    }
+
+
+async def friction_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
+    """Return typed friction-episode counts for a period, zero-filled per kind.
+
+    Joins ``sessions_friction`` to ``sessions`` on ``session_id`` and filters
+    on the parent session's ``started_at`` -- the same window boundary
+    ``sessions_summary`` uses -- rather than the friction row's own
+    ``created_at``, so a friction breakdown and an outcome summary for the
+    same ``period`` always describe the same set of sessions.
+    """
+    if period not in _SUMMARY_PERIODS:
+        raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
+
+    since = _period_start(period)
+    rows = await pool.fetch(
+        """
+        SELECT f.kind, COUNT(*)::bigint AS count
+        FROM sessions_friction f
+        JOIN sessions s ON s.id = f.session_id
+        WHERE s.started_at >= $1
+        GROUP BY f.kind
+        """,
+        since,
+    )
+
+    by_kind: dict[str, int] = dict.fromkeys(_FRICTION_KINDS, 0)
+    for row in rows:
+        kind = str(row["kind"])
+        by_kind[kind] = by_kind.get(kind, 0) + int(row["count"])
+
+    return {
+        "period": period,
+        "total": sum(by_kind.values()),
+        "by_kind": by_kind,
     }
 
 

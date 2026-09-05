@@ -28,6 +28,7 @@ import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { Button } from "@/components/ui/button";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
+import { ButlerFrictionPanel } from "@/components/butler-detail/ButlerFrictionPanel";
 import { useButlerSessions } from "@/hooks/use-sessions";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +120,7 @@ export default function ButlerSessionsTab({
         </div>
       )}
       <ButlerPanelGrid>
+        <ButlerFrictionPanel butlerName={butlerName} />
         <Panel title="sessions" span={4} testId="panel-sessions">
           <QueryBoundary
             isLoading={isLoading}

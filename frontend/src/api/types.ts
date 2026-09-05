@@ -8306,6 +8306,29 @@ export interface LatencyStatsParams {
   window_days?: number;
 }
 
+/**
+ * Response from GET /api/butlers/{name}/analytics/friction (bu-8cdl1.9 S3).
+ *
+ * `by_kind` is zero-filled across every `sessions_friction.kind` value
+ * (degenerate_tool_loop, guardrail_termination, classification_timeout,
+ * recovered_error, dead_end) so a console panel can render a stable counter
+ * set. `succeeded` / `failed` / `by_error_marker` mirror the outcome fields
+ * `sessions_summary` computes for the same period and window.
+ */
+export interface FrictionSummary {
+  period: "today" | "7d" | "30d";
+  total: number;
+  by_kind: Record<string, number>;
+  succeeded: number;
+  failed: number;
+  by_error_marker: Record<string, number>;
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/friction. */
+export interface FrictionSummaryParams {
+  period?: "today" | "7d" | "30d";
+}
+
 // ---------------------------------------------------------------------------
 // Activity feed (bu-y7lo7)
 // ---------------------------------------------------------------------------

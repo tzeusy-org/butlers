@@ -1405,6 +1405,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Updated {} transaction fact{}.
 - Bulk update failed.
 
+## `frontend/src/components/butler-detail/ButlerFrictionPanel.tsx`
+
+- no friction episodes this period
+- no failures this period
+- typed episodes + session outcomes
+- Friction summary period
+- Friction summary
+
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
 - Collections overview
@@ -4184,4 +4192,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3280*
+*Total strings: 3285*
