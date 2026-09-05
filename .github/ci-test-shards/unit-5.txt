@@ -14,4 +14,5 @@ tests/core/test_sessions_friction.py
 tests/core_tools/test_conversation_recall.py
 tests/core_tools/test_dashboard_answer_block.py
 tests/core_tools/test_dashboard_confirm_block.py
+tests/core_tools/test_graph.py
 tests/integration/test_dashboard_propose_then_act.py

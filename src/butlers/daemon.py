@@ -180,6 +180,12 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # rest of the bus -- only a butler that can receive an event can close
         # the loop on one.
         "report_event_reaction",
+        # bu-8cdl1.8 Slice 3: zero-LLM public.entity_graph_edges traversal;
+        # always registered on every butler — every butler role already holds
+        # SELECT on the table (RFC 0031's grant model), same reasoning as
+        # conversation_recall above.
+        "entity_graph_walk",
+        "entity_graph_path",
     }
 )
 

@@ -11,6 +11,7 @@ from butlers.core_tools._conversation_recall import register_conversation_recall
 from butlers.core_tools._conversation_reply import register_conversation_reply_tool
 from butlers.core_tools._delegation import register_delegation_tools
 from butlers.core_tools._domain_events import register_domain_event_tools
+from butlers.core_tools._graph import register_graph_tools
 from butlers.core_tools._infra import register_infra_tools
 from butlers.core_tools._media import register_media_tools
 from butlers.core_tools._memory_access import register_memory_access_tool
@@ -52,7 +53,10 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       17. Domain-event tools (publish_event, subscribe_to_event,
           unsubscribe_from_event, list_my_subscriptions, receive_domain_event,
           report_event_reaction)
-      18. Shutdown tool (shutdown)
+      18. Graph tools (entity_graph_walk, entity_graph_path) — always
+          registered, zero-LLM recursive-CTE traversal over
+          public.entity_graph_edges
+      19. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -72,4 +76,5 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_conversation_recall_tool(ctx, mcp, _core_tool)
     register_delegation_tools(ctx, mcp, _core_tool)
     register_domain_event_tools(ctx, mcp, _core_tool)
+    register_graph_tools(ctx, mcp, _core_tool)
     register_shutdown_tool(ctx, mcp, _core_tool)
