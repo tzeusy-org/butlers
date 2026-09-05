@@ -189,6 +189,27 @@ class TestEntityGraphWalk:
     async def test_no_edges_returns_empty_list(self, pool: asyncpg.Pool) -> None:
         assert await walk_entity_graph(pool, entity_id=_uuid()) == []
 
+    async def test_truncation_keeps_nearest_hop_entities_over_farther_ones(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A limit smaller than the reachable set must drop farthest hops first.
+
+        Hop-2 entities are given small UUID ints (sorting *before* the hop-1
+        entities' large-int UUIDs) so that truncating by raw entity_id order
+        instead of hop distance would keep the wrong (farther) entities.
+        """
+        a = _uuid()
+        near = [uuid.UUID(int=100 + i) for i in range(3)]
+        far = [uuid.UUID(int=1 + i) for i in range(3)]
+        for n in near:
+            await _live_edge(pool, subject=a, predicate="knows", obj=n)
+        for n, f in zip(near, far, strict=True):
+            await _live_edge(pool, subject=n, predicate="knows", obj=f)
+
+        rows = await walk_entity_graph(pool, entity_id=a, max_hops=2, limit=3)
+
+        assert {r["entity_id"] for r in rows} == set(near)
+
     async def test_max_hops_out_of_range_raises(self, pool: asyncpg.Pool) -> None:
         with pytest.raises(ValueError, match="max_hops"):
             await walk_entity_graph(pool, entity_id=_uuid(), max_hops=MAX_WALK_HOPS + 1)

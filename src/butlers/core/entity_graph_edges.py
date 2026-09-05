@@ -355,13 +355,16 @@ async def walk_entity_graph(
     sql = (
         _WALK_CTE
         + """
-        SELECT DISTINCT ON (w.entity_id)
-            w.entity_id, w.hop, e.id,
-            e.subject_entity_id, e.predicate, e.object_entity_id
-        FROM walk w
-        JOIN public.entity_graph_edges e
-            ON e.id = w.edge_path[array_length(w.edge_path, 1)]
-        ORDER BY w.entity_id, w.hop
+        SELECT * FROM (
+            SELECT DISTINCT ON (w.entity_id)
+                w.entity_id, w.hop, e.id,
+                e.subject_entity_id, e.predicate, e.object_entity_id
+            FROM walk w
+            JOIN public.entity_graph_edges e
+                ON e.id = w.edge_path[array_length(w.edge_path, 1)]
+            ORDER BY w.entity_id, w.hop
+        ) AS nearest
+        ORDER BY nearest.hop, nearest.entity_id
         LIMIT $5
         """
     )
