@@ -121,7 +121,6 @@ export default function ButlerSkillsTab({ butlerName }: ButlerSkillsTabProps) {
     );
   }
 
-  // eslint-disable-next-line no-restricted-syntax -- isLoading/isError return before skillsResponse?.data ?? [] is evaluated.
   const skills = skillsResponse?.data ?? [];
 
   if (skills.length === 0) {

@@ -189,7 +189,6 @@ export function ConnectorsRoster() {
   // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
   // note instead of an empty section. The `?? []` covers only an older cached
   // response that predates the field.
-  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
   const unparentedCheckpoints = connectorsResp?.data?.unparented_checkpoints ?? []
 
   // Registry records nothing has claimed as a process. They stay in the roster
@@ -199,7 +198,6 @@ export function ConnectorsRoster() {
   // only inside `!rosterUnavailable`, so a failed roster fetch shows the degraded
   // note instead of a reassuring zero. The `?? 0` covers only an older cached
   // response that predates the field.
-  // eslint-disable-next-line no-restricted-syntax -- guarded by !rosterUnavailable
   const unclassifiedCount = connectorsResp?.data?.unclassified_count ?? 0
 
   // Available dormant profiles (catalog entries not yet registered)
