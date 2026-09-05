@@ -75,6 +75,11 @@ or a navigation target.
 - `GET /api/butlers/{name}/conversations/search` ->
   `PaginatedResponse<ConversationSearchResult>`; requires non-empty `q` and
   accepts `offset` and `limit`.
+- `GET /api/conversations/messages/search` (bu-0ynlk.9, NOT butler-scoped) ->
+  `CursorPaginatedResponse<MessageSearchResult>`; owner-scoped full-text
+  search across every butler's dashboard messages, one row per matching
+  message with `highlight_ranges`. Requires non-empty `q` (max 512 chars) and
+  accepts `limit`, `cursor`, `channel`, `butler`, `from`, `to`.
 - `GET /api/butlers/{name}/conversations/{conversationId}/messages` ->
   `PaginatedResponse<ConversationMessage>`; accepts `offset` and `limit`.
 - `POST /api/butlers/{name}/conversations` and `POST

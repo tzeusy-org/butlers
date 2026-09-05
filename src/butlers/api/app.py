@@ -58,6 +58,7 @@ from butlers.api.routers.calendar_workspace import (
 from butlers.api.routers.channel_defaults import router as channel_defaults_router
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.contacts import router as contacts_router
+from butlers.api.routers.conversations import messages_search_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
 from butlers.api.routers.data_ops import _is_production
@@ -704,6 +705,7 @@ def create_app(
     app.include_router(telegram_auth_router)
     app.include_router(whatsapp_router)
     app.include_router(conversations_router)
+    app.include_router(messages_search_router)
     app.include_router(preferences_router)
     app.include_router(runtime_config_router)
     app.include_router(system_router)

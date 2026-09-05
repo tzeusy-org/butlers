@@ -7,8 +7,9 @@ import {
   listConversations,
   getConversationMessages,
   searchConversations,
+  searchMessages,
 } from "@/api/index.ts";
-import type { ConversationListParams } from "@/api/index.ts";
+import type { ConversationListParams, MessageSearchParams } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -24,6 +25,11 @@ export const conversationKeys = {
     ["conversation-messages", butlerName, conversationId] as const,
   search: (butlerName: string, query: string) =>
     ["conversations", butlerName, "search", query] as const,
+};
+
+/** Query key for the owner-scoped cross-butler message search (bu-0ynlk.9). */
+export const messageSearchKeys = {
+  search: (query: string) => ["message-search", query] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,6 +85,23 @@ export function useConversationSearch(butlerName: string, query: string) {
     queryKey: conversationKeys.search(butlerName, query),
     queryFn: () => searchConversations(butlerName, query),
     enabled: !!butlerName && query.trim().length > 0,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Owner-scoped message-level full-text search across every butler's
+ * dashboard chats (bu-0ynlk.9). Only fires when `query` is non-empty;
+ * debounce should be applied at the call site.
+ */
+export function useMessageSearch(
+  query: string,
+  params?: Omit<MessageSearchParams, "q">,
+) {
+  return useQuery({
+    queryKey: messageSearchKeys.search(query),
+    queryFn: () => searchMessages({ q: query, ...params }),
+    enabled: query.trim().length > 0,
     staleTime: 30_000,
   });
 }

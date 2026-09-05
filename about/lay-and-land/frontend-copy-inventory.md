@@ -1999,6 +1999,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - New
 - Start a conversation
+- Messages
 - New conversation
 - Expand sidebar
 - Collapse sidebar
@@ -2007,6 +2008,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No conversations yet.
 - No results found.
 - Start a conversation below.
+- message search results
 
 ## `frontend/src/components/chat/ConversationReadError.tsx`
 
@@ -4180,4 +4182,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3276*
+*Total strings: 3278*

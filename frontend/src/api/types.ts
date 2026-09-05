@@ -5525,6 +5525,49 @@ export interface PageContextVisibleResource {
 }
 
 /**
+ * One message-level full-text search hit
+ * (`GET /api/conversations/messages/search`, bu-0ynlk.9).
+ *
+ * Owner-scoped across every butler — unlike `ConversationSearchResult`
+ * (per-butler, one row per conversation), this is one row per matching
+ * message, ranked by text relevance.
+ */
+export interface MessageSearchResult {
+  message_id: string;
+  conversation_id: string;
+  role: string;
+  created_at: string;
+  butler_name: string;
+  session_id: string | null;
+  /** Plain-text excerpt around the match (markers already stripped). */
+  snippet: string;
+  /** [start, end) character offsets into `snippet`, one pair per match. */
+  highlight_ranges: [number, number][];
+  /**
+   * Dashboard path to open for more context — `/sessions/{id}` when the
+   * message has a session, else `/butlers/{butler_name}` (no dedicated
+   * conversation page exists yet).
+   */
+  deep_link: string;
+}
+
+/** Query params for GET /api/conversations/messages/search. */
+export interface MessageSearchParams {
+  q: string;
+  limit?: number;
+  /** Opaque cursor from the previous page's `next_cursor`. Omit for the first page. */
+  cursor?: string;
+  /** Filter to one conversation source_channel (e.g. "dashboard"). */
+  channel?: string;
+  /** Filter to one butler's conversations. */
+  butler?: string;
+  /** ISO-8601 inclusive lower bound on message created_at. */
+  from?: string;
+  /** ISO-8601 exclusive upper bound on message created_at. */
+  to?: string;
+}
+
+/**
  * Dashboard route/query/entity/resource context captured at message send
  * time (bu-p6ey8.4, extended by bu-0ynlk.4). Mirrors the backend's
  * `PageContext` model. Built by `usePageContextCapture()`

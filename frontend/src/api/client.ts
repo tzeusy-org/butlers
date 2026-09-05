@@ -249,6 +249,8 @@ import type {
   CreateConversationRequest,
   SendMessageRequest,
   ConversationCancelResponse,
+  MessageSearchResult,
+  MessageSearchParams,
   TelegramSendCodeRequest,
   TelegramSendCodeResponse,
   TelegramVerifyCodeRequest,
@@ -5312,6 +5314,27 @@ export function searchConversations(
 ): Promise<ApiResponse<ConversationSummary[]>> {
   return apiFetch<ApiResponse<ConversationSummary[]>>(
     `/butlers/${encodeURIComponent(butlerName)}/conversations/search?q=${encodeURIComponent(query)}`,
+  );
+}
+
+/**
+ * GET /api/conversations/messages/search — owner-scoped, cursor-paginated
+ * full-text search across every butler's dashboard messages. One row per
+ * matching message, ranked by relevance then recency, with highlight ranges.
+ */
+export function searchMessages(
+  params: MessageSearchParams,
+): Promise<CursorPaginatedResponse<MessageSearchResult>> {
+  const sp = new URLSearchParams();
+  sp.set("q", params.q);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.cursor) sp.set("cursor", params.cursor);
+  if (params.channel) sp.set("channel", params.channel);
+  if (params.butler) sp.set("butler", params.butler);
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  return apiFetch<CursorPaginatedResponse<MessageSearchResult>>(
+    `/conversations/messages/search?${sp.toString()}`,
   );
 }
 

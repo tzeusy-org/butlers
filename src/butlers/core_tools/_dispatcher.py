@@ -7,6 +7,7 @@ from typing import Any
 
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._chronicler import register_chronicler_tools
+from butlers.core_tools._conversation_recall import register_conversation_recall_tool
 from butlers.core_tools._conversation_reply import register_conversation_reply_tool
 from butlers.core_tools._delegation import register_delegation_tools
 from butlers.core_tools._domain_events import register_domain_event_tools
@@ -45,11 +46,13 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       13. Memory catalog fetch — server-authorized and Switchboard-brokered
       14. Conversation-reply tool (conversation_reply) — always registered,
           dashboard chat confirm-loop reply channel
-      15. Delegation tools (delegate_ask, delegate_receive, delegate_answer, delegate_wake)
-      16. Domain-event tools (publish_event, subscribe_to_event,
+      15. Conversation-recall tools (conversation_recall, conversation_thread_read)
+          — always registered, owner-scoped cross-butler dashboard chat recall
+      16. Delegation tools (delegate_ask, delegate_receive, delegate_answer, delegate_wake)
+      17. Domain-event tools (publish_event, subscribe_to_event,
           unsubscribe_from_event, list_my_subscriptions, receive_domain_event,
           report_event_reaction)
-      17. Shutdown tool (shutdown)
+      18. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -66,6 +69,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_memory_access_tool(ctx, mcp, _core_tool)
     register_memory_catalog_tools(ctx, mcp, _core_tool)
     register_conversation_reply_tool(ctx, mcp, _core_tool)
+    register_conversation_recall_tool(ctx, mcp, _core_tool)
     register_delegation_tools(ctx, mcp, _core_tool)
     register_domain_event_tools(ctx, mcp, _core_tool)
     register_shutdown_tool(ctx, mcp, _core_tool)

@@ -29,3 +29,30 @@ export function createClientMessageId(): string {
   }
   return fallbackUuid4();
 }
+
+/**
+ * DOM id for a message bubble anchor. Shared between `MessageThread` (which
+ * sets it) and `scrollToMessageAnchor` (which looks it up) so a
+ * conversation_recall / message-search jump-to-message result can find its
+ * bubble once the conversation's messages have rendered (bu-0ynlk.9).
+ */
+export function messageAnchorId(messageId: string): string {
+  return `message-${messageId}`;
+}
+
+/**
+ * Scroll a message bubble into view and briefly highlight it.
+ *
+ * A no-op when the message isn't in the DOM yet (e.g. the conversation's
+ * messages haven't finished loading) — callers should retry once loading
+ * completes rather than treating a miss as an error.
+ */
+export function scrollToMessageAnchor(messageId: string): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.getElementById(messageAnchorId(messageId));
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("chat-message-highlight");
+  window.setTimeout(() => el.classList.remove("chat-message-highlight"), 2000);
+  return true;
+}

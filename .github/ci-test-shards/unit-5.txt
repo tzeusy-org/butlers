@@ -3,11 +3,13 @@ roster/relationship/tests/test_entities_api.py
 roster/relationship/tests/test_entity_tabs.py
 tests/api/test_api_health_facts_reads.py
 tests/api/test_api_qa.py
+tests/api/test_conversations_message_search_unit.py
 tests/api/test_model_runtime_attention.py
 tests/api/test_page_context_model.py
 tests/api/test_spend_runtime_attention.py
 tests/core/test_chronicler_day_close_refresh_tool.py
 tests/core/test_sessions_friction.py
+tests/core_tools/test_conversation_recall.py
 tests/core_tools/test_dashboard_answer_block.py
 tests/core_tools/test_dashboard_confirm_block.py
 tests/integration/test_dashboard_propose_then_act.py

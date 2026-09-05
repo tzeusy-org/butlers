@@ -157,6 +157,12 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # registered on every butler — any butler can be the classification
         # or pinned-target destination of a dashboard conversation.
         "conversation_reply",
+        # bu-0ynlk.9: owner-scoped cross-butler dashboard chat recall; always
+        # registered on every butler for the same reason as conversation_reply
+        # above — any butler may need to recall a turn the owner had with a
+        # different butler.
+        "conversation_recall",
+        "conversation_thread_read",
         # bu-gxmfx: cross-butler delegation ledger; non-STAFFER only, same
         # gate as notify/remind above.
         "delegate_ask",
