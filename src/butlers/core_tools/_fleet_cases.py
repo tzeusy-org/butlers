@@ -1,4 +1,4 @@
-"""Fleet Case File contribution tools (bu-8cdl1.7 Slice 3, RFC 0032).
+"""Fleet Case File contribution tools (bu-8cdl1.7 Slices 3-4, RFC 0032).
 
 See ``src/butlers/core/fleet_cases.py`` for the shared data layer and
 ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full design.
@@ -6,7 +6,10 @@ Slice 1 (schema/RLS, core_217) and Slice 2 (read API,
 ``roster/switchboard/api/router.py``) already landed; this adds the six MCP
 tools the RFC's Slice 3 names: ``find_open_case``, ``open_case``,
 ``contribute_case_evidence``, ``propose_case_posture``, ``close_case``,
-``read_case``.
+``read_case``. Slice 4 (situation-scoped attention) adds no new tool -- it
+folds a ``case_attention`` field into ``contribute_case_evidence`` and
+``propose_case_posture``'s existing results (see
+``fleet_cases.evaluate_case_attention``).
 
 Registered fleet-wide, every butler type included (unlike ``domain_events``/
 ``delegation``, which exclude STAFFER): Switchboard itself is a STAFFER and is
@@ -189,7 +192,13 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         observation. Any butler may contribute; this never needs
         Switchboard.
 
-        Returns ``{"status": "ok", "evidence": {...}, "newly_recorded": bool}``.
+        Returns ``{"status": "ok", "evidence": {...}, "newly_recorded": bool,
+        "case_attention": {...} | None}``. ``case_attention`` (Slice 4,
+        situation-scoped attention) is only evaluated for a newly-recorded
+        contribution -- a repeat report is a no-op and cannot itself trigger a
+        quiet-hours bypass -- and is ``None`` when the case no longer exists
+        by the time attention is evaluated. See
+        ``fleet_cases.evaluate_case_attention`` for what its fields mean.
         """
         try:
             evidence, newly_recorded = await fleet_cases.contribute_evidence(
@@ -202,7 +211,25 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             )
         except fleet_cases.FleetCaseError as exc:
             return {"status": "error", "error": str(exc)}
-        return {"status": "ok", "evidence": evidence, "newly_recorded": newly_recorded}
+
+        case_attention = None
+        if newly_recorded:
+            case_summary = await fleet_cases.get_case_summary(pool, case_id)
+            if case_summary is not None:
+                case_attention = await fleet_cases.evaluate_case_attention(
+                    pool,
+                    case_id=case_id,
+                    correlation_key=case_summary["correlation_key"],
+                    posture=case_summary["posture"],
+                    state=case_summary["state"],
+                    origin_butler=butler_name,
+                )
+        return {
+            "status": "ok",
+            "evidence": evidence,
+            "newly_recorded": newly_recorded,
+            "case_attention": case_attention,
+        }
 
     @_core_tool("fleet_cases")
     @tool_span("propose_case_posture", butler_name=butler_name)
@@ -218,14 +245,25 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         plain last-write-wins update -- there is no quorum/voting model in
         this slice. Refused once the case is closed.
 
-        Returns ``{"status": "ok", "case": {...}}``.
+        Returns ``{"status": "ok", "case": {...}, "case_attention": {...}}``.
+        ``case_attention`` (Slice 4, situation-scoped attention) reports
+        whether *this* proposal broke quiet hours for the case -- see
+        ``fleet_cases.evaluate_case_attention`` for what its fields mean.
         """
         if ctx.is_switchboard:
             try:
                 case = await fleet_cases.propose_posture(pool, case_id=case_id, posture=posture)
             except fleet_cases.FleetCaseError as exc:
                 return {"status": "error", "error": str(exc)}
-            return {"status": "ok", "case": case}
+            case_attention = await fleet_cases.evaluate_case_attention(
+                pool,
+                case_id=case_id,
+                correlation_key=case["correlation_key"],
+                posture=case["posture"],
+                state=case["state"],
+                origin_butler=butler_name,
+            )
+            return {"status": "ok", "case": case, "case_attention": case_attention}
         return await _dispatch_fleet_case_write(
             daemon,
             pool,

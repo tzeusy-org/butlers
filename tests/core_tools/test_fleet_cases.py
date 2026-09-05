@@ -165,20 +165,62 @@ class TestContributeCaseEvidence:
         evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "finance"}
         contribute_mock = AsyncMock(return_value=(evidence_row, True))
         dispatch_mock = AsyncMock()
+        attention_result = {"bypass": True, "reason": "urgent_case_bypass"}
         monkeypatch.setattr(_fleet_cases.fleet_cases, "contribute_evidence", contribute_mock)
         monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=_CASE)
+        )
+        evaluate_mock = AsyncMock(return_value=attention_result)
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "evaluate_case_attention", evaluate_mock)
 
         result = await registered["contribute_case_evidence"](
             case_id=_CASE_ID, kind="candidate", ref="insight-42"
         )
 
-        assert result == {"status": "ok", "evidence": evidence_row, "newly_recorded": True}
+        assert result == {
+            "status": "ok",
+            "evidence": evidence_row,
+            "newly_recorded": True,
+            "case_attention": attention_result,
+        }
         dispatch_mock.assert_not_awaited()
         _, kwargs = contribute_mock.await_args
         assert kwargs["contributor"] == "finance"
         assert kwargs["case_id"] == _CASE_ID
         assert kwargs["kind"] == "candidate"
         assert kwargs["ref"] == "insight-42"
+        _, attention_kwargs = evaluate_mock.await_args
+        assert attention_kwargs["origin_butler"] == "finance"
+        assert attention_kwargs["correlation_key"] == _CASE["correlation_key"]
+        assert attention_kwargs["posture"] == _CASE["posture"]
+        assert attention_kwargs["state"] == _CASE["state"]
+
+    async def test_repeat_contribution_skips_the_attention_check(self, monkeypatch):
+        """A no-op re-report (newly_recorded=False) cannot itself trigger a
+        quiet-hours bypass -- evaluating it again would let a single
+        contributor manufacture repeated bypasses just by re-reporting."""
+        registered = _register(butler_name="finance")
+        evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "finance"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=(evidence_row, False)),
+        )
+        evaluate_mock = AsyncMock()
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "evaluate_case_attention", evaluate_mock)
+
+        result = await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="candidate", ref="insight-42"
+        )
+
+        assert result == {
+            "status": "ok",
+            "evidence": evidence_row,
+            "newly_recorded": False,
+            "case_attention": None,
+        }
+        evaluate_mock.assert_not_awaited()
 
     async def test_data_layer_error_is_returned_as_an_error_result(self, monkeypatch):
         registered = _register(butler_name="finance")
@@ -197,16 +239,24 @@ class TestProposeCasePosture:
     async def test_switchboard_writes_directly(self, monkeypatch):
         registered = _register(butler_name="switchboard")
         updated = {**_CASE, "posture": "urgent"}
+        attention_result = {"bypass": True, "reason": "urgent_case_bypass"}
         monkeypatch.setattr(
             _fleet_cases.fleet_cases, "propose_posture", AsyncMock(return_value=updated)
         )
         dispatch_mock = AsyncMock()
         monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+        evaluate_mock = AsyncMock(return_value=attention_result)
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "evaluate_case_attention", evaluate_mock)
 
         result = await registered["propose_case_posture"](case_id=_CASE_ID, posture="urgent")
 
-        assert result == {"status": "ok", "case": updated}
+        assert result == {"status": "ok", "case": updated, "case_attention": attention_result}
         dispatch_mock.assert_not_awaited()
+        _, kwargs = evaluate_mock.await_args
+        assert kwargs["origin_butler"] == "switchboard"
+        assert kwargs["correlation_key"] == updated["correlation_key"]
+        assert kwargs["posture"] == "urgent"
+        assert kwargs["state"] == updated["state"]
 
     async def test_non_switchboard_forwards_through_switchboard_route(self, monkeypatch):
         registered = _register(butler_name="health", switchboard_client=object())

@@ -1,9 +1,10 @@
 """Fleet Case File data layer: ``public.fleet_cases``/``fleet_case_evidence``/
-``fleet_case_links`` (bu-8cdl1.7 Slice 3, RFC 0032).
+``fleet_case_links`` (bu-8cdl1.7 Slices 3-4, RFC 0032).
 
 See ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full
 design and ``alembic/versions/core/core_217_fleet_case_file.py`` (Slice 1) for
-the schema/RLS this module writes through.
+the schema/RLS this module writes through. :func:`evaluate_case_attention`
+(Slice 4) is the situation-scoped attention bypass -- see its docstring.
 
 Write authority mirrors the RLS policy exactly: ``fleet_case_evidence`` has no
 role restriction (any butler may contribute), while ``fleet_cases`` restricts
@@ -25,12 +26,26 @@ it is given.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
+from butlers.core.approvals_policy import (
+    get_approvals_policy_quiet_hours,
+    is_policy_quiet_now,
+    policy_quiet_hours_window_start,
+)
+from butlers.core.attention_ledger import attention_event_recorded_since, record_attention_event
+
 CASE_STATES = frozenset({"open", "watching", "closing", "closed"})
 CASE_POSTURES = frozenset({"silent", "routine", "active", "urgent"})
+
+# Prefix for the attention-ledger dedup_key used by evaluate_case_attention,
+# namespaced so a case's bypass key can never collide with an insight
+# candidate's dedup_key (roster/switchboard/tools/insight/broker.py) sharing
+# the same public.attention_ledger table.
+CASE_ATTENTION_DEDUP_PREFIX = "fleet_case:"
 
 _CASE_COLUMNS = "id, correlation_key, state, posture, outcome, opened_at, updated_at, closed_at"
 _EVIDENCE_COLUMNS = "id, case_id, contributor, kind, ref, payload, contributed_at"
@@ -67,6 +82,22 @@ async def find_open_case(pool: Any, correlation_key: str) -> dict[str, Any] | No
         f"SELECT {_CASE_COLUMNS} FROM public.fleet_cases"
         " WHERE correlation_key = $1 AND state <> 'closed'",
         correlation_key,
+    )
+    return dict(row) if row is not None else None
+
+
+async def get_case_summary(pool: Any, case_id: str) -> dict[str, Any] | None:
+    """Return ``{id, correlation_key, state, posture}`` for one case, or ``None``.
+
+    A lighter read than :func:`read_case` for callers (like
+    :func:`evaluate_case_attention`'s tool-layer callers) that only need to
+    branch on a case's current state/posture, not its full accreted evidence
+    and links.
+    """
+    case_uuid = _parse_case_id(case_id)
+    row = await pool.fetchrow(
+        "SELECT id, correlation_key, state, posture FROM public.fleet_cases WHERE id = $1",
+        case_uuid,
     )
     return dict(row) if row is not None else None
 
@@ -263,3 +294,71 @@ async def read_case(pool: Any, case_id: str) -> dict[str, Any] | None:
         "evidence": [dict(r) for r in evidence_rows],
         "links": [dict(r) for r in link_rows],
     }
+
+
+def case_attention_dedup_key(correlation_key: str) -> str:
+    """Return the ``public.attention_ledger`` dedup key for one case's bypass."""
+    return f"{CASE_ATTENTION_DEDUP_PREFIX}{correlation_key}"
+
+
+async def evaluate_case_attention(
+    pool: Any,
+    *,
+    case_id: str,
+    correlation_key: str,
+    posture: str,
+    state: str,
+    origin_butler: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Decide, and record, whether *this* moment breaks quiet hours for a case.
+
+    RFC 0032 Slice 4 -- situation-scoped attention. The insight broker's
+    existing priority-urgent bypass (``roster/switchboard/tools/insight/
+    broker.py``) fires per *candidate*: five butlers independently noticing
+    the same situation break quiet hours five times. This is the case-scoped
+    equivalent: any number of contributions/proposals against the same
+    ``correlation_key`` collapse to at most one recorded bypass per
+    quiet-hours window, because they all key off the same
+    :func:`case_attention_dedup_key` regardless of which butler or which
+    fleet-case tool call triggered the check.
+
+    Only a non-closed case at ``posture='urgent'`` can trigger a bypass -- a
+    case's attention need is exactly its current posture, so closing it (or
+    stepping it down from urgent) clears the need with no separate cleanup.
+    Outside quiet hours there is nothing to bypass -- normal delivery already
+    reaches the owner, so this is a no-op.
+
+    Returns ``{"bypass": bool, "reason": str}``. ``reason`` is one of:
+    ``case_closed``, ``not_urgent``, ``quiet_hours_inactive``,
+    ``already_bypassed_this_window``, ``urgent_case_bypass``.
+    """
+    if state == "closed":
+        return {"bypass": False, "reason": "case_closed"}
+    if posture != "urgent":
+        return {"bypass": False, "reason": "not_urgent"}
+
+    if now is None:
+        now = datetime.now(UTC)
+    policy = await get_approvals_policy_quiet_hours(pool)
+    if not is_policy_quiet_now(policy, now=now):
+        return {"bypass": False, "reason": "quiet_hours_inactive"}
+
+    dedup_key = case_attention_dedup_key(correlation_key)
+    window_start = policy_quiet_hours_window_start(policy, now=now)
+    if window_start is not None and await attention_event_recorded_since(
+        pool, dedup_key=dedup_key, since=window_start
+    ):
+        return {"bypass": False, "reason": "already_bypassed_this_window"}
+
+    await record_attention_event(
+        pool,
+        origin_butler=origin_butler,
+        source="insight",
+        outcome="delivered",
+        intent="fleet_case",
+        dedup_key=dedup_key,
+        reason="urgent_case_bypass",
+        metadata={"case_id": case_id, "correlation_key": correlation_key},
+    )
+    return {"bypass": True, "reason": "urgent_case_bypass"}
