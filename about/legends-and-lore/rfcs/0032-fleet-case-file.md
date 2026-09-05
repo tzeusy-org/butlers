@@ -1,7 +1,8 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slices 1-6 landed — schema, read API, contribution tools,
-situation-scoped attention, lapse sweep, historical backfill)
+**Status:** Implemented (Slices 1-7 landed — schema, read API, contribution
+tools, situation-scoped attention, lapse sweep, historical backfill,
+three-ledger binding)
 **Date:** 2026-09-05
 
 ## Context
@@ -88,7 +89,7 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; Slices 1-6 have landed.
+This RFC is written for the whole feature; all seven slices have landed.
 
 - **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
@@ -138,7 +139,31 @@ This RFC is written for the whole feature; Slices 1-6 have landed.
   open case — and a `WHERE NOT EXISTS` guard on `correlation_key` makes
   reruns idempotent. No `fleet_case_links` row is written; that binding is
   S7's job.
-- **S7:** three-ledger binding through `fleet_case_links`.
+- **S7 (landed):** three-ledger binding through `fleet_case_links`
+  (`fleet_cases.write_case_link`, `core_tools._fleet_cases.record_case_link`).
+  `link_kind` is one of `insight_candidate`, `owner_condition`,
+  `attention_record` — `ref` is that ledger's own id
+  (`public.insight_candidates.id`, `public.owner_conditions.id`,
+  `public.attention_ledger.id` respectively). No new scheduled job: the write
+  is triggered from the three existing call sites that can observe a genuine
+  cross-ledger reference rather than a speculative correlation —
+  `contribute_case_evidence` writes a link when called with one of the three
+  reserved `kind` values (the insight-candidate and owner-condition paths;
+  the insight broker itself still does not call any fleet-case tool, so an
+  insight-candidate link requires some caller to cite the candidate id
+  explicitly via evidence — no broker wiring ships in this slice either);
+  `evaluate_case_attention`'s urgent-bypass path (Slice 4) writes an
+  `attention_record` link for the `public.attention_ledger` row it just
+  created, from both `contribute_case_evidence` and `propose_case_posture`;
+  and `backfill_from_owner_conditions` (Slice 6) writes an `owner_condition`
+  link back to the source episode for every case it touches, including a
+  case an earlier (pre-Slice-7) run already created — a rerun repairs the
+  missing links onto old rows, not just new ones. Write authority matches
+  `fleet_cases` exactly (`butler_switchboard_rw` only, RLS): a caller on a
+  non-Switchboard pool forwards through Switchboard's `route()`, mirroring
+  Slice 3's `open_case`/`propose_case_posture`/`close_case`. Idempotent via
+  `uq_fleet_case_links_ref`'s `(case_id, link_kind, ref)` uniqueness —
+  `ON CONFLICT DO NOTHING` — the same shape as `contribute_evidence`.
 
 ## Non-goals
 
