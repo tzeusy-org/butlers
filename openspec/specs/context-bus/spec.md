@@ -23,7 +23,7 @@ The system SHALL maintain a `public.user_context` table in the shared PostgreSQL
 - **THEN** the database rejects the insert with a CHECK constraint violation
 
 ### Requirement: Signal Vocabulary
-The system SHALL define a fixed vocabulary of context signal types as a Python enum (`ContextSignal`). The vocabulary SHALL include: `traveling`, `sleeping`, `meeting`, `focused`, `exercising`, `sick`, `socializing`, `commuting`, `at_home`, `away`, and `dnd`. Signal types are validated at the application level before database writes.
+The system SHALL define a fixed vocabulary of context signal types as a Python enum (`ContextSignal`). The vocabulary SHALL include: `traveling`, `sleeping`, `meeting`, `focused`, `exercising`, `sick`, `socializing`, `commuting`, `at_home`, `in_space`, `away`, and `dnd`. Signal types are validated at the application level before database writes.
 
 #### Scenario: Valid signal type accepted
 - **WHEN** `set_context()` is called with `signal_type="traveling"`
@@ -47,6 +47,7 @@ The permission mapping SHALL be:
 - `socializing`: relationship, general
 - `commuting`: travel, general
 - `at_home`: travel, home, general
+- `in_space`: home, general
 - `away`: general
 - `dnd`: general, switchboard
 
@@ -76,6 +77,7 @@ Default and maximum TTLs:
 - `socializing`: default 3h, max 12h
 - `commuting`: default 45min, max 3h
 - `at_home`: default 12h, max 24h
+- `in_space`: default 12h, max 24h
 - `away`: default 12h, max 30d
 - `dnd`: default 2h, max 24h
 

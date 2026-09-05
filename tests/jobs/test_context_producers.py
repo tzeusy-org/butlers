@@ -28,6 +28,7 @@ from butlers.db import register_jsonb_codec
 from butlers.jobs.context_producers import (
     classify_calendar_signal,
     resolve_owner_presence,
+    resolve_owner_room,
     run_calendar_context_producer,
     run_home_presence_context_producer,
     run_sleep_window_context_producer,
@@ -141,6 +142,118 @@ def test_resolve_owner_presence():
         )
         is True
     )
+
+
+def test_resolve_owner_room():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    fresh = now - timedelta(minutes=5)
+    stale = now - timedelta(hours=2)
+    owner_ids = frozenset({"person.owner", "device_tracker.owner_phone"})
+
+    # A zone-aware device tracker reports the room directly as its state.
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "device_tracker.owner_phone",
+                    "state": "office",
+                    "last_updated": fresh,
+                    "attributes": None,
+                }
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        == "office"
+    )
+    # A generic "home" state falls back to Home Assistant area attributes.
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "person.owner",
+                    "state": "home",
+                    "last_updated": fresh,
+                    "attributes": {"area": "kitchen"},
+                }
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        == "kitchen"
+    )
+    # No area data anywhere (state is generic, attributes empty) -> unknown.
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "person.owner",
+                    "state": "home",
+                    "last_updated": fresh,
+                    "attributes": {},
+                }
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        is None
+    )
+    # Only a stale room reading -> unknown (never report a dead feed's room).
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "device_tracker.owner_phone",
+                    "state": "office",
+                    "last_updated": stale,
+                    "attributes": None,
+                }
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        is None
+    )
+    # A fresh non-owner entity's room is ignored -> unknown.
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "device_tracker.housemate_phone",
+                    "state": "kitchen",
+                    "last_updated": fresh,
+                    "attributes": None,
+                }
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        is None
+    )
+    # Multiple fresh owner rows -> the most recently updated one wins.
+    assert (
+        resolve_owner_room(
+            [
+                {
+                    "entity_id": "person.owner",
+                    "state": "office",
+                    "last_updated": fresh - timedelta(minutes=1),
+                    "attributes": None,
+                },
+                {
+                    "entity_id": "device_tracker.owner_phone",
+                    "state": "kitchen",
+                    "last_updated": fresh,
+                    "attributes": None,
+                },
+            ],
+            owner_entity_ids=owner_ids,
+            now=now,
+        )
+        == "kitchen"
+    )
+    # Empty -> unknown
+    assert resolve_owner_room([], owner_entity_ids=owner_ids, now=now) is None
 
 
 def _active_calendar_row(
@@ -701,6 +814,117 @@ class TestContextProducersIntegration:
             assert not await pool.fetchval(
                 "SELECT count(*) FROM public.user_context "
                 "WHERE signal_type = 'at_home' AND superseded_at IS NULL AND expires_at > now()"
+            )
+        finally:
+            await pool.close()
+
+    async def test_home_presence_producer_resolves_in_space_and_clears_on_departure(
+        self, home_db_url
+    ):
+        """bu-8cdl1.11 slice 2: room-resolved occupancy alongside at_home."""
+        pool = await _pool(home_db_url)
+        try:
+            await self._mark_ha_source_healthy(pool)
+            await state_set(pool, "home:presence:owner_entities", ["person.owner"])
+            await pool.execute("TRUNCATE ha_entity_snapshot")
+
+            # Owner home, area resolved from HA attributes (generic "home" state).
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, attributes, last_updated) "
+                "VALUES ('person.owner', 'home', $1, $2)",
+                {"area": "kitchen"},
+                datetime.now(UTC),
+            )
+            result = await run_home_presence_context_producer(pool)
+            assert result["presence"] == "home"
+            assert result["room"] == "kitchen"
+            assert (
+                await pool.fetchval(
+                    "SELECT value FROM public.user_context "
+                    "WHERE signal_type = 'in_space' AND set_by_butler = 'home' "
+                    "AND superseded_at IS NULL AND expires_at > now()"
+                )
+                == "kitchen"
+            )
+
+            # A second owner-linked entity -- e.g. a BLE room-presence sensor --
+            # reports the room directly as its state rather than via attributes.
+            # person.owner keeps asserting at_home = home throughout; this entity
+            # only refines *which room*, so it must never itself decide at_home.
+            await state_set(
+                pool, "home:presence:owner_entities", ["person.owner", "sensor.owner_room"]
+            )
+            await pool.execute(
+                "UPDATE ha_entity_snapshot SET attributes = NULL WHERE entity_id = 'person.owner'"
+            )
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
+                "VALUES ('sensor.owner_room', 'office', $1)",
+                datetime.now(UTC),
+            )
+            result2 = await run_home_presence_context_producer(pool)
+            assert result2["presence"] == "home"
+            assert result2["room"] == "office"
+            assert (
+                await pool.fetchval(
+                    "SELECT value FROM public.user_context "
+                    "WHERE signal_type = 'in_space' AND set_by_butler = 'home' "
+                    "AND superseded_at IS NULL AND expires_at > now()"
+                )
+                == "office"
+            )
+
+            # Owner leaves: both at_home and in_space clear, even though the
+            # room-presence sensor still (harmlessly) reports a fresh reading.
+            await pool.execute(
+                "UPDATE ha_entity_snapshot SET state = 'not_home', last_updated = $1 "
+                "WHERE entity_id = 'person.owner'",
+                datetime.now(UTC),
+            )
+            result3 = await run_home_presence_context_producer(pool)
+            assert result3["presence"] == "away"
+            assert not await pool.fetchval(
+                "SELECT count(*) FROM public.user_context "
+                "WHERE signal_type IN ('at_home', 'in_space') "
+                "AND superseded_at IS NULL AND expires_at > now()"
+            )
+        finally:
+            await pool.close()
+
+    async def test_home_presence_producer_in_space_degrades_to_unmeasurable_on_ha_outage(
+        self, home_db_url
+    ):
+        """bu-8cdl1.11 slice 2: HA staleness degrades in_space, mirroring at_home (slice 1)."""
+        pool = await _pool(home_db_url)
+        try:
+            await self._mark_ha_source_healthy(pool)
+            await state_set(pool, "home:presence:owner_entities", ["person.owner"])
+            await pool.execute("TRUNCATE ha_entity_snapshot")
+            await pool.execute(
+                "INSERT INTO ha_entity_snapshot (entity_id, state, attributes, last_updated) "
+                "VALUES ('person.owner', 'home', $1, $2)",
+                {"area": "kitchen"},
+                datetime.now(UTC),
+            )
+            result = await run_home_presence_context_producer(pool)
+            assert result["room"] == "kitchen"
+
+            # HA outage: a fresh-looking room row must not be reported as current --
+            # the producer reports unmeasurable and never computes a room at all,
+            # the same early exit that already protects at_home (bu-8cdl1.12 slice 1).
+            await self._mark_ha_source_error(pool)
+            result2 = await run_home_presence_context_producer(pool)
+            assert result2 == {"signal": None, "presence": "unmeasurable"}
+
+            # The prior in_space assertion self-heals via its own bounded TTL
+            # rather than being force-cleared -- identical to at_home's contract.
+            assert (
+                await pool.fetchval(
+                    "SELECT value FROM public.user_context "
+                    "WHERE signal_type = 'in_space' AND set_by_butler = 'home' "
+                    "AND superseded_at IS NULL AND expires_at > now()"
+                )
+                == "kitchen"
             )
         finally:
             await pool.close()
