@@ -1,11 +1,13 @@
 """Fleet Case File data layer: ``public.fleet_cases``/``fleet_case_evidence``/
-``fleet_case_links`` (bu-8cdl1.7 Slices 3-5, RFC 0032).
+``fleet_case_links`` (bu-8cdl1.7 Slices 3-6, RFC 0032).
 
 See ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full
 design and ``alembic/versions/core/core_217_fleet_case_file.py`` (Slice 1) for
 the schema/RLS this module writes through. :func:`evaluate_case_attention`
 (Slice 4) is the situation-scoped attention bypass; :func:`run_lapse_sweep`
-(Slice 5) is the scheduled lapse-close sweep -- see their docstrings.
+(Slice 5) is the scheduled lapse-close sweep; :func:`backfill_historical_case`/
+:func:`backfill_from_owner_conditions` (Slice 6) is the one-time historical
+backfill -- see their docstrings.
 
 Write authority mirrors the RLS policy exactly: ``fleet_case_evidence`` has no
 role restriction (any butler may contribute), while ``fleet_cases`` restricts
@@ -26,6 +28,7 @@ it is given.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -450,4 +453,205 @@ async def run_lapse_sweep(
     return {
         "lapsed_case_ids": [str(row["id"]) for row in lapsed],
         "lapsed_count": len(lapsed),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Slice 6 -- historical backfill. RFC 0032's Non-goals section names the
+# single hard invariant this section exists to enforce: "Backfill (S6) never
+# resurrects a case as active -- it only writes historical closed/lapsed
+# rows."
+# ---------------------------------------------------------------------------
+
+# Namespaces every correlation_key this module backfills, so a historical row
+# can never collide with a correlation_key a live S3 contribution tool opens
+# for the same underlying identity after this backfill runs --
+# uq_fleet_cases_active_correlation_key only constrains non-closed rows, so
+# nothing at the database would otherwise stop that collision. Also makes a
+# backfilled row self-describing to an operator scanning the table: this
+# case's history predates RFC 0032.
+BACKFILL_CORRELATION_KEY_PREFIX = "backfill:owner_condition:"
+
+# Fallback outcome for a resolved owner_conditions episode whose
+# metadata.resolution_reason is absent (an explicit resolve_condition() call
+# made with no resolution_metadata) -- chk_fleet_cases_closed_needs_outcome
+# still requires a non-NULL value, and "resolved" is the honest generic
+# answer when the producer recorded no more specific reason.
+DEFAULT_BACKFILL_OUTCOME = "resolved"
+
+
+async def backfill_historical_case(
+    pool: Any,
+    *,
+    correlation_key: str,
+    outcome: str,
+    opened_at: datetime,
+    closed_at: datetime,
+) -> dict[str, Any] | None:
+    """Insert one historical case at ``state='closed'``, or no-op if a case
+    with this exact ``correlation_key`` already exists.
+
+    Every backfill source must go through this one write path. The INSERT
+    below hard-codes ``state = 'closed'`` in the SQL text itself -- there is
+    no parameter that can make it write anything else, so no future caller
+    can make this function resurrect a case as active (RFC 0032's Non-goals:
+    "Backfill (S6) never resurrects a case as active"). Because every row
+    this ever writes already has ``state = 'closed'``, it can never collide
+    with ``uq_fleet_cases_active_correlation_key`` -- that partial index only
+    constrains rows where ``state <> 'closed'``.
+
+    The ``WHERE NOT EXISTS`` guard makes rerunning a backfill over the same
+    source data idempotent: a ``correlation_key`` this function has already
+    written is skipped (returns ``None``) rather than inserted again, so no
+    duplicate rows accumulate across reruns.
+
+    Raises :class:`FleetCaseError` for a blank ``correlation_key``/``outcome``
+    or a ``closed_at`` that precedes ``opened_at`` -- refused before any
+    database access, mirroring :func:`open_case`/:func:`close_case`'s own
+    input validation.
+    """
+    if not correlation_key or not correlation_key.strip():
+        raise FleetCaseError("backfill_historical_case requires a non-empty correlation_key.")
+    if not outcome or not outcome.strip():
+        raise FleetCaseError("backfill_historical_case requires a non-empty outcome.")
+    if closed_at < opened_at:
+        raise FleetCaseError(
+            f"backfill_historical_case: closed_at={closed_at!r} precedes opened_at={opened_at!r}."
+        )
+
+    row = await pool.fetchrow(
+        f"""
+        INSERT INTO public.fleet_cases
+            (correlation_key, state, posture, outcome, opened_at, updated_at, closed_at)
+        SELECT $1, 'closed', 'silent', $2, $3, $4, $4
+        WHERE NOT EXISTS (
+            SELECT 1 FROM public.fleet_cases WHERE correlation_key = $1
+        )
+        RETURNING {_CASE_COLUMNS}
+        """,
+        correlation_key,
+        outcome,
+        opened_at,
+        closed_at,
+    )
+    return dict(row) if row is not None else None
+
+
+def _owner_condition_backfill_outcome(metadata: dict[str, Any] | None) -> str:
+    """Map a resolved owner_conditions episode's ``resolution_reason`` to a
+    fleet_cases ``outcome``. See :func:`backfill_from_owner_conditions`."""
+    if isinstance(metadata, dict):
+        reason = metadata.get("resolution_reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    return DEFAULT_BACKFILL_OUTCOME
+
+
+async def backfill_from_owner_conditions(pool: Any, *, page_size: int = 200) -> dict[str, Any]:
+    """One-time/idempotent-rerun backfill of closed ``fleet_cases`` rows from
+    already-resolved ``public.owner_conditions`` episodes.
+
+    Source choice
+    -------------
+    RFC 0032's Context section names the insight broker's correlated-cluster
+    computation (``roster/switchboard/tools/insight/broker.py::
+    _cluster_candidates``/``_synthesize_cluster_sentence``) as this feature's
+    original motivation, but that computation is, by the RFC's own words,
+    discarded every delivery cycle: it runs in-memory over whichever
+    ``insight_candidates`` rows happen to be ``status='pending'`` at that
+    instant and never persists a cluster or a correlation_key anywhere.
+    There is no durable cluster-history table to backfill from --
+    reapplying ``_cluster_candidates`` to old ``insight_candidates`` rows
+    (which are themselves purged by ``cleanup_old_rows``' 30-day retention
+    regardless) would not reproduce what was actually shown to the owner at
+    delivery time, since a cycle's clustering depends on exactly which
+    candidates happened to still be pending together at that moment --
+    fabricating history a synthetic re-clustering cannot actually know.
+
+    ``public.owner_conditions`` (``butlers.core.owner_conditions``,
+    bu-ep4ks.6) is the clean historical source instead: a durable
+    append-per-episode ledger of owner-facing standing concerns (an overdue
+    bill, an expiring document, and similar) that already existed before RFC
+    0032, with an explicit terminal ``state='resolved'`` and a
+    ``chk_owner_conditions_resolved_fields`` guarantee that ``resolved_at``
+    is always set once it is. Each resolved episode is one concluded
+    situation -- exactly what a backfilled fleet case represents.
+
+    Mapping
+    -------
+    - ``correlation_key`` = ``f"{BACKFILL_CORRELATION_KEY_PREFIX}{source}:
+      {fingerprint}:{episode}"`` -- namespaced by
+      :data:`BACKFILL_CORRELATION_KEY_PREFIX` so a backfilled row can never
+      collide with a live case a later S3 tool opens for the same identity,
+      and suffixed with ``episode`` because one ``(source, fingerprint)``
+      identity can have multiple past resolved episodes (it reopened and
+      resolved more than once) -- each is a distinct historical situation,
+      not the same case repeated.
+    - ``outcome`` = the episode's ``metadata.resolution_reason`` when it
+      recorded one (see :func:`_owner_condition_backfill_outcome`), else
+      :data:`DEFAULT_BACKFILL_OUTCOME`.
+    - ``opened_at``/``closed_at`` = the episode's own ``first_detected_at``/
+      ``resolved_at``.
+
+    No ``fleet_case_links`` row is written back to the source episode --
+    binding a case to another ledger's entry is RFC 0032 Slice 7's job
+    ("three-ledger binding"), not this slice's.
+
+    Idempotent: a ``correlation_key`` this function has already backfilled is
+    skipped on a rerun (see :func:`backfill_historical_case`), so processing
+    the same ``owner_conditions`` rows twice creates no duplicate
+    ``fleet_cases`` rows.
+
+    Returns ``{"created_case_ids": [...], "created_count": int, "skipped_count": int}``.
+    """
+    created: list[str] = []
+    skipped = 0
+    offset = 0
+    while True:
+        rows = await pool.fetch(
+            """
+            SELECT source, fingerprint, episode, first_detected_at, resolved_at, metadata
+            FROM public.owner_conditions
+            WHERE state = 'resolved'
+            ORDER BY first_detected_at ASC
+            OFFSET $1 LIMIT $2
+            """,
+            offset,
+            page_size,
+        )
+        if not rows:
+            break
+        offset += len(rows)
+
+        for row in rows:
+            resolved_at = row["resolved_at"]
+            if resolved_at is None:
+                # chk_owner_conditions_resolved_fields guarantees this cannot
+                # happen for state='resolved'; skip defensively rather than
+                # ever writing a fleet_cases row with closed_at=NULL.
+                skipped += 1
+                continue
+            metadata = row["metadata"]
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            correlation_key = (
+                f"{BACKFILL_CORRELATION_KEY_PREFIX}{row['source']}:"
+                f"{row['fingerprint']}:{row['episode']}"
+            )
+            result = await backfill_historical_case(
+                pool,
+                correlation_key=correlation_key,
+                outcome=_owner_condition_backfill_outcome(metadata),
+                opened_at=row["first_detected_at"],
+                closed_at=resolved_at,
+            )
+            if result is not None:
+                created.append(str(result["id"]))
+            else:
+                skipped += 1
+
+    return {
+        "created_case_ids": created,
+        "created_count": len(created),
+        "skipped_count": skipped,
     }

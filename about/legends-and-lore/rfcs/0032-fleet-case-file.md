@@ -1,7 +1,7 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slices 1-5 landed — schema, read API, contribution tools,
-situation-scoped attention, lapse sweep)
+**Status:** Draft (Slices 1-6 landed — schema, read API, contribution tools,
+situation-scoped attention, lapse sweep, historical backfill)
 **Date:** 2026-09-05
 
 ## Context
@@ -88,7 +88,7 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; Slices 1-5 have landed.
+This RFC is written for the whole feature; Slices 1-6 have landed.
 
 - **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
@@ -123,8 +123,21 @@ This RFC is written for the whole feature; Slices 1-5 have landed.
   cases are never auto-lapsed regardless of age, and the eligibility check
   and the write are one atomic `UPDATE`, so a case can never be resurrected
   and an already-closed case is never touched again.
-- **S6:** backfill — creates only `closed`/`lapsed` historical cases from
-  existing data, never resurrects an inferred case as open.
+- **S6 (landed):** backfill (`fleet_cases.backfill_historical_case`/
+  `backfill_from_owner_conditions`, `scripts/backfill_fleet_cases.py` — a
+  one-time/idempotent-rerun script, not a scheduled job). Source: resolved
+  `public.owner_conditions` episodes (`butlers.core.owner_conditions`,
+  pre-dates this RFC) — not the insight broker's clustering, which the
+  Context section above already notes is discarded every delivery cycle and
+  so has no durable history to backfill from. Each resolved episode becomes
+  one `state='closed'` case keyed by
+  `backfill:owner_condition:{source}:{fingerprint}:{episode}`, with
+  `outcome` taken from the episode's `metadata.resolution_reason` (falling
+  back to `"resolved"`). `backfill_historical_case` hard-codes
+  `state = 'closed'` in its INSERT text — no caller can make it write an
+  open case — and a `WHERE NOT EXISTS` guard on `correlation_key` makes
+  reruns idempotent. No `fleet_case_links` row is written; that binding is
+  S7's job.
 - **S7:** three-ledger binding through `fleet_case_links`.
 
 ## Non-goals
