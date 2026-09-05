@@ -197,6 +197,10 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "contribute_case_evidence",
         "propose_case_posture",
         "close_case",
+        # bu-8cdl1.7 Slice 7: three-ledger binding through fleet_case_links
+        # (RFC 0032). Same write-authority/registration reasoning as the
+        # Slice 3 tools above.
+        "record_case_link",
         "read_case",
     }
 )
