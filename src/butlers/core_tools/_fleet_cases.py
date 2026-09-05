@@ -1,15 +1,19 @@
-"""Fleet Case File contribution tools (bu-8cdl1.7 Slices 3-4, RFC 0032).
+"""Fleet Case File contribution tools (bu-8cdl1.7 Slices 3-4 and 7, RFC 0032).
 
 See ``src/butlers/core/fleet_cases.py`` for the shared data layer and
 ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full design.
 Slice 1 (schema/RLS, core_217) and Slice 2 (read API,
-``roster/switchboard/api/router.py``) already landed; this adds the six MCP
-tools the RFC's Slice 3 names: ``find_open_case``, ``open_case``,
-``contribute_case_evidence``, ``propose_case_posture``, ``close_case``,
-``read_case``. Slice 4 (situation-scoped attention) adds no new tool -- it
-folds a ``case_attention`` field into ``contribute_case_evidence`` and
+``roster/switchboard/api/router.py``) already landed; Slice 3 adds six MCP
+tools: ``find_open_case``, ``open_case``, ``contribute_case_evidence``,
+``propose_case_posture``, ``close_case``, ``read_case``. Slice 4
+(situation-scoped attention) adds no new tool -- it folds a
+``case_attention`` field into ``contribute_case_evidence`` and
 ``propose_case_posture``'s existing results (see
-``fleet_cases.evaluate_case_attention``).
+``fleet_cases.evaluate_case_attention``). Slice 7 (three-ledger binding)
+adds one new tool, ``record_case_link``, and wires it into the two call
+sites that can observe a genuine cross-ledger reference: a linkable
+``kind``/``ref`` on ``contribute_case_evidence``, and an actually-recorded
+urgent-bypass event from ``evaluate_case_attention``.
 
 Registered fleet-wide, every butler type included (unlike ``domain_events``/
 ``delegation``, which exclude STAFFER): Switchboard itself is a STAFFER and is
@@ -17,12 +21,13 @@ the one role that can actually write ``fleet_cases``/``fleet_case_links``
 (RLS, ``core_217_fleet_case_file.py``), so it needs these tools registered on
 its own daemon too, not just as a routing target.
 
-``open_case``/``propose_case_posture``/``close_case`` mutate ``fleet_cases``,
-which RLS restricts to ``butler_switchboard_rw``. On Switchboard's own daemon
-the tool writes directly through the caller's own pool (already the
-switchboard role); on every other butler's daemon it is forwarded through the
-Switchboard's ``route()`` primitive to Switchboard's own registration of the
-same tool -- mirroring ``_delegation.py``/``_domain_events.py``'s existing
+``open_case``/``propose_case_posture``/``close_case``/``record_case_link``
+mutate ``fleet_cases``/``fleet_case_links``, both RLS-restricted to
+``butler_switchboard_rw``. On Switchboard's own daemon the tool writes
+directly through the caller's own pool (already the switchboard role); on
+every other butler's daemon it is forwarded through the Switchboard's
+``route()`` primitive to Switchboard's own registration of the same tool --
+mirroring ``_delegation.py``/``_domain_events.py``'s existing
 client-vs-self-delivery split via the shared
 ``_switchboard_route_dispatch.dispatch_via_switchboard_route`` -- so the
 actual write always lands under Switchboard's own role regardless of which
@@ -30,10 +35,14 @@ butler initiated it. ``propose_case_posture``'s "Switchboard arbitrates" is,
 in this slice, a plain last-write-wins update once forwarded; no quorum/
 voting model ships here.
 
-``find_open_case``, ``contribute_case_evidence``, and ``read_case`` need no
-forwarding: ``fleet_case_evidence`` has no RLS restriction (any role may
-INSERT) and both tables are readable by every role, so these run directly
-against the calling butler's own pool.
+``find_open_case`` and ``read_case`` need no forwarding: both
+``fleet_cases``/``fleet_case_links`` are readable by every role. Evidence
+insertion inside ``contribute_case_evidence`` also needs no forwarding
+(``fleet_case_evidence`` has no RLS restriction), but that same call can
+now also produce a ``fleet_case_links`` write (Slice 7) when the evidence
+cites one of the three ledgers -- that write goes through the same
+Switchboard-forwarding helper as ``record_case_link`` itself, so
+``contribute_case_evidence`` is no longer unconditionally forwarding-free.
 """
 
 from __future__ import annotations
@@ -92,6 +101,40 @@ async def _dispatch_fleet_case_write(
         "status": "error",
         "error": "Switchboard returned no data for this fleet case write.",
     }
+
+
+async def _write_case_link(
+    ctx: ToolContext,
+    daemon: Any,
+    pool: Any,
+    butler_name: str,
+    *,
+    case_id: str,
+    link_kind: str,
+    ref: str,
+) -> dict[str, Any]:
+    """Write one ``fleet_case_links`` row, forwarding through Switchboard when
+    this daemon isn't Switchboard's own -- the same is_switchboard split as
+    ``open_case``/``propose_case_posture``/``close_case``, shared by
+    ``record_case_link`` itself and by the two internal call sites
+    (``contribute_case_evidence``, ``propose_case_posture``) that can also
+    observe a genuine cross-ledger reference (RFC 0032 Slice 7).
+    """
+    if ctx.is_switchboard:
+        try:
+            link, newly_recorded = await fleet_cases.write_case_link(
+                pool, case_id=case_id, link_kind=link_kind, ref=ref
+            )
+        except fleet_cases.FleetCaseError as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "ok", "link": link, "newly_recorded": newly_recorded}
+    return await _dispatch_fleet_case_write(
+        daemon,
+        pool,
+        butler_name,
+        tool_name="record_case_link",
+        args={"case_id": case_id, "link_kind": link_kind, "ref": ref},
+    )
 
 
 def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -166,8 +209,13 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             str,
             Field(
                 description=(
-                    "What kind of evidence this is, e.g. 'candidate', 'session', "
-                    "'observation'. Open vocabulary, your own words."
+                    "What kind of evidence this is. Open vocabulary, your own words -- "
+                    "e.g. 'session', 'observation' -- except for three reserved values "
+                    "that also bind this case to another ledger's entry (RFC 0032 Slice "
+                    "7): 'insight_candidate', 'owner_condition', 'attention_record'. Use "
+                    "one of those three only when ref is that ledger's own id and you "
+                    "have a genuine reason to believe it is about this case's situation "
+                    "-- not a speculative or incidental correlation."
                 )
             ),
         ],
@@ -175,8 +223,10 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             str,
             Field(
                 description=(
-                    "A reference to what you observed -- an insight candidate id, a "
-                    "session id, a task name. Something a reader can open."
+                    "A reference to what you observed -- a session id, a task name, or "
+                    "(for the three reserved kind values above) that ledger's own id: "
+                    "public.insight_candidates.id, public.owner_conditions.id, or "
+                    "public.attention_ledger.id. Something a reader can open."
                 )
             ),
         ],
@@ -192,13 +242,22 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         observation. Any butler may contribute; this never needs
         Switchboard.
 
+        When *kind* is one of the three reserved ``fleet_cases.LINK_KINDS``
+        values (RFC 0032 Slice 7), a newly-recorded contribution also binds
+        the case to that ledger entry via ``fleet_case_links`` -- forwarded
+        through Switchboard when this daemon isn't Switchboard's own.
+
         Returns ``{"status": "ok", "evidence": {...}, "newly_recorded": bool,
-        "case_attention": {...} | None}``. ``case_attention`` (Slice 4,
-        situation-scoped attention) is only evaluated for a newly-recorded
-        contribution -- a repeat report is a no-op and cannot itself trigger a
-        quiet-hours bypass -- and is ``None`` when the case no longer exists
-        by the time attention is evaluated. See
-        ``fleet_cases.evaluate_case_attention`` for what its fields mean.
+        "case_attention": {...} | None, "link": {...} | None}``.
+        ``case_attention`` (Slice 4, situation-scoped attention) is only
+        evaluated for a newly-recorded contribution -- a repeat report is a
+        no-op and cannot itself trigger a quiet-hours bypass -- and is
+        ``None`` when the case no longer exists by the time attention is
+        evaluated. See ``fleet_cases.evaluate_case_attention`` for what its
+        fields mean. ``link`` is the Slice 7 binding described above, or
+        ``None`` when *kind* isn't a reserved link kind, the contribution
+        wasn't newly recorded, or the link write itself failed (a link
+        failure never fails the evidence contribution it accompanies).
         """
         try:
             evidence, newly_recorded = await fleet_cases.contribute_evidence(
@@ -213,7 +272,14 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             return {"status": "error", "error": str(exc)}
 
         case_attention = None
+        link = None
         if newly_recorded:
+            if kind in fleet_cases.LINK_KINDS:
+                link_result = await _write_case_link(
+                    ctx, daemon, pool, butler_name, case_id=case_id, link_kind=kind, ref=ref
+                )
+                if link_result.get("status") == "ok":
+                    link = link_result.get("link")
             case_summary = await fleet_cases.get_case_summary(pool, case_id)
             if case_summary is not None:
                 case_attention = await fleet_cases.evaluate_case_attention(
@@ -224,11 +290,23 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                     state=case_summary["state"],
                     origin_butler=butler_name,
                 )
+                attention_ledger_id = case_attention.get("attention_ledger_id")
+                if case_attention.get("bypass") and attention_ledger_id:
+                    await _write_case_link(
+                        ctx,
+                        daemon,
+                        pool,
+                        butler_name,
+                        case_id=case_id,
+                        link_kind="attention_record",
+                        ref=attention_ledger_id,
+                    )
         return {
             "status": "ok",
             "evidence": evidence,
             "newly_recorded": newly_recorded,
             "case_attention": case_attention,
+            "link": link,
         }
 
     @_core_tool("fleet_cases")
@@ -248,7 +326,9 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
         Returns ``{"status": "ok", "case": {...}, "case_attention": {...}}``.
         ``case_attention`` (Slice 4, situation-scoped attention) reports
         whether *this* proposal broke quiet hours for the case -- see
-        ``fleet_cases.evaluate_case_attention`` for what its fields mean.
+        ``fleet_cases.evaluate_case_attention`` for what its fields mean. An
+        actually-recorded bypass also binds the case to that
+        ``attention_ledger`` row via ``fleet_case_links`` (Slice 7).
         """
         if ctx.is_switchboard:
             try:
@@ -263,6 +343,17 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
                 state=case["state"],
                 origin_butler=butler_name,
             )
+            attention_ledger_id = case_attention.get("attention_ledger_id")
+            if case_attention.get("bypass") and attention_ledger_id:
+                await _write_case_link(
+                    ctx,
+                    daemon,
+                    pool,
+                    butler_name,
+                    case_id=case_id,
+                    link_kind="attention_record",
+                    ref=attention_ledger_id,
+                )
             return {"status": "ok", "case": case, "case_attention": case_attention}
         return await _dispatch_fleet_case_write(
             daemon,
@@ -304,6 +395,46 @@ def register_fleet_case_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             butler_name,
             tool_name="close_case",
             args={"case_id": case_id, "outcome": outcome},
+        )
+
+    @_core_tool("fleet_cases")
+    @tool_span("record_case_link", butler_name=butler_name)
+    async def record_case_link(
+        case_id: Annotated[str, Field(description="fleet_cases.id to bind.")],
+        link_kind: Annotated[
+            str,
+            Field(description=("One of: insight_candidate, owner_condition, attention_record.")),
+        ],
+        ref: Annotated[
+            str,
+            Field(
+                description=(
+                    "The other ledger's own id for the entry you are binding to -- "
+                    "public.insight_candidates.id, public.owner_conditions.id, or "
+                    "public.attention_ledger.id."
+                )
+            ),
+        ],
+    ) -> dict:
+        """Bind this case to a genuine, already-existing entry in another ledger.
+
+        RFC 0032 Slice 7 -- the three-ledger binding. Only call this for an
+        explicit cross-ledger reference you have a concrete id for; do not
+        call it for a speculative or incidental correlation.
+        ``contribute_case_evidence``/``propose_case_posture`` already call
+        this automatically when they observe one (a linkable evidence
+        ``kind``, or an urgent-bypass attention event), so most callers never
+        need to call it directly.
+
+        Idempotent: repeating the same ``(case_id, link_kind, ref)`` is a
+        no-op, not a duplicate row. Only Switchboard may actually write
+        ``fleet_case_links`` (RLS); a call from any other butler is forwarded
+        through Switchboard's ``route()``.
+
+        Returns ``{"status": "ok", "link": {...}, "newly_recorded": bool}``.
+        """
+        return await _write_case_link(
+            ctx, daemon, pool, butler_name, case_id=case_id, link_kind=link_kind, ref=ref
         )
 
     @_core_tool("fleet_cases")

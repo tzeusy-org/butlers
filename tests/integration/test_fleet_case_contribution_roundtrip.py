@@ -1,13 +1,13 @@
-"""Real-Postgres regression: fleet case contribution (bu-8cdl1.7 Slices 3-6, RFC 0032).
+"""Real-Postgres regression: fleet case contribution (bu-8cdl1.7 Slices 3-7, RFC 0032).
 
 Exercises ``butlers.core.fleet_cases`` against a fully migrated Postgres
 instance (testcontainers) -- not just the mocked-pool unit tests in
 ``tests/core/test_fleet_cases.py``. Things a mock cannot verify:
 
 - The RLS policy from core_217 actually blocks a non-Switchboard role's
-  ``open_case``/``propose_posture``/``close_case`` at the database, so the
-  MCP tool layer's route-forwarding (``core_tools/_fleet_cases.py``) is load-
-  bearing, not decorative.
+  ``open_case``/``propose_posture``/``close_case``/``write_case_link`` at the
+  database, so the MCP tool layer's route-forwarding
+  (``core_tools/_fleet_cases.py``) is load-bearing, not decorative.
 - ``contribute_evidence``'s ``ON CONFLICT DO NOTHING`` + re-SELECT round-trips
   correctly against real Postgres: the epic's acceptance criterion ("two
   butlers contributing the same evidence ref -> one row") means one row *per
@@ -18,6 +18,10 @@ instance (testcontainers) -- not just the mocked-pool unit tests in
   ``uq_fleet_cases_active_correlation_key`` are actually satisfied by the
   backfill's writes against the live constraints, not just by inspecting its
   SQL text (see ``tests/core/test_fleet_cases.py`` for that half).
+- Slice 7's three-ledger binding: ``write_case_link``'s
+  ``uq_fleet_case_links_ref`` idempotence, its RLS write-authority refusal for
+  a non-Switchboard role, and that a linked case surfaces its links through
+  ``read_case`` -- all against the live constraints, not mocked ones.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import pytest
 
 from butlers.core.fleet_cases import (
     BACKFILL_CORRELATION_KEY_PREFIX,
+    LINK_KINDS,
     FleetCaseError,
     backfill_from_owner_conditions,
     backfill_historical_case,
@@ -40,6 +45,7 @@ from butlers.core.fleet_cases import (
     propose_posture,
     read_case,
     run_lapse_sweep,
+    write_case_link,
 )
 from butlers.testing.migration import (
     create_migrated_test_db,
@@ -149,19 +155,20 @@ async def _seed_owner_condition(
     resolved_at: datetime | None = None,
     recovered_after_s: float | None = None,
     metadata: dict | None = None,
-) -> None:
+) -> str:
     """Seed one public.owner_conditions episode directly -- Slice 6's backfill
     source. Bypasses the condition_ledger engine (reconcile_snapshot/
     resolve_condition) the same way _seed_case bypasses open_case/close_case:
     the backfill test needs a specific already-resolved episode the ordinary
-    API path doesn't let a test dictate directly."""
+    API path doesn't let a test dictate directly. Returns the episode's own
+    id -- Slice 7's ``owner_condition`` link ref."""
     conn = await asyncpg.connect(bootstrap_url)
     try:
-        await conn.execute(
+        row = await conn.fetchrow(
             "INSERT INTO public.owner_conditions "
             "(source, fingerprint, episode, state, first_detected_at, last_confirmed_at, "
             " resolved_at, recovered_after_s, metadata) "
-            "VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::jsonb)",
+            "VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::jsonb) RETURNING id",
             source,
             fingerprint,
             episode,
@@ -171,6 +178,7 @@ async def _seed_owner_condition(
             recovered_after_s,
             json.dumps(metadata) if metadata is not None else None,
         )
+        return str(row["id"])
     finally:
         await conn.close()
 
@@ -276,6 +284,88 @@ async def test_non_switchboard_role_cannot_write_fleet_cases_at_the_data_layer(
         await switchboard_conn.close()
         await health_conn.close()
         await _delete_case(bootstrap_url, "test:rls-refusal-key-2")
+
+
+async def test_write_case_link_covers_all_three_link_kinds_and_is_idempotent(
+    db_url: str, bootstrap_url: str
+) -> None:
+    """RFC 0032 Slice 7 end-to-end: each of the three link_kinds can be
+    written and read back via (case_id, link_kind, ref), a repeat write of
+    the exact same (case_id, link_kind, ref) is a no-op rather than a
+    duplicate row (``uq_fleet_case_links_ref``), and a linked case surfaces
+    every link through ``read_case`` (Slice 2's read API)."""
+    switchboard_conn = await _role_conn(db_url, "butler_switchboard_rw")
+    try:
+        case = await open_case(switchboard_conn, correlation_key="test:link-lifecycle-key")
+        case_id = str(case["id"])
+
+        refs = {
+            "insight_candidate": "candidate-1",
+            "owner_condition": "condition-1",
+            "attention_record": "attention-1",
+        }
+        assert set(refs) == LINK_KINDS
+        for link_kind, ref in refs.items():
+            link_row, newly_recorded = await write_case_link(
+                switchboard_conn, case_id=case_id, link_kind=link_kind, ref=ref
+            )
+            assert newly_recorded is True
+            assert link_row["case_id"] == case["id"]
+            assert link_row["link_kind"] == link_kind
+            assert link_row["ref"] == ref
+
+        # A repeat write of the exact same (case_id, link_kind, ref) is a
+        # no-op -- the existing row is returned, not a duplicate.
+        repeat_row, repeat_new = await write_case_link(
+            switchboard_conn,
+            case_id=case_id,
+            link_kind="insight_candidate",
+            ref=refs["insight_candidate"],
+        )
+        assert repeat_new is False
+        assert repeat_row["ref"] == refs["insight_candidate"]
+
+        full = await read_case(switchboard_conn, case_id)
+        assert full is not None
+        assert len(full["links"]) == 3
+        assert {row["link_kind"] for row in full["links"]} == LINK_KINDS
+
+        count = await switchboard_conn.fetchval(
+            "SELECT count(*) FROM public.fleet_case_links WHERE case_id = $1", case["id"]
+        )
+        assert count == 3
+    finally:
+        await switchboard_conn.close()
+        await _delete_case(bootstrap_url, "test:link-lifecycle-key")
+
+
+async def test_non_switchboard_role_cannot_write_fleet_case_links_at_the_data_layer(
+    db_url: str, bootstrap_url: str
+) -> None:
+    """Write authority matches fleet_cases exactly -- a non-Switchboard
+    role's INSERT on fleet_case_links raises the same
+    InsufficientPrivilegeError as open_case's, so the MCP tool layer's
+    record_case_link route-forwarding is load-bearing here too."""
+    switchboard_conn = await _role_conn(db_url, "butler_switchboard_rw")
+    health_conn = await _role_conn(db_url, "butler_health_rw")
+    try:
+        case = await open_case(switchboard_conn, correlation_key="test:link-rls-refusal-key")
+        case_id = str(case["id"])
+
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await write_case_link(
+                health_conn, case_id=case_id, link_kind="insight_candidate", ref="candidate-1"
+            )
+
+        # Confirmed refused at the database, not silently dropped.
+        count = await switchboard_conn.fetchval(
+            "SELECT count(*) FROM public.fleet_case_links WHERE case_id = $1", case["id"]
+        )
+        assert count == 0
+    finally:
+        await switchboard_conn.close()
+        await health_conn.close()
+        await _delete_case(bootstrap_url, "test:link-rls-refusal-key")
 
 
 async def test_lapse_sweep_only_closes_genuinely_stale_silent_or_routine_cases(
@@ -462,7 +552,7 @@ async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_id
 
     switchboard_conn = await _role_conn(db_url, "butler_switchboard_rw")
     try:
-        await _seed_owner_condition(
+        episode_id = await _seed_owner_condition(
             bootstrap_url,
             source=source,
             fingerprint="resolved-fp",
@@ -504,6 +594,15 @@ async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_id
         )
         assert never_created is None
 
+        # RFC 0032 Slice 7: the backfill also binds the case to the source
+        # episode via fleet_case_links -- surfaced through read_case, not
+        # just queryable directly.
+        full_case = await read_case(switchboard_conn, str(created_row["id"]))
+        assert full_case is not None
+        assert len(full_case["links"]) == 1
+        assert full_case["links"][0]["link_kind"] == "owner_condition"
+        assert full_case["links"][0]["ref"] == episode_id
+
         rerun = await backfill_from_owner_conditions(switchboard_conn)
         assert str(created_row["id"]) not in rerun["created_case_ids"]
 
@@ -511,6 +610,11 @@ async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_id
             "SELECT count(*) FROM public.fleet_cases WHERE correlation_key = $1", resolved_key
         )
         assert count == 1
+        link_count = await switchboard_conn.fetchval(
+            "SELECT count(*) FROM public.fleet_case_links WHERE case_id = $1",
+            created_row["id"],
+        )
+        assert link_count == 1
     finally:
         await switchboard_conn.close()
         await _delete_owner_conditions(bootstrap_url, source=source)
