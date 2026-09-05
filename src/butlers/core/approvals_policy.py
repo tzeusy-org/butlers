@@ -212,6 +212,41 @@ def policy_quiet_hours_deliver_at(
     return candidate.astimezone(UTC)
 
 
+def policy_quiet_hours_window_start(
+    policy: dict[str, Any] | None,
+    *,
+    now: datetime,
+) -> datetime | None:
+    """Return the start instant of the quiet-hours window *now* falls inside.
+
+    Mirrors :func:`policy_quiet_hours_deliver_at`'s end-of-window calculation
+    but resolves the other boundary. A caller that needs to deduplicate
+    something "once per quiet-hours window" (see
+    ``butlers.core.fleet_cases.evaluate_case_attention``) can use this instant
+    as a stable window key instead of re-deriving window membership from wall-
+    clock hours on every check.
+
+    Returns ``None`` when quiet hours are not currently active, or for any of
+    the fail-open reasons :func:`policy_quiet_hours_deliver_at` returns
+    ``None``.
+    """
+    state = _policy_local_now(policy, now=now)
+    if state is None:
+        return None
+    local_now, quiet_start, quiet_end = state
+    if not is_in_policy_quiet_hours(
+        current_hour=local_now.hour,
+        quiet_start=quiet_start,
+        quiet_end=quiet_end,
+    ):
+        return None
+
+    candidate = local_now.replace(hour=quiet_start, minute=0, second=0, microsecond=0)
+    if candidate > local_now:
+        candidate -= timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
 def approval_push_deliver_at(
     policy: dict[str, Any] | None,
     *,
