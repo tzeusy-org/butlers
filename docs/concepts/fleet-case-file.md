@@ -50,4 +50,17 @@ restriction. `EVIDENCE_KINDS` (the vocabulary `report_event_reaction` accepts
 for a domain-event reaction's evidence refs) now includes `case`, so a
 reaction can cite the fleet case it filed evidence into.
 
+Slice 4 adds situation-scoped attention (`fleet_cases.evaluate_case_attention`):
+one quiet-hours bypass per case per quiet-hours window, keyed by the case's
+`correlation_key` rather than by the individual candidate/contribution that
+triggered it. `contribute_case_evidence` and `propose_case_posture` each
+evaluate it and return a `case_attention` field describing whether that call
+broke quiet hours. Only a non-closed case at `posture='urgent'` can trigger a
+bypass; any number of contributors reporting evidence against the same urgent
+case during one quiet-hours window collapse to at most one recorded bypass
+(a `public.attention_ledger` row) — the fix for the original problem of one
+situation independently noticed by several butlers breaking quiet hours once
+per notice. Stepping a case down from `urgent` or closing it clears the
+attention need with no separate cleanup step.
+
 No broker wiring or dashboard write surface exist yet.

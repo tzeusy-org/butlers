@@ -10,18 +10,23 @@ tests/migrations/test_fleet_case_file_migration.py.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
 
+import butlers.core.fleet_cases as fleet_cases_module
 from butlers.core.fleet_cases import (
     CASE_POSTURES,
     CASE_STATES,
     FleetCaseError,
+    case_attention_dedup_key,
     close_case,
     contribute_evidence,
+    evaluate_case_attention,
     find_open_case,
+    get_case_summary,
     open_case,
     propose_posture,
     read_case,
@@ -79,6 +84,27 @@ class TestFindOpenCase:
         pool = _pool(fetchrow=_CASE_ROW)
         result = await find_open_case(pool, "health:owner:respiratory-illness")
         assert result == _CASE_ROW
+
+
+class TestGetCaseSummary:
+    async def test_returns_none_when_case_does_not_exist(self) -> None:
+        pool = _pool(fetchrow=None)
+        assert await get_case_summary(pool, _CASE_ID) is None
+
+    async def test_returns_the_summary_fields(self) -> None:
+        summary_row = {
+            "id": _CASE_ID,
+            "correlation_key": "health:owner:respiratory-illness",
+            "state": "open",
+            "posture": "urgent",
+        }
+        pool = _pool(fetchrow=summary_row)
+        assert await get_case_summary(pool, _CASE_ID) == summary_row
+
+    async def test_malformed_case_id_is_refused(self) -> None:
+        pool = _pool()
+        with pytest.raises(FleetCaseError, match="UUID"):
+            await get_case_summary(pool, "not-a-uuid")
 
 
 class TestOpenCase:
@@ -258,3 +284,140 @@ class TestReadCase:
         pool = _pool()
         with pytest.raises(FleetCaseError, match="UUID"):
             await read_case(pool, "not-a-uuid")
+
+
+class TestEvaluateCaseAttention:
+    """bu-8cdl1.7 Slice 4: one urgent bypass per case per quiet-hours window,
+    keyed by correlation_key rather than by the individual call that
+    triggered the check -- the fix for "one situation noticed by five
+    butlers breaks quiet hours five times"."""
+
+    _CORRELATION_KEY = "health:owner:respiratory-illness"
+    _QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+
+    async def test_closed_case_never_bypasses(self, monkeypatch) -> None:
+        get_policy_mock = AsyncMock()
+        monkeypatch.setattr(fleet_cases_module, "get_approvals_policy_quiet_hours", get_policy_mock)
+
+        result = await evaluate_case_attention(
+            _pool(),
+            case_id=_CASE_ID,
+            correlation_key=self._CORRELATION_KEY,
+            posture="urgent",
+            state="closed",
+            origin_butler="health",
+        )
+
+        assert result == {"bypass": False, "reason": "case_closed"}
+        get_policy_mock.assert_not_awaited()
+
+    async def test_non_urgent_posture_never_bypasses(self, monkeypatch) -> None:
+        get_policy_mock = AsyncMock()
+        monkeypatch.setattr(fleet_cases_module, "get_approvals_policy_quiet_hours", get_policy_mock)
+
+        result = await evaluate_case_attention(
+            _pool(),
+            case_id=_CASE_ID,
+            correlation_key=self._CORRELATION_KEY,
+            posture="active",
+            state="open",
+            origin_butler="health",
+        )
+
+        assert result == {"bypass": False, "reason": "not_urgent"}
+        get_policy_mock.assert_not_awaited()
+
+    async def test_urgent_but_quiet_hours_inactive_does_not_bypass(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            fleet_cases_module,
+            "get_approvals_policy_quiet_hours",
+            AsyncMock(return_value=self._QUIET_POLICY),
+        )
+        monkeypatch.setattr(fleet_cases_module, "is_policy_quiet_now", lambda policy, now: False)
+        record_mock = AsyncMock()
+        monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
+
+        result = await evaluate_case_attention(
+            _pool(),
+            case_id=_CASE_ID,
+            correlation_key=self._CORRELATION_KEY,
+            posture="urgent",
+            state="open",
+            origin_butler="health",
+            now=datetime(2026, 7, 18, 12, 0, tzinfo=UTC),
+        )
+
+        assert result == {"bypass": False, "reason": "quiet_hours_inactive"}
+        record_mock.assert_not_awaited()
+
+    async def test_first_urgent_call_in_a_window_bypasses_and_records(self, monkeypatch) -> None:
+        window_start = datetime(2026, 7, 18, 22, 0, tzinfo=UTC)
+        monkeypatch.setattr(
+            fleet_cases_module,
+            "get_approvals_policy_quiet_hours",
+            AsyncMock(return_value=self._QUIET_POLICY),
+        )
+        monkeypatch.setattr(fleet_cases_module, "is_policy_quiet_now", lambda policy, now: True)
+        monkeypatch.setattr(
+            fleet_cases_module, "policy_quiet_hours_window_start", lambda policy, now: window_start
+        )
+        monkeypatch.setattr(
+            fleet_cases_module, "attention_event_recorded_since", AsyncMock(return_value=False)
+        )
+        record_mock = AsyncMock()
+        monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
+
+        result = await evaluate_case_attention(
+            _pool(),
+            case_id=_CASE_ID,
+            correlation_key=self._CORRELATION_KEY,
+            posture="urgent",
+            state="open",
+            origin_butler="health",
+            now=datetime(2026, 7, 19, 1, 0, tzinfo=UTC),
+        )
+
+        assert result == {"bypass": True, "reason": "urgent_case_bypass"}
+        record_mock.assert_awaited_once()
+        _, kwargs = record_mock.await_args
+        assert kwargs["dedup_key"] == case_attention_dedup_key(self._CORRELATION_KEY)
+        assert kwargs["metadata"] == {
+            "case_id": _CASE_ID,
+            "correlation_key": self._CORRELATION_KEY,
+        }
+
+    async def test_second_urgent_call_in_the_same_window_does_not_rebypass(
+        self, monkeypatch
+    ) -> None:
+        """Five butlers independently reporting the same urgent case in one
+        window collapse to at most one recorded bypass -- a different
+        origin_butler on the second call changes nothing."""
+        monkeypatch.setattr(
+            fleet_cases_module,
+            "get_approvals_policy_quiet_hours",
+            AsyncMock(return_value=self._QUIET_POLICY),
+        )
+        monkeypatch.setattr(fleet_cases_module, "is_policy_quiet_now", lambda policy, now: True)
+        monkeypatch.setattr(
+            fleet_cases_module,
+            "policy_quiet_hours_window_start",
+            lambda policy, now: datetime(2026, 7, 18, 22, 0, tzinfo=UTC),
+        )
+        monkeypatch.setattr(
+            fleet_cases_module, "attention_event_recorded_since", AsyncMock(return_value=True)
+        )
+        record_mock = AsyncMock()
+        monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
+
+        result = await evaluate_case_attention(
+            _pool(),
+            case_id=_CASE_ID,
+            correlation_key=self._CORRELATION_KEY,
+            posture="urgent",
+            state="open",
+            origin_butler="finance",
+            now=datetime(2026, 7, 19, 1, 30, tzinfo=UTC),
+        )
+
+        assert result == {"bypass": False, "reason": "already_bypassed_this_window"}
+        record_mock.assert_not_awaited()
