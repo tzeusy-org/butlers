@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -282,14 +283,19 @@ async def _insert_subscription(
     frequency: str = "yearly",
     next_renewal: date | None = None,
     status: str = "active",
+    cancellation_url: str | None = None,
+    notice_period_days: int | None = None,
+    cancel_by: date | None = None,
+    metadata: dict | None = None,
 ) -> str:
     if next_renewal is None:
         next_renewal = _today() + timedelta(days=7)
     row_id = await pool.fetchval(
         """
         INSERT INTO finance.subscriptions
-            (service, amount, currency, frequency, next_renewal, status)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (service, amount, currency, frequency, next_renewal, status,
+             cancellation_url, notice_period_days, cancel_by, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
         RETURNING id
         """,
         service,
@@ -298,6 +304,10 @@ async def _insert_subscription(
         frequency,
         next_renewal,
         status,
+        cancellation_url,
+        notice_period_days,
+        cancel_by,
+        json.dumps(metadata or {}),
     )
     return str(row_id)
 
@@ -1420,6 +1430,108 @@ async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_p
         sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
         expected_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
         assert sub_cands[0]["dedup_key"] == expected_key
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — renewal insight door fields (bu-8cdl1.10 slice 3)
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
+    provisioned_postgres_pool,
+):
+    """A subscription with a complete cancellation door (notice period + URL +
+    cancel-by) carries the door fields and days-remaining-to-act on its
+    renewal insight, not just the amount."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        renewal_date = _today() + timedelta(days=10)
+        cancel_by = _today() + timedelta(days=3)
+        sub_id = await _insert_subscription(
+            pool,
+            service="Adobe",
+            next_renewal=renewal_date,
+            cancellation_url="https://adobe.com/cancel",
+            notice_period_days=7,
+            cancel_by=cancel_by,
+        )
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert cand["metadata"]["subscription_id"] == sub_id
+        assert cand["metadata"]["unknown_door"] is False
+        assert cand["metadata"]["cancellation_url"] == "https://adobe.com/cancel"
+        assert cand["metadata"]["notice_period_days"] == 7
+        assert cand["metadata"]["cancel_by"] == cancel_by.isoformat()
+        assert cand["metadata"]["warn_by"] == (cancel_by - timedelta(days=7)).isoformat()
+        assert cand["metadata"]["days_remaining_to_act"] == 3
+        assert "No cancellation door on file" not in cand["message"]
+        assert "Cancel by" in cand["message"]
+
+
+async def test_insight_scan_renewal_missing_door_renders_enrichment_prompt(
+    provisioned_postgres_pool,
+):
+    """A subscription with no cancellation door on file gets an explicit
+    enrichment prompt on its renewal insight, not a silent omission of the
+    door status."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        renewal_date = _today() + timedelta(days=10)
+        await _insert_subscription(pool, service="Dropbox", next_renewal=renewal_date)
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert cand["metadata"]["unknown_door"] is True
+        assert cand["metadata"]["cancel_by"] is None
+        assert cand["metadata"]["warn_by"] is None
+        assert "No cancellation door on file" in cand["message"]
+        assert "add its cancellation URL" in cand["message"]
+
+
+async def test_insight_scan_renewal_with_pre_charge_price_change_flag(
+    provisioned_postgres_pool,
+):
+    """A pre-charge price-change flag on the obligation ledger row surfaces on
+    the renewal insight alongside the door fields."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        renewal_date = _today() + timedelta(days=10)
+        cancel_by = _today() + timedelta(days=3)
+        await _insert_subscription(
+            pool,
+            service="Adobe",
+            amount="599.00",
+            next_renewal=renewal_date,
+            cancellation_url="https://adobe.com/cancel",
+            notice_period_days=7,
+            cancel_by=cancel_by,
+            metadata={"next_amount": "699.00"},
+        )
+
+        await run_insight_scan(pool)
+
+        cand = await pool.fetchrow(
+            "SELECT message, metadata FROM insight_candidates WHERE category = 'subscription-renewal'"
+        )
+        assert cand["metadata"]["price_change_amount"] == "699.00"
+        assert cand["metadata"]["price_change_direction"] == "increase"
+        assert "increase to USD 699.00" in cand["message"]
 
 
 async def test_insight_scan_deadline_candidates_include_event_date_metadata(

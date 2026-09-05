@@ -141,6 +141,37 @@ def _sub_row(
     }
 
 
+def _obligation_row(
+    *,
+    subscription_id: Any = None,
+    service: str = "Netflix",
+    amount: str = "15.49",
+    currency: str = "USD",
+    period: Any = None,
+    cancellation_url: str | None = None,
+    notice_period_days: int | None = None,
+    cancel_by: Any = None,
+    warn_by: Any = None,
+    unknown_door: bool = True,
+    price_change_amount: Any = None,
+    price_change_direction: str | None = None,
+) -> dict:
+    return {
+        "subscription_id": uuid.UUID(subscription_id) if subscription_id else uuid.uuid4(),
+        "service": service,
+        "amount": Decimal(amount),
+        "currency": currency,
+        "period": period or (_TODAY + timedelta(days=30)),
+        "cancellation_url": cancellation_url,
+        "notice_period_days": notice_period_days,
+        "cancel_by": cancel_by,
+        "warn_by": warn_by,
+        "unknown_door": unknown_door,
+        "price_change_amount": Decimal(price_change_amount) if price_change_amount else None,
+        "price_change_direction": price_change_direction,
+    }
+
+
 def _bill_row(
     *,
     id: Any = None,
@@ -634,6 +665,136 @@ async def test_list_subscriptions_schema_prefix():
         await client.get("/api/finance/subscriptions")
 
     call_args = mock_pool.fetchval.call_args[0][0]
+    assert "finance.subscriptions" in call_args
+
+
+# ---------------------------------------------------------------------------
+# Tests: GET /api/finance/obligations (bu-8cdl1.10 slice 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_empty():
+    """GET /api/finance/obligations returns an empty, available envelope."""
+    app, _ = _make_app(fetch_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"items": [], "count": 0, "available": True, "degraded_reason": None}
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_known_door_carries_warn_and_days_remaining():
+    """A known-door row surfaces the door fields and days-remaining-to-act."""
+    cancel_by = _TODAY + timedelta(days=3)
+    warn_by = _TODAY - timedelta(days=4)
+    rows = [
+        _obligation_row(
+            service="Adobe",
+            cancellation_url="https://adobe.com/cancel",
+            notice_period_days=7,
+            cancel_by=cancel_by,
+            warn_by=warn_by,
+            unknown_door=False,
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["service"] == "Adobe"
+    assert item["unknown_door"] is False
+    assert item["cancellation_url"] == "https://adobe.com/cancel"
+    assert item["notice_period_days"] == 7
+    assert item["cancel_by"] == str(cancel_by)
+    assert item["warn_by"] == str(warn_by)
+    assert item["days_remaining_to_act"] == 3
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_unknown_door_renders_null_dates_not_error():
+    """A missing-door row renders nulls for cancel_by/warn_by, not an error."""
+    rows = [_obligation_row(service="Dropbox", unknown_door=True)]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["unknown_door"] is True
+    assert item["cancel_by"] is None
+    assert item["warn_by"] is None
+    assert item["days_remaining_to_act"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_surfaces_price_change_flag():
+    """A pre-charge price-change flag round-trips onto the obligation item."""
+    rows = [
+        _obligation_row(
+            service="Adobe",
+            price_change_amount="699.00",
+            price_change_direction="increase",
+        )
+    ]
+    app, _ = _make_app(fetch_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
+
+    item = response.json()["items"][0]
+    assert item["price_change_amount"] == "699.00"
+    assert item["price_change_direction"] == "increase"
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_failure_is_degraded_not_empty_all_clear():
+    """A ledger read failure returns an explicit degraded envelope, never a
+    fabricated empty all-clear (response-conventions fleet-wide rule)."""
+    app, pool = _make_app()
+    pool.fetch.side_effect = RuntimeError("obligation_ledger unavailable")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "count": 0,
+        "available": False,
+        "degraded_reason": "obligation_ledger_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_obligations_schema_prefix():
+    """GET /api/finance/obligations joins the finance schema-qualified tables."""
+    app, mock_pool = _make_app(fetch_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get("/api/finance/obligations")
+
+    call_args = mock_pool.fetch.call_args[0][0]
+    assert "finance.obligation_ledger" in call_args
     assert "finance.subscriptions" in call_args
 
 
@@ -1456,6 +1617,26 @@ async def test_subscriptions_503_when_pool_unavailable():
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.get("/api/finance/subscriptions")
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_obligations_503_when_pool_unavailable():
+    """GET /api/finance/obligations returns 503 when DB pool is not available."""
+    from fastapi import FastAPI
+
+    mock_db = MagicMock()
+    mock_db.pool.side_effect = KeyError("finance")
+
+    app = FastAPI()
+    app.include_router(_finance_router_mod.router)
+    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/obligations")
 
     assert response.status_code == 503
 

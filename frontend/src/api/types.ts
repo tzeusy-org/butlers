@@ -7769,9 +7769,39 @@ export interface FinanceSubscription {
   payment_method: string | null;
   account_id: string | null;
   source_message_id: string | null;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/** One forward obligation ledger row (bu-8cdl1.10), denormalized with its
+ * subscription's service/amount and cancellation-door status. */
+export interface FinanceObligation {
+  subscription_id: string;
+  service: string;
+  /** Numeric amount as string. */
+  amount: string;
+  currency: string;
+  period: string;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
+  warn_by: string | null;
+  unknown_door: boolean;
+  /** Numeric amount as string. */
+  price_change_amount: string | null;
+  price_change_direction: "increase" | "decrease" | null;
+  days_remaining_to_act: number | null;
+}
+
+export interface FinanceObligationsResponse {
+  items: FinanceObligation[];
+  count: number;
+  available: boolean;
+  degraded_reason: "obligation_ledger_unavailable" | null;
 }
 
 export interface FinanceExpectedSignal {
