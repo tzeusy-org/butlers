@@ -9,7 +9,7 @@ Keep the "investigate only" hard stop intact.
 
 ---
 
-> You are running a **user-flow QC audit** of the Butlers dashboard (repo: /home/tze/gt/butlers).
+> You are running a **user-flow QC audit** of the Butlers dashboard (repo: /home/tze/GitHub/butlers).
 > **Investigate and report only — do not edit any file, run any migration, or run quality gates.**
 > You are read/trace-only.
 >

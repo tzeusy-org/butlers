@@ -11,7 +11,7 @@ checkpoint each batch to the harvest file (§3).
 
 ```
 You are one auditor in a fan-out pursuing a world-class JARVIS-like system for the Butlers
-project (repo: /home/tze/gt/butlers). Ground truth for "world-class":
+project (repo: /home/tze/GitHub/butlers). Ground truth for "world-class":
 - about/heart-and-soul/vision.md (read it)
 - docs/frontend/purpose-and-single-pane.md (read it if auditing a UI surface)
 - The north star: {north-star paragraph from the latest dossier}

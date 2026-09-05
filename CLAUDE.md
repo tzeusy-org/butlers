@@ -24,7 +24,7 @@ Detail belongs in the destinations below — add it there, not here.
 
 ## Repo Root Discipline (NON-NEGOTIABLE)
 
-**Never move HEAD in the main repo root (`~/gt/butlers`) off `main`** — no `git checkout -b`,
+**Never move HEAD in the main repo root (`~/GitHub/butlers`) off `main`** — no `git checkout -b`,
 `git switch`, or `git checkout <branch>`. Agents and humans rely on the root staying on `main`. If
 you find it on another branch, put it back before starting work.
 
