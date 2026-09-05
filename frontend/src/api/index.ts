@@ -1158,6 +1158,7 @@ export {
   getButlerDailyActivity,
   getButlerSessionKinds,
   getButlerLatencyStats,
+  getButlerFrictionSummary,
   getButlerMemoryStats,
 } from "./client.ts";
 
@@ -1173,6 +1174,8 @@ export type {
   SessionKindsParams,
   LatencyStats,
   LatencyStatsParams,
+  FrictionSummary,
+  FrictionSummaryParams,
   ButlerMemoryStats,
 } from "./types.ts";
 

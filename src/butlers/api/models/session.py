@@ -121,6 +121,24 @@ class LatencyStats(BaseModel):
     model: str | None = None
 
 
+class FrictionSummary(BaseModel):
+    """Typed friction episodes and session outcomes for a butler over a period.
+
+    Returned by ``GET /api/butlers/{name}/analytics/friction``. ``by_kind``
+    is zero-filled across every ``sessions_friction.kind`` value (bu-8cdl1.9
+    S2) so the console panel renders a stable counter set. ``succeeded`` /
+    ``failed`` / ``by_error_marker`` mirror ``sessions_summary``'s outcome
+    fields for the same period and window.
+    """
+
+    period: str
+    total: int
+    by_kind: dict[str, int] = {}
+    succeeded: int
+    failed: int
+    by_error_marker: dict[str, int] = {}
+
+
 class SessionAggregateButler(BaseModel):
     """A single butler's matching-session count for the aggregate rollup."""
 

@@ -412,6 +412,8 @@ import type {
   SessionKindsParams,
   LatencyStats,
   LatencyStatsParams,
+  FrictionSummary,
+  FrictionSummaryParams,
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
@@ -787,6 +789,17 @@ export function getButlerLatencyStats(
   if (params?.window_days != null) qs.set("window_days", String(params.window_days));
   const base = `/butlers/${encodeURIComponent(name)}/analytics/latency-stats`;
   return apiFetch<ApiResponse<LatencyStats>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/analytics/friction */
+export function getButlerFrictionSummary(
+  name: string,
+  params?: FrictionSummaryParams,
+): Promise<ApiResponse<FrictionSummary>> {
+  const qs = new URLSearchParams();
+  if (params?.period != null) qs.set("period", params.period);
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/friction`;
+  return apiFetch<ApiResponse<FrictionSummary>>(qs.toString() ? `${base}?${qs}` : base);
 }
 
 /** GET /api/butlers/{name}/activity-feed */

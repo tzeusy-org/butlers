@@ -467,6 +467,53 @@ async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
     assert rows[0]["kind"] == "degenerate_tool_loop"
 
 
+@pytest.mark.pg_clock
+@_asyncio_session
+async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
+    """friction_summary zero-fills every kind and counts derived episodes (bu-8cdl1.9 S3)."""
+    from butlers.core.sessions import friction_summary, session_complete, session_create
+
+    loop_sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        loop_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+    )
+
+    budget_sid = await session_create(
+        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        budget_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="GuardrailError: tool_call_budget_exceeded after 40 calls",
+    )
+
+    summary = await friction_summary(pool, period="7d")
+    assert summary["period"] == "7d"
+    assert summary["by_kind"]["degenerate_tool_loop"] == 1
+    assert summary["by_kind"]["guardrail_termination"] == 1
+    # Zero-filled, not omitted, for kinds with no episodes in the window.
+    assert summary["by_kind"]["classification_timeout"] == 0
+    assert summary["by_kind"]["recovered_error"] == 0
+    assert summary["by_kind"]["dead_end"] == 0
+    assert summary["total"] == 2
+
+    # Invalid period raises, same contract as sessions_summary.
+    with pytest.raises((ValueError, Exception)):
+        await friction_summary(pool, period="invalid_period")
+
+
 # ---------------------------------------------------------------------------
 # Orphan recovery
 # ---------------------------------------------------------------------------
