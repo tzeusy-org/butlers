@@ -441,6 +441,49 @@ CONTACT_ENTITY_MAP = TableStandin(
 )
 
 
+ENTITY_GRAPH_EDGES = TableStandin(
+    table="entity_graph_edges",
+    chains=("core",),
+    real_schema="public",
+    constant_path="src/butlers/testing/schema_standins.py::ENTITY_GRAPH_EDGES",
+    # alembic/versions/core/core_215_entity_graph_edges.py, unchanged since.
+    # FKs on subject_entity_id/object_entity_id to public.entities are dropped
+    # per the no-FK rule above (each stand-in stays independently creatable).
+    columns=(
+        ("id", "UUID PRIMARY KEY DEFAULT gen_random_uuid()"),
+        ("source_schema", "TEXT NOT NULL"),
+        ("source_table", "TEXT NOT NULL"),
+        ("source_id", "UUID NOT NULL"),
+        ("subject_entity_id", "UUID NOT NULL"),
+        ("predicate", "TEXT"),
+        ("object_entity_id", "UUID"),
+        (
+            "sensitivity",
+            "TEXT NOT NULL DEFAULT 'normal' "
+            "CHECK (sensitivity IN ('normal', 'pii', 'confidential'))",
+        ),
+        ("withheld_reason", "TEXT CHECK (withheld_reason IN ('sensitivity'))"),
+        ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+    ),
+    table_constraints=(
+        "CONSTRAINT uq_entity_graph_edges_source UNIQUE (source_schema, source_table, source_id)",
+        "CONSTRAINT chk_entity_graph_edges_payload_xor_withheld CHECK ("
+        "(withheld_reason IS NULL AND predicate IS NOT NULL AND object_entity_id IS NOT NULL)"
+        " OR "
+        "(withheld_reason IS NOT NULL AND predicate IS NULL AND object_entity_id IS NULL)"
+        ")",
+    ),
+    indexes=(
+        "CREATE INDEX IF NOT EXISTS idx_entity_graph_edges_subject ON {table} (subject_entity_id)",
+        "CREATE INDEX IF NOT EXISTS idx_entity_graph_edges_object "
+        "ON {table} (object_entity_id) WHERE object_entity_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_entity_graph_edges_withheld "
+        "ON {table} (subject_entity_id) WHERE withheld_reason IS NOT NULL",
+    ),
+)
+
+
 STANDINS: dict[str, TableStandin] = {
     standin.table: standin
     for standin in (
@@ -452,6 +495,7 @@ STANDINS: dict[str, TableStandin] = {
         APPROVAL_EVENTS,
         ENTITY_PREDICATE_REGISTRY,
         CONTACT_ENTITY_MAP,
+        ENTITY_GRAPH_EDGES,
     )
 }
 """Every declared stand-in, keyed by table name. Both guards iterate this."""
@@ -464,6 +508,7 @@ __all__ = [
     "AUTONOMY_SUGGESTIONS",
     "CONNECTOR_REGISTRY",
     "CONTACT_ENTITY_MAP",
+    "ENTITY_GRAPH_EDGES",
     "ENTITY_PREDICATE_REGISTRY",
     "PENDING_ACTIONS",
     "STANDINS",

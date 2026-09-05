@@ -83,7 +83,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -330,6 +330,8 @@ async def reconcile_snapshot(
     observations: Sequence[Observation],
     snapshot_complete: bool,
     initial_grace_seconds: float,
+    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
+    | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the condition ledger at ``table``.
 
@@ -359,6 +361,14 @@ async def reconcile_snapshot(
     ``initial_grace_seconds``, a duplicate fingerprint within
     ``observations``, or an observation whose ``metadata`` claims one of
     :data:`RESOLUTION_METADATA_KEYS`. All of it before any database access.
+
+    ``post_write``, when given, is awaited with ``(conn, transitions)``
+    *inside* the same transaction as the reconciliation writes, after they
+    complete but before commit — a downstream projection (e.g. the
+    commitment-graph write-behind in ``butlers.core.commitments``) that must
+    never silently diverge from the row it derives from. An exception raised
+    by ``post_write`` propagates and rolls back the whole transaction,
+    including the reconciliation writes it was projecting.
     """
     if not table:
         raise ValueError("reconcile_snapshot: table must be non-empty")
@@ -386,7 +396,7 @@ async def reconcile_snapshot(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            return await _reconcile_source_locked(
+            transitions = await _reconcile_source_locked(
                 conn,
                 table=table,
                 source=source,
@@ -394,6 +404,9 @@ async def reconcile_snapshot(
                 snapshot_complete=snapshot_complete,
                 initial_grace_seconds=initial_grace_seconds,
             )
+            if post_write is not None:
+                await post_write(conn, transitions)
+            return transitions
 
 
 async def resolve_condition(

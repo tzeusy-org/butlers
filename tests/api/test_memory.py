@@ -1797,12 +1797,15 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     # validity was previously 'active' and is now 'retracted'.
     assert data["validity"] == "retracted"
     # The retracting UPDATE ran, followed by the catalog disownment cascade
-    # (bu-5ud8p.3) — both against the pool that holds the fact.
-    assert len(holding.execute_calls) == 2
+    # (bu-5ud8p.3) and the entity-graph disownment cascade (RFC 0031 Slice 2,
+    # bu-8cdl1.8) — all three against the pool that holds the fact.
+    assert len(holding.execute_calls) == 3
     assert "validity = 'retracted'" in holding.execute_calls[0][0]
     assert "memory_catalog" in holding.execute_calls[1][0]
     # source_schema resolved via current_schema() (see _RetractPool.fetchval).
     assert holding.execute_calls[1][1][0] == "atlas"
+    assert "entity_graph_edges" in holding.execute_calls[2][0]
+    assert holding.execute_calls[2][1][0] == "atlas"
 
 
 async def test_retract_fact_404_when_not_found(app):

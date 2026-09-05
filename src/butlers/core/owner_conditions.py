@@ -70,7 +70,7 @@ resolution) — every function below is a thin facade binding
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import asyncpg
@@ -120,6 +120,8 @@ async def reconcile_snapshot(
     observations: Sequence[Observation],
     snapshot_complete: bool,
     initial_grace_seconds: float,
+    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
+    | None = None,
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the owner condition ledger.
 
@@ -131,6 +133,11 @@ async def reconcile_snapshot(
     Raises ``ValueError``, before any database access, when an observation's
     ``metadata`` claims one of :data:`RESOLUTION_METADATA_KEYS`
     (REQ-owner-condition-ledger-006).
+
+    ``post_write``, when given, runs inside the same transaction as the
+    reconciliation writes (see the engine's docstring) — used by
+    ``butlers.core.commitments`` to project a commitment's counterparty onto
+    ``public.entity_graph_edges`` atomically with the ledger write.
     """
     return await _reconcile_snapshot(
         pool,
@@ -139,6 +146,7 @@ async def reconcile_snapshot(
         observations=observations,
         snapshot_complete=snapshot_complete,
         initial_grace_seconds=initial_grace_seconds,
+        post_write=post_write,
     )
 
 

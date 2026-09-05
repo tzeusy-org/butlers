@@ -3,6 +3,7 @@ roster/relationship/tests/test_tools.py
 tests/api/test_conversation_recall_search_db.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_switchboard_connector_operational_role_migration.py
+tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py
 tests/migrations/test_collapse_dashboard_conversation_ghosts_migration.py

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
+from butlers.core import entity_graph_edges
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
     get_current_runtime_session_id,
@@ -582,6 +583,18 @@ async def _cascade_catalog_disownment(
         source_table=source_table,
         source_ids=source_ids,
         invalid_at=invalid_at or datetime.now(UTC),
+    )
+    # RFC 0031 (bu-8cdl1.8 Slice 2): a disowned fact's projected
+    # entity_graph_edges row must be retracted in the same transaction, or
+    # the graph would keep reporting a relationship whose source fact no
+    # longer exists / is no longer current. A no-op for rules (never
+    # projected — see entity_graph_edges.py) and for facts that were never
+    # edge-facts (no matching row to delete).
+    await entity_graph_edges.delete_entity_graph_edges(
+        conn,
+        source_schema=source_schema,
+        source_table=source_table,
+        source_ids=source_ids,
     )
 
 
@@ -1722,6 +1735,19 @@ async def store_fact(
             # active rows regardless of predicate_registry.is_temporal.
             skip_supersession = fact_valid_at is not None
 
+            # RFC 0031 (bu-8cdl1.8 Slice 2): resolved lazily, once, only when
+            # this call actually touches an edge-fact (entity_id AND
+            # object_entity_id both set) -- the overwhelming majority of
+            # store_fact() calls are non-edge property/temporal facts and
+            # must not pay for an extra round-trip.
+            _graph_schema: str | None = None
+
+            async def _resolve_graph_schema() -> str:
+                nonlocal _graph_schema
+                if _graph_schema is None:
+                    _graph_schema = await conn.fetchval("SELECT current_schema()")
+                return _graph_schema
+
             supersedes_id = None
             if skip_supersession and expected_supersedes_id is not None:
                 raise ValueError("expected_supersedes_id cannot be used for a temporal fact")
@@ -1790,6 +1816,18 @@ async def store_fact(
                         old_id,
                         now,
                     )
+                    if object_entity_id is not None:
+                        # The superseded row is no longer current -- its
+                        # projected edge must go with it in the same
+                        # transaction (RFC 0031 write-behind contract), or a
+                        # supersession would leave two live edges for the
+                        # same conceptual relationship.
+                        await entity_graph_edges.delete_entity_graph_edge(
+                            conn,
+                            source_schema=await _resolve_graph_schema(),
+                            source_table="facts",
+                            source_id=old_id,
+                        )
 
             # Insert new fact — include idempotency_key and observed_at columns
             # added by migration mem_016.  Falls back gracefully on older schemas
@@ -1822,6 +1860,22 @@ async def store_fact(
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
             )
+
+            if entity_id is not None and object_entity_id is not None:
+                # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
+                # edge in the same transaction as the canonical fact write --
+                # a projection failure here fails this whole write, so the
+                # graph can never silently diverge from `facts`.
+                await entity_graph_edges.project_or_withhold_entity_graph_edge(
+                    conn,
+                    source_schema=await _resolve_graph_schema(),
+                    source_table="facts",
+                    source_id=fact_id,
+                    subject_entity_id=entity_id,
+                    predicate=predicate,
+                    object_entity_id=object_entity_id,
+                    sensitivity=sensitivity,
+                )
 
             # Create supersedes link if applicable
             if supersedes_id:
@@ -1898,6 +1952,12 @@ async def store_fact(
                                     _inv_old_id,
                                     now,
                                 )
+                                await entity_graph_edges.delete_entity_graph_edge(
+                                    conn,
+                                    source_schema=await _resolve_graph_schema(),
+                                    source_table="facts",
+                                    source_id=_inv_old_id,
+                                )
 
                         _inv_fact_id = uuid.uuid4()
                         # Inverse subject/content: swap labels.
@@ -1933,6 +1993,20 @@ async def store_fact(
                             retention_class=retention_class,
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
+                        )
+                        # The mirrored fact is itself a canonical edge-fact row
+                        # (entity_id/object_entity_id both set by construction
+                        # above) -- it gets its own projected edge under its
+                        # own source_id, same as the forward fact.
+                        await entity_graph_edges.project_or_withhold_entity_graph_edge(
+                            conn,
+                            source_schema=await _resolve_graph_schema(),
+                            source_table="facts",
+                            source_id=_inv_fact_id,
+                            subject_entity_id=object_entity_id,
+                            predicate=_inverse_predicate,
+                            object_entity_id=entity_id,
+                            sensitivity=sensitivity,
                         )
 
                         if _inv_supersedes_id:

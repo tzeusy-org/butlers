@@ -2061,3 +2061,316 @@ def test_backfill_rules_forwards_normal_metadata_without_cataloging_sensitive_ru
     )
     assert result["normal_row"] == {"retention_class": "rule", "sensitivity": "normal"}, result
     assert result["sensitive_cataloged"] is False, result
+
+
+# ---------------------------------------------------------------------------
+# bu-8cdl1.8 Slice 2: entity_graph_edges write-behind projection (RFC 0031)
+# ---------------------------------------------------------------------------
+
+
+async def _make_edge_fact_entities(
+    pool: asyncpg.Pool, unique: str
+) -> tuple[uuid.UUID, uuid.UUID, str]:
+    subject_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) "
+        "VALUES ($1, 'person') RETURNING id",
+        f"graph-subject-{unique}",
+    )
+    object_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) "
+        "VALUES ($1, 'person') RETURNING id",
+        f"graph-object-{unique}",
+    )
+    edge_predicate = await pool.fetchval(
+        "SELECT name FROM predicate_registry "
+        "WHERE is_edge AND NOT is_temporal ORDER BY name LIMIT 1"
+    )
+    assert edge_predicate is not None
+    return subject_id, object_id, edge_predicate
+
+
+async def _store_edge_fact_and_read_graph_edge(db_url: str, *, sensitivity: str) -> dict:
+    """Store an edge-fact and read back its projected public.entity_graph_edges row."""
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+        subject_id, object_id, edge_predicate = await _make_edge_fact_entities(pool, unique)
+
+        fact = await store_fact(
+            pool,
+            subject=f"graph-subject-{unique}",
+            predicate=edge_predicate,
+            content=f"graph-object-{unique}",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+            sensitivity=sensitivity,
+        )
+
+        edge_row = await pool.fetchrow(
+            "SELECT subject_entity_id, predicate, object_entity_id, sensitivity, withheld_reason"
+            " FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+        return {
+            "subject_id": subject_id,
+            "object_id": object_id,
+            "predicate": edge_predicate,
+            "edge_row": dict(edge_row) if edge_row is not None else None,
+        }
+    finally:
+        await pool.close()
+
+
+@pytest.mark.parametrize(
+    "sensitivity,expect_withheld",
+    [("normal", False), ("pii", True), ("confidential", True)],
+)
+def test_edge_fact_projects_entity_graph_edge(
+    memory_migrated_db: str, sensitivity: str, expect_withheld: bool
+) -> None:
+    """store_fact() projects an entity_graph_edges row for an edge-fact.
+
+    A normal-sensitivity edge-fact projects a live edge; a pii/confidential
+    one projects a count-only withheld stub instead (RFC 0031 "Withheld Stub
+    Edges") -- never a live edge carrying its predicate/object.
+    """
+    result = asyncio.run(
+        _store_edge_fact_and_read_graph_edge(memory_migrated_db, sensitivity=sensitivity)
+    )
+    edge = result["edge_row"]
+    assert edge is not None, result
+    assert edge["subject_entity_id"] == result["subject_id"]
+    assert edge["sensitivity"] == sensitivity
+    if expect_withheld:
+        assert edge["withheld_reason"] == "sensitivity"
+        assert edge["predicate"] is None
+        assert edge["object_entity_id"] is None
+    else:
+        assert edge["withheld_reason"] is None
+        assert edge["predicate"] == result["predicate"]
+        assert edge["object_entity_id"] == result["object_id"]
+
+
+async def _supersede_edge_fact_and_read_graph_edges(db_url: str) -> dict:
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+        subject_id, object_id, edge_predicate = await _make_edge_fact_entities(pool, unique)
+
+        first = await store_fact(
+            pool,
+            subject=f"graph-subject-{unique}",
+            predicate=edge_predicate,
+            content="first",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+        # Same (entity_id, object_entity_id, scope, predicate) identity ->
+        # supersedes the first property fact rather than inserting a sibling.
+        second = await store_fact(
+            pool,
+            subject=f"graph-subject-{unique}",
+            predicate=edge_predicate,
+            content="second",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+        assert second["supersedes_id"] == first["id"]
+
+        old_edge = await pool.fetchval(
+            "SELECT 1 FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            first["id"],
+        )
+        new_edge = await pool.fetchrow(
+            "SELECT subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            second["id"],
+        )
+        return {
+            "old_edge_exists": old_edge is not None,
+            "new_edge": dict(new_edge) if new_edge is not None else None,
+            "subject_id": subject_id,
+            "object_id": object_id,
+        }
+    finally:
+        await pool.close()
+
+
+def test_edge_fact_supersession_moves_the_projected_edge(memory_migrated_db: str) -> None:
+    """Superseding an edge-fact deletes the old row's edge and projects the new one."""
+    result = asyncio.run(_supersede_edge_fact_and_read_graph_edges(memory_migrated_db))
+    assert result["old_edge_exists"] is False, result
+    assert result["new_edge"] == {
+        "subject_entity_id": result["subject_id"],
+        "object_entity_id": result["object_id"],
+    }, result
+
+
+async def _forget_edge_fact_and_check_graph_edge(db_url: str) -> dict:
+    from butlers.modules.memory.storage import forget_memory, store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+        subject_id, object_id, edge_predicate = await _make_edge_fact_entities(pool, unique)
+
+        fact = await store_fact(
+            pool,
+            subject=f"graph-subject-{unique}",
+            predicate=edge_predicate,
+            content="x",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+        before = await pool.fetchval(
+            "SELECT 1 FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+        found = await forget_memory(pool, "fact", fact["id"])
+        after = await pool.fetchval(
+            "SELECT 1 FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+        return {
+            "found": found,
+            "edge_existed_before": before is not None,
+            "edge_exists_after": after is not None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_forget_memory_retracts_the_projected_edge(memory_migrated_db: str) -> None:
+    """RFC 0031: retracting an edge-fact removes its projected edge in the same txn."""
+    result = asyncio.run(_forget_edge_fact_and_check_graph_edge(memory_migrated_db))
+    assert result["found"] is True, result
+    assert result["edge_existed_before"] is True, result
+    assert result["edge_exists_after"] is False, result
+
+
+async def _store_edge_fact_with_projection_failure(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> dict:
+    from butlers.core import entity_graph_edges
+    from butlers.modules.memory.storage import store_fact
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("simulated entity_graph_edges projection failure")
+
+    monkeypatch.setattr(entity_graph_edges, "project_or_withhold_entity_graph_edge", _boom)
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+        subject_id, object_id, edge_predicate = await _make_edge_fact_entities(pool, unique)
+
+        with pytest.raises(RuntimeError, match="simulated entity_graph_edges projection failure"):
+            await store_fact(
+                pool,
+                subject=f"graph-subject-{unique}",
+                predicate=edge_predicate,
+                content="x",
+                embedding_engine=engine,
+                entity_id=subject_id,
+                object_entity_id=object_id,
+                tenant_id="shared",
+                source_butler="travel",
+            )
+        survived = await pool.fetchval(
+            "SELECT COUNT(*) FROM facts WHERE entity_id = $1 AND object_entity_id = $2",
+            subject_id,
+            object_id,
+        )
+        return {"fact_rows_after_failed_write": survived}
+    finally:
+        await pool.close()
+
+
+def test_edge_fact_projection_failure_rolls_back_the_source_write(
+    memory_migrated_db: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RFC 0031 write-behind contract: a projection failure fails the whole write.
+
+    The graph must never be able to silently diverge from the fact store it
+    projects -- a projection failure (simulated here) must roll back the
+    canonical fact write too, not just skip the edge.
+    """
+    result = asyncio.run(_store_edge_fact_with_projection_failure(memory_migrated_db, monkeypatch))
+    assert result["fact_rows_after_failed_write"] == 0, result
+
+
+async def _backfill_edge_fact_twice(db_url: str) -> dict:
+    from butlers.core.entity_graph_edges import backfill_memory_facts_edges
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        unique = uuid.uuid4().hex[:8]
+        subject_id, object_id, edge_predicate = await _make_edge_fact_entities(pool, unique)
+
+        fact = await store_fact(
+            pool,
+            subject=f"graph-subject-{unique}",
+            predicate=edge_predicate,
+            content="x",
+            embedding_engine=engine,
+            entity_id=subject_id,
+            object_entity_id=object_id,
+            tenant_id="shared",
+            source_butler="travel",
+        )
+        # Simulate a historical row written before this projection existed --
+        # remove the edge the live writer just projected.
+        await pool.execute(
+            "DELETE FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+
+        first_count = await backfill_memory_facts_edges(pool, source_schema="public")
+        second_count = await backfill_memory_facts_edges(pool, source_schema="public")
+        total_rows = await pool.fetchval(
+            "SELECT COUNT(*) FROM public.entity_graph_edges"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact["id"],
+        )
+        return {
+            "first_count": first_count,
+            "second_count": second_count,
+            "total_rows": total_rows,
+        }
+    finally:
+        await pool.close()
+
+
+def test_backfill_memory_facts_edges_is_idempotent(memory_migrated_db: str) -> None:
+    """Re-running the backfill over an already-backfilled row never duplicates its edge."""
+    result = asyncio.run(_backfill_edge_fact_twice(memory_migrated_db))
+    assert result["first_count"] == 1, result
+    assert result["second_count"] == 0, result
+    assert result["total_rows"] == 1, result

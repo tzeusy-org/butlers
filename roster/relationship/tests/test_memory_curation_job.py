@@ -35,7 +35,11 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_memory_curation,
     run_pending_actions_curation,
 )
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    ENTITY_GRAPH_EDGES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 # ---------------------------------------------------------------------------
@@ -152,6 +156,9 @@ async def _setup_schema(pool: asyncpg.Pool) -> None:
     await pool.execute(_CREATE_PENDING_ACTIONS_SQL)
     await pool.execute(_CREATE_FACTS_SQL)
     await pool.execute(_CREATE_STATE_SQL)
+    # RFC 0031 Slice 2 (bu-8cdl1.8): the central writer projects entity-kind
+    # facts here in the same transaction as the fact write.
+    await pool.execute(ENTITY_GRAPH_EDGES.ddl())
     # rel_034: the central writer persists evidence and a coverage receipt in
     # the same transaction as the fact, so this schema is not optional.
     await apply_evidence_schema(pool)
