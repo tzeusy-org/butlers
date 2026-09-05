@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Home Assistant transport/wellness reliability landed at the connector boundary the plan preserves.
+> **Successor:** `openspec/specs/connector-home-assistant/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Home Assistant Transport and Wellness Reliability Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

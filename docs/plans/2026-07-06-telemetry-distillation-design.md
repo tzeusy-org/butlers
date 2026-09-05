@@ -45,7 +45,7 @@ arrives, how much of it turns into something Chronicler can reason about?
 ## 1. Grounding: what's actually retained, and what already gets distilled
 
 This section is a code- and data-grounded inventory (2026-07-06), not a
-re-statement of the 2026-07-05 deep dive (`2026-07-05-chronicler-time-inference-deep-dive.md`),
+re-statement of the 2026-07-05 deep dive (`docs/archive/plans/2026-07-05-chronicler-time-inference-deep-dive.md`),
 which this design builds directly on top of (its Tier 1/2 items are the
 supply side; read it first for the workday-specific narrative).
 

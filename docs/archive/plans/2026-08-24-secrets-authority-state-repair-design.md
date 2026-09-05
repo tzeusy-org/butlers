@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Codex CLI authority / Spotify projection repair shipped via the secrets-authority-projections change.
+> **Successor:** `openspec/changes/repair-secrets-authority-projections`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Secrets Authority and Projection State Repair
 
 ## Problem

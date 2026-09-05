@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Import migration to the canonical useTimezone / AppTimezoneProvider; the alias was retired in the context module.
+> **Successor:** `frontend/src/components/ui/timezone-context.tsx`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Frontend Timezone Alias Cleanup Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -155,7 +161,7 @@ Expected: only direct import/name/comment migrations and deletion of the two ali
 **Files:**
 
 - Verify: all files changed in Tasks 1-3
-- Commit: `docs/superpowers/plans/2026-08-28-frontend-timezone-alias-cleanup.md` and the scoped frontend changes
+- Commit: `docs/archive/superpowers/plans/2026-08-28-frontend-timezone-alias-cleanup.md` and the scoped frontend changes
 
 **Interfaces:**
 

@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Test-setup-only CI clock/schema repair (zero test delta, no production change) landed in the Nightly workflow.
+> **Successor:** `.github/workflows/nightly.yml`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Nightly CI Clock and Schema Repair Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

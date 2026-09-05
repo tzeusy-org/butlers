@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Live Codex auth propagation shipped and archived under the same-named change.
+> **Successor:** `openspec/changes/archive/2026-08-09-harden-live-codex-auth-sync`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Live Codex Auth Synchronization Implementation Plan
 
 **Goal:** Make a dashboard-refreshed Codex credential effective for the next

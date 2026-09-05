@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Implementation plan for the routed-approvals-replayable change; the work landed there.
+> **Successor:** `openspec/changes/make-routed-approvals-replayable`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Replayable Routed Approvals Implementation Plan
 
 **Goal:** Ensure every newly parked Messenger routed delivery can be replayed through

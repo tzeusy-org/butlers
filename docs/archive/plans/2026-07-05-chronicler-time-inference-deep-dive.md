@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Live-data audit whose findings drove the chronicler intent/evidence/activity separation and KPI-leak fixes; it landed as a capability spec.
+> **Successor:** `openspec/specs/chronicler-intent-evidence-activity/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Chronicler Time-Inference Deep Dive — why the workday is invisible
 
 **Date:** 2026-07-05

@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** The root conftest is now the sole registration layer for the canonical shared spawner fixtures.
+> **Successor:** `src/butlers/testing/shared_fixtures.py`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Test Fixture Registration Cleanup Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -172,7 +178,7 @@ Expected: all checks succeed; `tests/conftest.py` is the only deleted test file;
 Review the diff for spec/code alignment, root fixture ownership, preserved smoke-local behavior, and scoped-runner metadata. Commit only the planned files with:
 
 ```bash
-git add AGENTS.md conftest.py docs/superpowers/plans/2026-08-28-test-fixture-registration-cleanup.md openspec/specs/testing/spec.md tests/conftest.py tests/smoke/conftest.py src/butlers/testing/scoped_runner.py src/butlers/testing/source_test_map.py
+git add AGENTS.md conftest.py docs/archive/superpowers/plans/2026-08-28-test-fixture-registration-cleanup.md openspec/specs/testing/spec.md tests/conftest.py tests/smoke/conftest.py src/butlers/testing/scoped_runner.py src/butlers/testing/source_test_map.py
 git commit -m "refactor(testing): centralize shared fixture registration"
 ```
 

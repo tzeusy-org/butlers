@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** The --with-restore-drill launcher opt-in; the restore-drill contract is owned by the deployment-hardening spec.
+> **Successor:** `openspec/specs/deployment-hardening/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Restore-Drill Dev Opt-In Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -277,7 +283,7 @@ git add scripts/compose.sh tests/config/test_restore_drill_executor_compose.py \
   docs/operations/docker-deployment.md docs/operations/backup-restore.md scripts/README.md \
   openspec/changes/restore-drill-recovery-truthfulness/design.md \
   openspec/changes/restore-drill-recovery-truthfulness/specs/deployment-hardening/spec.md \
-  docs/superpowers/plans/2026-08-13-restore-drill-dev-opt-in.md
+  docs/archive/superpowers/plans/2026-08-13-restore-drill-dev-opt-in.md
 git commit -m "fix: make restore drill opt-in for dev"
 git push -u origin agent/bu-kqnum.8.9
 ```

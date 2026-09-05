@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Claim-fenced Stop-across-handoff remediation shipped and archived as the chat-stop server-cancel change.
+> **Successor:** `openspec/changes/archive/2026-07-29-chat-stop-button-server-cancel`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Dashboard Chat Stop Handoff Remediation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -201,7 +207,7 @@ Expected: PASS. Make the smallest implementation change only if a new assertion 
 - Modify: `about/legends-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md`
 - Modify: `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`
 - Modify: `about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md`
-- Modify: `docs/plans/2026-07-17-chat-send-retry-semantics.md`
+- Modify: `docs/archive/plans/2026-07-17-chat-send-retry-semantics.md`
 - Archive: `openspec/changes/chat-stop-button-server-cancel/` after canonical reconciliation, without syncing its obsolete delta
 
 **Interfaces:**

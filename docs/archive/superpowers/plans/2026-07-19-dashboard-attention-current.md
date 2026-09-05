@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Implementation plan executed and archived as the make-dashboard-attention-current change.
+> **Successor:** `openspec/changes/archive/2026-07-19-make-dashboard-attention-current`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Dashboard Attention Currentness Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -221,7 +227,7 @@ Run: `openspec validate make-dashboard-attention-current --strict`
 - [x] **Step 3: Commit and publish the reviewable branch**
 
 ```bash
-git add openspec/changes/make-dashboard-attention-current docs/superpowers/plans/2026-07-19-dashboard-attention-current.md src/butlers/api/routers/dashboard_briefing.py src/butlers/api/routers/qa.py tests/dashboard/test_briefing.py tests/dashboard/test_briefing_attention_contract.py tests/dashboard/test_briefing_cache_invalidation.py frontend/src/components/overview/model.ts frontend/src/components/overview/model.test.ts frontend/src/components/overview/model.contract.test.ts frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json frontend/src/pages/DashboardPage.tsx frontend/src/pages/DashboardPage.test.tsx
+git add openspec/changes/make-dashboard-attention-current docs/archive/superpowers/plans/2026-07-19-dashboard-attention-current.md src/butlers/api/routers/dashboard_briefing.py src/butlers/api/routers/qa.py tests/dashboard/test_briefing.py tests/dashboard/test_briefing_attention_contract.py tests/dashboard/test_briefing_cache_invalidation.py frontend/src/components/overview/model.ts frontend/src/components/overview/model.test.ts frontend/src/components/overview/model.contract.test.ts frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json frontend/src/pages/DashboardPage.tsx frontend/src/pages/DashboardPage.test.tsx
 git commit -m "fix: make dashboard attention current"
 git push -u origin agent/bu-kzum9
 gh pr create --base main --head agent/bu-kzum9 --draft --title "fix: make dashboard attention current" --body "## Summary

@@ -8,7 +8,7 @@
 // Extracted from FloatingChatWidget.tsx so the butler-detail ChatPanel can
 // classify SSE send errors identically instead of rendering an inert
 // assistant-bubble error message. See the design doc's Error handling
-// section (docs/plans/2026-07-03-dashboard-chat-widget-design.md) for the
+// section (docs/archive/plans/2026-07-03-dashboard-chat-widget-design.md) for the
 // three terminal/error states this distinguishes:
 //   - `SWITCHBOARD_UNAVAILABLE` (or any unclassified code) -> a retryable
 //     "offline" banner that re-sends the same failed text.
