@@ -17,6 +17,7 @@ it does not consult Prometheus.
 
 from __future__ import annotations
 
+import base64
 import datetime
 import importlib.util
 import json
@@ -33,7 +34,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models import (
+    ApiMeta,
+    ApiResponse,
+    CursorPaginatedResponse,
+    CursorPaginationMeta,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
     compute_auth_status,
@@ -103,6 +111,10 @@ if _spec is not None and _spec.loader is not None:
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
     InsightCandidate = _models.InsightCandidate
+    FleetCaseSummary = _models.FleetCaseSummary
+    FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
+    FleetCaseLinkEntry = _models.FleetCaseLinkEntry
+    FleetCaseDetail = _models.FleetCaseDetail
     RulePromotionSuggestion = _models.RulePromotionSuggestion
     RulePromotionAutoApplied = _models.RulePromotionAutoApplied
     RulePromotionSurface = _models.RulePromotionSurface
@@ -553,6 +565,274 @@ async def list_insight_candidates(
     ]
 
     return ApiResponse[list[InsightCandidate]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /cases, GET /cases/{case_id} — read-only fleet case file reader
+# (bu-8cdl1.7 Slice 2, RFC 0032)
+# ---------------------------------------------------------------------------
+
+# Valid state/posture values for public.fleet_cases (see core_217 CHECK constraints).
+_FLEET_CASE_STATES = ("open", "watching", "closing", "closed")
+_FLEET_CASE_POSTURES = ("silent", "routine", "active", "urgent")
+
+# Defensive caps on a single case's evidence/links — a case accreting past
+# these needs a dedicated paginated sub-resource, out of scope for this
+# read-only slice.
+_FLEET_CASE_EVIDENCE_LIMIT = 500
+_FLEET_CASE_LINKS_LIMIT = 500
+
+
+def _encode_fleet_case_cursor(updated_at: datetime.datetime, row_id: str) -> str:
+    """Encode a ``(updated_at, id)`` keyset position into an opaque cursor."""
+    payload = {"ua": updated_at.isoformat(), "id": str(row_id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def _decode_fleet_case_cursor(cursor: str) -> tuple[datetime.datetime, str]:
+    """Decode an opaque cursor string back to ``(updated_at, id)``.
+
+    Raises:
+        ValueError: If the cursor is malformed or cannot be decoded.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        payload = json.loads(raw)
+        updated_at = datetime.datetime.fromisoformat(payload["ua"])
+        row_id: str = payload["id"]
+        return updated_at, row_id
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid cursor: {exc}") from exc
+
+
+@router.get("/cases", response_model=CursorPaginatedResponse[FleetCaseSummary])
+async def list_fleet_cases(
+    state: str | None = Query(
+        None,
+        description=(
+            "Comma-separated state filter (open, watching, closing, closed). "
+            "Omit to include all states."
+        ),
+    ),
+    posture: str | None = Query(
+        None,
+        description="Comma-separated posture filter (silent, routine, active, urgent).",
+    ),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of rows to return"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's ``next_cursor`` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CursorPaginatedResponse[FleetCaseSummary]:
+    """List fleet cases from ``public.fleet_cases`` (RFC 0032), newest-updated first.
+
+    Read-only SELECT — every butler role has SELECT on ``fleet_cases`` (see
+    migration ``core_217``); only ``butler_switchboard_rw`` may write. This
+    reader is hosted on the Switchboard API surface because the Switchboard
+    is the sole arbiter of a case's existence/state/posture, mirroring the
+    ``/insights`` reader above.
+
+    Cursor pagination on ``(updated_at DESC, id DESC)`` — no ``total`` count
+    is computed per request. Pass the ``next_cursor`` from a previous
+    response as the ``cursor`` query param to fetch the next page.
+
+    Falls back gracefully to an empty page when the table does not exist
+    (degraded / partially migrated DB).
+    """
+    states = [s.strip() for s in state.split(",") if s.strip()] if state else None
+    if states:
+        invalid_states = [s for s in states if s not in _FLEET_CASE_STATES]
+        if invalid_states:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid state(s) {invalid_states}; "
+                    f"expected one of {', '.join(_FLEET_CASE_STATES)}"
+                ),
+            )
+
+    postures = [p.strip() for p in posture.split(",") if p.strip()] if posture else None
+    if postures:
+        invalid_postures = [p for p in postures if p not in _FLEET_CASE_POSTURES]
+        if invalid_postures:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid posture(s) {invalid_postures}; "
+                    f"expected one of {', '.join(_FLEET_CASE_POSTURES)}"
+                ),
+            )
+
+    cursor_pos: tuple[datetime.datetime, str] | None = None
+    if cursor is not None:
+        try:
+            cursor_pos = _decode_fleet_case_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+
+    pool = _pool(db)
+
+    conditions: list[str] = []
+    args: list[object] = []
+    if states:
+        args.append(states)
+        conditions.append(f"state = ANY(${len(args)}::text[])")
+    if postures:
+        args.append(postures)
+        conditions.append(f"posture = ANY(${len(args)}::text[])")
+    if cursor_pos is not None:
+        args.append(cursor_pos[0])
+        ua_idx = len(args)
+        args.append(cursor_pos[1])
+        id_idx = len(args)
+        conditions.append(f"(updated_at, id) < (${ua_idx}, ${id_idx})")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    args.append(limit + 1)  # fetch one extra row to compute has_more
+    limit_idx = len(args)
+
+    try:
+        rows = await pool.fetch(
+            "SELECT id, correlation_key, state, posture, outcome,"
+            " opened_at, updated_at, closed_at"
+            " FROM public.fleet_cases"
+            f" {where}"
+            " ORDER BY updated_at DESC, id DESC"
+            f" LIMIT ${limit_idx}",
+            *args,
+        )
+    except Exception:
+        logger.warning("fleet_cases not available; returning empty page", exc_info=True)
+        return CursorPaginatedResponse[FleetCaseSummary](
+            data=[], meta=CursorPaginationMeta(next_cursor=None, has_more=False)
+        )
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+
+    data = [
+        FleetCaseSummary(
+            id=str(r["id"]),
+            correlation_key=r["correlation_key"],
+            state=r["state"],
+            posture=r["posture"],
+            outcome=r["outcome"],
+            opened_at=str(r["opened_at"]) if r["opened_at"] else None,
+            updated_at=str(r["updated_at"]) if r["updated_at"] else None,
+            closed_at=str(r["closed_at"]) if r["closed_at"] else None,
+        )
+        for r in page_rows
+    ]
+
+    next_cursor = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_cursor = _encode_fleet_case_cursor(last["updated_at"], str(last["id"]))
+
+    return CursorPaginatedResponse[FleetCaseSummary](
+        data=data,
+        meta=CursorPaginationMeta(next_cursor=next_cursor, has_more=has_more),
+    )
+
+
+@router.get("/cases/{case_id}", response_model=ApiResponse[FleetCaseDetail])
+async def get_fleet_case(
+    case_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[FleetCaseDetail]:
+    """Return one fleet case with its accreted evidence and ledger links.
+
+    Evidence is ordered oldest-first (``contributed_at ASC``) so the
+    response reads as the situation's narrative history; links are ordered
+    by ``linked_at ASC``. Both lists are capped defensively — a case
+    accreting past the cap needs a dedicated paginated sub-resource, out of
+    scope for this read-only slice.
+
+    Returns:
+        200 — the case plus its evidence/links
+        404 — no case with that id exists
+        422 — malformed ``case_id``
+        503 — switchboard database (or ``fleet_cases`` table) unavailable
+    """
+    try:
+        case_uuid = UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid case_id: {exc}") from exc
+
+    pool = _pool(db)
+
+    try:
+        case_row = await pool.fetchrow(
+            "SELECT id, correlation_key, state, posture, outcome,"
+            " opened_at, updated_at, closed_at"
+            " FROM public.fleet_cases WHERE id = $1",
+            case_uuid,
+        )
+    except Exception as exc:
+        logger.warning("fleet_cases lookup failed for %s", case_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Fleet case store unavailable") from exc
+
+    if case_row is None:
+        raise HTTPException(status_code=404, detail=f"Fleet case '{case_id}' not found")
+
+    try:
+        evidence_rows = await pool.fetch(
+            "SELECT id, case_id, contributor, kind, ref, payload, contributed_at"
+            " FROM public.fleet_case_evidence WHERE case_id = $1"
+            " ORDER BY contributed_at ASC, id ASC"
+            f" LIMIT {_FLEET_CASE_EVIDENCE_LIMIT}",
+            case_uuid,
+        )
+        link_rows = await pool.fetch(
+            "SELECT id, case_id, link_kind, ref, metadata, linked_at"
+            " FROM public.fleet_case_links WHERE case_id = $1"
+            " ORDER BY linked_at ASC, id ASC"
+            f" LIMIT {_FLEET_CASE_LINKS_LIMIT}",
+            case_uuid,
+        )
+    except Exception as exc:
+        logger.warning("fleet_case_evidence/links lookup failed for %s", case_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Fleet case store unavailable") from exc
+
+    detail = FleetCaseDetail(
+        id=str(case_row["id"]),
+        correlation_key=case_row["correlation_key"],
+        state=case_row["state"],
+        posture=case_row["posture"],
+        outcome=case_row["outcome"],
+        opened_at=str(case_row["opened_at"]) if case_row["opened_at"] else None,
+        updated_at=str(case_row["updated_at"]) if case_row["updated_at"] else None,
+        closed_at=str(case_row["closed_at"]) if case_row["closed_at"] else None,
+        evidence=[
+            FleetCaseEvidenceEntry(
+                id=str(r["id"]),
+                case_id=str(r["case_id"]),
+                contributor=r["contributor"],
+                kind=r["kind"],
+                ref=r["ref"],
+                payload=r["payload"],
+                contributed_at=str(r["contributed_at"]) if r["contributed_at"] else None,
+            )
+            for r in evidence_rows
+        ],
+        links=[
+            FleetCaseLinkEntry(
+                id=str(r["id"]),
+                case_id=str(r["case_id"]),
+                link_kind=r["link_kind"],
+                ref=r["ref"],
+                metadata=r["metadata"],
+                linked_at=str(r["linked_at"]) if r["linked_at"] else None,
+            )
+            for r in link_rows
+        ],
+    )
+
+    return ApiResponse[FleetCaseDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slice 1 landed — schema only)
+**Status:** Draft (Slices 1-2 landed — schema + read API)
 **Date:** 2026-09-05
 
 ## Context
@@ -84,10 +84,13 @@ binding logic ships in this slice.
 
 This RFC is written for the whole feature; only Slice 1 has landed.
 
-- **S1 (this change):** `public.fleet_cases`, `public.fleet_case_evidence`,
+- **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
   broker wiring, no MCP tools, no dashboard surface.
-- **S2:** read API + dashboard routes.
+- **S2 (this change):** read API — `GET /api/switchboard/cases` (cursor-
+  paginated list) and `GET /api/switchboard/cases/{case_id}` (one case with
+  its evidence and links), hosted on the Switchboard API surface. No
+  dashboard frontend page ships in this slice — read-only API only.
 - **S3:** contribution tools — `find_open_case`, `open_case`,
   `contribute_case_evidence`, `propose_case_posture`, `close_case`,
   `read_case`. Adds `case` to `EVIDENCE_KINDS`.

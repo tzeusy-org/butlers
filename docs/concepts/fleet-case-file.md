@@ -33,5 +33,8 @@ arbitrated, enforced by row-level security rather than by GRANT/REVOKE alone
 (see the RLS note in RFC 0032).
 
 This schema is Slice 1 of a seven-slice rollout — see RFC 0032 for the full
-design and slice plan. No broker wiring, MCP tools, or dashboard surface
-exist yet.
+design and slice plan. Slice 2 adds a read-only API surface: `GET
+/api/switchboard/cases` (cursor-paginated list, filterable by `state` and
+`posture`) and `GET /api/switchboard/cases/{case_id}` (one case with its
+evidence and links). No broker wiring, MCP contribution tools, or a
+dashboard frontend page exist yet.

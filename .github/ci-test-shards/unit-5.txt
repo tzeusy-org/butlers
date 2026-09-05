@@ -7,6 +7,7 @@ tests/api/test_conversations_message_search_unit.py
 tests/api/test_model_runtime_attention.py
 tests/api/test_page_context_model.py
 tests/api/test_spend_runtime_attention.py
+tests/api/test_switchboard_fleet_cases.py
 tests/core/test_chronicler_day_close_refresh_tool.py
 tests/core/test_sessions_friction.py
 tests/core_tools/test_conversation_recall.py

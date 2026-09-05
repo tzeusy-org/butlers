@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from butlers.connectors.registry_roles import UNKNOWN as UNKNOWN_ROLE
 
@@ -1040,6 +1040,65 @@ class InsightCandidate(BaseModel):
     status: str
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Fleet case file — read API (bu-8cdl1.7 Slice 2, RFC 0032)
+# ---------------------------------------------------------------------------
+
+
+class FleetCaseSummary(BaseModel):
+    """A single fleet case row from ``public.fleet_cases`` (RFC 0032).
+
+    Read-only projection used by ``GET /api/switchboard/cases``. Every butler
+    role has SELECT on this table (migration ``core_217``); only
+    ``butler_switchboard_rw`` may INSERT/UPDATE it, which is why this reader
+    is hosted on the switchboard API surface, mirroring ``InsightCandidate``.
+    """
+
+    id: str
+    correlation_key: str
+    state: str
+    posture: str
+    outcome: str | None = None
+    opened_at: str | None = None
+    updated_at: str | None = None
+    closed_at: str | None = None
+
+
+class FleetCaseEvidenceEntry(BaseModel):
+    """A single contribution row from ``public.fleet_case_evidence``."""
+
+    id: str
+    case_id: str
+    contributor: str
+    kind: str
+    ref: str
+    payload: dict | None = None
+    contributed_at: str | None = None
+
+
+class FleetCaseLinkEntry(BaseModel):
+    """A single ledger-binding row from ``public.fleet_case_links``."""
+
+    id: str
+    case_id: str
+    link_kind: str
+    ref: str
+    metadata: dict | None = None
+    linked_at: str | None = None
+
+
+class FleetCaseDetail(FleetCaseSummary):
+    """A fleet case plus its accreted evidence and ledger links.
+
+    Used by ``GET /api/switchboard/cases/{case_id}``. Evidence is ordered
+    oldest-first (contributed_at ASC) so it reads as the situation's
+    narrative history; links are ordered by linked_at ASC.
+    """
+
+    evidence: list[FleetCaseEvidenceEntry] = Field(default_factory=list)
+    links: list[FleetCaseLinkEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
