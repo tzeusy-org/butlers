@@ -108,8 +108,9 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
     """A late schema can replay core after shared QA data reached a later vocabulary."""
     db_url = create_migration_db(postgres_container, migration_db_name())
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    tool_call_migration = _load_migration("core_139_replay", _TOOL_CALL_MIGRATION_PATH)
 
-    async def _seed_and_replay() -> None:
+    async def _seed() -> uuid.UUID:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
         try:
             patrol_id = await pool.fetchval(
@@ -137,11 +138,16 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
                     source_type,
                     now,
                 )
+            return patrol_id
         finally:
             await pool.close()
 
-        await run_migrations(db_url, chain="core", schema="concierge")
+    patrol_id = asyncio.run(_seed())
+    config = _build_alembic_config(db_url, ["core"], target_schema="concierge")
+    command.upgrade(config, f"core@{tool_call_migration.revision}")
+    command.downgrade(config, tool_call_migration.down_revision)
 
+    async def _verify_downgrade() -> None:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
         try:
             persisted_sources = {
@@ -152,6 +158,29 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
                 )
             }
             assert persisted_sources == _KNOWN_SOURCES
+            constraint = await pool.fetchval(
+                """
+                SELECT pg_get_constraintdef(oid, true)
+                FROM pg_constraint
+                WHERE conrelid = 'public.qa_findings'::regclass
+                  AND conname = 'ck_qa_findings_source_type'
+                """
+            )
+            assert constraint is not None
+            assert all(source in constraint for source in _KNOWN_SOURCES)
+            assert {
+                row["version_num"]
+                for row in await pool.fetch("SELECT version_num FROM concierge.alembic_version")
+            } == {tool_call_migration.down_revision}
+        finally:
+            await pool.close()
+
+    asyncio.run(_verify_downgrade())
+    asyncio.run(run_migrations(db_url, chain="core", schema="concierge"))
+
+    async def _verify_head() -> None:
+        pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+        try:
             assert {
                 row["version_num"]
                 for row in await pool.fetch("SELECT version_num FROM concierge.alembic_version")
@@ -159,7 +188,7 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
         finally:
             await pool.close()
 
-    asyncio.run(_seed_and_replay())
+    asyncio.run(_verify_head())
 
 
 def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) -> None:
