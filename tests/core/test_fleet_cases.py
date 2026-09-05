@@ -1,4 +1,4 @@
-"""Unit tests for butlers.core.fleet_cases (bu-8cdl1.7 Slices 3-6, RFC 0032).
+"""Unit tests for butlers.core.fleet_cases (bu-8cdl1.7 Slices 3-7, RFC 0032).
 
 Mocked-pool style mirroring tests/core/test_domain_event_reactions.py: this
 module's job is translating asyncpg constraint outcomes (UniqueViolation,
@@ -26,6 +26,7 @@ from butlers.core.fleet_cases import (
     DEFAULT_BACKFILL_OUTCOME,
     DEFAULT_LAPSE_STALENESS_WINDOW,
     LAPSE_ELIGIBLE_POSTURES,
+    LINK_KINDS,
     FleetCaseError,
     backfill_from_owner_conditions,
     backfill_historical_case,
@@ -39,6 +40,7 @@ from butlers.core.fleet_cases import (
     propose_posture,
     read_case,
     run_lapse_sweep,
+    write_case_link,
 )
 
 pytestmark = pytest.mark.unit
@@ -82,6 +84,9 @@ class TestVocabulary:
     def test_case_states_and_postures_match_the_schema_check_constraints(self) -> None:
         assert CASE_STATES == {"open", "watching", "closing", "closed"}
         assert CASE_POSTURES == {"silent", "routine", "active", "urgent"}
+
+    def test_link_kinds_are_the_three_ledgers_rfc_0032_names(self) -> None:
+        assert LINK_KINDS == {"insight_candidate", "owner_condition", "attention_record"}
 
 
 class TestFindOpenCase:
@@ -295,6 +300,75 @@ class TestReadCase:
             await read_case(pool, "not-a-uuid")
 
 
+class TestWriteCaseLink:
+    """RFC 0032 Slice 7: the three-ledger binding write path. Mirrors
+    TestContributeEvidence's mocked-pool shape exactly -- write_case_link is
+    contribute_evidence's sibling for the other RLS-restricted table."""
+
+    _LINK_ROW = {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "case_id": _CASE_ID,
+        "link_kind": "insight_candidate",
+        "ref": "insight-42",
+        "metadata": None,
+        "linked_at": "2026-09-06T00:00:00+00:00",
+    }
+
+    async def test_invalid_link_kind_is_refused_before_any_query(self) -> None:
+        pool = _pool()
+        with pytest.raises(FleetCaseError, match="link_kind"):
+            await write_case_link(pool, case_id=_CASE_ID, link_kind="bogus", ref="ref-1")
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_blank_ref_is_refused_before_any_query(self) -> None:
+        pool = _pool()
+        with pytest.raises(FleetCaseError, match="ref"):
+            await write_case_link(pool, case_id=_CASE_ID, link_kind="insight_candidate", ref="  ")
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_malformed_case_id_is_refused_before_any_query(self) -> None:
+        pool = _pool()
+        with pytest.raises(FleetCaseError, match="UUID"):
+            await write_case_link(
+                pool, case_id="not-a-uuid", link_kind="insight_candidate", ref="ref-1"
+            )
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_new_link_is_recorded_and_flagged_new(self) -> None:
+        pool = _pool(fetchrow=self._LINK_ROW)
+        row, newly_recorded = await write_case_link(
+            pool, case_id=_CASE_ID, link_kind="insight_candidate", ref="insight-42"
+        )
+        assert row == self._LINK_ROW
+        assert newly_recorded is True
+
+    async def test_repeat_link_returns_the_existing_row_not_new(self) -> None:
+        """ON CONFLICT DO NOTHING returns no row; the re-SELECT fetches the
+        original -- uq_fleet_case_links_ref's (case_id, link_kind, ref)
+        uniqueness surfaced as a normal success, not an error."""
+        pool = _pool(fetchrow_side_effect=[None, self._LINK_ROW])
+        row, newly_recorded = await write_case_link(
+            pool, case_id=_CASE_ID, link_kind="insight_candidate", ref="insight-42"
+        )
+        assert row == self._LINK_ROW
+        assert newly_recorded is False
+
+    async def test_unknown_case_id_is_refused(self) -> None:
+        pool = _pool(fetchrow_side_effect=asyncpg.ForeignKeyViolationError("fk violation"))
+        with pytest.raises(FleetCaseError, match=_CASE_ID):
+            await write_case_link(
+                pool, case_id=_CASE_ID, link_kind="insight_candidate", ref="insight-42"
+            )
+
+    async def test_all_three_link_kinds_are_accepted(self) -> None:
+        for link_kind in LINK_KINDS:
+            pool = _pool(fetchrow={**self._LINK_ROW, "link_kind": link_kind})
+            row, _ = await write_case_link(
+                pool, case_id=_CASE_ID, link_kind=link_kind, ref="some-ref"
+            )
+            assert row["link_kind"] == link_kind
+
+
 class TestEvaluateCaseAttention:
     """bu-8cdl1.7 Slice 4: one urgent bypass per case per quiet-hours window,
     keyed by correlation_key rather than by the individual call that
@@ -317,7 +391,7 @@ class TestEvaluateCaseAttention:
             origin_butler="health",
         )
 
-        assert result == {"bypass": False, "reason": "case_closed"}
+        assert result == {"bypass": False, "reason": "case_closed", "attention_ledger_id": None}
         get_policy_mock.assert_not_awaited()
 
     async def test_non_urgent_posture_never_bypasses(self, monkeypatch) -> None:
@@ -333,7 +407,7 @@ class TestEvaluateCaseAttention:
             origin_butler="health",
         )
 
-        assert result == {"bypass": False, "reason": "not_urgent"}
+        assert result == {"bypass": False, "reason": "not_urgent", "attention_ledger_id": None}
         get_policy_mock.assert_not_awaited()
 
     async def test_urgent_but_quiet_hours_inactive_does_not_bypass(self, monkeypatch) -> None:
@@ -356,7 +430,11 @@ class TestEvaluateCaseAttention:
             now=datetime(2026, 7, 18, 12, 0, tzinfo=UTC),
         )
 
-        assert result == {"bypass": False, "reason": "quiet_hours_inactive"}
+        assert result == {
+            "bypass": False,
+            "reason": "quiet_hours_inactive",
+            "attention_ledger_id": None,
+        }
         record_mock.assert_not_awaited()
 
     async def test_first_urgent_call_in_a_window_bypasses_and_records(self, monkeypatch) -> None:
@@ -373,7 +451,7 @@ class TestEvaluateCaseAttention:
         monkeypatch.setattr(
             fleet_cases_module, "attention_event_recorded_since", AsyncMock(return_value=False)
         )
-        record_mock = AsyncMock()
+        record_mock = AsyncMock(return_value="attn-row-1")
         monkeypatch.setattr(fleet_cases_module, "record_attention_event", record_mock)
 
         result = await evaluate_case_attention(
@@ -386,7 +464,11 @@ class TestEvaluateCaseAttention:
             now=datetime(2026, 7, 19, 1, 0, tzinfo=UTC),
         )
 
-        assert result == {"bypass": True, "reason": "urgent_case_bypass"}
+        assert result == {
+            "bypass": True,
+            "reason": "urgent_case_bypass",
+            "attention_ledger_id": "attn-row-1",
+        }
         record_mock.assert_awaited_once()
         _, kwargs = record_mock.await_args
         assert kwargs["dedup_key"] == case_attention_dedup_key(self._CORRELATION_KEY)
@@ -428,7 +510,11 @@ class TestEvaluateCaseAttention:
             now=datetime(2026, 7, 19, 1, 30, tzinfo=UTC),
         )
 
-        assert result == {"bypass": False, "reason": "already_bypassed_this_window"}
+        assert result == {
+            "bypass": False,
+            "reason": "already_bypassed_this_window",
+            "attention_ledger_id": None,
+        }
         record_mock.assert_not_awaited()
 
 
@@ -589,6 +675,7 @@ class TestBackfillFromOwnerConditions:
     @staticmethod
     def _owner_condition_row(**overrides):
         row = {
+            "id": "55555555-5555-5555-5555-555555555555",
             "source": "finance:bill-overdue",
             "fingerprint": "electric-bill",
             "episode": 1,
@@ -605,12 +692,21 @@ class TestBackfillFromOwnerConditions:
         )
         pool = _pool()
         pool.fetch = AsyncMock(side_effect=[[source_row], []])
-        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-1"})
+        pool.fetchrow = AsyncMock(
+            return_value={**_CASE_ROW, "id": "00000000-0000-0000-0000-000000000001"}
+        )
 
         result = await backfill_from_owner_conditions(pool)
 
-        assert result == {"created_case_ids": ["case-1"], "created_count": 1, "skipped_count": 0}
-        _sql, correlation_key, outcome, opened_at, closed_at = pool.fetchrow.call_args.args
+        assert result == {
+            "created_case_ids": ["00000000-0000-0000-0000-000000000001"],
+            "created_count": 1,
+            "skipped_count": 0,
+        }
+        # First fetchrow call is backfill_historical_case's INSERT into
+        # fleet_cases -- the second (asserted separately below) is the
+        # Slice 7 link write onto public.fleet_case_links.
+        _sql, correlation_key, outcome, opened_at, closed_at = pool.fetchrow.call_args_list[0].args
         assert correlation_key == (
             f"{BACKFILL_CORRELATION_KEY_PREFIX}finance:bill-overdue:electric-bill:1"
         )
@@ -622,11 +718,13 @@ class TestBackfillFromOwnerConditions:
         source_row = self._owner_condition_row(metadata=None)
         pool = _pool()
         pool.fetch = AsyncMock(side_effect=[[source_row], []])
-        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-2"})
+        pool.fetchrow = AsyncMock(
+            return_value={**_CASE_ROW, "id": "00000000-0000-0000-0000-000000000002"}
+        )
 
         await backfill_from_owner_conditions(pool)
 
-        outcome = pool.fetchrow.call_args.args[2]
+        outcome = pool.fetchrow.call_args_list[0].args[2]
         assert outcome == DEFAULT_BACKFILL_OUTCOME
 
     async def test_decodes_text_encoded_jsonb_metadata(self) -> None:
@@ -638,11 +736,13 @@ class TestBackfillFromOwnerConditions:
         )
         pool = _pool()
         pool.fetch = AsyncMock(side_effect=[[source_row], []])
-        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-3"})
+        pool.fetchrow = AsyncMock(
+            return_value={**_CASE_ROW, "id": "00000000-0000-0000-0000-000000000003"}
+        )
 
         await backfill_from_owner_conditions(pool)
 
-        outcome = pool.fetchrow.call_args.args[2]
+        outcome = pool.fetchrow.call_args_list[0].args[2]
         assert outcome == "bill_paid"
 
     async def test_counts_an_already_backfilled_episode_as_skipped_not_created(self) -> None:
@@ -663,27 +763,103 @@ class TestBackfillFromOwnerConditions:
         row_b = self._owner_condition_row(fingerprint="b")
         pool = _pool()
         pool.fetch = AsyncMock(side_effect=[[row_a], [row_b], []])
+        # Two owner_conditions rows, each needing two fetchrow calls now:
+        # backfill_historical_case's INSERT, then write_case_link's INSERT.
+        link_row_a = {
+            "id": "l-a",
+            "case_id": "0000000a-0000-0000-0000-00000000000a",
+            "link_kind": "owner_condition",
+            "ref": row_a["id"],
+            "metadata": None,
+            "linked_at": "now",
+        }
+        link_row_b = {
+            **link_row_a,
+            "id": "l-b",
+            "case_id": "0000000b-0000-0000-0000-00000000000b",
+            "ref": row_b["id"],
+        }
         pool.fetchrow = AsyncMock(
-            side_effect=[{**_CASE_ROW, "id": "case-a"}, {**_CASE_ROW, "id": "case-b"}]
+            side_effect=[
+                {**_CASE_ROW, "id": "0000000a-0000-0000-0000-00000000000a"},
+                link_row_a,
+                {**_CASE_ROW, "id": "0000000b-0000-0000-0000-00000000000b"},
+                link_row_b,
+            ]
         )
 
         result = await backfill_from_owner_conditions(pool, page_size=1)
 
         assert result == {
-            "created_case_ids": ["case-a", "case-b"],
+            "created_case_ids": [
+                "0000000a-0000-0000-0000-00000000000a",
+                "0000000b-0000-0000-0000-00000000000b",
+            ],
             "created_count": 2,
             "skipped_count": 0,
         }
         assert pool.fetch.await_count == 3
 
-    async def test_never_writes_to_fleet_case_links(self) -> None:
-        """Three-ledger binding through fleet_case_links is RFC 0032 Slice
-        7's job, not this slice's -- the backfill never touches that table."""
+    async def test_writes_an_owner_condition_link_for_a_newly_created_case(self) -> None:
+        """RFC 0032 Slice 7: the backfill now binds each case it creates back
+        to the source owner_conditions episode via fleet_case_links."""
         source_row = self._owner_condition_row()
         pool = _pool()
         pool.fetch = AsyncMock(side_effect=[[source_row], []])
-        pool.fetchrow = AsyncMock(return_value={**_CASE_ROW, "id": "case-1"})
+        link_row = {
+            "id": "link-1",
+            "case_id": "00000000-0000-0000-0000-000000000001",
+            "link_kind": "owner_condition",
+            "ref": source_row["id"],
+            "metadata": None,
+            "linked_at": "now",
+        }
+        pool.fetchrow = AsyncMock(
+            side_effect=[{**_CASE_ROW, "id": "00000000-0000-0000-0000-000000000001"}, link_row]
+        )
 
         await backfill_from_owner_conditions(pool)
 
-        pool.execute.assert_not_awaited()
+        link_sql, case_id, link_kind, ref, metadata = pool.fetchrow.call_args_list[1].args
+        assert "fleet_case_links" in link_sql
+        assert str(case_id) == "00000000-0000-0000-0000-000000000001"
+        assert link_kind == "owner_condition"
+        assert ref == source_row["id"]
+        assert metadata is None
+
+    async def test_repairs_the_missing_link_onto_an_already_backfilled_case(self) -> None:
+        """A case an earlier (pre-Slice-7) run already created has no link --
+        backfill_historical_case returns None (already backfilled), but the
+        rerun still looks up that case's id and writes the missing link onto
+        it, not just onto newly created cases."""
+        source_row = self._owner_condition_row()
+        pool = _pool()
+        pool.fetch = AsyncMock(side_effect=[[source_row], []])
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                None,  # backfill_historical_case: already exists, no-op
+                {"id": "00000000-0000-0000-0000-000000000009"},  # lookup by correlation_key
+                {  # write_case_link's INSERT
+                    "id": "link-2",
+                    "case_id": "00000000-0000-0000-0000-000000000009",
+                    "link_kind": "owner_condition",
+                    "ref": source_row["id"],
+                    "metadata": None,
+                    "linked_at": "now",
+                },
+            ]
+        )
+
+        result = await backfill_from_owner_conditions(pool)
+
+        assert result == {"created_case_ids": [], "created_count": 0, "skipped_count": 1}
+        lookup_sql, correlation_key = pool.fetchrow.call_args_list[1].args
+        assert "fleet_cases" in lookup_sql
+        assert correlation_key == (
+            f"{BACKFILL_CORRELATION_KEY_PREFIX}finance:bill-overdue:electric-bill:1"
+        )
+        link_sql, case_id, link_kind, ref, _metadata = pool.fetchrow.call_args_list[2].args
+        assert "fleet_case_links" in link_sql
+        assert str(case_id) == "00000000-0000-0000-0000-000000000009"
+        assert link_kind == "owner_condition"
+        assert ref == source_row["id"]
