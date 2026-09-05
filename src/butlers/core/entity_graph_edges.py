@@ -261,6 +261,160 @@ async def backfill_relationship_entity_facts_edges(pool: asyncpg.Pool, *, limit:
     return int(count or 0)
 
 
+# ---------------------------------------------------------------------------
+# Traversal (RFC 0031 Slice 3: "zero-LLM entity_graph_walk/entity_graph_path
+# core tools"). Both walk over the same recursive CTE, normalizing every live
+# edge into both traversal directions ('out' along subject->object, 'in'
+# along object->subject) so a caller can walk the graph as directed or
+# undirected. Withheld stubs (no object_entity_id) never enter the CTE at
+# all -- there is nothing to traverse through. Cycle-safety comes from the
+# per-path visited-entity array, not a global visited set, so two distinct
+# paths may legitimately revisit the same entity via different routes.
+# ---------------------------------------------------------------------------
+
+#: Hard depth cap, independent of any caller-supplied ``max_hops`` — bounds
+#: worst-case fan-out per RFC 0031 "Traversal Shape" regardless of caller input.
+MAX_WALK_HOPS = 6
+
+#: Hard cap on rows returned by a single walk, independent of caller ``limit``.
+MAX_WALK_RESULTS = 500
+
+_VALID_DIRECTIONS = ("out", "in", "both")
+
+_WALK_CTE = """
+    WITH RECURSIVE adj AS (
+        SELECT id AS edge_id, subject_entity_id AS from_id, object_entity_id AS to_id,
+               predicate, 'out'::text AS edge_direction
+        FROM public.entity_graph_edges
+        WHERE withheld_reason IS NULL
+        UNION ALL
+        SELECT id, object_entity_id, subject_entity_id, predicate, 'in'::text
+        FROM public.entity_graph_edges
+        WHERE withheld_reason IS NULL
+    ),
+    walk AS (
+        SELECT
+            a.to_id AS entity_id,
+            1 AS hop,
+            ARRAY[a.from_id, a.to_id] AS entity_path,
+            ARRAY[a.edge_id] AS edge_path
+        FROM adj a
+        WHERE a.from_id = $1
+          AND a.to_id != a.from_id
+          AND ($2::text[] IS NULL OR a.predicate = ANY($2::text[]))
+          AND ($3::text IS NULL OR a.edge_direction = $3)
+        UNION ALL
+        SELECT
+            a.to_id,
+            w.hop + 1,
+            w.entity_path || a.to_id,
+            w.edge_path || a.edge_id
+        FROM walk w
+        JOIN adj a ON a.from_id = w.entity_id
+        WHERE w.hop < $4
+          AND NOT (a.to_id = ANY(w.entity_path))
+          AND ($2::text[] IS NULL OR a.predicate = ANY($2::text[]))
+          AND ($3::text IS NULL OR a.edge_direction = $3)
+    )
+"""
+
+
+def _resolve_walk_params(max_hops: int, direction: str) -> str | None:
+    """Validate ``max_hops``/``direction`` and return the SQL direction filter.
+
+    Returns ``None`` for ``'both'`` (no filter — walk every normalized
+    adjacency row), or the literal ``'out'``/``'in'`` to bind against
+    ``edge_direction``.
+    """
+    if not (1 <= max_hops <= MAX_WALK_HOPS):
+        raise ValueError(f"max_hops must be between 1 and {MAX_WALK_HOPS}, got {max_hops}")
+    if direction not in _VALID_DIRECTIONS:
+        raise ValueError(f"direction must be one of {_VALID_DIRECTIONS}, got {direction!r}")
+    return None if direction == "both" else direction
+
+
+async def walk_entity_graph(
+    pool: asyncpg.Pool,
+    *,
+    entity_id: uuid.UUID,
+    max_hops: int = 2,
+    edge_types: list[str] | None = None,
+    direction: str = "both",
+    limit: int = 100,
+) -> list[asyncpg.Record]:
+    """Walk live edges up to ``max_hops`` from ``entity_id``, zero LLM cost.
+
+    Returns one row per distinct entity reached (its nearest hop distance and
+    the edge last traversed to reach it): ``entity_id``, ``hop``, ``id``,
+    ``subject_entity_id``, ``predicate``, ``object_entity_id``. Never includes
+    the start entity itself. Withheld (sensitivity-excluded) edges are never
+    traversed — a caller sees exactly the live-edge-reachable subgraph.
+    """
+    resolved_direction = _resolve_walk_params(max_hops, direction)
+    bounded_limit = max(1, min(limit, MAX_WALK_RESULTS))
+    sql = (
+        _WALK_CTE
+        + """
+        SELECT * FROM (
+            SELECT DISTINCT ON (w.entity_id)
+                w.entity_id, w.hop, e.id,
+                e.subject_entity_id, e.predicate, e.object_entity_id
+            FROM walk w
+            JOIN public.entity_graph_edges e
+                ON e.id = w.edge_path[array_length(w.edge_path, 1)]
+            ORDER BY w.entity_id, w.hop
+        ) AS nearest
+        ORDER BY nearest.hop, nearest.entity_id
+        LIMIT $5
+        """
+    )
+    return await pool.fetch(sql, entity_id, edge_types, resolved_direction, max_hops, bounded_limit)
+
+
+async def find_entity_graph_path(
+    pool: asyncpg.Pool,
+    *,
+    from_entity_id: uuid.UUID,
+    to_entity_id: uuid.UUID,
+    max_hops: int = 4,
+    edge_types: list[str] | None = None,
+    direction: str = "both",
+) -> list[asyncpg.Record] | None:
+    """Find the shortest live-edge path from one entity to another.
+
+    Returns the ordered list of traversed edge rows (``id``,
+    ``subject_entity_id``, ``predicate``, ``object_entity_id``), the empty
+    list when ``from_entity_id == to_entity_id`` (zero hops), or ``None`` when
+    no live-edge path connects the two entities within ``max_hops`` — never a
+    guessed or partial path.
+    """
+    if from_entity_id == to_entity_id:
+        return []
+    resolved_direction = _resolve_walk_params(max_hops, direction)
+    sql = (
+        _WALK_CTE
+        + """
+        SELECT w.edge_path
+        FROM walk w
+        WHERE w.entity_id = $5
+        ORDER BY w.hop
+        LIMIT 1
+        """
+    )
+    edge_path = await pool.fetchval(
+        sql, from_entity_id, edge_types, resolved_direction, max_hops, to_entity_id
+    )
+    if not edge_path:
+        return None
+    edges = await pool.fetch(
+        "SELECT id, subject_entity_id, predicate, object_entity_id "
+        "FROM public.entity_graph_edges WHERE id = ANY($1::uuid[])",
+        edge_path,
+    )
+    by_id = {row["id"]: row for row in edges}
+    return [by_id[edge_id] for edge_id in edge_path]
+
+
 async def backfill_memory_facts_edges(
     pool: asyncpg.Pool, *, source_schema: str, limit: int = 500
 ) -> int:
