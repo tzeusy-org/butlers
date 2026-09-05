@@ -48,6 +48,7 @@ from butlers.api.models.session import (
     HourlyActivity,
     HourlyActivityBucket,
     LatencyStats,
+    LinkedChatMessage,
     ProcessLog,
     SessionAggregate,
     SessionAggregateButler,
@@ -311,6 +312,28 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
         detail.correction_count = int(correction_count or 0)
     except Exception:
         logger.debug("Could not fetch correction count for session %s", session_id, exc_info=True)
+
+    # Attach the reverse "Asked in chat" link (bu-0ynlk.5): best-effort,
+    # since dashboard_messages is a shared public table every butler role can
+    # read, but a session invoked outside the dashboard chat path (schedule,
+    # notify, ...) legitimately has no linked message.
+    try:
+        linked_row = await pool.fetchrow(
+            """
+            SELECT conversation_id, id FROM public.dashboard_messages
+            WHERE session_id = $1 LIMIT 1
+            """,
+            session_id,
+        )
+        if linked_row is not None:
+            detail.linked_message = LinkedChatMessage(
+                conversation_id=linked_row["conversation_id"],
+                message_id=linked_row["id"],
+            )
+    except Exception:
+        logger.debug(
+            "Could not fetch linked dashboard message for session %s", session_id, exc_info=True
+        )
 
     return detail
 

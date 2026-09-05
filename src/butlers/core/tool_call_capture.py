@@ -234,6 +234,17 @@ def consume_runtime_session_tool_calls(session_id: str) -> list[dict[str, Any]]:
         return list(_captured_tool_calls.pop(session_id, []))
 
 
+def peek_runtime_session_tool_calls(session_id: str) -> list[dict[str, Any]]:
+    """Return captured executed tool calls for session id without clearing them.
+
+    Used by mid-session readers (e.g. ``conversation_reply``) that need the
+    calls captured so far without disturbing the buffer the Spawner still
+    drains at session finish via ``consume_runtime_session_tool_calls``.
+    """
+    with _capture_lock:
+        return list(_captured_tool_calls.get(session_id, []))
+
+
 def discard_runtime_session_tool_calls(session_id: str) -> None:
     """Drop captured executed tool calls for session id."""
     with _capture_lock:

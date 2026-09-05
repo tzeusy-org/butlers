@@ -58,11 +58,14 @@ SSE event types
     Streamed assistant response token. Data: ``{content}``.
 ``message_complete``
     The routed butler's ``conversation_reply`` message, with attribution.
-    Data: ``{message_id, model_name, input_tokens, output_tokens,
+    Data: ``{message_id, session_id, model_name, input_tokens, output_tokens,
     duration_ms, tool_calls, sources}``. ``model_name``/token/duration fields
     are ``null`` — the reply is persisted mid-session, before the spawned
     session's own accounting is known (see ``_stream_conversation_response``).
-    ``sources`` is ``[]`` outside the answer lane.
+    ``session_id`` is the ambient id captured at reply time, backfilled via
+    ``request_id`` -> ``sessions.id`` when that ambient context was absent;
+    ``null`` when neither resolves (never fabricated). ``sources`` is ``[]``
+    outside the answer lane.
 ``error``
     Session failure. Data: ``{code, message}`` (``SESSION_TIMEOUT`` also
     carries ``session_id``, non-null when the routed session could be
@@ -126,6 +129,7 @@ from butlers.api.conversations import (
     message_find_reply_since,
     message_get_by_id,
     message_list,
+    message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -796,11 +800,29 @@ async def _stream_conversation_response(
         # Step 4: Emit the already-persisted conversation_reply — no DB write
         # happens here; conversation_reply_create() did it inside the routed
         # butler's own session.
+        #
+        # session_id backfill: conversation_reply best-effort-stamps the
+        # ambient runtime session id at write time, but that context is not
+        # always bound (bu-0ynlk.5). Resolve it here the same way the
+        # SESSION_TIMEOUT path does (request_id -> sessions.id on the routed
+        # butler) and persist it, so a message that missed the ambient stamp
+        # still ends up with a durable link to its session.
+        reply_session_id = reply_row.get("session_id")
+        if reply_session_id is None:
+            reply_session_id = await _resolve_session_id(
+                db=db, routed_butler=routed_butler, request_id=request_id_str
+            )
+            if reply_session_id is not None:
+                await message_set_session_id_if_null(
+                    shared_pool, reply_row["id"], session_id=reply_session_id
+                )
+
         yield _sse_event("token", {"content": reply_row["content"]})
         yield _sse_event(
             "message_complete",
             {
                 "message_id": str(reply_row["id"]),
+                "session_id": str(reply_session_id) if reply_session_id else None,
                 "model_name": reply_row.get("model_name"),
                 "input_tokens": reply_row.get("input_tokens"),
                 "output_tokens": reply_row.get("output_tokens"),

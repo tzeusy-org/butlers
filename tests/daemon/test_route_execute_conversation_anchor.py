@@ -257,6 +257,70 @@ async def test_creates_conversation_anchor_and_forwards_conversation_id(
     assert trigger_mock.call_args.kwargs["conversation_id"] == conversation_id
 
 
+async def test_dashboard_channel_resolves_existing_conversation_without_forking(
+    tmp_path: Path,
+) -> None:
+    """bu-0ynlk.5: a dashboard turn must resolve the existing conversation by
+    id (its source_thread_identity IS that conversation's id, see
+    build_dashboard_envelope) rather than upsert it as a novel thread key --
+    the latter forks an invisible second "ghost" anchor every turn.
+    """
+    patches = _patch_infra("finance")
+    butler_dir = _make_butler_toml(tmp_path, butler_name="finance")
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+
+    trigger_mock = _make_trigger_mock()
+    daemon.spawner.trigger = trigger_mock
+
+    existing_conversation_id = uuid.uuid4()
+    mock_get_by_id = AsyncMock(
+        return_value={"id": existing_conversation_id, "butler_name": "switchboard"}
+    )
+    mock_get_or_create = AsyncMock()
+
+    with (
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch(
+            "butlers.core_tools._routing.route_inbox_claim_processing",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch(
+            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
+            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
+        ),
+        _renew_processing_claim_patch(),
+        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
+        patch(
+            "butlers.api.conversations.conversation_get_by_id_any_butler",
+            mock_get_by_id,
+        ),
+        patch(
+            "butlers.api.conversations.conversation_get_or_create_by_thread",
+            mock_get_or_create,
+        ),
+    ):
+        await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(
+                source_channel="dashboard",
+                source_thread_identity=str(existing_conversation_id),
+            ),
+            input={"prompt": "What did I spend on groceries?"},
+        )
+        await asyncio.sleep(0.05)
+
+    mock_get_by_id.assert_awaited_once_with(patches["mock_pool"], existing_conversation_id)
+    mock_get_or_create.assert_not_awaited()
+    trigger_mock.assert_awaited()
+    assert trigger_mock.call_args.kwargs["conversation_id"] == existing_conversation_id
+
+
 async def test_skips_conversation_anchor_when_no_thread_identity(tmp_path: Path) -> None:
     patches = _patch_infra("health")
     butler_dir = _make_butler_toml(tmp_path, butler_name="health")

@@ -30,12 +30,14 @@ from fastapi import FastAPI
 
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
+    conversation_get_by_id_any_butler,
     conversation_get_or_create_by_thread,
     conversation_reply_create,
     conversation_search,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
+    message_set_session_id_if_null,
     resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
@@ -382,6 +384,52 @@ async def test_conversation_reply_create_returns_none_for_missing_conversation()
     pool.execute.assert_not_awaited()
 
 
+async def test_conversation_reply_create_persists_session_id_and_tool_calls():
+    """bu-0ynlk.5: conversation_reply's ambient session id and this turn's
+    tool calls flow through into the persisted message row."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)  # conversation exists
+    session_id = uuid4()
+    tool_calls = [{"name": "finance.get_budget"}]
+
+    await conversation_reply_create(
+        pool,
+        _CONV_ID,
+        message="You spent $312.",
+        session_id=session_id,
+        tool_calls=tool_calls,
+    )
+
+    insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert "INSERT INTO public.dashboard_messages" in insert_sql
+    assert session_id in insert_args
+    assert tool_calls in insert_args
+
+
+async def test_conversation_reply_create_defaults_session_id_and_tool_calls_to_none():
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)
+
+    await conversation_reply_create(pool, _CONV_ID, message="Recorded — correct?")
+
+    _insert_sql, *insert_args = pool.execute.await_args_list[0].args
+    assert None in insert_args  # session_id / tool_calls both absent
+
+
+async def test_message_set_session_id_if_null_updates_only_when_null():
+    pool = AsyncMock()
+    message_id = uuid4()
+    session_id = uuid4()
+
+    await message_set_session_id_if_null(pool, message_id, session_id=session_id)
+
+    pool.execute.assert_awaited_once()
+    sql, *args = pool.execute.await_args.args
+    assert "session_id = $2" in sql
+    assert "session_id IS NULL" in sql
+    assert args == [message_id, session_id]
+
+
 async def test_message_create_idempotent_returns_existing_message_without_incrementing():
     message_id = uuid4()
     existing = {
@@ -456,6 +504,36 @@ async def test_message_find_reply_since_deserializes_tool_calls_json_string():
     result = await message_find_reply_since(pool, _CONV_ID, since=_NOW)
 
     assert result["tool_calls"] == [{"name": "conversation_reply"}]
+
+
+# ---------------------------------------------------------------------------
+# bu-0ynlk.5: conversation_get_by_id_any_butler (dashboard-channel routing fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_get_by_id_any_butler_returns_row_regardless_of_owner():
+    """id-only lookup — no butler_name filter, since classification may route
+    a dashboard turn to a different butler than the one the row was created
+    under."""
+    row = _make_conversation_row(butler_name="switchboard")
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+
+    result = await conversation_get_by_id_any_butler(pool, _CONV_ID)
+
+    assert result == row
+    sql, *args = pool.fetchrow.await_args.args
+    assert "butler_name" not in sql.split("WHERE")[-1]
+    assert args == [_CONV_ID]
+
+
+async def test_conversation_get_by_id_any_butler_returns_none_when_missing():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+
+    result = await conversation_get_by_id_any_butler(pool, _CONV_ID)
+
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -728,6 +806,90 @@ async def test_create_conversation_streams_conversation_reply_message(app):
     # model_name/tokens are null — persisted mid-session, before the routed
     # session's own accounting exists.
     assert '"model_name": null' in resp.text
+
+
+async def test_create_conversation_backfills_session_id_when_reply_row_lacks_one(app):
+    """bu-0ynlk.5: conversation_reply best-effort-stamps session_id at write
+    time; when that ambient context was absent, the poller must resolve it
+    via request_id -> sessions.id on the routed butler, persist it, and
+    include it on the emitted message_complete event."""
+    request_id = str(uuid4())
+    resolved_session_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row()  # session_id is None — ambient context absent
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    mock_db = app.dependency_overrides[_get_db_manager]()
+    butler_pool = AsyncMock()
+    butler_pool.fetchval = AsyncMock(return_value=resolved_session_id)
+    mock_db.pool = MagicMock(return_value=butler_pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert f'"session_id": "{resolved_session_id}"' in resp.text
+    butler_pool.fetchval.assert_awaited_once()
+    backfill_calls = [
+        call
+        for call in shared_pool.execute.await_args_list
+        if "dashboard_messages" in call.args[0] and "session_id = $2" in call.args[0]
+    ]
+    assert len(backfill_calls) == 1
+    assert backfill_calls[0].args[1:] == (reply_row["id"], resolved_session_id)
+
+
+async def test_create_conversation_keeps_ambient_session_id_without_resolving(app):
+    """When conversation_reply already stamped session_id, the poller must
+    not attempt the request_id -> sessions.id fallback resolution at all."""
+    request_id = str(uuid4())
+    ambient_session_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "duplicate": False,
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    reply_row = _make_reply_row(session_id=ambient_session_id)
+    app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
+
+    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db.pool = MagicMock(side_effect=AssertionError("must not resolve when already stamped"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Alice is Bob's sister"},
+        )
+
+    assert resp.status_code == 200
+    assert f'"session_id": "{ambient_session_id}"' in resp.text
 
 
 async def test_create_conversation_streams_sources_on_the_message_complete_event(app):

@@ -33,6 +33,19 @@ class ProcessLog(BaseModel):
     expires_at: datetime | None = None
 
 
+class LinkedChatMessage(BaseModel):
+    """The dashboard chat message this session was invoked from, if any.
+
+    Reverse of ``ConversationMessage.session_id`` (bu-0ynlk.5) -- powers the
+    session detail page's "Asked in chat" affordance. ``None`` when no
+    ``dashboard_messages`` row is stamped with this session's id (never
+    fabricated).
+    """
+
+    conversation_id: UUID
+    message_id: UUID
+
+
 class SessionKindItem(BaseModel):
     """A single trigger_source bucket with its session count."""
 
@@ -180,3 +193,4 @@ class SessionDetail(BaseModel):
     complexity: str | None = None
     resolution_source: str | None = None
     correction_count: int = 0
+    linked_message: LinkedChatMessage | None = None
