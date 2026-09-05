@@ -137,6 +137,26 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_fleet_case_lapse_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the fleet-case lapse sweep (bu-8cdl1.7 Slice 5, RFC 0032).
+
+    Closes silent/routine ``public.fleet_cases`` rows that have gone stale
+    (no fresh evidence contribution, no posture/state update) with
+    ``outcome='lapsed'``. See ``butlers.core.fleet_cases.run_lapse_sweep``
+    for the full eligibility policy -- it never touches ``active``/
+    ``urgent`` cases and never resurrects an already-closed one. Runs on the
+    Switchboard daemon because only ``butler_switchboard_rw`` may write
+    ``public.fleet_cases`` (RFC 0032's write-authority section).
+    """
+    del job_args
+    from butlers.core.fleet_cases import run_lapse_sweep
+
+    return await run_lapse_sweep(pool)
+
+
 async def _run_switchboard_decision_review_digest_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2004,6 +2024,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
+            "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

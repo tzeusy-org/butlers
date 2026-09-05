@@ -1,10 +1,11 @@
 """Fleet Case File data layer: ``public.fleet_cases``/``fleet_case_evidence``/
-``fleet_case_links`` (bu-8cdl1.7 Slices 3-4, RFC 0032).
+``fleet_case_links`` (bu-8cdl1.7 Slices 3-5, RFC 0032).
 
 See ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full
 design and ``alembic/versions/core/core_217_fleet_case_file.py`` (Slice 1) for
 the schema/RLS this module writes through. :func:`evaluate_case_attention`
-(Slice 4) is the situation-scoped attention bypass -- see its docstring.
+(Slice 4) is the situation-scoped attention bypass; :func:`run_lapse_sweep`
+(Slice 5) is the scheduled lapse-close sweep -- see their docstrings.
 
 Write authority mirrors the RLS policy exactly: ``fleet_case_evidence`` has no
 role restriction (any butler may contribute), while ``fleet_cases`` restricts
@@ -26,7 +27,7 @@ it is given.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -56,6 +57,28 @@ _LINK_COLUMNS = "id, case_id, link_kind, ref, metadata, linked_at"
 # accreting for months should never make read_case unbounded.
 _EVIDENCE_LIMIT = 500
 _LINKS_LIMIT = 500
+
+# Postures the lapse sweep (Slice 5) may close unattended. ``silent``/
+# ``routine`` are the two postures where nobody is actively engaged with the
+# situation, so a long unattended silence plausibly means it resolved itself
+# without ceremony. ``active`` means a contributor is presently working the
+# case and ``urgent`` means the owner needs to see it -- both stay excluded
+# so an automated sweep can never make an engaged or owner-facing case
+# disappear without an explicit close_case. This mirrors the RFC's own
+# framing of outcome="lapsed" as a value the sweep is allowed to write, never
+# a fifth state, and the doctrine that nothing closes silently for a case
+# that still needed eyes on it.
+LAPSE_ELIGIBLE_POSTURES = frozenset({"silent", "routine"})
+
+# How long a silent/routine case must go without a fresh evidence
+# contribution or a state/posture update before the sweep may lapse it. Seven
+# days gives a slow-building but still-live situation (RFC 0032's own
+# "multi-day illness" example) ample room to keep accreting evidence -- each
+# new contribution or posture change resets the clock -- while still
+# reclaiming cases that were plainly abandoned rather than resolved.
+DEFAULT_LAPSE_STALENESS_WINDOW = timedelta(days=7)
+
+LAPSE_OUTCOME = "lapsed"
 
 
 class FleetCaseError(Exception):
@@ -362,3 +385,69 @@ async def evaluate_case_attention(
         metadata={"case_id": case_id, "correlation_key": correlation_key},
     )
     return {"bypass": True, "reason": "urgent_case_bypass"}
+
+
+async def run_lapse_sweep(
+    pool: Any,
+    *,
+    staleness_window: timedelta = DEFAULT_LAPSE_STALENESS_WINDOW,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Close every silent/routine case that has gone stale.
+
+    RFC 0032 Slice 5 -- the scheduled lapse sweep. A case is eligible only
+    when *all* of the following hold, checked in one atomic
+    ``UPDATE ... RETURNING``:
+
+    - ``state <> 'closed'`` -- an already-closed case is never touched, so
+      this can never resurrect a case (there is no code path here that ever
+      writes anything but ``state = 'closed'``).
+    - ``posture`` is in :data:`LAPSE_ELIGIBLE_POSTURES` -- ``active``/
+      ``urgent`` cases are excluded entirely; they need an explicit
+      close_case, not a silent unattended lapse.
+    - ``updated_at`` (bumped by :func:`propose_posture`/:func:`close_case`)
+      predates the cutoff -- a posture change or an attempted re-close resets
+      the clock.
+    - no :func:`contribute_evidence` row for the case at or after the cutoff
+      -- a still-accreting situation never lapses no matter how old the case
+      itself is.
+
+    Doing the eligibility check and the write in one statement (rather than
+    a SELECT candidates then per-row close_case) closes the TOCTOU window
+    where a case could flip to ``urgent`` or gain fresh evidence between
+    selection and write -- the single ``UPDATE``'s ``WHERE`` clause is
+    re-evaluated against the current row, so a case that stopped being
+    eligible in that instant is simply not touched. Running the sweep twice
+    is a no-op the second time: the first run's writes already flipped
+    ``state`` to ``closed``, which drops every row from the second run's
+    ``WHERE state <> 'closed'``.
+
+    Returns ``{"lapsed_case_ids": [...], "lapsed_count": int}``.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    cutoff = now - staleness_window
+
+    rows = await pool.fetch(
+        f"""
+        UPDATE public.fleet_cases c
+        SET state = 'closed', outcome = $1, closed_at = $2, updated_at = $2
+        WHERE c.state <> 'closed'
+          AND c.posture = ANY($3::text[])
+          AND c.updated_at < $4
+          AND NOT EXISTS (
+              SELECT 1 FROM public.fleet_case_evidence e
+              WHERE e.case_id = c.id AND e.contributed_at >= $4
+          )
+        RETURNING {_CASE_COLUMNS}
+        """,
+        LAPSE_OUTCOME,
+        now,
+        list(LAPSE_ELIGIBLE_POSTURES),
+        cutoff,
+    )
+    lapsed = [dict(row) for row in rows]
+    return {
+        "lapsed_case_ids": [str(row["id"]) for row in lapsed],
+        "lapsed_count": len(lapsed),
+    }
