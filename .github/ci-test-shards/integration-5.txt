@@ -5,6 +5,7 @@ tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_switchboard_connector_operational_role_migration.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
+tests/integration/test_fleet_case_contribution_roundtrip.py
 tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py
 tests/migrations/test_collapse_dashboard_conversation_ghosts_migration.py

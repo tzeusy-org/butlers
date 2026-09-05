@@ -1,6 +1,6 @@
 # RFC 0032: Fleet Case File
 
-**Status:** Draft (Slices 1-2 landed — schema + read API)
+**Status:** Draft (Slices 1-3 landed — schema, read API, contribution tools)
 **Date:** 2026-09-05
 
 ## Context
@@ -37,9 +37,14 @@ A case has:
   `health:owner:respiratory-illness`). Not free-form UUID noise: readable so
   an operator can recognize a case from the key alone.
 - `state` — `open | watching | closing | closed`. Only `closed` is terminal.
-- `posture` — `silent | routine | active | urgent`. Contributors will
-  eventually propose a posture; the Switchboard arbitrates the case's actual
-  posture (posture arbitration ships in a later slice — see Slice plan).
+- `posture` — `silent | routine | active | urgent`. Contributors propose a
+  posture via `propose_case_posture` (Slice 3); the Switchboard is the only
+  role that can actually write it (RLS), so a proposal from any other butler
+  is forwarded through Switchboard's `route()` primitive and takes effect as
+  a plain last-write-wins update. A richer arbitration model (quorum, decay,
+  per-butler cooldown) is not part of this design; "the Switchboard
+  arbitrates" currently means "the Switchboard is the sole write authority,"
+  not majority voting.
 - `outcome` — required exactly when `state = 'closed'`, forbidden otherwise
   (`chk_fleet_cases_closed_needs_outcome`). A lapse sweep (later slice) closes
   a case by writing `outcome = 'lapsed'`; it is a value of `outcome`, not a
@@ -82,18 +87,21 @@ binding logic ships in this slice.
 
 ## Slice plan
 
-This RFC is written for the whole feature; only Slice 1 has landed.
+This RFC is written for the whole feature; Slices 1-3 have landed.
 
 - **S1 (landed):** `public.fleet_cases`, `public.fleet_case_evidence`,
   `public.fleet_case_links` — schema, constraints, grants/RLS only. No
   broker wiring, no MCP tools, no dashboard surface.
-- **S2 (this change):** read API — `GET /api/switchboard/cases` (cursor-
+- **S2 (landed):** read API — `GET /api/switchboard/cases` (cursor-
   paginated list) and `GET /api/switchboard/cases/{case_id}` (one case with
   its evidence and links), hosted on the Switchboard API surface. No
   dashboard frontend page ships in this slice — read-only API only.
-- **S3:** contribution tools — `find_open_case`, `open_case`,
+- **S3 (this change):** contribution tools — `find_open_case`, `open_case`,
   `contribute_case_evidence`, `propose_case_posture`, `close_case`,
-  `read_case`. Adds `case` to `EVIDENCE_KINDS`.
+  `read_case` (`src/butlers/core_tools/_fleet_cases.py`, gated behind the new
+  `fleet_cases` core group). Adds `case` to `EVIDENCE_KINDS`. Still no broker
+  wiring — the insight broker does not call these tools yet — and no
+  dashboard write surface.
 - **S4:** situation-scoped attention — one urgent bypass per case per
   quiet-hours window, keyed by case rather than by candidate.
 - **S5:** lapse sweep — may only transition a case to `closed` with

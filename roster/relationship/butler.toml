@@ -17,6 +17,7 @@ core_groups = [
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
     "delegation",     # delegate_ask/receive/answer/wake — cross-butler questions
+    "fleet_cases",    # find_open_case/open_case/contribute_case_evidence/propose_case_posture/close_case/read_case
 ]
 
 [butler.db]
