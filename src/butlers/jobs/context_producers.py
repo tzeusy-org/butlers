@@ -40,6 +40,20 @@ Producers and their sources
 - **travel → traveling** (writer ``travel``): a currently-underway trip in
   ``travel.trips`` (an active trip is the container for its legs). Cleared when
   no trip is underway.
+- **travel → commuting** (writer ``travel``): OwnTracks-derived arrival lead
+  time. While ``at_home`` is not currently asserted, fresh
+  ``connectors.owntracks_points`` rows within the last
+  :data:`_COMMUTING_FRESHNESS` window are compared against the owner-declared
+  ``home`` entry in ``OWNTRACKS_PLACE_REFERENCES`` (the same env var
+  :mod:`butlers.chronicler.adapters.owntracks_place_cluster` already parses).
+  A closing distance to home over that window yields a genuine ETA: the signal
+  is set with ``value`` naming the estimated arrival lead time and
+  ``expires_at`` set to the estimated arrival instant itself, so the signal
+  self-clears when the owner should have arrived. Already within the home
+  radius clears ``commuting`` immediately (arrived); no fresh points, no
+  configured home reference, or a distance that is not clearly closing leaves
+  the signal untouched to self-heal via its own TTL rather than guessing
+  (bu-8cdl1.11 slice 3).
 - **health → sleeping** (writer ``health``): the owner-declared quiet-hours
   window in ``public.approvals_policy``. Setting ``sleeping`` here activates the
   already-shipped notify sleeping-gate. Expiry is the wake time (window end).
@@ -52,14 +66,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
 
+from butlers.chronicler.adapters.owntracks_place_cluster import (
+    PlaceReference,
+    haversine_meters,
+    parse_place_references,
+)
 from butlers.context_bus import (
     ContextSignal,
     clear_context,
+    is_user_in_context,
     set_context,
 )
 from butlers.core.approvals_policy import (
@@ -501,6 +523,203 @@ async def _publish_trip_active_event(pool: asyncpg.Pool, row: asyncpg.Record) ->
 
 
 # ---------------------------------------------------------------------------
+# Commuting/ETA producer (writer: travel) — commuting
+# ---------------------------------------------------------------------------
+
+# A durable OwnTracks point older than this is never used to derive commuting
+# state -- a device that stopped reporting must never hold a stale ETA.
+_COMMUTING_FRESHNESS = timedelta(minutes=20)
+
+# The home-to-owner distance must shrink by at least this much across the
+# fresh window before the trend counts as "closing" -- filters ordinary GPS
+# jitter and a stationary-but-imprecise fix from reading as commuting.
+_COMMUTING_MIN_CLOSING_METERS = 100.0
+
+# The OWNTRACKS_PLACE_REFERENCES entry that names the owner's home. Matched
+# case-insensitively against each reference's label.
+_HOME_PLACE_LABEL = "home"
+
+
+@dataclass(frozen=True)
+class CommutingEta:
+    """Outcome of :func:`resolve_commuting_eta`.
+
+    ``arrived`` means the freshest point already sits inside the home
+    reference's radius -- the caller clears ``commuting`` rather than setting
+    an ETA. Otherwise ``distance_meters``, ``eta_seconds`` and ``eta_at`` carry
+    the derived arrival lead time.
+    """
+
+    arrived: bool
+    distance_meters: float
+    eta_seconds: float | None = None
+    eta_at: datetime | None = None
+
+
+def resolve_commuting_eta(
+    points: list[dict[str, Any]] | list[asyncpg.Record],
+    *,
+    home: PlaceReference,
+    now: datetime,
+    freshness: timedelta = _COMMUTING_FRESHNESS,
+    min_closing_meters: float = _COMMUTING_MIN_CLOSING_METERS,
+) -> CommutingEta | None:
+    """Derive arrival lead time from OwnTracks points, or ``None`` when ambiguous.
+
+    Considers only points with ``ts`` inside ``[now - freshness, now]``. With
+    no fresh points at all, returns ``None`` (unmeasurable -- leave any prior
+    signal untouched). With at least one fresh point, a freshest-point distance
+    inside ``home.radius_m`` returns ``arrived=True`` regardless of how many
+    points are available -- being inside the geofence is decisive on its own.
+
+    Otherwise, a genuine ETA requires at least two fresh points so a closing
+    speed can be derived: the distance-to-home at the oldest fresh point minus
+    the distance-to-home at the freshest fresh point is the closing distance
+    over the elapsed interval between them. A single fresh point, a
+    non-positive elapsed interval, or a closing distance below
+    ``min_closing_meters`` (stationary, moving away, or GPS jitter) all return
+    ``None`` -- the caller leaves the existing signal to self-heal via its own
+    TTL rather than asserting a guess.
+
+    Each point must expose ``ts``, ``lat`` and ``lon``.
+    """
+    cutoff = now - freshness
+    fresh: list[tuple[datetime, float, float]] = []
+    for point in points:
+        ts = point["ts"]
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        if ts < cutoff or ts > now:
+            continue
+        fresh.append((ts, point["lat"], point["lon"]))
+    if not fresh:
+        return None
+
+    fresh.sort(key=lambda item: item[0])
+    latest_ts, latest_lat, latest_lon = fresh[-1]
+    distance_latest = haversine_meters(latest_lat, latest_lon, home.lat, home.lon)
+
+    if distance_latest <= home.radius_m:
+        return CommutingEta(arrived=True, distance_meters=distance_latest)
+
+    if len(fresh) < 2:
+        return None
+
+    earliest_ts, earliest_lat, earliest_lon = fresh[0]
+    elapsed_seconds = (latest_ts - earliest_ts).total_seconds()
+    if elapsed_seconds <= 0:
+        return None
+
+    distance_earliest = haversine_meters(earliest_lat, earliest_lon, home.lat, home.lon)
+    closing_meters = distance_earliest - distance_latest
+    if closing_meters < min_closing_meters:
+        return None
+
+    speed_mps = closing_meters / elapsed_seconds
+    eta_seconds = distance_latest / speed_mps
+    return CommutingEta(
+        arrived=False,
+        distance_meters=distance_latest,
+        eta_seconds=eta_seconds,
+        eta_at=now + timedelta(seconds=eta_seconds),
+    )
+
+
+def _load_home_place_reference() -> PlaceReference | None:
+    """Resolve the owner's ``home`` entry from ``OWNTRACKS_PLACE_REFERENCES``.
+
+    Reused, not reimplemented: the same env var and parser
+    :mod:`butlers.chronicler.adapters.owntracks_place_cluster` already uses to
+    label place clusters. Re-read on every call (cheap, no I/O) so an operator
+    correction takes effect on the next scheduled tick without a restart --
+    mirrors ``run_project_owntracks_place_cluster``'s degrade-gracefully
+    handling of the same env var: a malformed value logs a warning and is
+    treated as unconfigured rather than wedging this job on every run.
+    """
+    raw = os.environ.get("OWNTRACKS_PLACE_REFERENCES", "")
+    try:
+        references = parse_place_references(raw)
+    except ValueError:
+        logger.warning(
+            "context_producer_commuting_eta: malformed OWNTRACKS_PLACE_REFERENCES; "
+            "treating as unconfigured",
+            exc_info=True,
+        )
+        return None
+    for reference in references:
+        if reference.label.strip().lower() == _HOME_PLACE_LABEL:
+            return reference
+    return None
+
+
+async def run_commuting_eta_context_producer(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Publish ``commuting`` with a genuine arrival ETA from OwnTracks GPS data.
+
+    Skips entirely while ``at_home`` is currently asserted (by any butler) --
+    an already-home owner cannot be arriving home, so any lingering
+    ``commuting`` assertion is cleared immediately rather than left to expire.
+    Otherwise resolves the owner's ``home`` reference point from
+    ``OWNTRACKS_PLACE_REFERENCES`` and the freshest ``connectors.owntracks_points``
+    rows (see :func:`resolve_commuting_eta`): a closing distance over the fresh
+    window sets ``commuting`` with ``expires_at`` pinned to the estimated
+    arrival instant itself, so the signal naturally clears once the owner
+    should have arrived; already inside the home radius clears ``commuting``
+    immediately (arrived); anything ambiguous (no fresh points, no configured
+    home reference, or a distance that is not clearly closing) leaves any
+    prior signal untouched to self-heal via its own TTL.
+    """
+    del job_args
+    now = datetime.now(UTC)
+
+    if await is_user_in_context(pool, ContextSignal.at_home.value):
+        await clear_context(pool, "travel", ContextSignal.commuting.value)
+        return {"signal": None, "reason": "at_home", "cleared": ["commuting"]}
+
+    home = _load_home_place_reference()
+    if home is None:
+        return {"signal": None, "reason": "unconfigured"}
+
+    rows = await pool.fetch(
+        "SELECT ts, lat, lon FROM connectors.owntracks_points WHERE ts >= $1 ORDER BY ts ASC",
+        now - _COMMUTING_FRESHNESS,
+    )
+    result = resolve_commuting_eta(rows, home=home, now=now)
+
+    if result is None:
+        return {"signal": None, "reason": "unmeasurable"}
+
+    if result.arrived:
+        await clear_context(pool, "travel", ContextSignal.commuting.value)
+        return {"signal": None, "reason": "arrived", "cleared": ["commuting"]}
+
+    assert result.eta_seconds is not None and result.eta_at is not None
+    eta_minutes = round(result.eta_seconds / 60)
+    await set_context(
+        pool,
+        butler_name="travel",
+        signal_type=ContextSignal.commuting.value,
+        value=f"home in ~{eta_minutes} min",
+        expires_at=result.eta_at,
+        confidence=0.6,
+        metadata={
+            "source": "owntracks",
+            "distance_meters": round(result.distance_meters),
+            "eta_minutes": round(result.eta_seconds / 60, 1),
+        },
+    )
+    return {
+        "signal": "commuting",
+        "eta_minutes": eta_minutes,
+        "distance_meters": round(result.distance_meters),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Sleep-window producer (writer: health) — sleeping
 # ---------------------------------------------------------------------------
 
@@ -546,9 +765,12 @@ async def run_sleep_window_context_producer(
 
 
 __all__ = [
+    "CommutingEta",
     "classify_calendar_signal",
+    "resolve_commuting_eta",
     "resolve_owner_presence",
     "run_calendar_context_producer",
+    "run_commuting_eta_context_producer",
     "run_home_presence_context_producer",
     "run_sleep_window_context_producer",
     "run_travel_context_producer",

@@ -408,9 +408,11 @@ OwnTracks events feed the situational context bus (RFC 0009). Context signal der
 - **WHEN** the home butler processes an OwnTracks transition event with `event = "enter"` and `desc = "Home"`
 - **THEN** it calls `set_context("at_home", confidence=0.95)` with `metadata` referencing the OwnTracks transition event
 
-#### Scenario: General butler derives commuting from velocity
-- **WHEN** the general butler processes OwnTracks location events with `vel > 80` km/h sustained over multiple consecutive updates
-- **THEN** it calls `set_context("commuting", confidence=0.6, ttl=45min)`
+#### Scenario: Travel butler derives commuting with an arrival ETA
+- **WHEN** `at_home` is not currently asserted and the freshest `connectors.owntracks_points` rows show the owner's distance to the `home` entry in `OWNTRACKS_PLACE_REFERENCES` closing over the last 20 minutes
+- **THEN** the travel butler calls `set_context("commuting", confidence=0.6, value="home in ~<n> min")` with `expires_at` set to the estimated arrival instant and `metadata` carrying the derived distance and ETA
+- **AND** when the freshest point already sits inside the home reference's radius, it calls `clear_context("commuting")` instead (arrived)
+- **AND** when there are no fresh points, no configured `home` reference, or the distance is not clearly closing, no signal is set or cleared -- any existing `commuting` signal self-heals via its own TTL
 
 #### Scenario: Confidence levels for OwnTracks-derived signals
 - **WHEN** a context signal is derived from an explicit geofence transition (enter/leave event)
