@@ -374,6 +374,7 @@ import type {
   FinanceTransaction,
   FinanceSubscription,
   FinanceExpectedSignalsResponse,
+  FinanceObligationsResponse,
   FinanceAccount,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
@@ -6317,6 +6318,14 @@ export function getFinanceSubscriptions(
 /** Read state-only Finance recurrence measurability. */
 export function getFinanceExpectedSignals(): Promise<FinanceExpectedSignalsResponse> {
   return apiFetch<FinanceExpectedSignalsResponse>("/finance/expected-signals");
+}
+
+/** List the forward obligation ledger (bu-8cdl1.10): warn-by dates,
+ * cancellation-door status, and pre-charge price-change flags per
+ * subscription. Explicitly degraded (never a fabricated all-clear) when the
+ * ledger read fails. */
+export function getFinanceObligations(): Promise<FinanceObligationsResponse> {
+  return apiFetch<FinanceObligationsResponse>("/finance/obligations");
 }
 
 /** List upcoming bills with urgency classification. */

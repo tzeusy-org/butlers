@@ -47,6 +47,7 @@ import {
   useBulkUpdateTransactionMetadata,
   useFinanceAccounts,
   useFinanceExpectedSignals,
+  useFinanceObligations,
   useFinanceSpendingSummary,
   useFinanceSubscriptions,
   useFinanceTransactions,
@@ -56,6 +57,7 @@ import type {
   FinanceAccount,
   FinanceExpectedSignal,
   FinanceBulkUpdateOp,
+  FinanceObligation,
   FinanceTransaction,
   FinanceSubscription,
   FinanceUpcomingBillItem,
@@ -505,11 +507,68 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline"> = {
   cancelled: "outline",
 };
 
+// ---------------------------------------------------------------------------
+// Cancellation-door status line (bu-8cdl1.10 slice 3)
+//
+// Surfaces the forward obligation ledger (GET /finance/obligations) inline on
+// each subscription row: a known door shows its cancel-by date and days
+// remaining to act; an unknown door renders an explicit enrichment prompt
+// rather than silently omitting the door status; a pre-charge price-change
+// flag appends its own note. No ledger row for a subscription (e.g. a
+// degraded /obligations read) renders nothing extra -- never a fabricated
+// "no door" claim.
+// ---------------------------------------------------------------------------
+
+function ObligationDoorLine({ obligation }: { obligation: FinanceObligation | undefined }) {
+  if (!obligation) return null;
+
+  if (obligation.unknown_door) {
+    return (
+      <p
+        className="text-xs text-[var(--amber-text)]"
+        data-testid="subscription-door-unknown"
+      >
+        No cancellation door on file -- add a cancellation URL, notice
+        period, and cancel-by date.
+      </p>
+    );
+  }
+
+  const daysRemaining = obligation.days_remaining_to_act;
+  const urgent = daysRemaining != null && daysRemaining <= 3;
+
+  return (
+    <div className="space-y-0.5" data-testid="subscription-door-known">
+      <p
+        className={`text-xs ${urgent ? "text-destructive" : "text-muted-foreground"}`}
+      >
+        Cancel by{" "}
+        {obligation.cancel_by ? (
+          <Time value={obligation.cancel_by} mode="absolute" precision="day" compact />
+        ) : (
+          "—"
+        )}
+        {daysRemaining != null
+          ? ` · ${daysRemaining} day${daysRemaining === 1 ? "" : "s"} left`
+          : ""}
+      </p>
+      {obligation.price_change_amount ? (
+        <p className="text-xs text-[var(--amber-text)]" data-testid="subscription-price-change-flag">
+          Price set to {obligation.price_change_direction ?? "change"} to{" "}
+          {formatCurrency(obligation.price_change_amount, obligation.currency)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function SubscriptionsPanel({
   subscriptions,
+  obligationsBySubscriptionId,
   isLoading,
 }: {
   subscriptions: FinanceSubscription[];
+  obligationsBySubscriptionId: Map<string, FinanceObligation>;
   isLoading: boolean;
 }) {
   return (
@@ -537,6 +596,9 @@ function SubscriptionsPanel({
                     compact
                   />
                 </p>
+                <ObligationDoorLine
+                  obligation={obligationsBySubscriptionId.get(sub.id)}
+                />
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className="text-sm font-mono tnum">
@@ -717,6 +779,11 @@ export default function ButlerFinanceFinancesTab() {
     isLoading: accountsLoading,
     isFetching: accountsFetching,
   } = useFinanceAccounts();
+  const {
+    data: obligationsResp,
+    isLoading: obligationsLoading,
+    isFetching: obligationsFetching,
+  } = useFinanceObligations();
 
   // Never-blank floor (bu-nhcp5): this tab's windows are fixed at mount (this
   // month / trailing 30 days — no user-navigable date picker exists here
@@ -733,7 +800,8 @@ export default function ButlerFinanceFinancesTab() {
     upcomingLoading ||
     monthlyLoading ||
     categoryLoading ||
-    accountsLoading;
+    accountsLoading ||
+    obligationsLoading;
   const isRefetching =
     !isInitialLoad &&
     (txFetching ||
@@ -742,7 +810,8 @@ export default function ButlerFinanceFinancesTab() {
       upcomingFetching ||
       monthlyFetching ||
       categoryFetching ||
-      accountsFetching);
+      accountsFetching ||
+      obligationsFetching);
 
   // Memoized so the applyBulk useCallback below has a stable transactions dep.
   const transactions = useMemo(() => txResp?.data ?? [], [txResp]);
@@ -845,6 +914,17 @@ export default function ButlerFinanceFinancesTab() {
   const subscriptions = subResp?.data ?? [];
   const upcomingBills = upcomingResp?.items ?? [];
   const accounts = accountsResp?.data ?? [];
+  // Obligation ledger (bu-8cdl1.10 slice 3), keyed for O(1) lookup per
+  // subscription row -- a degraded /obligations read (available: false)
+  // yields an empty map, so the panel renders subscriptions without door
+  // status rather than erroring.
+  const obligationsBySubscriptionId = useMemo(() => {
+    const map = new Map<string, FinanceObligation>();
+    for (const obligation of obligationsResp?.items ?? []) {
+      map.set(obligation.subscription_id, obligation);
+    }
+    return map;
+  }, [obligationsResp]);
 
   // Active subscriptions KPI: count only real, billable active subs. Drop the
   // literal service:'dummy' test record and any $0 placeholder — neither
@@ -994,7 +1074,11 @@ export default function ButlerFinanceFinancesTab() {
       />
 
       {/* Row 4: Subscriptions (span-2) + Accounts (span-2) */}
-      <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
+      <SubscriptionsPanel
+        subscriptions={subscriptions}
+        obligationsBySubscriptionId={obligationsBySubscriptionId}
+        isLoading={subLoading}
+      />
       <AccountsPanel accounts={accounts} isLoading={accountsLoading} />
       <RecurrenceSignalPanel
         signals={signalResp?.signals ?? []}

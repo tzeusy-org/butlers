@@ -1238,7 +1238,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     async with db_pool.acquire() as conn:
         sub_rows = await conn.fetch(
             """
-            SELECT id, service, amount, currency, next_renewal
+            SELECT id, service, amount, currency, next_renewal,
+                   cancellation_url, notice_period_days, cancel_by
             FROM finance.subscriptions
             WHERE status = 'active'
               AND frequency = 'yearly'
@@ -1250,6 +1251,28 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             renewal_window_end,
         )
 
+    # bu-8cdl1.10 slice 3: best-effort obligation-ledger lookup so this
+    # renewal insight can carry the derived warn_by/unknown_door/price-change
+    # flags (slice 2) rather than just the amount. Read separately (instead of
+    # joining into the query above) so an unmigrated pool missing
+    # finance.obligation_ledger degrades this renewal insight down to the
+    # column-derived door status below instead of breaking submission
+    # entirely -- mirrors _register_obligations' degraded-honesty contract.
+    ledger_by_key: dict[tuple[str, date], asyncpg.Record] = {}
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            ledger_rows = await conn.fetch(
+                "SELECT subscription_id, period, warn_by, unknown_door,"
+                " price_change_amount, price_change_direction FROM obligation_ledger"
+            )
+        ledger_by_key = {(str(r["subscription_id"]), r["period"]): r for r in ledger_rows}
+    except Exception:
+        logger.warning(
+            "Finance insight scan: obligation ledger read failed; "
+            "renewal insights will fall back to column-derived door status",
+            exc_info=True,
+        )
+
     for row in sub_rows:
         renewal_date = row["next_renewal"]
         days_until = (renewal_date - today).days
@@ -1257,6 +1280,28 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         service = row["service"]
         amount = Decimal(str(row["amount"]))
         currency = row["currency"]
+        cancellation_url = row["cancellation_url"]
+        notice_period_days = row["notice_period_days"]
+        cancel_by = row["cancel_by"]
+
+        ledger_row = ledger_by_key.get((sub_id, renewal_date))
+        if ledger_row is not None:
+            unknown_door = ledger_row["unknown_door"]
+            warn_by = ledger_row["warn_by"]
+            price_change_amount = ledger_row["price_change_amount"]
+            price_change_direction = ledger_row["price_change_direction"]
+        else:
+            # Ledger row unavailable (unmigrated pool) -- derive the door
+            # status directly from the columns slice 1 added to
+            # subscriptions rather than silently omitting it.
+            unknown_door = (
+                cancellation_url is None or notice_period_days is None or cancel_by is None
+            )
+            warn_by = None
+            price_change_amount = None
+            price_change_direction = None
+
+        days_remaining_to_act = (cancel_by - today).days if cancel_by else None
 
         priority = (
             _SUBSCRIPTION_PRIORITY_CRITICAL if days_until <= 3 else _SUBSCRIPTION_PRIORITY_SOON
@@ -1266,10 +1311,30 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             if days_until == 0
             else ("tomorrow" if days_until == 1 else f"in {days_until} days")
         )
-        message = (
+        renewal_clause = (
             f"Annual subscription renewing {urgency_label}: {service} — "
             f"{currency} {amount:.2f} on {renewal_date.isoformat()}"
         )
+        if unknown_door:
+            # bu-8cdl1.10: a missing cancellation door is exactly as unusable
+            # to the owner as a missing date -- surface an explicit enrichment
+            # prompt rather than silently omitting the door status.
+            message = (
+                f"{renewal_clause}. No cancellation door on file -- add its "
+                f"cancellation URL, notice period, and cancel-by date so a "
+                f"warning can reach you in time to act."
+            )
+        else:
+            message = (
+                f"{renewal_clause}. Cancel by {cancel_by.isoformat()} "
+                f"({days_remaining_to_act} day{'s' if days_remaining_to_act != 1 else ''} left) "
+                f"at {cancellation_url} to avoid this charge."
+            )
+        if price_change_amount is not None:
+            message += (
+                f" Price is set to {price_change_direction or 'change'} to "
+                f"{currency} {price_change_amount} at this renewal."
+            )
         dedup_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
         expires_at = _owner_midnight(renewal_date + timedelta(days=1), zone)
 
@@ -1287,6 +1352,19 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # As with bills, preserve the source renewal date rather than
                 # treating a finance-local ID as a cross-domain entity identity.
                 "event_date": renewal_date.isoformat(),
+                # bu-8cdl1.10 slice 3: cancellation-door fields so this
+                # insight carries the door + days-remaining-to-act, not just
+                # the amount.
+                "cancellation_url": cancellation_url,
+                "notice_period_days": notice_period_days,
+                "cancel_by": cancel_by.isoformat() if cancel_by else None,
+                "warn_by": warn_by.isoformat() if warn_by else None,
+                "unknown_door": unknown_door,
+                "days_remaining_to_act": days_remaining_to_act,
+                "price_change_amount": (
+                    str(price_change_amount) if price_change_amount is not None else None
+                ),
+                "price_change_direction": price_change_direction,
             },
         )
         if not keep_going:

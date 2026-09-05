@@ -144,6 +144,36 @@ class FinanceExpectedSignalsResponse(BaseModel):
     degraded_reason: str | None = None
 
 
+class ObligationModel(BaseModel):
+    """One forward obligation ledger row (bu-8cdl1.10 slice 3), denormalized
+    with its subscription's service/amount and cancellation-door status."""
+
+    subscription_id: str
+    service: str
+    amount: str
+    currency: str
+    period: str
+    cancellation_url: str | None = None
+    notice_period_days: int | None = None
+    cancel_by: str | None = None
+    warn_by: str | None = None
+    unknown_door: bool
+    price_change_amount: str | None = None
+    price_change_direction: Literal["increase", "decrease"] | None = None
+    days_remaining_to_act: int | None = None
+
+
+class ObligationsResponse(BaseModel):
+    """Response envelope for GET /obligations. Explicitly degraded, never a
+    fabricated all-clear when the ledger read fails (response-conventions
+    fleet-wide rule)."""
+
+    items: list[ObligationModel] = []
+    count: int = 0
+    available: bool = True
+    degraded_reason: Literal["obligation_ledger_unavailable"] | None = None
+
+
 class UpcomingBillItemModel(BaseModel):
     """A bill with urgency classification for the upcoming-bills endpoint."""
 
