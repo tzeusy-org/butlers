@@ -18,3 +18,4 @@ tests/core_tools/test_dashboard_confirm_block.py
 tests/core_tools/test_fleet_cases.py
 tests/core_tools/test_graph.py
 tests/integration/test_dashboard_propose_then_act.py
+tests/scripts/test_backfill_fleet_cases.py

@@ -1,8 +1,8 @@
-"""Real-Postgres regression: fleet case contribution (bu-8cdl1.7 Slice 3, RFC 0032).
+"""Real-Postgres regression: fleet case contribution (bu-8cdl1.7 Slices 3-6, RFC 0032).
 
 Exercises ``butlers.core.fleet_cases`` against a fully migrated Postgres
 instance (testcontainers) -- not just the mocked-pool unit tests in
-``tests/core/test_fleet_cases.py``. Two things a mock cannot verify:
+``tests/core/test_fleet_cases.py``. Things a mock cannot verify:
 
 - The RLS policy from core_217 actually blocks a non-Switchboard role's
   ``open_case``/``propose_posture``/``close_case`` at the database, so the
@@ -14,10 +14,15 @@ instance (testcontainers) -- not just the mocked-pool unit tests in
   contributor* -- ``UNIQUE(case_id, contributor, kind, ref)`` -- so two
   distinct butlers reporting the same ref get two attributed rows, while the
   same butler repeating it collapses to one.
+- Slice 6's backfill: that ``chk_fleet_cases_closed_needs_outcome`` and
+  ``uq_fleet_cases_active_correlation_key`` are actually satisfied by the
+  backfill's writes against the live constraints, not just by inspecting its
+  SQL text (see ``tests/core/test_fleet_cases.py`` for that half).
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime, timedelta
 
@@ -25,7 +30,10 @@ import asyncpg
 import pytest
 
 from butlers.core.fleet_cases import (
+    BACKFILL_CORRELATION_KEY_PREFIX,
     FleetCaseError,
+    backfill_from_owner_conditions,
+    backfill_historical_case,
     close_case,
     contribute_evidence,
     open_case,
@@ -126,6 +134,51 @@ async def _seed_evidence(bootstrap_url: str, *, case_id: str, contributed_at: da
             case_id,
             contributed_at,
         )
+    finally:
+        await conn.close()
+
+
+async def _seed_owner_condition(
+    bootstrap_url: str,
+    *,
+    source: str,
+    fingerprint: str,
+    episode: int,
+    first_detected_at: datetime,
+    state: str = "resolved",
+    resolved_at: datetime | None = None,
+    recovered_after_s: float | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Seed one public.owner_conditions episode directly -- Slice 6's backfill
+    source. Bypasses the condition_ledger engine (reconcile_snapshot/
+    resolve_condition) the same way _seed_case bypasses open_case/close_case:
+    the backfill test needs a specific already-resolved episode the ordinary
+    API path doesn't let a test dictate directly."""
+    conn = await asyncpg.connect(bootstrap_url)
+    try:
+        await conn.execute(
+            "INSERT INTO public.owner_conditions "
+            "(source, fingerprint, episode, state, first_detected_at, last_confirmed_at, "
+            " resolved_at, recovered_after_s, metadata) "
+            "VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8::jsonb)",
+            source,
+            fingerprint,
+            episode,
+            state,
+            first_detected_at,
+            resolved_at,
+            recovered_after_s,
+            json.dumps(metadata) if metadata is not None else None,
+        )
+    finally:
+        await conn.close()
+
+
+async def _delete_owner_conditions(bootstrap_url: str, *, source: str) -> None:
+    conn = await asyncpg.connect(bootstrap_url)
+    try:
+        await conn.execute("DELETE FROM public.owner_conditions WHERE source = $1", source)
     finally:
         await conn.close()
 
@@ -315,3 +368,150 @@ async def test_lapse_sweep_only_closes_genuinely_stale_silent_or_routine_cases(
         await switchboard_conn.close()
         for key in keys.values():
             await _delete_case(bootstrap_url, key)
+
+
+async def test_backfill_historical_case_is_idempotent_against_real_postgres(
+    db_url: str, bootstrap_url: str
+) -> None:
+    """Requirement (1)+(2)+(3): a direct call succeeds only because the write
+    already satisfies chk_fleet_cases_closed_needs_outcome (Postgres would
+    raise a CheckViolationError otherwise), and a second call with the exact
+    same correlation_key is a no-op rather than a duplicate row."""
+    key = "test:backfill-historical-case-direct"
+    opened_at = datetime(2026, 1, 1, tzinfo=UTC)
+    closed_at = datetime(2026, 1, 5, tzinfo=UTC)
+
+    switchboard_conn = await _role_conn(db_url, "butler_switchboard_rw")
+    try:
+        first = await backfill_historical_case(
+            switchboard_conn,
+            correlation_key=key,
+            outcome="resolved",
+            opened_at=opened_at,
+            closed_at=closed_at,
+        )
+        assert first is not None
+        assert first["state"] == "closed"
+        assert first["outcome"] == "resolved"
+        assert first["closed_at"] is not None
+
+        rerun = await backfill_historical_case(
+            switchboard_conn,
+            correlation_key=key,
+            outcome="resolved",
+            opened_at=opened_at,
+            closed_at=closed_at,
+        )
+        assert rerun is None
+
+        count = await switchboard_conn.fetchval(
+            "SELECT count(*) FROM public.fleet_cases WHERE correlation_key = $1", key
+        )
+        assert count == 1
+    finally:
+        await switchboard_conn.close()
+        await _delete_case(bootstrap_url, key)
+
+
+async def test_closed_backfilled_row_can_share_a_correlation_key_with_an_active_case(
+    bootstrap_url: str,
+) -> None:
+    """Requirement (3), non-collision half: uq_fleet_cases_active_correlation_key
+    is a partial index scoped to ``state <> 'closed'``. Since the backfill
+    only ever writes ``state='closed'``, a closed historical row must be able
+    to coexist with an active case sharing the same correlation_key --
+    confirmed here at the database rather than merely asserted from the
+    index's WHERE clause."""
+    key = "test:backfill-collision-key"
+    now = datetime(2026, 9, 6, tzinfo=UTC)
+    active_id = await _seed_case(bootstrap_url, correlation_key=key, updated_at=now, state="open")
+    try:
+        closed_id = await _seed_case(
+            bootstrap_url,
+            correlation_key=key,
+            updated_at=now,
+            state="closed",
+            outcome="resolved",
+            closed_at=now,
+        )
+        assert closed_id != active_id
+
+        conn = await asyncpg.connect(bootstrap_url)
+        try:
+            rows = await conn.fetch(
+                "SELECT id, state FROM public.fleet_cases WHERE correlation_key = $1", key
+            )
+        finally:
+            await conn.close()
+        assert {row["state"] for row in rows} == {"open", "closed"}
+    finally:
+        await _delete_case(bootstrap_url, key)
+
+
+async def test_backfill_from_owner_conditions_creates_closed_cases_and_reruns_idempotently(
+    db_url: str, bootstrap_url: str
+) -> None:
+    """RFC 0032 Slice 6 end-to-end: a resolved owner_conditions episode
+    becomes one closed fleet case with the resolution_reason as outcome; an
+    unresolved episode is left untouched; rerunning creates no duplicate."""
+    source = "test:backfill-source"
+    detected = datetime(2026, 1, 1, tzinfo=UTC)
+    resolved = datetime(2026, 1, 10, tzinfo=UTC)
+    resolved_key = f"{BACKFILL_CORRELATION_KEY_PREFIX}{source}:resolved-fp:1"
+    open_key = f"{BACKFILL_CORRELATION_KEY_PREFIX}{source}:open-fp:1"
+
+    switchboard_conn = await _role_conn(db_url, "butler_switchboard_rw")
+    try:
+        await _seed_owner_condition(
+            bootstrap_url,
+            source=source,
+            fingerprint="resolved-fp",
+            episode=1,
+            first_detected_at=detected,
+            state="resolved",
+            resolved_at=resolved,
+            recovered_after_s=777600.0,
+            metadata={"resolution_reason": "bill_paid"},
+        )
+        await _seed_owner_condition(
+            bootstrap_url,
+            source=source,
+            fingerprint="open-fp",
+            episode=1,
+            first_detected_at=detected,
+            state="open",
+            resolved_at=None,
+            recovered_after_s=None,
+            metadata=None,
+        )
+
+        result = await backfill_from_owner_conditions(switchboard_conn)
+
+        created_row = await switchboard_conn.fetchrow(
+            "SELECT id, state, outcome, opened_at, closed_at FROM public.fleet_cases "
+            "WHERE correlation_key = $1",
+            resolved_key,
+        )
+        assert created_row is not None
+        assert created_row["state"] == "closed"
+        assert created_row["outcome"] == "bill_paid"
+        assert created_row["opened_at"] == detected
+        assert created_row["closed_at"] == resolved
+        assert str(created_row["id"]) in result["created_case_ids"]
+
+        never_created = await switchboard_conn.fetchrow(
+            "SELECT 1 FROM public.fleet_cases WHERE correlation_key = $1", open_key
+        )
+        assert never_created is None
+
+        rerun = await backfill_from_owner_conditions(switchboard_conn)
+        assert str(created_row["id"]) not in rerun["created_case_ids"]
+
+        count = await switchboard_conn.fetchval(
+            "SELECT count(*) FROM public.fleet_cases WHERE correlation_key = $1", resolved_key
+        )
+        assert count == 1
+    finally:
+        await switchboard_conn.close()
+        await _delete_owner_conditions(bootstrap_url, source=source)
+        await _delete_case(bootstrap_url, resolved_key)
