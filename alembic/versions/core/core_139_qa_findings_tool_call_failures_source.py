@@ -9,6 +9,12 @@ and the QA module now emits ``QaFinding(source_type="tool_call_failures")`` from
 that source.  The original ``public.qa_findings`` source-type constraint still
 accepted only the three earlier sources, so patrols failed when the new source
 produced a finding.  This migration reconciles the persisted source vocabulary.
+
+The core chain is tracked independently in every butler schema, while
+``public.qa_findings`` is shared.  A newly added butler can therefore replay
+this historical migration after another schema has reached ``core_170`` and
+persisted ``infra_state`` findings.  Keep this migration's allowlist cumulative
+so replay never narrows the live shared-table contract on its way to head.
 """
 
 from __future__ import annotations
@@ -29,11 +35,7 @@ _SOURCES = (
     "session_records",
     "butler_reports",
     "tool_call_failures",
-)
-_DOWNGRADE_SOURCES = (
-    "log_scanner",
-    "session_records",
-    "butler_reports",
+    "infra_state",
 )
 
 
@@ -56,4 +58,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _replace_source_constraint(_DOWNGRADE_SOURCES)
+    # Narrowing would reject persisted tool-call or infra-state findings.
+    # Older runtime code simply never emits the additional accepted values.
+    pass
