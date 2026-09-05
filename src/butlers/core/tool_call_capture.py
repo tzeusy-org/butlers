@@ -14,6 +14,8 @@ import threading
 from collections import defaultdict
 from typing import Any
 
+MANUAL_DAY_CLOSE_TRIGGER_PREFIX = "api:day_close_refresh:"
+
 _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_session_id_var", default=None
 )

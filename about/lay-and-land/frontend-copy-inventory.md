@@ -399,7 +399,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
 
-- Regeneration failed.
+- Regeneration produced no usable summary.
 - Chronicles
 - Retrospective view of lived past time reconstructed from butler evidence.
 - Previous day: archive boundary unavailable
@@ -408,9 +408,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Next day
 - The day-close summary may be out of date.
 - Day-close summary may be out of date
-- Regenerate day-close summary
 - Coverage or availability for this day could not be affirmed.
 - Coverage or availability for this day could not be affirmed
+- Regenerate day-close summary
 
 ## `frontend/src/pages/ConditionsPage.tsx`
 

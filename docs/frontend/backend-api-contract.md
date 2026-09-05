@@ -235,10 +235,34 @@ not prior prose, KPI, recent-day rows, cache state, or drilldown content.
   return `400` with `error.code = "day_close_not_settled"` before any
   rate-limit lookup or dispatch. A valid historical target continues to the
   normal tuple-keyed rate-limit and dispatch path.
-- When a selected briefing reports its day-close prose as stale, the Chronicles
-  page's **Regenerate** action POSTs that exact selected `{date, tz}` tuple and
-  re-fetches the same tuple only after a successful response. Failure leaves
-  the stale indication visible rather than replacing it with unproven prose.
+- When a selected briefing reports stale day-close prose, or reports
+  `state_class="unavailable"` while both coverage reads succeeded and no named
+  subquery is unavailable, the Chronicles page's **Regenerate** action POSTs
+  that exact selected `{date, tz}` tuple and re-fetches the same tuple only
+  after a successful response. Missing/failed availability evidence does not
+  expose the action. Failure leaves the prior truthful state visible rather
+  than replacing it with unproven prose.
+- The dashboard API proxies regeneration over MCP to a Chronicler-only daemon
+  control. That control owns settled-date and timezone validation, tuple rate
+  limiting, scheduled-prompt dispatch, cache admission, and coverage-witness
+  verification. It returns cache/admission metadata only; prompt, prose, tool
+  calls, bundle content, and provenance do not cross the control response.
+- The owning Chronicler control bounds its complete operation at 100 seconds,
+  the dashboard bounds the daemon MCP execution at 110 seconds, and the browser
+  allows 120 seconds for the enclosing request. A timeout returns `504` with
+  `error.code = "dispatch_timeout"` before the client deadline fires, and the
+  owning daemon does not continue cache/witness work in the background.
+- Manual historical regeneration derives an
+  `api:day_close_refresh:{date}` execution source and is notification-silent.
+  The Chronicler MCP wrapper permits only `chronicler_day_close_bundle` for
+  that runtime context and suppresses every other tool before its handler can
+  notify, remind, schedule, trigger, route, defer, or mutate. Normal
+  `schedule:chronicler_day_close` sessions are unchanged.
+- Concurrent refreshes for the same tuple serialize in the owning daemon and
+  re-check durable success before dispatch. If cache admission succeeds but
+  its witness write fails, cache presence alone is not promoted into coverage
+  proof or used to block retry; the next request re-runs the canonical bounded
+  evidence read and retries witness persistence.
 - A prose-producing or contained-invalid success returns
   `{cache_key, cache_built_at, invalid, invalid_reason}`. `invalid_reason` is
   `null`, `inadmissible_prose`, or `date_mismatch`.
