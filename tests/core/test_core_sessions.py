@@ -330,6 +330,144 @@ async def test_sessions_summary_error_marker_breakdown(pool):
 
 
 # ---------------------------------------------------------------------------
+# Friction ledger (bu-8cdl1.9 S2)
+# ---------------------------------------------------------------------------
+
+
+@_asyncio_session
+async def test_friction_events_derived_at_session_close(pool):
+    """Each session_complete call derives zero or one typed friction row."""
+    from butlers.core.sessions import session_complete, session_create
+
+    async def _friction_kinds(session_id: uuid.UUID) -> list[str]:
+        rows = await pool.fetch(
+            "SELECT kind FROM sessions_friction WHERE session_id = $1 ORDER BY kind", session_id
+        )
+        return [r["kind"] for r in rows]
+
+    # Clean session: zero friction rows.
+    clean_sid = await session_create(
+        pool, prompt="clean run", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool, clean_sid, output="ok", tool_calls=[], duration_ms=10, success=True
+    )
+    assert await _friction_kinds(clean_sid) == []
+
+    # Guardrail-marker failure -> degenerate_tool_loop.
+    loop_sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        loop_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: 5 consecutive identical calls to foo",
+    )
+    assert await _friction_kinds(loop_sid) == ["degenerate_tool_loop"]
+
+    # Tool-call/token budget guardrail -> guardrail_termination.
+    budget_sid = await session_create(
+        pool, prompt="budget", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        budget_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="GuardrailError: tool_call_budget_exceeded after 40 calls",
+    )
+    assert await _friction_kinds(budget_sid) == ["guardrail_termination"]
+
+    # Switchboard classification timeout (mini model, <=60s) -> classification_timeout.
+    classification_sid = await session_create(
+        pool,
+        prompt="classify inbound message",
+        trigger_source="classification",
+        request_id=str(uuid.uuid4()),
+        model="claude-haiku-4-5-mini",
+    )
+    await session_complete(
+        pool,
+        classification_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="TimeoutError: Session timed out after 45s (model=claude-haiku-4-5-mini, "
+        "butler=switchboard)",
+    )
+    assert await _friction_kinds(classification_sid) == ["classification_timeout"]
+
+    # Success carrying a leftover error string -> recovered_error.
+    recovered_sid = await session_create(
+        pool, prompt="recovered", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        recovered_sid,
+        output="done after retry",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        error="transient ToolError: first attempt failed, retried",
+    )
+    assert await _friction_kinds(recovered_sid) == ["recovered_error"]
+
+    # Unclassified failure -> dead_end.
+    dead_end_sid = await session_create(
+        pool, prompt="dead end", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        dead_end_sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="ValueError: something unrelated broke",
+    )
+    assert await _friction_kinds(dead_end_sid) == ["dead_end"]
+
+
+@_asyncio_session
+async def test_friction_events_idempotent_on_session_kind_ordinal(pool):
+    """Re-deriving friction for the same session/kind never duplicates the row."""
+    from butlers.core.sessions import _record_friction_event, session_complete, session_create
+
+    sid = await session_create(
+        pool, prompt="loop", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool,
+        sid,
+        output=None,
+        tool_calls=[],
+        duration_ms=10,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+    )
+
+    # Simulate a redundant derivation pass for the same session/kind.
+    await _record_friction_event(
+        pool,
+        sid,
+        success=False,
+        error="RuntimeError: degenerate_tool_loop: repeat",
+        model=None,
+    )
+
+    rows = await pool.fetch("SELECT kind FROM sessions_friction WHERE session_id = $1", sid)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "degenerate_tool_loop"
+
+
+# ---------------------------------------------------------------------------
 # Orphan recovery
 # ---------------------------------------------------------------------------
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -101,6 +102,88 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     if trigger_source.startswith("deadline:") and len(trigger_source) > 9:
         return True
     return False
+
+
+#: Friction-episode kinds derivable deterministically at session close, no
+#: LLM judgment involved (bu-8cdl1.9 S2). Mirrors the same guardrail/timeout
+#: signatures as ``_ERROR_MARKER_CASE_SQL`` below, plus two additional
+#: buckets: ``recovered_error`` (a success carrying a leftover error string)
+#: and ``dead_end`` (a failure that matched none of the named guardrails).
+_FRICTION_GUARDRAIL_MARKERS = ("tool_call_budget_exceeded", "token_budget_exceeded")
+_FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE = re.compile(r"Session timed out after (\d+)s")
+
+
+def _is_friction_classification_timeout(error: str | None, model: str | None) -> bool:
+    """Mirror the ``classification_timeout`` branch of ``_ERROR_MARKER_CASE_SQL``."""
+    if not error or not model or "mini" not in model.lower():
+        return False
+    error_lower = error.lower()
+    if "timeouterror" not in error_lower or "butler=switchboard" not in error_lower:
+        return False
+    match = _FRICTION_CLASSIFICATION_TIMEOUT_SECONDS_RE.search(error)
+    if not match:
+        return False
+    try:
+        return int(match.group(1)) <= 60
+    except ValueError:
+        return False
+
+
+def _classify_friction_kind(*, success: bool, error: str | None, model: str | None) -> str | None:
+    """Deterministically classify a completed session into a friction kind.
+
+    Returns ``None`` for a clean session (nothing to record). A successful
+    session that nonetheless carries a leftover ``error`` string is a
+    recovered failure, not a clean run.
+    """
+    if success:
+        return "recovered_error" if error else None
+
+    error_lower = (error or "").lower()
+    if "degenerate_tool_loop" in error_lower:
+        return "degenerate_tool_loop"
+    if any(marker in error_lower for marker in _FRICTION_GUARDRAIL_MARKERS):
+        return "guardrail_termination"
+    if _is_friction_classification_timeout(error, model):
+        return "classification_timeout"
+    return "dead_end"
+
+
+async def _record_friction_event(
+    pool: asyncpg.Pool,
+    session_id: uuid.UUID,
+    *,
+    success: bool,
+    error: str | None,
+    model: str | None,
+) -> None:
+    """Derive and persist a typed friction row for a just-completed session.
+
+    Best-effort and isolated from the session-close path: a write failure
+    here is logged and swallowed, never propagated, so a friction-ledger
+    outage cannot block the append-only session-close contract.
+    """
+    kind = _classify_friction_kind(success=success, error=error, model=model)
+    if kind is None:
+        return
+    try:
+        await pool.execute(
+            """
+            INSERT INTO sessions_friction (session_id, kind, ordinal, detail)
+            VALUES ($1, $2, 0, $3)
+            ON CONFLICT (session_id, kind, ordinal) DO NOTHING
+            """,
+            session_id,
+            kind,
+            error,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record friction event kind=%s for session %s",
+            kind,
+            session_id,
+            exc_info=True,
+        )
 
 
 def _decode_row(row: asyncpg.Record) -> dict[str, Any]:
@@ -279,7 +362,7 @@ async def session_complete(
     safe_tool_calls = _sanitize_json_value(tool_calls)
     safe_cost = _sanitize_json_value(cost) if cost is not None else None
 
-    row = await pool.fetchval(
+    row = await pool.fetchrow(
         """
         UPDATE sessions
         SET result        = $2,
@@ -294,7 +377,7 @@ async def session_complete(
             cache_creation_tokens = $11,
             completed_at  = now()
         WHERE id = $1
-        RETURNING id
+        RETURNING id, model
         """,
         session_id,
         safe_output,
@@ -310,6 +393,10 @@ async def session_complete(
     )
     if row is None:
         raise ValueError(f"Session {session_id} not found")
+
+    await _record_friction_event(
+        pool, session_id, success=success, error=safe_error, model=row["model"]
+    )
     logger.info(
         "Session completed: %s (%d ms, success=%s, in=%s, out=%s)",
         session_id,

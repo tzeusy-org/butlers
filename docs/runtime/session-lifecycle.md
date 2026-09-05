@@ -64,6 +64,17 @@ The session log supports several query patterns:
 - **`top_sessions(pool, limit)`** --- Highest-token completed sessions, ordered by total tokens descending.
 - **`schedule_costs(pool)`** --- Joins `scheduled_tasks` with `sessions` via the `trigger_source` convention to compute per-schedule token usage, plus a forecast: `projected_monthly_runs` per schedule, the cron expression's own cadence over an average Gregorian calendar month (30.436875 days), and a top-level `forecast_basis` stating that basis once for the whole result (it is a constant, so it is not repeated per row). The cadence is counted over a whole number of the expression's own repeat cycles from a fixed anchor, so it is a pure function of the cron string and does not change with the time of the request; a cadence that cannot be established yields `0.0`, meaning "unknown", not "never runs", and never raises. Keep it separate from the measured totals in the same row.
 
+## Friction Ledger
+
+`session_complete()` derives a typed friction row into `sessions_friction` for every session that was not clean, keyed on `(session_id, kind, ordinal)` for idempotence. Derivation is deterministic (`_classify_friction_kind()` in `sessions.py`, mirroring the same guardrail/timeout signatures as `by_error_marker`) — no LLM judgment. A clean session (`success=True`, no leftover `error`) writes zero rows. Kinds:
+
+- `degenerate_tool_loop` / `guardrail_termination` --- spawner guardrail terminations (repeated identical tool calls, or a tool-call/token budget cap).
+- `classification_timeout` --- a switchboard classification dispatch (mini model, ≤60s) that timed out.
+- `recovered_error` --- the session ultimately succeeded but carries a leftover `error` string from a mid-session failure.
+- `dead_end` --- any other unclassified failure.
+
+A friction-write failure is logged and swallowed; it never blocks the append-only session-close contract.
+
 ## JSONB Handling
 
 JSONB columns (`tool_calls`, `cost`) are stored as JSON strings in PostgreSQL. The `_decode_row()` helper deserializes these when reading session records, ensuring callers always receive Python dicts/lists rather than raw JSON strings.
