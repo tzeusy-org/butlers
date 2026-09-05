@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Spotify-category lifecycle exclusion shipped directly in the secrets lifecycle job.
+> **Successor:** `src/butlers/jobs/secrets_lifecycle.py`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Spotify lifecycle alert exclusion
 
 ## Problem

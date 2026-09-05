@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** compose.sh restore-drill preflight; the durable restore-drill requirement lives in the deployment-hardening spec.
+> **Successor:** `openspec/specs/deployment-hardening/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Restore-Drill Password Preflight Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -158,7 +164,7 @@ Expected: all commands exit 0.
 
 ```bash
 git add AGENTS.md \
-  docs/superpowers/plans/2026-08-13-compose-restore-drill-password-preflight.md \
+  docs/archive/superpowers/plans/2026-08-13-compose-restore-drill-password-preflight.md \
   scripts/compose.sh \
   tests/config/test_restore_drill_executor_compose.py
 git commit -m "fix: preflight restore-drill password file"

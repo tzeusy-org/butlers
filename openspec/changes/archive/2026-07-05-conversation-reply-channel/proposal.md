@@ -1,6 +1,6 @@
 ## Why
 
-Owner chat widget epic bu-p6ey8 (design: `docs/plans/2026-07-03-dashboard-chat-widget-design.md`)
+Owner chat widget epic bu-p6ey8 (design: `docs/archive/plans/2026-07-03-dashboard-chat-widget-design.md`)
 needs a real reply channel. Today `_poll_session_completion` reads the routed
 butler's raw `sessions.result` — the spawned session's final transcript, not
 a deliberate confirmation — and only ever finds it when the session landed on

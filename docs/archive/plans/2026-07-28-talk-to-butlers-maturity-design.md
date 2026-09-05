@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Reliability-first front-door guarantees (message-scoped Stop, receipts, durable route reservation) landed in the conversations spine.
+> **Successor:** `openspec/specs/dashboard-conversations/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Talk to Butlers maturity design
 
 **Status:** proposed direction, awaiting owner approval before Bead authoring or

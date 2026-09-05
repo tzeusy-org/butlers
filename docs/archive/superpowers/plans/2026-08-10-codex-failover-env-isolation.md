@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Behavior was already RFC-mandated; the env-isolation fix landed in the Codex runtime adapter.
+> **Successor:** `src/butlers/core/runtimes/codex.py`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Codex Failover Environment Isolation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -157,7 +163,7 @@ Expected: exit 0.
 - [x] **Step 4: Commit the coherent fix**
 
 ```bash
-git add docs/superpowers/plans/2026-08-10-codex-failover-env-isolation.md \
+git add docs/archive/superpowers/plans/2026-08-10-codex-failover-env-isolation.md \
   AGENTS.md \
   src/butlers/core/runtimes/base.py \
   src/butlers/core/runtimes/codex.py \

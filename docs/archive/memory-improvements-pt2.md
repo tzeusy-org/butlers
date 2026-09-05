@@ -34,6 +34,10 @@ These items from the original plan are now landed and working:
 
 ## Confirmed remaining gaps
 
+> **Tracked:** the three gaps below are carried as an open issue — **bu-txa1n**.
+> This document stays a stable record; verify the line references against the
+> current tree before fixing.
+
 ### 1. `episodes.retention_class` not persisted on write
 
 **Location**: `storage.py:319-322`

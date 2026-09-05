@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Implementation plan for the secrets-authority-projections change; the work landed there.
+> **Successor:** `openspec/changes/repair-secrets-authority-projections`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Secrets Authority and Projection State Repair Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -43,7 +49,7 @@ schema: spec-driven
 created: 2026-08-24
 ```
 
-Write `proposal.md`, `design.md`, and `tasks.md` from the approved design in `docs/plans/2026-08-24-secrets-authority-state-repair-design.md`. Keep the change limited to inventory projection, query invalidation, and Spotify presentation state.
+Write `proposal.md`, `design.md`, and `tasks.md` from the approved design in `docs/archive/plans/2026-08-24-secrets-authority-state-repair-design.md`. Keep the change limited to inventory projection, query invalidation, and Spotify presentation state.
 
 - [ ] **Step 2: Add the dashboard API requirement**
 

@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Native-command-before-gating design shipped via the routed-approvals-replayable change.
+> **Successor:** `openspec/changes/make-routed-approvals-replayable`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Replayable Routed Approvals Design
 
 Messenger routed delivery currently parks approval payloads that diverge from the

@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Durable dashboard-turn / immutable message_id retry contract is now codified in the conversations spec.
+> **Successor:** `openspec/specs/dashboard-conversations/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Chat Send Retry Semantics
 
 **Status:** Current durable-turn contract · amended 2026-07-29

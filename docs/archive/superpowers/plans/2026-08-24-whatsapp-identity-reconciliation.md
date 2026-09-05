@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** WhatsApp canonical-identity + reconciliation shipped via the repair-whatsapp-identity-reconciliation change.
+> **Successor:** `openspec/changes/repair-whatsapp-identity-reconciliation`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # WhatsApp Identity Resolution and Reconciliation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development

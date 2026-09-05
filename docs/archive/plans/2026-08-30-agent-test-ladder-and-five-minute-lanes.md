@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Fail-closed plan-only selector + agent test ladder are now codified in the testing spec.
+> **Successor:** `openspec/specs/testing/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Agent Test Ladder and Five-Minute Routine Lanes
 
 **Date:** 2026-08-30

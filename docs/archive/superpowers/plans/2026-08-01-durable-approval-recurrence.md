@@ -1,3 +1,9 @@
+> **ARCHIVED** — This implementation/design plan is historical. Archived on 2026-09-06.
+> **Reason:** Connector-endpoint promotion condition + durable curation state landed via the rule-promotion capability.
+> **Successor:** `openspec/specs/switchboard-rule-promotion/spec.md`.
+>
+> The doctrine on archival lives in `openspec/specs/docs-information-architecture/spec.md`.
+
 # Durable Approval Recurrence Repair Plan
 
 **Goal:** Stop opaque connector identities from repeatedly generating unusable
