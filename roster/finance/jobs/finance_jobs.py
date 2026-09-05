@@ -27,7 +27,7 @@ from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.credential_store import CredentialStore
-from butlers.tools.finance.alerts import detect_price_changes
+from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
 from butlers.tools.finance.overview import subscription_audit
@@ -784,6 +784,24 @@ async def _reconcile_owner_conditions(
         )
 
 
+async def _register_obligations(db_pool: asyncpg.Pool) -> None:
+    """Best-effort forward obligation ledger write (bu-8cdl1.10 slice 2).
+
+    A STATE side effect alongside the insight-candidate delivery above, not
+    instead of it: this registers/updates ``obligation_ledger`` rows (warn-by
+    date, unknown-door flag, pre-charge price-change flag) for slice 3's
+    future insight payload to read, but does not itself submit an insight
+    candidate. Mirrors ``_reconcile_owner_conditions``'s degraded-honesty
+    contract -- a ledger-write failure must never break the insight scan it
+    runs alongside.
+    """
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            await register_obligations(conn)
+    except Exception:
+        logger.warning("Finance insight scan: obligation ledger registration failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # run_insight_scan
 # ---------------------------------------------------------------------------
@@ -811,6 +829,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     the insight-candidate delivery above: it gives "is this still true and
     still unactioned" a durable, escalating answer on the dashboard's
     Standing Conditions panel, best-effort and non-fatal to this scan.
+
+    bu-8cdl1.10 slice 2: this scan also registers/updates a forward
+    obligation ledger row (``finance.obligation_ledger``) per active
+    subscription's next renewal, ahead of the four candidate categories
+    above so it always runs regardless of where a verbosity-off/filtered
+    early exit lands. Also best-effort and non-fatal.
 
     Args:
         db_pool: Database connection pool (used for both finance and insight tables).
@@ -854,6 +878,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         else:
             counts["accepted"] += 1
         return True  # continue
+
+    # ------------------------------------------------------------------
+    # Forward obligation ledger (bu-8cdl1.10 slice 2)
+    # ------------------------------------------------------------------
+    # Runs first, ahead of every verbosity-off/filtered early exit below, so
+    # this STATE side effect is genuinely "alongside, not instead of"
+    # candidate delivery rather than silently unreachable whenever an
+    # earlier category's submission gets filtered.
+    await _register_obligations(db_pool)
 
     # ------------------------------------------------------------------
     # 1. Spending anomalies

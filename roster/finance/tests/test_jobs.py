@@ -83,9 +83,29 @@ CREATE TABLE IF NOT EXISTS finance.subscriptions (
     payment_method    TEXT,
     account_id        UUID,
     source_message_id TEXT,
+    cancellation_url    TEXT,
+    notice_period_days  INTEGER,
+    cancel_by           DATE,
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_OBLIGATION_LEDGER_SQL = """
+CREATE TABLE IF NOT EXISTS finance.obligation_ledger (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id         UUID NOT NULL REFERENCES finance.subscriptions(id) ON DELETE CASCADE,
+    period                  DATE NOT NULL,
+    warn_by                 DATE,
+    unknown_door            BOOLEAN NOT NULL DEFAULT false,
+    price_change_amount     NUMERIC(14, 2),
+    price_change_direction  TEXT
+                                 CHECK (price_change_direction IS NULL
+                                     OR price_change_direction IN ('increase', 'decrease')),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_obligation_ledger_subscription_period UNIQUE (subscription_id, period)
 )
 """
 
@@ -215,6 +235,10 @@ async def _setup_insight_schema(pool) -> None:
     # so that side effect is exercised (not silently no-op'd by a missing
     # table) rather than added to a separate, divergent test setup helper.
     await create_owner_conditions_table(pool)
+    # bu-8cdl1.10 slice 2: run_insight_scan also registers a forward
+    # obligation ledger row per active subscription -- same rationale as the
+    # owner_conditions table above.
+    await pool.execute(CREATE_OBLIGATION_LEDGER_SQL)
     # Seed insight_settings with default verbosity (not 'off')
     await pool.execute(
         "INSERT INTO insight_settings (id, verbosity) "
@@ -534,6 +558,90 @@ async def test_insight_scan_missing_owner_conditions_table_does_not_break_scan(
 
         result = await run_insight_scan(pool)
         assert result["errors"] == 0
+
+
+async def test_insight_scan_registers_obligation_ledger_row(provisioned_postgres_pool):
+    """bu-8cdl1.10 slice 2: run_insight_scan registers a forward obligation
+    ledger row (as a state side effect, not an insight candidate) for every
+    active subscription's next renewal."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        sub_id = await _insert_subscription(
+            pool, service="Netflix", next_renewal=_today() + timedelta(days=30)
+        )
+
+        await run_insight_scan(pool)
+
+        row = await pool.fetchrow(
+            "SELECT * FROM finance.obligation_ledger WHERE subscription_id = $1::uuid", sub_id
+        )
+        assert row is not None
+        assert row["unknown_door"] is True  # no cancellation_url/notice_period_days/cancel_by set
+
+
+async def test_insight_scan_missing_obligation_ledger_table_does_not_break_scan(
+    provisioned_postgres_pool,
+):
+    """bu-8cdl1.10 slice 2: obligation ledger registration is best-effort -- an
+    unmigrated pool (obligation_ledger table absent) must not break insight
+    candidate submission."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        # Deliberately skip creating finance.obligation_ledger here.
+        await pool.execute(CREATE_FINANCE_SCHEMA)
+        await pool.execute(CREATE_BILLS_SQL)
+        await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
+        await pool.execute(CREATE_TRANSACTIONS_SQL)
+        await pool.execute(CREATE_BUDGETS_SQL)
+        await create_insight_tables(pool)
+        await create_owner_conditions_table(pool)
+        await pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) "
+            "VALUES (1, 'normal') ON CONFLICT (id) DO NOTHING"
+        )
+
+        await _insert_subscription(
+            pool, service="Netflix", next_renewal=_today() + timedelta(days=30)
+        )
+
+        result = await run_insight_scan(pool)
+        assert result["errors"] == 0
+
+
+async def test_insight_scan_registers_obligation_ledger_despite_verbosity_off_early_exit(
+    provisioned_postgres_pool,
+):
+    """bu-8cdl1.10 slice 2: the ledger write must run even when verbosity=off
+    trips the very first candidate submission -- it is a STATE side effect
+    alongside candidate delivery, not gated by whether any candidate survives
+    the verbosity filter."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await pool.execute("UPDATE insight_settings SET verbosity = 'off' WHERE id = 1")
+
+        sub_id = await _insert_subscription(
+            pool, service="Netflix", next_renewal=_today() + timedelta(days=30)
+        )
+        # A bill due soon is an unconditional bill-due submission (section 2),
+        # so the very first _submit() call reliably trips the verbosity-off
+        # early exit regardless of anomaly/budget history.
+        await _insert_bill_returning_id(
+            pool, payee="Electric Co", due_date=_today() + timedelta(days=1)
+        )
+
+        result = await run_insight_scan(pool)
+        assert result["early_exit"] is True
+
+        row = await pool.fetchrow(
+            "SELECT * FROM finance.obligation_ledger WHERE subscription_id = $1::uuid", sub_id
+        )
+        assert row is not None
 
 
 async def test_insight_scan_spending_anomaly_opens_owner_condition(provisioned_postgres_pool):

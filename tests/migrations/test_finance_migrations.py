@@ -616,3 +616,113 @@ class TestSubscriptionCancellationDoorMigration:
             "  AND column_name IN ('cancellation_url', 'notice_period_days', 'cancel_by')"
         )
         assert cols == []
+
+
+# ---------------------------------------------------------------------------
+# finance_014 — obligation_ledger
+# ---------------------------------------------------------------------------
+
+_MIGRATION_014 = _FINANCE_MIGRATIONS / "014_obligation_ledger.py"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestObligationLedgerMigration:
+    """Integration tests for finance_014: obligation ledger table.
+
+    Reuses the ``subscriptions_pool`` fixture (finance_001 state) and layers
+    finance_013 on top, since obligation_ledger.subscription_id references
+    subscriptions and slice 2's derivation reads the finance_013 door columns.
+    """
+
+    async def _upgrade_to_014(self, pool: asyncpg.Pool) -> None:
+        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
+        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "upgrade")
+
+    @pytest.mark.integration
+    async def test_upgrade_creates_table_with_expected_columns(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        """After upgrade, obligation_ledger exists with the derived-warning columns."""
+        pool = subscriptions_pool
+        await self._upgrade_to_014(pool)
+
+        cols = {
+            row["column_name"]
+            for row in await pool.fetch(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'obligation_ledger'"
+            )
+        }
+        assert cols == {
+            "id",
+            "subscription_id",
+            "period",
+            "warn_by",
+            "unknown_door",
+            "price_change_amount",
+            "price_change_direction",
+            "created_at",
+            "updated_at",
+        }
+
+    @pytest.mark.integration
+    async def test_upgrade_enforces_one_row_per_subscription_period(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        """The unique constraint on (subscription_id, period) rejects a duplicate."""
+        pool = subscriptions_pool
+        await self._upgrade_to_014(pool)
+
+        sub_id = await pool.fetchval(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('Netflix', 15.49, 'USD', 'monthly', '2026-10-01', 'active')
+            RETURNING id
+            """
+        )
+        await pool.execute(
+            "INSERT INTO obligation_ledger (subscription_id, period) VALUES ($1, '2026-10-01')",
+            sub_id,
+        )
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await pool.execute(
+                "INSERT INTO obligation_ledger (subscription_id, period) VALUES ($1, '2026-10-01')",
+                sub_id,
+            )
+
+    @pytest.mark.integration
+    async def test_upgrade_rejects_invalid_price_change_direction(
+        self, subscriptions_pool: asyncpg.Pool
+    ) -> None:
+        """price_change_direction, when present, must be 'increase' or 'decrease'."""
+        pool = subscriptions_pool
+        await self._upgrade_to_014(pool)
+
+        sub_id = await pool.fetchval(
+            """
+            INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
+            VALUES ('Spotify', 9.99, 'USD', 'monthly', '2026-10-01', 'active')
+            RETURNING id
+            """
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await pool.execute(
+                """
+                INSERT INTO obligation_ledger (subscription_id, period, price_change_direction)
+                VALUES ($1, '2026-10-01', 'sideways')
+                """,
+                sub_id,
+            )
+
+    @pytest.mark.integration
+    async def test_downgrade_drops_table(self, subscriptions_pool: asyncpg.Pool) -> None:
+        """After upgrade then downgrade, obligation_ledger no longer exists."""
+        pool = subscriptions_pool
+        await self._upgrade_to_014(pool)
+        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "downgrade")
+
+        exists = await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'obligation_ledger')"
+        )
+        assert exists is False

@@ -5,12 +5,15 @@ Covers:
 - alert_list: empty result, single alert, multiple alerts
 - detect_price_changes: no subscriptions, no recent charges, price increase,
   price decrease, within threshold (no flag), zero tracked amount, multiple services
+- register_obligations: warn-by derivation, unknown-door flag, pre-charge price
+  change flag, idempotence (bu-8cdl1.10 slice 2)
 """
 
 from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 
@@ -91,9 +94,28 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     payment_method    TEXT,
     account_id        UUID,
     source_message_id TEXT,
+    cancellation_url    TEXT,
+    notice_period_days  INTEGER,
+    cancel_by           DATE,
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+_DDL_OBLIGATION_LEDGER = """
+CREATE TABLE IF NOT EXISTS obligation_ledger (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id         UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+    period                  DATE NOT NULL,
+    warn_by                 DATE,
+    unknown_door            BOOLEAN NOT NULL DEFAULT false,
+    price_change_amount     NUMERIC(14, 2),
+    price_change_direction  TEXT
+                                 CHECK (price_change_direction IS NULL
+                                     OR price_change_direction IN ('increase', 'decrease')),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_obligation_ledger_subscription_period UNIQUE (subscription_id, period)
 )
 """
 _DDL_TRANSACTIONS = """
@@ -134,6 +156,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(_DDL_FACTS)
         await p.execute(_DDL_FACTS_UNIQUE_INDEX)
         await p.execute(_DDL_SUBSCRIPTIONS)
+        await p.execute(_DDL_OBLIGATION_LEDGER)
         await p.execute(_DDL_TRANSACTIONS)
         yield p
 
@@ -151,21 +174,35 @@ async def _insert_subscription(
     currency: str = "USD",
     status: str = "active",
     next_renewal: str = "2099-12-31",
-) -> None:
+    cancellation_url: str | None = None,
+    notice_period_days: int | None = None,
+    cancel_by: str | None = None,
+    metadata: dict | None = None,
+) -> str:
     from datetime import date
 
     renewal_date = date.fromisoformat(next_renewal)
-    await pool.execute(
+    cancel_by_date = date.fromisoformat(cancel_by) if cancel_by is not None else None
+    row = await pool.fetchrow(
         """
-        INSERT INTO subscriptions (service, amount, currency, frequency, next_renewal, status)
-        VALUES ($1, $2, $3, 'monthly', $4, $5)
+        INSERT INTO subscriptions (
+            service, amount, currency, frequency, next_renewal, status,
+            cancellation_url, notice_period_days, cancel_by, metadata
+        )
+        VALUES ($1, $2, $3, 'monthly', $4, $5, $6, $7, $8, $9)
+        RETURNING id
         """,
         service,
         amount,
         currency,
         renewal_date,
         status,
+        cancellation_url,
+        notice_period_days,
+        cancel_by_date,
+        metadata or {},
     )
+    return str(row["id"])
 
 
 async def _insert_transaction(
@@ -734,3 +771,189 @@ class TestLargeTransactionAlertFlag:
         assert alerts[0]["threshold"] == 500.0
         assert alerts[0]["amount"] == 750.0
         assert alerts[0]["exceeds_by"] == 250.0
+
+
+# ---------------------------------------------------------------------------
+# register_obligations tests (bu-8cdl1.10 slice 2)
+# ---------------------------------------------------------------------------
+
+
+async def _get_obligation(pool, subscription_id: str):
+    return await pool.fetchrow(
+        "SELECT * FROM obligation_ledger WHERE subscription_id = $1",
+        subscription_id,
+    )
+
+
+class TestRegisterObligations:
+    """Tests for register_obligations against the finance-alerts behavior matrix."""
+
+    async def test_known_renewal_warns_at_cancel_by_minus_notice(self, pool):
+        """happy: cancellation_url, cancel_by, and notice_period_days all
+        known -> warn_by is derived."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool,
+            service="Netflix",
+            next_renewal="2026-10-01",
+            cancellation_url="https://netflix.example/cancel",
+            notice_period_days=7,
+            cancel_by="2026-09-25",
+        )
+
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 1, "unknown_door": 0, "price_changes": 0}
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["period"].isoformat() == "2026-10-01"
+        assert obligation["warn_by"].isoformat() == "2026-09-18"
+        assert obligation["unknown_door"] is False
+
+    async def test_missing_door_metadata_sets_unknown_door_flag(self, pool):
+        """missing metadata: no cancel_by/notice_period_days -> unknown_door flag,
+        prompting owner enrichment, instead of a silently wrong warn_by."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(pool, service="Hulu", next_renewal="2026-11-01")
+
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 1, "unknown_door": 1, "price_changes": 0}
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["unknown_door"] is True
+        assert obligation["warn_by"] is None
+
+    async def test_partial_door_metadata_also_sets_unknown_door_flag(self, pool):
+        """A cancel_by with no notice_period_days is still an incomplete door."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool, service="Disney+", next_renewal="2026-11-15", cancel_by="2026-11-10"
+        )
+
+        result = await register_obligations(pool)
+
+        assert result["unknown_door"] == 1
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["unknown_door"] is True
+        assert obligation["warn_by"] is None
+
+    async def test_missing_cancellation_url_sets_unknown_door_flag(self, pool):
+        """cancel_by and notice_period_days known but no cancellation_url is
+        still an incomplete door -- the owner has dates but nowhere to act on
+        them, so this must not be treated as a fully known door."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool,
+            service="HBO Max",
+            next_renewal="2026-11-20",
+            notice_period_days=7,
+            cancel_by="2026-11-13",
+        )
+
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 1, "unknown_door": 1, "price_changes": 0}
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["unknown_door"] is True
+        assert obligation["warn_by"] is None
+
+    async def test_price_change_warns_pre_charge_when_next_amount_known(self, pool):
+        """price change: metadata.next_amount known and different from the tracked
+        amount -> a pre-charge warning, ahead of any posted transaction."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool,
+            service="Spotify",
+            amount="9.99",
+            next_renewal="2026-10-05",
+            metadata={"next_amount": "12.99"},
+        )
+
+        result = await register_obligations(pool)
+
+        assert result["price_changes"] == 1
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["price_change_amount"] == Decimal("12.99")
+        assert obligation["price_change_direction"] == "increase"
+
+    async def test_no_price_change_flag_when_next_amount_matches_tracked(self, pool):
+        """metadata.next_amount equal to the tracked amount is not a price change."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool,
+            service="iCloud",
+            amount="2.99",
+            next_renewal="2026-10-05",
+            metadata={"next_amount": "2.99"},
+        )
+
+        result = await register_obligations(pool)
+
+        assert result["price_changes"] == 0
+        obligation = await _get_obligation(pool, sub_id)
+        assert obligation["price_change_amount"] is None
+        assert obligation["price_change_direction"] is None
+
+    async def test_cancelled_subscription_is_not_registered(self, pool):
+        """Only active subscriptions accrue a forward obligation."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        await _insert_subscription(
+            pool, service="Peacock", next_renewal="2026-10-01", status="cancelled"
+        )
+
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 0, "unknown_door": 0, "price_changes": 0}
+
+    async def test_idempotent_rerun_does_not_duplicate_row(self, pool):
+        """idempotence: re-running for the same subscription+period upserts in
+        place rather than inserting a second row."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(
+            pool,
+            service="Netflix",
+            next_renewal="2026-10-01",
+            cancellation_url="https://netflix.example/cancel",
+            notice_period_days=7,
+            cancel_by="2026-09-25",
+        )
+
+        await register_obligations(pool)
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 1, "unknown_door": 0, "price_changes": 0}
+        rows = await pool.fetch(
+            "SELECT id FROM obligation_ledger WHERE subscription_id = $1", sub_id
+        )
+        assert len(rows) == 1
+
+    async def test_idempotent_rerun_updates_changed_door_fields(self, pool):
+        """A re-run after the owner enriches the cancellation door updates the
+        existing row's warn_by/unknown_door rather than leaving it stale."""
+        from butlers.tools.finance.alerts import register_obligations
+
+        sub_id = await _insert_subscription(pool, service="Netflix", next_renewal="2026-10-01")
+        await register_obligations(pool)
+
+        await pool.execute(
+            "UPDATE subscriptions SET cancellation_url = 'https://netflix.example/cancel', "
+            "notice_period_days = 7, cancel_by = '2026-09-25' WHERE id = $1",
+            sub_id,
+        )
+        result = await register_obligations(pool)
+
+        assert result == {"registered": 1, "unknown_door": 0, "price_changes": 0}
+        rows = await pool.fetch(
+            "SELECT id, warn_by, unknown_door FROM obligation_ledger WHERE subscription_id = $1",
+            sub_id,
+        )
+        assert len(rows) == 1
+        assert rows[0]["unknown_door"] is False
+        assert rows[0]["warn_by"].isoformat() == "2026-09-18"
