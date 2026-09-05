@@ -36,6 +36,7 @@ KNOWN_CORE_GROUPS: frozenset[str] = frozenset(
         "switchboard_backfill",
         "delegation",
         "domain_events",
+        "fleet_cases",
     }
 )
 

@@ -36,5 +36,18 @@ This schema is Slice 1 of a seven-slice rollout — see RFC 0032 for the full
 design and slice plan. Slice 2 adds a read-only API surface: `GET
 /api/switchboard/cases` (cursor-paginated list, filterable by `state` and
 `posture`) and `GET /api/switchboard/cases/{case_id}` (one case with its
-evidence and links). No broker wiring, MCP contribution tools, or a
-dashboard frontend page exist yet.
+evidence and links).
+
+Slice 3 adds the six MCP contribution tools (registered fleet-wide behind
+the `fleet_cases` core group, `src/butlers/core_tools/_fleet_cases.py`):
+`find_open_case`, `open_case`, `contribute_case_evidence`,
+`propose_case_posture`, `close_case`, and `read_case`. `open_case`,
+`propose_case_posture`, and `close_case` mutate `fleet_cases`, so a call from
+any butler other than Switchboard is transparently forwarded through
+Switchboard's `route()` primitive; `find_open_case`, `contribute_case_evidence`,
+and `read_case` run directly since evidence and reads carry no such
+restriction. `EVIDENCE_KINDS` (the vocabulary `report_event_reaction` accepts
+for a domain-event reaction's evidence refs) now includes `case`, so a
+reaction can cite the fleet case it filed evidence into.
+
+No broker wiring or dashboard write surface exist yet.

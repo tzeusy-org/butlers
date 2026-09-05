@@ -10,9 +10,11 @@ tests/api/test_page_context_model.py
 tests/api/test_spend_runtime_attention.py
 tests/api/test_switchboard_fleet_cases.py
 tests/core/test_chronicler_day_close_refresh_tool.py
+tests/core/test_fleet_cases.py
 tests/core/test_sessions_friction.py
 tests/core_tools/test_conversation_recall.py
 tests/core_tools/test_dashboard_answer_block.py
 tests/core_tools/test_dashboard_confirm_block.py
+tests/core_tools/test_fleet_cases.py
 tests/core_tools/test_graph.py
 tests/integration/test_dashboard_propose_then_act.py
