@@ -1314,6 +1314,16 @@ async def _run_context_producer_sleep_window_job(
     return await run_sleep_window_context_producer(pool, job_args)
 
 
+async def _run_context_producer_commuting_eta_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish commuting context with an arrival ETA from OwnTracks GPS data."""
+    from butlers.jobs.context_producers import run_commuting_eta_context_producer
+
+    return await run_commuting_eta_context_producer(pool, job_args)
+
+
 # ---------------------------------------------------------------------------
 # Home butler jobs
 # ---------------------------------------------------------------------------
@@ -1910,6 +1920,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "flight_status_check": _run_travel_flight_status_check_job,
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
+            "context_producer_commuting_eta": _run_context_producer_commuting_eta_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "messenger": {
