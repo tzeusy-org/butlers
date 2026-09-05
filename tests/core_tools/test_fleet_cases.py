@@ -71,6 +71,7 @@ def test_all_fleet_case_tools_registered_for_a_domain_butler():
         "contribute_case_evidence",
         "propose_case_posture",
         "close_case",
+        "record_case_link",
         "read_case",
     }
 
@@ -86,6 +87,7 @@ def test_all_fleet_case_tools_also_registered_for_switchboard():
         "contribute_case_evidence",
         "propose_case_posture",
         "close_case",
+        "record_case_link",
         "read_case",
     }
 
@@ -183,6 +185,7 @@ class TestContributeCaseEvidence:
             "evidence": evidence_row,
             "newly_recorded": True,
             "case_attention": attention_result,
+            "link": None,
         }
         dispatch_mock.assert_not_awaited()
         _, kwargs = contribute_mock.await_args
@@ -219,6 +222,7 @@ class TestContributeCaseEvidence:
             "evidence": evidence_row,
             "newly_recorded": False,
             "case_attention": None,
+            "link": None,
         }
         evaluate_mock.assert_not_awaited()
 
@@ -234,6 +238,151 @@ class TestContributeCaseEvidence:
         )
         assert result == {"status": "error", "error": "No fleet case with id='bogus'."}
 
+    async def test_linkable_kind_writes_the_link_directly_on_switchboard(self, monkeypatch):
+        """RFC 0032 Slice 7: a newly-recorded contribution whose kind is one
+        of LINK_KINDS also binds the case to that ledger entry."""
+        registered = _register(butler_name="switchboard")
+        evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "switchboard"}
+        link_row = {"id": "l1", "case_id": _CASE_ID, "link_kind": "insight_candidate"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=(evidence_row, True)),
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=_CASE)
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "evaluate_case_attention",
+            AsyncMock(return_value={"bypass": False, "reason": "not_urgent"}),
+        )
+        write_link_mock = AsyncMock(return_value=(link_row, True))
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "write_case_link", write_link_mock)
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+
+        result = await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="insight_candidate", ref="candidate-1"
+        )
+
+        assert result["link"] == link_row
+        dispatch_mock.assert_not_awaited()
+        _, kwargs = write_link_mock.await_args
+        assert kwargs == {
+            "case_id": _CASE_ID,
+            "link_kind": "insight_candidate",
+            "ref": "candidate-1",
+        }
+
+    async def test_linkable_kind_forwards_through_switchboard_route_for_a_domain_butler(
+        self, monkeypatch
+    ):
+        registered = _register(butler_name="health", switchboard_client=object())
+        evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "health"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=(evidence_row, True)),
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=_CASE)
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "evaluate_case_attention",
+            AsyncMock(return_value={"bypass": False, "reason": "not_urgent"}),
+        )
+        link_row = {"id": "l1", "case_id": _CASE_ID, "link_kind": "owner_condition"}
+        dispatch_mock = AsyncMock(return_value=({"status": "ok", "link": link_row}, None, False))
+        monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+
+        result = await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="owner_condition", ref="condition-1"
+        )
+
+        assert result["link"] == link_row
+        _, kwargs = dispatch_mock.await_args
+        assert kwargs["target_butler"] == "switchboard"
+        assert kwargs["tool_name"] == "record_case_link"
+        assert kwargs["args"] == {
+            "case_id": _CASE_ID,
+            "link_kind": "owner_condition",
+            "ref": "condition-1",
+        }
+
+    async def test_urgent_bypass_with_a_ledger_id_also_writes_an_attention_record_link(
+        self, monkeypatch
+    ):
+        registered = _register(butler_name="switchboard")
+        evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "switchboard"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=(evidence_row, True)),
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=_CASE)
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "evaluate_case_attention",
+            AsyncMock(
+                return_value={
+                    "bypass": True,
+                    "reason": "urgent_case_bypass",
+                    "attention_ledger_id": "attn-1",
+                }
+            ),
+        )
+        write_link_mock = AsyncMock(return_value=({"id": "l1"}, True))
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "write_case_link", write_link_mock)
+
+        await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="session", ref="session-1"
+        )
+
+        _, kwargs = write_link_mock.await_args
+        assert kwargs == {
+            "case_id": _CASE_ID,
+            "link_kind": "attention_record",
+            "ref": "attn-1",
+        }
+
+    async def test_bypass_without_a_ledger_id_writes_no_link(self, monkeypatch):
+        """record_attention_event is best-effort and can return None; a
+        missing ledger id must never be passed to write_case_link as a
+        blank/None ref."""
+        registered = _register(butler_name="switchboard")
+        evidence_row = {"id": "e1", "case_id": _CASE_ID, "contributor": "switchboard"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=(evidence_row, True)),
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=_CASE)
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "evaluate_case_attention",
+            AsyncMock(
+                return_value={
+                    "bypass": True,
+                    "reason": "urgent_case_bypass",
+                    "attention_ledger_id": None,
+                }
+            ),
+        )
+        write_link_mock = AsyncMock()
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "write_case_link", write_link_mock)
+
+        await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="session", ref="session-1"
+        )
+
+        write_link_mock.assert_not_awaited()
+
 
 class TestProposeCasePosture:
     async def test_switchboard_writes_directly(self, monkeypatch):
@@ -247,6 +396,8 @@ class TestProposeCasePosture:
         monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
         evaluate_mock = AsyncMock(return_value=attention_result)
         monkeypatch.setattr(_fleet_cases.fleet_cases, "evaluate_case_attention", evaluate_mock)
+        write_link_mock = AsyncMock()
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "write_case_link", write_link_mock)
 
         result = await registered["propose_case_posture"](case_id=_CASE_ID, posture="urgent")
 
@@ -257,6 +408,38 @@ class TestProposeCasePosture:
         assert kwargs["correlation_key"] == updated["correlation_key"]
         assert kwargs["posture"] == "urgent"
         assert kwargs["state"] == updated["state"]
+        # attention_result has no attention_ledger_id -- no link write attempted.
+        write_link_mock.assert_not_awaited()
+
+    async def test_switchboard_bypass_with_a_ledger_id_writes_an_attention_record_link(
+        self, monkeypatch
+    ):
+        registered = _register(butler_name="switchboard")
+        updated = {**_CASE, "posture": "urgent"}
+        attention_result = {
+            "bypass": True,
+            "reason": "urgent_case_bypass",
+            "attention_ledger_id": "attn-2",
+        }
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "propose_posture", AsyncMock(return_value=updated)
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "evaluate_case_attention",
+            AsyncMock(return_value=attention_result),
+        )
+        write_link_mock = AsyncMock(return_value=({"id": "l1"}, True))
+        monkeypatch.setattr(_fleet_cases.fleet_cases, "write_case_link", write_link_mock)
+
+        await registered["propose_case_posture"](case_id=_CASE_ID, posture="urgent")
+
+        _, kwargs = write_link_mock.await_args
+        assert kwargs == {
+            "case_id": _CASE_ID,
+            "link_kind": "attention_record",
+            "ref": "attn-2",
+        }
 
     async def test_non_switchboard_forwards_through_switchboard_route(self, monkeypatch):
         registered = _register(butler_name="health", switchboard_client=object())
@@ -299,6 +482,82 @@ class TestCloseCase:
         assert kwargs["target_butler"] == "switchboard"
         assert kwargs["tool_name"] == "close_case"
         assert kwargs["args"] == {"case_id": _CASE_ID, "outcome": "resolved"}
+
+
+class TestRecordCaseLink:
+    """RFC 0032 Slice 7's directly callable tool -- same is_switchboard split
+    as open_case/propose_case_posture/close_case."""
+
+    async def test_switchboard_writes_directly(self, monkeypatch):
+        registered = _register(butler_name="switchboard")
+        link_row = {"id": "l1", "case_id": _CASE_ID, "link_kind": "insight_candidate"}
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "write_case_link",
+            AsyncMock(return_value=(link_row, True)),
+        )
+        dispatch_mock = AsyncMock()
+        monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+
+        result = await registered["record_case_link"](
+            case_id=_CASE_ID, link_kind="insight_candidate", ref="candidate-1"
+        )
+
+        assert result == {"status": "ok", "link": link_row, "newly_recorded": True}
+        dispatch_mock.assert_not_awaited()
+
+    async def test_switchboard_error_is_returned_as_an_error_result(self, monkeypatch):
+        registered = _register(butler_name="switchboard")
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "write_case_link",
+            AsyncMock(side_effect=FleetCaseError("link_kind='bogus' must be one of [...].")),
+        )
+        result = await registered["record_case_link"](
+            case_id=_CASE_ID, link_kind="bogus", ref="ref-1"
+        )
+        assert result == {
+            "status": "error",
+            "error": "link_kind='bogus' must be one of [...].",
+        }
+
+    async def test_non_switchboard_forwards_through_switchboard_route(self, monkeypatch):
+        registered = _register(butler_name="finance", switchboard_client=object())
+        link_row = {"id": "l1", "case_id": _CASE_ID, "link_kind": "owner_condition"}
+        dispatch_mock = AsyncMock(
+            return_value=(
+                {"status": "ok", "link": link_row, "newly_recorded": True},
+                None,
+                False,
+            )
+        )
+        monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", dispatch_mock)
+
+        result = await registered["record_case_link"](
+            case_id=_CASE_ID, link_kind="owner_condition", ref="condition-1"
+        )
+
+        assert result == {"status": "ok", "link": link_row, "newly_recorded": True}
+        _, kwargs = dispatch_mock.await_args
+        assert kwargs["target_butler"] == "switchboard"
+        assert kwargs["tool_name"] == "record_case_link"
+        assert kwargs["args"] == {
+            "case_id": _CASE_ID,
+            "link_kind": "owner_condition",
+            "ref": "condition-1",
+        }
+
+    async def test_route_error_surfaces_as_an_error_result(self, monkeypatch):
+        registered = _register(butler_name="finance", switchboard_client=object())
+        monkeypatch.setattr(
+            _fleet_cases,
+            "dispatch_via_switchboard_route",
+            AsyncMock(return_value=(None, "Switchboard unreachable", True)),
+        )
+        result = await registered["record_case_link"](
+            case_id=_CASE_ID, link_kind="owner_condition", ref="condition-1"
+        )
+        assert result == {"status": "error", "error": "Switchboard unreachable", "retryable": True}
 
 
 class TestReadCase:

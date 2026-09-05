@@ -1,5 +1,5 @@
 """Fleet Case File data layer: ``public.fleet_cases``/``fleet_case_evidence``/
-``fleet_case_links`` (bu-8cdl1.7 Slices 3-6, RFC 0032).
+``fleet_case_links`` (bu-8cdl1.7 Slices 3-7, RFC 0032).
 
 See ``about/legends-and-lore/rfcs/0032-fleet-case-file.md`` for the full
 design and ``alembic/versions/core/core_217_fleet_case_file.py`` (Slice 1) for
@@ -7,7 +7,8 @@ the schema/RLS this module writes through. :func:`evaluate_case_attention`
 (Slice 4) is the situation-scoped attention bypass; :func:`run_lapse_sweep`
 (Slice 5) is the scheduled lapse-close sweep; :func:`backfill_historical_case`/
 :func:`backfill_from_owner_conditions` (Slice 6) is the one-time historical
-backfill -- see their docstrings.
+backfill; :func:`write_case_link` (Slice 7) is the three-ledger binding write
+path -- see their docstrings.
 
 Write authority mirrors the RLS policy exactly: ``fleet_case_evidence`` has no
 role restriction (any butler may contribute), while ``fleet_cases`` restricts
@@ -44,6 +45,15 @@ from butlers.core.attention_ledger import attention_event_recorded_since, record
 
 CASE_STATES = frozenset({"open", "watching", "closing", "closed"})
 CASE_POSTURES = frozenset({"silent", "routine", "active", "urgent"})
+
+# The three ledgers RFC 0032's Decision section names as fleet_case_links'
+# binding targets (Slice 7): an insight candidate (public.insight_candidates),
+# an owner condition (public.owner_conditions), or a runtime-attention record
+# (public.attention_ledger). ``link_kind`` is exactly one of these -- there is
+# no "another case" link_kind yet (the Decision section names it as a
+# possibility, but nothing in this slice's three trigger points ever produces
+# one, so validating it here would be speculative).
+LINK_KINDS = frozenset({"insight_candidate", "owner_condition", "attention_record"})
 
 # Prefix for the attention-ledger dedup_key used by evaluate_case_attention,
 # namespaced so a case's bypass key can never collide with an insight
@@ -215,6 +225,77 @@ async def contribute_evidence(
     return dict(existing), False
 
 
+async def write_case_link(
+    pool: Any,
+    *,
+    case_id: str,
+    link_kind: str,
+    ref: str,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Bind *case_id* to one entry in another ledger, idempotently.
+
+    RFC 0032 Slice 7 -- the three-ledger binding ``fleet_case_links`` was
+    schema-only since Slice 1. *link_kind* must be one of
+    :data:`LINK_KINDS` (``insight_candidate``, ``owner_condition``,
+    ``attention_record``) and *ref* must be that ledger's own id for the
+    entry being bound -- ``public.insight_candidates.id``,
+    ``public.owner_conditions.id``, or ``public.attention_ledger.id``
+    respectively.
+
+    Mirrors :func:`contribute_evidence`'s exact idempotence shape: a repeat of
+    the same ``(case_id, link_kind, ref)`` is a no-op at the database
+    (``uq_fleet_case_links_ref``) -- this returns the existing row with
+    ``newly_recorded=False`` rather than raising.
+
+    Only ``butler_switchboard_rw`` may INSERT ``fleet_case_links`` (RLS,
+    ``core_217_fleet_case_file.py``) -- a non-Switchboard pool's INSERT raises
+    ``asyncpg.InsufficientPrivilegeError`` here, exactly like
+    :func:`open_case`. Callers on a non-Switchboard pool must forward through
+    Switchboard's ``route()`` primitive first (see
+    ``butlers.core_tools._fleet_cases.record_case_link``).
+    """
+    if link_kind not in LINK_KINDS:
+        raise FleetCaseError(f"link_kind={link_kind!r} must be one of {sorted(LINK_KINDS)}.")
+    if not ref or not ref.strip():
+        raise FleetCaseError("ref must be a non-empty string.")
+    case_uuid = _parse_case_id(case_id)
+
+    try:
+        row = await pool.fetchrow(
+            "INSERT INTO public.fleet_case_links (case_id, link_kind, ref, metadata) "
+            "VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (case_id, link_kind, ref) DO NOTHING "
+            f"RETURNING {_LINK_COLUMNS}",
+            case_uuid,
+            link_kind,
+            ref,
+            metadata,
+        )
+    except asyncpg.ForeignKeyViolationError as exc:
+        raise FleetCaseError(f"No fleet case with id={case_id!r}.") from exc
+
+    if row is not None:
+        return dict(row), True
+
+    existing = await pool.fetchrow(
+        f"SELECT {_LINK_COLUMNS} FROM public.fleet_case_links "
+        "WHERE case_id = $1 AND link_kind = $2 AND ref = $3",
+        case_uuid,
+        link_kind,
+        ref,
+    )
+    if existing is None:
+        # Same reasoning as contribute_evidence's mirror-image branch:
+        # fleet_case_links rows cascade-delete only with their parent case,
+        # and the FK check above already ruled out a missing case.
+        raise FleetCaseError(
+            f"Link insert for case_id={case_id!r} conflicted but the existing row "
+            "could not be re-read."
+        )
+    return dict(existing), False
+
+
 async def _no_op_update_error(
     pool: Any, case_uuid: uuid.UUID, case_id: str, *, verb: str
 ) -> FleetCaseError:
@@ -355,29 +436,38 @@ async def evaluate_case_attention(
     Outside quiet hours there is nothing to bypass -- normal delivery already
     reaches the owner, so this is a no-op.
 
-    Returns ``{"bypass": bool, "reason": str}``. ``reason`` is one of:
-    ``case_closed``, ``not_urgent``, ``quiet_hours_inactive``,
-    ``already_bypassed_this_window``, ``urgent_case_bypass``.
+    Returns ``{"bypass": bool, "reason": str, "attention_ledger_id": str | None}``.
+    ``reason`` is one of: ``case_closed``, ``not_urgent``,
+    ``quiet_hours_inactive``, ``already_bypassed_this_window``,
+    ``urgent_case_bypass``. ``attention_ledger_id`` is the new
+    ``public.attention_ledger`` row's id when a bypass was actually recorded,
+    else ``None`` -- the caller (``butlers.core_tools._fleet_cases``) uses it
+    to bind this case to that ledger row via :func:`write_case_link`
+    (RFC 0032 Slice 7, ``link_kind="attention_record"``).
     """
     if state == "closed":
-        return {"bypass": False, "reason": "case_closed"}
+        return {"bypass": False, "reason": "case_closed", "attention_ledger_id": None}
     if posture != "urgent":
-        return {"bypass": False, "reason": "not_urgent"}
+        return {"bypass": False, "reason": "not_urgent", "attention_ledger_id": None}
 
     if now is None:
         now = datetime.now(UTC)
     policy = await get_approvals_policy_quiet_hours(pool)
     if not is_policy_quiet_now(policy, now=now):
-        return {"bypass": False, "reason": "quiet_hours_inactive"}
+        return {"bypass": False, "reason": "quiet_hours_inactive", "attention_ledger_id": None}
 
     dedup_key = case_attention_dedup_key(correlation_key)
     window_start = policy_quiet_hours_window_start(policy, now=now)
     if window_start is not None and await attention_event_recorded_since(
         pool, dedup_key=dedup_key, since=window_start
     ):
-        return {"bypass": False, "reason": "already_bypassed_this_window"}
+        return {
+            "bypass": False,
+            "reason": "already_bypassed_this_window",
+            "attention_ledger_id": None,
+        }
 
-    await record_attention_event(
+    attention_ledger_id = await record_attention_event(
         pool,
         origin_butler=origin_butler,
         source="insight",
@@ -387,7 +477,11 @@ async def evaluate_case_attention(
         reason="urgent_case_bypass",
         metadata={"case_id": case_id, "correlation_key": correlation_key},
     )
-    return {"bypass": True, "reason": "urgent_case_bypass"}
+    return {
+        "bypass": True,
+        "reason": "urgent_case_bypass",
+        "attention_ledger_id": attention_ledger_id,
+    }
 
 
 async def run_lapse_sweep(
@@ -593,14 +687,20 @@ async def backfill_from_owner_conditions(pool: Any, *, page_size: int = 200) -> 
     - ``opened_at``/``closed_at`` = the episode's own ``first_detected_at``/
       ``resolved_at``.
 
-    No ``fleet_case_links`` row is written back to the source episode --
-    binding a case to another ledger's entry is RFC 0032 Slice 7's job
-    ("three-ledger binding"), not this slice's.
+    RFC 0032 Slice 7 -- one ``fleet_case_links`` row (``link_kind=
+    "owner_condition"``, ``ref=`` the episode's own ``public.owner_conditions.id``)
+    is written back to the source episode for every case this touches,
+    whether the case was just created or already existed from an earlier
+    run -- so re-running this script after Slice 7 lands backfills the
+    missing links onto cases a pre-Slice-7 run already created, not just onto
+    newly created ones.
 
     Idempotent: a ``correlation_key`` this function has already backfilled is
     skipped on a rerun (see :func:`backfill_historical_case`), so processing
     the same ``owner_conditions`` rows twice creates no duplicate
-    ``fleet_cases`` rows.
+    ``fleet_cases`` rows; :func:`write_case_link`'s own
+    ``uq_fleet_case_links_ref`` constraint makes the link write idempotent the
+    same way.
 
     Returns ``{"created_case_ids": [...], "created_count": int, "skipped_count": int}``.
     """
@@ -610,7 +710,7 @@ async def backfill_from_owner_conditions(pool: Any, *, page_size: int = 200) -> 
     while True:
         rows = await pool.fetch(
             """
-            SELECT source, fingerprint, episode, first_detected_at, resolved_at, metadata
+            SELECT id, source, fingerprint, episode, first_detected_at, resolved_at, metadata
             FROM public.owner_conditions
             WHERE state = 'resolved'
             ORDER BY first_detected_at ASC
@@ -646,9 +746,23 @@ async def backfill_from_owner_conditions(pool: Any, *, page_size: int = 200) -> 
                 closed_at=resolved_at,
             )
             if result is not None:
-                created.append(str(result["id"]))
+                case_id = result["id"]
+                created.append(str(case_id))
             else:
                 skipped += 1
+                existing_case = await pool.fetchrow(
+                    "SELECT id FROM public.fleet_cases WHERE correlation_key = $1",
+                    correlation_key,
+                )
+                case_id = existing_case["id"] if existing_case is not None else None
+
+            if case_id is not None:
+                await write_case_link(
+                    pool,
+                    case_id=str(case_id),
+                    link_kind="owner_condition",
+                    ref=str(row["id"]),
+                )
 
     return {
         "created_case_ids": created,
