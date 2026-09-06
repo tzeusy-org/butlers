@@ -174,9 +174,18 @@ mechanism; eager filtering is the conservative cross-CLI compatibility path.
   to the live runtime-config vocabulary after the branch had already gained
   the seven-tool `fleet_cases` group, so that review and CI are superseded and
   non-transferable.
-- Post-PR-#4045 merged-tree successor: **Pending fresh exact-head owner
-  approval.** The approval must cite the immutable PR head presented in the
-  review packet. Every artifact-specific approval, review, and CI result at or
-  before `99ecce950314ac597802ed42fca81c7fdb04c65a` is explicitly superseded;
-  none transfers to the successor. Any later edit likewise creates another
-  artifact and invalidates exact-head evidence.
+- `263d9a6c211fbf0a501cda68ef22f296dc73b2c7`: **Not owner-approved as an
+  exact artifact.** Hosted CI run `34028358724` succeeded, but the independent
+  exact-head review returned NO-GO on runtime-seed, transport, wrapper, retry,
+  and legacy-catalog current-truth drift. That review and CI apply only to this
+  superseded head and do not transfer to its correction.
+- Current correction successor: **Pending fresh exact-head owner approval.**
+  The approval must cite the immutable PR head presented in the final review
+  packet. Every artifact-specific approval, review, and CI result at or before
+  `263d9a6c211fbf0a501cda68ef22f296dc73b2c7` is explicitly superseded; none
+  transfers to the successor. Any later edit likewise creates another artifact
+  and invalidates exact-head evidence.
+- **Final-review prerequisite:** final exact-head review SHALL wait until the
+  separate `bu-hxirg` legacy-catalog cleanup PR merges. PR #3952 SHALL then
+  integrate the then-current `main` if required before new review or owner
+  approval is requested.

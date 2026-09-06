@@ -2,7 +2,9 @@
 
 ### Requirement: Core Tool Surface
 Every butler daemon SHALL register core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. When `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
-- The baseline records this earlier implementation statement: This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD constants and the `_tools_to_remove` post-registration pruning) documented in RFC 0002 §Tool Budget Discipline. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) are removed. RFC 0002 §Tool Budget Discipline requires amendment to reflect the `core_groups` mechanism. The merged-tree correction is that `_tools_to_remove` is retired while those legacy constants remain only as contract-test compatibility catalogs and SHALL NOT control registration.
+
+This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD constants and the `_tools_to_remove` post-registration pruning) documented in RFC 0002 §Tool Budget Discipline. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) are removed. RFC 0002 §Tool Budget Discipline requires amendment to reflect the `core_groups` mechanism. The target removal SHALL also include `CHRONICLER_CORE_TOOL_NAMES`, the combined `CORE_TOOL_NAMES` catalog, and every same-repository compatibility alias for those catalogs; actual registration behavior and a mechanically derived inventory SHALL replace circular catalog assertions.
+
 - The complete merged-tree inventory contains 79 unique registrations: 71 tools in 14 groups plus eight direct registrations.
 - `infra` (11): status, trigger, tick, correct, memory_access, memory_catalog_fetch, conversation_reply, conversation_recall, conversation_thread_read, shutdown, chronicler_day_close_refresh. Only chronicler_day_close_refresh is name-gated, to chronicler.
 - `state` (4): state_get, state_set, state_delete, state_list. No type/name gate.
@@ -75,7 +77,7 @@ Scope: v1-mandatory
 - **AND** the adapter artifact omits its name and schema before model serialization/search without claiming new call-time authorization
 
 ### Requirement: Config loading parses runtime_seed section
-The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL be rejected with a clear error.
+The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL NOT be rejected with a clear error; they SHALL be accepted and ignored. The dataclass is operational-only: retired `model`, `runtime_type`, `args`, and `session_timeout_s` keys inside `[butler.runtime_seed]` SHALL be rejected, while the obsolete top-level `[runtime]` section SHALL be rejected with deletion guidance. The target dataclass SHALL add `tool_exposure_policy` as one further operational field without restoring any retired runtime-selection field.
 
 ID: REQ-core-daemon-003
 Source: RFC 0001 §Startup Phases (phase 1 — config load), Doctrine Rule #5
@@ -83,16 +85,25 @@ Scope: v1-mandatory
 
 #### Scenario: Parse runtime_seed section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime_seed]`
-- **THEN** a `RuntimeSeedConfig` SHALL be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
-- **AND** it SHALL include `tool_exposure_policy` with default `eager_filtered` and accepted values `eager_filtered` or `auto`
+- **THEN** a `RuntimeSeedConfig` SHALL NOT be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
+- **AND** it SHALL instead contain exactly these current fields: `core_groups` (`tuple[str, ...] | None`, default `None`), `catalog_read_sensitivity` (`normal | internal | confidential`, default `normal`), `max_concurrent_sessions` (`int`, default `3`), `max_queued_sessions` (`int`, default `10`), `liveness_ttl_seconds` (`int`, default `300`), `route_contract_min` (`int`, default `1`), and `route_contract_max` (`int`, default `1`)
+- **AND** the target dataclass SHALL add `tool_exposure_policy` with default `eager_filtered` and accepted values `eager_filtered` or `auto`
+- **AND** `model`, `runtime_type`, `args`, and `session_timeout_s` SHALL NOT be dataclass fields and SHALL raise `ConfigError` when supplied inside `[butler.runtime_seed]`
 
 #### Scenario: Reject old [butler.runtime] section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to rename to `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to rename to `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig` or runtime selection
 
 #### Scenario: Reject old [butler.seed_configs] section
 - **WHEN** `load_config()` reads a toml with `[butler.seed_configs]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to merge into `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to merge into `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig`
+
+#### Scenario: Obsolete top-level [runtime] section is rejected
+- **WHEN** `load_config()` reads a toml with a top-level `[runtime]` section
+- **THEN** a `ConfigError` SHALL state that the section is no longer supported and direct the operator to delete it
+- **AND** the error SHALL NOT direct the operator to move runtime selection into `[butler.runtime_seed]`
 
 #### Scenario: Missing runtime_seed section uses defaults
 - **WHEN** `load_config()` reads a toml with no `[butler.runtime_seed]` section
