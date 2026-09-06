@@ -43,32 +43,67 @@ Scope: v1-mandatory
 
 ### Requirement: Chat Draft Submission and Read-Recovery Outcomes
 
-The chat composer SHALL clear a stored draft only after the dashboard has evidence that the exact owner message was durably accepted. Validation failure, transport failure, rejection before durable acceptance, or an unknown send outcome SHALL retain the draft without presenting an unsafe automatic resend, while the existing durable conversation read model remains authoritative for message and terminal-action state.
+The chat composer SHALL allocate and persist the existing immutable client `message_id` together with the exact submitted draft revision before issuing a send. It SHALL clear only that submitted revision after the durable conversation read model proves acceptance of the same `message_id`. Validation failure or proven rejection before durable acceptance SHALL retain the editable draft; transport interruption or any outcome that cannot be classified from durable evidence SHALL retain the bound attempt as unknown without text matching or automatic resend.
 
 ID: REQ-dashboard-chat-ui-005
-Source: dashboard-chat-ui § Message Input Area; durable-dashboard-terminal-action-recovery REQ-dashboard-chat-ui-002 and REQ-dashboard-chat-ui-003; design.md Decisions 4 and 7
+Source: dashboard-chat-ui § Message Input Area; durable-dashboard-terminal-action-recovery REQ-dashboard-chat-ui-002 and REQ-dashboard-chat-ui-003; design.md Decisions 4 and 10
 Scope: v1-mandatory
 
-#### Scenario: Durable send acceptance clears the exact draft
+#### Scenario: Send binds the existing immutable message identity
 
-- **WHEN** the chat send path proves durable acceptance of message M from draft key K
-- **THEN** the composer and stored record for K are cleared
+- **WHEN** the owner submits revision R from chat draft K
+- **THEN** the client reuses the existing message-ID generator and transactionally records `message_id` M with K and R before sending
+- **AND** retry and reconciliation of that attempt reuse M rather than creating a second identity
+- **AND** no message-content comparison is used as identity
+
+#### Scenario: Durable send acceptance clears the submitted revision
+
+- **WHEN** the durable read model proves that message ID M from draft K revision R was accepted
+- **THEN** one transaction tombstones M's attempt snapshot and clears the composer and stored record for K only if their authoritative revision remains R
 - **AND** drafts under every other key remain unchanged
 - **AND** assistant processing or streaming may continue under the existing conversation contract
 
-#### Scenario: Send failure retains editable text
+#### Scenario: Late chat acceptance retains newer text
 
-- **WHEN** validation, transport, or application failure occurs before durable acceptance can be proved
+- **WHEN** acceptance of message ID M bound to revision R is proven after the same tab or another tab accepted a newer revision for K
+- **THEN** the newer revision remains visible and stored
+- **AND** the same transaction replaces M's completed attempt with a content-free tombstone without clearing the newer text
+
+#### Scenario: Proven pre-acceptance failure retains editable text
+
+- **WHEN** local validation or durable server evidence proves that message ID M was rejected before acceptance
 - **THEN** the exact message text remains editable in the composer and retained under its draft key
 - **AND** the existing classified failure UI remains visible
 - **AND** closing and reopening the same composer can restore the retained text
 
 #### Scenario: Unknown send outcome does not advertise a safe resend
 
-- **WHEN** the dashboard cannot prove whether the exact message was durably accepted
-- **THEN** the text remains retained until the existing durable-status path resolves the outcome or the owner discards it
+- **WHEN** transport interruption, timeout, reload, or missing durable evidence leaves message ID M's acceptance unknown
+- **THEN** the text and M-to-submitted-revision binding remain retained until an applicable durable read resolves the outcome or the owner discards it
 - **AND** the UI identifies the outcome as unknown and does not automatically resend
 - **AND** any retry action remains governed by the existing exact-message recovery contract
+
+#### Scenario: Loaded known-conversation attempt reconciles after reload
+
+- **WHEN** a reloaded draft retains message ID M and the bounded loaded durable read for known conversation C contains M
+- **THEN** the client reconciles only the exact M message and dashboard-turn projection
+- **AND** accepted or completed evidence conditionally clears the submitted revision, while pending evidence retains it as pending
+- **AND** retryable, rejected, cancelled, or ambiguous evidence retains the text with the corresponding existing recovery state
+- **AND** absence or read failure remains unknown and never triggers automatic replay
+
+#### Scenario: Observed new-conversation creation retires only the submitted revision
+
+- **WHEN** the existing `conversation_created` SSE event binds submitted message ID M to conversation C
+- **THEN** one browser-storage transaction records C against M and treats that exact message as durably accepted
+- **AND** it tombstones M's attempt snapshot and the `new` draft only when the draft still has M's submitted revision
+- **AND** it neither copies the submitted text into C as an unsent draft nor clears a newer `new` revision
+
+#### Scenario: Unavailable exact-message read remains honestly blocked
+
+- **WHEN** the dashboard reloads after missing a new conversation's `conversation_created` event, or M is absent from a known conversation's bounded loaded messages
+- **THEN** the retained message ID and text render as an outcome-unknown attempt rather than apparently unsent text
+- **AND** the dashboard does not search by text, scan unbounded conversation history, call a mutating recovery endpoint as a read, or resend automatically
+- **AND** automatic reconciliation remains blocked until an approved content-blind read can resolve butler plus message ID to conversation ID and durable turn outcome
 
 #### Scenario: History read recovery preserves the active draft
 

@@ -50,7 +50,7 @@ Scope: v1-mandatory
 
 ### Requirement: Stable Browser Draft Identity and Lifecycle
 
-Eligible drafts SHALL use versioned records in `localStorage` under the dashboard origin, keyed only by a stable surface identifier, operation mode, and non-content domain identifiers. A record SHALL expire 24 hours after its last accepted edit, SHALL be removed when all eligible values are empty or reset to their initial values, and SHALL NOT exceed 64 KiB serialized.
+Eligible drafts SHALL use versioned transactional IndexedDB records under the dashboard origin, keyed only by a stable surface identifier, operation mode, and non-content domain identifiers. Every live record or content-free tombstone SHALL carry a store epoch and per-key revision token. Draft content SHALL expire 24 hours after its last accepted edit, SHALL be replaced by an ordered tombstone when all eligible values are empty or reset to their initial values, and SHALL NOT exceed 64 KiB serialized.
 
 ID: REQ-dashboard-shell-002
 Source: dashboard-shell § Utility Infrastructure / Local settings resilience; design.md Decisions 1 and 3
@@ -68,23 +68,26 @@ Scope: v1-mandatory
 - **THEN** its key contains only the versioned namespace, approved surface identifier, operation mode, and required non-content domain identifiers
 - **AND** no field value, label, title, free-text fragment, content hash, or other content-derived identifier appears in the key
 
-#### Scenario: Empty or reset form removes its record
+#### Scenario: Empty or reset form removes content with an ordered tombstone
 
 - **WHEN** every eligible value is empty or equals the form's current initial value
-- **THEN** the stored record for that exact draft identity is removed
+- **THEN** one read-write transaction replaces the current live revision with the next content-free tombstone revision
 - **AND** later reopening does not show a restored-draft affordance
+- **AND** a delayed writer based on the replaced revision cannot recreate the deleted content
 
 #### Scenario: Sliding expiry removes stale drafts
 
 - **WHEN** 24 hours elapse after the last accepted edit to a stored draft
-- **THEN** the draft is treated as expired and is removed before any content is rendered
+- **THEN** the draft is treated as expired and its content is replaced by the next ordered tombstone before any content is rendered
 - **AND** expiry of one record does not remove a newer or unrelated draft
+- **AND** a concurrent transaction can expire only the exact revision it observed
 
 #### Scenario: Unsupported or corrupt record fails closed
 
 - **WHEN** a stored record has an unsupported schema version, invalid shape, invalid timestamps, or malformed serialized data
 - **THEN** no value from that record is rendered into a form
-- **AND** the invalid record is removed when possible
+- **AND** its content is replaced by an ordered tombstone when the key and ordering token can be read safely
+- **AND** an unreadable ordering token triggers an epoch-advance transaction before the invalid record is removed
 - **AND** the owner is told once that the saved draft could not be restored
 
 #### Scenario: Oversize draft stays only in the current mount
@@ -123,11 +126,18 @@ Scope: v1-mandatory
 - **AND** Keep draft and close leaves the stored record intact
 - **AND** Discard and close removes only that draft before closing
 
-#### Scenario: Successful submission clears only the submitted draft
+#### Scenario: Successful submission clears only the submitted revision
 
-- **WHEN** the existing mutation contract proves successful submission of draft K
-- **THEN** the stored record and restored-state affordance for K are cleared
+- **WHEN** the existing mutation contract proves successful submission of revision R from draft K
+- **THEN** one compare-and-delete transaction replaces K with a tombstone only when its authoritative live revision is still R
+- **AND** the in-memory values and restored-state affordance clear only when they still represent R
 - **AND** no other draft key is changed
+
+#### Scenario: Late success retains newer edits
+
+- **WHEN** submission of revision R succeeds after the same tab or another tab has accepted revision R+N for draft K
+- **THEN** the success handler does not delete, clear, or overwrite R+N
+- **AND** only the submitted operation receives its existing success feedback
 
 #### Scenario: Failed submission retains the draft
 
@@ -142,32 +152,47 @@ Scope: v1-mandatory
 - **THEN** values are applied at most once and deletion remains a no-op after the record is absent
 - **AND** duplicate status announcements or duplicate submissions are not produced
 
-### Requirement: Deterministic Cross-Tab Draft Conflict Handling
+### Requirement: Transactional Cross-Tab Draft Ordering and Deletion
 
-Draft records SHALL carry a last-edit timestamp and per-tab writer identifier, and storage ordering SHALL use the deterministic tuple `(updatedAt, writerId)`. A newer cross-tab record MAY replace an untouched local view, but SHALL NOT silently overwrite text edited in the current tab or merge field values.
+Every draft write, override, submission clear, discard, expiry, invalid-record rejection, and tombstone compaction SHALL run as a single IndexedDB read-write transaction against the authoritative store epoch and per-key revision. An ordinary write SHALL succeed only when its base token matches the current live revision; deletion SHALL write the next content-free tombstone revision. A stale transaction SHALL report a conflict and SHALL NOT overwrite or resurrect the authoritative record. Tombstone compaction SHALL advance the store epoch transactionally before removing tombstones, so every writer holding the prior epoch becomes stale.
 
 ID: REQ-dashboard-shell-004
 Source: design.md Decision 6
 Scope: v1-mandatory
 
-#### Scenario: Newer record refreshes an untouched local form
+#### Scenario: Accepted remote revision refreshes an untouched local form
 
-- **WHEN** another tab writes a deterministically newer revision for the same key and the current tab has not changed since its last restore
-- **THEN** the current tab applies the newer complete record
+- **WHEN** another tab commits a higher authoritative revision for the same key and the current tab has not changed since its last restore
+- **THEN** a cross-tab notification or the next focus/visibility reconciliation loads and applies the higher complete record
 - **AND** the updated restore status is announced once
 
 #### Scenario: Newer record conflicts with current-tab edits
 
-- **WHEN** another tab writes a deterministically newer revision for the same key after the current tab has made local edits
+- **WHEN** another tab commits a higher authoritative revision for the same key after the current tab has made local edits
 - **THEN** the current tab keeps its visible values and shows that the draft changed in another tab
 - **AND** explicit Use this tab and Load other draft actions are offered
-- **AND** choosing Use this tab writes a new complete revision while choosing Load other draft replaces the visible values with the stored revision
+- **AND** ordinary debounced writes remain suspended while the choice is pending
+- **AND** Use this tab explicitly writes over the current authoritative revision while Load other draft adopts it
 
-#### Scenario: Equal timestamps resolve consistently
+#### Scenario: Inverted write completion cannot regress storage
 
-- **WHEN** two revisions for the same key have equal last-edit timestamps
-- **THEN** every tab selects the same winner by writer-identifier order
-- **AND** no field-level merge occurs
+- **WHEN** transactions based on revision R race and the transaction carrying the later user edit begins or completes in either order
+- **THEN** at most one ordinary compare-and-swap from R succeeds
+- **AND** the loser observes the committed revision and enters conflict instead of physically storing a lower or stale state
+- **AND** a newly opened tab reads the same authoritative winner
+
+#### Scenario: Ordered deletion defeats a delayed writer
+
+- **WHEN** submit success, Discard, expiry, or invalid-record rejection commits tombstone T after a writer captured an older live base revision
+- **THEN** the delayed ordinary writer fails its base-token comparison against T
+- **AND** no notification ordering or tab lifetime can restore the deleted content automatically
+
+#### Scenario: Tombstone compaction fences old writers
+
+- **WHEN** 256 tombstones exist or the oldest tombstone reaches 30 days
+- **THEN** one transaction increments the store epoch, carries live records into that epoch, and removes prior tombstones
+- **AND** any delayed writer holding the prior epoch is rejected even though its per-key tombstone was compacted
+- **AND** compaction changes no live draft content or expiry
 
 #### Scenario: Unrelated keys do not conflict
 
@@ -177,8 +202,7 @@ Scope: v1-mandatory
 ### Requirement: Draft Privacy, Authorization, and Forbidden Surfaces
 
 Browser draft persistence SHALL be an explicit client-side recovery aid, not an authentication or authorization boundary. The persistence mechanism SHALL read or render content only inside a currently accessible eligible surface and SHALL NOT transmit draft records through an API, URL, log, telemetry event, event bus, error report, or provider call except when the owner invokes the surface's existing submission action.
-
-Dedicated Secrets and provider-configuration surfaces, password controls, and fields whose declared purpose is a credential, API key, token, private key, recovery code, auth session, or copy-once revealed value SHALL never be eligible. The system SHALL make no claim that it detects secret material pasted into an otherwise eligible ordinary prose or JSON field.
+Dedicated Secrets and provider-configuration surfaces, password controls, and fields whose declared purpose is a credential, API key, token, private key, recovery code, auth session, or copy-once revealed value SHALL never be eligible, and the system SHALL make no claim that it detects secret material pasted into an otherwise eligible ordinary prose or JSON field.
 
 ID: REQ-dashboard-shell-005
 Source: heart-and-soul/security.md § Credential Tiers and Constraints; dashboard-admin-gateway § Defense-in-Depth API-Key Authentication; craft-and-care/security-and-secrets.md; design.md Decisions 2 and 7
