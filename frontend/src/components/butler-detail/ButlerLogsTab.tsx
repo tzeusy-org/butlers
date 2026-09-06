@@ -284,7 +284,7 @@ export default function ButlerLogsTab({ butlerName }: ButlerLogsTabProps) {
       ) : (
         <ul
           ref={listRef}
-          className="max-h-[calc(100vh-22rem)] overflow-y-auto px-4"
+          className="max-h-[calc(100dvh-22rem)] overflow-y-auto px-4"
           aria-label="Log lines"
           data-testid="log-line-list"
         >
