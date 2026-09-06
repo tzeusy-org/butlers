@@ -13,8 +13,8 @@ configured maximum/source inventory. For each module, collect the tools that
 would register with the effective groups config. Report as a markdown table.
 Core daemon tools: inspect `butlers.core_tools.register_all_core_tools()` and
 the owning registration functions. Count group-decorated and direct tools for
-the butler's type and name; use `references/tool-budget.md` as the current
-inventory guide rather than constructing a second name catalog.
+the butler's type and name; use `references/tool-budget.md` only for
+registration and review principles, and derive the inventory mechanically.
 ```
 
 **Docstring audit agent (per module, Phase 2):**

@@ -1,12 +1,13 @@
 # Historical Usage Audit (Phase 7 Detail)
 
-Query the butler's `sessions` table to see which tools the runtime LLM has
-actually called. Every MCP tool invocation is captured in the JSONB
-`tool_calls` column via `_ToolCallLoggingMCP` (`daemon.py`) and persisted by
-`sessions.complete()`. This is one LLM-use signal and candidate-evidence
-source. It is never primary removal authority: code-level analysis and session
-history answer different consumer questions, and neither grants permission to
-remove a tool.
+Query the butler's `sessions` table for session-bound tool-use evidence. Core
+handlers are captured through `_ToolCallLoggingMCP`, module handlers through
+`_SpanWrappingMCP`, and `Spawner` merges daemon-captured records with
+adapter-parsed records before `session_complete()` persists the JSONB
+`tool_calls` column. Calls outside runtime session capture may be absent. This
+is one LLM-use signal and candidate-evidence source, never primary removal
+authority: code-level analysis and session history answer different consumer
+questions, and neither grants permission to remove a tool.
 
 Session history is evidence of LLM-facing usage only. It does not enumerate
 infrastructure or server-to-server consumers: for example, `ingest`,
