@@ -2,25 +2,33 @@
 
 Covers: not-configured honest skip (no AVIATIONSTACK_API_KEY), the pure
 ``parse_flight_status`` classifier, a successful poll that notifies on a
-delay past threshold, a poll that stays quiet under threshold, and a fetch
-failure that degrades honestly without crashing the sweep.
+delay past threshold, a poll that stays quiet under threshold, a fetch
+failure that degrades honestly without crashing the sweep, and a
+Docker-gated integration test proving ``_fetch_upcoming_flight_legs``'s
+``metadata ? 'flight_number'`` predicate actually selects real jsonb rows
+(bu-2jtfw.1 -- the mocked-pool tests above bypass SQL entirely and cannot
+prove this on their own).
 """
 
 from __future__ import annotations
 
+import shutil
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from butlers.jobs.flight_status import (
+    _fetch_upcoming_flight_legs,
     parse_flight_status,
     run_flight_status_check,
 )
 
 pytestmark = pytest.mark.unit
+
+_docker_available = shutil.which("docker") is not None
 
 _FLIGHT_PAYLOAD_DELAYED = {
     "data": [
@@ -163,6 +171,9 @@ async def test_configured_no_legs_records_zero_check_attempt():
     assert result["legs_checked"] == 0
     assert result["delays_detected"] == 0
     assert result["notified"] == []
+    # A zero-selectable-legs pass is not a silent success: it must never
+    # write `last_error = NULL` as if a real poll had verified something.
+    assert result["last_error"] == "no selectable legs"
 
 
 # ---------------------------------------------------------------------------
@@ -286,3 +297,96 @@ async def test_leg_without_flight_number_is_skipped():
 
     assert result["legs_checked"] == 0
     assert result["notified"] == []
+    assert result["last_error"] == "no selectable legs"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_upcoming_flight_legs — real Postgres, real jsonb (bu-2jtfw.1)
+#
+# Every test above mocks `pool.fetch` directly, so none of them exercise the
+# `metadata ? 'flight_number'` predicate's actual SQL. That predicate is only
+# ever true against a genuine jsonb object -- against the pre-fix
+# double-encoded jsonb *string* it silently matched nothing, which is why no
+# flight was ever polled. This proves the predicate against a real pool with
+# metadata written the way `record_booking` (post bu-2jtfw.1 fix) writes it.
+# ---------------------------------------------------------------------------
+
+_TRAVEL_SCHEMA_SQL = """
+CREATE SCHEMA IF NOT EXISTS travel;
+
+CREATE TABLE IF NOT EXISTS travel.trips (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    start_date  DATE NOT NULL,
+    end_date    DATE NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'planned',
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS travel.legs (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id     UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    type        TEXT NOT NULL DEFAULT 'flight',
+    departure_at TIMESTAMPTZ NOT NULL,
+    arrival_at   TIMESTAMPTZ NOT NULL,
+    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+class TestFetchUpcomingFlightLegsAgainstPostgres:
+    async def test_selects_both_segments_of_the_dd94xr_journey(
+        self, provisioned_postgres_pool
+    ) -> None:
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute(_TRAVEL_SCHEMA_SQL)
+
+            trip_id = await pool.fetchval(
+                """
+                INSERT INTO travel.trips (name, destination, start_date, end_date, status)
+                VALUES ('DD94XR journey', 'Test', $1, $2, 'planned')
+                RETURNING id
+                """,
+                date.today(),
+                date.today() + timedelta(days=3),
+            )
+
+            now = datetime.now(UTC)
+            # Two segments of the same journey, each carrying a distinct
+            # flight_number in real jsonb metadata -- exactly what
+            # `record_booking` writes since the bu-2jtfw.1 write-path fix
+            # (binding the dict directly, never `json.dumps()`-ing it first).
+            for flight_number, offset_hours in (("DD94XR", 6), ("DD94YR", 20)):
+                await pool.execute(
+                    """
+                    INSERT INTO travel.legs (trip_id, type, departure_at, arrival_at, metadata)
+                    VALUES ($1::uuid, 'flight', $2, $3, $4)
+                    """,
+                    trip_id,
+                    now + timedelta(hours=offset_hours),
+                    now + timedelta(hours=offset_hours + 10),
+                    {"flight_number": flight_number},
+                )
+            # A leg with no flight_number at all must not be selected.
+            await pool.execute(
+                """
+                INSERT INTO travel.legs (trip_id, type, departure_at, arrival_at, metadata)
+                VALUES ($1::uuid, 'flight', $2, $3, '{}'::jsonb)
+                """,
+                trip_id,
+                now + timedelta(hours=8),
+                now + timedelta(hours=18),
+            )
+
+            legs = await _fetch_upcoming_flight_legs(pool)
+
+        flight_numbers = {leg["metadata"]["flight_number"] for leg in legs}
+        assert flight_numbers == {"DD94XR", "DD94YR"}

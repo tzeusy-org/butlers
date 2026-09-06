@@ -228,7 +228,7 @@ async def _insert_leg(
         confirmation_number,
         payload.get("pnr"),
         payload.get("seat"),
-        json.dumps(meta),
+        meta,
     )
     return str(row["id"]), True, False
 
@@ -279,7 +279,7 @@ async def _insert_accommodation(
         check_in,
         check_out,
         confirmation_number,
-        json.dumps(meta),
+        meta,
     )
     return str(row["id"]), True, False
 
@@ -326,7 +326,7 @@ async def _insert_reservation(
         payload.get("provider"),
         event_dt,
         confirmation_number,
-        json.dumps(meta),
+        meta,
     )
     return str(row["id"]), True, False
 
@@ -358,7 +358,7 @@ async def _insert_document(
         doc_type,
         payload.get("blob_ref"),
         expiry,
-        json.dumps(meta),
+        meta,
     )
     return str(row["id"]), True, False
 
@@ -669,7 +669,7 @@ async def update_itinerary(
             params.append(val)
             idx += 1
         set_clauses.append(f"metadata = ${idx}::jsonb")
-        params.append(json.dumps(existing_meta))
+        params.append(existing_meta)
         idx += 1
         set_clauses.append(f"updated_at = ${idx}")
         params.append(datetime.now(UTC))
@@ -841,7 +841,7 @@ async def update_itinerary(
                         params_e.append(val)
                         idx_e += 1
                     set_clauses_e.append(f"metadata = ${idx_e}::jsonb")
-                    params_e.append(json.dumps(entity_meta))
+                    params_e.append(entity_meta)
                     idx_e += 1
                     set_clauses_e.append(f"updated_at = ${idx_e}")
                     params_e.append(datetime.now(UTC))

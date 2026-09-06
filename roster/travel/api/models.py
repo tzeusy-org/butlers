@@ -142,6 +142,10 @@ class UpcomingTravelModel(BaseModel):
     actions: list[PreTripActionModel] = []
     window_start: str
     window_end: str
+    # Trip ids excluded from `upcoming_trips` because their row could not be
+    # normalized (e.g. corrupt metadata) -- named-list degraded-mode envelope
+    # (docs/api_and_protocols/response-conventions.md), never silently dropped.
+    unreadable_trip_ids: list[str] = []
 
 
 class ExpiringDocumentModel(BaseModel):
