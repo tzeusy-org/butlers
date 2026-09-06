@@ -44,7 +44,7 @@ For each butler in `roster/*/butler.toml`:
 ```
 | Butler | Module | Groups | Tools | Total |
 |---|---|---|---:|---:|
-| switchboard | core (staffer+switchboard) | — | 30 | |
+| switchboard | core (staffer+switchboard) | all eligible groups | 41 | |
 | | memory | core | 8 | |
 | | calendar | core | 8 | |
 | | switchboard | routing, extraction | 8 | |
@@ -162,7 +162,8 @@ Tools with 0 calls that are safe to remove. Group by module for clean removal:
 ### Recommendations
 1. Module removals (entire modules with 0 usage)
 2. Group pruning (modules with partial usage)
-3. Core tool excludes (universal tools never called by this butler's LLM)
+3. Core group/configuration recommendations (groups whose registration or
+   role/name gates should be reviewed against actual usage and doctrine)
 4. Docstring/error fixes (for surviving tools only)
 
 ### Per-Butler Details

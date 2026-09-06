@@ -8,8 +8,10 @@ Copy-ready dispatch prompts for the per-butler / per-module subagents used in
 Read roster/{butler}/butler.toml. List all enabled modules with their
 configured groups. For each module, count the tools that would be
 registered given the groups config. Report as a markdown table.
-Core daemon tools: see the UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD
-constants in src/butlers/daemon.py.
+Core daemon tools: inspect `butlers.core_tools.register_all_core_tools()` and
+the owning registration functions. Count group-decorated and direct tools for
+the butler's type and name; use `references/tool-budget.md` as the current
+inventory guide rather than constructing a second name catalog.
 ```
 
 **Docstring audit agent (per module, Phase 2):**
