@@ -49,6 +49,8 @@ def _make_session_row(
         "complexity": None,
         "input_tokens": 1234,
         "output_tokens": 567,
+        "cached_input_tokens": None,
+        "cache_creation_tokens": None,
         "cancelled_by_owner": False,
     }
     row.update(overrides)
