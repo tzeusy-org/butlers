@@ -8843,6 +8843,32 @@ export interface ActivityBin {
   count: number;
 }
 
+/** One row in the merged relationship and Chronicler activity stream. */
+export interface EntityActivityItem {
+  id: string;
+  ts: string | null;
+  kind: string;
+  src: "relationship" | "chronicler";
+  /** Raw relationship predicate; absent for Chronicler episodes. */
+  predicate?: string | null;
+  /** Explicit episode id; present for Chronicler rows. */
+  episode_id?: string | null;
+  /** Canonical episode title; present for Chronicler rows. */
+  summary?: string | null;
+}
+
+/** Response for GET /api/relationship/entities/{id}/activity. */
+export interface EntityActivityResponse {
+  items: EntityActivityItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** True when the Chronicler contribution could not be read. */
+  degraded: boolean;
+  /** Fixed content-blind failure discriminator from the activity aggregator. */
+  degraded_reason: "chronicler_activity_unavailable" | null;
+}
+
 /**
  * Response for GET /api/butlers/relationship/entities/{id}/activity when
  * ``bins_only=true``.

@@ -19,12 +19,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const mockInvalidateQueries = vi.fn();
 const mockQueryClient = { invalidateQueries: mockInvalidateQueries };
+const mockUseQuery = vi.hoisted(() => vi.fn((opts: unknown) => opts));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...original,
     useMutation: vi.fn((opts: unknown) => opts),
+    useQuery: mockUseQuery,
     useQueryClient: () => mockQueryClient,
   };
 });
@@ -37,6 +39,7 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/api/index.ts")>();
   return {
     ...original,
+    getEntityActivity: vi.fn(),
     mergeRelationshipEntities: vi.fn(),
     forgetRelationshipEntity: vi.fn(),
   };
@@ -48,12 +51,43 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 
 import { useMutation } from "@tanstack/react-query";
 import {
+  useEntityActivity,
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
 } from "@/hooks/use-entities.ts";
 import type { MergeRelationshipEntitiesRequest } from "@/api/index.ts";
 
 const mockUseMutation = vi.mocked(useMutation);
+
+describe("useEntityActivity", () => {
+  beforeEach(() => {
+    mockUseQuery.mockClear();
+  });
+
+  it("uses the canonical activity cache and forwards query cancellation", async () => {
+    const { getEntityActivity } = await import("@/api/index.ts");
+    const activity = vi.mocked(getEntityActivity);
+    activity.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      degraded: false,
+      degraded_reason: null,
+    });
+
+    useEntityActivity("entity-001");
+    const options = mockUseQuery.mock.calls.at(-1)?.[0] as {
+      queryKey: unknown;
+      queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+    };
+    const signal = new AbortController().signal;
+
+    expect(options.queryKey).toEqual(["entity-activity", "entity-001"]);
+    await options.queryFn({ signal });
+    expect(activity).toHaveBeenCalledWith("entity-001", { signal });
+  });
+});
 
 /**
  * Call the hook-under-test (which calls mockUseMutation) and return the

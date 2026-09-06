@@ -22,6 +22,7 @@ import {
   dismissRelationshipEntityQueueItem,
   forgetRelationshipEntity,
   getEntityActivityBins,
+  getEntityActivity,
   getEntityConcentration,
   getEntityCoreDates,
   getEntityDeltaFacts,
@@ -115,7 +116,22 @@ export function useEntityLoans(entityId: string | undefined) {
   });
 }
 
-/** Fetch unified timeline data for a relationship entity. */
+/**
+ * Fetch the canonical merged relationship and Chronicler activity stream.
+ *
+ * The query function forwards TanStack Query's AbortSignal so navigating away
+ * from an entity cancels the in-flight request rather than allowing a stale
+ * response to settle into the cache.
+ */
+export function useEntityActivity(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-activity", entityId],
+    queryFn: ({ signal }) => getEntityActivity(entityId!, { signal }),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch the legacy relationship-only timeline for callers that still need it. */
 export function useEntityTimeline(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-timeline", entityId],
@@ -963,6 +979,7 @@ export function useCreateEntityNote() {
     mutationFn: ({ entityId, request }: { entityId: string; request: CreateEntityNoteRequest }) =>
       createEntityNote(entityId, request),
     onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });
@@ -986,6 +1003,7 @@ export function useCreateEntityInteraction() {
       request: CreateEntityInteractionRequest;
     }) => createEntityInteraction(entityId, request),
     onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-activity-bins", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-message-threads", entityId] });
@@ -1001,6 +1019,7 @@ export function useCreateEntityGift() {
       createEntityGift(entityId, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["entity-gifts", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-activity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["entity-timeline", entityId] });
     },
   });

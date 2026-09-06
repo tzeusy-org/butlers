@@ -26,11 +26,43 @@ function mockJson(body: unknown) {
 }
 
 import {
+  getEntityActivity,
   getEntityActivityBins,
   getEntityCoreDates,
   getEntityDeltaFacts,
   markEntityView,
 } from "./client.ts";
+
+describe("getEntityActivity", () => {
+  it("reads the merged activity response from the canonical endpoint", async () => {
+    mockJson({
+      items: [
+        {
+          id: "episode-1",
+          ts: "2026-06-01T12:00:00Z",
+          kind: "episode",
+          src: "chronicler",
+          episode_id: "episode-1",
+          summary: "Lunch with Alice",
+        },
+      ],
+      total: 1,
+      limit: 25,
+      offset: 5,
+      degraded: false,
+      degraded_reason: null,
+    });
+
+    const result = await getEntityActivity("e1", { limit: 25, offset: 5 });
+
+    expect(result.items[0].src).toBe("chronicler");
+    expect(result.items[0].summary).toBe("Lunch with Alice");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("/entities/e1/activity?");
+    expect(url).toContain("limit=25");
+    expect(url).toContain("offset=5");
+  });
+});
 
 describe("getEntityActivityBins", () => {
   it("sends bins=daily&bins_only=true and reads the bins series", async () => {
