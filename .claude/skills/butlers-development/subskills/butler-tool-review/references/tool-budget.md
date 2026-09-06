@@ -2,16 +2,17 @@
 
 ## Maintenance contract (read this first)
 
-This file records group and registration semantics, not authoritative module
-counts. An audit derives each butler's actual core and module counts from its
-registration behavior and effective configuration. Whenever an audit (or any
-change to `register_tools()`) changes that behavior:
+This file records registration and review principles, not authoritative names,
+group taxonomies, counts, or retention lists. An audit derives each butler's
+actual core and module inventory from registration behavior and effective
+configuration. Whenever an audit (or any change to `register_tools()`) reveals
+that a principle or gate shape here has changed:
 
-1. Update group names, gate semantics, and examples here in the same change —
-   don't defer as follow-up.
-2. If a core registration function or its dispatcher changes, collect the
-   actual registrations across role contexts and update the "Core Tool Groups"
-   tables to match. Do not recreate a daemon-level name catalog.
+1. Update the gate semantics and examples here in the same change — don't defer
+   as follow-up.
+2. Collect actual registrations across all relevant role contexts and update
+   their behavior-level contract tests. Do not recreate a name, count, group,
+   or retention catalog here.
 
 ## Why Tool Count Matters
 
@@ -24,27 +25,22 @@ called from `src/butlers/daemon.py::_register_core_tools()`. Group decorators,
 direct infrastructure registrations, and butler type/name gates together
 determine the surface.
 
-### Registration Inventory
+### Registration Discovery
 
-The dispatcher has **79** unique registrations: **71** group-decorated across
-14 groups and **8** direct registrations. The contract test derives this
-inventory by running the dispatcher for domain, Switchboard, Messenger, and
-Chronicler contexts; it is the regression guard, not a second catalog.
+The dispatcher mixes two registration shapes. Derive both mechanically; a
+configured group list alone cannot describe the effective surface.
 
-| Registration shape | Condition | Count | Examples |
-|---|---|---:|---|
-| Group-decorated | `core_groups` permits the group, plus any local type/name gate | 71 | state, scheduling, temporal, delegation, graph |
-| Direct | Always or owning-name registration, independent of `core_groups` | 8 | cancel_session, route.execute, Messenger preferences |
+| Registration shape | Condition | Discovery evidence |
+|---|---|---|
+| Group-decorated | `core_groups` permits the group, plus any local type/name gate | Collect decorated registration behavior across relevant role contexts |
+| Direct | Always or owning-name registration, independent of `core_groups` | Collect direct registration behavior across the same contexts |
 
-### Core tools per butler (all groups enabled)
+At minimum, exercise an ordinary domain butler plus each distinct staffer,
+name-gated, or type-gated context present in registration source. Add a context
+when a new gate appears. Behavior-level contract tests are the regression
+guard; this reference deliberately does not duplicate their inventory.
 
-- **Domain butler**: **64**
-- **Chronicler**: **65** (domain surface plus its control)
-- **Staffer (switchboard)**: **41**
-- **Staffer (messenger)**: **39**
-- **Staffer (qa)**: **33**
-
-### Core Tool Groups
+### Core Group Discovery
 
 Group-decorated tools respect `core_groups` from DB-backed runtime config,
 seeded by `[butler.runtime_seed]`:
@@ -55,28 +51,11 @@ core_groups = ["infra", "notifications", "module_mgmt"]
 # omit core_groups = register ALL (backward compatible)
 ```
 
-| Group | Tools | Count |
-|---|---|---:|
-| infra | status, trigger, tick, correct, memory/conversation controls, shutdown, Chronicler control | 11 |
-| state | state_get, state_set, state_delete, state_list | 4 |
-| scheduling | schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs | 6 |
-| sessions | sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions | 5 |
-| notifications | notify, remind | 2 |
-| temporal | deadline_*, event_chain_*, seasonal_period_* | 13 |
-| media | get_attachment | 1 |
-| module_mgmt | module.states, module.set_enabled | 2 |
-| delegation | delegate_ask, delegate_receive, delegate_answer, delegate_wake | 4 |
-| domain_events | publish/subscribe, receive, reaction tools | 6 |
-| fleet_cases | case read/write/contribution tools | 7 |
-| graph | entity_graph_walk, entity_graph_path | 2 |
-| switchboard_routing | ingest, route_to_butler, routing helpers, connector.heartbeat | 6 |
-| switchboard_backfill | backfill.poll, backfill.progress | 2 |
-
-Temporal, delegation, and domain-event groups exclude staffers. Switchboard
-groups require the Switchboard name; Messenger preference tools are direct and
-require the Messenger name. `route.execute` and `cancel_session` are direct
-infrastructure registrations and remain available even when `core_groups` is
-empty.
+Discover core group names and membership from the owning registration
+functions. Then apply effective `runtime_config`, type gates, name gates, and
+direct-registration behavior. Some direct tools intentionally remain available
+when `core_groups` is empty; prove that behavior from source and contract tests
+rather than an always-retain list in this reference.
 
 ## Module Tool Groups
 

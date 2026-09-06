@@ -7,7 +7,7 @@ metadata:
     - tze
     - Claude
   status: active
-  last_reviewed: "2026-09-05"
+  last_reviewed: "2026-09-06"
 ---
 
 # Butler Tool Review
@@ -120,18 +120,19 @@ For each butler, verify:
 3. Domain modules on their specialist butler keep ALL groups (ownership principle)
 4. Report estimated savings if any module is unconfigured
 
-See [references/tool-budget.md](references/tool-budget.md) for group taxonomy.
+Derive groups from registration source and effective config; use
+[references/tool-budget.md](references/tool-budget.md) only for principles.
 
 ### Phase 7: Historical Usage Audit
 
-**This phase is critical for removal decisions** — session history is evidence of
-LLM-facing usage, not a complete ownership inventory. Before recommending
-REMOVE for a zero-session tool, search repository call sites plus roster config,
-API, connector, and scheduler use. Infrastructure and server-to-server tools
-often have zero session calls; the examples in
-`references/historical-usage-audit.md` are non-exhaustive.
+Session history is one LLM-use signal and source of candidate evidence. It is
+neither a complete ownership inventory nor primary removal authority. Before
+classifying a zero-session tool as eligible for removal review, search
+repository call sites plus roster config, API, connector, and scheduler use.
+Infrastructure and server-to-server tools often have zero session calls; the
+examples in `references/historical-usage-audit.md` are non-exhaustive.
 
-See [references/historical-usage-audit.md](references/historical-usage-audit.md) for the DB connection details, the exact SQL queries to run, result-interpretation rules (what to ignore, what counts as safe-to-remove), and the output format.
+See [references/historical-usage-audit.md](references/historical-usage-audit.md) for connection details, exact SQL, candidate-evidence rules, and output format.
 
 ### Phase 8: MCP Connection Reliability
 
@@ -151,30 +152,32 @@ For each butler, report:
 ### Phase 9: Report
 
 Synthesize into a single structured report. **Historical usage data (Phase 7)
-is evidence of LLM-facing use, not removal authority** — each removal
-recommendation also records the required non-session consumer search.
+is candidate evidence of LLM-facing use, not removal authority.** Each
+eligibility recommendation records the required non-session consumer and
+contract searches plus whether explicit removal authority exists.
 
 ```markdown
 ## Tool Surface Audit Report
 
 ### Summary
-| Butler | Type | Registered Tools | LLM Used (30d) | Removal Candidates | Est. Token Overhead |
+| Butler | Type | Registered Tools | LLM Used (30d) | Eligibility Candidates | Est. Token Overhead |
 
-### Removal Candidates (highest impact)
+### Removal Eligibility Candidates (highest impact)
 For each zero-session candidate, record the repository, roster-config, API,
-connector, and scheduler consumer-search result before recommending removal.
-Group verified removals by module for clean execution:
-| Module | Verified Candidates | Action |
-| email | email_send_message, ... (4) | Remove module from butler.toml |
-| memory | memory_confirm, ... (3) | Prune to used groups only |
+connector, scheduler, RFC, OpenSpec, manifesto, role-contract, scheduled
+cadence, and rare-recovery evidence. Group evidence-complete candidates by
+module, and report removal authority separately:
+| Module | Evidence-complete Candidates | Removal Authority |
+| email | email_send_message, ... (4) | Not granted — no removal action |
+| memory | memory_confirm, ... (3) | Granted by {decision} — prune named group only |
 
 ### Docstring / Error Issues
 (prioritize actively used tools; retain required infrastructure tools even when
 they have no session calls)
 
 ### Recommendations
-1. Module removals (verified zero-session candidates with no non-session consumers)
-2. Group pruning (modules with partial LLM usage after consumer search)
+1. Removal eligibility candidates (evidence matrix plus explicit authority status)
+2. Group-pruning candidates (partial LLM usage plus consumer and authority review)
 3. Core group/configuration recommendations (groups whose registration or
    role/name gates should be reviewed against actual usage and doctrine)
 4. Docstring/error fixes (for surviving tools only)
