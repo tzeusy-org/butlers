@@ -107,29 +107,15 @@ def register_tools(mcp, module, config=None):
     async def my_tool(...): ...
 ```
 
-### Group Taxonomy
+### Module Group Discovery
 
-| Module | Groups |
-|---|---|
-| memory | core, feedback, entity, preferences, admin |
-| calendar | core, butler_events, attendees |
-| relationship | contacts, interactions, relationships, social, notes, tracking, management, entity |
-| finance | core, facts, bulk, subscriptions, bills, budgets, analytics, intelligence |
-| education | mind_maps, teaching, mastery, spaced_repetition, diagnostics, curriculum, analytics |
-| health | measurements, medications, conditions, symptoms, nutrition, reports, research |
-| home_assistant | core, history, maintenance |
-| approvals | actions, rules, promotions |
-| switchboard | routing, extraction, backfill, operator |
+Discover group names from registration source and effective configuration; do not
+maintain a package-wide taxonomy here.
 
 ### Ownership Principle
 
 - **Domain modules on their specialist butler** keep ALL groups (no pruning). The finance butler needs all finance groups.
 - **Cross-cutting modules** (memory, calendar, approvals, home_assistant) are where pruning matters. Each butler enables only the groups it uses.
-
-### Modules Without Group Support
-
-contacts, email, general, travel, qa, whatsapp, telegram, spotify, steam,
-google_drive, insight_broker. Count their active registrations directly.
 
 ## Adding Group Support to a New Module
 

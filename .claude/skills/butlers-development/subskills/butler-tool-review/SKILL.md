@@ -41,7 +41,7 @@ For each butler in `roster/*/butler.toml`:
    group/direct gates. `runtime_seed` is first-boot input only, not evidence of
    current groups. If live state is unavailable, report a configured
    maximum/source inventory explicitly, never as the effective surface — see
-   [references/tool-budget.md](references/tool-budget.md) for gate semantics.
+   registration source for gate semantics.
 3. Collect module registrations with the effective module `groups` config;
    derive counts from that behavior rather than a hand-maintained table.
 4. Produce per-butler inventory table
@@ -50,16 +50,13 @@ For each butler in `roster/*/butler.toml`:
 ```
 | Butler | Module | Groups | Tools | Total |
 |---|---|---|---:|---:|
-| switchboard | core (staffer+switchboard) | all eligible groups | 41 | |
-| | memory | core | 8 | |
-| | calendar | core | 8 | |
-| | switchboard | routing, extraction | 8 | |
-| | ... | | | 59 |
+| {butler} | core | {derived groups} | {derived} | |
+| | {module} | {effective groups} | {derived} | |
 ```
 
 ### Phase 2: Docstring Quality
 
-For each module with >=10 tools, dispatch a subagent to read the tool definitions and assess each docstring:
+For each module meeting the review threshold (normally >=10 derived tools), dispatch a subagent to read the tool definitions and assess each docstring:
 
 - **Purpose**: First line clearly states what the tool does
 - **Parameters**: All params documented with types and allowed values

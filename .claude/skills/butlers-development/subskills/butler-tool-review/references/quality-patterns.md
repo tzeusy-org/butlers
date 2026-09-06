@@ -96,4 +96,4 @@ When two tools on the same butler do similar things, fix by:
 
 1. **Distinct docstring first lines** — make the difference obvious in the first sentence
 2. **"Use X instead when..."** cross-references in each tool's docstring
-3. **If truly redundant** — remove one and alias if needed for backwards compat
+3. **If truly redundant** — remove one. Retain an alias only for a verified external consumer with an owner and dated removal plan.

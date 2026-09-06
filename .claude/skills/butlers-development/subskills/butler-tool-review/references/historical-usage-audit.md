@@ -29,7 +29,7 @@ Connect via `psql` with `PGPASSWORD` env var. Sessions live in `{butler_schema}.
 
 ```sql
 SELECT
-    tc->>'name' AS tool_name,
+    COALESCE(tc->>'name', tc->>'tool', tc->>'tool_name', tc->'call'->>'name', tc->'tool_call'->>'name', tc->'function'->>'name') AS tool_name,
     tc->>'module' AS module,
     COUNT(*) AS call_count
 FROM {schema}.sessions,
@@ -74,8 +74,10 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
   roster configuration, API, connector, and scheduler use before classifying
   a tool as removable.
 - **Safe to remove** if a tool has:
-  - Zero calls over 30+ days AND
+  - Zero calls are only a candidate signal AND
   - No repository, roster-config, API, connector, or scheduler consumer AND
+  - No RFC, OpenSpec, manifesto, or role-contract requirement AND
+  - No rare recovery or scheduled cadence consumer AND
   - Is NOT newly added (check git log for when the tool was introduced —
     `git log --all -1 --format=%ai -- {tool_source_file}`)
 
