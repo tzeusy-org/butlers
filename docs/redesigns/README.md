@@ -15,7 +15,8 @@ path as provenance:
 2. **Pursuit / audit dossiers** — dated, point-in-time UI-maturity audits from
    the `butler-relentless-jarvis-pursuit` skill. Each `<date>-*-pursuit.md` has
    a machine-queryable `-data.json` sibling. These are historical snapshots:
-   the **newest run is the live tier board**; earlier runs are superseded record;
+   each board describes only its audit cohort and timestamp; later runs may
+   recheck different scopes;
    findings are tracked as beads, not by editing the dossier.
 
 > Nothing here is deleted or relocated on the basis of age alone: many entries
@@ -42,13 +43,14 @@ change `add-connector-oauth-scope-surface`:
 
 ## Pursuit / audit dossiers
 
-Point-in-time UI-maturity audits (newest first is the live board). Query the
+Point-in-time UI-maturity audits, listed by run. A newer date is not live
+verification or proof that an earlier finding is resolved. Query the
 `-data.json` sibling, e.g.
 `jq '.audits[] | select(.page=="<key>")' docs/redesigns/<date>-jarvis-pursuit-data.json`.
 
 | Run | Dossier |
 |---|---|
-| 11 (2026-09-03) | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) — **current board** |
+| 11 (2026-09-03) | [2026-09-03-jarvis-pursuit.md](2026-09-03-jarvis-pursuit.md) |
 | 10 (2026-09-02) | [2026-09-02-dashboard-chat-pursuit.md](2026-09-02-dashboard-chat-pursuit.md) — dashboard chat lens |
 | 09 (2026-09-01) | [2026-09-01-jarvis-pursuit.md](2026-09-01-jarvis-pursuit.md) |
 | 08 (2026-08-09) | [2026-08-09-jarvis-pursuit.md](2026-08-09-jarvis-pursuit.md) |
@@ -65,9 +67,16 @@ Point-in-time UI-maturity audits (newest first is the live board). Query the
 
 - **Briefs** are added by `butlers-redesign-prompt` and updated when their
   binding spec's design intent changes; when a brief is fully superseded, add a
-  banner at its top pointing at the successor (the `design-language.md` graduated
-  stub is the pattern) rather than deleting it while citers remain.
+  concise successor mapping, move remaining binding clauses into their canonical
+  spec, and update live citers before deleting the redundant body. Historical
+  provenance belongs in Git or a dated evidence record, not a second live contract.
 - **Dossiers** are appended by `butler-relentless-jarvis-pursuit`, one dated pair
   per run. That skill does not yet append its run to this index; wiring that into
   its output contract (and back-filling per-file status banners) is tracked in
   **bu-hw39n**. Until then, add the new run's row to the table above by hand.
+
+Retain briefs while a live spec incorporates their clauses, prototypes while an
+acceptance check compares against them, and dated audit pairs while later audits
+use their cohort evidence. A finding or proposed move does not become an approved
+requirement merely because it appears in a dossier. Implementation and release
+status belong in Beads and current verification receipts.
