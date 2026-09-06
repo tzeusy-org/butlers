@@ -279,8 +279,8 @@ time reads and corrections, see §4a) and the QA dashboard routes under `/api/qa
 
 | Route | Component | Capability |
 |---|---|---|
-| `/chronicles` | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
-| `/qa` | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
+| **`/chronicles`** | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
+| **`/qa`** | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
 
 ---
 
@@ -290,11 +290,11 @@ Cross-butler identity resolution lives in the `public` PostgreSQL schema.
 
 | Table | Responsibility |
 |---|---|
-| `public.entities` | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
-| `public.contacts` | Contact records linked to entities. |
-| `public.contact_info` | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
-| `public.model_catalog` | Global model catalog for dynamic model routing. |
-| `public.butler_model_overrides` | Per-butler model selection overrides. |
+| **`public.entities`** | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
+| **`public.contacts`** | Contact records linked to entities. |
+| **`public.contact_info`** | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
+| **`public.model_catalog`** | Global model catalog for dynamic model routing. |
+| **`public.butler_model_overrides`** | Per-butler model selection overrides. |
 
 Resolution flow: channel identifier -> `contact_info` -> `contacts` -> `entities` -> roles.
 
