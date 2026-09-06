@@ -57,7 +57,7 @@ Scope: v1-mandatory
 #### Scenario: Invalid core_groups — unknown group name
 - **WHEN** a PATCH request sets `core_groups` to `["infra", "foo"]`
 - **THEN** the response SHALL return HTTP 422 with a validation error listing `"foo"` as an unknown group
-- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`
+- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`
 
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
