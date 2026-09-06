@@ -178,7 +178,9 @@ def test_patch_cold_field_returns_restart_required():
 
     # bu-27dxl.5.3: "delegation" is a known group — PATCH accepts it like any
     # other, instead of the 422 unknown-group rejection it got previously.
-    resp_delegation = client.patch(
-        "/api/butlers/test/runtime-config", json={"core_groups": ["infra", "delegation"]}
+    # Graph is likewise a selectable core group for the entity graph tools.
+    resp_known_groups = client.patch(
+        "/api/butlers/test/runtime-config",
+        json={"core_groups": ["infra", "delegation", "graph"]},
     )
-    assert resp_delegation.status_code == 200
+    assert resp_known_groups.status_code == 200

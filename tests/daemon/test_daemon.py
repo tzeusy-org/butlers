@@ -308,11 +308,13 @@ def butler_dir_with_modules(tmp_path: Path) -> Path:
     )
 
 
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+def _make_runtime_config_row(
+    butler_name: str = "test-butler", core_groups: list[str] | None = None
+) -> dict:
     """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
     return {
         "butler_name": butler_name,
-        "core_groups": None,
+        "core_groups": core_groups,
         "catalog_read_sensitivity": "normal",
         "max_concurrent": 3,
         "max_queued": 10,
@@ -321,19 +323,21 @@ def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
     }
 
 
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+def _make_fetchrow_side_effect(
+    butler_name: str = "test-butler", core_groups: list[str] | None = None
+):
     """Return an async side_effect for pool.fetchrow that returns runtime_config rows
     for runtime_config queries and None for all other queries."""
 
     async def _fetchrow(query: str, *args, **kwargs):
         if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
+            return _make_runtime_config_row(butler_name, core_groups=core_groups)
         return None
 
     return _fetchrow
 
 
-def _patch_infra():
+def _patch_infra(*, core_groups: list[str] | None = None):
     """Return a dict of patches for all infrastructure dependencies."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
@@ -347,7 +351,7 @@ def _patch_infra():
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect(core_groups=core_groups))
     mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
@@ -569,6 +573,61 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # "general" is a domain butler → gets universal + domain tools, not
     # messenger or switchboard tools.
     assert set(registered_tools) == UNIVERSAL_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
+
+
+@pytest.mark.parametrize(
+    ("core_groups", "graph_enabled"),
+    [
+        (["graph"], True),
+        (["infra"], False),
+        (None, True),
+    ],
+    ids=["graph-allowlisted", "graph-omitted", "null-all-groups"],
+)
+async def test_graph_core_group_registration(
+    butler_dir: Path, core_groups: list[str] | None, graph_enabled: bool
+) -> None:
+    """The graph group follows the existing allowlist and always-on gates."""
+    patches = _patch_infra(core_groups=core_groups)
+    registered_tools: list[str] = []
+
+    mock_mcp = MagicMock()
+
+    def tool_decorator(*_decorator_args, **decorator_kwargs):
+        declared_name = decorator_kwargs.get("name")
+
+        def decorator(fn):
+            registered_tools.append(declared_name or fn.__name__)
+            return fn
+
+        return decorator
+
+    mock_mcp.tool = tool_decorator
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"],
+        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["connect_switchboard"],
+        patches["create_audit_pool"],
+        patches["recover_route_inbox"],
+    ):
+        daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
+        await daemon.start()
+
+    graph_tools = {"entity_graph_walk", "entity_graph_path"}
+    assert graph_tools.issubset(registered_tools) is graph_enabled
+    # Existing infrastructure controls remain callable even when a group
+    # allowlist excludes graph and every other ordinary core group.
+    assert {"route.execute", "cancel_session"}.issubset(registered_tools)
 
 
 async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:

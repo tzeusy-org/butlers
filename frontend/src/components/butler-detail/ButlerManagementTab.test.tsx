@@ -319,6 +319,9 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     // The orphaned read-only ConfigRows are gone; the editable card title is present.
     expect(screen.getByText("Runtime Config")).toBeTruthy();
     expect(screen.getByText("Save")).toBeTruthy();
+    for (const group of ["graph", "delegation", "domain_events", "fleet_cases"]) {
+      expect(screen.getByText(group)).toBeTruthy();
+    }
   });
 
   it("surfaces the cold (restart required) tier badge for ceiling fields", () => {
