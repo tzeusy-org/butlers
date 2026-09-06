@@ -28,6 +28,7 @@ import pytest
 
 from butlers.core.entity_graph_edges import (
     MAX_WALK_HOPS,
+    coverage_for_entities,
     find_entity_graph_path,
     walk_entity_graph,
 )
@@ -261,3 +262,49 @@ class TestEntityGraphPath:
         )
 
         assert path is None
+
+
+class TestCoverageForEntities:
+    """RFC 0031 Slice 4: batch relationship counts for catalog-search integration."""
+
+    async def test_counts_edges_on_both_subject_and_object_side(self, pool: asyncpg.Pool) -> None:
+        a, b, c = _uuid(), _uuid(), _uuid()
+        await _live_edge(pool, subject=a, predicate="knows", obj=b)
+        await _live_edge(pool, subject=c, predicate="knows", obj=a)
+
+        coverage = await coverage_for_entities(pool, [a])
+
+        assert coverage == {a: (2, 0)}
+
+    async def test_withheld_edge_counts_separately_from_live(self, pool: asyncpg.Pool) -> None:
+        a, b = _uuid(), _uuid()
+        await _live_edge(pool, subject=a, predicate="knows", obj=b)
+        await _withheld_edge(pool, subject=a)
+
+        coverage = await coverage_for_entities(pool, [a])
+
+        assert coverage == {a: (1, 1)}
+
+    async def test_entity_with_no_edges_absent_from_result(self, pool: asyncpg.Pool) -> None:
+        a, b = _uuid(), _uuid()
+        await _live_edge(pool, subject=a, predicate="knows", obj=b)
+
+        lonely = _uuid()
+        coverage = await coverage_for_entities(pool, [a, lonely])
+
+        assert lonely not in coverage
+        assert coverage[a] == (1, 0)
+
+    async def test_empty_entity_ids_returns_empty_without_querying(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        assert await coverage_for_entities(pool, []) == {}
+
+    async def test_batches_multiple_entities_in_one_call(self, pool: asyncpg.Pool) -> None:
+        a, b, c = _uuid(), _uuid(), _uuid()
+        await _live_edge(pool, subject=a, predicate="knows", obj=b)
+        await _live_edge(pool, subject=b, predicate="knows", obj=c)
+
+        coverage = await coverage_for_entities(pool, [a, b, c])
+
+        assert coverage == {a: (1, 0), b: (2, 0), c: (1, 0)}
