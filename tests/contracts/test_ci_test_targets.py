@@ -432,12 +432,20 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift() -> No
         "CHANGES_RESULT",
         "CHANGES_BACKEND",
         "PLAN_MODE",
-        "CHECK_PREFLIGHT_RESULT",
         *[f"CHECK_UNIT_{index}_RESULT" for index in range(1, 6)],
         *[f"CHECK_INTEGRATION_{index}_RESULT" for index in range(1, 6)],
         "CHECK_AFFECTED_RESULT",
     ):
         assert result_name in gate["run"]
+    # Regression guard (bu-tt97y): check-preflight must NOT appear in the
+    # gate's shard-classification env/loop. It is not one of the ten heavy
+    # shards gated by the scoped/full plan decision -- it always runs and
+    # always succeeds when reached -- so counting it there falsely fails
+    # every scoped-mode PR. Its own success/failure is already enforced via
+    # the hard `needs:` dependency asserted above (check_job["needs"]).
+    assert "CHECK_PREFLIGHT_RESULT" not in gate["run"]
+    assert "CHECK_PREFLIGHT_RESULT" not in gate["env"]
+    assert "needs.check-preflight" not in str(gate["env"])
     # Fail closed: a skipped shard passes only for a docs-only PR that the
     # `changes` job classified successfully, on push to main (the queue
     # already validated that tree), or a pull_request where the affected-test
