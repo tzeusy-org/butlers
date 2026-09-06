@@ -388,6 +388,17 @@ class ReembedRunResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class EntityGraphCoverage(BaseModel):
+    """Relationship coverage for one entity, drawn from public.entity_graph_edges.
+
+    RFC 0031 (Slice 4): counts, never content — ``relationships_withheld``
+    reflects sensitivity-excluded edges without exposing what they are.
+    """
+
+    relationships_known: int
+    relationships_withheld: int
+
+
 class MemoryCatalogSearchResult(BaseModel):
     """One row from a public.memory_catalog cross-butler search.
 
@@ -415,3 +426,5 @@ class MemoryCatalogSearchResult(BaseModel):
     sensitivity: str | None = None
     score: float | None = None
     """Relevance score: similarity (semantic), rank (keyword), or rrf_score (hybrid)."""
+    graph_coverage: EntityGraphCoverage | None = None
+    """Present only when entity_id is set; relationship counts anchored on it (RFC 0031 Slice 4)."""

@@ -19,6 +19,7 @@ allowed to lag or fail silently, this one is not.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 import asyncpg
 
@@ -413,6 +414,50 @@ async def find_entity_graph_path(
     )
     by_id = {row["id"]: row for row in edges}
     return [by_id[edge_id] for edge_id in edge_path]
+
+
+# ---------------------------------------------------------------------------
+# Coverage (RFC 0031 Slice 4: "entity catalog read integration — surfacing
+# graph coverage alongside existing catalog search results"). A per-entity
+# count, not a traversal -- reused as-is by Slice 5's dossier coverage
+# statement ("N relationships known, M withheld for sensitivity").
+# ---------------------------------------------------------------------------
+
+
+async def coverage_for_entities(
+    pool: asyncpg.Pool, entity_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, tuple[int, int]]:
+    """Batch-count live/withheld edges touching each of ``entity_ids``.
+
+    An entity counts an edge whether it appears as ``subject_entity_id`` or
+    ``object_entity_id`` -- withheld stubs only ever populate the subject
+    side, so they are counted once, on the entity that owns the withheld
+    fact. Returns ``{entity_id: (relationships_known, relationships_withheld)}``;
+    an entity with no edges at all is simply absent from the mapping, not
+    present with zeros -- callers default a lookup miss to ``(0, 0)``.
+    """
+    if not entity_ids:
+        return {}
+    unique_ids = list({eid for eid in entity_ids})
+    rows = await pool.fetch(
+        """
+        SELECT entity_id,
+               COUNT(*) FILTER (WHERE withheld_reason IS NULL)     AS known,
+               COUNT(*) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
+        FROM (
+            SELECT subject_entity_id AS entity_id, withheld_reason
+            FROM public.entity_graph_edges
+            WHERE subject_entity_id = ANY($1::uuid[])
+            UNION ALL
+            SELECT object_entity_id AS entity_id, withheld_reason
+            FROM public.entity_graph_edges
+            WHERE object_entity_id = ANY($1::uuid[])
+        ) sides
+        GROUP BY entity_id
+        """,
+        unique_ids,
+    )
+    return {row["entity_id"]: (row["known"], row["withheld"]) for row in rows}
 
 
 async def backfill_memory_facts_edges(
