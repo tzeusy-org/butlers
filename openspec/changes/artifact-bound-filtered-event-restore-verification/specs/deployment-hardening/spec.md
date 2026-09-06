@@ -37,11 +37,14 @@ Scope: v1-mandatory
 - **THEN** it records the fixed parent as `connectors.filtered_events` with
   `relkind="p"`, range strategy, and the sole partition key `received_at`
 - **AND** it records every directly attached child exactly once, using a
-  `filtered_events_YYYYMM` name, ordinary-relation kind, normalized UTC month
-  lower bound, next-month exclusive upper bound, and non-negative exact row
-  count
-- **AND** no name-matching unattached table, default partition, partial child
-  list, duplicate child, overlapping bound, or non-month bound is accepted
+  fixed `schema="connectors"`, `filtered_events_YYYYMM` name, ordinary-relation
+  kind, normalized UTC month lower bound, next-month exclusive upper bound, and
+  non-negative exact row count
+- **AND** the complete set and uniqueness comparison uses fully qualified
+  `(schema, name)` identities, never relation name alone
+- **AND** no attached foreign-schema child, name-matching unattached table,
+  default partition, partial child list, duplicate child, overlapping bound, or
+  non-month bound is accepted
 
 #### Scenario: Optional status counts remain complete and content-blind
 
@@ -113,10 +116,11 @@ Scope: v1-mandatory
 - **THEN** one repeatable-read, read-only transaction against the scratch
   database proves that `connectors.filtered_events` exists with
   `relkind="p"`, range strategy, and exactly the `received_at` partition key
-- **AND** the attached-child names equal the manifest set exactly, with no
-  missing or unexpected child and no unattached name match accepted
-- **AND** every child is attached directly to the parent with the exact
-  normalized half-open UTC month bounds declared by the manifest
+- **AND** the attached fully qualified `(schema, name)` child identities equal
+  the manifest set exactly, every child is in the fixed `connectors` schema, and
+  no missing, unexpected, foreign-schema, or unattached name match is accepted
+- **AND** every fully qualified child is attached directly to the parent with
+  the exact normalized half-open UTC month bounds declared by the manifest
 
 #### Scenario: Checker proves exact counts without content reads
 
@@ -134,8 +138,10 @@ Scope: v1-mandatory
   check mismatches, or a catalog/count query or parse fails
 - **THEN** the scoped result is `fail`; no passing subset, inferred value,
   current-live comparison, or last-known result substitutes for the failed check
-- **AND** the overall restore drill records `result="fail"`,
-  `failure_stage="verify"`, and `failure_code="integrity_check_failed"`
+- **AND** the overall restore drill records `result="fail"` with
+  `failure_stage="verify"` and `failure_code="integrity_check_failed"` unless a
+  later post-cleanup failure supplies the terminal overall stage/code while
+  retaining this scoped failure in the same attempt row
 - **AND** generic verification success cannot override that scoped failure
 
 #### Scenario: Passing verdict is tied to the exact artifact and capture
@@ -145,10 +151,24 @@ Scope: v1-mandatory
 - **THEN** the checker returns `scope="connectors.filtered_events"`,
   `result="pass"`, and `reason_code="ok"`, bound to non-null artifact SHA-256,
   manifest SHA-256, and manifest capture-completion timestamp
-- **AND** the protected executor persists that scoped binding through its
-  migration-owned result authority before an overall pass can be recorded
+- **AND** the protected executor persists the scoped binding and overall result
+  in the same immutable executor-owner attempt row and database transaction
+- **AND** that row's database constraints require an overall pass to carry this
+  exact scoped pass and all three non-null binding fields
 - **AND** generic restore verification and successful post-run scratch cleanup
   remain separately necessary for the overall pass
+
+#### Scenario: Crash or retry cannot reuse an earlier scoped pass
+
+- **WHEN** the executor crashes before authoritative attempt persistence, retries
+  after an interrupted attempt, or records two attempts against adjacent
+  artifacts
+- **THEN** a pre-commit crash leaves no partial authoritative row, and each retry
+  recomputes and atomically records its own scoped verdict and bindings
+- **AND** a post-commit crash leaves one complete immutable attempt row
+- **AND** no read or write path may join, copy, or associate a scoped pass or
+  artifact/manifest/capture binding from one attempt row with another attempt's
+  overall result
 
 #### Scenario: Failure verdict uses a closed content-blind vocabulary
 

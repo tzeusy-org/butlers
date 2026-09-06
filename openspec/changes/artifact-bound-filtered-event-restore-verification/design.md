@@ -72,6 +72,7 @@ exact JSON object with unknown fields rejected and this version-1 shape:
   },
   "partitions": [
     {
+      "schema": "connectors",
       "name": "filtered_events_YYYYMM",
       "relkind": "r",
       "lower_bound": "RFC3339 UTC month start",
@@ -91,12 +92,15 @@ exact JSON object with unknown fields rejected and this version-1 shape:
 
 `status_counts` is optional as a whole. When present, it contains exactly the
 five allowed status keys, including zeroes, and its non-negative integer values
-sum exactly to `row_count`. Every partition entry is unique and sorted by name.
-The suffix and bounds agree: `filtered_events_202608` has exactly
+sum exactly to `row_count`. Every partition entry has `schema="connectors"`, is
+unique and sorted by fully qualified `(schema, name)`, and is therefore never
+identified by an unqualified relation name. The suffix and bounds agree:
+`connectors.filtered_events_202608` has exactly
 `[2026-08-01T00:00:00Z, 2026-09-01T00:00:00Z)`. Gaps between months are allowed
 because a month with no insert need not have a child; duplicates, overlapping
-bounds, default partitions, unattached tables, extra partition-key columns, and
-non-month bounds are not allowed by this scope.
+bounds, default partitions, attached or unattached children in another schema,
+unattached tables, extra partition-key columns, and non-month bounds are not
+allowed by this scope.
 
 The allowlist deliberately excludes row IDs, connector or sender identities,
 external IDs, preview/subject text, filter reasons, `full_payload`, error detail,
@@ -116,13 +120,16 @@ same snapshot before their first query. The exporting transaction stays open
 until both the dump and every manifest query finish.
 
 The manifest inventory comes from PostgreSQL partition catalogs, not table-name
-discovery. It records every child attached to `connectors.filtered_events` in
-that snapshot. Every count is a `COUNT(*)` scoped to one recorded child;
-optional status counts group only by the closed status vocabulary. No payload
-column is selected. If snapshot export/import, catalog discovery, any count,
-the dump, gzip validation, or manifest validation fails, the producer publishes
-no completed pair and records a failed backup run through the existing run-
-outcome mechanism.
+discovery. It requires every child attached to `connectors.filtered_events` in
+that snapshot to be in the fixed `connectors` schema and records its fully
+qualified identity. A foreign-schema child, including one whose relation name
+matches a canonical child, fails production instead of being collapsed into an
+unqualified name. Every count is a `COUNT(*)` scoped to one fully qualified
+recorded child; optional status counts group only by the closed status
+vocabulary. No payload column is selected. If snapshot export/import, catalog
+discovery, any count, the dump, gzip validation, or manifest validation fails,
+the producer publishes no completed pair and records a failed backup run through
+the existing run-outcome mechanism.
 
 This design allows writes after snapshot acquisition without mixing states. A
 row committed later is absent from both the dump and manifest. Concurrent DDL
@@ -167,10 +174,12 @@ verifies:
 
 1. `connectors.filtered_events` exists with `relkind='p'`, range strategy, and
    exactly one partition key, `received_at`;
-2. the exact set of attached child names equals the manifest set, with no
-   missing, unexpected, or unattached name-matching table accepted;
-3. each child is an ordinary relation attached directly to the parent and has
-   the exact normalized half-open UTC month bounds in the manifest;
+2. the exact set of attached fully qualified `(schema, name)` child identities
+   equals the manifest set, every child is in `connectors`, and no missing,
+   unexpected, foreign-schema, or unattached name-matching table is accepted;
+3. each fully qualified child is an ordinary relation attached directly to the
+   parent and has the exact normalized half-open UTC month bounds in the
+   manifest;
 4. each child's exact `COUNT(*)` equals `row_count`; and
 5. when `status_counts` is present, every closed-vocabulary status count equals
    the manifest and sums to the child count.
@@ -180,7 +189,7 @@ one extra attached child, one wrong bound, one count mismatch, an unknown status
 or any query/parse failure fails the entire scoped verdict. It never substitutes
 current live counts when manifest evidence is unavailable.
 
-### 5. Scoped verdicts are exact, durable, and sanitized
+### 5. Scoped and overall verdicts share one authoritative attempt row
 
 The checker returns exactly one scoped verdict:
 
@@ -210,21 +219,97 @@ The closed failure vocabulary is:
 
 `pass` uses `reason_code=ok` and requires all three binding fields to be
 non-null. A failure may leave a field null when it cannot be established safely.
-The executor records the scoped verdict through a migration-owned extension to
-its existing protected result authority. No caller-supplied dashboard or normal
-runtime value is accepted as evidence. The fixed public audit projection and
-operator API need expose only the existing overall result and stable sanitized
-failure classification; they do not expose artifact paths, counts, manifest
-bodies, query output, or client diagnostics.
+The executor does not persist a scope receipt before or separately from the
+overall result. The existing `restore_drill_results.id` identifies one immutable
+attempt row that stores the overall result and its scope state
+(`not_run|pass|fail`), scope reason, and binding fields in one insert. The
+migration-owned writer validates the cross-field invariants and writes that row
+and its fixed audit projection in one database transaction.
 
-Any scoped failure maps to the existing overall restore result
-`result=fail`, `failure_stage=verify`, and
-`failure_code=integrity_check_failed`. A scoped pass is necessary but not
-sufficient for an overall pass: generic restore verification and post-cleanup
-must still succeed. This preserves the existing result vocabulary and prevents
-a table-specific success from masking a later lifecycle failure.
+An overall pass is valid only when the same row contains a scope pass with
+`reason_code=ok` and all binding fields. A scope failure requires an overall
+failure; it maps to verify-stage `integrity_check_failed` when no later
+post-cleanup failure becomes the terminal overall classification. `not_run`
+requires null scope binding fields and is permitted only for an overall failure
+where this checker did not complete, including an earlier lifecycle stage or a
+generic verify-stage failure before the scope verdict. A scope pass or failure
+may coexist with an overall post-cleanup failure, truthfully retaining the
+checker result while the attempt remains failed. The ledger exposes no
+update/delete path, and readers never join a scope receipt from one row to an
+overall result from another.
 
-### 6. Missing and legacy metadata fail closed
+A crash before this single transaction commits leaves no authoritative row for
+that attempt. A retry recomputes the scope verdict and binding; it cannot claim
+an in-memory or prior-row pass. A crash after commit leaves the complete attempt
+row. No caller-supplied dashboard or normal runtime value is accepted as
+evidence. The fixed public audit projection and operator API need expose only
+the existing overall result and stable sanitized failure classification; they
+do not expose artifact paths, counts, manifest bodies, query output, or client
+diagnostics.
+
+Any scoped failure makes the existing overall restore result fail. It uses
+`failure_stage=verify` and `failure_code=integrity_check_failed` unless a later
+post-cleanup failure supplies the terminal overall stage/code. A scoped pass is
+necessary but not sufficient for an overall pass: generic restore verification
+and post-cleanup must still succeed. This preserves the existing result
+vocabulary and prevents a table-specific success from masking a later lifecycle
+failure.
+
+### 6. The protected ledger transition is trusted-bootstrap-first
+
+The current authority is not writable DDL owned by the shared migration login.
+`restore_drill_executor.restore_drill_results`, its sequence, and its executor
+functions are owned by `restore_drill_executor_owner`; the admin installer and
+finalizer are owned by the cluster-superuser bootstrap provenance. The new
+attempt columns and writer therefore follow the same two-stage boundary.
+
+On a clean database, `scripts/init-db.sql` creates the exact superuser-owned,
+zero-argument, fixed-search-path `install_interface()` and
+`finalize_interface()` definitions for the new interface and temporarily grants
+only installer execution to the configured migration role. On an existing
+database, that bootstrap path accepts only the exact clean finalized predecessor
+interface before staging its one-way upgrade. It rejects partial, shared-owned,
+trigger-bearing, wrong-signature, wrong-owner, wrong-search-path, or otherwise
+spoofed predecessor/current objects before any DDL, ownership transfer, or
+grant.
+
+The following core migration runs only after that privileged bootstrap. It
+either verifies an already-finalized current interface or invokes the exact
+trusted bootstrap installer, then independently proves the final table columns,
+constraints, function signatures, owners, SECURITY DEFINER flags, fixed search
+paths, trigger absence, role flags, memberships, and ACLs. An old interface or
+missing/untrusted installer fails closed with an instruction to run the managed
+bootstrap; the migration never alters protected objects directly or stamps past
+the prerequisite.
+
+The finalized writer is
+`restore_drill_executor.record_attempt(text,text,text,text,text,text,text,timestamptz)`:
+overall result, failure stage, failure code, scoped result, scoped reason,
+artifact SHA-256, manifest SHA-256, and manifest capture completion time. It
+returns the existing row ID. The four-argument `record_result(text,text,text,
+integer)` predecessor may remain only as a non-passing compatibility surface;
+after finalization the executor receives EXECUTE on `is_due(integer)` and the
+new writer, not the predecessor writer or `latest_result()`. The shared
+migration/dashboard role receives schema USAGE and EXECUTE on `latest_result()`
+only, with no direct ledger/sequence DML, owner membership, admin-schema access,
+installer/finalizer execution, or executor-writer execution. Other normal roles
+receive none. The audit writer retains only its fixed public-audit projection
+capability and no private-ledger access.
+
+Clean installation, exact-predecessor upgrade, interrupted retry, privileged
+bootstrap rerun, migration retry, and a later per-schema replay all converge on
+the same finalized interface without duplicate rows or widened ACLs. A late
+schema first proves the already-finalized current catalog and no-ops; it cannot
+re-run the upgrade or temporarily reacquire installer authority.
+
+The exact finalized `latest_result()` table return keeps `checked_at`, `result`,
+`detail`, `failure_stage`, `failure_code`, and `failing_since`, and adds
+`filtered_events_result`, `filtered_events_reason_code`,
+`filtered_events_artifact_sha256`, `filtered_events_manifest_sha256`, and
+`filtered_events_manifest_capture_completed_at`. Catalog verification checks
+that complete return shape as well as the zero-argument function identity.
+
+### 7. Missing and legacy metadata fail closed
 
 An artifact produced before this manifest contract, a missing sibling, invalid
 JSON, duplicate key, unknown field, unsupported version, incomplete capture,
