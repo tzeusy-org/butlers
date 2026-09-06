@@ -607,6 +607,128 @@
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
     }
   ],
+  "durable-dashboard-terminal-action-recovery/staffer-qa/V1 Discovery Sources": [
+    {
+      "kind": "clause",
+      "scenario": "Log scanner source",
+      "digest": "f0cba01ffd08",
+      "excerpt": "- **AND** all filtering is tool-based (JSON parsing, regex, severity checks) — no LLM invocation"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "52223f90dc23",
+      "excerpt": "- **AND** the view is read-only (structurally enforced — no INSERT/UPDATE/DELETE), date-filtered, and created via aud..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "8ea84368008f",
+      "excerpt": "- **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session err..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "e2f8510a5094",
+      "excerpt": "- **AND** computes fingerprints using the same algorithm as log scanner findings"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "092c6a2eb242",
+      "excerpt": "- **AND** excludes rows that represent expected or controlled outcomes rather than product/runtime failures"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "b8d8d54b57e4",
+      "excerpt": "- short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = \"classification\"` (or th..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "b545d0eb4563",
+      "excerpt": "- synthetic startup-recovery rows (`orphaned: daemon restart`)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Session record source",
+      "digest": "41b6d4c3bb85",
+      "excerpt": "- spawner guardrail terminations whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Butler report source (reactive relay via Switchboard)",
+      "digest": "38b9a1516494",
+      "excerpt": "- **THEN** butlers relay `report_error` findings to the QA staffer via Switchboard's `route()` MCP tool, calling the ..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Butler report source (reactive relay via Switchboard)",
+      "digest": "dc5590ed9cb3",
+      "excerpt": "- **AND** the QA staffer's `report_finding` MCP tool handler queues received findings in an in-memory buffer"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Butler report source (reactive relay via Switchboard)",
+      "digest": "95d8ad4e1c15",
+      "excerpt": "- **AND** the patrol cycle drains the buffer and includes those findings alongside batch sources"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Butler report source (reactive relay via Switchboard)",
+      "digest": "474c1b8fdb43",
+      "excerpt": "- **AND** if the buffer exceeds `max_reactive_buffer` (default: 50), oldest entries are dropped with a WARNING"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "b598bb8f4e6a",
+      "excerpt": "- **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "ce8fc8c93405",
+      "excerpt": "- **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `swit..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "f523edb68dd6",
+      "excerpt": "- **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) an..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "f8f0aa842aef",
+      "excerpt": "- **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-b..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "c35d9d283211",
+      "excerpt": "- **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_dead..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "a62a85c9f77a",
+      "excerpt": "- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, o..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "818e26c77b45",
+      "excerpt": "- **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Infra state source",
+      "digest": "fe706b47f658",
+      "excerpt": "- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is rai..."
+    }
+  ],
   "durable-issue-condition-ledger/dashboard-api/Issues Aggregation": [
     {
       "kind": "clause",
@@ -1525,6 +1647,38 @@
       "scenario": "All edges are prerequisite edges by default",
       "digest": "e2f70f6937d1",
       "excerpt": "\"All edges are prerequisite edges by default\" is not in the block"
+    }
+  ],
+  "source-grounded-education/module-education-teaching-flows/Teaching Phase — Explain, Question, Evaluate": [
+    {
+      "kind": "scenario",
+      "scenario": "Session delivers explanation for current node",
+      "digest": "682319c63207",
+      "excerpt": "\"Session delivers explanation for current node\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Session asks comprehension question after explanation",
+      "digest": "c03d6862c318",
+      "excerpt": "\"Session asks comprehension question after explanation\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Session evaluates user answer and gives feedback",
+      "digest": "dd0b7f9cb2f2",
+      "excerpt": "\"Session evaluates user answer and gives feedback\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Mastery updated after teaching evaluation",
+      "digest": "9d5789245b4b",
+      "excerpt": "\"Mastery updated after teaching evaluation\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Flow advances to QUIZZING after teaching evaluation",
+      "digest": "10bc40a4698a",
+      "excerpt": "\"Flow advances to QUIZZING after teaching evaluation\" is not in the block"
     }
   ],
   "true-bidirectional-email-correspondence/connector-base-spec/Authentication and Token Management": [
