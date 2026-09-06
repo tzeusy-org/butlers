@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.tools.travel._helpers import _row_to_dict
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -72,80 +73,23 @@ def _pool(db: DatabaseManager):
 
 
 def _row_to_trip(r: dict) -> TripModel:
-    return TripModel(
-        id=str(r["id"]),
-        name=r["name"],
-        destination=r["destination"],
-        start_date=str(r["start_date"]),
-        end_date=str(r["end_date"]),
-        status=r["status"],
-        metadata=dict(r["metadata"]) if r["metadata"] else {},
-        created_at=str(r["created_at"]),
-        updated_at=str(r["updated_at"]),
-    )
+    return TripModel(**_row_to_dict(r))
 
 
 def _row_to_leg(r: dict) -> LegModel:
-    return LegModel(
-        id=str(r["id"]),
-        trip_id=str(r["trip_id"]),
-        type=r["type"],
-        carrier=r["carrier"],
-        departure_airport_station=r["departure_airport_station"],
-        departure_city=r["departure_city"],
-        departure_at=str(r["departure_at"]),
-        arrival_airport_station=r["arrival_airport_station"],
-        arrival_city=r["arrival_city"],
-        arrival_at=str(r["arrival_at"]),
-        confirmation_number=r["confirmation_number"],
-        pnr=r["pnr"],
-        seat=r["seat"],
-        metadata=dict(r["metadata"]) if r["metadata"] else {},
-        created_at=str(r["created_at"]),
-        updated_at=str(r["updated_at"]),
-    )
+    return LegModel(**_row_to_dict(r))
 
 
 def _row_to_accommodation(r: dict) -> AccommodationModel:
-    return AccommodationModel(
-        id=str(r["id"]),
-        trip_id=str(r["trip_id"]),
-        type=r["type"],
-        name=r["name"],
-        address=r["address"],
-        check_in=str(r["check_in"]) if r["check_in"] else None,
-        check_out=str(r["check_out"]) if r["check_out"] else None,
-        confirmation_number=r["confirmation_number"],
-        metadata=dict(r["metadata"]) if r["metadata"] else {},
-        created_at=str(r["created_at"]),
-        updated_at=str(r["updated_at"]),
-    )
+    return AccommodationModel(**_row_to_dict(r))
 
 
 def _row_to_reservation(r: dict) -> ReservationModel:
-    return ReservationModel(
-        id=str(r["id"]),
-        trip_id=str(r["trip_id"]),
-        type=r["type"],
-        provider=r["provider"],
-        datetime=str(r["datetime"]) if r["datetime"] else None,
-        confirmation_number=r["confirmation_number"],
-        metadata=dict(r["metadata"]) if r["metadata"] else {},
-        created_at=str(r["created_at"]),
-        updated_at=str(r["updated_at"]),
-    )
+    return ReservationModel(**_row_to_dict(r))
 
 
 def _row_to_document(r: dict) -> DocumentModel:
-    return DocumentModel(
-        id=str(r["id"]),
-        trip_id=str(r["trip_id"]),
-        type=r["type"],
-        blob_ref=r["blob_ref"],
-        expiry_date=str(r["expiry_date"]) if r["expiry_date"] else None,
-        metadata=dict(r["metadata"]) if r["metadata"] else {},
-        created_at=str(r["created_at"]),
-    )
+    return DocumentModel(**_row_to_dict(r))
 
 
 # ---------------------------------------------------------------------------
@@ -573,67 +517,79 @@ async def get_upcoming_travel(
     )
 
     upcoming_trips: list[UpcomingTripModel] = []
+    unreadable_trip_ids: list[str] = []
     all_actions: list[dict] = []
 
     for row in rows:
-        trip = _row_to_trip(dict(row))
-        trip_id = trip.id
+        raw_trip_id = str(row["id"])
+        try:
+            trip = _row_to_trip(dict(row))
+            trip_id = trip.id
 
-        legs_rows = await pool.fetch(
-            "SELECT id, trip_id, type, carrier, departure_airport_station, departure_city,"
-            " departure_at, arrival_airport_station, arrival_city, arrival_at,"
-            " confirmation_number, pnr, seat, metadata, created_at, updated_at"
-            " FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at ASC",
-            trip_id,
-        )
-        legs = [_row_to_leg(dict(r)) for r in legs_rows]
-
-        acc_rows = await pool.fetch(
-            "SELECT id, trip_id, type, name, address, check_in, check_out,"
-            " confirmation_number, metadata, created_at, updated_at"
-            " FROM travel.accommodations WHERE trip_id = $1::uuid ORDER BY check_in ASC",
-            trip_id,
-        )
-        accommodations = [_row_to_accommodation(dict(r)) for r in acc_rows]
-
-        # Calculate days until departure
-        days_until: int | None = None
-        start_date_val = trip.start_date
-        if start_date_val:
-            try:
-                start_d = date.fromisoformat(start_date_val)
-                days_until = (start_d - today).days
-            except (ValueError, TypeError):
-                pass
-
-        upcoming_trips.append(
-            UpcomingTripModel(
-                trip=trip,
-                legs=legs,
-                accommodations=accommodations,
-                days_until_departure=days_until,
-            )
-        )
-
-        if include_pretrip_actions:
-            doc_rows = await pool.fetch(
-                "SELECT id, trip_id, type, blob_ref, expiry_date, metadata, created_at"
-                " FROM travel.documents WHERE trip_id = $1::uuid",
+            legs_rows = await pool.fetch(
+                "SELECT id, trip_id, type, carrier, departure_airport_station, departure_city,"
+                " departure_at, arrival_airport_station, arrival_city, arrival_at,"
+                " confirmation_number, pnr, seat, metadata, created_at, updated_at"
+                " FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at ASC",
                 trip_id,
             )
-            documents = [_row_to_document(dict(r)) for r in doc_rows]
+            legs = [_row_to_leg(dict(r)) for r in legs_rows]
 
-            trip_alerts = _compute_alerts(legs, documents)
-            for alert in trip_alerts:
-                all_actions.append(
-                    {
-                        "trip_id": trip_id,
-                        "trip_name": trip.name,
-                        "type": alert.type,
-                        "message": alert.message,
-                        "severity": alert.severity,
-                    }
+            acc_rows = await pool.fetch(
+                "SELECT id, trip_id, type, name, address, check_in, check_out,"
+                " confirmation_number, metadata, created_at, updated_at"
+                " FROM travel.accommodations WHERE trip_id = $1::uuid ORDER BY check_in ASC",
+                trip_id,
+            )
+            accommodations = [_row_to_accommodation(dict(r)) for r in acc_rows]
+
+            # Calculate days until departure
+            days_until: int | None = None
+            start_date_val = trip.start_date
+            if start_date_val:
+                try:
+                    start_d = date.fromisoformat(start_date_val)
+                    days_until = (start_d - today).days
+                except (ValueError, TypeError):
+                    pass
+
+            upcoming_trips.append(
+                UpcomingTripModel(
+                    trip=trip,
+                    legs=legs,
+                    accommodations=accommodations,
+                    days_until_departure=days_until,
                 )
+            )
+
+            if include_pretrip_actions:
+                doc_rows = await pool.fetch(
+                    "SELECT id, trip_id, type, blob_ref, expiry_date, metadata, created_at"
+                    " FROM travel.documents WHERE trip_id = $1::uuid",
+                    trip_id,
+                )
+                documents = [_row_to_document(dict(r)) for r in doc_rows]
+
+                trip_alerts = _compute_alerts(legs, documents)
+                for alert in trip_alerts:
+                    all_actions.append(
+                        {
+                            "trip_id": trip_id,
+                            "trip_name": trip.name,
+                            "type": alert.type,
+                            "message": alert.message,
+                            "severity": alert.severity,
+                        }
+                    )
+        except Exception:
+            # A single unreadable trip (e.g. corrupt metadata) must not 500
+            # the whole upcoming-travel response. Exclude it and disclose the
+            # id (named-list degraded-mode envelope) instead of either.
+            logger.warning(
+                "get_upcoming_travel: excluding unreadable trip %s", raw_trip_id, exc_info=True
+            )
+            unreadable_trip_ids.append(raw_trip_id)
+            continue
 
     # Urgency-rank: high=1, medium=2, low=3
     _severity_rank = {"high": 1, "medium": 2, "low": 3}
@@ -660,6 +616,7 @@ async def get_upcoming_travel(
         actions=actions,
         window_start=today.isoformat(),
         window_end=window_end.isoformat(),
+        unreadable_trip_ids=unreadable_trip_ids,
     )
 
 

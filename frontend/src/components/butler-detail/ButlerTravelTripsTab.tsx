@@ -22,6 +22,7 @@ import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import {
   Sheet,
   SheetContent,
@@ -168,77 +169,115 @@ function ExpiringDocsBanner({ documents, lookaheadDays }: ExpiringDocsBannerProp
 interface KpiStripProps {
   upcoming: ReturnType<typeof useUpcomingTravel>["data"];
   isLoading: boolean;
+  isError: boolean;
+  onRetry?: () => void;
 }
 
-function KpiStrip({ upcoming, isLoading }: KpiStripProps) {
+/** Rendered instead of a numeral whenever the source is down — never "0". */
+const UNAVAILABLE = "unavailable";
+
+function KpiStrip({ upcoming, isLoading, isError, onRetry }: KpiStripProps) {
+  // First-load (or fully failed) fetch: no cached data survives an outage.
+  // Never render 0 active / 0 planned / 0 open actions over a real failure —
+  // that reads as an honest empty calendar (bu-2jtfw.1).
+  const unavailable = isError && upcoming == null;
+
   const upcomingTrips = upcoming?.upcoming_trips ?? [];
   const actions = upcoming?.actions ?? [];
+  const unreadableTripIds = upcoming?.unreadable_trip_ids ?? [];
 
   const nextTrip: TravelUpcomingTrip | undefined = upcomingTrips[0];
   const activeCount = upcomingTrips.filter((ut) => ut.trip.status === "active").length;
   const plannedCount = upcomingTrips.filter((ut) => ut.trip.status === "planned").length;
   const highSeverityCount = actions.filter((a) => a.severity === "high").length;
 
-  const nextDepartureName =
-    nextTrip != null
+  const nextDepartureName = unavailable
+    ? UNAVAILABLE
+    : nextTrip != null
       ? nextTrip.trip.name
       : "—";
   const nextDepartureSub =
-    nextTrip?.days_until_departure != null
+    !unavailable && nextTrip?.days_until_departure != null
       ? `${nextTrip.days_until_departure}d away`
       : undefined;
 
   return (
-    <div
-      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
-      data-testid="travel-kpi-strip"
-    >
-      <Panel>
-        <KpiCell
-          label="Next departure"
-          value={
-            <span data-testid="kpi-next-departure">
-              {isLoading ? "…" : nextDepartureName}
-            </span>
-          }
-          sub={isLoading ? undefined : nextDepartureSub}
-        />
-      </Panel>
+    <div data-testid="travel-kpi-strip-container">
+      {unavailable && (
+        <div className="px-4 pt-3">
+          <SourceDegradedNote
+            label="Upcoming travel"
+            detail="/api/travel/upcoming unavailable"
+            onRetry={onRetry}
+            testId="travel-kpi-degraded"
+          />
+        </div>
+      )}
+      {!unavailable && unreadableTripIds.length > 0 && (
+        <div className="px-4 pt-3">
+          <SourceDegradedNote
+            label="Upcoming travel"
+            detail={`partial: ${unreadableTripIds.length} trip${unreadableTripIds.length === 1 ? "" : "s"} excluded (unreadable)`}
+            onRetry={onRetry}
+            testId="travel-kpi-partial-degraded"
+          />
+        </div>
+      )}
+      <div
+        className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
+        data-testid="travel-kpi-strip"
+      >
+        <Panel>
+          <KpiCell
+            label="Next departure"
+            value={
+              <span data-testid="kpi-next-departure">
+                {isLoading ? "…" : nextDepartureName}
+              </span>
+            }
+            sub={isLoading ? undefined : nextDepartureSub}
+          />
+        </Panel>
 
-      <Panel>
-        <KpiCell
-          label="Active trips"
-          value={
-            <span data-testid="kpi-active-count" className="tnum">
-              {isLoading ? "…" : activeCount}
-            </span>
-          }
-        />
-      </Panel>
+        <Panel>
+          <KpiCell
+            label="Active trips"
+            value={
+              <span data-testid="kpi-active-count" className="tnum">
+                {isLoading ? "…" : unavailable ? UNAVAILABLE : activeCount}
+              </span>
+            }
+          />
+        </Panel>
 
-      <Panel>
-        <KpiCell
-          label="Planned trips"
-          value={
-            <span data-testid="kpi-planned-count" className="tnum">
-              {isLoading ? "…" : plannedCount}
-            </span>
-          }
-        />
-      </Panel>
+        <Panel>
+          <KpiCell
+            label="Planned trips"
+            value={
+              <span data-testid="kpi-planned-count" className="tnum">
+                {isLoading ? "…" : unavailable ? UNAVAILABLE : plannedCount}
+              </span>
+            }
+          />
+        </Panel>
 
-      <Panel>
-        <KpiCell
-          label="Open actions"
-          tone={highSeverityCount > 0 ? "red" : "fg"}
-          value={
-            <span data-testid="kpi-open-actions" className="tnum">
-              {isLoading ? "…" : actions.length}
-            </span>
-          }
-          sub={highSeverityCount > 0 ? `${highSeverityCount} high severity` : undefined}
-        />
-      </Panel>
+        <Panel>
+          <KpiCell
+            label="Open actions"
+            tone={highSeverityCount > 0 ? "red" : "fg"}
+            value={
+              <span data-testid="kpi-open-actions" className="tnum">
+                {isLoading ? "…" : unavailable ? UNAVAILABLE : actions.length}
+              </span>
+            }
+            sub={
+              !unavailable && highSeverityCount > 0
+                ? `${highSeverityCount} high severity`
+                : undefined
+            }
+          />
+        </Panel>
+      </div>
     </div>
   );
 }
@@ -643,7 +682,13 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
 export default function ButlerTravelTripsTab() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
-  const { data: upcoming, isLoading: upcomingLoading, error: upcomingError } = useUpcomingTravel(90);
+  const {
+    data: upcoming,
+    isLoading: upcomingLoading,
+    error: upcomingError,
+    isError: upcomingIsError,
+    refetch: refetchUpcoming,
+  } = useUpcomingTravel(90);
   const { data: expiringDocs } = useExpiringDocuments(EXPIRING_DOCS_LOOKAHEAD_DAYS);
 
   const expiringDocuments = expiringDocs?.documents ?? [];
@@ -666,7 +711,12 @@ export default function ButlerTravelTripsTab() {
       )}
 
       {/* Row 1: KPI strip — full 4-col width */}
-      <KpiStrip upcoming={upcoming} isLoading={upcomingLoading} />
+      <KpiStrip
+        upcoming={upcoming}
+        isLoading={upcomingLoading}
+        isError={upcomingIsError}
+        onRetry={() => void refetchUpcoming()}
+      />
 
       {/* Row 2: Week ahead (span 2) + Upcoming checklist (span 2) */}
       <div className="grid grid-cols-1 lg:grid-cols-4 border-l border-border/60">

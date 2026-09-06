@@ -8101,6 +8101,8 @@ export interface TravelUpcomingModel {
   actions: TravelPreTripAction[];
   window_start: string;
   window_end: string;
+  /** Trip ids excluded from `upcoming_trips` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
 }
 
 /** Params for listing trips. */
