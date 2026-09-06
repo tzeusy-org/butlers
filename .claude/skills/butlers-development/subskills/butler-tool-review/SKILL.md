@@ -121,7 +121,12 @@ See [references/tool-budget.md](references/tool-budget.md) for group taxonomy.
 
 ### Phase 7: Historical Usage Audit
 
-**This phase is critical for removal decisions** — code-level analysis alone cannot tell you whether a tool is actually used. Query the butler's `{schema}.sessions` table (JSONB `tool_calls` column) to see which tools the runtime LLM has actually called. Some infrastructure or server-to-server tools (`ingest`, `tick`, `route.execute`, `connector.heartbeat`, `backfill.poll`, `backfill.progress`, `trigger`, `cancel_session`, `chronicler_day_close_refresh`) do not appear in session data but are still required — everything else that's LLM-facing MUST show usage to justify its existence.
+**This phase is critical for removal decisions** — session history is evidence of
+LLM-facing usage, not a complete ownership inventory. Before recommending
+REMOVE for a zero-session tool, search repository call sites plus roster config,
+API, connector, and scheduler use. Infrastructure and server-to-server tools
+often have zero session calls; the examples in
+`references/historical-usage-audit.md` are non-exhaustive.
 
 See [references/historical-usage-audit.md](references/historical-usage-audit.md) for the DB connection details, the exact SQL queries to run, result-interpretation rules (what to ignore, what counts as safe-to-remove), and the output format.
 
@@ -142,26 +147,31 @@ For each butler, report:
 
 ### Phase 9: Report
 
-Synthesize into a single structured report. **Historical usage data (Phase 7) should be the primary driver of removal recommendations** — see Phase 7 for why.
+Synthesize into a single structured report. **Historical usage data (Phase 7)
+is evidence of LLM-facing use, not removal authority** — each removal
+recommendation also records the required non-session consumer search.
 
 ```markdown
 ## Tool Surface Audit Report
 
 ### Summary
-| Butler | Type | Registered Tools | Actually Used (30d) | Dead Tools | Est. Token Overhead |
+| Butler | Type | Registered Tools | LLM Used (30d) | Removal Candidates | Est. Token Overhead |
 
-### Dead Tool Removal (highest impact)
-Tools with 0 calls that are safe to remove. Group by module for clean removal:
-| Module | Dead Tools | Action |
+### Removal Candidates (highest impact)
+For each zero-session candidate, record the repository, roster-config, API,
+connector, and scheduler consumer-search result before recommending removal.
+Group verified removals by module for clean execution:
+| Module | Verified Candidates | Action |
 | email | email_send_message, ... (4) | Remove module from butler.toml |
 | memory | memory_confirm, ... (3) | Prune to used groups only |
 
 ### Docstring / Error Issues
-(only for tools that are actually used — no point fixing dead tools)
+(prioritize actively used tools; retain required infrastructure tools even when
+they have no session calls)
 
 ### Recommendations
-1. Module removals (entire modules with 0 usage)
-2. Group pruning (modules with partial usage)
+1. Module removals (verified zero-session candidates with no non-session consumers)
+2. Group pruning (modules with partial LLM usage after consumer search)
 3. Core group/configuration recommendations (groups whose registration or
    role/name gates should be reviewed against actual usage and doctrine)
 4. Docstring/error fixes (for surviving tools only)

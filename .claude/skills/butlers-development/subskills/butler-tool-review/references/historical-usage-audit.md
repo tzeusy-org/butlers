@@ -6,13 +6,12 @@ actually called. Every MCP tool invocation is captured in the JSONB
 `sessions.complete()`. This is the primary evidence for removal decisions —
 code-level analysis alone cannot tell you whether a tool is actually used.
 
-**Infrastructure and server-to-server tools never appear in session data but are still required:**
-`ingest`, `tick`, `route.execute`, `cancel_session`,
-`connector.heartbeat`, `backfill.poll`, `backfill.progress` (connector-facing),
-`trigger` (scheduler-facing), and `chronicler_day_close_refresh` (dashboard
-control-plane RPC). Tools that are exclusively
-LLM-facing (memory, calendar, email, state, sessions, schedule, extraction,
-etc.) MUST show usage here to justify their existence.
+Session history is evidence of LLM-facing usage only. It does not enumerate
+infrastructure or server-to-server consumers: for example, `ingest`,
+`route.execute`, `cancel_session`, and `chronicler_day_close_refresh` may have
+zero session calls while remaining required. These examples are non-exhaustive.
+Before recommending REMOVE for any zero-session tool, search repository call
+sites and roster configuration, API, connector, and scheduler use.
 
 ## Database connection
 
@@ -71,11 +70,12 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
   internals, not MCP tools.
 - **Ignore** tool name variants with `mcp__` or `{butler}_` prefixes — these
   are the same tools under different naming conventions. Consolidate counts.
-- **Infrastructure and server-to-server tools** — see the list above; they are KEEP regardless of
-  zero session calls.
+- **Zero session calls are not a removal verdict.** Check repository call sites,
+  roster configuration, API, connector, and scheduler use before classifying
+  a tool as removable.
 - **Safe to remove** if a tool has:
   - Zero calls over 30+ days AND
-  - Is NOT in the infrastructure/server-to-server list above AND
+  - No repository, roster-config, API, connector, or scheduler consumer AND
   - Is NOT newly added (check git log for when the tool was introduced —
     `git log --all -1 --format=%ai -- {tool_source_file}`)
 
@@ -87,10 +87,10 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
 | Tool | Module | Calls | Last Used | Verdict |
 |---|---|---:|---|---|
 | route_to_butler | core | 1292 | 2026-04-07 | KEEP — primary function |
-| memory_store_fact | memory | 0 | never | REMOVE — never called, not daemon-internal |
-| ingest | core | 0 | n/a | KEEP — infrastructure, not LLM-facing |
+| memory_store_fact | memory | 0 | never | INVESTIGATE — search non-session consumers before REMOVE |
+| ingest | core | 0 | n/a | KEEP — verified infrastructure consumer |
 
-### Dead tools (0 calls, safe to remove)
+### Removal candidates (zero calls, pending consumer search)
 - email_send_message, email_reply_to_thread, ...
 
 ### Removal savings
