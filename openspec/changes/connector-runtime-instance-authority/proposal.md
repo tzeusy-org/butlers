@@ -23,6 +23,16 @@ their siblings as separate OFFLINE listening connectors beside the single
 genuinely online account — each one dragging fleet KPIs down and taking a slot
 in the attention strip.
 
+Some legitimate writers also create or enrich the runtime identity before its
+first heartbeat. Connector settings, an OAuth scope observation recorded by the
+dashboard, a self-owned cursor, or Google Drive's metadata cache can therefore
+leave a real setup-in-progress row with `operational_role = 'unknown'`. Calling
+every such row merely `unclassified` hides useful positive evidence; calling it
+configured, live, healthy, or offline would give that evidence authority it does
+not have. The dashboard needs a narrower, presentation-only
+`awaiting_first_heartbeat` state while unexplained unknown rows remain honestly
+unclassified.
+
 Migration `sw_028` had already patched the symptom for the QA liveness view by
 inferring storage rows from column nullability (`instance_id IS NULL AND
 last_heartbeat_at IS NULL AND checkpoint_cursor IS NOT NULL`). That inference
@@ -47,6 +57,10 @@ shape was still wearing runtime-health authority everywhere else.
     demotes — so a connector that checkpoints under its own heartbeat identity
     is never dropped from the fleet.
   - The role is never inferred from the opaque `endpoint_identity` string.
+  - A reader may derive an additive pre-heartbeat presentation for an `unknown`
+    row from a closed set of content-blind existence predicates. This does not
+    widen or mutate `operational_role`, and a real heartbeat remains the only
+    promotion to `runtime_instance`.
   - Migration `sw_031` backfills from persisted evidence only, attaches each
     existing cursor to the longest runtime-instance identity it extends by a
     `:`-delimited suffix, and re-points `public.v_qa_connector_state` at the
@@ -65,9 +79,21 @@ shape was still wearing runtime-health authority everywhere else.
   - A row whose role is `unknown` reports `liveness: "unclassified"` — a named
     unavailable state. It is never read as active or healthy, and never
     inferred into `offline` from a heartbeat contract that does not exist.
+  - Within that unclassified umbrella, an `unknown` row with fixed positive
+    pre-heartbeat evidence gains `presentation_state:
+    "awaiting_first_heartbeat"`; an unexplained row retains
+    `presentation_state: "unclassified"`. Existing unclassified fields and
+    counts keep their meaning for older clients, and additive counts identify
+    the awaiting subset.
+  - The roster says “awaiting first heartbeat” and explains that runtime status
+    is unavailable until one arrives. An optional “Review setup” action is
+    shown only when the successful connector catalog supplies the matching
+    setup destination; it never claims to start, restart, or recover a process.
 
-- **NO new tables.** Two additive columns, one CHECK constraint, one view
-  redefinition.
+- **NO additional persistence change for the presentation.** The existing
+  change still adds two columns, one CHECK constraint, and one view
+  redefinition. `awaiting_first_heartbeat` is derived at read time and is not a
+  fourth persisted role.
 
 ## Capabilities
 
@@ -92,22 +118,35 @@ shape was still wearing runtime-health authority everywhere else.
   - `src/butlers/connectors/google_health.py` — passes its canonical heartbeat
     identity as the cursor's parent.
   - `src/butlers/api/routers/ingestion_connectors.py` — partitions registry rows
-    by role, nests checkpoints, and counts runtime instances only.
+    by role, nests checkpoints, counts runtime instances only, and owns the
+    content-blind presentation derivation for the primary roster API.
   - `roster/switchboard/api/router.py`, `roster/switchboard/api/models.py` —
-    the same authority on the legacy roster and summary endpoints.
+    the same authority and additive presentation on the legacy roster, detail,
+    and summary endpoints.
   - `frontend/src/api/types.ts`,
-    `frontend/src/components/ingestion/connectors/` — the `unclassified` health
-    state, nested checkpoints, and the unresolved-owner section.
+    `frontend/src/components/ingestion/connectors/connector-auth.ts`,
+    `ConnectorRosterRow.tsx`, and `ConnectorsRoster.tsx` — the additive type,
+    verdict/copy, catalog-backed review action, and subset count.
+  - `tests/api/test_connector_operational_role.py`,
+    `tests/config/test_switchboard_connector_operational_role_migration.py`, and
+    `frontend/src/components/ingestion/connectors/ConnectorsRosterRuntimeAuthority.test.tsx`
+    — API, real-Postgres producer-ordering, compatibility, and UI contract
+    seams.
 
 - **APIs** (all additive):
   - `GET /api/ingestion/connectors/summaries` — each connector gains
     `operational_role` and `checkpoints[]`; the envelope gains
     `unparented_checkpoints[]` and `unclassified_count`. `liveness` gains the
-    `unclassified` value.
+    `unclassified` value. An `unknown` row additionally gains nullable
+    `presentation_state`; the envelope gains
+    `awaiting_first_heartbeat_count` as a subset of `unclassified_count`.
   - `GET /api/ingestion/connectors/cross-summary` — gains
-    `connectors_unclassified`; `total_connectors` now counts runtime instances.
+    `connectors_unclassified` and the subset
+    `connectors_awaiting_first_heartbeat`; `total_connectors` now counts runtime
+    instances.
   - `GET /api/switchboard/connectors` and `/connectors/summary` — the same
-    role fields and the same runtime-instance-only totals.
+    role fields, nullable presentation state, subset count, and the same
+    runtime-instance-only totals.
 
 - **Database**: `operational_role TEXT NOT NULL DEFAULT 'unknown'` +
   `parent_endpoint_identity TEXT NULL` on `connector_registry`, with a backfill.
@@ -131,3 +170,8 @@ shape was still wearing runtime-health authority everywhere else.
 - Degraded-envelope conventions —
   `docs/api_and_protocols/response-conventions.md`
 - Tracked implementation bead — `bu-6jv4m.11`
+- Awaiting-first-heartbeat specification bead — `bu-poven`
+
+This additive specification is pending independent state-machine and UX review,
+followed by fresh owner approval of its exact artifact. It authorizes no
+implementation, runtime, provider, credential, deployment, or merge action.
