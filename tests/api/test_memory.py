@@ -2771,9 +2771,7 @@ async def test_catalog_search_empty_results(app, monkeypatch):
     assert resp.json()["data"] == []
 
 
-async def test_catalog_search_attaches_graph_coverage_for_entity_anchored_result(
-    app, monkeypatch
-):
+async def test_catalog_search_attaches_graph_coverage_for_entity_anchored_result(app, monkeypatch):
     """An entity-anchored row gets its RFC 0031 relationship counts attached."""
     from butlers.core import entity_graph_edges as _graph_edges_module
     from butlers.modules.memory import search as _catalog_search_module
@@ -2797,9 +2795,7 @@ async def test_catalog_search_attaches_graph_coverage_for_entity_anchored_result
         return {entity_id: (3, 1)}
 
     monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
-    monkeypatch.setattr(
-        _graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities
-    )
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2833,9 +2829,7 @@ async def test_catalog_search_omits_graph_coverage_without_entity_id(app, monkey
         raise AssertionError("coverage_for_entities should not be called with no entity_id rows")
 
     monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
-    monkeypatch.setattr(
-        _graph_edges_module, "coverage_for_entities", _unexpected_coverage_call
-    )
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _unexpected_coverage_call)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2867,9 +2861,7 @@ async def test_catalog_search_graph_coverage_none_when_entity_has_no_edges(app, 
         return {}
 
     monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
-    monkeypatch.setattr(
-        _graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities
-    )
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
