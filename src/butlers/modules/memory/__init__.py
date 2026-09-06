@@ -1469,7 +1469,7 @@ class MemoryModule(Module):
             """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
             Sections (in order, empty sections omitted):
-            - ## Profile Facts (30% of budget): owner entity facts sorted by importance
+            - ## Profile Facts (20% of budget): owner entity facts sorted by importance
             - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
             - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
@@ -1478,9 +1478,10 @@ class MemoryModule(Module):
 
             Same inputs always produce identical output (deterministic section compiler).
             """
-            catalog_read_policy = None
-            if include_fleet_knowledge:
-                catalog_read_policy = await module._catalog_read_policy()
+            # Loaded unconditionally: the read ceiling now governs Profile
+            # Facts and Task-Relevant Facts (recall) in every assembly, not
+            # only the opt-in Fleet Knowledge section.
+            catalog_read_policy = await module._catalog_read_policy()
             return await _context.memory_context(
                 module._get_pool(),
                 module._get_embedding_engine(),

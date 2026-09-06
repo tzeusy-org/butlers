@@ -1,12 +1,20 @@
 """Memory context building — deterministic section compiler for CC system prompts.
 
-Builds a four-section context block with strict quota allocation:
-  1. Profile Facts     (30% of budget) — owner entity facts by importance
+Builds a sectioned context block with strict quota allocation:
+  1. Profile Facts     (20% of budget) — owner entity facts by importance
   2. Task-Relevant Facts (35% of budget) — recall matches excluding profile facts
   3. Active Rules      (20% of budget) — sorted by maturity rank then effectiveness
   4. Recent Episodes   (15% of budget) — opt-in via include_recent_episodes=True
+  5. Fleet Knowledge   (10% of budget) — opt-in via include_fleet_knowledge=True
 
 All sections use deterministic tie-breaking: score/importance DESC, created_at DESC, id ASC.
+
+A single server-held read ceiling (``CatalogReadPolicy``, loaded once per
+assembly) governs every fetch in this module — Profile Facts, Task-Relevant
+Facts/recall, and Recent Episodes all apply the same ``allowed_sensitivities``
+in SQL, matching the ceiling ``search_catalog`` already enforces for
+cross-butler reads. Facts withheld from Profile Facts by the ceiling are
+reported via a ``withheld: N`` marker rather than silently disappearing.
 """
 
 from __future__ import annotations
@@ -31,12 +39,22 @@ _MATURITY_RANK: dict[str, int] = {
     "anti_pattern": 0,
 }
 
-# Section budget fractions
-_PROFILE_FACTS_FRAC = 0.30
+# Section budget fractions. MUST sum to <= 1.0 across every section, including
+# the opt-in ones — memory_context assumes the worst case (every section
+# active at once) rather than budgeting only the always-on subset.
+_PROFILE_FACTS_FRAC = 0.20
 _TASK_FACTS_FRAC = 0.35
 _RULES_FRAC = 0.20
 _EPISODES_FRAC = 0.15
 _FLEET_KNOWLEDGE_FRAC = 0.10
+
+_SECTION_FRACTION_TOTAL = (
+    _PROFILE_FACTS_FRAC + _TASK_FACTS_FRAC + _RULES_FRAC + _EPISODES_FRAC + _FLEET_KNOWLEDGE_FRAC
+)
+assert _SECTION_FRACTION_TOTAL <= 1.0 + 1e-9, (
+    f"memory_context section fractions sum to {_SECTION_FRACTION_TOTAL}, "
+    "which exceeds the token_budget they are meant to partition"
+)
 
 # Cross-butler catalog results to request from public.memory_catalog before
 # filtering out this butler's own entries (see _fetch_fleet_knowledge).
@@ -48,27 +66,66 @@ async def _fetch_profile_facts(
     tenant_id: str,
     *,
     limit: int = 50,
-) -> list[dict[str, Any]]:
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
     """Fetch facts anchored to the owner entity.
 
-    Sorted by importance DESC, created_at DESC, id ASC.
+    Sorted by importance DESC, created_at DESC, id ASC. The read ceiling is
+    applied in SQL, matching ``search_catalog``'s sensitivity filter, so an
+    above-ceiling owner fact is never fetched at all — a real Postgres row
+    that only exists in the excluded tier returns zero rows here, not a
+    post-fetch drop.
+
+    Returns ``(facts, withheld_count)`` where ``withheld_count`` is the
+    number of owner facts that matched every condition except the ceiling
+    (0 when ``allowed_sensitivities`` is None).
     """
-    sql = """
+    conditions = [
+        "f.tenant_id = $1",
+        "f.validity IN ('active', 'fading')",
+        "'owner' = ANY(e.roles)",
+    ]
+    params: list[Any] = [tenant_id]
+    if allowed_sensitivities is not None:
+        params.append(list(allowed_sensitivities))
+        conditions.append(f"COALESCE(f.sensitivity, 'normal') = ANY(${len(params)})")
+    where = " AND ".join(conditions)
+
+    params.append(limit)
+    sql = f"""
         SELECT f.*
+        FROM facts f
+        JOIN public.entities e ON f.entity_id = e.id
+        WHERE {where}
+        ORDER BY f.importance DESC, f.created_at DESC, f.id ASC
+        LIMIT ${len(params)}
+    """
+    try:
+        rows = await pool.fetch(sql, *params)
+        facts = [dict(r) for r in rows]
+    except Exception:
+        logger.debug("Profile facts query failed (likely missing public.entities)", exc_info=True)
+        return [], 0
+
+    if allowed_sensitivities is None:
+        return facts, 0
+
+    withheld_sql = """
+        SELECT COUNT(*)
         FROM facts f
         JOIN public.entities e ON f.entity_id = e.id
         WHERE f.tenant_id = $1
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
-        ORDER BY f.importance DESC, f.created_at DESC, f.id ASC
-        LIMIT $2
+          AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($2))
     """
     try:
-        rows = await pool.fetch(sql, tenant_id, limit)
-        return [dict(r) for r in rows]
+        withheld = await pool.fetchval(withheld_sql, tenant_id, list(allowed_sensitivities))
     except Exception:
-        logger.debug("Profile facts query failed (likely missing public.entities)", exc_info=True)
-        return []
+        logger.debug("Profile facts withheld-count query failed", exc_info=True)
+        withheld = 0
+
+    return facts, int(withheld or 0)
 
 
 async def _fetch_recent_episodes(
@@ -77,19 +134,33 @@ async def _fetch_recent_episodes(
     tenant_id: str,
     *,
     limit: int = 20,
+    allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch most recent episodes for the butler, ordered by created_at DESC."""
-    sql = """
+    """Fetch most recent episodes for the butler, ordered by created_at DESC.
+
+    Read-ceiling filtered in SQL, same shape as ``_fetch_profile_facts``.
+    """
+    conditions = [
+        "butler = $1",
+        "tenant_id = $2",
+        "metadata->>'provenance_placeholder' IS DISTINCT FROM 'true'",
+    ]
+    params: list[Any] = [butler, tenant_id]
+    if allowed_sensitivities is not None:
+        params.append(list(allowed_sensitivities))
+        conditions.append(f"COALESCE(sensitivity, 'normal') = ANY(${len(params)})")
+    where = " AND ".join(conditions)
+
+    params.append(limit)
+    sql = f"""
         SELECT *
         FROM episodes
-        WHERE butler = $1
-          AND tenant_id = $2
-          AND metadata->>'provenance_placeholder' IS DISTINCT FROM 'true'
+        WHERE {where}
         ORDER BY created_at DESC
-        LIMIT $3
+        LIMIT ${len(params)}
     """
     try:
-        rows = await pool.fetch(sql, butler, tenant_id, limit)
+        rows = await pool.fetch(sql, *params)
         return [dict(r) for r in rows]
     except Exception:
         logger.debug("Recent episodes query failed", exc_info=True)
@@ -131,6 +202,21 @@ async def _fetch_fleet_knowledge(
         logger.debug("Fleet knowledge catalog search failed", exc_info=True)
         return []
     return [r for r in results if r.get("source_butler") != butler]
+
+
+def _is_confidence_renderable(row: dict[str, Any]) -> bool:
+    """False when this row's effective confidence would render as a fake 0.00.
+
+    A decaying fact (``decay_rate != 0``) that has never been confirmed
+    (``last_confirmed_at IS NULL``) has *unknown* confidence, not zero
+    confidence — ``_effective_confidence`` returns 0.0 for it as a scoring
+    floor, but rendering that as ``(confidence: 0.00)`` misrepresents an
+    unconfirmed fact as a thoroughly discredited one. Such rows are excluded
+    from rendering (they remain fully visible to ``recall``/``memory_search``,
+    which use the raw score for ranking, not for display).
+    """
+    decay_rate = row.get("decay_rate", 0.0) or 0.0
+    return not (decay_rate != 0.0 and row.get("last_confirmed_at") is None)
 
 
 def _effective_confidence(row: dict[str, Any]) -> float:
@@ -229,13 +315,21 @@ async def memory_context(
     """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
     Sections (in order, empty sections omitted):
-      ## Profile Facts     — 30% of budget, owner entity facts sorted by importance
+      ## Profile Facts     — 20% of budget, owner entity facts sorted by importance
       ## Task-Relevant Facts — 35% of budget, recall matches (excluding profile facts)
       ## Active Rules      — 20% of budget, sorted by maturity rank then effectiveness
       ## Recent Episodes   — 15% of budget, opt-in only via include_recent_episodes=True
       ## Fleet Knowledge   — 10% of budget, opt-in only via include_fleet_knowledge=True;
         cross-butler facts/rules discovered via public.memory_catalog, excluding
         this butler's own entries (already covered by Task-Relevant Facts)
+
+    A single read ceiling (``catalog_read_policy``, loaded once here if not
+    supplied) governs Profile Facts, Task-Relevant Facts (via ``recall``),
+    Recent Episodes, and Fleet Knowledge alike — the same server-held ceiling
+    ``search_catalog`` already enforces, generalized to every local fetch in
+    this assembly so a mid-assembly config change can never half-govern one
+    block. Facts withheld from Profile Facts by the ceiling are reported as
+    a ``withheld: N`` marker rather than disappearing without a trace.
 
     Args:
         pool: asyncpg connection pool.
@@ -248,8 +342,9 @@ async def memory_context(
             surfacing relevant cross-butler catalog entries. Best-effort —
             a catalog search failure degrades to an empty section rather
             than failing context assembly.
-        catalog_read_policy: Server-held catalog policy. Module entry points
-            pass the policy from the owning runtime-config pool.
+        catalog_read_policy: Server-held read policy. Module entry points pass
+            the policy from the owning runtime-config pool; when omitted, it
+            is loaded once from ``pool`` (fail-closed to 'normal').
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             trace correlation and tenant scoping.
 
@@ -264,6 +359,11 @@ async def memory_context(
             tenant_id = rc_tenant.strip()
     validate_tenant_id(tenant_id)
 
+    # Read ceiling: loaded once per assembly so every fetch below agrees on
+    # exactly one policy, even if runtime_config changes mid-assembly.
+    read_policy = catalog_read_policy or await _search.load_catalog_read_policy(pool)
+    allowed_sensitivities = read_policy.allowed_sensitivities
+
     total_chars = token_budget * 4
 
     profile_budget = int(total_chars * _PROFILE_FACTS_FRAC)
@@ -273,11 +373,15 @@ async def memory_context(
     fleet_knowledge_budget = int(total_chars * _FLEET_KNOWLEDGE_FRAC)
 
     # --- 1. Fetch profile facts (owner entity) ---
-    profile_facts = await _fetch_profile_facts(pool, tenant_id)
+    profile_facts, profile_withheld = await _fetch_profile_facts(
+        pool, tenant_id, allowed_sensitivities=allowed_sensitivities
+    )
+    profile_facts = [f for f in profile_facts if _is_confidence_renderable(f)]
     profile_ids: set = {r.get("id") for r in profile_facts if r.get("id") is not None}
 
     # --- 2. Fetch task-relevant facts via recall (exclude profile facts) ---
-    # recall returns facts + rules sorted by composite_score DESC
+    # recall returns facts + rules sorted by composite_score DESC; the same
+    # read_policy loaded above governs this fetch too.
     recall_results = await _search.recall(
         pool,
         trigger_prompt,
@@ -285,6 +389,7 @@ async def memory_context(
         scope=butler,
         limit=30,
         tenant_id=tenant_id,
+        read_policy=read_policy,
     )
     task_facts = [
         r
@@ -320,12 +425,13 @@ async def memory_context(
     # --- 4. Optionally fetch recent episodes ---
     recent_episodes: list[dict[str, Any]] = []
     if include_recent_episodes:
-        recent_episodes = await _fetch_recent_episodes(pool, butler, tenant_id)
+        recent_episodes = await _fetch_recent_episodes(
+            pool, butler, tenant_id, allowed_sensitivities=allowed_sensitivities
+        )
 
     # --- 5. Optionally fetch cross-butler fleet knowledge ---
     fleet_knowledge: list[dict[str, Any]] = []
     if include_fleet_knowledge:
-        read_policy = catalog_read_policy or await _search.load_catalog_read_policy(pool)
         fleet_knowledge = await _fetch_fleet_knowledge(
             pool, embedding_engine, trigger_prompt, butler, tenant_id, read_policy
         )
@@ -340,6 +446,12 @@ async def memory_context(
         _format_fact_line,
         profile_budget,
     )
+    if profile_withheld > 0:
+        # A confidential owner fact is absent from the section above but its
+        # exclusion is reported, not silent — see _fetch_profile_facts.
+        if not profile_section:
+            profile_section = "\n## Profile Facts\n"
+        profile_section += f"_(withheld: {profile_withheld})_\n"
     if profile_section:
         sections.append(profile_section)
 
