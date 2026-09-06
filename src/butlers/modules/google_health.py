@@ -1,8 +1,18 @@
 """Google Health module — read-only MCP tools for Health butler wellness queries.
 
-Provides eight read-only tools that query the Health butler's SPO fact store via
-the memory module's ``memory_search`` primitive.  Tools do NOT call
-``health.googleapis.com`` directly; that is the connector's responsibility.
+Provides eight read-only tools that query the Health butler's SPO fact store
+directly (raw SQL against ``facts``, the same surface ``health_jobs.py``'s
+insight scan reads) and return daemon-computed numbers.  Tools do NOT call
+``health.googleapis.com`` directly; that is the connector's responsibility, and
+they never delegate arithmetic to the calling model — every returned dict is a
+finished result, never an ``{'instruction': ...}`` recipe for the model to
+execute.
+
+Daily wellness metrics (resting HR, HRV, SpO2, breathing rate, steps, active
+minutes) are grouped by UTC calendar day and aggregated (mean/min/max) in SQL
+so a duplicate same-day ingestion converges instead of producing two rows —
+the aggregation is a pure function of the underlying facts, so repeated reads
+are naturally idempotent without a separate materialized rollup table.
 
 Credential resolution follows the Tier-2 security contract in
 ``about/heart-and-soul/security.md``: the primary Google account is resolved
@@ -48,6 +58,130 @@ _NO_DATA_TEMPLATE = (
     "No {metric} data ingested yet. "
     "Google Health data appears after the device syncs and the connector has run."
 )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic aggregation helpers
+#
+# These query ``facts`` directly (unqualified name, resolved via search_path,
+# matching health_jobs.py) and compute the returned numbers in Python/SQL —
+# never leaving arithmetic for the calling model to perform.
+# ---------------------------------------------------------------------------
+
+
+async def _last_fact_at(pool: Any, predicate: str) -> datetime | None:
+    """Return the ``valid_at`` of the most recent active fact for *predicate*, if any."""
+    return await pool.fetchval(
+        "SELECT valid_at FROM facts"
+        " WHERE predicate = $1 AND scope = 'health' AND validity = 'active'"
+        " ORDER BY valid_at DESC NULLS LAST LIMIT 1",
+        predicate,
+    )
+
+
+async def _empty_metric_result(
+    pool: Any, predicate: str, days: int, *, metric_label: str | None = None
+) -> dict[str, Any]:
+    """Build an explicit, honest empty result naming the metric and last known day.
+
+    Never a fabricated zero or average — an absence of facts in the window is
+    reported as such, with the last day data existed (if any).
+    """
+    label = metric_label or predicate
+    last_at = await _last_fact_at(pool, predicate)
+    return {
+        "found": False,
+        "metric": predicate,
+        "days": days,
+        "last_data_at": last_at,
+        "message": _NO_DATA_TEMPLATE.format(metric=label),
+    }
+
+
+async def _daily_numeric_rollup(
+    pool: Any, predicate: str, metadata_key: str, since: datetime
+) -> list[dict[str, Any]]:
+    """Group *predicate* facts by UTC calendar day and aggregate one metadata field.
+
+    ``metadata_key`` is always a hardcoded literal supplied by call sites in
+    this module (never derived from tool arguments), so it is safe to
+    interpolate into the query text alongside the already-interpolated
+    ``measurement_{type}`` predicate pattern used throughout this codebase.
+    """
+    rows = await pool.fetch(
+        f"""
+        SELECT DATE(valid_at AT TIME ZONE 'UTC') AS day,
+               AVG((metadata->>'{metadata_key}')::numeric) AS mean_value,
+               MIN((metadata->>'{metadata_key}')::numeric) AS min_value,
+               MAX((metadata->>'{metadata_key}')::numeric) AS max_value,
+               COUNT(*) AS n
+        FROM facts
+        WHERE predicate = $1 AND scope = 'health' AND validity = 'active'
+          AND valid_at >= $2 AND metadata ? '{metadata_key}'
+        GROUP BY day
+        ORDER BY day ASC
+        """,
+        predicate,
+        since,
+    )
+    return [
+        {
+            "date": row["day"].isoformat(),
+            "mean": float(row["mean_value"]) if row["mean_value"] is not None else None,
+            "min": float(row["min_value"]) if row["min_value"] is not None else None,
+            "max": float(row["max_value"]) if row["max_value"] is not None else None,
+            "n": row["n"],
+        }
+        for row in rows
+    ]
+
+
+def _summarize_daily(daily: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize a list of per-day {mean, min, max} rows into one min/max/avg."""
+    means = [d["mean"] for d in daily if d["mean"] is not None]
+    mins = [d["min"] for d in daily if d["min"] is not None]
+    maxes = [d["max"] for d in daily if d["max"] is not None]
+    return {
+        "min": min(mins) if mins else None,
+        "max": max(maxes) if maxes else None,
+        "avg": round(sum(means) / len(means), 2) if means else None,
+    }
+
+
+def _trend_slope(values: list[float]) -> float | None:
+    """Ordinary-least-squares slope of *values* against their chronological index."""
+    n = len(values)
+    if n < 2:
+        return None
+    xs = list(range(n))
+    x_mean = sum(xs) / n
+    y_mean = sum(values) / n
+    numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values, strict=True))
+    denominator = sum((x - x_mean) ** 2 for x in xs)
+    if denominator == 0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+def _trend_direction(values: list[float], *, threshold: float = 0.05) -> str:
+    """Classify chronologically-ordered *values* as improving/stable/declining.
+
+    Compares the mean of the first half against the mean of the second half;
+    a relative change beyond *threshold* in either direction is not "stable".
+    """
+    half = len(values) // 2
+    if half == 0:
+        return "stable"
+    first = sum(values[:half]) / half
+    second = sum(values[-half:]) / half
+    if first == 0:
+        return "stable"
+    change = (second - first) / abs(first)
+    if change > threshold:
+        return "improving"
+    if change < -threshold:
+        return "declining"
+    return "stable"
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +388,7 @@ class GoogleHealthModule(Module):
             else GoogleHealthConfig(**(config or {}))
         )
         module = self  # captured for closures
+        pool = getattr(db, "pool", None)
 
         # ----------------------------------------------------------------
         # Group 1: Sleep
@@ -269,21 +404,36 @@ class GoogleHealthModule(Module):
             stages (deep, light, rem, wake), and summary text.
             Returns an empty result with explanation when no data exists.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
+            row = await pool.fetchrow(
+                "SELECT valid_at, content, metadata FROM facts"
+                " WHERE predicate = 'sleep_session' AND scope = 'health'"
+                " AND validity = 'active' ORDER BY valid_at DESC NULLS LAST LIMIT 1"
+            )
+            if row is None:
+                return {
+                    "found": False,
+                    "metric": "sleep_session",
+                    "message": _NO_SLEEP_DATA,
+                }
+            meta = row["metadata"] or {}
+            stages = meta.get("stages") or {}
+            duration_ms = meta.get("duration_ms")
             return {
-                "query": "latest sleep session",
-                "predicate": "sleep_session",
-                "scope": "health",
-                "instruction": (
-                    "Call memory_search with query='sleep session', "
-                    "types=['fact'], scope='health', "
-                    "filters={'predicate': 'sleep_session'}, limit=1 "
-                    "to retrieve the most recent sleep session fact. "
-                    "Return session_start, duration_minutes, efficiency, "
-                    "stages (deep, light, rem, wake), and the summary text. "
-                    f"If no results, return: {_NO_SLEEP_DATA!r}"
+                "found": True,
+                "session_start": row["valid_at"],
+                "duration_minutes": (
+                    round(duration_ms / 60000, 1) if duration_ms is not None else None
                 ),
+                "efficiency": meta.get("efficiency"),
+                "stages": {
+                    "deep": stages.get("deep"),
+                    "light": stages.get("light"),
+                    "rem": stages.get("rem"),
+                    "wake": stages.get("wake"),
+                },
+                "summary": row["content"],
             }
 
         async def health_sleep_history(days: int = 7) -> dict[str, Any]:
@@ -297,26 +447,62 @@ class GoogleHealthModule(Module):
             same fields as ``health_sleep_latest``, plus aggregate stats:
             avg_duration_minutes, avg_efficiency, avg_deep_minutes, avg_rem_minutes.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 90))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            rows = await pool.fetch(
+                "SELECT valid_at, content, metadata FROM facts"
+                " WHERE predicate = 'sleep_session' AND scope = 'health'"
+                " AND validity = 'active' AND valid_at >= $1 ORDER BY valid_at DESC",
+                time_from,
+            )
+            if not rows:
+                return await _empty_metric_result(pool, "sleep_session", days, metric_label="sleep")
+            sessions: list[dict[str, Any]] = []
+            durations: list[float] = []
+            efficiencies: list[float] = []
+            deeps: list[float] = []
+            rems: list[float] = []
+            for row in rows:
+                meta = row["metadata"] or {}
+                stages = meta.get("stages") or {}
+                duration_ms = meta.get("duration_ms")
+                duration_minutes = duration_ms / 60000 if duration_ms is not None else None
+                efficiency = meta.get("efficiency")
+                deep = stages.get("deep")
+                rem = stages.get("rem")
+                sessions.append(
+                    {
+                        "session_start": row["valid_at"],
+                        "duration_minutes": (
+                            round(duration_minutes, 1) if duration_minutes is not None else None
+                        ),
+                        "efficiency": efficiency,
+                        "stages": stages,
+                        "summary": row["content"],
+                    }
+                )
+                if duration_minutes is not None:
+                    durations.append(duration_minutes)
+                if efficiency is not None:
+                    efficiencies.append(efficiency)
+                if deep is not None:
+                    deeps.append(deep)
+                if rem is not None:
+                    rems.append(rem)
             return {
-                "query": f"sleep sessions last {days} days",
-                "predicate": "sleep_session",
-                "scope": "health",
+                "found": True,
                 "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search with query='sleep session', "
-                    f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'sleep_session', 'time_from': {time_from!r}}}, "
-                    f"limit=90 to retrieve sleep facts for the last {days} days. "
-                    "Sort results reverse-chronologically. "
-                    "Compute aggregate: avg_duration_minutes, avg_efficiency, "
-                    "avg_deep_minutes, avg_rem_minutes. "
-                    f"If no results, return: {_NO_SLEEP_DATA!r}"
+                "sessions": sessions,
+                "avg_duration_minutes": (
+                    round(sum(durations) / len(durations), 1) if durations else None
                 ),
+                "avg_efficiency": (
+                    round(sum(efficiencies) / len(efficiencies), 1) if efficiencies else None
+                ),
+                "avg_deep_minutes": round(sum(deeps) / len(deeps), 1) if deeps else None,
+                "avg_rem_minutes": round(sum(rems) / len(rems), 1) if rems else None,
             }
 
         mcp.tool()(health_sleep_latest)
@@ -335,26 +521,19 @@ class GoogleHealthModule(Module):
             Queries ``measurement_resting_hr`` facts. Returns daily resting HR values
             plus a summary with min, max, avg, and a linear trend slope.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 365))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
-            return {
-                "query": f"resting heart rate last {days} days",
-                "predicate": "measurement_resting_hr",
-                "scope": "health",
-                "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search with query='resting heart rate', "
-                    f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_resting_hr', "
-                    f"'time_from': {time_from!r}}}, "
-                    f"limit=365 to retrieve resting HR facts for the last {days} days. "
-                    "Compute summary: min, max, avg, and linear trend slope. "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='heart rate')!r}"
-                ),
-            }
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            daily = await _daily_numeric_rollup(pool, "measurement_resting_hr", "value", time_from)
+            if not daily:
+                return await _empty_metric_result(
+                    pool, "measurement_resting_hr", days, metric_label="heart rate"
+                )
+            values = [d["mean"] for d in daily if d["mean"] is not None]
+            summary = _summarize_daily(daily)
+            summary["trend_slope"] = _trend_slope(values)
+            return {"found": True, "days": days, "daily": daily, "summary": summary}
 
         async def health_hrv_history(days: int = 30) -> dict[str, Any]:
             """Return heart rate variability (HRV) history over the requested window.
@@ -365,25 +544,21 @@ class GoogleHealthModule(Module):
             Queries ``measurement_hrv`` facts. Returns daily RMSSD values plus a
             summary with avg_rmssd, coverage, and trend direction.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 365))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            daily = await _daily_numeric_rollup(pool, "measurement_hrv", "daily_rmssd", time_from)
+            if not daily:
+                return await _empty_metric_result(pool, "measurement_hrv", days, metric_label="HRV")
+            values = [d["mean"] for d in daily if d["mean"] is not None]
             return {
-                "query": f"HRV history last {days} days",
-                "predicate": "measurement_hrv",
-                "scope": "health",
+                "found": True,
                 "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search with query='heart rate variability HRV RMSSD', "
-                    f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_hrv', 'time_from': {time_from!r}}}, "
-                    f"limit=365 to retrieve HRV facts for the last {days} days. "
-                    "Compute summary: avg_rmssd, coverage (days with data / total days), "
-                    "and trend direction (improving / stable / declining). "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='HRV')!r}"
-                ),
+                "daily": daily,
+                "avg_rmssd": round(sum(values) / len(values), 2) if values else None,
+                "coverage": round(len(daily) / days, 2) if days else None,
+                "trend": _trend_direction(values),
             }
 
         mcp.tool()(health_hr_history)
@@ -401,23 +576,49 @@ class GoogleHealthModule(Module):
 
             Queries ``measurement_spo2`` facts. Returns daily average SpO2 values.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 365))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            rows = await pool.fetch(
+                """
+                SELECT DATE(valid_at AT TIME ZONE 'UTC') AS day,
+                       AVG((metadata->>'avg')::numeric) AS avg_value,
+                       MIN((metadata->>'min')::numeric) AS min_value,
+                       MAX((metadata->>'max')::numeric) AS max_value
+                FROM facts
+                WHERE predicate = 'measurement_spo2' AND scope = 'health'
+                  AND validity = 'active' AND valid_at >= $1
+                GROUP BY day
+                ORDER BY day ASC
+                """,
+                time_from,
+            )
+            if not rows:
+                return await _empty_metric_result(
+                    pool, "measurement_spo2", days, metric_label="SpO2"
+                )
+            daily = [
+                {
+                    "date": row["day"].isoformat(),
+                    "avg": float(row["avg_value"]) if row["avg_value"] is not None else None,
+                    "min": float(row["min_value"]) if row["min_value"] is not None else None,
+                    "max": float(row["max_value"]) if row["max_value"] is not None else None,
+                }
+                for row in rows
+            ]
+            avgs = [d["avg"] for d in daily if d["avg"] is not None]
+            mins = [d["min"] for d in daily if d["min"] is not None]
+            maxes = [d["max"] for d in daily if d["max"] is not None]
             return {
-                "query": f"SpO2 blood oxygen last {days} days",
-                "predicate": "measurement_spo2",
-                "scope": "health",
+                "found": True,
                 "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search with query='blood oxygen SpO2 saturation', "
-                    f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_spo2', 'time_from': {time_from!r}}}, "
-                    f"limit=365 to retrieve SpO2 facts for the last {days} days. "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='SpO2')!r}"
-                ),
+                "daily": daily,
+                "summary": {
+                    "avg": round(sum(avgs) / len(avgs), 1) if avgs else None,
+                    "min": min(mins) if mins else None,
+                    "max": max(maxes) if maxes else None,
+                },
             }
 
         async def health_breathing_rate_history(days: int = 30) -> dict[str, Any]:
@@ -428,24 +629,22 @@ class GoogleHealthModule(Module):
 
             Queries ``measurement_breathing_rate`` facts. Returns daily breathing rate values.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 365))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            daily = await _daily_numeric_rollup(
+                pool, "measurement_breathing_rate", "value", time_from
+            )
+            if not daily:
+                return await _empty_metric_result(
+                    pool, "measurement_breathing_rate", days, metric_label="breathing rate"
+                )
             return {
-                "query": f"breathing rate last {days} days",
-                "predicate": "measurement_breathing_rate",
-                "scope": "health",
+                "found": True,
                 "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search with query='breathing rate respiratory', "
-                    f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_breathing_rate', "
-                    f"'time_from': {time_from!r}}}, "
-                    f"limit=365 to retrieve breathing rate facts for the last {days} days. "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='breathing rate')!r}"
-                ),
+                "daily": daily,
+                "summary": _summarize_daily(daily),
             }
 
         mcp.tool()(health_spo2_history)
@@ -466,32 +665,88 @@ class GoogleHealthModule(Module):
             fairly_active_minutes, lightly_active_minutes, sedentary_minutes.
             Aggregate: average steps, average active minutes, days meeting 10 000 steps.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
             days = max(1, min(days, 90))
-            time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+            time_from = datetime.now(tz=UTC) - timedelta(days=days)
+            steps_rows = await pool.fetch(
+                """
+                SELECT DATE(valid_at AT TIME ZONE 'UTC') AS day,
+                       SUM((metadata->>'value')::numeric) AS steps,
+                       SUM((metadata->>'distance_km')::numeric) AS distance_km,
+                       SUM((metadata->>'floors')::numeric) AS floors
+                FROM facts
+                WHERE predicate = 'measurement_steps' AND scope = 'health'
+                  AND validity = 'active' AND valid_at >= $1
+                GROUP BY day
+                """,
+                time_from,
+            )
+            active_rows = await pool.fetch(
+                """
+                SELECT DATE(valid_at AT TIME ZONE 'UTC') AS day,
+                       SUM((metadata->>'very_active')::numeric) AS very_active,
+                       SUM((metadata->>'fairly_active')::numeric) AS fairly_active,
+                       SUM((metadata->>'lightly_active')::numeric) AS lightly_active,
+                       SUM((metadata->>'sedentary')::numeric) AS sedentary
+                FROM facts
+                WHERE predicate = 'measurement_active_minutes' AND scope = 'health'
+                  AND validity = 'active' AND valid_at >= $1
+                GROUP BY day
+                """,
+                time_from,
+            )
+            by_day: dict[Any, dict[str, Any]] = {}
+            for row in steps_rows:
+                entry = by_day.setdefault(row["day"], {})
+                entry["steps"] = float(row["steps"]) if row["steps"] is not None else None
+                entry["distance_km"] = (
+                    float(row["distance_km"]) if row["distance_km"] is not None else None
+                )
+                entry["floors"] = float(row["floors"]) if row["floors"] is not None else None
+            for row in active_rows:
+                entry = by_day.setdefault(row["day"], {})
+                entry["very_active_minutes"] = (
+                    float(row["very_active"]) if row["very_active"] is not None else None
+                )
+                entry["fairly_active_minutes"] = (
+                    float(row["fairly_active"]) if row["fairly_active"] is not None else None
+                )
+                entry["lightly_active_minutes"] = (
+                    float(row["lightly_active"]) if row["lightly_active"] is not None else None
+                )
+                entry["sedentary_minutes"] = (
+                    float(row["sedentary"]) if row["sedentary"] is not None else None
+                )
+            if not by_day:
+                return await _empty_metric_result(
+                    pool, "measurement_steps", days, metric_label="activity"
+                )
+            daily = []
+            for day in sorted(by_day):
+                entry = dict(by_day[day])
+                entry["date"] = day.isoformat()
+                daily.append(entry)
+            steps_values = [d["steps"] for d in daily if d.get("steps") is not None]
+            active_minutes_values = [
+                (d.get("very_active_minutes") or 0)
+                + (d.get("fairly_active_minutes") or 0)
+                + (d.get("lightly_active_minutes") or 0)
+                for d in daily
+            ]
             return {
-                "query": f"activity steps active minutes last {days} days",
-                "predicates": ["measurement_steps", "measurement_active_minutes"],
-                "scope": "health",
+                "found": True,
                 "days": days,
-                "time_from": time_from,
-                "instruction": (
-                    f"Call memory_search twice: "
-                    f"(1) query='daily steps activity', types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_steps', 'time_from': {time_from!r}}}, "
-                    f"limit=90; "
-                    f"(2) query='active minutes exercise', types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'measurement_active_minutes', "
-                    f"'time_from': {time_from!r}}}, "
-                    f"limit=90. "
-                    "Join results by date. Per-day return: steps, distance_km, floors, "
-                    "very_active_minutes, fairly_active_minutes, lightly_active_minutes, "
-                    "sedentary_minutes. "
-                    "Aggregate: avg_steps, avg_active_minutes, "
-                    "days_meeting_10k_steps (count of days with steps >= 10000). "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='activity')!r}"
+                "daily": daily,
+                "avg_steps": (
+                    round(sum(steps_values) / len(steps_values), 1) if steps_values else None
                 ),
+                "avg_active_minutes": (
+                    round(sum(active_minutes_values) / len(active_minutes_values), 1)
+                    if active_minutes_values
+                    else None
+                ),
+                "days_meeting_10k_steps": sum(1 for v in steps_values if v >= 10000),
             }
 
         mcp.tool()(health_activity_summary)
@@ -506,20 +761,27 @@ class GoogleHealthModule(Module):
             Queries the ``measurement_vo2_max`` fact for the owner entity.
             Returns: value, range_low, range_high, midpoint, and measurement date.
             """
-            if not module._scopes_ok:
+            if not module._scopes_ok or pool is None:
                 return module._not_connected()
+            row = await pool.fetchrow(
+                "SELECT valid_at, metadata FROM facts"
+                " WHERE predicate = 'measurement_vo2_max' AND scope = 'health'"
+                " AND validity = 'active' ORDER BY valid_at DESC LIMIT 1"
+            )
+            if row is None:
+                return {
+                    "found": False,
+                    "metric": "measurement_vo2_max",
+                    "message": _NO_DATA_TEMPLATE.format(metric="VO2 max"),
+                }
+            meta = row["metadata"] or {}
             return {
-                "query": "latest VO2 max",
-                "predicate": "measurement_vo2_max",
-                "scope": "health",
-                "instruction": (
-                    "Call memory_search with query='VO2 max cardiorespiratory fitness', "
-                    "types=['fact'], scope='health', "
-                    "filters={'predicate': 'measurement_vo2_max'}, limit=1 "
-                    "to retrieve the most recent VO2 max fact. "
-                    "Return: value, range_low, range_high, midpoint, and measurement date. "
-                    f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='VO2 max')!r}"
-                ),
+                "found": True,
+                "value": meta.get("midpoint"),
+                "range_low": meta.get("range_low"),
+                "range_high": meta.get("range_high"),
+                "midpoint": meta.get("midpoint"),
+                "measured_at": row["valid_at"],
             }
 
         mcp.tool()(health_vo2_max_latest)
