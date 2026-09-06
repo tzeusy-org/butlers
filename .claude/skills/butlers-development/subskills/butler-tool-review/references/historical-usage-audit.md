@@ -6,10 +6,11 @@ actually called. Every MCP tool invocation is captured in the JSONB
 `sessions.complete()`. This is the primary evidence for removal decisions —
 code-level analysis alone cannot tell you whether a tool is actually used.
 
-**Daemon-called tools never appear in session data but are still required:**
-`ingest`, `tick`, `route.execute` (daemon dispatches these directly),
+**Infrastructure and server-to-server tools never appear in session data but are still required:**
+`ingest`, `tick`, `route.execute`, `cancel_session`,
 `connector.heartbeat`, `backfill.poll`, `backfill.progress` (connector-facing),
-`trigger` (called by the scheduler loop). Tools that are exclusively
+`trigger` (scheduler-facing), and `chronicler_day_close_refresh` (dashboard
+control-plane RPC). Tools that are exclusively
 LLM-facing (memory, calendar, email, state, sessions, schedule, extraction,
 etc.) MUST show usage here to justify their existence.
 
@@ -70,11 +71,11 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
   internals, not MCP tools.
 - **Ignore** tool name variants with `mcp__` or `{butler}_` prefixes — these
   are the same tools under different naming conventions. Consolidate counts.
-- **Daemon-called tools** — see the list above; they are KEEP regardless of
+- **Infrastructure and server-to-server tools** — see the list above; they are KEEP regardless of
   zero session calls.
 - **Safe to remove** if a tool has:
   - Zero calls over 30+ days AND
-  - Is NOT in the daemon-called list above AND
+  - Is NOT in the infrastructure/server-to-server list above AND
   - Is NOT newly added (check git log for when the tool was introduced —
     `git log --all -1 --format=%ai -- {tool_source_file}`)
 
@@ -87,7 +88,7 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
 |---|---|---:|---|---|
 | route_to_butler | core | 1292 | 2026-04-07 | KEEP — primary function |
 | memory_store_fact | memory | 0 | never | REMOVE — never called, not daemon-internal |
-| ingest | core | 0 | n/a | KEEP — daemon-called, not LLM-facing |
+| ingest | core | 0 | n/a | KEEP — infrastructure, not LLM-facing |
 
 ### Dead tools (0 calls, safe to remove)
 - email_send_message, email_reply_to_thread, ...

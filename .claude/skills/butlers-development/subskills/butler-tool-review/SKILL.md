@@ -121,7 +121,7 @@ See [references/tool-budget.md](references/tool-budget.md) for group taxonomy.
 
 ### Phase 7: Historical Usage Audit
 
-**This phase is critical for removal decisions** — code-level analysis alone cannot tell you whether a tool is actually used. Query the butler's `{schema}.sessions` table (JSONB `tool_calls` column) to see which tools the runtime LLM has actually called. Some tools (`ingest`, `tick`, `route.execute`, `connector.heartbeat`, `backfill.poll`, `backfill.progress`, `trigger`) are called by the daemon or scheduler directly and will NOT appear in session data but are still required — everything else that's LLM-facing MUST show usage to justify its existence.
+**This phase is critical for removal decisions** — code-level analysis alone cannot tell you whether a tool is actually used. Query the butler's `{schema}.sessions` table (JSONB `tool_calls` column) to see which tools the runtime LLM has actually called. Some infrastructure or server-to-server tools (`ingest`, `tick`, `route.execute`, `connector.heartbeat`, `backfill.poll`, `backfill.progress`, `trigger`, `cancel_session`, `chronicler_day_close_refresh`) do not appear in session data but are still required — everything else that's LLM-facing MUST show usage to justify its existence.
 
 See [references/historical-usage-audit.md](references/historical-usage-audit.md) for the DB connection details, the exact SQL queries to run, result-interpretation rules (what to ignore, what counts as safe-to-remove), and the output format.
 
