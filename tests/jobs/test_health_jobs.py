@@ -181,7 +181,14 @@ async def test_adherence_symptom_correlation_submits_via_mcp_tool():
 
     def fetch_router(sql, args):
         if "predicate = 'medication'" in sql:
-            return [{"id": med_id, "name": "Metformin", "frequency": "daily"}]
+            return [
+                {
+                    "id": med_id,
+                    "name": "Metformin",
+                    "frequency": "daily",
+                    "created_at": now - timedelta(days=100),
+                }
+            ]
         return []
 
     def fetchval_router(sql, args):

@@ -28,6 +28,9 @@ from butlers.core.expected_signals import (
     upsert_expected_signal,
 )
 from butlers.tools.health._medication_utils import (
+    expected_dose_count as _expected_dose_count,
+)
+from butlers.tools.health._medication_utils import (
     frequency_to_doses_per_day as _frequency_to_doses_per_day,
 )
 
@@ -463,7 +466,8 @@ async def run_insight_scan(
     # live in metadata. The legacy health.medications relational table is orphaned.
     med_rows = await db_pool.fetch(
         """
-        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency
+        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency,
+               created_at
         FROM facts
         WHERE predicate = 'medication'
           AND validity = 'active'
@@ -806,7 +810,14 @@ async def _scan_adherence_symptom_correlation(
         frequency = med_row["frequency"] or "daily"
         doses_per_day = _frequency_to_doses_per_day(frequency)
 
-        expected_doses = doses_per_day * _ADHERENCE_DIP_WINDOW_DAYS
+        # Shared denominator (also used by trend_report and the adherence
+        # route): frequency x window, capped at the medication's own age.
+        expected_doses = _expected_dose_count(
+            doses_per_day=doses_per_day,
+            window_start=dip_start,
+            window_end=dip_end,
+            medication_created_at=med_row["created_at"],
+        )
         if expected_doses <= 0:
             continue
 
