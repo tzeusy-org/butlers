@@ -1760,8 +1760,42 @@ async def test_health_summary_sparse(pool):
     # Just check it doesn't error
     summary = await health_summary(pool)
     assert isinstance(summary["recent_measurements"], list)
+    assert isinstance(summary["absent_measurement_types"], list)
     assert isinstance(summary["active_medications"], list)
     assert isinstance(summary["active_conditions"], list)
+
+
+async def test_health_summary_lists_live_type_outside_frozen_five(pool):
+    """health_summary is not blind to measurement types outside the write-gate five.
+
+    Wellness ingestion (Google Health) writes measurement_resting_hr directly
+    via store_fact, bypassing measurement_log's VALID_MEASUREMENT_TYPES gate.
+    health_summary must still surface it — that live-type discovery is the fix
+    for bu-2jtfw.2 (previously a frozen five-type loop made this invisible).
+    """
+    from butlers.tools.health import health_summary
+
+    await _insert_fact(
+        pool, "measurement_resting_hr", "Resting HR: 58 bpm", _utcnow(), {"value": 58}
+    )
+
+    summary = await health_summary(pool)
+    types = {m["type"] for m in summary["recent_measurements"]}
+    assert "resting_hr" in types
+
+
+async def test_health_summary_reports_absent_canonical_type_with_reason(pool):
+    """A canonical (write-gate) measurement type with no data is named absent, not omitted."""
+    from butlers.tools.health import health_summary, measurement_log
+
+    # Seed only one canonical type; blood_sugar (also canonical) stays unseeded.
+    await measurement_log(pool, "blood_pressure", {"systolic": 120, "diastolic": 80})
+
+    summary = await health_summary(pool)
+    absent_types = {a["type"]: a["reason"] for a in summary["absent_measurement_types"]}
+    assert "blood_sugar" in absent_types
+    assert "blood_sugar" in absent_types["blood_sugar"]
+    assert "blood_pressure" not in absent_types
 
 
 async def test_trend_report_week(pool):
@@ -1780,6 +1814,14 @@ async def test_trend_report_week(pool):
     await measurement_log(pool, "weight", {"kg": 74}, measured_at=now - timedelta(days=1))
 
     med = await medication_add(pool, "TrendMed", "10mg", "daily")
+    # Backdate the medication itself well before the trend window so the
+    # frequency-expected denominator (below) sees the full 7-day window
+    # rather than capping at a med "created" seconds ago in this test.
+    await pool.execute(
+        "UPDATE facts SET created_at = $1 WHERE id = $2",
+        now - timedelta(days=30),
+        med["id"],
+    )
     await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=2))
     await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=1), skipped=True)
 
@@ -1797,17 +1839,48 @@ async def test_trend_report_week(pool):
     assert wt["first"] is not None
     assert wt["last"] is not None
 
-    # Medication adherence
+    # Medication adherence — denominator is frequency-expected doses (1/day x 7
+    # days = 7), not len(dose_rows); this is the shared expected_dose_count
+    # helper also used by the adherence route and the insight-scan job.
     med_adh = [m for m in report["medication_adherence"] if m["name"] == "TrendMed"]
     assert len(med_adh) == 1
     assert med_adh[0]["total_doses"] == 2
     assert med_adh[0]["taken_doses"] == 1
-    assert med_adh[0]["adherence_rate"] == 50.0
+    assert med_adh[0]["expected_doses"] == 7
+    assert med_adh[0]["adherence_rate"] == pytest.approx(1 / 7 * 100, abs=0.1)
 
     # Symptom data
     assert "TrendHeadache" in report["symptom_frequency"]
     assert report["symptom_frequency"]["TrendHeadache"] >= 2
     assert "TrendHeadache" in report["symptom_severity_avg"]
+
+
+async def test_trend_report_medication_adherence_caps_expected_at_medication_age(pool):
+    """A medication created 3 days ago is not scored against a full 30-day expectation.
+
+    Denominator-reconciliation fix (bu-2jtfw.2): expected_doses must be capped
+    at the medication's own age, or a perfectly adherent owner of a brand-new
+    medication reads as ~10% adherent over the month window.
+    """
+    from butlers.tools.health import medication_add, medication_log_dose, trend_report
+
+    now = _utcnow()
+    med = await medication_add(pool, "NewMed", "5mg", "daily")
+    await pool.execute(
+        "UPDATE facts SET created_at = $1 WHERE id = $2",
+        now - timedelta(days=3),
+        med["id"],
+    )
+    # Perfectly adherent for the 3 days the medication has existed.
+    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=2))
+    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=1))
+    await medication_log_dose(pool, str(med["id"]), taken_at=now)
+
+    report = await trend_report(pool, period="month")
+    med_adh = [m for m in report["medication_adherence"] if m["name"] == "NewMed"]
+    assert len(med_adh) == 1
+    assert med_adh[0]["expected_doses"] == 3
+    assert med_adh[0]["adherence_rate"] == pytest.approx(100.0, abs=0.1)
 
 
 async def test_trend_report_month(pool):
