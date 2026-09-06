@@ -8,9 +8,18 @@ the shell capability authority maps: the lazy route chunk and, when declared, th
 query data. Both projections SHALL be coordinated by one pending timer per mounted primitive
 instance.
 
-Pointer intent SHALL require an uninterrupted 120 ms dwell. Keyboard focus and activation by click
-or Enter SHALL warm immediately. Activation handlers MUST start warmup before router navigation or
-an imperative activation callback begins.
+Pointer intent SHALL require an uninterrupted 120 ms dwell. Keyboard focus and activation by click,
+Enter, or Space where the control's existing accessibility contract exposes Space activation SHALL
+warm immediately. Activation handlers MUST start warmup before router navigation or an imperative
+activation callback begins.
+
+An intent cycle SHALL be bound to one mounted control and one target. It starts with the first
+pointer enter, focus, imperative immediate-warm signal, or activation after the prior cycle ends.
+Focus and the immediately following click, Enter, or supported Space activation SHALL join the
+current cycle. The cycle ends after activation dispatch completes, when neither pointer nor focus
+remains, when the target changes, or when the primitive unmounts. A remount starts with fresh cycle
+state. Each resource SHALL start at most once within a cycle; ending a cycle SHALL permit a later
+distinct cycle to request warmup again without aborting or evicting work already started.
 
 Navigation warmup MUST remain speculative, side-effect-free, and failure-contained. It MUST use the
 destination's existing authenticated read, exact query key, stale time, and TanStack Query cache
@@ -39,10 +48,10 @@ state, telemetry payload, or event-bus payload. Route chunks SHALL use the brows
 - **THEN** every available mapped resource starts without waiting for the pointer delay
 - **AND** the control remains keyboard-operable under its existing accessibility contract
 
-#### Scenario: Click or Enter warms before navigation
+#### Scenario: Click, Enter, or supported Space warms before activation
 
-- **WHEN** the owner activates a route-aware control by click or Enter while a pointer timer may be
-  pending
+- **WHEN** the owner activates a route-aware control by click, Enter, or Space where that control's
+  existing accessibility contract exposes Space activation while a pointer timer may be pending
 - **THEN** the primitive cancels the pending timer and starts every available mapped resource once
   for that intent cycle
 - **AND** warmup starts before router navigation or the caller's imperative activation callback
@@ -83,20 +92,26 @@ state, telemetry payload, or event-bus payload. Route chunks SHALL use the brows
 - **AND** actual destination loading retains authority over its normal authorization, loading,
   empty, and error presentation
 
-#### Scenario: Pending work is cancelled when its control is no longer current
+#### Scenario: Pending work is cancelled when its cycle ends
 
-- **WHEN** a pointer timer is pending and the target changes, the control loses focus, or the
-  primitive unmounts before 120 ms
+- **WHEN** a pointer timer is pending and, before 120 ms, the target changes, the primitive
+  unmounts, or all intent presence ends because pointer leave or cancellation occurs with no focus
+  or blur occurs with no pointer presence
 - **THEN** the pending cycle is cancelled
-- **AND** no resource for the stale target starts
+- **AND** no resource for the stale or abandoned target starts
 - **AND** a replacement target requires a new intent signal
 
-#### Scenario: Repeated signals preserve resource-native deduplication
+#### Scenario: Focus and activation share one cycle without suppressing a later cycle
 
-- **WHEN** pointer scheduling is followed by focus, click, or Enter for the same mounted control and
-  destination
-- **THEN** the pointer timer is cancelled before immediate warmup
+- **WHEN** a mounted control receives focus and is then activated by click, Enter, or supported Space
+  for the same destination
+- **THEN** focus and activation belong to the same intent cycle
+- **AND** the pointer timer, when present, is cancelled before immediate warmup
 - **AND** each mapped resource starts at most once for that intent cycle
+- **AND** completion of activation ends the cycle
+- **AND** blur followed by refocus when no pointer remains, pointer leave followed by re-entry when
+  no focus remains, or a later explicit activation after completion starts a distinct cycle that
+  may request each mapped resource again
 - **AND** later cycles and other controls continue to use TanStack Query freshness and in-flight
   deduplication and the browser module cache rather than a second navigation-intent cache
 
@@ -119,7 +134,8 @@ state, telemetry payload, or event-bus payload. Route chunks SHALL use the brows
 - **AND** `usePrefetchOnIntent` and `useRouteChunkPrefetchOnIntent`, their duplicate timing
   constants, and obsolete focused tests are removed without temporary compatibility aliases
 - **AND** one consolidated behavior suite verifies the primitive while caller tests verify wiring
-  and warm-before-activation ordering
+  and warm-before-activation ordering, including focus followed by Space for `DisclosureRow` and the
+  nested-interactive `RowLink` fallback
 
 #### Scenario: Implementation rollback requires no data repair
 

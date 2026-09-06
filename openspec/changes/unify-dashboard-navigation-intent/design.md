@@ -46,9 +46,18 @@ timer to start all mapped resources. Timer state is per mounted hook instance, n
 timer would make intent on one independent control cancel intent on another and would couple
 otherwise isolated surfaces.
 
-Scheduling a new pointer intent cancels that instance's older pending timer. Pointer leave,
-pointer cancellation, blur, target change, and unmount cancel pending work. Once warmup starts,
-those signals do not abort or evict the underlying module or query request.
+An intent cycle is bound to one mounted control and one target. It starts with the first pointer
+enter, focus, imperative immediate-warm signal, or activation after the preceding cycle has ended.
+A focus event joins an existing pointer cycle, and the immediately following click, Enter, or
+supported Space activation joins that same cycle. The cycle records which mapped resources it has
+started so joined signals do not submit them again.
+
+Before activation, pointer leave or cancellation and blur update the cycle's pointer and focus
+presence. The cycle ends when neither remains; any pending timer is cancelled then. Activation ends
+the cycle after the caller's navigation or activation callback has been invoked, allowing a later
+explicit activation to start a distinct cycle even if the control remains mounted. Target change
+and unmount end the cycle immediately. A remount always starts with fresh cycle state. Once warmup
+starts, ending a cycle does not abort or evict the underlying module or query request.
 
 ### D2: Resolve chunk and query mappings independently at execution time
 
@@ -65,12 +74,13 @@ from the old target.
 
 `OWNER-DECISION-NAV-001` proposes an exact 120 ms pointer dwell. Pointer enter schedules one intent
 cycle; pointer leave or pointer cancellation before 120 ms starts neither resource. Keyboard focus
-starts the cycle immediately because focus is already deliberate navigation intent.
+starts or joins the cycle immediately because focus is already deliberate navigation intent.
 
-Click and Enter handlers call `warmNow` before invoking router navigation or the caller's imperative
-activation callback. `warmNow` first clears the pending timer, then starts each available resource
-once for that intent cycle. This ordering prevents activation and unmount from cancelling work that
-should have begun before navigation.
+Click and Enter handlers, plus Space handlers on controls whose existing accessibility contract
+exposes Space activation, call `warmNow` before invoking router navigation or the caller's
+imperative activation callback. `warmNow` first clears the pending timer, then starts each available
+resource not already started in that cycle. This ordering preserves Space behavior and prevents
+activation and unmount from cancelling work that should have begun before navigation.
 
 ### D4: Warmup stays within existing authorization and cache boundaries
 
@@ -98,10 +108,13 @@ The two resources are failure-isolated: rejection of one does not cancel or evic
 ### D6: Preserve deduplication without a second cache
 
 Within one intent cycle, each mapped resource starts at most once. A scheduled pointer cycle followed
-by focus, click, or Enter is converted to one immediate cycle by cancelling the timer first. Across
-separate consumers or later cycles, TanStack Query's query key and freshness rules and the browser's
-module cache remain the deduplication authorities. The primitive adds no global promise registry or
-cache with a competing lifetime.
+by focus and then click, Enter, or supported Space remains one cycle: focus cancels the timer and
+starts the resources, while activation observes their started markers and does not submit them
+again. Activation completion, loss of all pointer/focus presence, target change, or unmount resets
+the local cycle state, so a later distinct cycle may request warmup again. Across separate consumers
+or later cycles, TanStack Query's query key and freshness rules and the browser's module cache remain
+the deduplication authorities. The primitive adds no global promise registry or cache with a
+competing lifetime.
 
 ### D7: Migrate internal callers atomically
 
@@ -123,18 +136,23 @@ real or faithfully configured `QueryClient`. It must prove:
 
 - `/sessions/abc` with both mappings invokes its loader and `prefetchQuery` after exactly 120 ms;
 - pointer enter followed by leave or cancellation before 120 ms invokes neither;
-- focus, click, and Enter start both resources immediately, and activation observes warmup first;
+- focus, click, Enter, and supported Space start both resources immediately, and activation observes
+  warmup first;
 - chunk-only and query-only destinations start the available resource;
 - an unmapped destination and an absent query provider remain safe;
 - rejecting either or both resources produces no uncaught rejection and does not suppress the
   other resource;
 - unmount or target change cancels pending work; and
-- pointer scheduling followed by activation invokes each mapped resource once for that cycle.
+- real focus followed by click, Enter, or supported Space invokes each mapped resource once for that
+  joined cycle, while blur then refocus or completion followed by a later explicit activation starts
+  a distinct cycle without being suppressed.
 
-`RowLink` and `DisclosureRow` tests prove composed handlers retain caller behavior and call warmup
-before navigation or activation. `SessionTable`, `Sidebar`, and `EntityFinder` tests prove each
-uses the unified seam. Frontend lint, typecheck/build, `knip`, focused Vitest coverage, and terminal
-hosted frontend CI validate the exact implementation head.
+`RowLink` and `DisclosureRow` tests prove composed handlers retain caller behavior, preserve Space
+where those controls expose it, and call warmup before navigation or activation. Those caller tests
+also exercise focus followed by Enter or Space against both mapped resources, rather than mocking
+away the cycle boundary. `SessionTable`, `Sidebar`, and `EntityFinder` tests prove each uses the
+unified seam. Frontend lint, typecheck/build, `knip`, focused Vitest coverage, and terminal hosted
+frontend CI validate the exact implementation head.
 
 ## Risks / Trade-offs
 

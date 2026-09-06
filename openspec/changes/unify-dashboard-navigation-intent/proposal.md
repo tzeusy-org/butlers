@@ -16,7 +16,8 @@ independent and exact owner review; it does not approve the behavior described h
 - Define one intent cycle that warms every mapped route resource through one pending timer:
   - pointer dwell warms at 120 ms and a shorter pointer sweep warms nothing;
   - keyboard focus warms immediately;
-  - click and Enter warm synchronously before navigation starts;
+  - click, Enter, and Space where the control exposes Space activation warm synchronously before
+    navigation or activation starts;
   - chunk-only and query-only mappings proceed independently;
   - unmapped destinations remain no-ops;
   - rejection, target change, cancellation, unmount, and repeated signals remain contained.
@@ -30,8 +31,8 @@ independent and exact owner review; it does not approve the behavior described h
 The following product and privacy choices require exact owner approval of this artifact before any
 implementation:
 
-1. `OWNER-DECISION-NAV-001`: The pointer intent delay is exactly 120 ms. Focus, click, and Enter do
-   not wait for that delay.
+1. `OWNER-DECISION-NAV-001`: The pointer intent delay is exactly 120 ms. Focus, click, Enter, and
+   Space where the control exposes Space activation do not wait for that delay.
 2. `OWNER-DECISION-NAV-002`: Keyboard focus or a pointer dwell of at least 120 ms may initiate the
    destination's existing authenticated, side-effect-free read before navigation. The response may
    enter only the existing in-memory TanStack Query cache under the destination's normal query key,
@@ -61,6 +62,6 @@ cache, persisted schema, authentication mechanism, or implementation.
   `use-prefetch-on-intent.ts` and `use-route-chunk-prefetch-on-intent.ts`; focused hook and wiring
   tests.
 - Serialization: implementation remains behind terminal PR #4042 and `bu-8cdl1.13`, followed by a
-  fresh overlap/readiness scan. This draft does not require a clean PR to rebase merely to refresh.
+  fresh overlap/readiness scan.
 - Adoption gate: independent exact-head semantic review and exact owner approval remain required.
   This change must stay draft and must not be merged or archived before those gates pass.
