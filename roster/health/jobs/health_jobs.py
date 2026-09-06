@@ -466,8 +466,7 @@ async def run_insight_scan(
     # live in metadata. The legacy health.medications relational table is orphaned.
     med_rows = await db_pool.fetch(
         """
-        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency,
-               created_at
+        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency
         FROM facts
         WHERE predicate = 'medication'
           AND validity = 'active'
@@ -810,13 +809,17 @@ async def _scan_adherence_symptom_correlation(
         frequency = med_row["frequency"] or "daily"
         doses_per_day = _frequency_to_doses_per_day(frequency)
 
-        # Shared denominator (also used by trend_report and the adherence
-        # route): frequency x window, capped at the medication's own age.
+        # Same frequency x window arithmetic as trend_report and the adherence
+        # route (via the shared expected_dose_count), but deliberately without
+        # its medication-age cap: the prior_doses check just below already
+        # requires dose history from well before the dip window, so the
+        # medication demonstrably predates it regardless of when its fact row
+        # was created (e.g. backdated dose history imported after the fact) —
+        # capping by created_at here would zero out exactly that legitimate case.
         expected_doses = _expected_dose_count(
             doses_per_day=doses_per_day,
             window_start=dip_start,
             window_end=dip_end,
-            medication_created_at=med_row["created_at"],
         )
         if expected_doses <= 0:
             continue
