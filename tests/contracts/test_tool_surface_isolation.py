@@ -9,6 +9,7 @@ MCP endpoint via a generated config (RFC 0002, security.md).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from unittest.mock import MagicMock
 
@@ -20,13 +21,13 @@ from butlers.core_tools import ToolContext, register_all_core_tools
 pytestmark = pytest.mark.contract
 
 
-def _record_core_registrations(
+async def _record_core_registrations(
     butler_name: str,
     butler_type: ButlerType,
     *,
     core_groups: frozenset[str] | None = None,
 ) -> list[tuple[str, str | None]]:
-    """Collect registrations emitted by the real dispatcher for one butler shape."""
+    """Collect registrations and drain registration-time background tasks."""
     registrations: list[tuple[str, str | None]] = []
 
     class RecordingMCP:
@@ -47,6 +48,7 @@ def _record_core_registrations(
 
         return register
 
+    existing_tasks = asyncio.all_tasks()
     register_all_core_tools(
         ToolContext(
             daemon=MagicMock(),
@@ -61,19 +63,24 @@ def _record_core_registrations(
         RecordingMCP(),
         core_tool,
     )
+    registration_tasks = asyncio.all_tasks() - existing_tasks
+    for task in registration_tasks:
+        task.cancel()
+    if registration_tasks:
+        await asyncio.gather(*registration_tasks, return_exceptions=True)
     return registrations
 
 
 class TestEphemeralMcpConfig:
     """RFC 0002: Ephemeral MCP config is scoped to a single butler."""
 
-    def test_core_tools_catalog_completeness(self):
+    async def test_core_tools_catalog_completeness(self):
         """RFC 0002: the dispatcher preserves its complete, role-gated inventory."""
         registrations = {
-            "domain": _record_core_registrations("general", ButlerType.BUTLER),
-            "switchboard": _record_core_registrations("switchboard", ButlerType.STAFFER),
-            "messenger": _record_core_registrations("messenger", ButlerType.STAFFER),
-            "chronicler": _record_core_registrations("chronicler", ButlerType.BUTLER),
+            "domain": await _record_core_registrations("general", ButlerType.BUTLER),
+            "switchboard": await _record_core_registrations("switchboard", ButlerType.STAFFER),
+            "messenger": await _record_core_registrations("messenger", ButlerType.STAFFER),
+            "chronicler": await _record_core_registrations("chronicler", ButlerType.BUTLER),
         }
         all_registrations = [
             registration
@@ -455,14 +462,14 @@ class TestToolBudgetDiscipline:
             "Test confirms > 50 tools can be registered (triggering the budget warning)"
         )
 
-    def test_core_groups_allowlist_reduces_registered_tools(self):
+    async def test_core_groups_allowlist_reduces_registered_tools(self):
         """RFC 0002: core_groups allowlist gates core tool registration.
 
         When core_groups is set, only tools in the listed groups are registered.
         This allows butlers to stay within the 30-50 tool target.
         NULL means all groups are registered (backward compatibility).
         """
-        registrations = _record_core_registrations(
+        registrations = await _record_core_registrations(
             "general", ButlerType.BUTLER, core_groups=frozenset({"infra"})
         )
         names = {name for name, _ in registrations}
@@ -472,14 +479,14 @@ class TestToolBudgetDiscipline:
         assert {"status", "route.execute", "cancel_session"} <= names
         assert {"state_get", "schedule_list", "deadline_create"}.isdisjoint(names)
 
-    def test_route_execute_always_registered_regardless_of_core_groups(self):
+    async def test_route_execute_always_registered_regardless_of_core_groups(self):
         """RFC 0002: route.execute is ALWAYS registered regardless of core_groups setting.
 
         'route.execute is ALWAYS registered regardless of core_groups.'
         All butlers need route.execute because the Switchboard calls it server-to-server
         to deliver routed requests.
         """
-        registrations = _record_core_registrations(
+        registrations = await _record_core_registrations(
             "general", ButlerType.BUTLER, core_groups=frozenset()
         )
 
