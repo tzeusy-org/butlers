@@ -181,12 +181,14 @@ tests/migrations/test_entity_v3_lifecycle_migration.py
 tests/migrations/test_home_assistant_person_entity_only_migration.py
 tests/migrations/test_message_inbox_scanner_index_migration.py
 tests/migrations/test_predicate_registry_migration.py
+tests/migrations/test_reclassify_health_write_sensitivity_migration.py
 tests/migrations/test_rehome_contact_profile_migration.py
 tests/migrations/test_relationship_facts_migration.py
 tests/migrations/test_runtime_config_migration.py
 tests/migrations/test_secrets_be1_migration.py
 tests/migrations/test_tombstone_memory_calendar_episodes_migration.py
 tests/migrations/test_v_overlay_contributions_migration.py
+tests/modules/memory/test_local_read_ceiling.py
 tests/modules/memory/test_reembedding.py
 tests/modules/memory/test_tools_preferences.py
 tests/modules/memory/test_tools_reading.py
