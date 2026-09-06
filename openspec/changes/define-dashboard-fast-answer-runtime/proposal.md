@@ -35,15 +35,20 @@ The current implementation cannot safely be widened by removing the dashboard ex
   owner decision, and a plan of at most three reads without invoking any tool. Only the admitted
   fast-answer phase may call reads and phrase one answer.
 - Give the whole classify/read/phrase operation one Switchboard-owned durable runtime identity.
-  Register it before the first provider invocation, claim the existing pre-invoke fence, and make
-  the live task addressable through Switchboard's existing `cancel_session` MCP boundary.
+  Register it before catalog or provider work, claim the existing pre-invoke fence, heartbeat a
+  fenced 60-second lease at least every 20 seconds, and make the live task addressable through
+  Switchboard's existing `cancel_session` MCP boundary. A startup/60-second reconciler preserves
+  receipts and marks an unprovable outcome ambiguous by a 15-minute deadline without replay.
 - Replace the fast-answer call site's nullable catalog tuple with `matched`, `no_match`, and
   `unavailable` outcomes. A match carries at most three ordered, provenance-bearing candidates and
-  an explicit selected-hit rule; its RRF score remains ranking evidence, not confidence.
+  an explicit selected-hit rule; any malformed returned candidate poisons the whole result to
+  `unavailable`, and RRF score remains ranking evidence, not confidence.
 - Persist a monotonic dashboard intent lane separate from `target_kind`. `answer` uses a 45-second
   SSE reply-observation window; `non_answer`, unknown, and legacy/null use 300 seconds. Closing an
   SSE stream never cancels or fails the runtime, and a late reply remains visible.
-- Resolve classification and phrasing through the model catalog with distinct purpose attribution.
+- Resolve classification and phrasing from exact `cheap` API catalog entries with tier fallthrough
+  and static fallback disabled, and with distinct purpose attribution. Resolve both before reads;
+  fast admission does not provider-failover, while its one same-candidate schema retry remains.
   Keep the original hermetic 20-question fixed-latency-stub benchmark and its `<3s` p95 target.
   Keep it marked slow and eligible to skip in normal CI, and record its result in the future
   implementation PR body. Optional live evidence is a separate authorized activity and is never
@@ -106,20 +111,30 @@ must still be honored independently.
 
 ## Proposed Owner Decisions
 
-Owner approval is requested for this exact set of choices:
+Owner approval is requested for this exact set of twelve choices:
 
 1. Limit the initial fast path to dashboard Lane D system-plane questions selected for Concierge;
    domain questions keep the accepted `answer_question` to `route.execute` path.
-2. Require side-effect-free structured admission before any terminal tool execution.
-3. Use one Switchboard-owned `fast_answer` runtime identity across classification, Concierge reads,
-   answer phrasing, and reply settlement, registered durably before the first provider call.
+2. Require side-effect-free structured admission, cap its admitted plan at three reads, and execute no
+   terminal tool before admission succeeds.
+3. Use one Switchboard-owned `fast_answer` runtime identity across catalog resolution,
+   classification, Concierge reads, answer phrasing, and reply settlement. Register it before
+   catalog/provider work with a 60-second fenced lease, heartbeat at least every 20 seconds, and
+   reconcile on startup and at most every 60 seconds to a receipt-backed result or ambiguity by 15
+   minutes. Lease expiry alone is not death or Stop proof; a newly claimed generation fences a
+   partitioned predecessor, and an unproven deadline outcome uses reason
+   `fast_answer_runtime_outcome_unknown` without replay.
 4. Address Stop through the existing message-scoped dashboard API and Switchboard's registered
    `cancel_session` MCP tool; confirm cancellation only after all invoke claims are released.
-5. Allow at most three target-owned read calls, each to a tool that is both currently registered and in Concierge's
-   `dashboard_read` read-only projection, under their existing module, schema-role, validation,
-   and call-time checks.
-6. Use typed catalog outcomes with up to three provenance-bearing candidates; allow preselection
-   only under the deterministic same-owner rule in `design.md`, and never call RRF score confidence.
+5. Authorize only the exact checked-in V1 tool-name allowlist in `design.md`, intersected with
+   Concierge's enabled `dashboard_read` module and live target registration. The accepted Concierge,
+   module-dashboard-read, and RFC 0030 contracts provide the read-only guarantee; `ToolMeta`, tool
+   discovery, and visibility metadata provide no effect authority. Broadening V1 requires an
+   owner-approved amendment.
+6. Use typed catalog outcomes with up to three provenance-bearing candidates. Any malformed
+   returned envelope or candidate makes the whole result `unavailable`; no record is discarded to
+   strengthen selection. For a wholly valid match, allow preselection only under the deterministic
+   same-owner rule in `design.md`, and never call RRF score confidence.
 7. Treat an authoritative empty catalog result as `cannot_answer` only after Lane D classification;
    make zero `invoke_structured` ownership calls in that no-match branch, and treat catalog
    unavailability as a pre-effect fallback condition, never as no match.
@@ -127,10 +142,33 @@ Owner approval is requested for this exact set of choices:
    seconds from the existing SSE observation start, with legacy/null retaining 300 seconds.
 9. Permit an SSE observation timeout to close only that stream. It does not cancel the runtime,
    fail the conversation, suppress a late reply, or license replay.
-10. Resolve both provider phases through the model catalog at the cheap tier with distinct purpose
-    attribution, and retain the hermetic fixed-latency-stub `<3s` p95 benchmark as the required
-    performance gate, marked slow/may-skip-CI with its result in the implementation PR body. Any live
-    p95 run remains optional and separately authorized.
+10. Resolve both phase candidates before reads by requesting exact `cheap` entries with
+    `allow_tier_fallthrough=false`; require `runtime_type="api"`, and treat no exact candidate,
+    non-API selection, quota denial, non-cheap fallthrough, or static fallback as pre-effect fast-path
+    ineligibility that continues through the existing Spawner.
+11. Make one normal admission provider call, permit only its existing one same-candidate
+    schema-invalid retry, and prohibit provider failover in the fast path. After reads begin, make
+    exactly one phrasing call with no retry/failover; record every actual call under its distinct
+    phase purpose and shared runtime.
+12. Retain the hermetic fixed-latency-stub `<3s` p95 benchmark as the required performance gate,
+    marked slow/may-skip-CI with its result in the implementation PR body. Any live p95 run remains
+    optional and separately authorized.
 
-Until the owner approves the exact artifact digest or commit, this change remains a draft and
-`bu-0ynlk.6` remains blocked from implementation.
+## Review Correction Risk Delta
+
+This correction makes four material choices explicit for owner review:
+
+- Tool authority is a checked-in exact V1 name set backed by the accepted read-only module/RFC
+  contracts, rather than nonexistent `ToolMeta` effect metadata. The benefit is executable authority;
+  the cost is that adding a new fast-answer tool requires an approved allowlist amendment.
+- Any malformed catalog candidate poisons the whole result to `unavailable`. This gives up partial
+  selection when one row is corrupt so incomplete evidence can never strengthen an owner choice.
+- Fast runtimes add durable instance/generation/lease/heartbeat evidence and a bounded operational
+  reconciler. This is more schema and operational machinery, but it closes the forever-live invoke
+  and unacknowledgeable Stop failure after a Switchboard crash.
+- Fast model resolution is exact-cheap and catalog-only, with no provider failover. This sacrifices
+  fast-path availability when cheap API capacity is absent or fails, while preserving predictable
+  latency/cost, an executable call bound, and safe pre-effect fallback to the existing Spawner.
+
+Until the owner approves the exact artifact digest or commit and all twelve choices above, this
+change remains a draft and `bu-0ynlk.6` remains blocked from implementation.

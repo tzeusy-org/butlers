@@ -52,9 +52,10 @@ tool. A schema-valid result can enter the fast execution phase only when all of 
 2. the durable turn is active and not cancelling or terminal;
 3. classification is Lane D and `scope="system"`;
 4. catalog selection resolves Concierge under Decision 4;
-5. the plan contains at most three calls and every planned tool resolves to a currently registered
-   Concierge `dashboard_read` read handler;
-6. the selected runtime supports the structured admission and phrasing calls; and
+5. the plan contains at most three calls and every planned tool belongs to the exact V1 allowlist in
+   Decision 5, resolves in Concierge's live registry, and has its module enabled;
+6. exact-cheap API catalog candidates for both classification and phrasing have been resolved with
+   tier fallthrough and static fallback disabled; and
 7. no direct tool, terminal reply, route, bug report, dead letter, or other effect has started.
 
 The execution matrix is:
@@ -66,7 +67,7 @@ The execution matrix is:
 | Statement or action request | no | existing Spawner classification/routing path |
 | Bug report | no | existing Spawner classification/QA path |
 | Ambiguous classification | no | existing clarifying/dead-letter behavior |
-| Invalid schema or unsupported direct runtime | no | existing Spawner classifier, before any fast tool call |
+| Invalid schema, absent exact-cheap API model, or unsupported direct runtime | no | existing Spawner classifier, before any fast tool call |
 | Catalog unavailable | no | existing Spawner classifier or its existing fail-closed outcome |
 | Write-capable, unregistered, disabled, or non-Concierge read plan | no | reject admission and use the pre-effect fallback |
 
@@ -84,6 +85,15 @@ settlement; individual provider calls do not mint replacement runtime identities
 not eligible, the fast runtime releases before the existing Spawner continuation registers its own
 session; any Stop that lands between them remains durable and is observed by the later registration.
 
+Registration also creates durable liveness evidence specific to the fast runtime: a boot-scoped
+`owner_instance_id`, monotonically increasing `lease_generation`, `heartbeat_at`,
+`lease_expires_at`, and `reconcile_deadline_at`. The initial lease lasts 60 seconds, the owning
+Switchboard process refreshes it at least every 20 seconds while invoke or reply work remains active,
+and the reconciliation deadline is fixed no later than 15 minutes after registration. Every
+heartbeat, phase advance, invoke release, reply claim/receipt, and terminal transition presents the
+same owner instance and lease generation. A stale predecessor cannot commit after a later generation
+wins.
+
 After registration, the runtime claims the existing durable pre-invoke fence once for the whole
 sequence. Switchboard also registers the live coroutine in its process-local cancellable-runtime
 map under that session UUID. Its existing registered `cancel_session` MCP handler resolves both
@@ -95,9 +105,11 @@ The sequence is:
 ```text
 durable turn already open
   -> create Switchboard session UUID
-  -> durable register(message, session, owner=switchboard, phase=fast_answer)
+  -> durable register(message, session, owner=switchboard, phase=fast_answer,
+       owner_instance_id, generation=1, lease=60s, deadline<=15m)
   -> process-local cancellable registration
   -> durable claim_invoke(message, session)
+  -> resolve exact-cheap API candidates for classification and phrasing
   -> typed catalog lookup
   -> structured admission provider call
   -> target-owned registered Concierge MCP reads
@@ -107,10 +119,11 @@ durable turn already open
   -> process-local unregister
 ```
 
-Every transition after `claim_invoke` checks the durable cancellation state before beginning the
-next read, the phrasing call, or reply persistence. Cleanup releases the invoke claim and unregisters
-the live task on success, deterministic failure, or confirmed cancellation. A process crash may
-prevent cleanup; recovery handles that as Decision 3 specifies.
+Every transition after `claim_invoke` checks the durable cancellation state and presents the current
+lease generation before beginning the next read, the phrasing call, or reply persistence. Cleanup
+releases the invoke claim and unregisters the live task on success, deterministic failure, or
+confirmed cancellation. A process crash may prevent cleanup; recovery handles that as Decision 3
+specifies.
 
 ## Decision 3: Stop is a durable fence, not a client detach
 
@@ -137,10 +150,21 @@ Race behavior is fixed:
 - **Stop after durable completion:** the canonical endpoint reports the existing already-finished
   meaning and does not rewrite the answer.
 
-If the process or transport dies with an invoke or reply attempt in an unprovable state, recovery
-uses durable evidence to preserve a proven result or records ambiguity. It never reconstructs the
-prompt, reruns classification, repeats a read plan, rephrases, or reissues reply persistence merely
-because the live task is gone. A late provider response cannot cross a lost invoke/reply fence.
+Switchboard owns a supervised fast-runtime reconciler. It scans at startup and at most every 60
+seconds. It may inspect only a row whose 60-second lease has expired, and lease expiry or a changed
+process instance is never itself proof that the predecessor died, stopped, or failed. The reconciler
+first reads durable runtime, Stop, and deterministic reply-receipt evidence. It then conditionally
+claims a new reconciliation generation only while the old lease remains expired. That generation
+fences a merely partitioned predecessor: if the old process later regains the database, its stale
+heartbeat, phase, reply, and completion writes fail, and it must cancel its local work.
+
+The reconciler performs observation and classification only. A proven reply receipt completes the
+turn; a proven cancellation acknowledgement confirms cancellation; a proven deterministic failure
+records failure. With no conclusive receipt, the turn remains `pending_reconciliation` (or
+`pending_cancellation` after Stop) until `reconcile_deadline_at`. At that deadline it becomes
+`ambiguous` with reason `fast_answer_runtime_outcome_unknown`. The reconciler never invokes a
+provider, repeats a Concierge read, persists a reply, or calls the runtime cancelled by inference.
+A late provider response cannot cross the superseded generation or reply fence.
 
 ## Decision 4: Catalog resolution is typed and selection is deterministic
 
@@ -161,16 +185,21 @@ or MCP invocation.
 
 The proposed selected-hit rule is deliberately non-probabilistic:
 
-1. Reject malformed candidates, missing owners, non-finite scores, and owners outside the current
-   eligible roster before ranking.
-2. Keep catalog order and at most the first three valid candidates.
-3. If no candidate remains, return `no_match` only when the underlying search was authoritative;
-   otherwise return `unavailable`.
-4. Select the first candidate's owner when there is exactly one valid candidate.
-5. With two or three candidates, select the first owner's value only when the first two candidates
+1. Request catalog `limit=3`, then validate the response envelope and every returned candidate before
+   selection. A count above three, missing resolved owner, missing provenance field/rank/finite score,
+   or unsupported envelope shape poisons the entire response to `unavailable`.
+2. Preserve every returned candidate and catalog order; no candidate is discarded or reordered. A
+   well-formed owner outside the current eligible roster remains visible as provenance but cannot be
+   selected.
+3. Return `no_match` only when the underlying search and held-authority path were authoritative and
+   returned zero candidates. Any malformed envelope or candidate returns `unavailable`.
+4. Select the first candidate's owner when there is exactly one wholly valid candidate and that
+   owner is currently eligible.
+5. With two or three wholly valid candidates, select the first owner's value only when the first two candidates
    name the same owner and every candidate tied at the highest score names that owner.
-6. A cross-owner top-two result, cross-owner top-score tie, missing score, or malformed provenance
-   yields `matched(..., selected_owner=null)`. Numeric score margin never overrides disagreement.
+6. A cross-owner top-two result, cross-owner top-score tie, or well-formed but ineligible selected
+   owner yields `matched(..., selected_owner=null)`. Numeric score margin never overrides
+   disagreement. Malformed evidence never yields `matched`.
 
 Before preselection is enabled, this rule runs against a fixed, labeled, seeded catalog corpus and
 records corpus digest, result-limit, rule version, selected coverage, wrong-owner count, per-owner
@@ -178,21 +207,52 @@ breakdown, and confusion matrix. A wrong-owner selected hit blocks enablement; e
 tighten the rule without owner intervention, but broadening it requires a new proposal. This is
 calibration/verification of a deterministic rule, not conversion of RRF into confidence.
 
-## Decision 5: Concierge remains the owner and MCP remains the call boundary
+## Decision 5: An exact V1 allowlist supplies executable tool authority
 
-The eligible read projection is the intersection of:
+Current `ToolMeta` describes argument sensitivity only, and `DashboardReadModule` publishes no
+`tool_metadata()`. Neither is effect authority. This proposal instead introduces one checked-in
+`FAST_ANSWER_CONCIERGE_TOOLS_V1` grant map. Every entry has fixed
+`target="concierge"`, `module="dashboard_read"`, and `effect="read"`, keyed by exactly these names:
 
+- `dashboard_read_fleet_status`
+- `dashboard_read_butler_detail`
+- `dashboard_read_sessions_recent`
+- `dashboard_read_session_detail`
+- `dashboard_read_sessions_aggregate`
+- `dashboard_read_sessions_trigger_breakdown`
+- `dashboard_read_fleet_errors_recent`
+- `dashboard_read_fleet_search`
+- `dashboard_read_timeline_recent`
+- `dashboard_read_butler_activity`
+- `dashboard_read_spend_summary`
+- `dashboard_read_spend_daily`
+- `dashboard_read_spend_top_sessions`
+- `dashboard_read_spend_breakdown_by_butler`
+- `dashboard_read_spend_breakdown_by_model`
+- `dashboard_read_insight_delivery_state`
+
+The executable eligible set is the intersection of:
+
+- this exact checked-in V1 set;
 - handlers currently registered by the Concierge FastMCP server;
-- tools belonging to its enabled `dashboard_read` module/group;
-- tools declared read-only under the existing tool metadata; and
-- a bounded fast-answer allowlist derived from those registered names.
+- Concierge's enabled `dashboard_read` module state; and
+- the existing accepted `butler-concierge`, `module-dashboard-read`, and RFC 0030 contracts, which
+  require every named module tool to be a read through the sanctioned views/public read source.
 
-Missing, stale, or contradictory metadata excludes a tool. Discovery or visibility metadata may
-narrow presentation but cannot add a handler or grant invocation authority. Every call crosses the
-registered Switchboard-to-Concierge MCP path and therefore retains schema validation, module-state,
-schema-role, transport, call-time authorization, and future middleware checks. Switchboard does not
-import Concierge code, call `.fn()`, query a Concierge view, or dereference a catalog pointer.
-An admitted plan contains at most three calls; an overlong plan is invalid before any read starts.
+The executor validates the grant map before admission. A missing, duplicate, malformed, or
+contradictory target/module/effect entry disables fast admission fail-closed. An allowlisted name
+missing from live registration is unavailable, and an additional registered
+`dashboard_read_*` name is ineligible until an owner-approved amendment broadens V1. Disabled module
+state, a name outside V1, a registered-name mismatch, or a future contradiction with the accepted
+read-only module/RFC contracts rejects the whole proposed plan before its first read. Emergency or
+security narrowing may disable a name; it cannot silently broaden the set. `ToolMeta`, discovery,
+and visibility metadata may narrow presentation but cannot grant invocation authority.
+
+Every call crosses the registered Switchboard-to-Concierge MCP path and therefore retains schema
+validation, module-state, schema-role, transport, call-time authorization, and future middleware
+checks. Switchboard does not import Concierge code, call `.fn()`, query a Concierge view, or
+dereference a catalog pointer. An admitted plan contains at most three calls; an overlong plan is
+invalid before any read starts.
 
 The answer model receives only validated read results and their required `source` envelopes.
 Server code derives the persisted `sources` list from those envelopes; model prose cannot invent or
@@ -236,26 +296,38 @@ connection. It does not call Stop, alter the turn/conversation, claim provider t
 delete draft/attempt state, or authorize retry. A reply persisted later remains visible through the
 normal message history and unread refresh.
 
-## Decision 8: Model resolution and attribution remain explicit
+## Decision 8: Model resolution is exact-cheap and call bounds are literal
 
-The initial system-plane fast path resolves both provider phases through the existing model catalog
-at the cheap tier. Classification uses a structured-output, no-terminal-tool dispatch intent and
-records purpose `dashboard_fast_answer_classification`. Phrasing uses the frozen validated read
-results, records purpose `dashboard_fast_answer_phrasing`, and makes exactly one provider call.
+Before any provider or Concierge read, the fast path resolves both phase candidates through the
+existing model catalog with requested tier `cheap`, `allow_tier_fallthrough=false`, and distinct
+phase intents. Both candidates must be catalog-backed `runtime_type="api"` entries with effective
+tier `cheap`. No matching exact-tier entry, quota denial, a non-API entry, a non-cheap fallthrough,
+or static fallback makes the fast path ineligible before effects and hands the turn to the existing
+Spawner. Static configuration is never a fast-answer model authority.
+
+Classification uses a structured-output, no-terminal-tool dispatch intent and records purpose
+`dashboard_fast_answer_classification`. It makes one normal provider attempt and permits only the
+existing one schema-invalid retry against that same candidate. A provider/runtime failure does not
+try another catalog candidate in the fast path; because no read has started, it releases the fast
+runtime and uses the existing Spawner continuation. Phrasing uses the frozen validated read results,
+records purpose `dashboard_fast_answer_phrasing`, and makes exactly one provider call with no retry
+or provider failover.
 These remain ephemeral LLM operations. Deterministic daemon code owns registration, validation,
 fencing, dispatch, attribution, and settlement; it does not retain or perform model reasoning.
 
-Each phase records the selected runtime type, model ID, catalog entry, effective tier, resolution
-source, provider execution timeout, token usage, duration, and outcome under the shared fast-runtime
+Each actual attempt records requested tier `cheap`, effective tier `cheap`, resolution source
+`catalog`, selected runtime type, model ID, catalog entry, provider execution timeout, token usage,
+duration, and outcome under the shared fast-runtime
 and dashboard request identities. Content-bearing prompt, tool arguments/results, and answer text do
 not enter attribution telemetry. Catalog `timeout_s` remains that phase's provider execution budget;
 it is never replaced by the 45-second SSE observation window.
 
 The normal successful path uses one classification call, zero CLI spawns, at most three registered
-read calls from the admitted plan, one phrasing call, and one idempotent reply. The
-existing single schema-invalid classification retry may run before any read; exhaustion falls back
-to the existing Spawner path. Provider failover follows existing no-effect rules before reads.
-After a read starts, no fallback may re-execute the whole turn.
+read calls from the admitted plan, one phrasing call, and one idempotent reply. The existing single
+same-candidate schema-invalid classification retry may run before any read, producing exactly two
+attributed classification attempts; exhaustion falls back to the existing Spawner path. Provider
+failover is disabled for both fast phases. After a read starts, no fallback may re-execute the whole
+turn.
 
 ## Decision 9: Performance evidence stays hermetic by default
 
@@ -276,8 +348,11 @@ implementation, and its result cannot be inferred from the stub.
 | Failure point | Durable interpretation | Fallback/replay rule | Owner-visible result |
 |---|---|---|---|
 | Catalog authoritative empty | no owner evidence | only Lane D may decline; no General route | honest `cannot_answer` reply/dead letter |
-| Catalog/hook/authority unavailable | evidence unavailable | pre-effect existing Spawner fallback | existing fallback/error behavior |
-| Classification invalid/unsupported | no admitted plan | pre-effect existing Spawner fallback | existing lane result |
+| Catalog malformed/hook/authority unavailable | evidence unavailable | poison whole catalog result; pre-effect Spawner fallback | existing fallback/error behavior |
+| V1 grant map malformed or contradictory | tool authority unavailable | disable fast admission before any read | existing Spawner behavior |
+| Exact-cheap API candidate absent/non-cheap/static | fast model ineligible | pre-effect existing Spawner fallback | existing lane result |
+| Admission provider failure | no admitted plan | no fast provider failover; pre-effect Spawner fallback | existing lane result |
+| Admission schema invalid twice | no admitted plan | one same-candidate retry, then pre-effect Spawner fallback | existing lane result |
 | Stop before invoke | cancelled | no provider/tool/reply | confirmed Stop after release |
 | Stop during provider/read | cancelling until settled | no whole-turn replay | cancelled or ambiguity if unprovable |
 | Concierge unavailable before first read | fast path unavailable | no direct read; existing fail-closed answer behavior | honest unavailable/decline |
@@ -286,7 +361,8 @@ implementation, and its result cannot be inferred from the stub.
 | Reply write conflicts | canonical reply wins | no changed overwrite | existing reply or structured conflict |
 | Reply write outcome unknown | pending reconciliation/ambiguous | receipt lookup only; no replay | durable unknown outcome |
 | SSE reaches 45/300 seconds | observation ended | runtime continues; Stop remains available | lane-named timeout; thread stays open |
-| Runtime process crashes active | outcome unproven | no automatic runtime replay | durable ambiguity unless receipt proves outcome |
+| Runtime lease expires | predecessor liveness unproven | fence generation; inspect receipts only | pending reconciliation/cancellation |
+| Runtime process crashes active | outcome unproven | startup/60s reconciler; no replay; 15m bound | receipt-backed result or `fast_answer_runtime_outcome_unknown` ambiguity |
 
 ## Compatibility and Sequencing
 
@@ -332,7 +408,7 @@ authorized live evidence must be reported as different evidence classes.
 
 ## Owner Review Gate
 
-The exact product choices requiring approval are the ten numbered decisions in `proposal.md`.
+The exact product choices requiring approval are the twelve numbered decisions in `proposal.md`.
 Routine implementation choices may be resolved within those constraints. Any proposal to widen the
 eligible lanes or butlers, execute writes, weaken the selected-hit rule, bypass MCP, reinterpret an
 SSE timeout as cancellation/failure, replay uncertain work, or require live-provider evidence needs

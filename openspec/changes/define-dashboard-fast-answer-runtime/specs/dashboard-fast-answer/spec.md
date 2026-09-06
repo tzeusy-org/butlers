@@ -4,7 +4,10 @@
 
 The Switchboard SHALL admit direct fast-answer execution only for a dashboard Lane D system-plane
 question whose deterministic catalog selection names Concierge and whose complete read plan resolves
-to at most three calls to currently registered Concierge `dashboard_read` read-only MCP handlers. Structured admission
+to at most three names in the exact `FAST_ANSWER_CONCIERGE_TOOLS_V1` allowlist that are live on
+Concierge while its `dashboard_read` module is enabled. The accepted Concierge, module-dashboard-read,
+and RFC 0030 contracts SHALL supply the read-only guarantee; `ToolMeta`, discovery, and visibility
+metadata SHALL NOT supply effect authority. Structured admission
 SHALL classify lane, scope, selected owner, and read plan without executing any terminal tool or
 other effect. Every non-eligible, invalid, unsupported, or pre-effect unavailable result SHALL use
 the existing Spawner continuation or its existing fail-closed outcome. Domain questions SHALL retain
@@ -18,8 +21,8 @@ Scope: proposed-v1
 #### Scenario: Eligible system question enters the fast path without a CLI spawn
 
 - **WHEN** a dashboard turn has an immutable message identity, structured admission returns Lane D
-  with `scope="system"`, catalog selection names Concierge, and every planned tool is a currently
-  registered Concierge `dashboard_read` read-only handler
+  with `scope="system"`, catalog selection names Concierge, both provider phases resolve to exact
+  cheap API catalog entries, and every planned tool is allowlisted and live on enabled Concierge
 - **THEN** the turn MAY execute the dashboard fast-answer phase
 - **AND** the admitted plan SHALL contain at most three read calls
 - **AND** its successful path uses no CLI subprocess or Spawner classification session
@@ -43,16 +46,18 @@ Scope: proposed-v1
 
 #### Scenario: Invalid or unsupported admission falls back before effects
 
-- **WHEN** the direct runtime is unsupported, catalog evidence is unavailable, classification fails,
-  or structured output is invalid after its existing bounded schema retry
+- **WHEN** an exact-cheap API candidate is absent for either phase, direct runtime is unsupported,
+  catalog evidence is unavailable, classification fails, or structured output is invalid after its
+  existing bounded schema retry
 - **THEN** no fast-answer tool or reply SHALL have executed
 - **AND** the pipeline SHALL use the existing Spawner classifier or its existing fail-closed outcome
 - **AND** catalog unavailability SHALL NOT be converted into no match or `cannot_answer`
 
 #### Scenario: Ineligible read plan is rejected before invocation
 
-- **WHEN** a proposed plan contains a write-capable, unregistered, disabled-module, non-Concierge,
-  direct-handler, or otherwise unauthorized tool, or contains more than three calls
+- **WHEN** a proposed plan contains a name outside the exact V1 allowlist, an unregistered,
+  disabled-module, non-Concierge, direct-handler, or otherwise unauthorized tool, or more than three
+  calls
 - **THEN** admission SHALL reject the whole plan before any planned tool runs
 - **AND** tool visibility, catalog provenance, or a model-produced name SHALL NOT grant authority
 
@@ -67,12 +72,16 @@ Scope: proposed-v1
 ### Requirement: Durable Cross-Process Fast-Answer Stop
 
 One Switchboard-owned durable `fast_answer` runtime identity SHALL span catalog resolution,
-structured classification, registered Concierge reads, answer phrasing, and reply settlement. The runtime SHALL be registered
-against the immutable dashboard message before catalog resolution or the first provider invocation, SHALL claim the
-existing pre-invoke fence once, and SHALL be addressable through Switchboard's registered
-`cancel_session` MCP boundary. Confirmed cancellation SHALL require every active invoke/reply claim
-to be released and a durable cancellation acknowledgement. Unprovable runtime or reply outcomes
-SHALL become durable ambiguity and SHALL NOT be replayed.
+structured classification, registered Concierge reads, answer phrasing, and reply settlement. The
+runtime SHALL be registered against the immutable dashboard message before catalog resolution or the
+first provider invocation, SHALL claim the existing pre-invoke fence once, and SHALL be addressable
+through Switchboard's registered `cancel_session` MCP boundary. It SHALL carry a boot-scoped owner
+instance, monotonically fenced lease generation, heartbeat, 60-second lease, and reconciliation
+deadline no later than 15 minutes after registration. The owner SHALL heartbeat at least every 20
+seconds. A supervised Switchboard reconciler SHALL scan at startup and at most every 60 seconds.
+Confirmed cancellation SHALL require every active invoke/reply claim to be released and a durable
+cancellation acknowledgement. Unprovable runtime or reply outcomes SHALL become durable ambiguity
+with reason `fast_answer_runtime_outcome_unknown` by the deadline and SHALL NOT be replayed.
 
 ID: REQ-dashboard-fast-answer-002
 Source: dashboard-conversations § Durable Dashboard Turn Control; dashboard-chat-ui § SSE Client
@@ -88,6 +97,46 @@ Scope: proposed-v1
   before catalog resolution or the first provider call
 - **AND** registration or claim observing prior Stop SHALL prevent every provider, MCP read,
   phrasing, and reply call
+
+#### Scenario: Active owner heartbeats a fenced lease
+
+- **WHEN** a fast runtime owns active catalog, provider, MCP-read, or reply work
+- **THEN** it SHALL refresh its durable 60-second lease at least every 20 seconds using the same
+  `owner_instance_id` and `lease_generation`
+- **AND** every phase advance, invoke release, reply claim/receipt, and terminal transition SHALL
+  present that generation or fail closed
+
+#### Scenario: Expired lease starts observation-only reconciliation
+
+- **WHEN** the startup or periodic reconciler finds a fast runtime whose lease expired and whose
+  outcome is not terminal
+- **THEN** it SHALL first inspect durable runtime, Stop, and deterministic reply-receipt evidence
+- **AND** it MAY conditionally claim a new reconciliation generation only while the old lease remains
+  expired
+- **AND** lease expiry or a changed process instance alone SHALL NOT prove that the predecessor died,
+  stopped, failed, or completed
+
+#### Scenario: Reconciliation generation fences a partitioned predecessor
+
+- **WHEN** a reconciler claims the generation after an expired lease while the predecessor process
+  is merely partitioned and later regains database access
+- **THEN** the predecessor's stale heartbeat, phase, reply, release, and completion writes SHALL be
+  rejected
+- **AND** the predecessor SHALL cancel its local work rather than persist a late result
+- **AND** the reconciler SHALL NOT describe the predecessor as dead or cancelled by inference
+
+#### Scenario: Reconciler settles from receipts or bounded ambiguity
+
+- **WHEN** reconciliation finds a proven reply receipt, cancellation acknowledgement, or
+  deterministic failure receipt
+- **THEN** it SHALL preserve that receipt and project completed, cancelled, or failed respectively
+- **WHEN** no conclusive receipt exists at `reconcile_deadline_at`
+- **THEN** it SHALL mark the turn `ambiguous` with reason
+  `fast_answer_runtime_outcome_unknown`
+- **AND** before the deadline it SHALL retain `pending_reconciliation` or, after Stop,
+  `pending_cancellation`
+- **AND** it SHALL never invoke a provider, repeat a Concierge read, persist a reply, or replay the
+  runtime
 
 #### Scenario: Stop during classification cancels the shared runtime
 
@@ -136,6 +185,16 @@ Scope: proposed-v1
 - **AND** it SHALL NOT reconstruct prompts, rerun classification, repeat reads, rephrase, or reissue
   reply persistence from process-local absence
 
+#### Scenario: Restart test drives the operational reconciler
+
+- **WHEN** an integration test persists an active fast runtime with a live lease, crashes its owning
+  Switchboard process, starts a replacement Switchboard, and advances an injected clock through
+  lease expiry and the reconciliation deadline
+- **THEN** the replacement's real startup/periodic reconciler entrypoint SHALL claim a new generation
+  and persist `ambiguous` with reason `fast_answer_runtime_outcome_unknown`
+- **AND** the test SHALL observe zero provider, Concierge-read, reply, and replay calls
+- **AND** directly calling a transition helper SHALL NOT satisfy this scenario
+
 #### Scenario: Every settled path releases the runtime
 
 - **WHEN** fast execution completes, fails deterministically, or confirms cancellation
@@ -147,10 +206,12 @@ Scope: proposed-v1
 ### Requirement: Typed Catalog Evidence and Selected-Owner Rule
 
 Catalog-assisted dashboard ownership SHALL return `matched`, `no_match`, or `unavailable` rather
-than one nullable tuple. A match SHALL contain at most three ordered candidates after server-held
-sensitivity filtering. Each candidate SHALL carry bounded provenance and RRF ranking evidence. The
-selected owner SHALL follow the deterministic same-owner rule below; raw RRF score SHALL NOT be
-named, normalized, or interpreted as calibrated confidence.
+than one nullable tuple. A match SHALL contain at most three ordered, wholly valid candidates after
+server-held sensitivity filtering. Each candidate SHALL carry bounded provenance and RRF ranking
+evidence. Any malformed envelope or candidate SHALL poison the whole result to `unavailable`; no
+record SHALL be discarded to strengthen selection. The selected owner SHALL follow the deterministic
+same-owner rule below; raw RRF score SHALL NOT be named, normalized, or interpreted as calibrated
+confidence.
 
 ID: REQ-dashboard-fast-answer-003
 Source: memory-discovery-catalog § Cross-butler search via catalog and Sensitivity filtering;
@@ -159,8 +220,10 @@ Scope: proposed-v1
 
 #### Scenario: Matched outcome carries bounded provenance
 
-- **WHEN** an authoritative held-sensitivity-filtered catalog search returns eligible candidates
-- **THEN** `matched` SHALL return at most the first three valid ordered candidates
+- **WHEN** an authoritative held-sensitivity-filtered catalog search requested `limit=3` and returns
+  one to three candidates in a wholly valid envelope
+- **THEN** `matched` SHALL return every candidate in catalog order without discarding or reordering a
+  record
 - **AND** each candidate SHALL contain only `catalog_id`, resolved owner, `source_schema`,
   `source_table`, `source_id`, `ranking_method="rrf"`, `rrf_score`, `semantic_rank`, and
   `keyword_rank`
@@ -175,17 +238,26 @@ Scope: proposed-v1
 
 #### Scenario: Multiple candidates require same-owner agreement
 
-- **WHEN** `matched` contains two or three valid candidates
+- **WHEN** `matched` contains two or three wholly valid candidates
 - **THEN** `selected_owner` SHALL equal the first candidate's owner only when the first two candidates
   name the same owner and every candidate tied for highest score names that owner
-- **AND** a cross-owner top-two result, cross-owner top-score tie, missing/non-finite score, malformed
-  provenance, or ineligible owner SHALL leave `selected_owner` null
+- **AND** a cross-owner top-two result, cross-owner top-score tie, or well-formed but ineligible owner
+  SHALL leave `selected_owner` null
 - **AND** numeric score margin SHALL never override owner disagreement
+
+#### Scenario: Any malformed candidate poisons the whole result
+
+- **WHEN** a returned catalog envelope contains more than three candidates or any candidate lacks a
+  resolved owner, required provenance, semantic/keyword rank, or finite RRF score, whether malformed
+  evidence appears alone, before a valid candidate, or after a valid candidate
+- **THEN** the whole outcome SHALL be `unavailable` with a bounded categorical reason
+- **AND** it SHALL NOT return `matched`, select an owner, discard the malformed record, promote a
+  remaining record, or return `no_match`
 
 #### Scenario: Successful empty differs from unavailable
 
 - **WHEN** the hook, server-held authority source, embedding/search dependencies, and catalog query
-  all succeed and no eligible candidate remains
+  all succeed and the search returns zero candidates
 - **THEN** the outcome SHALL be `no_match`
 - **WHEN** the hook is absent, held authority cannot be loaded, a dependency/query fails, or returned
   evidence is malformed
@@ -211,13 +283,40 @@ Scope: proposed-v1
 
 ### Requirement: Target-Owned Registered Concierge Reads
 
-Every fast-answer data access SHALL invoke an already registered Concierge `dashboard_read`
-read-only handler through the registered Switchboard-to-Concierge MCP boundary. The eligible set
-SHALL be derived from current target registration, enabled module/group state, existing read-only
-metadata, and a bounded fast-answer allowlist. Existing schema validation, module checks, database
-role, call-time authorization, middleware, RFC 0030 views, and source-envelope rules SHALL remain in
-force. Switchboard SHALL NOT import or call Concierge handlers directly, query another schema, or
-use catalog provenance as canonical read authority.
+Every fast-answer data access SHALL invoke an already registered Concierge `dashboard_read` handler
+through the registered Switchboard-to-Concierge MCP boundary. Executable authority SHALL be the
+intersection of Concierge's enabled module state, its live target registration, and the exact
+checked-in `FAST_ANSWER_CONCIERGE_TOOLS_V1` set below. The accepted `butler-concierge`,
+`module-dashboard-read`, and RFC 0030 contracts SHALL supply the read-only guarantee. `ToolMeta`,
+tool discovery, visibility metadata, and naming convention SHALL NOT supply effect authority.
+Existing schema validation, module checks, database role, call-time authorization, middleware, RFC
+0030 views, and source-envelope rules SHALL remain in force. Switchboard SHALL NOT import or call
+Concierge handlers directly, query another schema, or use catalog provenance as canonical read
+authority.
+
+`FAST_ANSWER_CONCIERGE_TOOLS_V1` SHALL be a checked-in grant map whose entries all declare
+`target="concierge"`, `module="dashboard_read"`, and `effect="read"`. It SHALL contain exactly these
+names:
+
+- `dashboard_read_fleet_status`
+- `dashboard_read_butler_detail`
+- `dashboard_read_sessions_recent`
+- `dashboard_read_session_detail`
+- `dashboard_read_sessions_aggregate`
+- `dashboard_read_sessions_trigger_breakdown`
+- `dashboard_read_fleet_errors_recent`
+- `dashboard_read_fleet_search`
+- `dashboard_read_timeline_recent`
+- `dashboard_read_butler_activity`
+- `dashboard_read_spend_summary`
+- `dashboard_read_spend_daily`
+- `dashboard_read_spend_top_sessions`
+- `dashboard_read_spend_breakdown_by_butler`
+- `dashboard_read_spend_breakdown_by_model`
+- `dashboard_read_insight_delivery_state`
+
+Broadening this set SHALL require a new owner-approved amendment. Disabling a module or narrowing the
+set for security SHALL remain fail-closed.
 
 ID: REQ-dashboard-fast-answer-004
 Source: Non-Negotiable Rule 3; RFC 0030 §§ Exception Scope, Data Flow, and Guardrails;
@@ -227,8 +326,8 @@ Scope: proposed-v1
 
 #### Scenario: Registered Concierge read executes through MCP
 
-- **WHEN** an admitted plan names a currently registered, enabled, allowlisted Concierge
-  `dashboard_read` read-only tool
+- **WHEN** an admitted plan names a V1-allowlisted handler that is live on Concierge while its
+  `dashboard_read` module is enabled
 - **THEN** Switchboard SHALL invoke it through the registered target MCP boundary
 - **AND** the target's normal input validation, module-state, schema-role, call-time, transport, and
   middleware checks SHALL run
@@ -239,6 +338,23 @@ Scope: proposed-v1
 - **THEN** the entire plan SHALL be rejected before any read starts
 - **AND** an admitted plan SHALL execute each listed call at most once under the shared runtime
 
+#### Scenario: Existing contracts rather than ToolMeta provide read authority
+
+- **WHEN** the fast-answer executor evaluates a proposed Concierge call
+- **THEN** it SHALL derive executable authority from the exact V1 set, live target registration, and
+  enabled module state
+- **AND** it SHALL rely on the accepted Concierge/module/RFC contracts for the read-only guarantee
+- **AND** the absence of a `DashboardReadModule.tool_metadata()` effect declaration,
+  argument-sensitivity metadata, or presentation metadata SHALL neither reject every allowlisted
+  happy path nor grant any additional tool
+
+#### Scenario: Malformed or contradictory V1 grant map fails closed
+
+- **WHEN** the checked-in V1 grant map has a missing, duplicate, malformed, or contradictory
+  name/target/module/effect entry
+- **THEN** fast admission SHALL be disabled before classification or any read
+- **AND** the turn SHALL use the existing Spawner continuation
+
 #### Scenario: Presentation metadata cannot grant a call
 
 - **WHEN** discovery, visibility, catalog, or model output names a tool that is not currently
@@ -247,12 +363,20 @@ Scope: proposed-v1
 - **AND** no generic invoke gateway, direct `.fn()` call, imported handler, or copied schema SHALL be
   used as a fallback
 
-#### Scenario: Disabled or write-capable tool is rejected
+#### Scenario: Missing or contradictory authority rejects the plan
 
-- **WHEN** the owning module is disabled, read-only classification is missing/uncertain, or any
-  proposed tool can perform a write or external effect
-- **THEN** the whole fast read plan SHALL be rejected before that tool runs
+- **WHEN** the owning module is disabled, a planned name is absent from V1 or live target
+  registration, or an allowlisted implementation contradicts the accepted read-only module/RFC
+  contracts
+- **THEN** the whole proposed read plan SHALL be rejected before any planned tool runs
 - **AND** no approval policy or write-tool wrapper SHALL be used to make it eligible
+
+#### Scenario: Broadening the live module does not broaden fast authority
+
+- **WHEN** Concierge registers a new `dashboard_read_*` handler that is absent from
+  `FAST_ANSWER_CONCIERGE_TOOLS_V1`
+- **THEN** the new handler SHALL remain ineligible for fast answers
+- **AND** only a new owner-approved amendment may add it to the V1 authority set
 
 #### Scenario: Source attribution is server-derived
 
@@ -330,10 +454,12 @@ Scope: proposed-v1
 An admitted fast answer SHALL use one shared durable runtime, one normal classification provider
 call (plus only the existing pre-read schema-invalid retry), bounded registered Concierge MCP reads,
 exactly one answer-phrasing provider call, and one deterministic message-derived idempotent reply
-claim. Classification and phrasing SHALL resolve through the existing model catalog at the cheap tier
-with distinct purpose attribution and their catalog execution timeouts. Required performance
-evidence SHALL be the original hermetic fixed-latency-stub benchmark; live-provider evidence SHALL be
-optional and separately authorized.
+claim. Before any provider or read, classification and phrasing SHALL each resolve an exact `cheap`,
+catalog-backed `runtime_type="api"` candidate with `allow_tier_fallthrough=false`, distinct purpose
+attribution, and its catalog execution timeout. Static fallback, non-cheap fallthrough, and provider
+failover SHALL be ineligible for fast execution. Required performance evidence SHALL be the original
+hermetic fixed-latency-stub benchmark; live-provider evidence SHALL be optional and separately
+authorized.
 
 ID: REQ-dashboard-fast-answer-006
 Source: dashboard-conversations § Message Data Model and Conversation Reply Channel;
@@ -341,12 +467,41 @@ docs/runtime/model-routing.md § Resolution Flow in the Spawner; about/craft-and
 discipline.md; design.md Decisions 6, 8, and 9
 Scope: proposed-v1
 
+#### Scenario: Exact cheap catalog models are required before reads
+
+- **WHEN** the fast runtime resolves classification and phrasing candidates
+- **THEN** it SHALL request `cheap` with `allow_tier_fallthrough=false` for both phase-specific intents
+- **AND** both selections SHALL be catalog-backed API entries with effective tier `cheap`
+- **AND** no exact candidate, quota denial, non-API selection, non-cheap fallthrough, or static
+  fallback SHALL make the fast path ineligible before any provider or Concierge read
+- **AND** the turn SHALL continue through the existing Spawner without treating that continuation as
+  fast-answer evidence
+
 #### Scenario: Successful fast answer has bounded calls and one reply
 
-- **WHEN** an eligible fast answer succeeds without a schema retry
+- **WHEN** an eligible fast answer succeeds without a schema retry or provider failure
 - **THEN** it SHALL make one structured classification provider call, zero CLI spawns, only the
-  zero-to-three registered reads in its admitted plan, one phrasing provider call, and one reply attempt
+  zero-to-three registered reads in its admitted plan, one phrasing provider call, and one reply
+  attempt
 - **AND** exactly one assistant reply SHALL complete under the deterministic reply identity
+
+#### Scenario: Admission schema retry has an exact bound
+
+- **WHEN** the exact-cheap admission candidate returns a schema-invalid result on its first call
+- **THEN** it MAY make exactly one retry against the same catalog candidate before any read
+- **AND** both attempts SHALL be attributed to `dashboard_fast_answer_classification` under the same
+  fast runtime
+- **AND** a second invalid result SHALL release the fast runtime and use the existing Spawner
+
+#### Scenario: Provider failure does not fail over inside the fast path
+
+- **WHEN** the admission provider/runtime fails before any read
+- **THEN** the fast runtime SHALL record that single failed attempt, release, and use the existing
+  Spawner continuation
+- **AND** it SHALL NOT invoke another catalog candidate inside the fast path
+- **WHEN** the one phrasing call fails after reads begin
+- **THEN** it SHALL record an honest fast-runtime failure and SHALL NOT retry, provider-failover,
+  restart classification, repeat reads, or persist a fabricated answer
 
 #### Scenario: Reply identity makes repeats idempotent
 
@@ -364,9 +519,9 @@ Scope: proposed-v1
 
 #### Scenario: Provider phases carry distinct model purposes
 
-- **WHEN** the classification and phrasing provider calls are resolved and recorded
-- **THEN** both SHALL use the existing model catalog's cheap tier and retain their resolved runtime,
-  model, catalog entry, effective tier, resolution source, and provider execution timeout
+- **WHEN** the classification and phrasing provider candidates and calls are resolved and recorded
+- **THEN** both SHALL record requested tier `cheap`, effective tier `cheap`, resolution source
+  `catalog`, runtime type `api`, model, catalog entry, and provider execution timeout
 - **AND** classification SHALL record purpose `dashboard_fast_answer_classification`
 - **AND** phrasing SHALL record purpose `dashboard_fast_answer_phrasing`
 - **AND** both SHALL correlate to the shared runtime and dashboard request without recording prompt,
@@ -384,7 +539,10 @@ Scope: proposed-v1
   seeded database and a fixed-latency stub adapter
 - **THEN** it SHALL record declared stub latency, sample count, per-run wall time, p50, p95, provider
   calls, registered tool calls, and CLI spawns
-- **AND** p95 SHALL be less than 3 seconds and CLI spawns SHALL be zero
+- **AND** the valid-schema successful corpus SHALL make exactly 40 provider calls total, one
+  classification and one phrasing call per question
+- **AND** registered tool calls SHALL equal the sum of the admitted plans with zero-to-three per
+  question, p95 SHALL be less than 3 seconds, and CLI spawns SHALL be zero
 - **AND** the benchmark SHALL remain marked slow, MAY be skipped in normal CI, and SHALL record its
   result in the future implementation PR body
 - **AND** the result SHALL be labeled hermetic orchestration evidence, not live-provider latency

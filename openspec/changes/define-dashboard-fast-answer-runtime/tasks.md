@@ -1,6 +1,6 @@
 ## 1. Approval and dependency gate
 
-- [ ] 1.1 Obtain exact owner approval for the ten product choices in `proposal.md`; record the
+- [ ] 1.1 Obtain exact owner approval for the twelve product choices in `proposal.md`; record the
   approved artifact digest and do not infer implementation, migration, provider, deployment,
   archive, or merge authority from draft review.
 - [ ] 1.2 Land or explicitly rederive against the durable message-scoped Stop and owner-facing turn
@@ -13,14 +13,21 @@
 ## 2. Durable fast runtime and Stop
 
 - [ ] 2.1 Add a cumulative core migration for the `fast_answer` durable session phase, monotonic
-  `answer|non_answer` intent lane, and any deterministic answer-reply claim/receipt state required by
+  `answer|non_answer` intent lane, boot-scoped owner instance, lease generation, heartbeat/expiry,
+  15-minute reconciliation deadline, and deterministic answer-reply claim/receipt state required by
   this contract. Preserve all existing turn phases, target kinds, and legacy/null behavior.
-- [ ] 2.2 Register one Switchboard-owned fast-answer session before the first provider call, claim
-  the existing pre-invoke fence once, expose the live coroutine through Switchboard's registered
-  `cancel_session` MCP handler, and release/complete it on every settled outcome.
+- [ ] 2.2 Register one Switchboard-owned fast-answer session before catalog/provider work, claim the
+  existing pre-invoke fence once, heartbeat its 60-second fenced lease at least every 20 seconds,
+  expose the live coroutine through Switchboard's registered `cancel_session` MCP handler, and
+  release/complete it on every settled outcome.
 - [ ] 2.3 Implement Stop fences before classification, each read, phrasing, and reply persistence;
   reconcile crash/transport uncertainty without automatic replay and make repeat/concurrent Stop
   idempotent.
+- [ ] 2.4 Add the supervised Switchboard fast-runtime reconciler at startup and at most 60-second
+  cadence. Inspect expired leases and durable receipts, conditionally claim a fencing generation,
+  preserve proven completion/cancellation/failure, and otherwise transition to ambiguity by 15
+  minutes with reason `fast_answer_runtime_outcome_unknown`; never replay work or infer death/Stop
+  from lease expiry.
 
 ## 3. Admission, catalog, and target-owned reads
 
@@ -28,16 +35,19 @@
   separate execution phase. Preserve the existing Spawner paths for domain questions, statements,
   actions, bugs, ambiguity, invalid schema, unsupported runtime, and pre-effect unavailability.
 - [ ] 3.2 Add typed `matched|no_match|unavailable` catalog results with at most three
-  held-sensitivity-filtered provenance records and the deterministic selected-owner rule. Keep RRF
-  scores labeled as ranking evidence and prove authoritative no-match makes zero
+  held-sensitivity-filtered provenance records and the deterministic selected-owner rule. Poison the
+  whole result to `unavailable` for any malformed envelope or candidate, without record filtering;
+  keep RRF scores labeled as ranking evidence and prove authoritative no-match makes zero
   `invoke_structured` ownership calls.
 - [ ] 3.3 Verify the selected-owner rule against a fixed labeled seeded catalog corpus; record corpus
   digest, rule version, result limit, coverage, wrong-owner count, per-owner breakdown, and confusion
   matrix, and refuse enablement on any wrong-owner selected hit.
-- [ ] 3.4 Build the fast read allowlist from Concierge's currently registered `dashboard_read`
-  read-only handlers, reject plans over three calls, and invoke accepted plans through the registered
-  MCP boundary under existing module, schema-role, validation, and call-time checks. Reject missing,
-  disabled, unregistered, write-capable, direct-handler, and cross-schema paths.
+- [ ] 3.4 Add the exact checked-in `FAST_ANSWER_CONCIERGE_TOOLS_V1` names from the spec and intersect
+  them with Concierge's enabled `dashboard_read` module plus live target registration. Use the
+  accepted Concierge/module/RFC contracts as the read-only authority, never `ToolMeta` or
+  presentation metadata; reject plans over three calls and missing/contradictory authority, keep
+  extra ungranted live tools ineligible, and reject direct-handler and cross-schema paths before any
+  read.
 
 ## 4. Reply, observation, and model attribution
 
@@ -47,8 +57,9 @@
 - [ ] 4.2 Persist the intent lane before answer/non-answer execution and select 45- or 300-second SSE
   observation from the original observation start. Name the lane and awaited in-thread reply in
   timeout copy; leave the conversation/runtime unchanged and surface late replies normally.
-- [ ] 4.3 Resolve classification and phrasing independently through the cheap model catalog tier,
-  retain catalog execution timeouts, and record distinct
+- [ ] 4.3 Resolve both phase candidates before reads as exact `cheap`, catalog-backed API entries
+  with tier fallthrough and static fallback disabled. Retain catalog execution timeouts, prohibit
+  provider failover, and record distinct
   `dashboard_fast_answer_classification` and `dashboard_fast_answer_phrasing` attribution under the
   shared runtime/request identity without content-bearing telemetry.
 
@@ -56,27 +67,35 @@
 
 - [ ] 5.1 Extend `roster/switchboard/tests/test_structured_classify.py` and
   `tests/modules/test_module_pipeline.py` for the full eligibility/fallback matrix, side-effect-free
-  admission, exact successful-path provider/tool bounds, and zero CLI spawns.
+  admission, exact-cheap/no-fallthrough/no-static-fallback resolution, one normal admission call,
+  one same-candidate schema retry, no provider failover, exact successful-path provider/tool bounds,
+  and zero CLI spawns.
 - [ ] 5.2 Extend `tests/core/test_dashboard_turns.py`, `tests/core/test_core_spawner.py`, and
   `tests/api/test_dashboard_turn_cancellation.py` for registration-before-invoke, Stop at every
-  boundary, concurrent/repeat Stop, release ordering, late completion fencing, crash ambiguity, and
-  no replay.
+  boundary, concurrent/repeat Stop, owner-instance/generation/lease heartbeats, release ordering,
+  late completion fencing, and no replay. Drive the real startup/periodic reconciler through
+  process-crash, lease-expiry, predecessor-partition, receipt-found, and 15-minute ambiguity cases;
+  a direct transition-helper test is insufficient.
 - [ ] 5.3 Extend `tests/core/test_delegation_ledger.py`,
   `roster/concierge/tests/test_dashboard_read.py`, and module integration coverage for typed catalog
-  outcomes, top-three provenance, held filtering, selected-owner rules, registered target-owned MCP
-  reads, write/unregistered/disabled rejection, and source attribution.
+  outcomes, `[malformed]`, `[valid, malformed]`, and `[malformed, valid]` whole-result poisoning,
+  top-three provenance, held filtering, selected-owner rules, the exact V1 allowlist intersected with
+  live registration/module state, missing/extra/contradictory authority rejection, registered
+  target-owned MCP reads, and source attribution.
 - [ ] 5.4 Add a new real-Postgres migration/replay and transaction suite beside
   `tests/config/test_dashboard_turn_cancellation_migration.py`; cover late-schema replay, legacy/null
-  lane compatibility, reciprocal Stop/invoke/reply fences, idempotent reply receipt, crash recovery,
-  and non-narrowing downgrade behavior.
+  lane compatibility, runtime instance/generation/lease/heartbeat/deadline constraints, reciprocal
+  Stop/invoke/reply fences, idempotent reply receipt, operational crash recovery, and non-narrowing
+  downgrade behavior.
 - [ ] 5.5 Extend `tests/api/test_conversations.py` for answer 45 seconds,
   non-answer/legacy/null 300 seconds, original-start timing, lane-specific timeout text, open thread,
   unchanged runtime, and visible late reply.
 - [ ] 5.6 Retain the slow hermetic benchmark of 20 representative seeded system-plane questions
   using a declared fixed-latency stub adapter. Record stub latency, sample size, p50, p95, exact
-  provider/tool/CLI call counts, and require p95 `<3s`; keep it marked slow and eligible to skip in
-  normal CI, record the result in the implementation PR body, and label it hermetic and never as
-  live proof.
+  provider/tool/CLI call counts, require exactly 40 provider calls for the valid-schema corpus and
+  tool calls equal to the admitted-plan sum, and require p95 `<3s`; keep it marked slow and eligible
+  to skip in normal CI, record the result in the implementation PR body, and label it hermetic and
+  never as live proof.
 - [ ] 5.7 If separately authorized, record optional live evidence with sample size, date,
   runtime/model/catalog/timeout tuple, p50, p95, and failures in a separate evidence section. Its
   absence is not a gate.
