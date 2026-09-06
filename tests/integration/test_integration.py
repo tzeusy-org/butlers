@@ -353,12 +353,8 @@ class TestButlerStartupIntegration:
         """Verify that the daemon registers the expected set of core tools."""
         from unittest.mock import MagicMock
 
-        from butlers.daemon import (
-            CHRONICLER_CORE_TOOL_NAMES,
-            CORE_TOOL_NAMES,
-            MESSENGER_CORE_TOOL_NAMES,
-            ButlerDaemon,
-        )
+        from butlers.config import ButlerType
+        from butlers.daemon import ButlerDaemon
 
         # We cannot easily call daemon.start() without extensive mocking,
         # but we can test _register_core_tools by setting up the daemon's
@@ -368,7 +364,7 @@ class TestButlerStartupIntegration:
         daemon.config.name = "test-butler"
         daemon.config.description = "A test butler"
         daemon.config.port = 9100
-        daemon.config.type = MagicMock(value="staffer")
+        daemon.config.type = ButlerType.BUTLER
         daemon.config.runtime_seed = MagicMock()
         daemon.config.runtime_seed.core_groups = None
         daemon._modules = []
@@ -397,8 +393,17 @@ class TestButlerStartupIntegration:
 
         daemon._register_core_tools()
 
-        expected_tools = CORE_TOOL_NAMES - MESSENGER_CORE_TOOL_NAMES - CHRONICLER_CORE_TOOL_NAMES
-        assert set(registered_tools) == expected_tools
+        # Exercise the actual daemon dispatcher rather than comparing it with
+        # another mutable production catalog.
+        assert len(set(registered_tools)) == 64
+        assert {"state_list", "notify", "seasonal_period_create", "route.execute"} <= set(
+            registered_tools
+        )
+        assert {
+            "chronicler_day_close_refresh",
+            "delivery_preferences_set",
+            "ingest",
+        }.isdisjoint(registered_tools)
 
 
 # ---------------------------------------------------------------------------
