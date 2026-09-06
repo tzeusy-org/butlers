@@ -41,7 +41,7 @@ GET /api/butlers/{name}/conversation-turns/{message_id}
 
 This is the read counterpart to the existing message-scoped Stop route and the active change's proposed recovery route. It keeps `{name}` as the established butler namespace and `message_id` as the one immutable turn identity. A new top-level search endpoint or body-bearing POST would weaken discoverability, cache/method semantics, and the exact-resource model.
 
-`message_id` is a FastAPI UUID path parameter. Invalid UUIDs retain normal request-validation behavior and never reach the database. The response always includes `Cache-Control: no-store` because absence can change and durable outcomes advance.
+`message_id` is a FastAPI UUID path parameter. Invalid UUIDs retain normal request-validation behavior and never reach the database. Every post-authentication resolver outcome emitted by the route (200 found, 404 not observed, and 503 unavailable) includes `Cache-Control: no-store` because absence can change and durable outcomes advance. The middleware's pre-route 401 and the framework's pre-handler 422 remain under their existing contracts and are outside this route-owned header guarantee.
 
 ### Decision 2: Use a dedicated content-blind identity query
 

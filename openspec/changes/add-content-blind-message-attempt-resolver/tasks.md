@@ -15,8 +15,8 @@
 ## 3. Behavior and Privacy Verification
 
 - [ ] 3.1 Add focused route tests for every allowed found outcome, exact four-field serialization, version equality/change behavior, `no-store`, and repeated side-effect-free reads (REQ-dashboard-conversations-009).
-- [ ] 3.2 Add absence/race tests proving nonexistent, assistant-role, and wrong-butler rows return the same fixed 404; a later first persistence of the same ID becomes found; neither response performs or advertises retry/replay/new-identity authority.
-- [ ] 3.3 Add unavailable tests for shared-pool acquisition/query failure and missing, incomplete, invalid, or unversioned turn projection; each must return fixed 503 rather than 404, guessed state, or raw detail.
+- [ ] 3.2 Add absence/race tests proving nonexistent, assistant-role, and wrong-butler rows return the same fixed 404 with `Cache-Control: no-store`; a later first persistence of the same ID becomes found; neither response performs or advertises retry/replay/new-identity authority.
+- [ ] 3.3 Add unavailable tests for shared-pool acquisition/query failure and missing, incomplete, invalid, or unversioned turn projection; each must return fixed 503 with `Cache-Control: no-store` rather than 404, guessed state, or raw detail.
 - [ ] 3.4 Add authorization tests proving an invalid API key returns 401 before either content-blind helper runs, and prove no owner/actor/principal/user input exists on the route.
 - [ ] 3.5 Add a query-shape/privacy gate that fails if the resolver path selects or returns message content, page context, title, source, request/session/route identity, errors, targets, terminal-action details, credentials, or other fields outside the four-field allowlist.
 - [ ] 3.6 Add side-effect spies/contract checks proving the GET opens no write transaction, audit append, MCP/LLM/provider/connector call, Stop, retry, ingress claim, replay, notification, or identity-bearing telemetry/log path.
@@ -25,5 +25,5 @@
 
 - [ ] 4.1 Update the dashboard API inventory with the route, exact response allowlist, point-in-time absence semantics, unavailable behavior, access authority, and explicit no-replay/no-body-read boundary.
 - [ ] 4.2 Run the exact new route/helper/model test nodes first, then their owning files; record the actual implementation test delta as `Tests: +a ~b -c`.
-- [ ] 4.3 Run strict/source-trace checks, `make check-spec-overwrites`, `make check-countable-tasks`, `make check-guards`, applicable formatting/lint/type gates, and terminal hosted CI on the exact clean implementation head.
+- [ ] 4.3 Run strict/source-trace checks, `make check-spec-overwrites`, `make check-countable-tasks`, `make check-guards`, applicable formatting/lint/type gates, and terminal hosted CI on the exact clean implementation head; this spec-only draft is expected to have one authoring warning for REQ-dashboard-conversations-009's absent implementation-test citation, while implementation closeout must add the citation and remove that warning.
 - [ ] 4.4 Require fresh independent semantic/privacy review with zero unresolved threads before merge; only after this resolver and PR #4056 are each owner-approved may a separately allocated client implementation consume the endpoint.

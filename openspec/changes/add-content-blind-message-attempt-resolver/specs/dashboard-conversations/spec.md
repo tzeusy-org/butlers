@@ -2,10 +2,10 @@
 
 ### Requirement: Content-Blind Exact Message Attempt Resolution
 
-The dashboard API SHALL expose `GET /api/butlers/{name}/conversation-turns/{message_id}` as a read-only resolver under the existing dashboard access authority. A found response SHALL identify only the exact immutable user message, its conversation, the sanitized owner-facing durable-turn outcome, and that projection's version. Authoritative point-in-time absence and source/projection unavailability SHALL be distinct error outcomes. The resolver SHALL NOT read or return message content, infer identity from content, mutate state, or authorize retry or replay.
+The dashboard API SHALL expose `GET /api/butlers/{name}/conversation-turns/{message_id}` as a read-only resolver under the existing dashboard access authority. A found response SHALL identify only the exact immutable user message, its conversation, the sanitized owner-facing durable-turn outcome, and that projection's version. Authoritative point-in-time absence and source/projection unavailability SHALL be distinct error outcomes. Every found, absence, and unavailable response SHALL carry `Cache-Control: no-store`. The resolver SHALL NOT read or return message content, infer identity from content, mutate state, or authorize retry or replay.
 
 ID: REQ-dashboard-conversations-009
-Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-conversations § Message Data Model and Durable Dashboard Turn Control; durable-dashboard-terminal-action-recovery REQ-dashboard-conversations-002 and REQ-dashboard-conversations-005; design.md Decisions 1-6
+Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-conversations § Message Data Model and Durable Dashboard Turn Control; durable-dashboard-terminal-action-recovery REQ-dashboard-conversations-002 and REQ-dashboard-conversations-005; design.md Decisions 1-7
 Scope: v1-mandatory
 
 #### Scenario: Exact matching user message returns the content-blind projection
@@ -34,6 +34,7 @@ Scope: v1-mandatory
 - **THEN** the API returns HTTP 404 with fixed code `MESSAGE_ATTEMPT_NOT_OBSERVED`
 - **AND** the fixed error text contains no message body, search fragment, conversation identity, alternate butler, raw exception, or source detail
 - **AND** the observation means only that M was absent in that snapshot
+- **AND** the response carries `Cache-Control: no-store`
 
 #### Scenario: Absence never licenses a new attempt or replay
 
@@ -49,12 +50,14 @@ Scope: v1-mandatory
 - **THEN** the API returns HTTP 503 with fixed code `MESSAGE_ATTEMPT_SOURCE_UNAVAILABLE`
 - **AND** it does not return HTTP 200 with guessed/default state or HTTP 404 absence
 - **AND** it does not fall back to private control fields, message content, an SSE/process-local map, or a mutating status control
+- **AND** the response carries `Cache-Control: no-store`
 
 #### Scenario: Shared source failure is unavailable
 
 - **WHEN** the shared pool, exact identity query, consistent snapshot, or trusted projection read fails
 - **THEN** the API returns HTTP 503 with fixed code `MESSAGE_ATTEMPT_SOURCE_UNAVAILABLE`
 - **AND** the error contains no raw database, credential, message, request, session, route, provider, or exception detail
+- **AND** the response carries `Cache-Control: no-store`
 
 #### Scenario: Existing dashboard authorization runs before resolution
 
