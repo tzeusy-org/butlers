@@ -192,9 +192,10 @@ RFC 0027 LLM-presentation inventory.
 `RuntimeConfig` (resolved from the `runtime_config` DB table via
 `RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
 group-aware decorator `_core_tool(group)` replaces the prior post-registration
-prune pass. The `_tools_to_remove` pruning path is retired. Registration
-correctness is derived from the dispatcher, decorators, effective gates, and
-behavior tests rather than from a second hand-maintained catalog alias.
+prune pass. The former tier catalog and the `_tools_to_remove` pruning section
+are removed. Registration correctness is derived from the dispatcher,
+decorators, effective gates, and behavior tests rather than from a second
+hand-maintained catalog alias.
 
 #### Module Tool Groups
 
