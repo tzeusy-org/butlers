@@ -183,6 +183,13 @@ The documentation SHALL minimize content duplication across pages. When the same
 - **THEN** exactly one page SHALL provide the full explanation
 - **AND** other pages SHALL link to the canonical page rather than duplicating the explanation
 
+#### Scenario: Spent plan is synthesized before retirement
+- **WHEN** a plan or integration brief is superseded by maintained contracts
+- **THEN** its still-applicable requirements and rationale SHALL be reconciled into the owning spec, RFC, doctrine, or engineering standard before its body is retired
+- **AND** unresolved decisions and delivery work SHALL retain their approval status and owning change or Beads task
+- **AND** live references and direct test consumers SHALL be updated or the artifact SHALL be retained with an explicit dependency reason
+- **AND** a successor map and git history SHALL preserve discoverability without duplicating the full implementation recipe
+
 #### Scenario: Per-butler pages do not duplicate module docs
 - **WHEN** a butler page in `docs/butlers/` references modules that the butler uses
 - **THEN** the butler page SHALL list the modules with brief descriptions and link to `docs/modules/` for full details
@@ -334,13 +341,11 @@ docs/
     identity/
     operations/
     testing/
-  archive/                      # forward-looking design drafts only;
-    draft-discord.md            # dated migration/reconciliation snapshots are
-    health-wearable-draft.md    # point-in-time records and are not retained in-tree
-    home-assistant-draft.md     # (git history preserves them)
+  archive/                      # retained research and evidence with an explicit purpose
+    README.md                   # successors for retired bodies; git history preserves them
+    draft-discord.md
+    home-assistant-draft.md
     photos-screenshots-draft.md
     voice-draft.md
     whatsapp-draft.md
-    memory-improvements.md
-    memory-improvements-pt2.md
 ```
