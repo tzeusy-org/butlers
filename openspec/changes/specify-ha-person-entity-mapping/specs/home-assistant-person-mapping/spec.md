@@ -123,6 +123,25 @@ advisory lock derived from the fixed namespace
 `butlers:dashboard:ha-person-mapping:v1`. All batches in this workflow SHALL use
 that same mapping-specific lock.
 
+After a new idempotency decision and before reading mappings, the transaction
+SHALL select every submitted UUID from `public.entities` in ascending UUID
+order with `FOR UPDATE`, without filtering invalid rows out of the lock query.
+It SHALL retain every acquired entity-row lock through mapping, receipt, and
+audit commit. It SHALL then require every submitted UUID to have one locked row
+whose `entity_type = 'person'`, `metadata->>'merged_into' IS NULL`, and
+`metadata->>'deleted_at' IS NULL`. Missing rows and rows failing any of those
+actual live predicates SHALL enter the one content-blind `INVALID_REFERENCE`
+category.
+
+If a concurrent merge, metadata tombstone/delete, physical delete, or
+`entity_type` change owns a referenced row first, mapping validation SHALL wait
+and then evaluate its committed state; an invalid result SHALL return
+`INVALID_REFERENCE`. If mapping validation owns the row lock first, that entity
+mutation SHALL wait until the mapping, receipt, and audit decision commits. A
+success receipt proves completeness at this serialization point and SHALL NOT
+claim to prevent a separately authorized later lifecycle mutation. A deadlock
+or aborted transaction SHALL commit no partial mapping or success receipt.
+
 Under the lock, the server SHALL classify an existing exact pair as unchanged.
 A Home Assistant ID mapped to a different or null entity, or an entity UUID
 mapped to a different Home Assistant ID, SHALL be a conflict. If any conflict
@@ -197,6 +216,46 @@ because no canonical mapping set exists.
 - **AND** at most one complete non-conflicting mapping set SHALL commit
 - **AND** the other request SHALL return a content-blind `409` with zero partial
   mapping writes
+
+#### Scenario: Entity mutation commits before mapping validation
+
+- **WHEN** a merge, `metadata.deleted_at` tombstone, physical delete, or
+  `entity_type` change holds a submitted entity row and commits before mapping
+  validation can lock it
+- **THEN** mapping validation SHALL wait, observe the committed missing or
+  non-live/non-person state through the actual metadata predicates, and return
+  `INVALID_REFERENCE`
+- **AND** it SHALL commit zero mapping writes and no false success receipt
+
+#### Scenario: Mapping validation commits before entity mutation
+
+- **WHEN** mapping validation locks a referenced entity row before a concurrent
+  merge, metadata tombstone/delete, physical delete, or `entity_type` change
+  reaches that row
+- **THEN** the entity mutation SHALL wait until the complete
+  mapping/receipt/audit decision commits
+- **AND** the success receipt SHALL be truthful at that serialization point
+- **AND** the later entity mutation SHALL not cause partial mapping writes or
+  retroactively rewrite the receipt
+
+#### Scenario: Simultaneous identical idempotency requests share one result
+
+- **WHEN** two real concurrent transactions submit the same opaque key and the
+  same canonical request with forced overlap before idempotency lookup/insert
+- **THEN** the fixed mapping lock and durable key uniqueness SHALL produce
+  exactly one terminal idempotency record
+- **AND** both callers SHALL receive the identical receipt and aggregate counts
+- **AND** the waiting caller SHALL perform zero mapping writes
+
+#### Scenario: Simultaneous divergent idempotency requests elect one winner
+
+- **WHEN** two real concurrent transactions submit the same opaque key with
+  different canonical requests and force overlap before idempotency
+  lookup/insert
+- **THEN** the first lock holder SHALL create the only terminal idempotency
+  record and complete according to its request
+- **AND** the loser SHALL return fixed `IDEMPOTENCY_CONFLICT`, create no second
+  terminal idempotency record, and perform zero mapping writes
 
 #### Scenario: Failure after an attempted insert rolls back the whole batch
 
@@ -303,7 +362,11 @@ rollback tests, and positive-field plus absence-sentinel privacy tests. The
 tests SHALL cover exact replay, fresh-key identical no-op, same-key different
 request, duplicate IDs on either side, missing/tombstoned/merged/wrong-type
 entities, legacy null targets, conflicts in both directions, injected mid-batch
-failure, zero partial writes, and absence from every prohibited surface.
+failure, zero partial writes, and absence from every prohibited surface. Real
+PostgreSQL concurrency tests SHALL force both orderings against merge,
+`metadata.deleted_at` tombstone, physical delete, and `entity_type` change, and
+SHALL force simultaneous same-key/same-request and same-key/different-request
+overlap before idempotency lookup/insert.
 
 Merge, queue, deployment/environment availability, actual private mapping
 submission (`bu-pvapy`), restart, replay, watermark change, synthetic/natural

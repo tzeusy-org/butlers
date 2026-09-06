@@ -28,15 +28,17 @@ mapping.
   separately approved browser-auth contract lands.
 - Define a server-generated opaque receipt and browser-generated opaque
   idempotency key, one mapping-specific transaction advisory lock, exact replay,
-  identical no-op, and all-or-nothing conflict handling. A mapping conflict in
-  either direction returns a content-blind `409` and commits no mapping row.
+  deterministic locks on every referenced entity row, identical no-op, and
+  all-or-nothing conflict handling. A mapping conflict in either direction
+  returns a content-blind `409` and commits no mapping row.
 - Exclude the entire request and both private identifiers from generic audit
   body capture, logs, URLs, errors, responses, metrics, traces, prompts,
   sessions, and MCP tools. Explicit audit records contain only the operation,
   server-derived actor, receipt, aggregate counts, outcome, and a fixed failure
   category.
 - Require future real-PostgreSQL, API, browser-client, concurrency, rollback,
-  and privacy absence tests before implementation can be considered complete.
+  and privacy absence tests before implementation can be considered complete,
+  including forced entity-lifecycle and simultaneous-idempotency interleavings.
 
 ## Capabilities
 
