@@ -722,12 +722,35 @@ export interface SpendDivergence {
 export interface SpendSummary {
   total_cost_usd: number;
   total_sessions: number;
+  /** Uncached input tokens only -- see `total_cached_input_tokens`. */
   total_input_tokens: number;
   total_output_tokens: number;
+  /**
+   * Prompt-cache reads. Previously computed and discarded (bu-2jtfw.4): a
+   * heavily-cached model showed as a small fraction of its true token
+   * volume. Add to `total_input_tokens` for the true total tokens bought.
+   */
+  total_cached_input_tokens?: number;
+  /** Prompt-cache writes. */
+  total_cache_creation_tokens?: number;
+  /** Dollar cost of just the cache-read bucket, isolated from `total_cost_usd`. */
+  cache_read_cost_usd?: number;
+  /**
+   * Fraction of input tokens served from cache. `null` (never `0`) when
+   * `total_cached_input_tokens + total_input_tokens` is zero -- a zero
+   * denominator is "no data", not "no cache hits".
+   */
+  cache_hit_rate?: number | null;
   by_butler: Record<string, number>;
   by_model: Record<string, number>;
   /** Models excluded from dollar subtotals; never silently folded into $0. */
   unpriced_models?: UnpricedModelUsage[];
+  /**
+   * Priced models whose cache reads this window billed at the full input
+   * rate because no confirmed cache-read price is configured -- their
+   * dollar figures are real but not cache-discounted.
+   */
+  no_cache_price_models?: string[];
   divergences?: SpendDivergence[];
   divergence_source_error?: boolean;
   historical_attribution_note?: string | null;
@@ -743,6 +766,11 @@ export interface DailySpend {
   sessions: number;
   input_tokens: number;
   output_tokens: number;
+  /** See `SpendSummary.total_cached_input_tokens` -- same semantics, scoped to one day. */
+  cached_input_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_cost_usd?: number;
+  cache_hit_rate?: number | null;
   /**
    * Real per-butler cost contributions for this day (bu-86c4c.11 — extends
    * GET /api/spend/daily to preserve the butler identity it previously
@@ -810,16 +838,23 @@ export interface TopSessionsResponse {
  * `meta.forecast_basis` (it is a constant, so it is not repeated on each row).
  * `projected_monthly_runs === 0` means the cadence could not be established --
  * there is no forecast, which is not the same claim as "this costs nothing".
+ *
+ * `retired` is true when the underlying schedule has been disabled (removed
+ * from TOML config rather than deleted). Its measured history above stays
+ * real, but it cannot recur -- `projected_monthly_runs` is always `0` and
+ * `projected_monthly_usd` is always `null` for a retired schedule, so it can
+ * never occupy the head of a projected-cost ranking (bu-2jtfw.4).
  */
 export interface ScheduleCost {
   schedule_name: string;
   butler: string;
   cron: string;
+  retired?: boolean;
   total_runs: number;
   total_cost_usd: number;
   avg_cost_per_run: number;
   projected_monthly_runs: number;
-  projected_monthly_usd: number;
+  projected_monthly_usd: number | null;
 }
 
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
