@@ -90,7 +90,8 @@ Dashboard list/count endpoints retain useful last-known rows where their
 response envelope can carry `ha_source_available=false`. Missing single-item
 reads, empty bare area lists, and the energy endpoints return 503 during that
 state because they cannot honestly distinguish absence from an outage. The
-presence producer leaves `at_home` untouched, and the Home briefing emits an
+presence producer leaves `at_home` (and the owner's room-resolved `in_space`
+signal, bu-8cdl1.11 slice 2) untouched, and the Home briefing emits an
 explicit high-priority unmeasurable highlight instead of a nominal all-clear.
 
 Operators should verify both the source ledger and a reader response without

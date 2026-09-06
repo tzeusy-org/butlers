@@ -1797,12 +1797,15 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     # validity was previously 'active' and is now 'retracted'.
     assert data["validity"] == "retracted"
     # The retracting UPDATE ran, followed by the catalog disownment cascade
-    # (bu-5ud8p.3) — both against the pool that holds the fact.
-    assert len(holding.execute_calls) == 2
+    # (bu-5ud8p.3) and the entity-graph disownment cascade (RFC 0031 Slice 2,
+    # bu-8cdl1.8) — all three against the pool that holds the fact.
+    assert len(holding.execute_calls) == 3
     assert "validity = 'retracted'" in holding.execute_calls[0][0]
     assert "memory_catalog" in holding.execute_calls[1][0]
     # source_schema resolved via current_schema() (see _RetractPool.fetchval).
     assert holding.execute_calls[1][1][0] == "atlas"
+    assert "entity_graph_edges" in holding.execute_calls[2][0]
+    assert holding.execute_calls[2][1][0] == "atlas"
 
 
 async def test_retract_fact_404_when_not_found(app):
@@ -2766,3 +2769,104 @@ async def test_catalog_search_empty_results(app, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+async def test_catalog_search_attaches_graph_coverage_for_entity_anchored_result(app, monkeypatch):
+    """An entity-anchored row gets its RFC 0031 relationship counts attached."""
+    from butlers.core import entity_graph_edges as _graph_edges_module
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    entity_id = uuid.uuid4()
+    row = _catalog_search_row()
+    row["entity_id"] = entity_id
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        return [row]
+
+    captured_entity_ids: list = []
+
+    async def _fake_coverage_for_entities(pool, entity_ids):
+        captured_entity_ids.extend(entity_ids)
+        return {entity_id: (3, 1)}
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/catalog/search", params={"query": "budget review"})
+
+    assert resp.status_code == 200
+    result = resp.json()["data"][0]
+    assert result["entity_id"] == str(entity_id)
+    assert result["graph_coverage"] == {"relationships_known": 3, "relationships_withheld": 1}
+    assert captured_entity_ids == [entity_id]
+
+
+async def test_catalog_search_omits_graph_coverage_without_entity_id(app, monkeypatch):
+    """A row with no entity_id never queries or carries graph coverage."""
+    from butlers.core import entity_graph_edges as _graph_edges_module
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    row = _catalog_search_row()
+    assert row["entity_id"] is None
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        return [row]
+
+    async def _unexpected_coverage_call(pool, entity_ids):
+        raise AssertionError("coverage_for_entities should not be called with no entity_id rows")
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _unexpected_coverage_call)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/catalog/search", params={"query": "budget review"})
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["graph_coverage"] is None
+
+
+async def test_catalog_search_graph_coverage_none_when_entity_has_no_edges(app, monkeypatch):
+    """An entity absent from the coverage map (zero edges) yields graph_coverage=None."""
+    from butlers.core import entity_graph_edges as _graph_edges_module
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    entity_id = uuid.uuid4()
+    row = _catalog_search_row()
+    row["entity_id"] = entity_id
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        return [row]
+
+    async def _fake_coverage_for_entities(pool, entity_ids):
+        return {}
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+    monkeypatch.setattr(_graph_edges_module, "coverage_for_entities", _fake_coverage_for_entities)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/catalog/search", params={"query": "budget review"})
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["graph_coverage"] is None

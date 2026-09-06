@@ -249,6 +249,39 @@ The dashboard API SHALL search across conversation history for a butler.
 - **WHEN** the `q` parameter is empty or missing
 - **THEN** a 400 response with `code: "VALIDATION_ERROR"` is returned
 
+### Requirement: Message-Level Search
+
+The dashboard API SHALL provide owner-scoped full-text search across every butler's dashboard messages, distinct from the per-butler conversation search above: one row per matching message (not one per conversation), ranked by text relevance, and not restricted to a single butler unless the caller filters to one. This backs both `GET /api/conversations/messages/search` and the always-on `conversation_recall` MCP tool (any butler can recall a turn the owner had with a different butler).
+
+#### Scenario: Search messages across every butler
+
+- **WHEN** `GET /api/conversations/messages/search?q=keyword&limit=20` is called
+- **THEN** messages matching `keyword` across every butler's conversations are returned, ordered by text relevance (`ts_rank`) then recency
+- **AND** each result includes `message_id`, `conversation_id`, `role`, `created_at`, `butler_name`, `session_id`, a `snippet` excerpt, `highlight_ranges` (`[start, end)` offsets into `snippet` for each matched term), and a `deep_link` navigation path
+- **AND** the response follows cursor pagination (`data`/`meta.next_cursor`/`meta.has_more`, no `total`/`offset`) per the dashboard API response conventions
+
+#### Scenario: Cursor stable across a concurrent insert
+
+- **WHEN** a new matching message is inserted after a page has been fetched but before the next page is requested with that page's `next_cursor`
+- **THEN** the next page is neither missing nor duplicating any row from the already-returned page
+
+#### Scenario: Optional filters
+
+- **WHEN** `channel`, `butler`, `from`, or `to` query parameters are supplied
+- **THEN** results are restricted to that source channel, that butler's conversations, and/or that `created_at` time range respectively
+
+#### Scenario: Empty or overlong query
+
+- **WHEN** `q` is empty/blank, or exceeds 512 characters
+- **THEN** an empty/blank `q` returns a `422` (missing required parameter); a `q` over 512 characters returns a `422` with a validation error — neither case infers or fabricates a result
+
+#### Scenario: conversation_recall MCP tool
+
+- **WHEN** any butler calls the always-on `conversation_recall(query, since, until, limit, channel, butler)` tool
+- **THEN** it returns ranked excerpts backed by the same index and search primitive as the router endpoint above, scoped to the owner (not to the calling butler)
+- **AND** a blank `query` or a query with no matches returns `[]` — the tool never infers or fabricates a recollection
+- **AND** the companion `conversation_thread_read(conversation_id, around_message_id)` tool returns a window of messages around a recalled hit for context
+
 ### Requirement: SSE Response Streaming
 
 Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on the conversation creation and message continuation endpoints. The reply text and attribution MUST come from the routed butler's `conversation_reply` call (see the Conversation Reply Channel requirement), not from the raw completion of its spawned session.

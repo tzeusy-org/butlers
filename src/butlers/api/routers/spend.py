@@ -74,7 +74,7 @@ from butlers.core.model_routing import (
     price_ledger_usage_rows,
     price_mtd_from_ledger,
 )
-from butlers.core.pricing import PricingConfig, estimate_session_cost
+from butlers.core.pricing import PricingConfig, TieredModelPricing, estimate_session_cost
 from butlers.core.sessions import (
     CADENCE_BASIS_DESCRIPTION,
     schedule_costs,
@@ -240,6 +240,65 @@ def _sum_tokens(rows: Iterable[Mapping[str, object]]) -> tuple[int, int, int, in
     return input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens
 
 
+def _cache_hit_rate(cached_input_tokens: int, input_tokens: int) -> float | None:
+    """Fraction of input tokens served from cache, or ``None`` with no data.
+
+    A zero denominator (no cached and no uncached input tokens) means the
+    window has nothing to measure -- reporting ``0.0`` would misread as "we
+    measured zero cache hits" instead of "we measured nothing" (bu-2jtfw.4).
+    """
+    denominator = cached_input_tokens + input_tokens
+    if denominator <= 0:
+        return None
+    return round(cached_input_tokens / denominator, 6)
+
+
+def _cache_read_cost_usd(
+    rows: Iterable[Mapping[str, object]],
+    pricing: PricingConfig,
+) -> float:
+    """Sum just the cache-read bucket's dollar cost, isolated from the total.
+
+    Mirrors ``price_ledger_usage_rows``' per-row, model-specific pricing but
+    keeps the cache-read component visible on its own rather than folding it
+    into an opaque total (bu-2jtfw.4).
+    """
+    total = 0.0
+    for row in rows:
+        cached_input_tokens = int(row.get("cached_input_tokens") or 0)
+        if cached_input_tokens <= 0:
+            continue
+        model_id = str(row.get("model_id") or "")
+        model_pricing = pricing.get_model_pricing(model_id)
+        if model_pricing is None:
+            continue
+        rates = (
+            model_pricing.tier_for_context(0)
+            if isinstance(model_pricing, TieredModelPricing)
+            else model_pricing
+        )
+        total += rates.effective_cached_input_price * cached_input_tokens
+    return round(total, 6)
+
+
+def _no_cache_price_models(
+    rows: Iterable[Mapping[str, object]],
+    pricing: PricingConfig,
+) -> list[str]:
+    """Name priced models whose cache reads this window fell back to the full
+    input rate because no confirmed cache-read price is configured."""
+    names: set[str] = set()
+    for row in rows:
+        if int(row.get("cached_input_tokens") or 0) <= 0:
+            continue
+        model_id = str(row.get("model_id") or "")
+        if pricing.get_model_pricing(model_id) is None:
+            continue
+        if not pricing.has_cached_input_price(model_id):
+            names.add(model_id)
+    return sorted(names)
+
+
 def _group_ledger_rows(
     rows: Iterable[Mapping[str, object]],
     key: str,
@@ -276,7 +335,9 @@ def _daily_ledger_spend(
     daily: list[DailySpend] = []
     for day, day_rows in sorted(by_day.items()):
         spend = price_ledger_usage_rows(day_rows, pricing)
-        input_tokens, output_tokens, _, _ = _sum_tokens(day_rows)
+        input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens = _sum_tokens(
+            day_rows
+        )
         by_butler = _known_group_costs(day_rows, "butler_name", pricing)
         daily.append(
             DailySpend(
@@ -285,6 +346,10 @@ def _daily_ledger_spend(
                 sessions=sum(int(row.get("calls") or 0) for row in day_rows),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cached_input_tokens=cached_input_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_cost_usd=_cache_read_cost_usd(day_rows, pricing),
+                cache_hit_rate=_cache_hit_rate(cached_input_tokens, input_tokens),
                 by_butler=by_butler,
                 unpriced_models=_as_api_unpriced(spend.unpriced_models),
             )
@@ -831,7 +896,7 @@ async def get_cost_summary(
         )
 
     spend = price_ledger_usage_rows(rows, pricing)
-    input_tokens, output_tokens, _, _ = _sum_tokens(rows)
+    input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens = _sum_tokens(rows)
     divergences, divergence_source_error = await _ledger_session_divergences(
         db, configs, range_from, range_to, rows
     )
@@ -842,9 +907,14 @@ async def get_cost_summary(
             total_sessions=sum(int(row.get("calls") or 0) for row in rows),
             total_input_tokens=input_tokens,
             total_output_tokens=output_tokens,
+            total_cached_input_tokens=cached_input_tokens,
+            total_cache_creation_tokens=cache_creation_tokens,
+            cache_read_cost_usd=_cache_read_cost_usd(rows, pricing),
+            cache_hit_rate=_cache_hit_rate(cached_input_tokens, input_tokens),
             by_butler=_known_group_costs(rows, "butler_name", pricing),
             by_model=_known_group_costs(rows, "model_id", pricing),
             unpriced_models=_as_api_unpriced(spend.unpriced_models),
+            no_cache_price_models=_no_cache_price_models(rows, pricing),
             divergences=divergences,
             divergence_source_error=divergence_source_error,
             historical_attribution_note=attribution_note,
@@ -1232,6 +1302,12 @@ def _schedule_costs_from_data(
             schedule_name,
             {
                 "cron": entry.get("cron", ""),
+                # A schedule with no session runs at all (LEFT JOIN, no model
+                # fragments) never reaches this loop -- but each real fragment
+                # shares one schedule, so `enabled` is identical across them.
+                # Old payloads predating bu-2jtfw.4 (no `enabled` key) default
+                # true, preserving prior forecast behavior.
+                "enabled": entry.get("enabled", True),
                 "total_runs": 0,
                 "total_cost_usd": 0.0,
                 # The cadence is derived from the cron alone (see
@@ -1249,23 +1325,28 @@ def _schedule_costs_from_data(
         total_runs = bucket["total_runs"]
         total_cost = bucket["total_cost_usd"]
         avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
+        retired = not bucket["enabled"]
         # Forecast, kept strictly separate from the measured totals above: the
         # projected monthly cost is avg-cost-per-run x the cron's own monthly
         # cadence, on the basis named in the response envelope's
         # ``forecast_basis``. There is no bare multiplier here -- the ~30x that
         # used to sit at this line reported a weekly schedule as thirty monthly
-        # runs (bu-6jv4m.2).
-        monthly_runs = bucket["projected_monthly_runs"]
+        # runs (bu-6jv4m.2). A retired schedule cannot recur, so it gets no
+        # projection at all -- None, not a computed 0.0 -- regardless of what
+        # the cron implies, so it can never rank as a live future cost
+        # (bu-2jtfw.4).
+        monthly_runs = 0.0 if retired else bucket["projected_monthly_runs"]
         costs.append(
             ScheduleCost(
                 schedule_name=schedule_name,
                 butler=name,
                 cron=bucket["cron"],
+                retired=retired,
                 total_runs=total_runs,
                 total_cost_usd=round(total_cost, 6),
                 avg_cost_per_run=round(avg_cost, 6),
                 projected_monthly_runs=round(monthly_runs, 4),
-                projected_monthly_usd=round(avg_cost * monthly_runs, 6),
+                projected_monthly_usd=None if retired else round(avg_cost * monthly_runs, 6),
             )
         )
     return costs
@@ -1421,7 +1502,13 @@ async def get_costs_by_schedule(
     ]
     results = await asyncio.gather(*tasks)
     all_costs = [c for butler_costs in results for c in butler_costs]
-    all_costs.sort(key=lambda c: c.projected_monthly_usd, reverse=True)
+    # A retired schedule's `projected_monthly_usd` is None (bu-2jtfw.4), never
+    # a computed number -- sink it to the bottom rather than let a missing
+    # value crash the comparison or, worse, sort as if it were a real 0.
+    all_costs.sort(
+        key=lambda c: c.projected_monthly_usd if c.projected_monthly_usd is not None else -1.0,
+        reverse=True,
+    )
     # The forecast basis is a constant of the estimator, not a property of any
     # one schedule, so it is stated once on the envelope (bu-6jv4m.2).
     meta = ApiMeta(

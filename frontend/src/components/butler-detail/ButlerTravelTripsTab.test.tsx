@@ -561,6 +561,82 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: KPI strip — degraded states (bu-2jtfw.1)
+//
+// "failure never impersonates health": on an upstream error the strip must
+// never fall back to a numeral (especially not 0), and a partial per-trip
+// exclusion must be disclosed rather than silently undercounted.
+// ---------------------------------------------------------------------------
+
+describe("ButlerTravelTripsTab — KPI strip degraded states", () => {
+  afterEach(() => cleanup());
+
+  it("renders no numeral and shows the degraded banner when the upcoming query errors", () => {
+    vi.resetAllMocks();
+    vi.mocked(useUpcomingTravel).mockReturnValue(
+      {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: new Error("network error"),
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useUpcomingTravel>,
+    );
+    vi.mocked(useTravelTrips).mockReturnValue(
+      { data: TRIPS_PAGE, isLoading: false } as unknown as ReturnType<typeof useTravelTrips>,
+    );
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      { data: undefined, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      { data: { documents: [] }, isLoading: false } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+
+    renderTab();
+
+    expect(screen.getByTestId("travel-kpi-degraded")).toBeDefined();
+    for (const testId of ["kpi-active-count", "kpi-planned-count", "kpi-open-actions"]) {
+      const text = screen.getByTestId(testId).textContent;
+      expect(text).toBe("unavailable");
+      expect(text).not.toBe("0");
+    }
+    expect(screen.getByTestId("kpi-next-departure").textContent).toBe("unavailable");
+  });
+
+  it("discloses excluded trips without zeroing the counts for a partial failure", () => {
+    vi.resetAllMocks();
+    vi.mocked(useUpcomingTravel).mockReturnValue(
+      {
+        data: { ...UPCOMING_DATA, unreadable_trip_ids: ["trip-corrupt"] },
+        isLoading: false,
+        isError: false,
+        error: null,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useUpcomingTravel>,
+    );
+    vi.mocked(useTravelTrips).mockReturnValue(
+      { data: TRIPS_PAGE, isLoading: false } as unknown as ReturnType<typeof useTravelTrips>,
+    );
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      { data: undefined, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      { data: { documents: [] }, isLoading: false } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+
+    renderTab();
+
+    expect(screen.queryByTestId("travel-kpi-degraded")).toBeNull();
+    const partial = screen.getByTestId("travel-kpi-partial-degraded");
+    expect(partial.textContent).toContain("1");
+    expect(partial.textContent).toContain("excluded");
+    // The readable trips (from UPCOMING_DATA) still count normally.
+    expect(screen.getByTestId("kpi-active-count").textContent).toBe("1");
+    expect(screen.getByTestId("kpi-planned-count").textContent).toBe("1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: Loading state
 // ---------------------------------------------------------------------------
 

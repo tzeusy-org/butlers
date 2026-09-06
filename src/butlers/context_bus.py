@@ -30,6 +30,7 @@ class ContextSignal(StrEnum):
     socializing = "socializing"
     commuting = "commuting"
     at_home = "at_home"
+    in_space = "in_space"
     away = "away"
     dnd = "dnd"
 
@@ -80,6 +81,7 @@ _WRITE_PERMISSIONS: dict[str, frozenset[str]] = {
     "socializing": frozenset({"relationship", "general"}),
     "commuting": frozenset({"travel", "general"}),
     "at_home": frozenset({"travel", "home", "general"}),
+    "in_space": frozenset({"home", "general"}),
     "away": frozenset({"general"}),
     "dnd": frozenset({"general", "switchboard"}),
 }
@@ -98,6 +100,7 @@ _TTL_CONFIG: dict[str, tuple[timedelta, timedelta]] = {
     "socializing": (timedelta(hours=3), timedelta(hours=12)),
     "commuting": (timedelta(minutes=45), timedelta(hours=3)),
     "at_home": (timedelta(hours=12), timedelta(hours=24)),
+    "in_space": (timedelta(hours=12), timedelta(hours=24)),
     "away": (timedelta(hours=12), timedelta(days=30)),
     "dnd": (timedelta(hours=2), timedelta(hours=24)),
 }

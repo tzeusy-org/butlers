@@ -18,6 +18,12 @@ POST /api/butlers/{name}/conversations
 GET  /api/butlers/{name}/conversations/search
     Substring search across conversation messages (case-insensitive ILIKE).
 
+GET  /api/conversations/messages/search
+    Owner-scoped, cursor-paginated full-text search across every butler's
+    dashboard messages (bu-0ynlk.9). One row per matching message with
+    ts_rank ordering and highlight ranges — distinct from the per-butler,
+    per-conversation substring search above.
+
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
 
@@ -129,11 +135,17 @@ from butlers.api.conversations import (
     message_find_reply_since,
     message_get_by_id,
     message_list,
+    message_search,
     message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.models import (
+    CursorPaginatedResponse,
+    CursorPaginationMeta,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
@@ -143,6 +155,7 @@ from butlers.api.models.conversation import (
     ConversationSummary,
     ConversationUpdateRequest,
     MessageCreateRequest,
+    MessageSearchResult,
 )
 from butlers.core.dashboard_turns import (
     DashboardTurnResult,
@@ -159,6 +172,11 @@ from butlers.core.dashboard_turns import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["conversations"])
+
+# Owner-scoped message search — NOT nested under /api/butlers/{name}/, since
+# it searches every butler's dashboard messages at once (bu-0ynlk.9). See
+# `search_messages` below.
+messages_search_router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 # SSE keepalive interval in seconds
 _KEEPALIVE_INTERVAL_S: float = 15.0
@@ -1383,6 +1401,96 @@ async def search_conversations(
     return PaginatedResponse[ConversationSearchResult](
         data=results,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/conversations/messages/search
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get(
+    "/messages/search",
+    response_model=CursorPaginatedResponse[MessageSearchResult],
+)
+async def search_messages(
+    q: str = Query(..., min_length=1, max_length=512, description="Full-text search query."),
+    limit: int = Query(20, ge=1, le=100, description="Max records to return"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Opaque cursor from the previous page's `next_cursor` field. "
+            "Omit to fetch the first page."
+        ),
+    ),
+    channel: str | None = Query(
+        None, description="Filter to one conversation source_channel (e.g. 'dashboard')."
+    ),
+    butler: str | None = Query(None, description="Filter to one butler's conversations."),
+    from_: str | None = Query(
+        None,
+        alias="from",
+        description="ISO-8601 inclusive lower bound on message created_at.",
+    ),
+    to: str | None = Query(
+        None, description="ISO-8601 exclusive upper bound on message created_at."
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CursorPaginatedResponse[MessageSearchResult]:
+    """Owner-scoped full-text search across every butler's dashboard messages.
+
+    Unlike ``GET /api/butlers/{name}/conversations/search`` (per-butler,
+    substring, one row per conversation), this searches every butler's
+    messages at once and returns one row per matching message, ranked by text
+    relevance (``ts_rank``) then recency. Each result carries
+    ``highlight_ranges`` — ``[start, end)`` offsets into ``snippet`` — so the
+    frontend can bold the matched terms without re-implementing the match.
+
+    Uses cursor (keyset) pagination per
+    ``docs/api_and_protocols/response-conventions.md``: no ``total``/``offset``,
+    ``next_cursor`` is ``null`` on the last page, and the cursor remains valid
+    even if a new message is inserted between page fetches.
+
+    Returns:
+        200 — ``{"data": [...], "meta": {"next_cursor", "has_more"}}``
+        422 — malformed ``cursor``, or ``from``/``to`` is not valid ISO-8601
+        503 — shared database pool unavailable
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    from_dt: datetime | None = None
+    to_dt: datetime | None = None
+    if from_ is not None:
+        try:
+            from_dt = datetime.fromisoformat(from_)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'from' value: {exc}") from exc
+    if to is not None:
+        try:
+            to_dt = datetime.fromisoformat(to)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid 'to' value: {exc}") from exc
+
+    try:
+        result = await message_search(
+            pool,
+            query=q,
+            since=from_dt,
+            until=to_dt,
+            channel=channel,
+            butler=butler,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return CursorPaginatedResponse[MessageSearchResult](
+        data=[MessageSearchResult(**item) for item in result["items"]],
+        meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
     )
 
 

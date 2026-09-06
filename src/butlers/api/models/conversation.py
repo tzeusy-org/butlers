@@ -260,6 +260,28 @@ class ConversationSearchResult(ConversationSummary):
     snippet: str
 
 
+class MessageSearchResult(BaseModel):
+    """One message-level full-text search hit (``GET /api/conversations/messages/search``)."""
+
+    message_id: UUID
+    conversation_id: UUID
+    role: str
+    created_at: datetime
+    butler_name: str
+    session_id: UUID | None = None
+    snippet: str = Field(description="Plain-text excerpt around the match (markers stripped).")
+    highlight_ranges: list[list[int]] = Field(
+        description="[start, end) character offsets into `snippet`, one pair per match."
+    )
+    deep_link: str = Field(
+        description=(
+            "Dashboard path to open for more context — `/sessions/{id}` when the "
+            "message has a session, else `/butlers/{butler_name}` (no dedicated "
+            "conversation page exists yet)."
+        )
+    )
+
+
 class ConversationStats(BaseModel):
     """Aggregate conversation statistics for a butler."""
 

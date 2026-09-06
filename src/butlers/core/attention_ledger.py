@@ -410,6 +410,43 @@ async def find_notify_dispatch_for_session(
     )
 
 
+async def attention_event_recorded_since(
+    pool: asyncpg.Pool | None,
+    *,
+    dedup_key: str,
+    since: datetime,
+) -> bool:
+    """Return whether a ledger row with *dedup_key* exists at/after *since*.
+
+    Lets a caller with a per-situation dedup key (e.g.
+    ``butlers.core.fleet_cases.evaluate_case_attention``'s per-case bypass
+    key) ask "did this already fire in the current window?" without
+    reinventing a cooldown table -- the ledger's existing ``dedup_key`` column
+    is the same primitive :func:`record_attention_event` already writes.
+
+    Fails open (returns ``False``) on any DB error or missing pool, mirroring
+    :func:`count_attention_events_since` -- an attention decision must never
+    block on ledger unavailability (see the module's degraded-honesty
+    contract).
+    """
+    if pool is None:
+        return False
+    try:
+        row = await pool.fetchval(
+            """
+            SELECT 1 FROM public.attention_ledger
+            WHERE dedup_key = $1 AND occurred_at >= $2
+            LIMIT 1
+            """,
+            dedup_key,
+            since,
+        )
+    except Exception:
+        logger.warning("attention_event_recorded_since: query failed; failing open", exc_info=True)
+        return False
+    return row is not None
+
+
 async def count_attention_events_since(
     pool: asyncpg.Pool | None,
     *,

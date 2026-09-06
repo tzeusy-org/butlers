@@ -40,6 +40,11 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   useConversations: vi.fn(),
   useConversationMessages: vi.fn(),
   useConversationSearch: vi.fn(),
+  useMessageSearch: vi.fn(() => ({
+    data: { data: [], meta: { next_cursor: null, has_more: false } },
+    isLoading: false,
+    isError: false,
+  })),
 }));
 
 vi.mock("@/api/client.ts", () => ({

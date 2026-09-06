@@ -722,12 +722,35 @@ export interface SpendDivergence {
 export interface SpendSummary {
   total_cost_usd: number;
   total_sessions: number;
+  /** Uncached input tokens only -- see `total_cached_input_tokens`. */
   total_input_tokens: number;
   total_output_tokens: number;
+  /**
+   * Prompt-cache reads. Previously computed and discarded (bu-2jtfw.4): a
+   * heavily-cached model showed as a small fraction of its true token
+   * volume. Add to `total_input_tokens` for the true total tokens bought.
+   */
+  total_cached_input_tokens?: number;
+  /** Prompt-cache writes. */
+  total_cache_creation_tokens?: number;
+  /** Dollar cost of just the cache-read bucket, isolated from `total_cost_usd`. */
+  cache_read_cost_usd?: number;
+  /**
+   * Fraction of input tokens served from cache. `null` (never `0`) when
+   * `total_cached_input_tokens + total_input_tokens` is zero -- a zero
+   * denominator is "no data", not "no cache hits".
+   */
+  cache_hit_rate?: number | null;
   by_butler: Record<string, number>;
   by_model: Record<string, number>;
   /** Models excluded from dollar subtotals; never silently folded into $0. */
   unpriced_models?: UnpricedModelUsage[];
+  /**
+   * Priced models whose cache reads this window billed at the full input
+   * rate because no confirmed cache-read price is configured -- their
+   * dollar figures are real but not cache-discounted.
+   */
+  no_cache_price_models?: string[];
   divergences?: SpendDivergence[];
   divergence_source_error?: boolean;
   historical_attribution_note?: string | null;
@@ -743,6 +766,11 @@ export interface DailySpend {
   sessions: number;
   input_tokens: number;
   output_tokens: number;
+  /** See `SpendSummary.total_cached_input_tokens` -- same semantics, scoped to one day. */
+  cached_input_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_read_cost_usd?: number;
+  cache_hit_rate?: number | null;
   /**
    * Real per-butler cost contributions for this day (bu-86c4c.11 — extends
    * GET /api/spend/daily to preserve the butler identity it previously
@@ -810,16 +838,23 @@ export interface TopSessionsResponse {
  * `meta.forecast_basis` (it is a constant, so it is not repeated on each row).
  * `projected_monthly_runs === 0` means the cadence could not be established --
  * there is no forecast, which is not the same claim as "this costs nothing".
+ *
+ * `retired` is true when the underlying schedule has been disabled (removed
+ * from TOML config rather than deleted). Its measured history above stays
+ * real, but it cannot recur -- `projected_monthly_runs` is always `0` and
+ * `projected_monthly_usd` is always `null` for a retired schedule, so it can
+ * never occupy the head of a projected-cost ranking (bu-2jtfw.4).
  */
 export interface ScheduleCost {
   schedule_name: string;
   butler: string;
   cron: string;
+  retired?: boolean;
   total_runs: number;
   total_cost_usd: number;
   avg_cost_per_run: number;
   projected_monthly_runs: number;
-  projected_monthly_usd: number;
+  projected_monthly_usd: number | null;
 }
 
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
@@ -5525,6 +5560,49 @@ export interface PageContextVisibleResource {
 }
 
 /**
+ * One message-level full-text search hit
+ * (`GET /api/conversations/messages/search`, bu-0ynlk.9).
+ *
+ * Owner-scoped across every butler — unlike `ConversationSearchResult`
+ * (per-butler, one row per conversation), this is one row per matching
+ * message, ranked by text relevance.
+ */
+export interface MessageSearchResult {
+  message_id: string;
+  conversation_id: string;
+  role: string;
+  created_at: string;
+  butler_name: string;
+  session_id: string | null;
+  /** Plain-text excerpt around the match (markers already stripped). */
+  snippet: string;
+  /** [start, end) character offsets into `snippet`, one pair per match. */
+  highlight_ranges: [number, number][];
+  /**
+   * Dashboard path to open for more context — `/sessions/{id}` when the
+   * message has a session, else `/butlers/{butler_name}` (no dedicated
+   * conversation page exists yet).
+   */
+  deep_link: string;
+}
+
+/** Query params for GET /api/conversations/messages/search. */
+export interface MessageSearchParams {
+  q: string;
+  limit?: number;
+  /** Opaque cursor from the previous page's `next_cursor`. Omit for the first page. */
+  cursor?: string;
+  /** Filter to one conversation source_channel (e.g. "dashboard"). */
+  channel?: string;
+  /** Filter to one butler's conversations. */
+  butler?: string;
+  /** ISO-8601 inclusive lower bound on message created_at. */
+  from?: string;
+  /** ISO-8601 exclusive upper bound on message created_at. */
+  to?: string;
+}
+
+/**
  * Dashboard route/query/entity/resource context captured at message send
  * time (bu-p6ey8.4, extended by bu-0ynlk.4). Mirrors the backend's
  * `PageContext` model. Built by `usePageContextCapture()`
@@ -7726,9 +7804,39 @@ export interface FinanceSubscription {
   payment_method: string | null;
   account_id: string | null;
   source_message_id: string | null;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/** One forward obligation ledger row (bu-8cdl1.10), denormalized with its
+ * subscription's service/amount and cancellation-door status. */
+export interface FinanceObligation {
+  subscription_id: string;
+  service: string;
+  /** Numeric amount as string. */
+  amount: string;
+  currency: string;
+  period: string;
+  cancellation_url: string | null;
+  notice_period_days: number | null;
+  cancel_by: string | null;
+  warn_by: string | null;
+  unknown_door: boolean;
+  /** Numeric amount as string. */
+  price_change_amount: string | null;
+  price_change_direction: "increase" | "decrease" | null;
+  days_remaining_to_act: number | null;
+}
+
+export interface FinanceObligationsResponse {
+  items: FinanceObligation[];
+  count: number;
+  available: boolean;
+  degraded_reason: "obligation_ledger_unavailable" | null;
 }
 
 export interface FinanceExpectedSignal {
@@ -8028,6 +8136,8 @@ export interface TravelUpcomingModel {
   actions: TravelPreTripAction[];
   window_start: string;
   window_end: string;
+  /** Trip ids excluded from `upcoming_trips` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
 }
 
 /** Params for listing trips. */
@@ -8261,6 +8371,29 @@ export interface LatencyStats {
 /** Query params for GET /api/butlers/{name}/analytics/latency-stats. */
 export interface LatencyStatsParams {
   window_days?: number;
+}
+
+/**
+ * Response from GET /api/butlers/{name}/analytics/friction (bu-8cdl1.9 S3).
+ *
+ * `by_kind` is zero-filled across every `sessions_friction.kind` value
+ * (degenerate_tool_loop, guardrail_termination, classification_timeout,
+ * recovered_error, dead_end) so a console panel can render a stable counter
+ * set. `succeeded` / `failed` / `by_error_marker` mirror the outcome fields
+ * `sessions_summary` computes for the same period and window.
+ */
+export interface FrictionSummary {
+  period: "today" | "7d" | "30d";
+  total: number;
+  by_kind: Record<string, number>;
+  succeeded: number;
+  failed: number;
+  by_error_marker: Record<string, number>;
+}
+
+/** Query params for GET /api/butlers/{name}/analytics/friction. */
+export interface FrictionSummaryParams {
+  period?: "today" | "7d" | "30d";
 }
 
 // ---------------------------------------------------------------------------

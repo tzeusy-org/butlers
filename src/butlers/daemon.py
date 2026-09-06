@@ -157,6 +157,12 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # registered on every butler — any butler can be the classification
         # or pinned-target destination of a dashboard conversation.
         "conversation_reply",
+        # bu-0ynlk.9: owner-scoped cross-butler dashboard chat recall; always
+        # registered on every butler for the same reason as conversation_reply
+        # above — any butler may need to recall a turn the owner had with a
+        # different butler.
+        "conversation_recall",
+        "conversation_thread_read",
         # bu-gxmfx: cross-butler delegation ledger; non-STAFFER only, same
         # gate as notify/remind above.
         "delegate_ask",
@@ -174,6 +180,28 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # rest of the bus -- only a butler that can receive an event can close
         # the loop on one.
         "report_event_reaction",
+        # bu-8cdl1.8 Slice 3: zero-LLM public.entity_graph_edges traversal;
+        # always registered on every butler — every butler role already holds
+        # SELECT on the table (RFC 0031's grant model), same reasoning as
+        # conversation_recall above.
+        "entity_graph_walk",
+        "entity_graph_path",
+        # bu-8cdl1.7 Slice 3: fleet case file contribution tools (RFC 0032).
+        # Registered fleet-wide for every butler type, including STAFFER
+        # (Switchboard is the sole write authority for open_case/
+        # propose_case_posture/close_case and needs them on its own daemon to
+        # perform writes forwarded from other butlers) — unlike delegate_*/
+        # publish_event above, this group has no ButlerType.STAFFER exclusion.
+        "find_open_case",
+        "open_case",
+        "contribute_case_evidence",
+        "propose_case_posture",
+        "close_case",
+        # bu-8cdl1.7 Slice 7: three-ledger binding through fleet_case_links
+        # (RFC 0032). Same write-authority/registration reasoning as the
+        # Slice 3 tools above.
+        "record_case_link",
+        "read_case",
     }
 )
 

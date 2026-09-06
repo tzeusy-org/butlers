@@ -499,6 +499,40 @@ async def test_get_trip_summary_trip_fields():
 
 
 @pytest.mark.asyncio
+async def test_get_trip_summary_survives_double_encoded_leg_metadata():
+    """A JSONB-double-encoded leg metadata value (the live bu-2jtfw.1 bug
+    shape: a JSON *string* on the wire rather than an object) must not
+    500/400 GET /trips/{id} -- the shared `_row_to_dict` converter decodes it.
+    Fails on main, where `_row_to_leg` did `dict(r["metadata"])` and raised.
+    """
+    trip = _trip_row(id=_TRIP_UUID)
+    leg = _leg_row(trip_id=_TRIP_UUID, metadata='{"flight_number": "DD94XR"}')
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], []])
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["legs"][0]["metadata"] == {"flight_number": "DD94XR"}
+
+
+@pytest.mark.asyncio
 async def test_get_trip_summary_missing_boarding_pass_alert():
     """GET /api/travel/trips/{trip_id} generates alert when boarding pass is missing."""
     trip = _trip_row(id=_TRIP_UUID)
@@ -657,6 +691,28 @@ async def test_list_trip_legs_with_data():
     assert "arrival_at" in item
     assert "carrier" in item
     assert "pnr" in item
+
+
+@pytest.mark.asyncio
+async def test_list_trip_legs_survives_double_encoded_metadata():
+    """A JSONB-double-encoded metadata value (the live bu-2jtfw.1 bug shape:
+    a JSON *string* on the wire rather than an object) must not 500/400 the
+    endpoint -- the shared `_row_to_dict` converter decodes it. Fails on main,
+    where `_row_to_leg` did `dict(r["metadata"])` and raised on a string.
+    """
+    leg = _leg_row(trip_id=_TRIP_UUID, metadata='{"flight_number": "DD94XR"}')
+    app, mock_pool = _make_app(fetchval_return=1, fetch_rows=[leg])
+    mock_pool.fetchval = AsyncMock(return_value=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}/legs")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["metadata"] == {"flight_number": "DD94XR"}
 
 
 # ---------------------------------------------------------------------------
@@ -1017,6 +1073,45 @@ async def test_get_upcoming_travel_urgency_ranking():
     _severity_rank = {"high": 1, "medium": 2, "low": 3}
     for i in range(len(severity_order) - 1):
         assert _severity_rank[severity_order[i]] <= _severity_rank[severity_order[i + 1]]
+
+
+@pytest.mark.asyncio
+async def test_get_upcoming_travel_excludes_and_discloses_unreadable_trip():
+    """One trip whose row cannot be normalized (unparseable metadata) must be
+    excluded from `upcoming_trips` and disclosed by id in
+    `unreadable_trip_ids` -- not silently dropped, and not a 500 for the
+    whole response (bu-2jtfw.1 degraded-mode disclosure)."""
+    good_trip = _trip_row(id=_TRIP_UUID, name="Readable Trip")
+    bad_trip_id = str(uuid.uuid4())
+    bad_trip = _trip_row(id=bad_trip_id, name="Corrupt Trip", metadata="not-valid-json")
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    # trips query, then for the good trip only: legs, accommodations, documents
+    # (the bad trip raises inside `_row_to_trip` before any further fetch).
+    mock_pool.fetch = AsyncMock(side_effect=[[good_trip, bad_trip], [], [], []])
+    mock_pool.fetchval = AsyncMock(return_value=1)
+    mock_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/upcoming")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(body["upcoming_trips"]) == 1
+    assert body["upcoming_trips"][0]["trip"]["id"] == _TRIP_UUID
+    assert body["unreadable_trip_ids"] == [bad_trip_id]
 
 
 # ---------------------------------------------------------------------------

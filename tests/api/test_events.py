@@ -288,6 +288,12 @@ class _FakeSessionPool:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         return self._return_id
 
+    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any]:
+        return {"id": self._return_id, "model": None}
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        return "INSERT 0 0"
+
 
 async def test_session_create_emits_session_started_event():
     """session_create publishes onto the cross-process fleet event bus via

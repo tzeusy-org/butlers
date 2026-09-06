@@ -249,6 +249,8 @@ import type {
   CreateConversationRequest,
   SendMessageRequest,
   ConversationCancelResponse,
+  MessageSearchResult,
+  MessageSearchParams,
   TelegramSendCodeRequest,
   TelegramSendCodeResponse,
   TelegramVerifyCodeRequest,
@@ -372,6 +374,7 @@ import type {
   FinanceTransaction,
   FinanceSubscription,
   FinanceExpectedSignalsResponse,
+  FinanceObligationsResponse,
   FinanceAccount,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
@@ -410,6 +413,8 @@ import type {
   SessionKindsParams,
   LatencyStats,
   LatencyStatsParams,
+  FrictionSummary,
+  FrictionSummaryParams,
   ActivityFeed,
   ActivityFeedParams,
   ButlerMemoryStats,
@@ -785,6 +790,17 @@ export function getButlerLatencyStats(
   if (params?.window_days != null) qs.set("window_days", String(params.window_days));
   const base = `/butlers/${encodeURIComponent(name)}/analytics/latency-stats`;
   return apiFetch<ApiResponse<LatencyStats>>(qs.toString() ? `${base}?${qs}` : base);
+}
+
+/** GET /api/butlers/{name}/analytics/friction */
+export function getButlerFrictionSummary(
+  name: string,
+  params?: FrictionSummaryParams,
+): Promise<ApiResponse<FrictionSummary>> {
+  const qs = new URLSearchParams();
+  if (params?.period != null) qs.set("period", params.period);
+  const base = `/butlers/${encodeURIComponent(name)}/analytics/friction`;
+  return apiFetch<ApiResponse<FrictionSummary>>(qs.toString() ? `${base}?${qs}` : base);
 }
 
 /** GET /api/butlers/{name}/activity-feed */
@@ -5316,6 +5332,27 @@ export function searchConversations(
 }
 
 /**
+ * GET /api/conversations/messages/search — owner-scoped, cursor-paginated
+ * full-text search across every butler's dashboard messages. One row per
+ * matching message, ranked by relevance then recency, with highlight ranges.
+ */
+export function searchMessages(
+  params: MessageSearchParams,
+): Promise<CursorPaginatedResponse<MessageSearchResult>> {
+  const sp = new URLSearchParams();
+  sp.set("q", params.q);
+  if (params.limit !== undefined) sp.set("limit", String(params.limit));
+  if (params.cursor) sp.set("cursor", params.cursor);
+  if (params.channel) sp.set("channel", params.channel);
+  if (params.butler) sp.set("butler", params.butler);
+  if (params.from) sp.set("from", params.from);
+  if (params.to) sp.set("to", params.to);
+  return apiFetch<CursorPaginatedResponse<MessageSearchResult>>(
+    `/conversations/messages/search?${sp.toString()}`,
+  );
+}
+
+/**
  * POST /api/butlers/{name}/conversations — create a new conversation with SSE streaming.
  * Returns the raw Response so callers can consume the SSE body directly.
  */
@@ -6281,6 +6318,14 @@ export function getFinanceSubscriptions(
 /** Read state-only Finance recurrence measurability. */
 export function getFinanceExpectedSignals(): Promise<FinanceExpectedSignalsResponse> {
   return apiFetch<FinanceExpectedSignalsResponse>("/finance/expected-signals");
+}
+
+/** List the forward obligation ledger (bu-8cdl1.10): warn-by dates,
+ * cancellation-door status, and pre-charge price-change flags per
+ * subscription. Explicitly degraded (never a fabricated all-clear) when the
+ * ledger read fails. */
+export function getFinanceObligations(): Promise<FinanceObligationsResponse> {
+  return apiFetch<FinanceObligationsResponse>("/finance/obligations");
 }
 
 /** List upcoming bills with urgency classification. */

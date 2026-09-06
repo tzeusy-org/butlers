@@ -10,6 +10,7 @@ const { mockAnnounce, mockPageHeader } = vi.hoisted(() => ({
 }))
 
 let mockHealth: "healthy" | "late" | "down" = "healthy"
+let mockClientLinkStatus: "online" | "offline" | "reconnecting" = "online"
 
 import RootLayout from "./RootLayout"
 
@@ -18,10 +19,13 @@ vi.mock("../components/layout/Shell", () => ({
   default: ({ children, header }: { children: ReactNode; header: ReactNode }) => <>{header}{children}</>,
 }))
 vi.mock("../components/layout/PageHeader", () => ({
-  default: ({ liveStatus }: { liveStatus?: string }) => {
-    mockPageHeader(liveStatus)
+  default: ({ liveStatus, clientLink }: { liveStatus?: string; clientLink?: string }) => {
+    mockPageHeader(liveStatus, clientLink)
     return null
   },
+}))
+vi.mock("../hooks/use-client-link", () => ({
+  useClientLink: () => ({ status: mockClientLinkStatus }),
 }))
 vi.mock("../components/layout/EntityFinder", () => ({ default: () => null }))
 vi.mock("../components/layout/GlobalActionsRegistrar", () => ({ GlobalActionsRegistrar: () => null }))
@@ -62,6 +66,7 @@ afterEach(() => {
   mockAnnounce.mockClear()
   mockPageHeader.mockClear()
   mockHealth = "healthy"
+  mockClientLinkStatus = "online"
 })
 
 describe("RootLayout", () => {
@@ -76,13 +81,13 @@ describe("RootLayout", () => {
 
   it("propagates late shared health to the shell indicator and announcement", () => {
     const { rerender } = render(<RootLayout />)
-    expect(mockPageHeader).toHaveBeenLastCalledWith("healthy")
+    expect(mockPageHeader).toHaveBeenLastCalledWith("healthy", "online")
     expect(mockAnnounce).not.toHaveBeenCalled()
 
     mockHealth = "late"
     rerender(<RootLayout />)
 
-    expect(mockPageHeader).toHaveBeenLastCalledWith("late")
+    expect(mockPageHeader).toHaveBeenLastCalledWith("late", "online")
     expect(mockAnnounce).toHaveBeenCalledWith("Fleet event stream reconnecting")
   })
 
@@ -102,5 +107,43 @@ describe("RootLayout", () => {
     rerender(<RootLayout />)
     expect(mockAnnounce).toHaveBeenCalledOnce()
     expect(mockAnnounce).toHaveBeenCalledWith("Fleet event stream reconnecting")
+  })
+
+  it("propagates the client link status to the shell indicator", () => {
+    mockClientLinkStatus = "offline"
+    render(<RootLayout />)
+    expect(mockPageHeader).toHaveBeenLastCalledWith("healthy", "offline")
+  })
+
+  it("blames the client, not the fleet, when navigator.onLine drops the socket, and stays silent on recovery", () => {
+    const { rerender } = render(<RootLayout />)
+    expect(mockPageHeader).toHaveBeenLastCalledWith("healthy", "online")
+
+    // The socket closing and the client link dropping arrive together, as
+    // they would from a real dropped LTE link.
+    mockHealth = "down"
+    mockClientLinkStatus = "offline"
+    rerender(<RootLayout />)
+
+    expect(mockAnnounce).toHaveBeenCalledWith("Your connection is offline")
+    expect(mockAnnounce).not.toHaveBeenCalledWith("Fleet event stream offline")
+
+    // Reconnect: silent recovery -- the client link itself coming back stays
+    // quiet (the fleet stream is still reported down here, unrelated to the
+    // socket reconnecting, so its edge does not fire either).
+    mockAnnounce.mockClear()
+    mockClientLinkStatus = "online"
+    rerender(<RootLayout />)
+
+    expect(mockAnnounce).not.toHaveBeenCalled()
+  })
+
+  it("still announces a genuine fleet outage when the client link stays online", () => {
+    const { rerender } = render(<RootLayout />)
+
+    mockHealth = "down"
+    rerender(<RootLayout />)
+
+    expect(mockAnnounce).toHaveBeenCalledWith("Fleet event stream offline")
   })
 })

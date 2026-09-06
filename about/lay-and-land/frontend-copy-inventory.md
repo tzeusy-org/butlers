@@ -1405,6 +1405,14 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Updated {} transaction fact{}.
 - Bulk update failed.
 
+## `frontend/src/components/butler-detail/ButlerFrictionPanel.tsx`
+
+- no friction episodes this period
+- no failures this period
+- typed episodes + session outcomes
+- Friction summary period
+- Friction summary
+
 ## `frontend/src/components/butler-detail/ButlerGeneralCollectionsTab.tsx`
 
 - Collections overview
@@ -1790,6 +1798,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Timeline
 - No timeline entries yet.
 - Accommodations
+- Upcoming travel
 - Next departure
 - Active trips
 - Planned trips
@@ -1999,6 +2008,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - New
 - Start a conversation
+- Messages
 - New conversation
 - Expand sidebar
 - Collapse sidebar
@@ -2007,6 +2017,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No conversations yet.
 - No results found.
 - Start a conversation below.
+- message search results
 
 ## `frontend/src/components/chat/ConversationReadError.tsx`
 
@@ -2941,6 +2952,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/layout/LiveIndicator.tsx`
 
+- Your device lost its network connection.
+- Your connection is reconnecting.
 - Fleet event stream: {}
 
 ## `frontend/src/components/layout/PageHeader.tsx`
@@ -4180,4 +4193,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3276*
+*Total strings: 3286*

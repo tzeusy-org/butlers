@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TypingIndicator } from "./TypingIndicator";
 import { ToolCallDetails } from "./ToolCallDetails";
+import { messageAnchorId } from "./message-id.ts";
 import type { Message, PricingMap } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,7 @@ function MessageBubble({
 
   return (
     <div
+      id={messageAnchorId(message.id)}
       className={cn(
         "flex flex-col gap-1 max-w-[85%]",
         isUser ? "self-end items-end" : "self-start items-start",

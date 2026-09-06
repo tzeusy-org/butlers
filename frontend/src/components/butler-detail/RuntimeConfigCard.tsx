@@ -23,10 +23,14 @@ const KNOWN_CORE_GROUPS = [
   "sessions",
   "notifications",
   "media",
+  "graph",
   "temporal",
   "module_mgmt",
   "switchboard_routing",
   "switchboard_backfill",
+  "delegation",
+  "domain_events",
+  "fleet_cases",
 ] as const;
 
 interface RuntimeConfigCardProps {

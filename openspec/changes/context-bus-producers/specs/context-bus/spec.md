@@ -14,8 +14,10 @@ bounded TTL so a crashed producer never leaves a signal permanently pinned.
 The following producers SHALL exist:
 - **calendar → meeting/focused** (writer `general`): derived from the
   currently-active event in the general butler's `calendar_events`.
-- **home → at_home** (writer `home`): derived from fresh Home Assistant
-  `person.*`/`device_tracker.*` presence in `ha_entity_snapshot`.
+- **home → at_home / in_space** (writer `home`): derived from fresh Home
+  Assistant `person.*`/`device_tracker.*` presence in `ha_entity_snapshot`,
+  scoped to the owner's configured entities; `in_space` additionally resolves
+  which room/area the owner is currently in from those same entities.
 - **travel → traveling** (writer `travel`): derived from a currently-underway
   trip in `travel.trips`.
 - **health → sleeping** (writer `health`): derived from the owner-declared
@@ -42,6 +44,23 @@ The following producers SHALL exist:
 - **WHEN** the only presence snapshots are older than the freshness window
 - **THEN** the home producer neither asserts nor clears `at_home` (the existing
   signal expires on its own TTL)
+
+#### Scenario: Home producer resolves in_space when a room is available
+- **WHEN** the owner is at_home and a fresh owner-linked entity exposes a
+  room/area (via its state or Home Assistant area attributes)
+- **THEN** the home producer sets an `in_space` signal with
+  `set_by_butler = "home"` and the resolved room as its value
+
+#### Scenario: Home producer clears in_space when the owner leaves
+- **WHEN** the owner transitions from at_home to away
+- **THEN** the home producer clears both `at_home` and `in_space`
+
+#### Scenario: Home producer never guesses a stale room
+- **WHEN** Home Assistant source health is unmeasurable, or no fresh
+  owner-linked entity exposes a room
+- **THEN** the home producer leaves any existing `in_space` signal untouched
+  so it self-heals via its bounded TTL rather than reporting a stale room as
+  current
 
 #### Scenario: Travel producer publishes traveling for an underway trip
 - **WHEN** a `travel.trips` row is `active`, or today falls within a

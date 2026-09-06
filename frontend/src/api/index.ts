@@ -841,6 +841,7 @@ export {
   listConversations,
   getConversationMessages,
   searchConversations,
+  searchMessages,
   createConversation,
   sendMessage,
   cancelConversationMessageTurn,
@@ -876,6 +877,8 @@ export type {
   ConversationListParams,
   Message,
   MessageToolCall,
+  MessageSearchResult,
+  MessageSearchParams,
   CreateConversationRequest,
   SendMessageRequest,
   ConversationSseEventType,
@@ -1065,6 +1068,7 @@ export type {
 export {
   getFinanceAccounts,
   getFinanceExpectedSignals,
+  getFinanceObligations,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
@@ -1078,6 +1082,8 @@ export type {
   FinanceBill,
   FinanceExpectedSignal,
   FinanceExpectedSignalsResponse,
+  FinanceObligation,
+  FinanceObligationsResponse,
   FinanceBulkUpdateMatch,
   FinanceBulkUpdateOp,
   FinanceBulkUpdateOpResult,
@@ -1155,6 +1161,7 @@ export {
   getButlerDailyActivity,
   getButlerSessionKinds,
   getButlerLatencyStats,
+  getButlerFrictionSummary,
   getButlerMemoryStats,
 } from "./client.ts";
 
@@ -1170,6 +1177,8 @@ export type {
   SessionKindsParams,
   LatencyStats,
   LatencyStatsParams,
+  FrictionSummary,
+  FrictionSummaryParams,
   ButlerMemoryStats,
 } from "./types.ts";
 

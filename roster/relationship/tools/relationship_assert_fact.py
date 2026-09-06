@@ -52,6 +52,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
@@ -782,6 +783,18 @@ async def _upsert_fact(
                 # Re-read and start over so we supersede the current active row.
                 continue
 
+            if object_kind == "entity":
+                # RFC 0031 (bu-8cdl1.8 Slice 2): the superseded row is no
+                # longer current -- its projected edge must go with it in the
+                # same transaction, or a supersession would leave two live
+                # edges for the same conceptual relationship.
+                await entity_graph_edges.delete_entity_graph_edge(
+                    conn,
+                    source_schema="relationship",
+                    source_table="entity_facts",
+                    source_id=old_id,
+                )
+
             new_id = await _insert_active_fact(
                 conn,
                 subject=subject,
@@ -805,6 +818,16 @@ async def _upsert_fact(
                 continue
             await carry_evidence_forward(conn, from_fact_id=old_id, to_fact_id=new_id)
             await persist_evidence(conn, fact_id=new_id, packet=packet)
+            if object_kind == "entity":
+                await entity_graph_edges.project_entity_graph_edge(
+                    conn,
+                    source_schema="relationship",
+                    source_table="entity_facts",
+                    source_id=new_id,
+                    subject_entity_id=subject,
+                    predicate=predicate,
+                    object_entity_id=uuid.UUID(object),
+                )
             return AssertResult(outcome=AssertOutcome.superseded, fact_id=new_id)
 
         # 4. No existing active row → insert. DO NOTHING (never DO UPDATE) so a
@@ -830,6 +853,20 @@ async def _upsert_fact(
             # report `unchanged` (identical provenance) or supersede it.
             continue
         await persist_evidence(conn, fact_id=new_id, packet=packet)
+        if object_kind == "entity":
+            # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity edge
+            # in the same transaction as the fact write -- a projection
+            # failure here fails this whole write, so the graph can never
+            # silently diverge from relationship.entity_facts.
+            await entity_graph_edges.project_entity_graph_edge(
+                conn,
+                source_schema="relationship",
+                source_table="entity_facts",
+                source_id=new_id,
+                subject_entity_id=subject,
+                predicate=predicate,
+                object_entity_id=uuid.UUID(object),
+            )
         return AssertResult(outcome=AssertOutcome.inserted, fact_id=new_id)
 
     raise RuntimeError(

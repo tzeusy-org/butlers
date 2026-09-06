@@ -381,6 +381,110 @@ class TestRecordBookingReservation:
 
 
 # ---------------------------------------------------------------------------
+# metadata JSONB encoding (bu-2jtfw.1)
+#
+# `register_jsonb_codec` (src/butlers/db.py) already serializes a bound Python
+# value to JSONB on the wire. Pre-serializing it with `json.dumps()` before
+# binding double-encodes it: the column ends up holding a JSONB *string*
+# (jsonb_typeof = 'string') instead of the real object, which is exactly why
+# `jsonb_typeof(...)` -- not the codec's `isinstance(..., str)` decode
+# fallback -- is what proves the fix: the fallback silently tolerates the bug.
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataStoredAsRealJsonbObject:
+    """record_booking must never double-encode any entity's metadata column."""
+
+    async def test_leg_metadata_is_a_real_object_not_a_json_string(self, pool):
+        """The DD94XR fixture: flight_status.py's selection predicate depends
+        on `travel.legs.metadata` being a real jsonb object (`? 'flight_number'`
+        is never true against a jsonb string scalar)."""
+        from butlers.tools.travel.bookings import record_booking
+
+        dep_at = (_utcnow() + timedelta(days=2)).isoformat()
+        arr_at = (_utcnow() + timedelta(days=2, hours=11)).isoformat()
+
+        result = await record_booking(
+            pool=pool,
+            payload={
+                "entity_type": "leg",
+                "carrier": "Delta",
+                "departure": "JFK",
+                "arrival": "LHR",
+                "departure_at": dep_at,
+                "arrival_at": arr_at,
+                "confirmation_number": "DD94XR-CONF",
+                "source_message_id": "dd94xr-email-001",
+                "metadata": {"flight_number": "DD94XR"},
+            },
+        )
+
+        typeof = await pool.fetchval(
+            "SELECT jsonb_typeof(metadata) FROM travel.legs WHERE id = $1::uuid",
+            result["entity_id"],
+        )
+        assert typeof == "object"
+
+        row = await pool.fetchrow(
+            "SELECT metadata FROM travel.legs WHERE id = $1::uuid", result["entity_id"]
+        )
+        # A real jsonb object decodes straight to a dict via the codec; a
+        # double-encoded string would decode to `str`, and this subscript
+        # would raise TypeError.
+        assert row["metadata"]["flight_number"] == "DD94XR"
+        assert row["metadata"]["source_message_id"] == "dd94xr-email-001"
+
+    async def test_accommodation_reservation_document_metadata_are_real_objects(self, pool):
+        """The same double-encoding bug in bookings.py hit every entity type,
+        not just legs -- accommodation, reservation, and document writers all
+        went through the identical `json.dumps()` call-site pattern."""
+        from butlers.tools.travel.bookings import record_booking
+
+        accom = await record_booking(
+            pool=pool,
+            payload={
+                "entity_type": "accommodation",
+                "check_in": (_utcnow() + timedelta(days=3)).isoformat(),
+                "check_out": (_utcnow() + timedelta(days=5)).isoformat(),
+                "source_message_id": "accom-jsonb-001",
+                "metadata": {"room": "1204"},
+            },
+        )
+        reservation = await record_booking(
+            pool=pool,
+            payload={
+                "entity_type": "reservation",
+                "datetime": (_utcnow() + timedelta(days=4)).isoformat(),
+                "source_message_id": "res-jsonb-001",
+                "metadata": {"table": "12"},
+            },
+        )
+        document = await record_booking(
+            pool=pool,
+            payload={
+                "entity_type": "document",
+                "source_message_id": "doc-jsonb-001",
+                "metadata": {"page_count": 2},
+            },
+        )
+
+        checks = (
+            ("travel.accommodations", accom["entity_id"], "room", "1204"),
+            ("travel.reservations", reservation["entity_id"], "table", "12"),
+            ("travel.documents", document["entity_id"], "page_count", 2),
+        )
+        for table, entity_id, key, expected in checks:
+            typeof = await pool.fetchval(
+                f"SELECT jsonb_typeof(metadata) FROM {table} WHERE id = $1::uuid", entity_id
+            )
+            assert typeof == "object", f"{table} metadata was not a real jsonb object"
+            row = await pool.fetchrow(
+                f"SELECT metadata FROM {table} WHERE id = $1::uuid", entity_id
+            )
+            assert row["metadata"][key] == expected
+
+
+# ---------------------------------------------------------------------------
 # update_itinerary — trip-level mutations
 # ---------------------------------------------------------------------------
 
@@ -419,11 +523,15 @@ class TestUpdateItineraryTripLevel:
             reason="trip commenced",
         )
 
-        import json
+        typeof = await pool.fetchval(
+            "SELECT jsonb_typeof(metadata) FROM travel.trips WHERE id = $1::uuid", trip_id
+        )
+        assert typeof == "object"
 
         row = await pool.fetchrow("SELECT metadata FROM travel.trips WHERE id = $1::uuid", trip_id)
-        meta_raw = row["metadata"]
-        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        # A real jsonb object decodes straight to a dict; a double-encoded
+        # string would decode to `str`, and `.get(...)` below would raise.
+        meta = row["metadata"]
         history = meta.get("change_history", [])
         assert len(history) == 1
         entry = history[0]
@@ -531,8 +639,6 @@ class TestUpdateItineraryEntityLevel:
 
     async def test_change_history_stored_in_leg_metadata(self, pool):
         """update_itinerary stores prior departure_at in leg metadata.change_history."""
-        import json
-
         from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool)
@@ -552,11 +658,17 @@ class TestUpdateItineraryEntityLevel:
             reason="gate change",
         )
 
+        typeof = await pool.fetchval(
+            "SELECT jsonb_typeof(metadata) FROM travel.legs WHERE id = $1::uuid", leg_id
+        )
+        assert typeof == "object"
+
         leg_row = await pool.fetchrow(
             "SELECT metadata FROM travel.legs WHERE id = $1::uuid", leg_id
         )
-        meta_raw = leg_row["metadata"]
-        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+        # A real jsonb object decodes straight to a dict; a double-encoded
+        # string would decode to `str`, and `.get(...)` below would raise.
+        meta = leg_row["metadata"]
         history = meta.get("change_history", [])
         assert len(history) == 1
         assert history[0]["prior_values"]["departure_at"] == orig_dep

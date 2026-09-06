@@ -120,6 +120,15 @@ cron = "*/15 * * * *"
 dispatch_mode = "job"
 job_name = "context_producer_travel"
 
+# Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
+# Publishes `commuting` with an OwnTracks-derived arrival ETA every 5 minutes
+# (bu-8cdl1.11 slice 3).
+[[butler.schedule]]
+name = "context_producer_commuting_eta"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "context_producer_commuting_eta"
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

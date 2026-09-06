@@ -17,6 +17,7 @@ The permission mapping SHALL remain:
 - `socializing`: relationship, general
 - `commuting`: travel, general
 - `at_home`: travel, home, general
+- `in_space`: home, general
 - `away`: general
 - `dnd`: general, switchboard
 

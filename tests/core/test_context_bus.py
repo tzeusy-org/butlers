@@ -56,7 +56,7 @@ def _entry(
 
 def test_context_signal_and_write_permission_and_ttl():
     """ContextSignal enum; write permission enforcement; TTL clamping per signal type."""
-    # ContextSignal enum: all 11 types present; StrEnum semantics; invalid raises
+    # ContextSignal enum: all 12 types present; StrEnum semantics; invalid raises
     expected = {
         "traveling",
         "sleeping",
@@ -67,6 +67,7 @@ def test_context_signal_and_write_permission_and_ttl():
         "socializing",
         "commuting",
         "at_home",
+        "in_space",
         "away",
         "dnd",
     }

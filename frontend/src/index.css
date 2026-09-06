@@ -771,6 +771,26 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+ * Chat message-search jump-to flash (bu-0ynlk.9)
+ *
+ * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * message bubble when a conversation_recall / message-search result is
+ * opened and scrolled into view.
+ * ---------------------------------------------------------------------------*/
+.chat-message-highlight {
+  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  position: relative;
+  z-index: 20;
+  border-radius: var(--radius-md, 0.5rem);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--fg);
+  }
+}
+
+/* ---------------------------------------------------------------------------
  * Global prefers-reduced-motion floor (bu-86c4c.16, JARVIS audit move 11)
  *
  * Reduced-motion was previously honored "artisanally": a JS hook

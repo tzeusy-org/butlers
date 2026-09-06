@@ -13,6 +13,10 @@ Supported alert types:
 detect_price_changes() compares recent transaction amounts for tracked
 subscription merchants against the recorded amounts in finance.subscriptions.
 Changes greater than 5% are flagged as price changes.
+
+register_obligations() derives a forward obligation ledger row (warn-by date,
+unknown-door flag, pre-charge price-change flag) for every active
+subscription's next renewal -- see finance.obligation_ledger.
 """
 
 from __future__ import annotations
@@ -447,4 +451,132 @@ async def detect_price_changes(
     return {
         "changes": changes,
         "total": len(changes),
+    }
+
+
+# ---------------------------------------------------------------------------
+# register_obligations
+# ---------------------------------------------------------------------------
+
+
+async def register_obligations(pool: asyncpg.Pool) -> dict[str, Any]:
+    """Derive and upsert a forward obligation ledger row for every active
+    subscription's next renewal (bu-8cdl1.10 slice 2).
+
+    For each active subscription, registers one ``obligation_ledger`` row
+    keyed by ``(subscription_id, period)`` where ``period`` is the
+    subscription's current ``next_renewal`` date:
+
+    - ``warn_by`` = ``cancel_by - notice_period_days`` when all three Slice-1
+      cancellation-door fields (``cancellation_url``, ``notice_period_days``,
+      ``cancel_by``) are known.
+    - ``unknown_door`` = True (and ``warn_by`` left NULL) when any one of
+      those three door fields is missing -- a URL-less door is exactly as
+      unusable to the owner as a missing date -- so the owner is prompted to
+      enrich it rather than the obligation silently warning at the wrong
+      time or not at all.
+    - ``price_change_amount``/``price_change_direction`` are set when the
+      subscription's ``metadata`` carries a ``next_amount`` that differs from
+      the currently tracked amount -- a pre-charge warning, ahead of
+      :func:`detect_price_changes`'s post-charge comparison against posted
+      transactions.
+
+    Idempotent: re-running for the same subscription and period upserts the
+    existing row in place rather than inserting a duplicate.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+
+    Returns
+    -------
+    dict
+        {registered, unknown_door, price_changes}: counts of obligation rows
+        upserted this run, how many carry the unknown-door flag, and how many
+        carry a pre-charge price-change flag.
+    """
+    subscriptions = await pool.fetch(
+        """
+        SELECT id, amount, next_renewal, cancellation_url, notice_period_days,
+               cancel_by, metadata
+        FROM subscriptions
+        WHERE status = 'active'
+        """
+    )
+
+    registered = 0
+    unknown_door_count = 0
+    price_change_count = 0
+
+    for sub in subscriptions:
+        period = sub["next_renewal"]
+        cancellation_url = sub["cancellation_url"]
+        notice_period_days = sub["notice_period_days"]
+        cancel_by = sub["cancel_by"]
+
+        if (
+            cancellation_url is not None
+            and cancel_by is not None
+            and notice_period_days is not None
+        ):
+            warn_by = cancel_by - timedelta(days=notice_period_days)
+            unknown_door = False
+        else:
+            warn_by = None
+            unknown_door = True
+            unknown_door_count += 1
+
+        raw_metadata = sub["metadata"]
+        if isinstance(raw_metadata, str):
+            try:
+                metadata = json.loads(raw_metadata)
+            except (json.JSONDecodeError, ValueError):
+                metadata = {}
+        elif isinstance(raw_metadata, dict):
+            metadata = raw_metadata
+        else:
+            metadata = {}
+
+        price_change_amount = None
+        price_change_direction = None
+        next_amount_raw = metadata.get("next_amount")
+        if next_amount_raw is not None:
+            try:
+                next_amount = Decimal(str(next_amount_raw))
+            except Exception:
+                next_amount = None
+            tracked_amount = Decimal(str(sub["amount"]))
+            if next_amount is not None and next_amount != tracked_amount:
+                price_change_amount = next_amount
+                price_change_direction = "increase" if next_amount > tracked_amount else "decrease"
+                price_change_count += 1
+
+        await pool.execute(
+            """
+            INSERT INTO obligation_ledger (
+                subscription_id, period, warn_by, unknown_door,
+                price_change_amount, price_change_direction
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (subscription_id, period) DO UPDATE SET
+                warn_by                 = EXCLUDED.warn_by,
+                unknown_door            = EXCLUDED.unknown_door,
+                price_change_amount     = EXCLUDED.price_change_amount,
+                price_change_direction  = EXCLUDED.price_change_direction,
+                updated_at              = now()
+            """,
+            sub["id"],
+            period,
+            warn_by,
+            unknown_door,
+            price_change_amount,
+            price_change_direction,
+        )
+        registered += 1
+
+    return {
+        "registered": registered,
+        "unknown_door": unknown_door_count,
+        "price_changes": price_change_count,
     }

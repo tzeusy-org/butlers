@@ -27,7 +27,11 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
+from butlers.testing.schema_standins import (
+    ENTITY_GRAPH_EDGES,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.relationship_assert_fact import (
     _PREDICATE_ALIAS_MAP,
@@ -128,6 +132,11 @@ async def pool(provisioned_postgres_pool):
 
         # 5. pending_actions (for owner carve-out)
         await p.execute(PENDING_ACTIONS.ddl())
+
+        # 6. public.entity_graph_edges (RFC 0031 Slice 2, bu-8cdl1.8): the
+        # central writer projects entity-kind facts here in the same
+        # transaction as the fact write.
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
 
         # rel_034: the central writer persists evidence and a coverage receipt in
         # the same transaction as the fact, so this schema is not optional.
@@ -254,6 +263,141 @@ class TestInsertNewFact:
             result.fact_id,
         )
         assert row["object_kind"] == "entity"
+        # RFC 0031 Slice 2 (bu-8cdl1.8): an entity-kind assert projects a live
+        # edge in the same transaction as the fact write.
+        edge = await pool.fetchrow(
+            "SELECT subject_entity_id, predicate, object_entity_id, sensitivity, withheld_reason"
+            " FROM public.entity_graph_edges"
+            " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+            " AND source_id = $1",
+            result.fact_id,
+        )
+        assert edge is not None
+        assert edge["subject_entity_id"] == entity
+        assert edge["predicate"] == _PRED_KNOWS
+        assert edge["object_entity_id"] == other_entity_id
+        assert edge["sensitivity"] == "normal"
+        assert edge["withheld_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: entity-graph projection (RFC 0031 Slice 2, bu-8cdl1.8)
+# ---------------------------------------------------------------------------
+
+
+class TestEntityGraphEdgeProjection:
+    async def test_supersession_moves_the_projected_edge(self, pool, entity):
+        """A supersession deletes the old row's edge and projects the new one."""
+        other_entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Other Entity', 'person', '{}') RETURNING id"
+        )
+        first = await relationship_assert_fact(
+            pool,
+            entity,
+            _PRED_KNOWS,
+            str(other_entity_id),
+            src="test",
+            conf=0.9,
+            object_kind="entity",
+        )
+        assert first.outcome == AssertOutcome.inserted
+
+        # Same (subject, predicate, object) identity, different provenance
+        # (conf) -- triggers supersession, not a fresh insert.
+        second = await relationship_assert_fact(
+            pool,
+            entity,
+            _PRED_KNOWS,
+            str(other_entity_id),
+            src="test",
+            conf=0.5,
+            object_kind="entity",
+        )
+        assert second.outcome == AssertOutcome.superseded
+
+        old_edge = await pool.fetchrow(
+            "SELECT 1 FROM public.entity_graph_edges"
+            " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+            " AND source_id = $1",
+            first.fact_id,
+        )
+        new_edge = await pool.fetchrow(
+            "SELECT object_entity_id FROM public.entity_graph_edges"
+            " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+            " AND source_id = $1",
+            second.fact_id,
+        )
+        assert old_edge is None
+        assert new_edge is not None
+        assert new_edge["object_entity_id"] == other_entity_id
+
+    async def test_projection_failure_rolls_back_the_fact_write(
+        self, pool, entity, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RFC 0031 write-behind contract: a projection failure fails the whole write."""
+        from butlers.core import entity_graph_edges
+
+        other_entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Failure Target', 'person', '{}') RETURNING id"
+        )
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("simulated entity_graph_edges projection failure")
+
+        monkeypatch.setattr(entity_graph_edges, "project_entity_graph_edge", _boom)
+
+        with pytest.raises(RuntimeError, match="simulated entity_graph_edges projection failure"):
+            await relationship_assert_fact(
+                pool,
+                entity,
+                _PRED_KNOWS,
+                str(other_entity_id),
+                src="test",
+                object_kind="entity",
+            )
+
+        survived = await pool.fetchval(
+            "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1 AND object = $2",
+            entity,
+            str(other_entity_id),
+        )
+        assert survived == 0
+
+    async def test_backfill_is_idempotent(self, pool, entity) -> None:
+        """Backfilling the same pre-existing active row twice never duplicates its edge."""
+        from butlers.core.entity_graph_edges import backfill_relationship_entity_facts_edges
+
+        other_entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Backfill Target', 'person', '{}') RETURNING id"
+        )
+        result = await relationship_assert_fact(
+            pool, entity, _PRED_KNOWS, str(other_entity_id), src="test", object_kind="entity"
+        )
+        assert result.outcome == AssertOutcome.inserted
+        # Simulate a historical row written before this projection existed --
+        # remove the edge the live writer just projected.
+        await pool.execute(
+            "DELETE FROM public.entity_graph_edges"
+            " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+            " AND source_id = $1",
+            result.fact_id,
+        )
+
+        first_count = await backfill_relationship_entity_facts_edges(pool)
+        second_count = await backfill_relationship_entity_facts_edges(pool)
+
+        total_rows = await pool.fetchval(
+            "SELECT COUNT(*) FROM public.entity_graph_edges"
+            " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
+            " AND source_id = $1",
+            result.fact_id,
+        )
+        assert first_count == 1
+        assert second_count == 0
+        assert total_rows == 1
 
 
 # ---------------------------------------------------------------------------
