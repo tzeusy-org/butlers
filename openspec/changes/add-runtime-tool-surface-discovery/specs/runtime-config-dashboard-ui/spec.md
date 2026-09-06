@@ -22,7 +22,10 @@ Scope: v1-mandatory
 
 - **WHEN** `tool_exposure_policy` is displayed or changed
 - **THEN** the card SHALL state that the setting applies to newly planned sessions without a daemon restart
-- **AND** `auto` SHALL be described as verified-native-when-available with eager fallback, not as a guarantee that native discovery will run
+- **AND** `auto` SHALL be described as verified-native-when-available with a
+  separately verified eager fallback only when one is available, otherwise the
+  tuple is unavailable/ineligible, not as a guarantee that native discovery
+  will run
 
 #### Scenario: Unavailable policy is not presented as active
 
@@ -61,9 +64,3 @@ Scope: v1-mandatory
 - **WHEN** the policy PATCH fails validation, transport, or persistence
 - **THEN** the UI SHALL show an actionable error and retain or restore the last server-confirmed policy
 - **AND** it SHALL not claim that the edited value is active
-
-## Source References
-
-- Non-Negotiable Rule 5 (operational tuning is DB-backed)
-- RFC 0007 (dashboard and API surface)
-- RFC 0027 (runtime tool surface discovery and exposure)

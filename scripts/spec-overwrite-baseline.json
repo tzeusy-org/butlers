@@ -7,14 +7,6 @@
       "excerpt": "- **AND** the user has active medications tracked by the health butler (queryable vithe `public` schema or known from..."
     }
   ],
-  "add-runtime-tool-surface-discovery/runtime-config-api/PATCH runtime config endpoint": [
-    {
-      "kind": "clause",
-      "scenario": "All managed fields are cold",
-      "digest": "ebf5c779c6d5",
-      "excerpt": "- **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three requir..."
-    }
-  ],
   "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
     {
       "kind": "clause",

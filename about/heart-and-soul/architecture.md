@@ -164,14 +164,21 @@ its scope is cross-butler coordination, not domain specialization.
 
 ## Why Tool Surface Discipline Matters
 
-Every tool registered on a butler's MCP server costs tokens when the LLM
-discovers available tools at session start. At 90-157 tools, this overhead is
-substantial: it consumes context window, increases latency, and measurably
-degrades tool selection accuracy --- especially on smaller or cheaper models.
+Under RFC 0027, initial-context cost comes from tool definitions loaded into
+model context at session start, not from every handler registered on the
+canonical MCP server. Under eager discovery those sets coincide: at
+90-157 registered tools, the same 90-157 definitions enter initial context,
+consuming context window, increasing latency, and degrading tool selection,
+especially on smaller or cheaper models. Under verified native deferred
+discovery, the registered and searchable sets may be larger while full typed
+definitions load only on demand.
 
-The target is 30-50 tools per butler. This is not arbitrary. It is the range
-where LLM tool selection remains reliable across model tiers without burning a
-significant fraction of the context window on tool definitions alone.
+The target is 30-50 tools initially loaded per session, not 30-50 registered
+handlers per butler. This is not arbitrary. It is the range where LLM tool
+selection remains reliable across model tiers without burning a significant
+fraction of the context window on tool definitions alone. Registration-time
+group and manifesto pruning remain mandatory because they enforce domain
+ownership even when a definition is not initially loaded.
 
 **How to stay within budget:**
 
