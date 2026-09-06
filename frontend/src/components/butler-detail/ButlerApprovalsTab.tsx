@@ -145,7 +145,7 @@ export default function ButlerApprovalsTab({ butlerName }: ButlerApprovalsTabPro
         title="Pending approvals"
         span={4}
         scroll
-        height="calc(100vh - 18rem)"
+        height="calc(100dvh - 18rem)"
         className="border-r-0"
       >
         {isLoading ? (
