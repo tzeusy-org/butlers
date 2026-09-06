@@ -181,9 +181,8 @@ future change.
 `RuntimeConfig` (resolved from the `runtime_config` DB table via
 `RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
 group-aware decorator `_core_tool(group)` replaces the prior post-registration
-prune pass. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`,
-`DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) and the
-`_tools_to_remove` pruning section are removed.
+prune pass. The former tier catalog and the `_tools_to_remove` pruning section
+are removed.
 
 #### Module Tool Groups
 

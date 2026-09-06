@@ -1315,8 +1315,8 @@ migrate.
 - Regression tests in `tests/daemon/test_route_execute_authz.py` cover unauthenticated/unauthorized rejection, custom config, and authorized pass-through.
 
 ### Core tool registration contract
-- `src/butlers/daemon.py` exports `CORE_TOOL_NAMES` as the canonical core-tool set (including `notify`); registration tests should assert against this set to prevent drift between `_register_core_tools()` behavior and expected tool coverage.
-  Adding any new core tool therefore requires adding its name to the matching frozenset in `daemon.py` (`UNIVERSAL_/MESSENGER_/DOMAIN_CORE_TOOL_NAMES`) -- `tests/daemon/test_daemon.py::test_all_core_tools_registered` asserts set *equality*, so a tool registered but not listed fails there and nowhere near the code you changed.
+- `src/butlers/daemon.py::_register_core_tools()` delegates registration to `butlers.core_tools.register_all_core_tools()` through the effective `core_groups` decorator. Keep group, type, name, and direct-registration gates in those owning registration modules; do not recreate a second catalog in the daemon or tests.
+- `tests/contracts/test_tool_surface_isolation.py::test_core_tools_catalog_completeness` collects actual dispatcher registrations across domain, Switchboard, Messenger, and Chronicler contexts. It guards the 79 unique registrations (71 group-decorated across 14 groups plus 8 direct registrations) and the role/name gates; `tests/daemon/test_daemon.py::test_all_core_tools_registered` protects the daemon-start integration seam.
 - MCP tool-call logging is centralized in `src/butlers/daemon.py`: `_register_core_tools()` registers through `_ToolCallLoggingMCP(module_name="core")`, and module tools log through `_SpanWrappingMCP` before module-enabled gating/span execution.
 - Canonical call log format is `MCP tool called (butler=%s module=%s tool=%s)`; keep this stable for log parsing/observability.
 

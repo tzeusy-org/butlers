@@ -6,10 +6,15 @@ Copy-ready dispatch prompts for the per-butler / per-module subagents used in
 **Inventory agent (per butler, Phase 1):**
 ```
 Read roster/{butler}/butler.toml. List all enabled modules with their
-configured groups. For each module, count the tools that would be
-registered given the groups config. Report as a markdown table.
-Core daemon tools: see the UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD
-constants in src/butlers/daemon.py.
+configured groups. Query effective runtime_config and/or list the live MCP
+surface before calling a core count actual; runtime_seed is first-boot input,
+not live-state evidence. If live state is unavailable, label the result a
+configured maximum/source inventory. For each module, collect the tools that
+would register with the effective groups config. Report as a markdown table.
+Core daemon tools: inspect `butlers.core_tools.register_all_core_tools()` and
+the owning registration functions. Count group-decorated and direct tools for
+the butler's type and name; use `references/tool-budget.md` only for
+registration and review principles, and derive the inventory mechanically.
 ```
 
 **Docstring audit agent (per module, Phase 2):**
@@ -38,21 +43,7 @@ description and specific issues.
 
 **Historical usage audit agent (per butler, Phase 7):**
 ```
-Connect to the butler's database using credentials from .env.dev
-(POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD).
-Run the following queries against the {schema}.sessions table:
-
-1. Tool call frequency (last 30 days):
-   SELECT tc->>'name', tc->>'module', COUNT(*)
-   FROM {schema}.sessions, jsonb_array_elements(tool_calls) AS tc
-   WHERE completed_at > now() - interval '30 days'
-   GROUP BY 1, 2 ORDER BY 3 DESC;
-
-2. Session volume:
-   SELECT COUNT(*), COUNT(*) FILTER (WHERE completed_at > now() - interval '30 days')
-   FROM {schema}.sessions;
-
-Report the raw results. Ignore 'command_execution' and 'skill' rows
-(runtime internals). Consolidate mcp__{butler}__ and {butler}_ prefixed
-tool names with their bare equivalents.
+Read and follow `references/historical-usage-audit.md` in full. It is the
+single canonical source for connection handling, supported call-shape SQL,
+inventory/alias resolution, and removal-evidence rules.
 ```

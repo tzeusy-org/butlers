@@ -431,12 +431,39 @@ class TestMcpOnlyInterButler:
         This is enforced by the ephemeral MCP config (RFC 0002) and the registry
         routing model (RFC 0003).
         """
-        # route.execute is registered as a core tool on every butler (RFC 0002)
-        from butlers.daemon import CORE_TOOL_NAMES
+        from unittest.mock import MagicMock
 
-        assert "route.execute" in CORE_TOOL_NAMES, (
-            "route.execute must be a core tool — it is the cross-butler dispatch mechanism (RFC 0003)"
+        from butlers.config import ButlerType
+        from butlers.core_tools import ToolContext
+        from butlers.core_tools._routing import register_routing_tools
+
+        registrations: list[str] = []
+
+        def tool(**tool_kwargs):
+            def register(fn):
+                registrations.append(tool_kwargs.get("name", fn.__name__))
+                return fn
+
+            return register
+
+        mcp = MagicMock()
+        mcp.tool = tool
+        register_routing_tools(
+            ToolContext(
+                daemon=MagicMock(),
+                pool=MagicMock(),
+                spawner=MagicMock(),
+                butler_name="general",
+                butler_type=ButlerType.BUTLER,
+                is_switchboard=False,
+                is_messenger=False,
+                route_metrics=MagicMock(),
+            ),
+            mcp,
+            MagicMock(),
         )
+
+        assert registrations == ["route.execute"]
 
         # The Switchboard routing pipeline uses this tool for dispatch
         route_execute_tool = "route.execute"

@@ -9,32 +9,137 @@ MCP endpoint via a generated config (RFC 0002, security.md).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+from unittest.mock import MagicMock
 
 import pytest
 
+from butlers.config import ButlerType
+from butlers.core_tools import ToolContext, register_all_core_tools
+
 pytestmark = pytest.mark.contract
+
+
+async def _record_core_registrations(
+    butler_name: str,
+    butler_type: ButlerType,
+    *,
+    core_groups: frozenset[str] | None = None,
+) -> list[tuple[str, str | None]]:
+    """Collect registrations and drain registration-time background tasks."""
+    registrations: list[tuple[str, str | None]] = []
+
+    class RecordingMCP:
+        def tool(self, **tool_kwargs):
+            def register(fn):
+                registrations.append((tool_kwargs.get("name", fn.__name__), None))
+                return fn
+
+            return register
+
+    def core_tool(group: str, **tool_kwargs):
+        if core_groups is not None and group not in core_groups:
+            return lambda fn: fn
+
+        def register(fn):
+            registrations.append((tool_kwargs.get("name", fn.__name__), group))
+            return fn
+
+        return register
+
+    existing_tasks = asyncio.all_tasks()
+    register_all_core_tools(
+        ToolContext(
+            daemon=MagicMock(),
+            pool=MagicMock(),
+            spawner=MagicMock(),
+            butler_name=butler_name,
+            butler_type=butler_type,
+            is_switchboard=butler_name == "switchboard",
+            is_messenger=butler_name == "messenger",
+            route_metrics=MagicMock(),
+        ),
+        RecordingMCP(),
+        core_tool,
+    )
+    registration_tasks = asyncio.all_tasks() - existing_tasks
+    for task in registration_tasks:
+        task.cancel()
+    if registration_tasks:
+        await asyncio.gather(*registration_tasks, return_exceptions=True)
+    return registrations
 
 
 class TestEphemeralMcpConfig:
     """RFC 0002: Ephemeral MCP config is scoped to a single butler."""
 
-    def test_core_tools_catalog_completeness(self):
-        """RFC 0002: Every butler exposes the complete core tool catalog.
+    async def test_core_tools_catalog_completeness(self):
+        """RFC 0002: the dispatcher preserves its complete, role-gated inventory."""
+        registrations = {
+            "domain": await _record_core_registrations("general", ButlerType.BUTLER),
+            "switchboard": await _record_core_registrations("switchboard", ButlerType.STAFFER),
+            "messenger": await _record_core_registrations("messenger", ButlerType.STAFFER),
+            "chronicler": await _record_core_registrations("chronicler", ButlerType.BUTLER),
+        }
+        all_registrations = [
+            registration
+            for role_registrations in registrations.values()
+            for registration in role_registrations
+        ]
+        inventory = {name: group for name, group in all_registrations}
 
-        The core tools defined in RFC 0002 must be registered on every
-        butler regardless of module configuration.
-        """
-        from butlers.daemon import CORE_TOOL_NAMES
+        # This is derived from decorator calls in the dispatcher, rather than
+        # duplicating its production catalog.  Keep the total as a regression
+        # guard for accidental registration loss.
+        assert len(inventory) == 79
+        assert sum(group is not None for group in inventory.values()) == 71
+        assert {
+            "state",
+            "infra",
+            "scheduling",
+            "sessions",
+            "notifications",
+            "temporal",
+            "media",
+            "module_mgmt",
+            "switchboard_routing",
+            "switchboard_backfill",
+            "delegation",
+            "domain_events",
+            "fleet_cases",
+            "graph",
+        } == {group for group in inventory.values() if group is not None}
+        assert {
+            "cancel_session",
+            "route.execute",
+            "delivery_preferences_set",
+            "delivery_preferences_get",
+            "deferred_notifications_list",
+            "deferred_notification_cancel",
+            "scheduling_preferences_set",
+            "scheduling_preferences_get",
+        } == {name for name, group in inventory.items() if group is None}
 
-        assert len(CORE_TOOL_NAMES) >= 21, "RFC 0002 defines at least 21 core tools"
-        # Core tools include route.execute for switchboard dispatch
-        assert "route.execute" in CORE_TOOL_NAMES
-        # Core tools include notify for outbound delivery
-        assert "notify" in CORE_TOOL_NAMES
-        # Core tools include all state store operations
-        for op in ["state_get", "state_set", "state_delete", "state_list"]:
-            assert op in CORE_TOOL_NAMES, f"Core tool '{op}' must be in CORE_TOOL_NAMES (RFC 0002)"
+        domain_tools = {name for name, _ in registrations["domain"]}
+        switchboard_tools = {name for name, _ in registrations["switchboard"]}
+        messenger_tools = {name for name, _ in registrations["messenger"]}
+        chronicler_tools = {name for name, _ in registrations["chronicler"]}
+
+        assert {"notify", "deadline_create", "delegate_wake", "route.execute"} <= domain_tools
+        assert {"ingest", "backfill.poll", "connector.heartbeat"} <= switchboard_tools
+        assert {
+            "delivery_preferences_set",
+            "deferred_notification_cancel",
+        } <= messenger_tools
+        assert "chronicler_day_close_refresh" in chronicler_tools
+        assert {
+            "ingest",
+            "delivery_preferences_set",
+            "chronicler_day_close_refresh",
+        }.isdisjoint(domain_tools)
+        assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(switchboard_tools)
+        assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(messenger_tools)
 
     def test_spawner_generates_single_butler_mcp_url(self):
         """RFC 0002: runtime_mcp_url generates a URL for exactly one butler.
@@ -357,70 +462,34 @@ class TestToolBudgetDiscipline:
             "Test confirms > 50 tools can be registered (triggering the budget warning)"
         )
 
-    def test_core_groups_allowlist_reduces_registered_tools(self):
+    async def test_core_groups_allowlist_reduces_registered_tools(self):
         """RFC 0002: core_groups allowlist gates core tool registration.
 
         When core_groups is set, only tools in the listed groups are registered.
         This allows butlers to stay within the 30-50 tool target.
         NULL means all groups are registered (backward compatibility).
         """
-        import ast
-        import pkgutil
-        from pathlib import Path
-
-        import butlers.core_tools as _ct_pkg
-
-        # Discover core groups by parsing _core_tool("...") calls in the package source.
-        # This catches any new groups added to the codebase automatically.
-        core_groups: set[str] = set()
-        for _finder, _modname, _ispkg in pkgutil.walk_packages(
-            path=_ct_pkg.__path__,
-            prefix=_ct_pkg.__name__ + ".",
-        ):
-            spec = __import__("importlib.util").util.find_spec(_modname)
-            if spec is None or spec.origin is None:
-                continue
-            src_text = Path(spec.origin).read_text(encoding="utf-8")
-            try:
-                tree = ast.parse(src_text)
-            except SyntaxError:
-                continue
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == "_core_tool"
-                    and node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
-                    core_groups.add(node.args[0].value)
-
-        assert len(core_groups) >= 8, (
-            f"RFC 0002 defines at least 8 core groups; found {sorted(core_groups)!r}"
+        registrations = await _record_core_registrations(
+            "general", ButlerType.BUTLER, core_groups=frozenset({"infra"})
         )
-        for required_group in ("infra", "state", "scheduling"):
-            assert required_group in core_groups, (
-                f"'{required_group}' group must be defined in core_tools (RFC 0002); "
-                f"found {sorted(core_groups)!r}"
-            )
+        names = {name for name, _ in registrations}
+        groups = {group for _, group in registrations}
 
-    def test_route_execute_always_registered_regardless_of_core_groups(self):
+        assert groups == {None, "infra"}
+        assert {"status", "route.execute", "cancel_session"} <= names
+        assert {"state_get", "schedule_list", "deadline_create"}.isdisjoint(names)
+
+    async def test_route_execute_always_registered_regardless_of_core_groups(self):
         """RFC 0002: route.execute is ALWAYS registered regardless of core_groups setting.
 
         'route.execute is ALWAYS registered regardless of core_groups.'
         All butlers need route.execute because the Switchboard calls it server-to-server
         to deliver routed requests.
         """
-        from butlers.daemon import CORE_TOOL_NAMES
-
-        assert "route.execute" in CORE_TOOL_NAMES, (
-            "route.execute must always be in CORE_TOOL_NAMES (RFC 0002)"
+        registrations = await _record_core_registrations(
+            "general", ButlerType.BUTLER, core_groups=frozenset()
         )
 
-        # route.execute is an infrastructure endpoint, not LLM-facing
-        # It must be registered even when core_groups restricts other tools
-        infra_tools = {"route.execute"}
-        assert infra_tools.issubset(CORE_TOOL_NAMES), (
-            "route.execute must be registered as an infrastructure endpoint (RFC 0002)"
-        )
+        # route.execute is a direct infrastructure registration, so an empty
+        # group allowlist does not suppress it.
+        assert {"route.execute", "cancel_session"} == {name for name, _ in registrations}

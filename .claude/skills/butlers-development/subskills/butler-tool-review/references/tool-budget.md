@@ -2,17 +2,17 @@
 
 ## Maintenance contract (read this first)
 
-This file is a living catalog of per-module tool/group counts — it goes
-stale whenever a module gains, removes, or regroups tools. Whenever an audit
-(or any change to `register_tools()`) finds a count here that no longer
-matches the code:
+This file records registration and review principles, not authoritative names,
+group taxonomies, counts, or retention lists. An audit derives each butler's
+actual core and module inventory from registration behavior and effective
+configuration. Whenever an audit (or any change to `register_tools()`) reveals
+that a principle or gate shape here has changed:
 
-1. Update the affected row(s) in the same change — don't defer as follow-up.
-2. If a module crosses the 10-tool threshold (gains or loses group support),
-   move it between the "Group Taxonomy" and "Modules Without Group Support"
-   tables.
-3. If core tool constants (`UNIVERSAL_CORE_TOOL_NAMES`, etc.) change in
-   `src/butlers/daemon.py`, update the "Core Tool Groups" tables to match.
+1. Update the gate semantics and examples here in the same change — don't defer
+   as follow-up.
+2. Collect actual registrations across all relevant role contexts and update
+   their behavior-level contract tests. Do not recreate a name, count, group,
+   or retention catalog here.
 
 ## Why Tool Count Matters
 
@@ -20,53 +20,47 @@ Every registered MCP tool costs tokens at discovery time and degrades model perf
 
 ## Core Daemon Tools
 
-Core tools are registered in `src/butlers/daemon.py::_register_core_tools()`. They are gated by butler type and name.
+Core tools are registered by `butlers.core_tools.register_all_core_tools()`,
+called from `src/butlers/daemon.py::_register_core_tools()`. Group decorators,
+direct infrastructure registrations, and butler type/name gates together
+determine the surface.
 
-### Tool Partition
+### Registration Discovery
 
-| Tier | Constant | Condition | Count | Examples |
-|---|---|---|---:|---|
-| Universal | `UNIVERSAL_CORE_TOOL_NAMES` | All butlers | 25 | status, trigger, route.execute, state_*, schedule_*, notify, remind, correct |
-| Domain | `DOMAIN_CORE_TOOL_NAMES` | `butler_type != STAFFER` | 13 | deadline_*, event_chain_*, seasonal_period_* |
-| Messenger | `MESSENGER_CORE_TOOL_NAMES` | `butler_name == "messenger"` | 4 | delivery_preferences_*, deferred_notification_* |
-| Switchboard | *(in switchboard if-block)* | `butler_name == "switchboard"` | 5 | ingest, route_to_butler, connector.heartbeat, backfill.poll/progress |
+The dispatcher mixes two registration shapes. Derive both mechanically; a
+configured group list alone cannot describe the effective surface.
 
-### Core tools per butler type (without core_groups pruning)
+| Registration shape | Condition | Discovery evidence |
+|---|---|---|
+| Group-decorated | `core_groups` permits the group, plus any local type/name gate | Collect decorated registration behavior across relevant role contexts |
+| Direct | Always or owning-name registration, independent of `core_groups` | Collect direct registration behavior across the same contexts |
 
-- **Domain butler**: 25 universal + 13 domain = **38**
-- **Staffer (switchboard)**: 25 universal + 5 switchboard-specific = **30**
-- **Staffer (messenger)**: 25 universal + 4 messenger-specific = **29**
-- **Staffer (qa)**: 25 universal = **25**
+At minimum, exercise an ordinary domain butler plus each distinct staffer,
+name-gated, or type-gated context present in registration source. Add a context
+when a new gate appears. Behavior-level contract tests are the regression
+guard; this reference deliberately does not duplicate their inventory.
 
-### Core Tool Groups
+### Core Group Discovery
 
-Universal core tools support the `core_groups` config in `[butler.runtime]`:
+Group-decorated tools respect `core_groups` from DB-backed runtime config,
+seeded by `[butler.runtime_seed]`:
 
 ```toml
-[butler.runtime]
+[butler.runtime_seed]
 core_groups = ["infra", "notifications", "module_mgmt"]
 # omit core_groups = register ALL (backward compatible)
 ```
 
-| Group | Tools | Count |
-|---|---|---:|
-| infra | status, trigger, route.execute, tick, correct | 5 |
-| state | state_get, state_set, state_delete, state_list | 4 |
-| scheduling | schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs | 6 |
-| sessions | sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions | 5 |
-| notifications | notify, remind | 2 |
-| media | get_attachment | 1 |
-| module_mgmt | module.states, module.set_enabled | 2 |
-| switchboard_routing | ingest, route_to_butler, connector.heartbeat | 3 |
-| switchboard_backfill | backfill.poll, backfill.progress | 2 |
-
-Domain tools (deadline_*, event_chain_*, seasonal_period_*) and messenger tools
-(delivery_preferences_*, deferred_notification_*) remain gated by butler type,
-not core_groups.
+Discover core group names and membership from the owning registration
+functions. Then apply effective `runtime_config`, type gates, name gates, and
+direct-registration behavior. Some direct tools intentionally remain available
+when `core_groups` is empty; prove that behavior from source and contract tests
+rather than an always-retain list in this reference.
 
 ## Module Tool Groups
 
-Modules with >=10 tools support the `groups` config in butler.toml:
+Use a module with >=10 derived tools as a review threshold for whether group
+configuration may be useful; it is not evidence that the module supports groups.
 
 ```toml
 [modules.memory]
@@ -93,28 +87,15 @@ def register_tools(mcp, module, config=None):
     async def my_tool(...): ...
 ```
 
-### Group Taxonomy
+### Module Group Discovery
 
-| Module | Groups | Total Tools |
-|---|---|---:|
-| memory | core(8), feedback(3), entity(7), preferences(2), admin(5) | 25 |
-| calendar | core(8), butler_events(4), attendees(2) | 14 |
-| relationship | contacts(17), interactions(5), relationships(8), social(10), notes(6), tracking(10), management(3), entity(4) | 63 |
-| finance | core(5), facts(5), bulk(7), subscriptions(4), bills(3), budgets(4), analytics(9), intelligence(6) | 43 |
-| education | mind_maps(12), teaching(5), mastery(4), spaced_repetition(3), diagnostics(3), curriculum(3), analytics(3) | 33 |
-| health | measurements(3), medications(4), conditions(3), symptoms(3), nutrition(3), reports(2), research(3) | 21 |
-| home_assistant | core(6), history(3), maintenance(4) | 13 |
-| approvals | actions(7), rules(6), promotions(3) | 16 |
-| switchboard | routing(5), extraction(3), backfill(5), operator(7) | 20 |
+Discover group names from registration source and effective configuration; do not
+maintain a package-wide taxonomy here.
 
 ### Ownership Principle
 
 - **Domain modules on their specialist butler** keep ALL groups (no pruning). The finance butler needs all finance groups.
 - **Cross-cutting modules** (memory, calendar, approvals, home_assistant) are where pruning matters. Each butler enables only the groups it uses.
-
-### Modules Without Group Support (<10 tools)
-
-contacts(4), email(4), general(10), travel(7), qa(3), whatsapp(2), telegram(0), spotify(0), steam(0), google_drive(0), insight_broker(1)
 
 ## Adding Group Support to a New Module
 

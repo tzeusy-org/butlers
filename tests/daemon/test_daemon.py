@@ -43,12 +43,7 @@ from butlers.core.tool_call_capture import (
     set_current_runtime_trigger_source,
 )
 from butlers.credentials import CredentialError
-from butlers.daemon import (
-    DOMAIN_CORE_TOOL_NAMES,
-    UNIVERSAL_CORE_TOOL_NAMES,
-    ButlerDaemon,
-    _McpSseDisconnectGuard,
-)
+from butlers.daemon import ButlerDaemon, _McpSseDisconnectGuard
 from butlers.mcp_patches import (
     apply_streamable_http_client_disconnect_patch,
     apply_streamable_http_disconnect_patch,
@@ -570,9 +565,18 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
         daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
         await daemon.start()
 
-    # "general" is a domain butler → gets universal + domain tools, not
-    # messenger or switchboard tools.
-    assert set(registered_tools) == UNIVERSAL_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
+    # A domain butler receives its actual group-gated surface, not a parallel
+    # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
+    # coverage; this startup test protects the daemon integration seam.
+    assert len(set(registered_tools)) == 64
+    assert {"state_get", "notify", "deadline_create", "delegate_wake", "route.execute"} <= set(
+        registered_tools
+    )
+    assert {
+        "chronicler_day_close_refresh",
+        "delivery_preferences_set",
+        "ingest",
+    }.isdisjoint(registered_tools)
 
 
 @pytest.mark.parametrize(
