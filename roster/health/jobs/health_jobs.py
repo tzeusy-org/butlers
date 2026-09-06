@@ -28,6 +28,9 @@ from butlers.core.expected_signals import (
     upsert_expected_signal,
 )
 from butlers.tools.health._medication_utils import (
+    expected_dose_count as _expected_dose_count,
+)
+from butlers.tools.health._medication_utils import (
     frequency_to_doses_per_day as _frequency_to_doses_per_day,
 )
 
@@ -806,7 +809,18 @@ async def _scan_adherence_symptom_correlation(
         frequency = med_row["frequency"] or "daily"
         doses_per_day = _frequency_to_doses_per_day(frequency)
 
-        expected_doses = doses_per_day * _ADHERENCE_DIP_WINDOW_DAYS
+        # Same frequency x window arithmetic as trend_report and the adherence
+        # route (via the shared expected_dose_count), but deliberately without
+        # its medication-age cap: the prior_doses check just below already
+        # requires dose history from well before the dip window, so the
+        # medication demonstrably predates it regardless of when its fact row
+        # was created (e.g. backdated dose history imported after the fact) —
+        # capping by created_at here would zero out exactly that legitimate case.
+        expected_doses = _expected_dose_count(
+            doses_per_day=doses_per_day,
+            window_start=dip_start,
+            window_end=dip_end,
+        )
         if expected_doses <= 0:
             continue
 
