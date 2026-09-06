@@ -11,8 +11,9 @@ matches the code:
 2. If a module crosses the 10-tool threshold (gains or loses group support),
    move it between the "Group Taxonomy" and "Modules Without Group Support"
    tables.
-3. If core tool constants (`UNIVERSAL_CORE_TOOL_NAMES`, etc.) change in
-   `src/butlers/daemon.py`, update the "Core Tool Groups" tables to match.
+3. If a core registration function or its dispatcher changes, collect the
+   actual registrations across role contexts and update the "Core Tool Groups"
+   tables to match. Do not recreate a daemon-level name catalog.
 
 ## Why Tool Count Matters
 
@@ -20,49 +21,64 @@ Every registered MCP tool costs tokens at discovery time and degrades model perf
 
 ## Core Daemon Tools
 
-Core tools are registered in `src/butlers/daemon.py::_register_core_tools()`. They are gated by butler type and name.
+Core tools are registered by `butlers.core_tools.register_all_core_tools()`,
+called from `src/butlers/daemon.py::_register_core_tools()`. Group decorators,
+direct infrastructure registrations, and butler type/name gates together
+determine the surface.
 
-### Tool Partition
+### Registration Inventory
 
-| Tier | Constant | Condition | Count | Examples |
-|---|---|---|---:|---|
-| Universal | `UNIVERSAL_CORE_TOOL_NAMES` | All butlers | 25 | status, trigger, route.execute, state_*, schedule_*, notify, remind, correct |
-| Domain | `DOMAIN_CORE_TOOL_NAMES` | `butler_type != STAFFER` | 13 | deadline_*, event_chain_*, seasonal_period_* |
-| Messenger | `MESSENGER_CORE_TOOL_NAMES` | `butler_name == "messenger"` | 4 | delivery_preferences_*, deferred_notification_* |
-| Switchboard | *(in switchboard if-block)* | `butler_name == "switchboard"` | 5 | ingest, route_to_butler, connector.heartbeat, backfill.poll/progress |
+The dispatcher has **79** unique registrations: **71** group-decorated across
+14 groups and **8** direct registrations. The contract test derives this
+inventory by running the dispatcher for domain, Switchboard, Messenger, and
+Chronicler contexts; it is the regression guard, not a second catalog.
 
-### Core tools per butler type (without core_groups pruning)
+| Registration shape | Condition | Count | Examples |
+|---|---|---:|---|
+| Group-decorated | `core_groups` permits the group, plus any local type/name gate | 71 | state, scheduling, temporal, delegation, graph |
+| Direct | Always or owning-name registration, independent of `core_groups` | 8 | cancel_session, route.execute, Messenger preferences |
 
-- **Domain butler**: 25 universal + 13 domain = **38**
-- **Staffer (switchboard)**: 25 universal + 5 switchboard-specific = **30**
-- **Staffer (messenger)**: 25 universal + 4 messenger-specific = **29**
-- **Staffer (qa)**: 25 universal = **25**
+### Core tools per butler (all groups enabled)
+
+- **Domain butler**: **64**
+- **Chronicler**: **65** (domain surface plus its control)
+- **Staffer (switchboard)**: **41**
+- **Staffer (messenger)**: **39**
+- **Staffer (qa)**: **33**
 
 ### Core Tool Groups
 
-Universal core tools support the `core_groups` config in `[butler.runtime]`:
+Group-decorated tools respect `core_groups` from DB-backed runtime config,
+seeded by `[butler.runtime_seed]`:
 
 ```toml
-[butler.runtime]
+[butler.runtime_seed]
 core_groups = ["infra", "notifications", "module_mgmt"]
 # omit core_groups = register ALL (backward compatible)
 ```
 
 | Group | Tools | Count |
 |---|---|---:|
-| infra | status, trigger, route.execute, tick, correct | 5 |
+| infra | status, trigger, tick, correct, memory/conversation controls, shutdown, Chronicler control | 11 |
 | state | state_get, state_set, state_delete, state_list | 4 |
 | scheduling | schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs | 6 |
 | sessions | sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions | 5 |
 | notifications | notify, remind | 2 |
+| temporal | deadline_*, event_chain_*, seasonal_period_* | 13 |
 | media | get_attachment | 1 |
 | module_mgmt | module.states, module.set_enabled | 2 |
-| switchboard_routing | ingest, route_to_butler, connector.heartbeat | 3 |
+| delegation | delegate_ask, delegate_receive, delegate_answer, delegate_wake | 4 |
+| domain_events | publish/subscribe, receive, reaction tools | 6 |
+| fleet_cases | case read/write/contribution tools | 7 |
+| graph | entity_graph_walk, entity_graph_path | 2 |
+| switchboard_routing | ingest, route_to_butler, routing helpers, connector.heartbeat | 6 |
 | switchboard_backfill | backfill.poll, backfill.progress | 2 |
 
-Domain tools (deadline_*, event_chain_*, seasonal_period_*) and messenger tools
-(delivery_preferences_*, deferred_notification_*) remain gated by butler type,
-not core_groups.
+Temporal, delegation, and domain-event groups exclude staffers. Switchboard
+groups require the Switchboard name; Messenger preference tools are direct and
+require the Messenger name. `route.execute` and `cancel_session` are direct
+infrastructure registrations and remain available even when `core_groups` is
+empty.
 
 ## Module Tool Groups
 
