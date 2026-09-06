@@ -2,16 +2,14 @@
 
 ## Maintenance contract (read this first)
 
-This file is a living catalog of per-module tool/group counts — it goes
-stale whenever a module gains, removes, or regroups tools. Whenever an audit
-(or any change to `register_tools()`) finds a count here that no longer
-matches the code:
+This file records group and registration semantics, not authoritative module
+counts. An audit derives each butler's actual core and module counts from its
+registration behavior and effective configuration. Whenever an audit (or any
+change to `register_tools()`) changes that behavior:
 
-1. Update the affected row(s) in the same change — don't defer as follow-up.
-2. If a module crosses the 10-tool threshold (gains or loses group support),
-   move it between the "Group Taxonomy" and "Modules Without Group Support"
-   tables.
-3. If a core registration function or its dispatcher changes, collect the
+1. Update group names, gate semantics, and examples here in the same change —
+   don't defer as follow-up.
+2. If a core registration function or its dispatcher changes, collect the
    actual registrations across role contexts and update the "Core Tool Groups"
    tables to match. Do not recreate a daemon-level name catalog.
 
@@ -111,26 +109,27 @@ def register_tools(mcp, module, config=None):
 
 ### Group Taxonomy
 
-| Module | Groups | Total Tools |
-|---|---|---:|
-| memory | core(8), feedback(3), entity(7), preferences(2), admin(5) | 25 |
-| calendar | core(8), butler_events(4), attendees(2) | 14 |
-| relationship | contacts(17), interactions(5), relationships(8), social(10), notes(6), tracking(10), management(3), entity(4) | 63 |
-| finance | core(5), facts(5), bulk(7), subscriptions(4), bills(3), budgets(4), analytics(9), intelligence(6) | 43 |
-| education | mind_maps(12), teaching(5), mastery(4), spaced_repetition(3), diagnostics(3), curriculum(3), analytics(3) | 33 |
-| health | measurements(3), medications(4), conditions(3), symptoms(3), nutrition(3), reports(2), research(3) | 21 |
-| home_assistant | core(6), history(3), maintenance(4) | 13 |
-| approvals | actions(7), rules(6), promotions(3) | 16 |
-| switchboard | routing(5), extraction(3), backfill(5), operator(7) | 20 |
+| Module | Groups |
+|---|---|
+| memory | core, feedback, entity, preferences, admin |
+| calendar | core, butler_events, attendees |
+| relationship | contacts, interactions, relationships, social, notes, tracking, management, entity |
+| finance | core, facts, bulk, subscriptions, bills, budgets, analytics, intelligence |
+| education | mind_maps, teaching, mastery, spaced_repetition, diagnostics, curriculum, analytics |
+| health | measurements, medications, conditions, symptoms, nutrition, reports, research |
+| home_assistant | core, history, maintenance |
+| approvals | actions, rules, promotions |
+| switchboard | routing, extraction, backfill, operator |
 
 ### Ownership Principle
 
 - **Domain modules on their specialist butler** keep ALL groups (no pruning). The finance butler needs all finance groups.
 - **Cross-cutting modules** (memory, calendar, approvals, home_assistant) are where pruning matters. Each butler enables only the groups it uses.
 
-### Modules Without Group Support (<10 tools)
+### Modules Without Group Support
 
-contacts(4), email(4), general(10), travel(7), qa(3), whatsapp(2), telegram(0), spotify(0), steam(0), google_drive(0), insight_broker(1)
+contacts, email, general, travel, qa, whatsapp, telegram, spotify, steam,
+google_drive, insight_broker. Count their active registrations directly.
 
 ## Adding Group Support to a New Module
 

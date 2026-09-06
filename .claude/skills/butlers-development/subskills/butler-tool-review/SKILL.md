@@ -36,8 +36,14 @@ Comprehensive audit of the MCP tool surface across all butlers. Produces a struc
 For each butler in `roster/*/butler.toml`:
 
 1. Read butler.toml — get enabled modules and configured `groups`
-2. Count core daemon tools using the butler's type — see [references/tool-budget.md](references/tool-budget.md)
-3. Count module tools, respecting `groups` config
+2. For an actual live core inventory, query effective `runtime_config` and/or
+   list the live MCP surface, then use source registration to classify
+   group/direct gates. `runtime_seed` is first-boot input only, not evidence of
+   current groups. If live state is unavailable, report a configured
+   maximum/source inventory explicitly, never as the effective surface — see
+   [references/tool-budget.md](references/tool-budget.md) for gate semantics.
+3. Collect module registrations with the effective module `groups` config;
+   derive counts from that behavior rather than a hand-maintained table.
 4. Produce per-butler inventory table
 
 **Output format:**

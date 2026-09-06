@@ -6,8 +6,11 @@ Copy-ready dispatch prompts for the per-butler / per-module subagents used in
 **Inventory agent (per butler, Phase 1):**
 ```
 Read roster/{butler}/butler.toml. List all enabled modules with their
-configured groups. For each module, count the tools that would be
-registered given the groups config. Report as a markdown table.
+configured groups. Query effective runtime_config and/or list the live MCP
+surface before calling a core count actual; runtime_seed is first-boot input,
+not live-state evidence. If live state is unavailable, label the result a
+configured maximum/source inventory. For each module, collect the tools that
+would register with the effective groups config. Report as a markdown table.
 Core daemon tools: inspect `butlers.core_tools.register_all_core_tools()` and
 the owning registration functions. Count group-decorated and direct tools for
 the butler's type and name; use `references/tool-budget.md` as the current
