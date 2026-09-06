@@ -70,6 +70,7 @@ tests/migrations/test_memory_catalog_read_sensitivity_migration.py
 tests/migrations/test_model_catalog_complexity_tier_default_migration.py
 tests/migrations/test_model_catalog_defaults_reseed_migration.py
 tests/migrations/test_predicate_registry_migration.py
+tests/migrations/test_reclassify_health_write_sensitivity_migration.py
 tests/migrations/test_resolve_owner_triple_migration.py
 tests/migrations/test_retitle_session_episodes_migration.py
 tests/migrations/test_spotify_spoken_policy_migration.py
@@ -78,6 +79,7 @@ tests/modules/memory/test_catalog_sensitivity.py
 tests/modules/memory/test_consolidation_lifecycle.py
 tests/modules/memory/test_episode_cleanup_consolidation_aware.py
 tests/modules/memory/test_episode_provenance_deletion.py
+tests/modules/memory/test_local_read_ceiling.py
 tests/modules/test_approvals_jsonb_roundtrip.py
 tests/modules/test_approvals_retention.py
 tests/scripts/test_reconcile_whatsapp_entities.py
