@@ -179,13 +179,22 @@ mechanism; eager filtering is the conservative cross-CLI compatibility path.
   exact-head review returned NO-GO on runtime-seed, transport, wrapper, retry,
   and legacy-catalog current-truth drift. That review and CI apply only to this
   superseded head and do not transfer to its correction.
-- Current correction successor: **Pending fresh exact-head owner approval.**
+- `d3423639661a4cdd348b4831e909c165f1f9bce1`: **Not owner-approved as an
+  exact artifact.** Hosted CI run `34031392691` succeeded and the correction
+  resolved the recorded current-truth findings. It is nevertheless superseded
+  because the separately reviewed catalog-cleanup prerequisite had not yet
+  been integrated into that tree; neither its CI nor any review transfers.
+- Post-cleanup integrated successor: **Pending fresh exact-head owner approval.**
   The approval must cite the immutable PR head presented in the final review
   packet. Every artifact-specific approval, review, and CI result at or before
-  `263d9a6c211fbf0a501cda68ef22f296dc73b2c7` is explicitly superseded; none
+  `d3423639661a4cdd348b4831e909c165f1f9bce1` is explicitly superseded; none
   transfers to the successor. Any later edit likewise creates another artifact
   and invalidates exact-head evidence.
-- **Final-review prerequisite:** final exact-head review SHALL wait until the
-  separate `bu-hxirg` legacy-catalog cleanup PR merges. PR #3952 SHALL then
-  integrate the then-current `main` if required before new review or owner
-  approval is requested.
+- **Cleanup prerequisite satisfied:** `bu-hxirg` landed through PR #4048 as
+  `13d269b1ef80a5815a6ef2567b139398940196a0`. PR #3952 integrated that exact
+  `main` through merge commit
+  `364585ccf7ffef82b04b64172e5d71d8cdec1576`, whose parents are
+  `d3423639661a4cdd348b4831e909c165f1f9bce1` and
+  `13d269b1ef80a5815a6ef2567b139398940196a0`. Final review and owner approval
+  SHALL bind the later immutable PR head containing this integration and SHALL
+  be repeated if `main` or the PR head moves again.
