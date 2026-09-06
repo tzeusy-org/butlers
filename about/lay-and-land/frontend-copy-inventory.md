@@ -1798,6 +1798,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Timeline
 - No timeline entries yet.
 - Accommodations
+- Upcoming travel
 - Next departure
 - Active trips
 - Planned trips
@@ -4192,4 +4193,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3285*
+*Total strings: 3286*
