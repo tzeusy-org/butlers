@@ -16,7 +16,7 @@ Comprehensive audit of the MCP tool surface across all butlers. Produces a struc
 
 ## Support files
 
-- [references/tool-budget.md](references/tool-budget.md) — core/module tool counts and group taxonomy. Load in Phase 1 (inventory) and Phase 6 (group config review). Living catalog — carries its own maintenance contract.
+- [references/tool-budget.md](references/tool-budget.md) — core registration gates and group-review guidance. Load in Phase 1 (inventory) and Phase 6 (group config review); derive counts from live/configured behavior.
 - [references/quality-patterns.md](references/quality-patterns.md) — before/after fix examples for docstrings and error messages. Load in Phase 2 and Phase 3 when writing up specific issues or fixes.
 - [references/historical-usage-audit.md](references/historical-usage-audit.md) — DB connection details, SQL queries, and result-interpretation rules for Phase 7. Load only when running Phase 7.
 - [references/subagent-prompts.md](references/subagent-prompts.md) — copy-ready dispatch prompts for the Phase 1/2/3/7 subagents. Load when dispatching those subagents.

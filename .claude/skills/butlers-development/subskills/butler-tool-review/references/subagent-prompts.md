@@ -48,7 +48,7 @@ Connect to the butler's database using credentials from .env.dev
 Run the following queries against the {schema}.sessions table:
 
 1. Tool call frequency (last 30 days):
-   SELECT tc->>'name', tc->>'module', COUNT(*)
+   SELECT COALESCE(tc->>'name', tc->>'tool', tc->>'tool_name', tc->'call'->>'name', tc->'tool_call'->>'name', tc->'function'->>'name'), tc->>'module', COUNT(*)
    FROM {schema}.sessions, jsonb_array_elements(tool_calls) AS tc
    WHERE completed_at > now() - interval '30 days'
    GROUP BY 1, 2 ORDER BY 3 DESC;
@@ -57,7 +57,7 @@ Run the following queries against the {schema}.sessions table:
    SELECT COUNT(*), COUNT(*) FILTER (WHERE completed_at > now() - interval '30 days')
    FROM {schema}.sessions;
 
-Report the raw results. Ignore 'command_execution' and 'skill' rows
-(runtime internals). Consolidate mcp__{butler}__ and {butler}_ prefixed
-tool names with their bare equivalents.
+Report raw results. Ignore `command_execution` and `skill` rows. Resolve any
+prefixed or alias name only when it matches the derived registered inventory or
+a verified alias; otherwise retain it for investigation.
 ```

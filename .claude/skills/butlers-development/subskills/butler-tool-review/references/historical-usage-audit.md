@@ -75,8 +75,9 @@ Replace `{schema}` with the butler's schema name from `butler.toml` (e.g.
 
 - **Ignore** `command_execution` and `skill` rows — these are runtime
   internals, not MCP tools.
-- **Ignore** tool name variants with `mcp__` or `{butler}_` prefixes — these
-  are the same tools under different naming conventions. Consolidate counts.
+- Resolve prefixed or alias names against the derived registered inventory or a
+  verified alias. Do not strip prefixes blindly; retain unmatched names for
+  investigation.
 - **Zero session calls are not a removal verdict.** Check repository call sites,
   roster configuration, API, connector, and scheduler use before classifying
   a tool as removable.

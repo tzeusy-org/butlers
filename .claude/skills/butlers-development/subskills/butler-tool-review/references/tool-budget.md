@@ -80,7 +80,8 @@ empty.
 
 ## Module Tool Groups
 
-Modules with >=10 tools support the `groups` config in butler.toml:
+Use a module with >=10 derived tools as a review threshold for whether group
+configuration may be useful; it is not evidence that the module supports groups.
 
 ```toml
 [modules.memory]
