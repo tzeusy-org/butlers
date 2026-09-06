@@ -149,6 +149,18 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     assert kwargs["butler_name"] == "tg:12345"
     assert kwargs["purpose"] == "discretion"
     assert kwargs["session_id"] is None
+    # bu-hz0g0: the discretion lane never composes a layered prompt, so it
+    # passes none of record_token_usage()'s composition/resume kwargs -- the
+    # ledger columns land honestly NULL rather than a fabricated 0.
+    for composition_kwarg in (
+        "base_prompt_tokens",
+        "timezone_instruction_tokens",
+        "context_preamble_tokens",
+        "routing_instructions_tokens",
+        "memory_context_tokens",
+        "resume_outcome",
+    ):
+        assert kwargs.get(composition_kwarg) is None
 
 
 async def test_call_without_identity_falls_back_to_constructor_butler_name() -> None:

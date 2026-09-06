@@ -164,6 +164,8 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 `record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
 
+The ledger also carries a per-layer token digest of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). Both are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
+
 ## Resolution Flow in the Spawner
 
 `resolve_model_with_effective_tier(pool, butler_name, complexity)` is the catalog entry point used by the spawner. It returns a 6-tuple:

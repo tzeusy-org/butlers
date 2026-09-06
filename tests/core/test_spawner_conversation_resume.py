@@ -74,6 +74,26 @@ def _fresh_provider_session(
     }
 
 
+_LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
+# Position of resume_outcome in pool.execute(...)'s positional call args
+# (bu-hz0g0): index 0 is the SQL string itself, then catalog_entry_id,
+# butler_name, session_id, input_tokens, output_tokens, cached_input_tokens,
+# cache_creation_tokens, purpose, base_prompt_tokens,
+# timezone_instruction_tokens, context_preamble_tokens,
+# routing_instructions_tokens, memory_context_tokens, resume_outcome.
+_RESUME_OUTCOME_ARG_INDEX = 14
+
+
+def _resume_outcomes_written(mock_pool: AsyncMock) -> list[str | None]:
+    """resume_outcome values from every token_usage_ledger INSERT on mock_pool."""
+    outcomes = []
+    for call in mock_pool.execute.call_args_list:
+        args = call[0]
+        if args and isinstance(args[0], str) and _LEDGER_INSERT in args[0]:
+            outcomes.append(args[_RESUME_OUTCOME_ARG_INDEX])
+    return outcomes
+
+
 class _ResumeCapableAdapter(RuntimeAdapter):
     """Adapter that records every invoke() call's resume_session_id and
     optionally fails its first N calls."""
@@ -124,7 +144,9 @@ class _ResumeCapableAdapter(RuntimeAdapter):
             "runtime_type": DEFAULT_RUNTIME_TYPE,
             "provider_session_id": self._reported_session_id,
         }
-        return self._result_text, [], None
+        # Reported usage is required for record_token_usage()'s ledger write
+        # (and thus resume_outcome persistence) to fire at all.
+        return self._result_text, [], {"input_tokens": 5, "output_tokens": 3}
 
     async def reset(self) -> None:
         pass
@@ -187,6 +209,7 @@ class TestResumeGating:
         )
         assert len(adapter.invoke_calls) == 1
         assert adapter.invoke_calls[0]["resume_session_id"] == "resumable-session-id"
+        assert _resume_outcomes_written(mock_pool) == ["resumed"]
 
     async def test_resume_not_passed_when_trigger_source_is_not_route(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
@@ -223,6 +246,7 @@ class TestResumeGating:
         assert result.success is True
         mock_get_session.assert_not_awaited()
         assert adapter.invoke_calls[0]["resume_session_id"] is None
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_resume_not_passed_when_adapter_does_not_support_resume(
         self, tmp_path: Path
@@ -260,6 +284,7 @@ class TestResumeGating:
         assert result.success is True
         mock_get_session.assert_not_awaited()
         assert adapter.invoke_calls[0]["resume_session_id"] is None
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_resume_not_passed_when_conversation_id_is_none(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
@@ -300,6 +325,7 @@ class TestResumeGating:
         mock_get_session.assert_not_awaited()
         mock_set_session.assert_not_awaited()
         assert adapter.invoke_calls[0]["resume_session_id"] is None
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_resume_not_passed_when_handle_expired(self, tmp_path: Path) -> None:
         """resolve_resume_handle's real TTL logic rejects a stale handle."""
@@ -338,6 +364,7 @@ class TestResumeGating:
 
         assert result.success is True
         assert adapter.invoke_calls[0]["resume_session_id"] is None
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_resume_not_passed_when_runtime_type_mismatches(self, tmp_path: Path) -> None:
         """A handle minted by a different runtime_type is never resumed."""
@@ -373,6 +400,7 @@ class TestResumeGating:
 
         assert result.success is True
         assert adapter.invoke_calls[0]["resume_session_id"] is None
+        assert _resume_outcomes_written(mock_pool) == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +474,9 @@ class TestResumeFailureFallsBackToCold:
         # against the model's breaker.
         outcomes = [c.kwargs.get("outcome") for c in mock_write.call_args_list]
         assert outcomes == ["success"]
+        # The session's resume_outcome reflects that resume WAS attempted and
+        # failed, even though the transparent cold retry then won.
+        assert _resume_outcomes_written(mock_pool) == ["resume_failed_retried_cold"]
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path
@@ -508,6 +539,10 @@ class TestResumeFailureFallsBackToCold:
         # The transparent-cold-retry branch never fires for an ineligible
         # (side-effecting) failure -- the handle is left untouched.
         mock_clear.assert_not_awaited()
+        # The failed attempt never returned a usage payload (it raised before
+        # reporting tokens), so no ledger row -- and thus no resume_outcome --
+        # is ever written for this terminal failure.
+        assert _resume_outcomes_written(mock_pool) == []
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +596,8 @@ class TestResumeHandlePersistedAfterSuccess:
             provider_session_id="brand-new-session",
             provider_runtime_type=DEFAULT_RUNTIME_TYPE,
         )
+        # No handle existed to resume this turn, so resume was never attempted.
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_handle_not_persisted_when_adapter_reports_none(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
@@ -606,6 +643,7 @@ class TestResumeHandlePersistedAfterSuccess:
 
         assert result.success is True
         mock_set_session.assert_not_awaited()
+        assert _resume_outcomes_written(mock_pool) == [None]
 
     async def test_handle_not_persisted_for_non_resume_adapter(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
@@ -639,6 +677,7 @@ class TestResumeHandlePersistedAfterSuccess:
 
         assert result.success is True
         mock_set_session.assert_not_awaited()
+        assert _resume_outcomes_written(mock_pool) == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -720,3 +759,6 @@ class TestCrossRuntimeFailoverNeverCarriesHandle:
         # Fallback adapter (different runtime_type): exactly one call, no resume.
         assert len(adapter_fallback.invoke_calls) == 1
         assert adapter_fallback.invoke_calls[0]["resume_session_id"] is None
+        # resume_outcome reflects the resume failure at attempt 1, regardless
+        # of which later candidate ultimately won.
+        assert _resume_outcomes_written(mock_pool) == ["resume_failed_retried_cold"]

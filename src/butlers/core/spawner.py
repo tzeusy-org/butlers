@@ -95,11 +95,13 @@ from butlers.core.skills import read_system_prompt
 # ``butlers.core.spawner.<name>`` continue to resolve correctly.
 # ---------------------------------------------------------------------------
 from butlers.core.spawner_context import (
+    ComposedPrompt,
     _compose_system_prompt,
     _is_missing_memory_table_error,  # noqa: F401 — re-export for test patches
     _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
     _memory_context_token_budget,
     _memory_module_enabled,
+    compose_prompt_digest,
     fetch_general_timezone_instruction,
     fetch_memory_context,
     fetch_routing_instructions,
@@ -270,6 +272,30 @@ class SpawnerResult:
     session_id: uuid.UUID | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+def _composed_prompt_ledger_kwargs(digest: ComposedPrompt | None) -> dict[str, int | None]:
+    """Expand a composed-prompt digest into record_token_usage()'s per-layer kwargs.
+
+    ``None`` (no composition happened this dispatch, e.g. the guardrail
+    early-write before a resume outcome is known) maps every column to
+    ``None`` rather than a fabricated 0.
+    """
+    if digest is None:
+        return {
+            "base_prompt_tokens": None,
+            "timezone_instruction_tokens": None,
+            "context_preamble_tokens": None,
+            "routing_instructions_tokens": None,
+            "memory_context_tokens": None,
+        }
+    return {
+        "base_prompt_tokens": digest.base_prompt_tokens,
+        "timezone_instruction_tokens": digest.timezone_instruction_tokens,
+        "context_preamble_tokens": digest.context_preamble_tokens,
+        "routing_instructions_tokens": digest.routing_instructions_tokens,
+        "memory_context_tokens": digest.memory_context_tokens,
+    }
 
 
 def _append_runtime_session_query(
@@ -1252,6 +1278,13 @@ class Spawner:
         _ledger_output_tokens: int | None = None
         _ledger_cached_input_tokens: int = 0
         _ledger_cache_creation_tokens: int = 0
+        # Resume-outcome tracking (bu-hz0g0): set only when a conversational
+        # (trigger_source == "route") turn on a resume-capable adapter actually
+        # attempts a provider-native session resume. Stays None for every
+        # other dispatch -- see record_token_usage()'s resume_outcome docstring
+        # for the exact vocabulary.
+        _resume_outcome: str | None = None
+        _composed_prompt_digest: ComposedPrompt | None = None
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -1929,6 +1962,13 @@ class Spawner:
                     final_prompt,
                     token_budget=_memory_context_token_budget(self._config),
                 )
+            _composed_prompt_digest = compose_prompt_digest(
+                system_prompt,
+                memory_ctx,
+                general_timezone_instruction=general_timezone_instruction,
+                routing_instructions=routing_ctx,
+                context_preamble=context_preamble_ctx,
+            )
             system_prompt = _compose_system_prompt(
                 system_prompt,
                 memory_ctx,
@@ -2301,6 +2341,8 @@ class Spawner:
                                     usage.get("cache_creation_input_tokens") or 0
                                 ),
                                 purpose=trigger_source,
+                                resume_outcome=_resume_outcome,
+                                **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                             )
                         _attempt_exc = RuntimeError(
                             "Runtime returned no response: no result text or MCP tool calls"
@@ -2312,6 +2354,8 @@ class Spawner:
                 # ------------------------------------------------------------------
                 if _attempt_exc is None:
                     # Invocation succeeded — exit the failover loop.
+                    if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                        _resume_outcome = "resumed"
                     break
 
                 # Invocation failed: classify for failover eligibility.
@@ -2324,6 +2368,12 @@ class Spawner:
                 )
 
                 if not _failover_decision.eligible:
+                    if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                        # The resume attempt itself failed, and confirmed side
+                        # effects make it ineligible for the transparent
+                        # cold-retry below -- terminal, not a health signal
+                        # about the model.
+                        _resume_outcome = "resume_failed_terminal"
                     # Failover suppressed — emit metric and re-raise to the outer handler.
                     self._metrics.record_failover_suppressed(reason=_failover_decision.reason)
                     logger.debug(
@@ -2368,6 +2418,7 @@ class Spawner:
                 # never consume a failover slot or count against the model's
                 # circuit breaker.
                 if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
+                    _resume_outcome = "resume_failed_retried_cold"
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
                         "runtime_type=%s (%s); evicting handle and retrying cold",
@@ -3256,6 +3307,8 @@ class Spawner:
                     cached_input_tokens=_ledger_cached_input_tokens,
                     cache_creation_tokens=_ledger_cache_creation_tokens,
                     purpose=trigger_source,
+                    resume_outcome=_resume_outcome,
+                    **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
                 )
             # Emit per-call cost event onto the multiplexed fleet event bus via
             # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same
