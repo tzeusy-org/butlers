@@ -43,7 +43,14 @@ ORDER BY call_count DESC;
 
 ```sql
 SELECT
-    tc->>'name' AS tool_name,
+    COALESCE(
+        tc->>'name',
+        tc->>'tool',
+        tc->>'tool_name',
+        tc->'call'->>'name',
+        tc->'tool_call'->>'name',
+        tc->'function'->>'name'
+    ) AS tool_name,
     tc->>'module' AS module,
     COUNT(*) AS total_calls,
     MAX(completed_at) AS last_used
