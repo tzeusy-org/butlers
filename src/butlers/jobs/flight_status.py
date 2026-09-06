@@ -30,7 +30,6 @@ Until then the feed reports ``configured=false`` and never polls.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -248,7 +247,7 @@ async def _write_leg_status(pool: asyncpg.Pool, leg_id: Any, status: dict[str, A
         WHERE id = $1
         """,
         leg_id,
-        json.dumps(payload),
+        payload,
     )
 
 
@@ -278,7 +277,11 @@ async def run_flight_status_check(
 
     legs_checked = 0
     delays_detected = 0
-    last_error: str | None = None
+    # Zero selectable legs is not a silent success -- distinguish "nothing to
+    # check" from a genuine poll failure (overwritten below if the loop hits
+    # a real fetch error) so `flight_status_feed_status.last_error` never
+    # reports NULL over a pass that verified nothing.
+    last_error: str | None = "no selectable legs" if not legs else None
     notified: list[dict[str, Any]] = []
 
     try:
