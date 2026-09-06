@@ -122,6 +122,27 @@ Both targets run pytest through `scripts/pytest_gate.py` and end on a `PASS` / `
 verdict line. That line is the evidence: quote it. `UNKNOWN` means the run rendered no verdict at all
 (killed, truncated, nothing collected), and an absent failure line is not a pass.
 
+## Five-Minute Routine-Lane Target
+
+The staged performance target is five minutes for the routine unit lane and
+five minutes for the integration lane, measured independently on the reference
+CI runner. Completion requires p95 at or below five minutes across ten clean
+samples for each lane. This is a target, not a claim that current CI has met it.
+
+Improve targetability first, then condense duplicated behavior coverage, reduce
+repeated work in the slowest domains, and introduce duration enforcement only
+after stable measurements. Each reduction needs scoped before/after timing and
+an account of the public behavior or contract that still protects each removed
+case. Preserve architecture, wire, privacy, authorization, migration, retry,
+and idempotency coverage. Test counts, mocks, or similar-looking cases alone
+are not grounds for deletion. A missed target keeps the phase open with its
+limiting domains recorded in the owning Beads task.
+
+The graduated commands and planner behavior live in
+[AGENTS.md](../../AGENTS.md#test-scope-policy) and the
+[testing spec](../../openspec/specs/testing/spec.md). The performance target
+does not weaken their escalation rules or the merge queue's full-tree gate.
+
 ## Evidence Expectations
 
 When reporting completion, include the checks that actually ran. For example:
