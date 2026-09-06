@@ -5,7 +5,7 @@
 
 ## Summary
 
-Every butler is a long-running FastMCP SSE server whose tool surface is assembled from two layers: core tools (always present) and module tools (opt-in per butler). Modules implement the `Module` abstract base class and are resolved in topological dependency order. All tool registrations pass through a logging proxy that instruments each call with OpenTelemetry spans and session-attributed tool call capture. Ephemeral LLM sessions connect exclusively to their own butler's MCP endpoint via a generated config.
+Every butler is a long-running FastMCP SSE server whose tool surface is assembled from two layers: daemon-owned core tools selected by group/type/name gates plus direct infrastructure registrations, and module tools opted into per butler. Modules implement the `Module` abstract base class and are resolved in topological dependency order. All tool registrations pass through a logging proxy that instruments each call with OpenTelemetry spans and session-attributed tool call capture. Ephemeral LLM sessions connect exclusively to their own butler's MCP endpoint via a generated config.
 
 ## Motivation
 
@@ -19,37 +19,19 @@ At startup, the daemon creates the `FastMCP` instance and registers core tools i
 
 ### Core Tools
 
-Every butler registers these tools regardless of module configuration:
+The daemon owns one core registration dispatcher independent of module
+configuration. The merged-tree inventory contains 79 unique core tool
+registrations: 71 are assigned to one of 14 `core_groups`, two are universal
+direct infrastructure registrations, and six are Messenger-only direct
+registrations. The exhaustive names and their registration gates are recorded
+under [Core Tool Gating via `core_groups`](#core-tool-gating-via-core_groups).
+No single butler necessarily receives all 79: `core_groups`, type gates, and
+name gates reduce the registered set before the server starts.
 
-| Tool | Signature | Purpose |
-|------|-----------|---------|
-| `status()` | `-> ButlerStatus` | Identity, loaded modules, health, uptime. Primary health-check endpoint. |
-| `trigger(prompt, context?)` | `-> TriggerResult` | Spawn a new LLM session with the given prompt. |
-| `route.execute(envelope)` | `-> {"status": "accepted"}` | Accept a routed request from the Switchboard (see RFC 0003). |
-| `tick()` | `-> TickResult` | Internal scheduler tick (not exposed to LLM sessions). |
-| `state_get(key)` | `-> value` | Read from KV state store. |
-| `state_set(key, value)` | `-> void` | Write to KV state store. |
-| `state_delete(key)` | `-> void` | Delete from KV state store. |
-| `state_list(prefix?)` | `-> [key, ...]` | List state store keys. |
-| `schedule_list()` | `-> [Schedule, ...]` | List scheduled tasks. |
-| `schedule_create(...)` | `-> Schedule` | Create a scheduled task. |
-| `schedule_update(...)` | `-> Schedule` | Update a scheduled task. |
-| `schedule_delete(id)` | `-> void` | Delete a scheduled task. |
-| `schedule_trigger(id)` | `-> TriggerResult` | Manually trigger a scheduled task. |
-| `sessions_list(...)` | `-> [Session, ...]` | Query session history. |
-| `sessions_get(id)` | `-> Session` | Get a single session. |
-| `sessions_summary()` | `-> Summary` | Aggregate session statistics. |
-| `sessions_daily()` | `-> [DaySummary, ...]` | Per-day session counts. |
-| `top_sessions(...)` | `-> [Session, ...]` | Highest-cost sessions. |
-| `schedule_costs()` | `-> CostBreakdown` | Cost attribution per schedule. |
-| `notify(...)` | `-> DeliveryResult` | Send outbound notification via Switchboard. |
-| `remind(...)` | `-> void` | Schedule a future reminder. |
-| `get_attachment(id)` | `-> AttachmentData` | Retrieve an ingested attachment from blob storage. |
-| `memory_catalog_fetch(source_schema, source_table, source_id)` | `-> CatalogFetchResult` | Follow a catalog pointer under server-held authority through Switchboard. |
-| `module.states()` | `-> ModuleStates` | List module enabled/disabled states. |
-| `module.set_enabled(name, enabled)` | `-> void` | Toggle a module at runtime. |
-
-Core tools are wrapped with OpenTelemetry spans (`butler.tool.<name>`) and tool-call logging for session attribution.
+Core tools are wrapped with OpenTelemetry spans (`butler.tool.<name>`) and
+tool-call logging for session attribution. Direct infrastructure registrations
+retain the same canonical wrapped MCP execution path even though they bypass
+the group decorator.
 
 ### Module ABC
 
@@ -148,52 +130,57 @@ by the `core_groups` allowlist from the per-schema `runtime_config` table. When
 `core_groups` is NULL, all groups are registered (backward compatibility). When
 set, only tools belonging to the listed groups are registered on the MCP server.
 
-The known core groups are:
+The complete merged-tree group inventory is:
 
-| Group | Tools |
-|-------|-------|
-| `infra` | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch`, `conversation_reply`, `conversation_recall`, `conversation_thread_read`, `shutdown`, `chronicler_day_close_refresh` (name-gated: chronicler only) |
-| `state` | `state_get`, `state_set`, `state_delete`, `state_list` |
-| `scheduling` | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` |
-| `sessions` | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` |
-| `notifications` | `notify`, `remind` |
-| `media` | `get_attachment` |
-| `temporal` | `deadline_*`, `event_chain_*`, `seasonal_period_*` |
-| `module_mgmt` | `module.states`, `module.set_enabled` |
-| `switchboard_routing` | `ingest`, `route_to_butler`, `answer_question`, `cannot_answer`, `file_bug_report`, `connector.heartbeat` (name-gated: switchboard only) |
-| `switchboard_backfill` | `backfill.poll`, `backfill.progress` (name-gated: switchboard only) |
-| `delegation` | `delegate_ask`, `delegate_receive`, `delegate_answer`, `delegate_wake` (type-gated: non-staffer only) |
-| `domain_events` | `publish_event`, `subscribe_to_event`, `unsubscribe_from_event`, `list_my_subscriptions`, `receive_domain_event`, `report_event_reaction` (type-gated: non-staffer only) |
+| Group | Count | Tools | Additional registration gate |
+|-------|------:|-------|------------------------------|
+| `infra` | 11 | `status`, `trigger`, `tick`, `correct`, `memory_access`, `memory_catalog_fetch`, `conversation_reply`, `conversation_recall`, `conversation_thread_read`, `shutdown`, `chronicler_day_close_refresh` | `chronicler_day_close_refresh` requires `butler_name == "chronicler"`; the other ten have no type/name gate. |
+| `state` | 4 | `state_get`, `state_set`, `state_delete`, `state_list` | None. |
+| `scheduling` | 6 | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` | `schedule_trigger` and `schedule_costs` require a non-staffer; the other four do not. |
+| `sessions` | 5 | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` | All five require a non-staffer. |
+| `notifications` | 2 | `remind`, `notify` | `notify` requires a non-staffer; `remind` does not. |
+| `media` | 1 | `get_attachment` | None. |
+| `graph` | 2 | `entity_graph_walk`, `entity_graph_path` | None; both are group-gated but available to every butler type. |
+| `temporal` | 13 | `deadline_create`, `deadline_update`, `deadline_list`, `deadline_delete`, `event_chain_create`, `event_chain_update`, `event_chain_list`, `event_chain_delete`, `seasonal_period_create`, `seasonal_period_update`, `seasonal_period_list`, `seasonal_period_delete`, `seasonal_period_create_preset` | All thirteen require a non-staffer. |
+| `module_mgmt` | 2 | `module.states`, `module.set_enabled` | None. |
+| `switchboard_routing` | 6 | `ingest`, `route_to_butler`, `answer_question`, `cannot_answer`, `file_bug_report`, `connector.heartbeat` | All six require `butler_name == "switchboard"`. |
+| `switchboard_backfill` | 2 | `backfill.poll`, `backfill.progress` | Both require `butler_name == "switchboard"`. |
+| `delegation` | 4 | `delegate_ask`, `delegate_receive`, `delegate_answer`, `delegate_wake` | All four require a non-staffer. |
+| `domain_events` | 6 | `publish_event`, `subscribe_to_event`, `unsubscribe_from_event`, `list_my_subscriptions`, `receive_domain_event`, `report_event_reaction` | All six require a non-staffer. |
+| `fleet_cases` | 7 | `find_open_case`, `open_case`, `contribute_case_evidence`, `propose_case_posture`, `close_case`, `record_case_link`, `read_case` | None; all seven are group-gated but registered for every butler type, including Switchboard. Call-time forwarding and write authority remain separate handler concerns. |
 
-**Name-gated groups.** Some groups are additionally gated by butler name:
-`switchboard_routing` and `switchboard_backfill` tools are ONLY registered when
-`butler_name == "switchboard"`, regardless of `core_groups`. Similarly,
-`delivery_preferences_*` and `deferred_notification_*` tools are ONLY registered
-when `butler_name == "messenger"`; the same Messenger-only boundary applies to
-`scheduling_preferences_set` and `scheduling_preferences_get`.
-`chronicler_day_close_refresh` belongs to `infra` but is registered only when
-`butler_name == "chronicler"`. These checks prevent a domain butler from
-gaining name-bound tools merely by configuring their group.
+The eight direct registrations are outside `KNOWN_CORE_GROUPS` and therefore
+do not become selectable merely by adding a group name:
 
-**Type-gated groups.** `delegation` and `domain_events` tools are registered
-only for non-staffer butlers, regardless of `core_groups`. This preserves the
-staffer boundary even if a staffer's configuration names either group.
+| Direct registration | Count | Tools | Gate |
+|---------------------|------:|-------|------|
+| Universal infrastructure | 2 | `route.execute`, `cancel_session` | Always registered, regardless of `core_groups`, type, or name. |
+| Messenger infrastructure | 6 | `delivery_preferences_set`, `delivery_preferences_get`, `deferred_notifications_list`, `deferred_notification_cancel`, `scheduling_preferences_set`, `scheduling_preferences_get` | Registered only when `butler_name == "messenger"`, independently of `core_groups`. |
 
-**`route.execute` and `cancel_session` are ALWAYS registered** regardless of
-`core_groups` or butler type. All butlers need `route.execute` because the
-Switchboard calls it server-to-server via MCP to deliver routed requests; the
-dashboard calls `cancel_session` server-to-server to stop an in-flight runtime.
-Both are infrastructure endpoints, not LLM-facing tools. LLM-visibility
-filtering hides them from the LLM's presentation while keeping their MCP
-handlers callable.
+**Name gates.** `switchboard_routing` and `switchboard_backfill` remain inert on
+every non-Switchboard daemon even when configured. The one group-local name
+gate is `infra`'s `chronicler_day_close_refresh`. Messenger's six tools are
+direct name-gated registrations rather than a fifteenth group.
+
+**Type gates.** The complete non-staffer-only set is the five `sessions` tools,
+all thirteen `temporal` tools, all four `delegation` tools, all six
+`domain_events` tools, `notify`, `schedule_trigger`, and `schedule_costs`.
+The remaining group tools have no type gate. `fleet_cases` deliberately remains
+available on staffers because Switchboard owns its write path.
+
+**Universal direct registrations.** Every daemon needs `route.execute` for
+Switchboard-routed delivery and `cancel_session` for dashboard cancellation.
+Both remain on canonical FastMCP `tools/list` but are infrastructure-only in the
+RFC 0027 LLM-presentation inventory.
 
 **Implementation.** The daemon reads `core_groups` from the effective
 `RuntimeConfig` (resolved from the `runtime_config` DB table via
 `RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
 group-aware decorator `_core_tool(group)` replaces the prior post-registration
-prune pass. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`,
-`DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) and the
-`_tools_to_remove` pruning section are removed.
+prune pass. The `_tools_to_remove` pruning path is retired. Legacy
+`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`,
+`MESSENGER_CORE_TOOL_NAMES`, and related union constants remain only as
+contract-test compatibility catalogs; they do not drive registration gates.
 
 #### Module Tool Groups
 

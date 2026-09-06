@@ -160,11 +160,23 @@ mechanism; eager filtering is the conservative cross-CLI compatibility path.
 - `f95052bc1ae721b11fc19f1aed8ac9e58e5c318d`: **Approved by owner on
   2026-09-05.** Superseded as the approval artifact by the corrective successor
   that completes the exact current core-tool registration inventory; its
-  accepted Option B and doctrine decisions remain historical provenance.
+  accepted Option B and doctrine decisions remain historical provenance. Its
+  hosted CI run `33952958265` is also historical and non-transferable.
 - `b7ff6c2bf064742907ac14db7e6a5f8e7c4df407`: **Approved by owner.**
   Superseded as the approval artifact after live `main` added
   `conversation_recall` and `conversation_thread_read`; its accepted Option B,
   doctrine, and earlier inventory corrections remain historical provenance.
-- Live-main corrective successor: **Pending refreshed exact-head owner
+  Hosted CI run `33962391110` and the independent artifact ACCEPT applied only
+  to that head and are superseded.
+- `99ecce950314ac597802ed42fca81c7fdb04c65a`: **Not owner-approved as an
+  exact artifact.** Hosted CI run `33978679113` and the independent alignment
+  GO applied only to that head. PR #4045 subsequently added the `graph` group
+  to the live runtime-config vocabulary after the branch had already gained
+  the seven-tool `fleet_cases` group, so that review and CI are superseded and
+  non-transferable.
+- Post-PR-#4045 merged-tree successor: **Pending fresh exact-head owner
   approval.** The approval must cite the immutable PR head presented in the
-  review packet; no prior artifact approval transfers to it.
+  review packet. Every artifact-specific approval, review, and CI result at or
+  before `99ecce950314ac597802ed42fca81c7fdb04c65a` is explicitly superseded;
+  none transfers to the successor. Any later edit likewise creates another
+  artifact and invalidates exact-head evidence.

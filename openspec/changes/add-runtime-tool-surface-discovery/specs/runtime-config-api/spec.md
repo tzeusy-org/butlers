@@ -62,6 +62,7 @@ Scope: v1-mandatory
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
 - **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
+- **AND** the same validation SHALL accept `graph` and `fleet_cases`, completing parity with all fourteen registered group names
 
 #### Scenario: Empty PATCH body
 - **WHEN** a PATCH request has an empty body or no changed fields
