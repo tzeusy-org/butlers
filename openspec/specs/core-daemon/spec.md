@@ -81,22 +81,31 @@ Name-gated tools (messenger-only, switchboard-only) are gated by butler name as 
 - **THEN** deadline, event_chain, and seasonal_period tools SHALL NOT be registered
 
 ### Requirement: Config loading parses runtime_seed section
-The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL be rejected with a clear error.
+The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL NOT be rejected with a clear error; they SHALL be accepted and ignored. The dataclass is operational-only: retired `model`, `runtime_type`, `args`, and `session_timeout_s` keys inside `[butler.runtime_seed]` SHALL be rejected, while the obsolete top-level `[runtime]` section SHALL be rejected with deletion guidance.
 
 Source: RFC 0001 §Startup Phases (phase 1 — config load), Doctrine Rule #5
 Scope: v1-mandatory
 
 #### Scenario: Parse runtime_seed section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime_seed]`
-- **THEN** a `RuntimeSeedConfig` SHALL be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
+- **THEN** a `RuntimeSeedConfig` SHALL NOT be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
+- **AND** it SHALL instead contain exactly these fields: `core_groups` (`tuple[str, ...] | None`, default `None`), `catalog_read_sensitivity` (`normal | internal | confidential`, default `normal`), `max_concurrent_sessions` (`int`, default `3`), `max_queued_sessions` (`int`, default `10`), `liveness_ttl_seconds` (`int`, default `300`), `route_contract_min` (`int`, default `1`), and `route_contract_max` (`int`, default `1`)
+- **AND** `model`, `runtime_type`, `args`, and `session_timeout_s` SHALL NOT be dataclass fields and SHALL raise `ConfigError` when supplied inside `[butler.runtime_seed]`
 
 #### Scenario: Reject old [butler.runtime] section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to rename to `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to rename to `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig` or runtime selection
 
 #### Scenario: Reject old [butler.seed_configs] section
 - **WHEN** `load_config()` reads a toml with `[butler.seed_configs]`
-- **THEN** a `ConfigError` SHALL be raised with message directing the user to merge into `[butler.runtime_seed]`
+- **THEN** a `ConfigError` SHALL NOT be raised with message directing the user to merge into `[butler.runtime_seed]`; the obsolete nested section SHALL be accepted and ignored
+- **AND** the nested section SHALL NOT alter the returned `RuntimeSeedConfig`
+
+#### Scenario: Obsolete top-level [runtime] section is rejected
+- **WHEN** `load_config()` reads a toml with a top-level `[runtime]` section
+- **THEN** a `ConfigError` SHALL state that the section is no longer supported and direct the operator to delete it
+- **AND** the error SHALL NOT direct the operator to move runtime selection into `[butler.runtime_seed]`
 
 #### Scenario: Missing runtime_seed section uses defaults
 - **WHEN** `load_config()` reads a toml with no `[butler.runtime_seed]` section
@@ -226,4 +235,3 @@ after the durable callback/task path is verified.
   a new recurring/one-shot schedule
 - **AND** no user notification, briefing producer, or live configuration PATCH
   SHALL be implied by the inventory definition
-
