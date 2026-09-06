@@ -243,18 +243,6 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
 
     This is the single place that knows the column names from :data:`SUMMARY_COLUMNS`.
     """
-    # Keep records built against the pre-cache list shape fail-closed at the
-    # DTO boundary. A real query against an unsupported schema still fails
-    # before conversion because SUMMARY_COLUMNS selects these columns.
-    try:
-        cached_input_tokens = row["cached_input_tokens"]
-    except (KeyError, IndexError):
-        cached_input_tokens = None
-    try:
-        cache_creation_tokens = row["cache_creation_tokens"]
-    except (KeyError, IndexError):
-        cache_creation_tokens = None
-
     return SessionSummaryRow(
         id=row["id"],
         butler=butler,
@@ -269,8 +257,8 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
         complexity=row["complexity"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
-        cached_input_tokens=cached_input_tokens,
-        cache_creation_tokens=cache_creation_tokens,
+        cached_input_tokens=row["cached_input_tokens"],
+        cache_creation_tokens=row["cache_creation_tokens"],
         # The SQL projection is non-null, but fail closed at the read-model
         # boundary if a legacy/mock row still reaches us with NULL.
         cancelled_by_owner=row["cancelled_by_owner"] is True,
