@@ -6509,22 +6509,6 @@
       "excerpt": "Track Change Event"
     }
   ],
-  "connector-spotify/dashboard-spotify-setup/Connection Status Card": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a2d08ee4ae12",
-      "excerpt": "Connection Status Card"
-    }
-  ],
-  "connector-spotify/dashboard-spotify-setup/Spotify OAuth 2.0 PKCE Authorization Flow": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e788b29f1db9",
-      "excerpt": "Spotify OAuth 2.0 PKCE Authorization Flow"
-    }
-  ],
   "cross-butler-daily-briefing/butler-general/General Butler Schedules": [
     {
       "kind": "clause",
