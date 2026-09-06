@@ -254,6 +254,13 @@ setting:
 RESTORE_DRILL_EXECUTOR_PASSWORD_FILE=/secure/managed/path/restore-drill-executor-password
 ```
 
+Before Compose is invoked or services are stopped, the protected
+[`scripts/compose.sh`](../../scripts/compose.sh) launcher checks that this setting
+names a readable, nonempty regular file. This preflight checks file metadata;
+it does not read or print the credential. A rejected preflight leaves the stack
+untouched. The [restore-drill recovery change](../../openspec/changes/restore-drill-recovery-truthfulness/)
+tracks the surrounding recovery and rollout contract.
+
 The file is a Tier-0 deployment secret. It is created and retained outside the
 repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
