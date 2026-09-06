@@ -21,14 +21,6 @@
       "excerpt": "- **THEN** the `session_process_logs` table is created with the specified schema and index"
     }
   ],
-  "approval-abandon-recovery/dashboard-approvals/Whole-population stalled approval radar": [
-    {
-      "kind": "scenario",
-      "scenario": "Dashboard abandons an eligible stalled action",
-      "digest": "9fdef3cd89b7",
-      "excerpt": "\"Dashboard abandons an eligible stalled action\" is not in the block"
-    }
-  ],
   "approval-abandon-recovery/module-approvals/Retention Policy": [
     {
       "kind": "clause",
@@ -49,12 +41,6 @@
       "scenario": null,
       "digest": "3b1a60b66bd7",
       "excerpt": "The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `approved -> executed|abandoned`; `rejec..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Dashboard abandons a stalled approved action",
-      "digest": "4d03cd5f5f22",
-      "excerpt": "\"Dashboard abandons a stalled approved action\" is not in the block"
     }
   ],
   "beads-projection-exporter/dashboard-api/Decisions Digest Endpoint": [
@@ -113,28 +99,10 @@
       "excerpt": "The response `meta` SHALL retain `decisions_available: boolean`. Missing, stale, or unreadable exports SHALL return `..."
     },
     {
-      "kind": "scenario",
-      "scenario": "Malformed metadata is visible without degrading the whole export",
-      "digest": "165c7ea3949a",
-      "excerpt": "\"Malformed metadata is visible without degrading the whole export\" is not in the block"
-    },
-    {
       "kind": "clause",
       "scenario": "Missing structured metadata is distinct from malformed metadata",
       "digest": "35a8697968af",
       "excerpt": "- **WHEN** a readable export contains an eligible decision with no `metadata.decision` mapping"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Degraded export never reads as an all-clear",
-      "digest": "484aaec5afa3",
-      "excerpt": "\"Degraded export never reads as an all-clear\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "A stale export still reports its known age",
-      "digest": "95112efd3f4e",
-      "excerpt": "\"A stale export still reports its known age\" is not in the block"
     }
   ],
   "beads-projection-exporter/dashboard-decisions/Export As-Of Plaque": [
@@ -143,12 +111,6 @@
       "scenario": null,
       "digest": "69f6cfc81da6",
       "excerpt": "The `/decisions` page SHALL render an export-as-of plaque whenever `meta.export_as_of` is known. A recently refreshed..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Plaque persists alongside a stale-export note",
-      "digest": "bbf841ef7542",
-      "excerpt": "\"Plaque persists alongside a stale-export note\" is not in the block"
     }
   ],
   "bind-day-close-cache-timezone/dashboard-chronicles/Day-Close Cache Invalidation": [
@@ -165,12 +127,6 @@
       "scenario": null,
       "digest": "0b2063d89510",
       "excerpt": "Before detection runs, the endpoint MUST collapse cross-source duplicate rows with the SAME dedup pass the workspace ..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Butler-authored shadow copy excluded from overlap pairing",
-      "digest": "1e73b3e287f0",
-      "excerpt": "\"Butler-authored shadow copy excluded from overlap pairing\" is not in the block"
     }
   ],
   "calendar-provenance-truth/module-calendar/CalendarEvent Model": [
@@ -203,36 +159,6 @@
       "scenario": null,
       "digest": "9f949c42e8aa",
       "excerpt": "- `entity_ids` — list of entity UUIDs linked to this event via the `calendar_event_entities` junction table; populate..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Google event parsing",
-      "digest": "3bb5c17ce8b3",
-      "excerpt": "\"Google event parsing\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Authorship annotation on create",
-      "digest": "c5e1b3dce1cc",
-      "excerpt": "\"Authorship annotation on create\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Entity association on create and update",
-      "digest": "2f3c2c5a6edd",
-      "excerpt": "\"Entity association on create and update\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Explicitly clear every entity association",
-      "digest": "c23674659814",
-      "excerpt": "\"Explicitly clear every entity association\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Entity association on read",
-      "digest": "f5881853a92f",
-      "excerpt": "\"Entity association on read\" is not in the block"
     }
   ],
   "calendar-provenance-truth/module-calendar/Reversible Mutation Pre-State Capture": [
@@ -241,30 +167,6 @@
       "scenario": null,
       "digest": "c37d8781a1a5",
       "excerpt": "The calendar module SHALL capture the pre-mutation event state of every reversible user-lane mutation into the record..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Update captures the pre-mutation event state",
-      "digest": "d17c719a8842",
-      "excerpt": "\"Update captures the pre-mutation event state\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Delete captures the pre-deletion event state",
-      "digest": "54c28fce211e",
-      "excerpt": "\"Delete captures the pre-deletion event state\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Pre-state is absent for non-reversible or non-applied outcomes",
-      "digest": "66d3308a8646",
-      "excerpt": "\"Pre-state is absent for non-reversible or non-applied outcomes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Idempotent-replay path is unchanged by capture",
-      "digest": "95e0ebb2bb94",
-      "excerpt": "\"Idempotent-replay path is unchanged by capture\" is not in the block"
     }
   ],
   "canonical-dnd-generation-guard/context-bus/Write Permissions": [
@@ -273,24 +175,6 @@
       "scenario": null,
       "digest": "a3b707a77712",
       "excerpt": "The system SHALL enforce per-signal write permissions at the application level. Each signal type SHALL have a defined..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Authorized butler writes signal",
-      "digest": "6f04f283c35b",
-      "excerpt": "\"Authorized butler writes signal\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Unauthorized butler rejected",
-      "digest": "5c52818648df",
-      "excerpt": "\"Unauthorized butler rejected\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "General butler has broad write access",
-      "digest": "be91d5201f1a",
-      "excerpt": "\"General butler has broad write access\" is not in the block"
     }
   ],
   "canonical-dnd-generation-guard/database-security/Graceful Fallback Policy": [
@@ -299,18 +183,6 @@
       "scenario": null,
       "digest": "7aa2d23b4506",
       "excerpt": "SET ROLE enforcement SHALL degrade gracefully in environments where runtime roles are absent"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Missing roles in development",
-      "digest": "31bdbe2dd55b",
-      "excerpt": "\"Missing roles in development\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Enforcement in production",
-      "digest": "22447ef90134",
-      "excerpt": "\"Enforcement in production\" is not in the block"
     }
   ],
   "canonical-dnd-generation-guard/database-security/Public Schema Write Authorization Matrix": [
@@ -319,60 +191,6 @@
       "scenario": null,
       "digest": "182b248b6b98",
       "excerpt": "Butler runtime roles SHALL have write access to a specific set of public tables. The authorization matrix is maintain..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Core infrastructure table writes",
-      "digest": "3ac7d710aefa",
-      "excerpt": "\"Core infrastructure table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Identity and contacts table writes",
-      "digest": "ea2916f3ddea",
-      "excerpt": "\"Identity and contacts table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "External account registry table writes",
-      "digest": "b2840f287fef",
-      "excerpt": "\"External account registry table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "QA and healing table writes",
-      "digest": "e4fb1b1cff66",
-      "excerpt": "\"QA and healing table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Memory and domain table writes",
-      "digest": "0ed846c7f7e0",
-      "excerpt": "\"Memory and domain table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Insight pipeline table writes",
-      "digest": "f3602af262b3",
-      "excerpt": "\"Insight pipeline table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Dispatch attempt provenance table writes",
-      "digest": "103e5fd16406",
-      "excerpt": "\"Dispatch attempt provenance table writes\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Read-only public tables",
-      "digest": "0bce68d7891c",
-      "excerpt": "\"Read-only public tables\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Adding new public tables to the matrix",
-      "digest": "223612de0a3f",
-      "excerpt": "\"Adding new public tables to the matrix\" is not in the block"
     }
   ],
   "close-audit-failure-spine/dashboard-audit-log/Audit Log Read API": [
@@ -403,18 +221,6 @@
       "scenario": null,
       "digest": "f8b5d2d52a29",
       "excerpt": "The system SHALL compute a deterministic `pattern_fingerprint` for every tool invocation by hashing the canonical rep..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Same tool and args produce identical fingerprint",
-      "digest": "8d208b010736",
-      "excerpt": "\"Same tool and args produce identical fingerprint\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Different arg values produce different fingerprints",
-      "digest": "be1033c0c61b",
-      "excerpt": "\"Different arg values produce different fingerprints\" is not in the block"
     },
     {
       "kind": "clause",
@@ -527,44 +333,6 @@
       "scenario": null,
       "digest": "556ca1f8f9ea",
       "excerpt": "The API SHALL expose a read endpoint for cached `chronicler_day_close` Tier-2 prose and a re-invocation endpoint that..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Unsettled refresh target is rejected before rate-limit or dispatch",
-      "digest": "806e57093015",
-      "excerpt": "\"Unsettled refresh target is rejected before rate-limit or dispatch\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Executed empty bundle returns a distinct quiet success",
-      "digest": "fd912486b566",
-      "excerpt": "\"Executed empty bundle returns a distinct quiet success\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Unproven blank refresh result remains a write failure",
-      "digest": "1b961b41fe10",
-      "excerpt": "\"Unproven blank refresh result remains a write failure\" is not in the block"
-    }
-  ],
-  "durable-approval-delivery-intent-recovery/dashboard-approvals/Approval Verbs": [
-    {
-      "kind": "scenario",
-      "scenario": "Approve with optional edits",
-      "digest": "264430dd0c6f",
-      "excerpt": "\"Approve with optional edits\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Deny with reason",
-      "digest": "950817c612d5",
-      "excerpt": "\"Deny with reason\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Defer with bounded hours",
-      "digest": "f7fcdb75011d",
-      "excerpt": "\"Defer with bounded hours\" is not in the block"
     }
   ],
   "durable-approval-delivery-intent-recovery/module-approvals/Pending Actions Queue": [
@@ -661,44 +429,6 @@
       "excerpt": "- **AND** an `action_expired` audit event is recorded for each"
     }
   ],
-  "durable-dashboard-terminal-action-recovery/butler-switchboard/Dashboard Chat-Widget Classification Lanes": [
-    {
-      "kind": "scenario",
-      "scenario": "Lane A — data statement routes with deterministic confirm-loop context",
-      "digest": "f6f354c6af9b",
-      "excerpt": "\"Lane A — data statement routes with deterministic confirm-loop context\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Lane A — first successful route stamps sticky routed_butler",
-      "digest": "e1b736ce43e3",
-      "excerpt": "\"Lane A — first successful route stamps sticky routed_butler\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Lane B — bug/system report is filed to QA, never routed to a domain butler",
-      "digest": "7da4f281b07b",
-      "excerpt": "\"Lane B — bug/system report is filed to QA, never routed to a domain butler\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Lane exclusivity is enforced at the tool layer, not just the classification prompt",
-      "digest": "a515b79b6d35",
-      "excerpt": "\"Lane exclusivity is enforced at the tool layer, not just the classification prompt\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Unroutable dashboard message dead-letters and notifies the owner",
-      "digest": "059048e0d41a",
-      "excerpt": "\"Unroutable dashboard message dead-letters and notifies the owner\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Route acknowledgement is terminal for the dead-letter net; downstream session completion is out of scope",
-      "digest": "0a761be20abb",
-      "excerpt": "\"Route acknowledgement is terminal for the dead-letter net; downstream session completion is out of scope\" is not in the block"
-    }
-  ],
   "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/Conversation React Query Hooks": [
     {
       "kind": "clause",
@@ -717,12 +447,6 @@
       "scenario": "useConversationMessages hook",
       "digest": "06efa1041feb",
       "excerpt": "- **AND** `staleTime` is 0 (always refetch when switching conversations)"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Mutation invalidation",
-      "digest": "ce6014aa56e1",
-      "excerpt": "\"Mutation invalidation\" is not in the block"
     }
   ],
   "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/SSE Client Integration": [
@@ -797,24 +521,6 @@
       "scenario": "Stream cancellation is a real server-side stop",
       "digest": "0a333761cae2",
       "excerpt": "- **AND** the input is re-enabled"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Stop click on an already-finished turn is a benign no-op",
-      "digest": "8f7f53bef1e2",
-      "excerpt": "\"Stop click on an already-finished turn is a benign no-op\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "A failed cancel attempt is never rendered as calm",
-      "digest": "037d8ccdb2d4",
-      "excerpt": "\"A failed cancel attempt is never rendered as calm\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "A same-message ingress is still in progress",
-      "digest": "934d4570cff9",
-      "excerpt": "\"A same-message ingress is still in progress\" is not in the block"
     }
   ],
   "durable-dashboard-terminal-action-recovery/dashboard-conversations/Conversation Pydantic Response Models": [
@@ -899,134 +605,6 @@
       "scenario": "QA module MCP tool registration",
       "digest": "bf06cec9d345",
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Reactive finding buffer is volatile",
-      "digest": "14a126e0380c",
-      "excerpt": "\"Reactive finding buffer is volatile\" is not in the block"
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/staffer-qa/V1 Discovery Sources": [
-    {
-      "kind": "clause",
-      "scenario": "Log scanner source",
-      "digest": "f0cba01ffd08",
-      "excerpt": "- **AND** all filtering is tool-based (JSON parsing, regex, severity checks) — no LLM invocation"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "52223f90dc23",
-      "excerpt": "- **AND** the view is read-only (structurally enforced — no INSERT/UPDATE/DELETE), date-filtered, and created via aud..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "8ea84368008f",
-      "excerpt": "- **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session err..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "e2f8510a5094",
-      "excerpt": "- **AND** computes fingerprints using the same algorithm as log scanner findings"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "092c6a2eb242",
-      "excerpt": "- **AND** excludes rows that represent expected or controlled outcomes rather than product/runtime failures"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "b8d8d54b57e4",
-      "excerpt": "- short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = \"classification\"` (or th..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "b545d0eb4563",
-      "excerpt": "- synthetic startup-recovery rows (`orphaned: daemon restart`)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "41b6d4c3bb85",
-      "excerpt": "- spawner guardrail terminations whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "38b9a1516494",
-      "excerpt": "- **THEN** butlers relay `report_error` findings to the QA staffer via Switchboard's `route()` MCP tool, calling the ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "dc5590ed9cb3",
-      "excerpt": "- **AND** the QA staffer's `report_finding` MCP tool handler queues received findings in an in-memory buffer"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "95d8ad4e1c15",
-      "excerpt": "- **AND** the patrol cycle drains the buffer and includes those findings alongside batch sources"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "474c1b8fdb43",
-      "excerpt": "- **AND** if the buffer exceeds `max_reactive_buffer` (default: 50), oldest entries are dropped with a WARNING"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "b598bb8f4e6a",
-      "excerpt": "- **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "ce8fc8c93405",
-      "excerpt": "- **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `swit..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "f523edb68dd6",
-      "excerpt": "- **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) an..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "f8f0aa842aef",
-      "excerpt": "- **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-b..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "c35d9d283211",
-      "excerpt": "- **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_dead..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "a62a85c9f77a",
-      "excerpt": "- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, o..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "818e26c77b45",
-      "excerpt": "- **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "fe706b47f658",
-      "excerpt": "- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is rai..."
     }
   ],
   "durable-issue-condition-ledger/dashboard-api/Issues Aggregation": [
@@ -1089,28 +667,10 @@
       "excerpt": "- **AND** a receipt row SHALL exist in `education.curriculum_requests` with status `accepted`, the topic and goal, an..."
     },
     {
-      "kind": "scenario",
-      "scenario": "Receipt precedes detached work",
-      "digest": "46c08d430607",
-      "excerpt": "\"Receipt precedes detached work\" is not in the block"
-    },
-    {
       "kind": "clause",
       "scenario": "Submit request without goal",
       "digest": "0cc85e0b646a",
       "excerpt": "- **AND** no non-terminal receipt exists"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Duplicate request while one is in flight",
-      "digest": "30ef6107f1dc",
-      "excerpt": "\"Duplicate request while one is in flight\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Receipt store unavailable",
-      "digest": "e6202a2c3f84",
-      "excerpt": "\"Receipt store unavailable\" is not in the block"
     }
   ],
   "education-mind-map-lifecycle-integrity/dashboard-education-ui/Curriculum management actions": [
@@ -1165,88 +725,12 @@
       "excerpt": "- **WHEN** `mind_map_list(pool)` is called and there are three mind maps with statuses `active`, `completed`, and `ab..."
     }
   ],
-  "education-mind-map-lifecycle-integrity/module-education-teaching-flows/Staleness Detection and Auto-Abandonment": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "bd9d599451ac",
-      "excerpt": "A weekly scheduled task (`stale-flow-check`) checks all active flows. Any flow with `last_session_at` more than 30 da..."
-    }
-  ],
   "generation-fenced-codex-auth-rotation-provenance/core-spawner/Pre-Launch and Prewarm Codex Auth Synchronization": [
     {
       "kind": "prose",
       "scenario": null,
       "digest": "c5b6dadedf88",
       "excerpt": "The Codex adapter SHALL perform live Codex device-auth reconciliation before evaluating token freshness, creating its..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Reconciliation precedes a Codex subprocess",
-      "digest": "2d915afc0063",
-      "excerpt": "\"Reconciliation precedes a Codex subprocess\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Unavailable auth synchronization does not consume session time",
-      "digest": "a1ffc96b4c30",
-      "excerpt": "\"Unavailable auth synchronization does not consume session time\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Bounded auth setup is outside provider execution time",
-      "digest": "b180f4b929df",
-      "excerpt": "\"Bounded auth setup is outside provider execution time\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Existing local CLI rotation persistence remains intact",
-      "digest": "2595e829eee5",
-      "excerpt": "\"Existing local CLI rotation persistence remains intact\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Internal retries persist the final local rotation",
-      "digest": "9ba71339e01e",
-      "excerpt": "\"Internal retries persist the final local rotation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Speculative prewarm receives reconciled auth",
-      "digest": "a970bac9fafe",
-      "excerpt": "\"Speculative prewarm receives reconciled auth\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Dashboard login captures its prewarm rotation",
-      "digest": "69aa52be7adb",
-      "excerpt": "\"Dashboard login captures its prewarm rotation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Auth reconciliation does not alter failover safety",
-      "digest": "175638ebbe2b",
-      "excerpt": "\"Auth reconciliation does not alter failover safety\" is not in the block"
-    }
-  ],
-  "harden-memory-retention-schedule-recovery/memory-retention-policy/Memory maintenance jobs are module-default": [
-    {
-      "kind": "scenario",
-      "scenario": "Decay sweep runs without any toml schedule",
-      "digest": "4eb6ecde0ec8",
-      "excerpt": "\"Decay sweep runs without any toml schedule\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Module registration is idempotent across restarts",
-      "digest": "093cbc8f1e24",
-      "excerpt": "\"Module registration is idempotent across restarts\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "TOML overrides cadence, not existence",
-      "digest": "e4b3fc3638cd",
-      "excerpt": "\"TOML overrides cadence, not existence\" is not in the block"
     }
   ],
   "harden-runtime-auth-and-breaker-attention/core-credentials/Live Codex Device-Auth Reconciliation": [
@@ -1599,86 +1083,12 @@
       "excerpt": "\"Unparseable scalar reads as zero without lowering the flag\" is not in the block"
     }
   ],
-  "inference-efficiency-pack/catalog-token-limits/Hard Block on Quota Exhaustion": [
-    {
-      "kind": "scenario",
-      "scenario": "Discretion dispatcher remains hard-blocked",
-      "digest": "0c6345513bb4",
-      "excerpt": "\"Discretion dispatcher remains hard-blocked\" is not in the block"
-    }
-  ],
-  "inference-efficiency-pack/model-catalog/Model Resolution": [
-    {
-      "kind": "scenario",
-      "scenario": "Priority tie-breaking via round-robin",
-      "digest": "e8ac4f2a6976",
-      "excerpt": "\"Priority tie-breaking via round-robin\" is not in the block"
-    }
-  ],
-  "ingestion-ledger-truth-and-replay-safety/dashboard-visibility/Ingestion Timeline Action Column": [
-    {
-      "kind": "scenario",
-      "scenario": "Replay button for filtered events",
-      "digest": "545ab8acb707",
-      "excerpt": "\"Replay button for filtered events\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Replay button for replay_failed events",
-      "digest": "dcc0d7b8dd5c",
-      "excerpt": "\"Replay button for replay_failed events\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Error handling on replay",
-      "digest": "f05c85fd9482",
-      "excerpt": "\"Error handling on replay\" is not in the block"
-    }
-  ],
   "insight-broker-v2-clustering-presence/proactive-insight-engine/Context-Bus Gating of the Delivery Cycle": [
     {
       "kind": "prose",
       "scenario": null,
       "digest": "b543d24ee76a",
       "excerpt": "The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping..."
-    }
-  ],
-  "k3s-deployment-helm-chart/core-skills/AGENTS.md Read/Write Access": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "e62d745d252c",
-      "excerpt": "`read_agents_md(config_dir)` reads the AGENTS.md file, returning empty string if absent. `write_agents_md(config_dir,..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Read existing AGENTS.md",
-      "digest": "d21643ba8ad3",
-      "excerpt": "\"Read existing AGENTS.md\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Write AGENTS.md",
-      "digest": "5b50fa331cf5",
-      "excerpt": "\"Write AGENTS.md\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Append to AGENTS.md",
-      "digest": "aa76b2b84a2d",
-      "excerpt": "\"Append to AGENTS.md\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "AGENTS.md content boundary",
-      "digest": "58c6d18eea72",
-      "excerpt": "\"AGENTS.md content boundary\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "AGENTS.md references skills for workflows",
-      "digest": "8659d9ed8566",
-      "excerpt": "\"AGENTS.md references skills for workflows\" is not in the block"
     }
   ],
   "make-operator-status-readers-distinguish-unavailable/butler-secrets/One Row Template Across All Three Families": [
@@ -1707,126 +1117,6 @@
       "scenario": "Widget with no data",
       "digest": "106bedf6ecf9",
       "excerpt": "- **WHEN** `totalCostUsd` is 0 and `topButler` is null"
-    }
-  ],
-  "make-qa-patrol-status-truthful/dashboard-briefing/Attention Item Sources": [
-    {
-      "kind": "scenario",
-      "scenario": "Board-derived attention items (butler liveness)",
-      "digest": "5016ed13294a",
-      "excerpt": "\"Board-derived attention items (butler liveness)\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Audit-derived attention items",
-      "digest": "0168a952d148",
-      "excerpt": "\"Audit-derived attention items\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Approvals-derived attention item",
-      "digest": "bd659665eefd",
-      "excerpt": "\"Approvals-derived attention item\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Notification-derived attention item",
-      "digest": "ac3f5c3df757",
-      "excerpt": "\"Notification-derived attention item\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "QA-derived attention item",
-      "digest": "5102d301cd43",
-      "excerpt": "\"QA-derived attention item\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Attention item source fetch failure",
-      "digest": "2886a7bec6b1",
-      "excerpt": "\"Attention item source fetch failure\" is not in the block"
-    }
-  ],
-  "make-qa-patrol-status-truthful/dashboard-overview/Needs Attention List": [
-    {
-      "kind": "scenario",
-      "scenario": "Attention rows are derived from current issues",
-      "digest": "1798611d28dc",
-      "excerpt": "\"Attention rows are derived from current issues\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Attention rows are severity-first and stable across kinds",
-      "digest": "e3cef5cde43c",
-      "excerpt": "\"Attention rows are severity-first and stable across kinds\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "A tripped QA circuit breaker surfaces as an attention row",
-      "digest": "47749a1fae43",
-      "excerpt": "\"A tripped QA circuit breaker surfaces as an attention row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "A recent QA patrol error surfaces as an attention row",
-      "digest": "17699575ba5e",
-      "excerpt": "\"A recent QA patrol error surfaces as an attention row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Active QA investigations surface as attention",
-      "digest": "189813941905",
-      "excerpt": "\"Active QA investigations surface as attention\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Notification pressure is time-bounded",
-      "digest": "e8665c47dad5",
-      "excerpt": "\"Notification pressure is time-bounded\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "An unreachable notifications source surfaces as a degraded row",
-      "digest": "b8811e468205",
-      "excerpt": "\"An unreachable notifications source surfaces as a degraded row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "An active fleet-halt (monthly spend ceiling) surfaces as a critical row",
-      "digest": "3b7eefa1723f",
-      "excerpt": "\"An active fleet-halt (monthly spend ceiling) surfaces as a critical row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "An unreachable butler board source surfaces as a degraded row",
-      "digest": "1b395c080670",
-      "excerpt": "\"An unreachable butler board source surfaces as a degraded row\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Historical issues are summarized",
-      "digest": "7ead9ee52657",
-      "excerpt": "\"Historical issues are summarized\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Attention list handles empty, loading, and error states",
-      "digest": "113ffff809e0",
-      "excerpt": "\"Attention list handles empty, loading, and error states\" is not in the block"
-    }
-  ],
-  "make-routed-approvals-replayable/core-notify/Channel Validation": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "8c7858759587",
-      "excerpt": "Only `telegram` and `email` channels are currently supported. Unsupported channels produce an immediate error response"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Supported channel",
-      "digest": "bb9505171909",
-      "excerpt": "\"Supported channel\" is not in the block"
     }
   ],
   "make-routed-approvals-replayable/module-approvals/Defense-in-Depth at the Delivery Layer": [
@@ -1919,18 +1209,6 @@
       "scenario": "Episode grouping by tenant and butler",
       "digest": "92dc357d3c5a",
       "excerpt": "- **THEN** episodes with `consolidation_status='pending'` MUST be fetched ordered by `(tenant_id, butler, created_at,..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Artifact output names exact episode evidence",
-      "digest": "dbedd5cc0b47",
-      "excerpt": "\"Artifact output names exact episode evidence\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Invalid artifact evidence fails the group before persistence",
-      "digest": "e5c2ecc3f40b",
-      "excerpt": "\"Invalid artifact evidence fails the group before persistence\" is not in the block"
     }
   ],
   "permissions-inherited-cell-mutation/dashboard-permissions/Permissions Matrix API": [
@@ -2097,12 +1375,6 @@
       "scenario": "Unknown sender sends a Telegram message",
       "digest": "c0f7f72c8f18",
       "excerpt": "- **AND** that minting reservation MUST NOT move `relationship.entity_facts` writes into Switchboard"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Fleet activation supplies the standard owner-delivery callback",
-      "digest": "156be3c4d026",
-      "excerpt": "\"Fleet activation supplies the standard owner-delivery callback\" is not in the block"
     }
   ],
   "restore-drill-recovery-truthfulness/core-notify/Attention Ledger Reader": [
@@ -2153,12 +1425,6 @@
       "excerpt": "The `/api/system/backups` endpoint SHALL return the recency and size of the most recent database backup, plus a short..."
     },
     {
-      "kind": "scenario",
-      "scenario": "Backup endpoint returns recency",
-      "digest": "924b8e835bf0",
-      "excerpt": "\"Backup endpoint returns recency\" is not in the block"
-    },
-    {
       "kind": "clause",
       "scenario": "Unavailable backup source degrades gracefully",
       "digest": "9f9ed10b541d",
@@ -2181,12 +1447,6 @@
       "scenario": "Unavailable backup source degrades gracefully",
       "digest": "4aed365b97ac",
       "excerpt": "- **AND** the frontend renders a \"backup status unavailable\" indicator rather than an error state"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Restore-drill ledger read failure degrades only that field",
-      "digest": "70780b2f47d2",
-      "excerpt": "\"Restore-drill ledger read failure degrades only that field\" is not in the block"
     }
   ],
   "restore-drill-recovery-truthfulness/system-overview-page/Weekly Restore Drill": [
@@ -2195,24 +1455,6 @@
       "scenario": null,
       "digest": "8b2b5eecf200",
       "excerpt": "Once a week, the system SHALL attempt to actually restore the most recent backup artifact into a scratch database, ve..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Drill succeeds",
-      "digest": "a4af9032184c",
-      "excerpt": "\"Drill succeeds\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Drill fails at any stage",
-      "digest": "7d412f142e87",
-      "excerpt": "\"Drill fails at any stage\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "No backup file yet",
-      "digest": "77e23116e11d",
-      "excerpt": "\"No backup file yet\" is not in the block"
     }
   ],
   "source-grounded-education/butler-education/MANIFESTO.md Content": [
@@ -2283,44 +1525,6 @@
       "scenario": "All edges are prerequisite edges by default",
       "digest": "e2f70f6937d1",
       "excerpt": "\"All edges are prerequisite edges by default\" is not in the block"
-    }
-  ],
-  "source-grounded-education/module-education-teaching-flows/Teaching Phase — Explain, Question, Evaluate": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "bbda8c3312cb",
-      "excerpt": "While in `teaching` status, the session moves through three sub-phases for the current node: `explaining` → `question..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Session delivers explanation for current node",
-      "digest": "682319c63207",
-      "excerpt": "\"Session delivers explanation for current node\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Session asks comprehension question after explanation",
-      "digest": "c03d6862c318",
-      "excerpt": "\"Session asks comprehension question after explanation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Session evaluates user answer and gives feedback",
-      "digest": "dd0b7f9cb2f2",
-      "excerpt": "\"Session evaluates user answer and gives feedback\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Mastery updated after teaching evaluation",
-      "digest": "9d5789245b4b",
-      "excerpt": "\"Mastery updated after teaching evaluation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Flow advances to QUIZZING after teaching evaluation",
-      "digest": "10bc40a4698a",
-      "excerpt": "\"Flow advances to QUIZZING after teaching evaluation\" is not in the block"
     }
   ],
   "true-bidirectional-email-correspondence/connector-base-spec/Authentication and Token Management": [
