@@ -44,7 +44,7 @@ Source: RFC 0002 §Core Tools
 Scope: v1-mandatory
 
 #### Scenario: Add a core group
-- **WHEN** the user adds a group to core_groups from the known list (infra, state, scheduling, sessions, notifications, media, temporal, module_mgmt, switchboard_routing, switchboard_backfill)
+- **WHEN** the user adds a group to core_groups from the known list (infra, state, scheduling, sessions, notifications, media, graph, temporal, module_mgmt, switchboard_routing, switchboard_backfill, delegation, domain_events, fleet_cases)
 - **THEN** the group SHALL appear in the list and be included in the PATCH payload on save
 
 #### Scenario: Remove a core group
