@@ -1711,7 +1711,6 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHANGES_BACKEND: ${{ needs.changes.outputs.backend }}
           PLAN_MODE: ${{ needs.plan.outputs.mode }}
-          CHECK_PREFLIGHT_RESULT: ${{ needs.check-preflight.result }}
           CHECK_UNIT_1_RESULT: ${{ needs.check-unit-1.result }}
           CHECK_UNIT_2_RESULT: ${{ needs.check-unit-2.result }}
           CHECK_UNIT_3_RESULT: ${{ needs.check-unit-3.result }}
@@ -1742,8 +1741,17 @@ jobs:
           failed=0
           ran=0
           skipped=0
+          # check-preflight is deliberately excluded from this loop: it always
+          # runs and always succeeds when reached, so it is not one of the ten
+          # heavy shards gated by the scoped/full plan decision. Counting its
+          # success here as `ran=1` made every scoped-mode PR (the normal path
+          # for most backend PRs) fail with a false "heavy shards ran but the
+          # plan selected a scoped mode" error, even when every real shard
+          # correctly reported skipped. check-preflight's own success/failure
+          # is already a hard `needs:` dependency of this job, so a failed
+          # preflight fails `check` through normal GitHub Actions dependency
+          # semantics without needing to appear in this shard-consistency loop.
           for named_result in \
-            "check-preflight=$CHECK_PREFLIGHT_RESULT" \
             "check-unit-1=$CHECK_UNIT_1_RESULT" \
             "check-unit-2=$CHECK_UNIT_2_RESULT" \
             "check-unit-3=$CHECK_UNIT_3_RESULT" \
