@@ -1068,6 +1068,12 @@ async def schedule_costs(
     own cadence over an average calendar month (``_estimate_monthly_runs``).
     ``forecast_basis`` states that basis once at the envelope level, since it is
     a constant and does not vary by schedule.
+
+    A row also carries ``enabled``, the live ``scheduled_tasks.enabled`` flag.
+    ``scheduler.py`` sets this ``false`` rather than deleting a removed TOML
+    schedule, so its historical sessions remain queryable -- but a disabled
+    schedule cannot recur, and ``projected_monthly_runs`` is forced to ``0.0``
+    for it regardless of what the cron expression implies (bu-2jtfw.4).
     """
     start_at, end_exclusive = _resolve_optional_range(from_date, to_date)
     rows = await pool.fetch(
@@ -1075,6 +1081,7 @@ async def schedule_costs(
         SELECT
             st.name,
             st.cron,
+            st.enabled,
             s.model,
             COUNT(s.id)::bigint AS total_runs,
             COALESCE(SUM(s.input_tokens), 0)::bigint AS total_input_tokens,
@@ -1086,7 +1093,7 @@ async def schedule_costs(
             ON s.trigger_source = ('schedule:' || st.name)
             AND ($1::timestamptz IS NULL OR s.started_at >= $1)
             AND ($2::timestamptz IS NULL OR s.started_at < $2)
-        GROUP BY st.name, st.cron, s.model
+        GROUP BY st.name, st.cron, st.enabled, s.model
         ORDER BY st.name, s.model
         """,
         start_at,
@@ -1096,10 +1103,12 @@ async def schedule_costs(
     schedules: list[dict[str, Any]] = []
     for row in rows:
         cron = str(row["cron"])
+        enabled = bool(row["enabled"])
         schedules.append(
             {
                 "name": str(row["name"]),
                 "cron": cron,
+                "enabled": enabled,
                 "model": "" if row["model"] is None else str(row["model"]),
                 "total_runs": int(row["total_runs"]),
                 "total_input_tokens": int(row["total_input_tokens"]),
@@ -1109,8 +1118,10 @@ async def schedule_costs(
                 # Forecast input, not measured history: the cadence the cron
                 # expression itself implies over an average calendar month
                 # (bu-6jv4m.2). Consumers must keep it separate from the
-                # measured totals above.
-                "projected_monthly_runs": _estimate_monthly_runs(cron),
+                # measured totals above. A retired (disabled) schedule cannot
+                # recur, so it never gets a forecast regardless of cadence
+                # (bu-2jtfw.4) -- the caller decides how to represent that.
+                "projected_monthly_runs": _estimate_monthly_runs(cron) if enabled else 0.0,
             }
         )
 

@@ -466,16 +466,35 @@ class SpendDivergence(BaseModel):
 
 
 class SpendSummary(BaseModel):
-    """Aggregate spend summary across all butlers."""
+    """Aggregate spend summary across all butlers.
+
+    ``total_input_tokens`` is the UNCACHED input bucket only -- it always was,
+    and stays so for back-compat. ``total_cached_input_tokens`` (cache reads)
+    and ``total_cache_creation_tokens`` (cache writes) are the other two
+    ledger buckets, previously computed and then discarded (bu-2jtfw.4): a
+    model that reads mostly from cache showed as a small fraction of its true
+    token volume. ``cache_hit_rate`` is ``None`` -- never ``0.0`` -- when
+    ``total_cached_input_tokens + total_input_tokens`` is zero, since a zero
+    denominator is "no data", not "no cache hits". ``no_cache_price_models``
+    names priced models that had cached-token traffic this window but whose
+    cache reads billed at the full input rate because no confirmed cache rate
+    is configured (``pricing.core.NO_CACHE_DISCOUNT_MODELS`` or a genuine gap)
+    -- their dollar figures above are real but not cache-discounted.
+    """
 
     period: str = "today"
     total_cost_usd: float
     total_sessions: int
     total_input_tokens: int
     total_output_tokens: int
+    total_cached_input_tokens: int = 0
+    total_cache_creation_tokens: int = 0
+    cache_read_cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
     by_butler: dict[str, float] = Field(default_factory=dict)
     by_model: dict[str, float] = Field(default_factory=dict)
     unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
+    no_cache_price_models: list[str] = Field(default_factory=list)
     divergences: list[SpendDivergence] = Field(default_factory=list)
     divergence_source_error: bool = False
     historical_attribution_note: str | None = None
@@ -491,13 +510,21 @@ class SpendSummary(BaseModel):
 
 
 class DailySpend(BaseModel):
-    """Spend data for a single day."""
+    """Spend data for a single day.
+
+    See :class:`SpendSummary` for the four-bucket / ``cache_hit_rate`` contract
+    -- identical semantics, scoped to one day (bu-2jtfw.4).
+    """
 
     date: str
     cost_usd: float
     sessions: int
     input_tokens: int
     output_tokens: int
+    cached_input_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_cost_usd: float = 0.0
+    cache_hit_rate: float | None = None
     by_butler: dict[str, float] = Field(default_factory=dict)
     unpriced_models: list[UnpricedModelUsage] = Field(default_factory=list)
 
@@ -526,18 +553,27 @@ class ScheduleCost(BaseModel):
 
     ``projected_monthly_runs == 0`` means the cadence could not be established,
     not that the schedule never runs.
+
+    ``retired`` is true when the underlying ``scheduled_tasks`` row is
+    disabled -- scheduler.py disables a removed TOML schedule rather than
+    deleting it, so its measured history above remains real, but it cannot
+    recur. A retired schedule always has ``projected_monthly_runs == 0`` and
+    ``projected_monthly_usd is None`` regardless of its cron cadence, so it
+    can never occupy the head of a projected-cost ranking (bu-2jtfw.4).
     """
 
     schedule_name: str
     butler: str
     cron: str
+    retired: bool = False
     # Measured over the queried range.
     total_runs: int
     total_cost_usd: float
     avg_cost_per_run: float
     # Forecast, from the cron cadence. See butlers.core.sessions for the basis.
+    # None (never a computed number) for a retired schedule.
     projected_monthly_runs: float
-    projected_monthly_usd: float
+    projected_monthly_usd: float | None
 
 
 # ---------------------------------------------------------------------------
