@@ -454,6 +454,69 @@ def test_runtime_fact_provenance_guard_and_recent_episode_filter(memory_migrated
     asyncio.run(_assert_runtime_fact_provenance_guard(memory_migrated_db))
 
 
+async def _assert_episode_retention_class_round_trip(db_url: str) -> None:
+    """Read back explicit retention classes across insert and session upsert paths."""
+    from butlers.modules.memory.storage import store_episode
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+        tenant_id = f"retention-round-trip-{uuid.uuid4().hex}"
+        butler = "memory-retention"
+        session_id = uuid.uuid4()
+
+        episode_id = await store_episode(
+            pool,
+            "Initial retention-class episode",
+            butler,
+            engine,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            retention_class="episodic",
+        )
+        inserted = await pool.fetchrow(
+            "SELECT id, retention_class FROM episodes WHERE id = $1",
+            episode_id,
+        )
+        assert inserted is not None
+        assert dict(inserted) == {"id": episode_id, "retention_class": "episodic"}
+
+        updated_episode_id = await store_episode(
+            pool,
+            "Updated retention-class episode",
+            butler,
+            engine,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            retention_class="personal_profile",
+        )
+        updated = await pool.fetchrow(
+            "SELECT id, content, retention_class FROM episodes WHERE id = $1",
+            updated_episode_id,
+        )
+        assert updated_episode_id == episode_id
+        assert updated is not None
+        assert dict(updated) == {
+            "id": episode_id,
+            "content": "Updated retention-class episode",
+            "retention_class": "personal_profile",
+        }
+    finally:
+        await pool.close()
+
+
+def test_store_episode_round_trips_retention_class_on_insert_and_same_session_update(
+    memory_migrated_db: str,
+) -> None:
+    """Explicit episode retention classes survive INSERT and same-session UPDATE."""
+    asyncio.run(_assert_episode_retention_class_round_trip(memory_migrated_db))
+
+
 async def _assert_expected_supersession_target_guard(db_url: str) -> None:
     from butlers.modules.memory.storage import StaleSupersessionTargetError, store_fact
 
