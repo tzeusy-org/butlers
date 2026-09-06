@@ -9,7 +9,7 @@
       future verification behavior.
 - [x] 1.3 Validate this named change strictly and run the spec-overwrite, countable-task, and full
       repository guard lanes. Record any global warnings or baseline debt truthfully.
-- [ ] 1.4 Publish the exact spec head as a draft PR with `Tests: +0 ~0 -0` and terminal hosted CI
+- [x] 1.4 Publish the exact spec head as a draft PR with `Tests: +0 ~0 -0` and terminal hosted CI
       evidence.
 
 ## 2. Adoption Gates
