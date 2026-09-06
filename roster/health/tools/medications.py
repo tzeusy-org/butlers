@@ -9,7 +9,12 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
+from butlers.tools.health._helpers import (
+    HEALTH_SENSITIVITY_CONFIDENTIAL,
+    _get_owner_entity_id,
+    _normalize_end_date,
+    _row_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,7 @@ async def medication_add(
             scope="health",
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
@@ -184,6 +190,7 @@ async def medication_update(
             scope="health",
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
@@ -351,6 +358,7 @@ async def medication_log_dose(
             entity_id=owner_entity_id,
             valid_at=valid_at,
             metadata=metadata,
+            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
         )
     )["id"]
 
