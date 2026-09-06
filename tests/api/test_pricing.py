@@ -358,3 +358,51 @@ class TestPricingDependency:
         assert cfg.estimate_cost(
             "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=256_000
         ) == pytest.approx(6.0)
+
+    def test_repo_default_ollama_models_are_billed_as_local(self):
+        # A known zero marginal cost must never be confused with a metered
+        # model missing a price entry (bu-2jtfw.4).
+        cfg = load_pricing()
+        for model_id in (
+            "ollama/qwen2.5-coder:7b",
+            "ollama/llama3.3:latest",
+            "ollama/deepseek-r1:32b",
+            "ollama/qwen3.5:9b",
+        ):
+            assert cfg.billing_class_for(model_id) == "local"
+
+    def test_repo_default_metered_catalog_models_confirm_cache_price_or_allowlist(self):
+        """Every metered model referenced by model_catalog_defaults.toml must
+        either declare a confirmed ``cached_input_price_per_token`` or appear
+        in :data:`NO_CACHE_DISCOUNT_MODELS` -- fail closed, so a newly added
+        catalog entry cannot silently fall back to full-price cache reads
+        without a reviewed, explicit decision (bu-2jtfw.4).
+
+        A catalog entry entirely absent from pricing.toml is a distinct,
+        already-honest gap (it surfaces via the existing unpriced-model path)
+        and is out of scope for this guard.
+        """
+        import tomllib
+        from pathlib import Path
+
+        from butlers.core.pricing import NO_CACHE_DISCOUNT_MODELS
+
+        catalog_path = Path(__file__).resolve().parents[2] / "model_catalog_defaults.toml"
+        with catalog_path.open("rb") as f:
+            catalog = tomllib.load(f)
+
+        cfg = load_pricing()
+        unresolved = []
+        for entry in catalog["models"]:
+            model_id = entry["model_id"]
+            if cfg.get_model_pricing(model_id) is None:
+                continue
+            if cfg.billing_class_for(model_id) != "metered":
+                continue
+            if (
+                not cfg.has_cached_input_price(model_id)
+                and model_id not in NO_CACHE_DISCOUNT_MODELS
+            ):
+                unresolved.append(model_id)
+
+        assert unresolved == []
