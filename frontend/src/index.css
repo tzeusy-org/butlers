@@ -363,12 +363,48 @@
   --space-10:  2.5rem;
   --space-11:  2.75rem;
   --space-12:  3rem;
+
+  /* ---------------------------------------------------------------------------
+   * Page gutter ramp (bu-8cdl1.13, Viewport and Modality Contract)
+   *
+   * Single source of truth for the Shell main region's edge padding, ramped
+   * across the three canonical device bands from
+   * openspec/specs/dashboard-design-language/spec.md: phone <768px (default,
+   * below this block's media queries), tablet 768-1023px (Tailwind `md`),
+   * desktop >=1024px (Tailwind `lg`). Paired with the safe-area tokens below
+   * so notch/home-indicator insets stack with the gutter rather than being
+   * clipped under it.
+   * ---------------------------------------------------------------------------*/
+  --page-gutter-x: var(--space-4);
+  --page-gutter-y: var(--space-4);
+  --safe-area-top:    env(safe-area-inset-top, 0px);
+  --safe-area-right:  env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left:   env(safe-area-inset-left, 0px);
+}
+
+@media (min-width: 768px) {
+  :root {
+    --page-gutter-x: var(--space-6);
+    --page-gutter-y: var(--space-6);
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --page-gutter-x: var(--space-8);
+    --page-gutter-y: var(--space-6);
+  }
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  /* dvh (bu-8cdl1.13): 100vh on mobile browsers is the viewport height with
+   * chrome collapsed, so the page can be taller than the visible area on
+   * load and get clipped by address-bar/toolbar chrome. dvh tracks the
+   * actual visible viewport as that chrome shows and hides. */
+  min-height: 100dvh;
 }
 
 @theme inline {
