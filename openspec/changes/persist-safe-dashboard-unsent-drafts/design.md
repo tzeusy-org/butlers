@@ -42,22 +42,23 @@ type DraftRecordV1 = {
   context: DraftContext;
   fields?: Record<string, string | number | boolean | string[] | null>;
   sourceBaseline: string | null;
+  contentRevision?: string;
   storeEpoch: number;
-  revision: number;
+  writeRevision: number;
   updatedAt: number;
   expiresAt?: number;
   deletedAt?: number;
-  deletionReason?: "empty" | "submitted" | "discarded" | "expired" | "invalid";
+  deletionReason?: "empty" | "submitted" | "discarded" | "expired" | "invalid" | "auth_reset";
 };
 ```
 
-`updatedAt`, `expiresAt`, `deletedAt` are UTC epoch milliseconds for expiry and disclosure only; they do not order writes. The ordering token is `(storeEpoch, revision)`. Live records contain the complete eligible field bundle; tombstones contain no `fields`, base snapshot, target label, chat text, or other owner content. A non-empty serialized live record is capped at 64 KiB.
+`updatedAt`, `expiresAt`, `deletedAt` are UTC epoch milliseconds for expiry and disclosure only; they do not order writes. The mutable stale-writer fence is `(storeEpoch, writeRevision)`. Every distinct in-memory field bundle receives a new random UUID `contentRevision`, and a successful ordinary write stores that caller-supplied identity unchanged. It stays unchanged when compaction rewrites only storage fencing metadata. Tombstones contain neither `contentRevision` nor `fields`, base snapshot, target label, chat text, or other owner content. A non-empty serialized live record is capped at 64 KiB.
 
 `draftKey` is `v1:<surfaceId>:<base64url-sha256(canonical-context)>`. `canonical-context` contains only Decision 3's structural identity dimensions and never a draft field bundle. Hashing also keeps an existing state-store key out of the IndexedDB primary key; the live record retains the target key only where the form already needs it.
 
-The `meta` store has one `storeEpoch` row. Every write or delete transaction reads that row and the addressed draft before it acts. A hook schedules persistence immediately after each edit. At most one transaction per hook is in flight; edits arriving during it coalesce into one latest follow-up transaction. Intentional panel/dialog close and in-app navigation wait for that queue to settle before unmount. This preserves the latest accepted revision without placing synchronous storage in the keystroke path. A browser/process crash may lose an uncommitted transaction; no web storage mechanism can prove otherwise, so restore promises apply to accepted revisions.
+The `meta` store has one `storeEpoch` row. Every write or delete transaction reads that row and the addressed draft before it acts. A hook schedules persistence immediately after each edit. At most one transaction per hook is in flight; edits arriving during it coalesce into one latest follow-up transaction. Intentional panel/dialog close and in-app navigation use the bounded Decision 5 flow before unmount. This preserves the latest accepted field bundle without placing synchronous storage in the keystroke path. A browser/process crash may lose an uncommitted transaction; no web storage mechanism can prove otherwise, so restore promises apply to committed and read-back content revisions.
 
-`chatAttempts` holds one live record per existing immutable `message_id`: submitted draft key and revision token, submitted field snapshot, butler, nullable conversation ID, attempt state, store epoch/revision, and 24-hour expiry. It uses the same conditional-write, tombstone, and epoch protocol as `drafts`; it does not create a second message identity. Separating attempts from the current live draft lets late durable completion retire the submitted attempt without deleting newer text.
+`chatAttempts` holds one live record per existing immutable `message_id`: submitted draft key and immutable `submittedContentRevision`, submitted field snapshot, butler, nullable conversation ID, attempt state, mutable store fence, and 24-hour expiry. It uses the same conditional-write, tombstone, and epoch protocol as `drafts`; `contentRevision` identifies a browser field snapshot and does not create a second message-attempt identity. Separating attempts from the current live draft lets late durable completion retire the submitted attempt without deleting newer text.
 
 ### Decision 2: Eligibility is a field-level allowlist
 
@@ -108,45 +109,51 @@ Logical identity dimensions are:
 
 Route pathname, dialog open count, mount order, component name, labels, titles, and other mutable prose never participate. A chat draft therefore survives movement between matching chat surfaces. Floating-chat page context is excluded so a restored message is paired only with the context chip visibly current at send time.
 
-### Decision 4: Persist the task bundle and clear by submitted revision
+### Decision 4: Persist the task bundle and clear by submitted content identity
 
 For an eligible multi-field form, restoring only the textarea could pair old prose with new dates, modes, or targets. Each record therefore holds the complete eligible bundle in Decision 2. Fields hidden by the current mode remain in the record so mode switching does not destroy in-progress work, but submission continues to use only fields valid for the selected mode.
 
-An empty draft, or a form reset exactly to its current initial values, transactionally replaces the observed live revision with the next tombstone. A submit attempt first flushes the current bundle and captures the accepted `(storeEpoch, revision)` as its immutable submission token. The owning mutation may clear only by a compare-and-delete transaction against that token after its existing success contract is satisfied. Validation, HTTP, application, authorization, and domain-conflict failures retain the record and visible values.
+An empty draft, or a form reset exactly to its current initial values, transactionally replaces the observed live record with the next tombstone. A submit attempt first flushes the current bundle and captures `(draftKey, contentRevision)` as its immutable submission identity. The owning mutation may clear only by a transaction that reads the authoritative current store fence and tombstones a live record whose `contentRevision` still equals the submitted identity. Validation, HTTP, application, authorization, and domain-conflict failures retain the record and visible values.
 
-The success handler also compares the current in-memory edit generation with the submitted snapshot. If the owner changed the same form after submitting, or another tab committed a newer revision, success retires only the completed submission state. It does not clear the newer in-memory bundle or stored revision. If deletion wins a race before a queued newer edit, that edit's stale compare-and-swap fails and enters the explicit conflict flow; it is never silently dropped.
+Draft persistence never blocks a valid form submission beyond 1 second. If the latest content revision cannot be committed and read back by that bound, the existing domain mutation proceeds once from the in-memory values and the UI discloses that reload recovery and later browser cleanup are unconfirmed. Domain failure keeps the in-memory bundle. Domain success follows the separate cleanup outcome below.
 
-For chat, submission allocates the existing immutable client `message_id`, flushes the submitted revision, and writes its `chatAttempts` snapshot before issuing the request. “Success” means durable acceptance of that exact `message_id`, not completion of the assistant response. A known conversation reconciles the attempt only from an exact match in its bounded loaded message/dashboard-turn read. Accepted evidence runs one transaction across `drafts`, `chatAttempts`, and `meta`: it tombstones the attempt, and tombstones the submitted draft only when that draft still has the submitted token. Newer draft text survives. Pending, retryable, rejected, cancelled, ambiguous, unavailable, and unknown evidence preserve the attempt snapshot with the existing honest UI state and no automatic resend.
+The success handler also compares the current in-memory `contentRevision` with the submitted snapshot. Every accepted edit, reset-to-live transition, or recreation receives a new content revision even when its bytes equal an older bundle. If the owner changed the same form after submitting, another tab committed a newer bundle, or deletion/auth reset was followed by recreation, success retires only the completed submission state. It does not clear the newer in-memory bundle or stored record. If deletion wins a race before a queued newer edit, that edit's stale fence fails and enters the explicit conflict flow; it is never silently dropped.
+
+Domain submission success and browser cleanup are separate outcomes. After real domain/chat success, the surface attempts the conditional tombstone for at most 1 second. If commit plus read-back is not confirmed, the domain success remains visible, duplicate submission is disabled, and the surface reports “Browser draft deletion unconfirmed” with Retry discard and Close with deletion unconfirmed. It does not roll back the real effect or claim that browser content was cleared.
+
+For chat, submission allocates the existing immutable client `message_id`, flushes the submitted content revision, and writes its `chatAttempts` snapshot before issuing the request. “Success” means durable acceptance of that exact `message_id`, not completion of the assistant response. A known conversation reconciles the attempt only from an exact match in its bounded loaded message/dashboard-turn read. Accepted evidence runs one transaction across `drafts`, `chatAttempts`, and `meta`: it tombstones the attempt, and tombstones the submitted draft only when that live draft still has `submittedContentRevision`. Compaction may change either record's mutable fence but preserves that content identity. Newer draft text survives. Pending, retryable, rejected, cancelled, ambiguous, unavailable, and unknown evidence preserve the attempt snapshot with the existing honest UI state and no automatic resend.
 
 ### Decision 5: Restore automatically when it is safe, keep dismissal explicit
 
-Matching create drafts auto-restore before first edit. Edit drafts capture `baseRevision`: an existing server `updated_at`/revision token when available, otherwise a canonical SHA-256 fingerprint of the initial eligible field bundle held only inside the local draft record. If the current source baseline matches, the draft auto-restores. If it differs, current source data renders first and the owner chooses Load draft or Discard draft; no automatic field merge occurs.
+Matching create drafts auto-restore before first edit. Edit drafts capture `sourceBaseline`: an existing server `updated_at`/revision token when available, otherwise a canonical SHA-256 fingerprint of the initial eligible field bundle held only inside the local draft record. If the current source baseline matches, the draft auto-restores. If it differs, current source data renders first and the owner chooses Load draft or Discard draft; no automatic field merge occurs.
 
 A restored surface shows one inline, visible `role="status"` message, “Draft restored”, with a keyboard-operable Discard action. It announces once per restored record revision and does not steal focus from the first editable field.
 
-Dirty eligible forms/dialogs intercept Cancel, Escape, backdrop close, close controls, and in-app route navigation. The confirmation offers:
+Dirty eligible forms/dialogs intercept Cancel, Escape, backdrop close, close controls, and in-app route navigation. When the latest `contentRevision` is already committed and read back, the confirmation offers:
 
 - **Keep editing**: close nothing and preserve focus.
-- **Keep draft and close**: close while retaining the stored record.
-- **Discard and close**: delete that record, then close.
+- **Keep draft and close**: close only after confirming the stored record still has the latest content revision.
+- **Discard and close**: close only after the ordered tombstone commits and reads back.
 
-Chat panels/widgets remain quick to dismiss because their draft restores automatically; they do not add a close confirmation. Their close path waits for the scheduled IndexedDB transaction before unmount. Browser/process termination still cannot wait for asynchronous storage and does not show a native unload prompt; only committed revisions are promised after a crash.
+If the latest form revision is not known durable, Keep draft and close first shows “Saving draft” in a visible status and waits at most 1 second for commit plus read-back. Discard and close uses the same bound for its tombstone. A confirmed operation closes with the corresponding claim. Failure or timeout leaves the form open and switches to the degraded choices in Decision 8; neither label is treated as completed before confirmation.
+
+Chat panels/widgets remain quick to dismiss when the latest content revision is already committed and read back. Otherwise their close path immediately shows “Saving draft”, waits at most 1 second, and closes only on confirmation. Failure or timeout leaves chat open with the same degraded choices as forms. Browser/process termination still cannot wait for asynchronous storage and does not show a native unload prompt; only committed revisions are promised after a crash.
 
 ### Decision 6: Serialize compare-and-swap writes and retain ordered tombstones
 
-An ordinary persistence request for either `drafts` or `chatAttempts` carries the base token last read by that hook. One IndexedDB read-write transaction reads `meta.storeEpoch` and the current key, then:
+An ordinary persistence request for either `drafts` or `chatAttempts` carries the mutable fence token last read by that hook. One IndexedDB read-write transaction reads `meta.storeEpoch` and the current key, then:
 
-1. rejects the request as stale when the epoch or revision differs;
-2. otherwise writes the complete bundle at `revision + 1` in the same epoch; and
+1. rejects the request as stale when the epoch or write revision differs;
+2. otherwise writes the complete bundle and its caller-supplied `contentRevision` at `writeRevision + 1` in the same epoch; and
 3. returns the accepted token to the hook before broadcasting a content-free invalidation on `BroadcastChannel("butlers-drafts-v1")`.
 
 Notifications are advisory. Each surface rereads IndexedDB on notification, focus, and visibility regain, so a dropped or reordered broadcast cannot produce a different durable winner. A newly opened tab reads the same committed record.
 
-If the receiving surface is unchanged since its base token, it adopts the authoritative revision. If it has local edits, it keeps them visible, suspends every ordinary/coalesced write, and offers **Use this tab** or **Load other draft**. Use this tab is an explicit override transaction that reads the current authoritative record and writes the local bundle at its next revision. Load other draft adopts the complete authoritative bundle and token. Further remote commits refresh the offered authoritative candidate without erasing the local candidate. No field-level merge occurs.
+If the receiving surface is unchanged since its mutable fence, it adopts the authoritative record. If it has local edits, it keeps them visible, suspends every ordinary/coalesced write, and offers **Use this tab** or **Load other draft**. Use this tab is an explicit override transaction that reads the current authoritative record and writes the local bundle at its next write revision with a new content revision. Load other draft adopts the complete authoritative bundle and fence. Further remote commits refresh the offered authoritative candidate without erasing the local candidate. No field-level merge occurs.
 
-Deletion is a state transition, not physical removal. Submit success uses compare-and-delete against the submitted token. Empty/reset, Discard, expiry, and invalid-record rejection likewise replace only the exact observed revision with `state: "tombstone"`, `revision + 1`, a fixed reason, and no content. A delayed write based on the deleted revision is stale regardless of transaction completion or notification order.
+Deletion is a state transition, not physical removal. Submit success reads the current mutable fence but authorizes deletion only when the live record's immutable `contentRevision` equals the submitted identity. Empty/reset, Discard, expiry, invalid-record rejection, and auth/reset cleanup replace only the exact observed fence with `state: "tombstone"`, `writeRevision + 1`, a fixed reason, and no content revision. A delayed write based on the deleted fence is stale regardless of transaction completion or notification order. Any recreation receives a new content revision, even for byte-identical values, so a late success cannot clear it.
 
-Tombstones across both content stores compact when either 256 exist or the oldest is 30 days old. One transaction over `meta`, `drafts`, and `chatAttempts` increments `storeEpoch`, rewrites every live record with the new epoch without changing its fields, revision, timestamps, or expiry, and removes the old tombstones. Any tab or queued write holding the previous epoch then fails closed even though its per-key tombstone is gone. This keeps deletion ordering permanent while bounding retained metadata.
+Tombstones across both content stores compact when either 256 exist or the oldest is 30 days old. One transaction over `meta`, `drafts`, and `chatAttempts` increments `storeEpoch`, rewrites every live record with the new epoch without changing its fields, `contentRevision`, `submittedContentRevision`, write revision, timestamps, or expiry, and removes the old tombstones. Any tab or queued write holding the previous epoch then fails closed even though its per-key tombstone is gone. A success callback uses immutable content identity, so compaction alone cannot prevent unchanged submitted content from clearing. This keeps deletion ordering permanent while bounding retained metadata.
 
 ### Decision 7: Browser storage is not an auth or secret-classification boundary
 
@@ -166,7 +173,19 @@ Existing network isolation and optional API-key middleware remain prerequisites 
 
 Every storage access, parse, validation, and serialization operation is exception-contained. A failed write keeps the current in-memory bundle. A corrupt, expired, or unsupported record never renders and is conditionally tombstoned when its key and ordering token can be read safely. If the token itself is invalid, one transaction advances the epoch, rewrites valid live records into it, and removes the invalid row; no writer minted under the earlier epoch can resurrect it.
 
-The first unavailable condition on an affected surface renders a visible `role="status"`: “Draft saving unavailable. Keep this tab open.” Repeated failures neither toast nor re-announce. A successful write followed by a successful read-back clears the disclosure. Diagnostics may carry only a fixed category (`unavailable`, `quota`, `oversize`, `corrupt`, `unsupported_version`, `expired`, `conflict`) and `surfaceId`; they carry no record, values, fragment, size, target identity, or content-derived fingerprint.
+The first denied, blocked, quota, oversize, failed, or unknown storage condition on an affected surface renders a visible `role="status"`: “Draft saving unavailable. Keep this tab open.” Repeated failures neither toast nor re-announce. A successful write followed by a successful read-back of the latest content revision clears the disclosure. Diagnostics may carry only a fixed category (`unavailable`, `blocked`, `timeout`, `quota`, `oversize`, `corrupt`, `unsupported_version`, `expired`, `conflict`) and `surfaceId`; they carry no record, values, fragment, size, target identity, or content-derived fingerprint.
+
+A storage operation is `unknown` after 1 second without a terminal transaction and read-back result. At that bound the UI attempts to abort the transaction, stops waiting, and remains responsive. It never converts timeout into saved or deleted. Known denied/quota/oversize states skip the wait and enter degraded dismissal immediately.
+
+Both form and chat degraded dismissal offer exactly three truthful choices:
+
+- **Keep editing**: remain on the current surface with the complete in-memory values.
+- **Retry saving** or **Retry discard**: start the requested operation again, remain open, and apply the same 1-second bound.
+- **Close with save unconfirmed** or **Close with deletion unconfirmed**: close immediately after explicit owner choice, while stating respectively “Latest changes may not be recoverable. A browser draft may still appear.” or “A browser draft may remain.”
+
+The normal **Keep draft and close** and **Discard and close** labels do not appear in degraded state because neither outcome is known. There is no indefinite spinner, native unload prompt, or automatic close after a late callback.
+
+Each mounted surface has a unique instance token paired with its exact `draftKey`. Close, route change, target change, and unmount retire that token before another context can mount. Storage and submit callbacks may update UI only when both token and key still match. Durable storage effects remain governed solely by transactional fences and immutable content identity: a late callback cannot set state, announce success, close, or clear a successor surface; a successor independently reads the authoritative store and receives the normal restored, degraded, or conflict presentation.
 
 ### Decision 9: Version and expiry cleanup are transactional and bounded
 
@@ -176,15 +195,17 @@ Expiry is sliding: an accepted edit sets `expiresAt = updatedAt + 24 hours`. A r
 
 ### Decision 10: Persist chat attempt identity and expose the missing new-conversation read prerequisite
 
-Before either chat surface sends, it creates the existing client `message_id` and atomically binds it to the submitted draft key, accepted revision token, text snapshot, butler, nullable conversation ID, and expiry in `chatAttempts`. It then sends that same ID in the existing request field. No draft-specific attempt ID or text comparison exists.
+Before either chat surface sends, it creates the existing client `message_id` and tries for at most 1 second to atomically bind it to the submitted draft key, immutable `submittedContentRevision`, text snapshot, butler, nullable conversation ID, and expiry in `chatAttempts`. When persistence confirms, it sends that same ID in the existing request field. When persistence fails or is unknown, the existing send still proceeds once with the same in-memory ID and content identity; the current instance retains them for outcome handling and states that reload recovery is unavailable. No draft-specific attempt ID or text comparison exists.
 
-For a known conversation ID, reload reconciliation may consume the existing bounded message/dashboard-turn response only when it contains the exact message ID. It does not page or scan unbounded history to prove absence. A `conversation_created` event proves that a new-conversation message was persisted and supplies its conversation ID. One transaction records that association, tombstones the attempt, and tombstones the `new` draft only when it still has the submitted token. It never copies submitted text into the real conversation as a fresh unsent draft, and it preserves any newer `new` revision. Pending evidence remains pending. Retryable, rejected, cancelled, ambiguous, missing, or unavailable evidence remains retained with the corresponding existing recovery presentation.
+For a known conversation ID, reload reconciliation may consume the existing bounded message/dashboard-turn response only when it contains the exact message ID. It does not page or scan unbounded history to prove absence. A `conversation_created` event proves that a new-conversation message was persisted and supplies its conversation ID. One transaction records that association, tombstones the attempt, and tombstones the `new` draft only when it still has `submittedContentRevision`. It never copies submitted text into the real conversation as a fresh unsent draft, and it preserves any newer `contentRevision`. Pending evidence remains pending. Retryable, rejected, cancelled, ambiguous, missing, or unavailable evidence remains retained with the corresponding existing recovery presentation.
 
-There is no current content-blind read endpoint that accepts `(butler, message_id)` and returns its conversation ID plus durable dashboard-turn outcome. The conversation list and message-list APIs either require a known conversation ID or an unbounded pagination scan; full-text message search is content-driven; the specified `retry-ingress` and current Stop endpoints are mutating controls and cannot be used as status reads. Therefore an attempt absent from the bounded loaded messages, including one that reloads before observing `conversation_created`, must remain visibly outcome-unknown, preserve its message ID and text snapshot, and offer no automatic resend. Complete automatic reload reconciliation is an explicit prerequisite: a separately owner-approved and implemented read-only exact-message capability. This change does not name its route, payload, authorization, or implementation and cannot become implementation-ready for the full chat outcome until that prerequisite exists.
+There is no current content-blind read endpoint that accepts `(butler, message_id)` and returns its conversation ID plus durable dashboard-turn outcome. The conversation list and message-list APIs either require a known conversation ID or an unbounded pagination scan; full-text message search is content-driven; the specified `retry-ingress` and current Stop endpoints are mutating controls and cannot be used as status reads. Therefore an attempt absent from the bounded loaded messages, including one that reloads before observing `conversation_created`, must remain visibly outcome-unknown, preserve its message ID and text snapshot, and offer no automatic resend. Complete automatic reload reconciliation is explicitly blocked by backend prerequisite `bu-z4eqza`: the separately owner-approved and implemented read-only exact-message capability. This change does not name its route, payload, authorization, or implementation and cannot become implementation-ready for the full chat outcome until that prerequisite exists.
 
 #### Separate prerequisite packet: content-blind exact-message attempt resolver
 
 **Dedupe key:** `dashboard-content-blind-message-attempt-resolver`
+
+**Tracking prerequisite:** `bu-z4eqza`
 
 **Existing seam and evidence:** Both chat clients already send an immutable client `message_id` in `CreateConversationRequest` / `SendMessageRequest`; the conversation write path persists that UUID before SSE streaming. `GET .../conversations/{conversation_id}/messages` exposes the durable message/dashboard-turn projection only after the conversation ID is known and only within a bounded page. `GET /api/conversations/messages/search` is content-driven, while `retry-ingress` and Stop are mutating controls. No current read resolves an exact owner attempt from `(butler, message_id)` alone.
 
@@ -198,7 +219,7 @@ There is no current content-blind read endpoint that accepts `(butler, message_i
 
 - **[Risk] Eligible health, relationship, chat, state, and calendar prose is sensitive even when it is not a credential.** → Keep it browser-origin-local, expire it after 24 hours, provide one-click discard, disclose the shared-profile boundary, and add no server or telemetry path.
 - **[Risk] An owner can paste a credential into an ordinary eligible field.** → State this limitation explicitly; rely on surface-purpose exclusion rather than a misleading content classifier.
-- **[Risk] IndexedDB can be unavailable, quota-limited, or delayed.** → Cap records at 64 KiB, keep one coalescing transaction queue per hook, await it before controlled unmount, and preserve in-memory input with visible degradation.
+- **[Risk] IndexedDB can be unavailable, quota-limited, blocked, or hung.** → Cap records at 64 KiB, keep one coalescing transaction queue per hook, bound controlled-unmount confirmation to 1 second, preserve in-memory input, and offer truthful degraded close choices.
 - **[Risk] Restoring an edit over changed server data could overwrite newer facts.** → Compare the captured baseline, require an explicit load choice on mismatch, and keep the normal domain conflict UI authoritative.
 - **[Risk] Two tabs can produce competing complete form states.** → Serialize conditional writes in IndexedDB, suspend ordinary writes during conflict, require explicit override or load, and never merge fields.
 - **[Risk] A stale writer can outlive tombstone retention.** → Compact tombstones only by transactionally advancing the store epoch, which permanently fences every token minted under the prior epoch.
@@ -208,9 +229,9 @@ There is no current content-blind read endpoint that accepts `(butler, message_i
 ## Migration Plan
 
 1. Land and owner-approve the separate content-blind exact-message read prerequisite, plus the active durable message/dashboard-turn projection this design consumes; otherwise keep the full chat outcome blocked.
-2. Introduce the V1 IndexedDB store/hook and its privacy, corruption, quota, expiry, conflict, revision, tombstone, epoch-compaction, and lifecycle tests without registering consumers.
-3. Register both chat surfaces under their shared conversation identity, then prove message-ID binding, new-to-created key movement, reload reconciliation, conditional durable-acceptance clear, and failure/unknown retention against existing recovery seams.
-4. Register the exact Decision 2 form/dialog allowlist in cohesive domain slices, including dirty-dismiss handling and representative source-baseline mismatch coverage.
+2. Introduce the V1 IndexedDB store/hook and its privacy, corruption, quota, expiry, conflict, content-identity, stale-writer fence, tombstone, epoch-compaction, timeout, and late-callback tests without registering consumers.
+3. Register both chat surfaces under their shared conversation identity, then prove message-ID binding, new-to-created key movement, reload reconciliation, compaction-safe conditional acceptance clear, failure/unknown retention, and bounded degraded close against existing recovery seams.
+4. Register the exact Decision 2 form/dialog allowlist in cohesive domain slices, including normal and degraded dirty-dismiss handling and representative source-baseline mismatch coverage.
 5. Add a structural allowlist/forbidden-surface gate and documentation that names eligible fields and the no-content-classification boundary.
 6. Run the focused frontend suites, lint, typecheck, knip, repository guards, and terminal hosted CI on the exact implementation head before any release.
 
@@ -224,9 +245,9 @@ Owner approval is required for this exact set of product/privacy choices:
 2. Browser-origin transactional IndexedDB, no server sync or encryption, and acceptance of same-profile/same-origin readability.
 3. No content classification: secret-bearing surfaces are forbidden, while secret-looking text in an eligible ordinary field can persist.
 4. Sliding 24-hour expiry and 64 KiB per-record limit.
-5. Automatic safe restore, one-click discard, three-way dirty-form dismissal, and visible non-blocking storage-failure disclosure.
-6. Compare-and-swap revision ordering, content-free tombstones, epoch compaction, and an explicit choice before replacing current-tab edits.
-7. Clear only the exact submitted revision on proven success; retain newer edits and failed or unknown chat attempts without adding an unsafe automatic resend.
-8. Keep the complete chat implementation blocked until a separately approved, content-blind, read-only exact-message capability can reconcile a message absent from the bounded loaded response, including a missed new-conversation identity after reload.
+5. Automatic safe restore, one-click discard, three-way dirty-form dismissal, a 1-second storage-operation bound for form/chat close and submit, valid submission continuation, and truthful degraded save/deletion choices.
+6. Compare-and-swap stale-writer fencing, separate immutable content revisions, content-free tombstones, epoch compaction, and an explicit choice before replacing current-tab edits.
+7. Clear only the exact submitted content revision on proven success, including across unrelated compaction; retain newer/reset/recreated edits and failed or unknown chat attempts without adding an unsafe automatic resend.
+8. Keep the complete chat implementation blocked on `bu-z4eqza`, whose separately approved content-blind read must reconcile a message absent from the bounded loaded response, including a missed new-conversation identity after reload.
 
 Until the owner approves the exact artifact digest or commit, `bu-itw51` remains a draft prerequisite and no implementation is ready.

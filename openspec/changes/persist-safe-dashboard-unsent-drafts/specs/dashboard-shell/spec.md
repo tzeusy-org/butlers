@@ -50,7 +50,7 @@ Scope: v1-mandatory
 
 ### Requirement: Stable Browser Draft Identity and Lifecycle
 
-Eligible drafts SHALL use versioned transactional IndexedDB records under the dashboard origin, keyed only by a stable surface identifier, operation mode, and non-content domain identifiers. Every live record or content-free tombstone SHALL carry a store epoch and per-key revision token. Draft content SHALL expire 24 hours after its last accepted edit, SHALL be replaced by an ordered tombstone when all eligible values are empty or reset to their initial values, and SHALL NOT exceed 64 KiB serialized.
+Eligible drafts SHALL use versioned transactional IndexedDB records under the dashboard origin, keyed only by a stable surface identifier, operation mode, and non-content domain identifiers. Every distinct in-memory field bundle SHALL receive an immutable random content revision that accepted persistence stores unchanged, distinct from its mutable store-epoch/write-revision stale-writer fence; compaction SHALL preserve content revision while changing the fence. Draft content SHALL expire 24 hours after its last accepted edit, SHALL be replaced by an ordered content-free tombstone when all eligible values are empty or reset to their initial values, and SHALL NOT exceed 64 KiB serialized.
 
 ID: REQ-dashboard-shell-002
 Source: dashboard-shell § Utility Infrastructure / Local settings resilience; design.md Decisions 1 and 3
@@ -71,9 +71,9 @@ Scope: v1-mandatory
 #### Scenario: Empty or reset form removes content with an ordered tombstone
 
 - **WHEN** every eligible value is empty or equals the form's current initial value
-- **THEN** one read-write transaction replaces the current live revision with the next content-free tombstone revision
+- **THEN** one read-write transaction replaces the current live fence with the next content-free tombstone fence
 - **AND** later reopening does not show a restored-draft affordance
-- **AND** a delayed writer based on the replaced revision cannot recreate the deleted content
+- **AND** a delayed writer based on the replaced fence cannot recreate the deleted content
 
 #### Scenario: Sliding expiry removes stale drafts
 
@@ -99,7 +99,7 @@ Scope: v1-mandatory
 
 ### Requirement: Draft Restore, Discard, Dismiss, and Submit Experience
 
-The dashboard SHALL make recovered state and persistence loss visible without interrupting typing. Create-form drafts whose identity matches SHALL restore automatically; edit-form drafts SHALL restore automatically only when their recorded source baseline still matches the current record. Every restored draft SHALL expose an accessible Discard action, and every dirty eligible form/dialog dismissal SHALL require an explicit keep-or-discard choice.
+The dashboard SHALL make recovered state and persistence loss visible without interrupting typing. Create-form drafts whose identity matches SHALL restore automatically; edit-form drafts SHALL restore automatically only when their recorded source baseline still matches the current record. Every restored draft SHALL expose an accessible Discard action. Every dirty eligible form/dialog dismissal SHALL require an explicit choice, and no surface SHALL claim saved or discarded content until the latest requested write or tombstone is committed and read back.
 
 ID: REQ-dashboard-shell-003
 Source: dashboard-design-language § Composure Doctrine, Interface Copy, and Interaction Affordances; th-design design-bar Recovery and Accessible defaults; design.md Decisions 4 and 5
@@ -123,20 +123,29 @@ Scope: v1-mandatory
 
 - **WHEN** the owner tries to dismiss a dirty eligible form/dialog by Cancel, Escape, backdrop interaction, close control, or route navigation
 - **THEN** the surface remains open and presents Keep editing, Keep draft and close, and Discard and close actions
-- **AND** Keep draft and close leaves the stored record intact
-- **AND** Discard and close removes only that draft before closing
+- **AND** Keep draft and close closes only after the latest content revision is committed and read back
+- **AND** Discard and close closes only after the ordered tombstone is committed and read back
+- **AND** failure or timeout switches to the degraded dismissal contract without closing
 
-#### Scenario: Successful submission clears only the submitted revision
+#### Scenario: Successful submission clears only the submitted content revision
 
-- **WHEN** the existing mutation contract proves successful submission of revision R from draft K
-- **THEN** one compare-and-delete transaction replaces K with a tombstone only when its authoritative live revision is still R
-- **AND** the in-memory values and restored-state affordance clear only when they still represent R
+- **WHEN** the existing mutation contract proves successful submission of content revision C from draft K
+- **THEN** one transaction replaces K with a tombstone only when its authoritative live content revision is still C
+- **AND** the in-memory values and restored-state affordance clear only when they still represent C in the same surface instance and context
 - **AND** no other draft key is changed
 
-#### Scenario: Late success retains newer edits
+#### Scenario: Unrelated compaction preserves successful clear identity
 
-- **WHEN** submission of revision R succeeds after the same tab or another tab has accepted revision R+N for draft K
-- **THEN** the success handler does not delete, clear, or overwrite R+N
+- **WHEN** content revision C is submitted, unrelated tombstones trigger store-epoch compaction, and C then succeeds without an intervening edit to K
+- **THEN** compaction preserves C while updating only K's mutable stale-writer fence
+- **AND** the success transaction reads the current fence and tombstones the unchanged live C
+- **AND** the submitted content does not reappear as an unsent draft
+
+#### Scenario: Late success retains newer, reset, or recreated content
+
+- **WHEN** submission of content revision C succeeds after a same-tab or cross-tab edit, reset, discard, expiry, auth reset, or recreation has changed K's live or tombstone state
+- **THEN** the success handler does not delete, clear, overwrite, or resurrect the successor state
+- **AND** byte-identical recreated content remains protected because it has a new content revision
 - **AND** only the submitted operation receives its existing success feedback
 
 #### Scenario: Failed submission retains the draft
@@ -148,13 +157,13 @@ Scope: v1-mandatory
 
 #### Scenario: Repeated restore and discard are safe
 
-- **WHEN** restore or discard handling is triggered more than once for the same record revision
+- **WHEN** restore or discard handling is triggered more than once for the same content revision and store fence
 - **THEN** values are applied at most once and deletion remains a no-op after the record is absent
 - **AND** duplicate status announcements or duplicate submissions are not produced
 
 ### Requirement: Transactional Cross-Tab Draft Ordering and Deletion
 
-Every draft write, override, submission clear, discard, expiry, invalid-record rejection, and tombstone compaction SHALL run as a single IndexedDB read-write transaction against the authoritative store epoch and per-key revision. An ordinary write SHALL succeed only when its base token matches the current live revision; deletion SHALL write the next content-free tombstone revision. A stale transaction SHALL report a conflict and SHALL NOT overwrite or resurrect the authoritative record. Tombstone compaction SHALL advance the store epoch transactionally before removing tombstones, so every writer holding the prior epoch becomes stale.
+Every draft write, override, submission clear, discard, expiry, auth reset, invalid-record rejection, and tombstone compaction SHALL run as a single IndexedDB read-write transaction against the authoritative store epoch and per-key write revision. An ordinary write SHALL succeed only when its mutable fence matches the current live fence and SHALL store the caller's immutable content revision unchanged; deletion SHALL write the next content-free tombstone fence. A stale transaction SHALL report a conflict and SHALL NOT overwrite or resurrect the authoritative record. Tombstone compaction SHALL advance the store epoch transactionally before removing tombstones while preserving every live content revision.
 
 ID: REQ-dashboard-shell-004
 Source: design.md Decision 6
@@ -162,37 +171,37 @@ Scope: v1-mandatory
 
 #### Scenario: Accepted remote revision refreshes an untouched local form
 
-- **WHEN** another tab commits a higher authoritative revision for the same key and the current tab has not changed since its last restore
-- **THEN** a cross-tab notification or the next focus/visibility reconciliation loads and applies the higher complete record
+- **WHEN** another tab commits a higher authoritative write revision for the same key and the current tab has not changed since its last restore
+- **THEN** a cross-tab notification or the next focus/visibility reconciliation loads and applies the higher complete record and its content revision
 - **AND** the updated restore status is announced once
 
 #### Scenario: Newer record conflicts with current-tab edits
 
-- **WHEN** another tab commits a higher authoritative revision for the same key after the current tab has made local edits
+- **WHEN** another tab commits a higher authoritative write revision for the same key after the current tab has made local edits
 - **THEN** the current tab keeps its visible values and shows that the draft changed in another tab
 - **AND** explicit Use this tab and Load other draft actions are offered
 - **AND** ordinary debounced writes remain suspended while the choice is pending
-- **AND** Use this tab explicitly writes over the current authoritative revision while Load other draft adopts it
+- **AND** Use this tab explicitly writes over the current authoritative record with a new content revision while Load other draft adopts it
 
 #### Scenario: Inverted write completion cannot regress storage
 
-- **WHEN** transactions based on revision R race and the transaction carrying the later user edit begins or completes in either order
-- **THEN** at most one ordinary compare-and-swap from R succeeds
+- **WHEN** transactions based on mutable fence F race and the transaction carrying the later user edit begins or completes in either order
+- **THEN** at most one ordinary compare-and-swap from F succeeds
 - **AND** the loser observes the committed revision and enters conflict instead of physically storing a lower or stale state
 - **AND** a newly opened tab reads the same authoritative winner
 
 #### Scenario: Ordered deletion defeats a delayed writer
 
-- **WHEN** submit success, Discard, expiry, or invalid-record rejection commits tombstone T after a writer captured an older live base revision
+- **WHEN** submit success, Discard, reset, expiry, auth reset, or invalid-record rejection commits tombstone T after a writer captured an older live fence
 - **THEN** the delayed ordinary writer fails its base-token comparison against T
 - **AND** no notification ordering or tab lifetime can restore the deleted content automatically
 
 #### Scenario: Tombstone compaction fences old writers
 
 - **WHEN** 256 tombstones exist or the oldest tombstone reaches 30 days
-- **THEN** one transaction increments the store epoch, carries live records into that epoch, and removes prior tombstones
+- **THEN** one transaction increments the store epoch, carries live records and their unchanged content revisions into that epoch, and removes prior tombstones
 - **AND** any delayed writer holding the prior epoch is rejected even though its per-key tombstone was compacted
-- **AND** compaction changes no live draft content or expiry
+- **AND** compaction changes no submitted-content identity, live draft content, or expiry
 
 #### Scenario: Unrelated keys do not conflict
 
@@ -236,19 +245,68 @@ Scope: v1-mandatory
 
 ### Requirement: Honest Degradation When Browser Persistence Is Unavailable
 
-Storage denial, quota exhaustion, serialization failure, or browser API unavailability SHALL never crash an eligible surface, block input, clear in-memory values, or fabricate successful persistence. The dashboard SHALL disclose loss of cross-unmount recovery once per affected surface state and SHALL avoid emitting draft content in diagnostics.
+Storage denial, blocked database access, quota exhaustion, oversize refusal, serialization failure, browser API unavailability, or an operation that does not settle within 1 second SHALL never crash an eligible surface, block input, clear in-memory values, wait indefinitely, or fabricate successful persistence or deletion. The dashboard SHALL disclose loss or uncertainty of cross-unmount recovery once per affected surface state, SHALL offer bounded truthful dismissal to both forms and chat, and SHALL prevent late callbacks from changing a successor surface or context.
 
 ID: REQ-dashboard-shell-006
 Source: dashboard-shell § Utility Infrastructure / Local settings resilience; dashboard-design-language § Composure Doctrine and Interface Copy; craft-and-care/security-and-secrets.md; design.md Decision 8
 Scope: v1-mandatory
 
-#### Scenario: Storage write fails while typing
+#### Scenario: Storage write is denied, rejected, or oversize while typing
 
-- **WHEN** browser storage throws, rejects, or runs out of quota while an eligible form is being edited
+- **WHEN** browser storage is denied, blocked, unavailable, over quota, or rejects an oversize or invalid write while an eligible surface is being edited
 - **THEN** the current mount keeps the complete in-memory values and remains usable
 - **AND** a visible `role="status"` message says "Draft saving unavailable. Keep this tab open."
 - **AND** the failure is not reported as a successful save
 - **AND** repeated failures do not produce repeated toasts or announcements
+
+#### Scenario: Pending close reaches a bounded unknown outcome
+
+- **WHEN** a form or chat close requests save or deletion and its transaction plus read-back does not settle within 1 second
+- **THEN** the surface stops waiting, remains open and responsive, and reports the requested outcome as unconfirmed
+- **AND** it attempts to abort the pending transaction without treating abort as proof of save or deletion
+- **AND** no indefinite spinner, automatic close, or normal saved/discarded label is shown
+
+#### Scenario: Degraded form dismissal stays truthful
+
+- **WHEN** the latest form content is not known durable or a requested tombstone is unconfirmed
+- **THEN** the form offers Keep editing, Retry saving or Retry discard, and Close with save unconfirmed or Close with deletion unconfirmed
+- **AND** the close-with-uncertainty action states that latest changes may not be recoverable or that a browser draft may remain
+- **AND** Keep draft and close and Discard and close are unavailable until their outcomes are committed and read back
+
+#### Scenario: Degraded chat dismissal stays truthful
+
+- **WHEN** chat close cannot confirm the latest content revision within the 1-second bound
+- **THEN** chat remains open and offers Keep editing, Retry saving, and Close with save unconfirmed
+- **AND** the close-with-uncertainty action states "Latest changes may not be recoverable. A browser draft may still appear."
+- **AND** choosing it closes without claiming that the latest text was saved or discarded
+
+#### Scenario: Degraded discard stays truthful on forms and chat
+
+- **WHEN** an eligible form or chat surface cannot confirm its requested tombstone within the 1-second bound
+- **THEN** the surface remains open and offers Keep editing, Retry discard, and Close with deletion unconfirmed
+- **AND** the close-with-uncertainty action states "A browser draft may remain."
+- **AND** no restored affordance or storage status reports Discarded before a tombstone is read back
+
+#### Scenario: Successful submit with unconfirmed draft deletion remains distinct
+
+- **WHEN** the existing domain or chat contract proves submission success but the submitted content's tombstone fails or does not settle within 1 second
+- **THEN** the surface reports the real submission success and separately reports "Browser draft deletion unconfirmed"
+- **AND** duplicate submission is disabled while Retry discard and Close with deletion unconfirmed remain available
+- **AND** no UI claims the browser draft was cleared, and closing states that a saved copy may remain
+
+#### Scenario: Unavailable draft persistence does not disable form submission
+
+- **WHEN** the owner submits a valid eligible form whose latest content revision cannot be committed and read back within 1 second
+- **THEN** the existing domain mutation proceeds once with the in-memory form values
+- **AND** the UI does not claim that reload recovery or later draft deletion is available
+- **AND** domain failure retains the current in-memory values, while domain success follows the unconfirmed-deletion scenario
+
+#### Scenario: Late callback cannot mutate a successor context
+
+- **WHEN** a storage operation or submit result settles after its surface closed, unmounted, changed target, or was replaced by another instance
+- **THEN** its UI callback is ignored unless both the captured surface-instance token and exact draft key still match
+- **AND** it cannot set values, announce success, close, or clear the successor surface
+- **AND** durable storage effects remain subject to the authoritative fence and content-revision rules
 
 #### Scenario: Storage read is unavailable
 
@@ -259,7 +317,7 @@ Scope: v1-mandatory
 #### Scenario: Later persistence recovery is honest
 
 - **WHEN** a later edit is successfully written and read back after an unavailable state
-- **THEN** the unavailable-recovery disclosure clears
+- **THEN** the unavailable-recovery disclosure clears only when that read-back contains the latest in-memory content revision
 - **AND** no earlier failed write is claimed as recovered
 
 #### Scenario: Diagnostics remain content-blind
