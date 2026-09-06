@@ -1355,10 +1355,21 @@ function ByScheduleSection({
                     {schedules.map((s) => (
                       <TableRow
                         key={`${s.butler}-${s.schedule_name}`}
-                        className="border-border/60 hover:bg-muted/30"
+                        className={`border-border/60 hover:bg-muted/30${s.retired ? " opacity-60" : ""}`}
                       >
                         <TableCell className="py-2 px-2 font-mono text-xs">
                           {s.schedule_name}
+                          {/* A retired schedule keeps its measured history but
+                              can never recur -- named so it never reads as a
+                              live future cost (bu-2jtfw.4). */}
+                          {s.retired && (
+                            <span
+                              className="ml-1.5 font-serif italic text-[10px] text-muted-foreground"
+                              data-testid={`schedule-retired-${s.butler}-${s.schedule_name}`}
+                            >
+                              retired
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="py-2 px-2">
                           <Link
@@ -1395,7 +1406,7 @@ function ByScheduleSection({
                           className="py-2 px-2 text-right tabular-nums font-medium"
                           data-testid={`schedule-projected-cost-${s.butler}-${s.schedule_name}`}
                         >
-                          {s.projected_monthly_runs > 0
+                          {s.projected_monthly_runs > 0 && s.projected_monthly_usd != null
                             ? formatCostUsd(s.projected_monthly_usd)
                             : "—"}
                         </TableCell>

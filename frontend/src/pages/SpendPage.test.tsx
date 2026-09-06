@@ -2741,6 +2741,51 @@ describe("SpendPage — By Schedule forecast honesty (bu-6jv4m.2)", () => {
       "$0.50",
     );
   });
+
+  it("marks a retired schedule and never renders it as a live forecast (bu-2jtfw.4)", async () => {
+    mockUseCostsBySchedule.mockReturnValue({
+      data: {
+        data: [
+          {
+            schedule_name: "deleted-schedule",
+            butler: "general",
+            cron: "0 8 * * *",
+            retired: true,
+            total_runs: 1,
+            total_cost_usd: 500.0,
+            avg_cost_per_run: 500.0,
+            projected_monthly_runs: 0,
+            projected_monthly_usd: null,
+          },
+        ],
+        meta: { forecast_basis: FORECAST_BASIS },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    await act(async () => {
+      renderPage();
+    });
+
+    const badge = await screen.findByTestId(
+      "schedule-retired-general-deleted-schedule",
+    );
+    expect(badge.textContent).toContain("retired");
+
+    const runs = screen.getByTestId(
+      "schedule-projected-runs-general-deleted-schedule",
+    );
+    const cost = screen.getByTestId(
+      "schedule-projected-cost-general-deleted-schedule",
+    );
+    expect(runs.textContent).toContain("—");
+    expect(cost.textContent).toContain("—");
+    // The real measured burn stays visible -- retired hides the forecast,
+    // not the history.
+    expect(screen.getByTestId("by-schedule-section").textContent).toContain(
+      "$500.00",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

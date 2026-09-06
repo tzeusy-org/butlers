@@ -316,6 +316,34 @@ describe("ButlerSpendTab — KPI strip labels and values", () => {
     // COST_SUMMARY_30D total_cost_usd = 4.80 (butler-scoped response)
     expect(strip.textContent).toContain("$4.80");
   });
+
+  it("includes cached input tokens in the 'Tokens today' in-count (bu-2jtfw.4)", () => {
+    vi.mocked(useSpendSummary).mockImplementation((period?: string) => {
+      if (period === "today") {
+        return {
+          data: {
+            data: {
+              ...COST_SUMMARY_TODAY.data,
+              total_input_tokens: 14_000,
+              total_cached_input_tokens: 6_000,
+            },
+          },
+          isLoading: false,
+          isError: false,
+        } as unknown as ReturnType<typeof useSpendSummary>;
+      }
+      return {
+        data: COST_SUMMARY_30D,
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useSpendSummary>;
+    });
+
+    renderTab();
+    const strip = screen.getByTestId("spend-kpi-strip");
+    // 14,000 uncached + 6,000 cached = 20,000 -> "20.0K in".
+    expect(strip.textContent).toContain("20.0K in");
+  });
 });
 
 // ---------------------------------------------------------------------------
