@@ -2,8 +2,9 @@
 
 - [x] 1.1 Specify the exact owner-control prerequisite, body/header limits,
   validation, mapping-specific advisory lock, one-transaction decision,
-  durable idempotency, identical no-op, bidirectional no-remap rule, aggregate
-  receipt, and content-blind failure behavior.
+  deterministic referenced-entity row locks, durable idempotency, identical
+  no-op, bidirectional no-remap rule, aggregate receipt, and content-blind
+  failure behavior.
 - [x] 1.2 Specify request-capture, URL, response/error, audit, log, telemetry,
   prompt/session, MCP, provider-read, and browser-persistence exclusions.
 - [x] 1.3 Name `bu-pb6oy` as the unresolved browser-auth prerequisite and keep
@@ -48,18 +49,31 @@
   the fixed advisory lock and prove that at most one complete non-conflicting
   mapping set commits, the loser is a content-blind `409`, and no partial or
   crossed mapping survives.
-- [ ] 4.4 API tests prove `503` when owner control is unconfigured, `401` for a
+- [ ] 4.4 Real PostgreSQL entity-lifecycle races force both orders for merge,
+  `metadata.deleted_at` tombstone, physical delete, and `entity_type` change.
+  When the entity mutation commits first, the mapping waits and returns
+  `INVALID_REFERENCE`; when mapping validation locks first, the mutation waits
+  until mapping/receipt/audit commit. Assert the actual
+  `metadata->>'merged_into'` / `metadata->>'deleted_at'` predicates, deterministic
+  UUID lock order, zero partial writes, and no false success receipt.
+- [ ] 4.5 Real PostgreSQL idempotency races force overlap before lookup/insert.
+  Same key plus the same canonical request must create one durable terminal
+  record and return identical receipt/counts to both callers. Same key plus
+  different requests must create exactly one winning terminal record; the loser
+  must return fixed `IDEMPOTENCY_CONFLICT`, create no second terminal record,
+  and perform zero mapping writes.
+- [ ] 4.6 API tests prove `503` when owner control is unconfigured, `401` for a
   missing/wrong credential, no pre-auth body/pool access, exact size/count/field
   validation, standard envelopes, aggregate-only `200/409/422/503` bodies, and
   byte-for-byte replay of the stored terminal receipt.
-- [ ] 4.5 Privacy absence-sentinel tests plant distinct synthetic sentinels in
+- [ ] 4.7 Privacy absence-sentinel tests plant distinct synthetic sentinels in
   both identifiers and assert absence from response body/headers, error details,
   generic and explicit audit rows, captured logs, rendered exception text,
   metric labels, span attributes/events/baggage, request URLs, session/prompt
   stores, browser persistence/query state, and mounted MCP/runtime tool
   registries. Assert the explicit audit field set positively so an empty-audit
   bug cannot make the absence test pass.
-- [ ] 4.6 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
+- [ ] 4.8 Run targeted API/real-PostgreSQL/frontend tests, repo guards, strict
   OpenSpec and overwrite checks, fresh independent exact-head privacy/security
   review, and terminal hosted CI. Report the implementation PR's actual test
   delta separately.

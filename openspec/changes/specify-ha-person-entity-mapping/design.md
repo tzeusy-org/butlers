@@ -134,12 +134,15 @@ Under that lock the server:
    request digest returns the stored terminal receipt without reading or writing
    mappings. The same key with a different digest returns a fixed
    `IDEMPOTENCY_CONFLICT` `409` with zero mapping writes.
-2. Resolves every distinct entity UUID in one bounded query and requires exactly
-   one live row (`merged_into IS NULL`, `deleted_at IS NULL`) with
-   `entity_type = 'person'`. Missing, tombstoned, merged, and wrong-type targets
-   are one `INVALID_REFERENCE` `422` category. Only the aggregate
-   `invalid_reference_count` is exposed; existence and type are not
-   distinguished.
+2. Selects every distinct referenced row from `public.entities` in ascending
+   UUID order with `FOR UPDATE`, without filtering invalid rows out of the lock
+   query. It retains every acquired row lock through the mapping, receipt, and
+   audit commit, then evaluates the locked rows using the actual live predicates
+   `metadata->>'merged_into' IS NULL` and
+   `metadata->>'deleted_at' IS NULL` plus `entity_type = 'person'`. Missing,
+   tombstoned, merged, and wrong-type targets are one `INVALID_REFERENCE` `422`
+   category. Only the aggregate `invalid_reference_count` is exposed; existence
+   and type are not distinguished.
 3. Reads all existing `connectors.home_assistant_persons` rows matching either
    side of the proposed batch. An exact pair is unchanged. A Home Assistant ID
    mapped to any other or null entity, or an entity UUID mapped to any other
@@ -167,6 +170,29 @@ Submitting an already-present set with a fresh key is a successful identical
 no-op: `created_count = 0`, every submitted pair contributes to
 `unchanged_count`, and no mapping row is updated. Replaying the same key and
 body returns the original receipt and counts exactly.
+
+The referenced-row locks establish the interaction with concurrent entity
+lifecycle mutations. An entity merge, metadata tombstone/delete, physical
+delete, or `entity_type` change that owns the entity row first must finish
+before the mapping query can lock and inspect it; the mapping then observes the
+committed invalid state and returns `INVALID_REFERENCE`. If the mapping
+transaction locks and validates the entity first, the entity mutation waits
+until the complete mapping/receipt/audit decision commits. The receipt proves
+the mapping was complete at that serialization point; it is not a lease against
+a separately authorized later entity lifecycle change. PostgreSQL may then
+apply that later change, including the existing foreign-key action on physical
+delete, only after the mapping decision is durable. A deadlock or aborted
+transaction produces no partial mapping or success receipt.
+
+The fixed mapping lock also serializes idempotency-key creation. Simultaneous
+same-key/same-request callers must produce exactly one durable terminal
+idempotency record; the first decision commits it and every waiter returns that
+record's identical receipt and counts. For simultaneous same-key/different-
+request callers, the first lock holder alone owns the durable terminal record.
+After it commits, every loser returns fixed `IDEMPOTENCY_CONFLICT`, creates no
+second idempotency terminal record, and performs zero mapping writes. A loser
+may emit its separately allowed content-blind refusal audit, which is not an
+idempotency terminal record.
 
 ### D4: Receipt and errors are aggregate-only
 
