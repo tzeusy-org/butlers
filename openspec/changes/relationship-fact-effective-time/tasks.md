@@ -5,6 +5,8 @@
 - [x] 1.2 Define exact columns, SQL types, constraints, bound semantics, precision vocabulary,
       normalization, compatibility, replay, correction, concurrency, approval, and reader behavior.
 - [x] 1.3 Preserve every baseline clause and scenario name in both MODIFIED requirement bodies.
+- [x] 1.4 Resolve explicit-null/omission semantics and the old/new writer index transition raised by
+      exact-head review without enabling temporal effects in this draft.
 
 ## 2. Draft verification
 
@@ -16,14 +18,21 @@
 
 ## 3. Future implementation owned by bu-h3b7t
 
-- [ ] 3.1 Add the then-free Relationship migration with nullable temporal columns, checks, and
-      occurrence-scoped active uniqueness; prove upgrade, idempotent replay, fail-closed downgrade,
-      and full chain execution against real PostgreSQL.
-- [ ] 3.2 Extend the central writer and MCP wrapper with normalization, explicit occurrence identity,
-      compare-and-swap correction, approval replay, evidence carry-forward, and atomic rollback.
-- [ ] 3.3 Add real-PostgreSQL scenarios for legacy rows, unknown/open/partial/coarse intervals,
-      invalid packets, identical replay, repeated periods, correction, concurrent correction, and
-      unchanged assertion-current read boundaries.
+- [ ] 3.1 Add a then-free expand migration with nullable temporal columns, checks, and the occurrence
+      index while retaining `uq_ef_spo_active`; prove the deployed old-writer SQL still prepares and
+      writes against that real PostgreSQL schema.
+- [ ] 3.2 Deploy a transition writer using targetless conflict handling that canonicalizes the full
+      presence/null matrix and rejects temporal intent while the legacy index exists; prove omitted
+      and explicit-null writes and approvals replay identically.
+- [ ] 3.3 After proving exact old-writer absence, add a separate then-free cutover migration that
+      removes the legacy index and enables temporal/repeated-period behavior, with the specified
+      rollback refusal once temporal data exists.
+- [ ] 3.4 Add real-PostgreSQL scenarios for the actual old/new SQL transition; legacy rows;
+      unknown/open/partial/coarse intervals; invalid packets; identical replay; correction to
+      unknown; repeated periods; and two truly concurrent CAS transactions whose loser rolls back
+      fact, evidence, coverage, approval-context, and projection effects.
+- [ ] 3.5 Preserve unchanged assertion-current read boundaries and execute the full Relationship
+      migration chain through expand and cutover without reserving revision numbers in this draft.
 
 ## 4. Separately owned follow-ups
 
