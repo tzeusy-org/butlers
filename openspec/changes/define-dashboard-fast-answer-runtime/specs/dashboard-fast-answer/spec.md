@@ -76,12 +76,16 @@ structured classification, registered Concierge reads, answer phrasing, and repl
 runtime SHALL be registered against the immutable dashboard message before catalog resolution or the
 first provider invocation, SHALL claim the existing pre-invoke fence once, and SHALL be addressable
 through Switchboard's registered `cancel_session` MCP boundary. It SHALL carry a boot-scoped owner
-instance, monotonically fenced lease generation, heartbeat, 60-second lease, and reconciliation
-deadline no later than 15 minutes after registration. The owner SHALL heartbeat at least every 20
-seconds. A supervised Switchboard reconciler SHALL scan at startup and at most every 60 seconds.
-Confirmed cancellation SHALL require every active invoke/reply claim to be released and a durable
-cancellation acknowledgement. Unprovable runtime or reply outcomes SHALL become durable ambiguity
-with reason `fast_answer_runtime_outcome_unknown` by the deadline and SHALL NOT be replayed.
+instance, monotonically fenced lease generation, heartbeat, 60-second lease, nullable immutable
+reconciliation anchor, and nullable reconciliation deadline. The owner SHALL heartbeat at least
+every 20 seconds, and successful renewal SHALL set lease expiry from the durable database clock.
+Registration age SHALL NOT limit healthy execution. On expired-lease takeover, the reconciler SHALL
+capture that predecessor generation's last durable lease expiry as immutable `L` and set immutable
+`D = L + 15 minutes`. A supervised Switchboard reconciler SHALL scan at startup and at most every 60
+seconds. Confirmed cancellation SHALL require every active invoke/reply claim to be released and a
+durable cancellation acknowledgement. Unprovable runtime or reply outcomes SHALL become durable
+ambiguity with reason `fast_answer_runtime_outcome_unknown` on the first available sweep at or after
+`D` and SHALL NOT be replayed.
 
 ID: REQ-dashboard-fast-answer-002
 Source: dashboard-conversations § Durable Dashboard Turn Control; dashboard-chat-ui § SSE Client
@@ -103,8 +107,19 @@ Scope: proposed-v1
 - **WHEN** a fast runtime owns active catalog, provider, MCP-read, or reply work
 - **THEN** it SHALL refresh its durable 60-second lease at least every 20 seconds using the same
   `owner_instance_id` and `lease_generation`
+- **AND** each accepted heartbeat SHALL set `lease_expires_at = database_now + 60 seconds`
 - **AND** every phase advance, invoke release, reply claim/receipt, and terminal transition SHALL
   present that generation or fail closed
+
+#### Scenario: Healthy runtime may renew beyond registration minute 15
+
+- **WHEN** a healthy fast runtime continues to heartbeat before each lease expires through minute 15
+  after registration and later
+- **THEN** it SHALL remain active and eligible to complete under its separate provider execution
+  budget
+- **AND** registration age SHALL NOT create a reconciliation anchor, cancel the runtime, authorize a
+  takeover, or mark the turn ambiguous
+- **AND** the real periodic reconciler entrypoint SHALL leave that current live generation unchanged
 
 #### Scenario: Expired lease starts observation-only reconciliation
 
@@ -113,8 +128,20 @@ Scope: proposed-v1
 - **THEN** it SHALL first inspect durable runtime, Stop, and deterministic reply-receipt evidence
 - **AND** it MAY conditionally claim a new reconciliation generation only while the old lease remains
   expired
+- **AND** a successful claim SHALL atomically copy the exact predecessor generation's last durable
+  `lease_expires_at` into immutable `reconcile_anchor_expires_at = L` and set immutable
+  `reconcile_deadline_at = D = L + 15 minutes`
 - **AND** lease expiry or a changed process instance alone SHALL NOT prove that the predecessor died,
   stopped, failed, or completed
+
+#### Scenario: Expiry around a sweep has an explicit scan bound
+
+- **WHEN** a lease expires immediately before a healthy periodic sweep while the durable store is
+  available
+- **THEN** that sweep MAY claim the expired generation and capture `L`
+- **WHEN** a lease expires immediately after a healthy periodic sweep under the same conditions
+- **THEN** the next sweep SHALL inspect it no later than `L + 60 seconds`
+- **AND** these scan positions SHALL not change `D = L + 15 minutes`
 
 #### Scenario: Reconciliation generation fences a partitioned predecessor
 
@@ -130,13 +157,52 @@ Scope: proposed-v1
 - **WHEN** reconciliation finds a proven reply receipt, cancellation acknowledgement, or
   deterministic failure receipt
 - **THEN** it SHALL preserve that receipt and project completed, cancelled, or failed respectively
-- **WHEN** no conclusive receipt exists at `reconcile_deadline_at`
-- **THEN** it SHALL mark the turn `ambiguous` with reason
+- **AND** lease expiry, registration age, takeover, or deadline SHALL NOT overwrite that proven
+  outcome with ambiguity
+- **WHEN** no conclusive receipt exists at the first successful sweep at or after immutable `D`
+- **THEN** it SHALL mark the turn `ambiguous` exactly once with reason
   `fast_answer_runtime_outcome_unknown`
 - **AND** before the deadline it SHALL retain `pending_reconciliation` or, after Stop,
   `pending_cancellation`
 - **AND** it SHALL never invoke a provider, repeat a Concierge read, persist a reply, or replay the
   runtime
+
+#### Scenario: Available supervision gives the true wall-clock bound
+
+- **WHEN** the Switchboard reconciliation supervisor runs and the durable store accepts every needed
+  scan/claim/read/write transaction continuously from `L` through `D + 60 seconds`
+- **THEN** an unproven outcome SHALL become ambiguous no earlier than `D` and no later than
+  `D + 60 seconds`
+- **AND** measured from the last accepted heartbeat, the maximum consists of at most 60 seconds of
+  remaining lease, 15 minutes from lease expiry, and 60 seconds of scan latency
+- **AND** this bound SHALL NOT be treated as a provider or workflow execution timeout
+
+#### Scenario: Repeated sweeps and restarts cannot extend reconciliation
+
+- **WHEN** multiple sweeps or replacement Switchboard reconcilers revisit the same fenced unresolved
+  generation
+- **THEN** they SHALL reuse the stored `L` and `D` and SHALL NOT recompute either from claim time,
+  sweep time, startup time, or the current clock
+- **AND** they SHALL produce no duplicate terminal outcome, provider call, read, reply, or replay
+
+#### Scenario: Heartbeat and reconciliation claim have one durable winner
+
+- **WHEN** an owner heartbeat and a reconciliation claim race around the same owner instance,
+  generation, and lease expiry
+- **THEN** reciprocal conditional writes SHALL select one winner
+- **AND** a heartbeat that commits before expiry SHALL extend the lease and make the stale claim fail
+- **AND** a reconciliation claim that commits for the expired generation SHALL advance the generation
+  and make the predecessor heartbeat and every later predecessor write fail
+
+#### Scenario: Durable-store outage suspends only the timing promise
+
+- **WHEN** the durable store is unavailable around lease expiry or immutable `D`
+- **THEN** the system SHALL preserve the last readable pending/unavailable state and SHALL NOT
+  fabricate timely completion, confirmed cancellation, failure, or ambiguity
+- **AND** after storage recovers, while the supervisor runs and the store remains available, the next
+  successful startup/periodic sweep no later than 60 seconds after availability returns SHALL capture
+  or reuse the original `L`, inspect receipts first, and apply the already-expired `D` when applicable
+- **AND** outage/recovery SHALL NOT move `L` or `D`, renew stale ownership, or authorize replay
 
 #### Scenario: Stop during classification cancels the shared runtime
 
@@ -188,10 +254,15 @@ Scope: proposed-v1
 #### Scenario: Restart test drives the operational reconciler
 
 - **WHEN** an integration test persists an active fast runtime with a live lease, crashes its owning
-  Switchboard process, starts a replacement Switchboard, and advances an injected clock through
-  lease expiry and the reconciliation deadline
+  Switchboard process just before registration minute 15, starts a replacement Switchboard, and
+  advances an injected database clock through the last lease expiry `L`, both sides of the periodic
+  scan boundary, immutable `D`, and `D + 60 seconds`
 - **THEN** the replacement's real startup/periodic reconciler entrypoint SHALL claim a new generation
   and persist `ambiguous` with reason `fast_answer_runtime_outcome_unknown`
+- **AND** a companion path SHALL heartbeat a healthy runtime beyond registration minute 15 without
+  takeover or ambiguity
+- **AND** restart/repeated-sweep, both heartbeat/claim winners, store-outage/recovery, and receipt-
+  precedence cases SHALL retain the same `L` and `D`
 - **AND** the test SHALL observe zero provider, Concierge-read, reply, and replay calls
 - **AND** directly calling a transition helper SHALL NOT satisfy this scenario
 

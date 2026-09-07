@@ -14,8 +14,9 @@
 
 - [ ] 2.1 Add a cumulative core migration for the `fast_answer` durable session phase, monotonic
   `answer|non_answer` intent lane, boot-scoped owner instance, lease generation, heartbeat/expiry,
-  15-minute reconciliation deadline, and deterministic answer-reply claim/receipt state required by
-  this contract. Preserve all existing turn phases, target kinds, and legacy/null behavior.
+  immutable expired-lease reconciliation anchor `L`, immutable `D = L + 15 minutes`, and
+  deterministic answer-reply claim/receipt state required by this contract. Preserve all existing
+  turn phases, target kinds, and legacy/null behavior; registration age is not an execution deadline.
 - [ ] 2.2 Register one Switchboard-owned fast-answer session before catalog/provider work, claim the
   existing pre-invoke fence once, heartbeat its 60-second fenced lease at least every 20 seconds,
   expose the live coroutine through Switchboard's registered `cancel_session` MCP handler, and
@@ -25,9 +26,12 @@
   idempotent.
 - [ ] 2.4 Add the supervised Switchboard fast-runtime reconciler at startup and at most 60-second
   cadence. Inspect expired leases and durable receipts, conditionally claim a fencing generation,
-  preserve proven completion/cancellation/failure, and otherwise transition to ambiguity by 15
-  minutes with reason `fast_answer_runtime_outcome_unknown`; never replay work or infer death/Stop
-  from lease expiry.
+  atomically capture the predecessor's exact lease expiry as stable `L`, preserve proven
+  completion/cancellation/failure, and otherwise transition once at the first available sweep at or
+  after `D` with reason `fast_answer_runtime_outcome_unknown`. Never replay work, infer death/Stop
+  from lease expiry, move `L`/`D` on restart, or impose an execution timeout. Under continuously
+  available supervision/storage, prove classification falls in `[D, D + 60 seconds]`; after an
+  outage, settle receipt-first within the next 60-second sweep without extending the original clock.
 
 ## 3. Admission, catalog, and target-owned reads
 
@@ -73,9 +77,12 @@
 - [ ] 5.2 Extend `tests/core/test_dashboard_turns.py`, `tests/core/test_core_spawner.py`, and
   `tests/api/test_dashboard_turn_cancellation.py` for registration-before-invoke, Stop at every
   boundary, concurrent/repeat Stop, owner-instance/generation/lease heartbeats, release ordering,
-  late completion fencing, and no replay. Drive the real startup/periodic reconciler through
-  process-crash, lease-expiry, predecessor-partition, receipt-found, and 15-minute ambiguity cases;
-  a direct transition-helper test is insufficient.
+  late completion fencing, and no replay. Drive the real startup/periodic reconciler with an injected
+  database clock through healthy renewal beyond registration minute 15; crash just before minute 15;
+  expiry immediately before and after a sweep; repeated sweeps/restarts; both heartbeat/claim race
+  winners; durable-store outage/recovery; predecessor partition; and reply/cancellation/failure
+  receipt precedence. Assert immutable `L`, `D = L + 15 minutes`, available-store classification in
+  `[D, D + 60 seconds]`, and zero replay; a direct transition-helper test is insufficient.
 - [ ] 5.3 Extend `tests/core/test_delegation_ledger.py`,
   `roster/concierge/tests/test_dashboard_read.py`, and module integration coverage for typed catalog
   outcomes, `[malformed]`, `[valid, malformed]`, and `[malformed, valid]` whole-result poisoning,
@@ -84,9 +91,10 @@
   target-owned MCP reads, and source attribution.
 - [ ] 5.4 Add a new real-Postgres migration/replay and transaction suite beside
   `tests/config/test_dashboard_turn_cancellation_migration.py`; cover late-schema replay, legacy/null
-  lane compatibility, runtime instance/generation/lease/heartbeat/deadline constraints, reciprocal
-  Stop/invoke/reply fences, idempotent reply receipt, operational crash recovery, and non-narrowing
-  downgrade behavior.
+  lane compatibility, runtime instance/generation/lease/heartbeat constraints, conditional
+  heartbeat-versus-takeover winners, immutable expired-lease anchor/deadline across repeated claims
+  and restarts, receipt precedence, reciprocal Stop/invoke/reply fences, idempotent reply receipt,
+  operational crash/storage recovery, and non-narrowing downgrade behavior.
 - [ ] 5.5 Extend `tests/api/test_conversations.py` for answer 45 seconds,
   non-answer/legacy/null 300 seconds, original-start timing, lane-specific timeout text, open thread,
   unchanged runtime, and visible late reply.

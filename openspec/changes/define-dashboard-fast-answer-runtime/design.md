@@ -87,12 +87,14 @@ session; any Stop that lands between them remains durable and is observed by the
 
 Registration also creates durable liveness evidence specific to the fast runtime: a boot-scoped
 `owner_instance_id`, monotonically increasing `lease_generation`, `heartbeat_at`,
-`lease_expires_at`, and `reconcile_deadline_at`. The initial lease lasts 60 seconds, the owning
-Switchboard process refreshes it at least every 20 seconds while invoke or reply work remains active,
-and the reconciliation deadline is fixed no later than 15 minutes after registration. Every
-heartbeat, phase advance, invoke release, reply claim/receipt, and terminal transition presents the
-same owner instance and lease generation. A stale predecessor cannot commit after a later generation
-wins.
+`lease_expires_at`, nullable `reconcile_anchor_expires_at`, and nullable
+`reconcile_deadline_at`. The initial lease lasts 60 seconds, and every successful heartbeat uses the
+durable database clock to set a new `lease_expires_at = now() + 60 seconds`. The owning Switchboard
+process refreshes at least every 20 seconds while invoke or reply work remains active. Registration
+age is not an execution deadline: a healthy runtime may renew beyond minute 15 and until its separate
+catalog provider budget or normal completion ends the work. Every heartbeat, phase advance, invoke
+release, reply claim/receipt, and terminal transition presents the same owner instance and lease
+generation. A stale predecessor cannot commit after a later generation wins.
 
 After registration, the runtime claims the existing durable pre-invoke fence once for the whole
 sequence. Switchboard also registers the live coroutine in its process-local cancellable-runtime
@@ -106,7 +108,7 @@ The sequence is:
 durable turn already open
   -> create Switchboard session UUID
   -> durable register(message, session, owner=switchboard, phase=fast_answer,
-       owner_instance_id, generation=1, lease=60s, deadline<=15m)
+       owner_instance_id, generation=1, lease_expires_at=db_now+60s)
   -> process-local cancellable registration
   -> durable claim_invoke(message, session)
   -> resolve exact-cheap API candidates for classification and phrasing
@@ -151,20 +153,46 @@ Race behavior is fixed:
   meaning and does not rewrite the answer.
 
 Switchboard owns a supervised fast-runtime reconciler. It scans at startup and at most every 60
-seconds. It may inspect only a row whose 60-second lease has expired, and lease expiry or a changed
-process instance is never itself proof that the predecessor died, stopped, or failed. The reconciler
-first reads durable runtime, Stop, and deterministic reply-receipt evidence. It then conditionally
-claims a new reconciliation generation only while the old lease remains expired. That generation
-fences a merely partitioned predecessor: if the old process later regains the database, its stale
-heartbeat, phase, reply, and completion writes fail, and it must cancel its local work.
+seconds. It may inspect only a row whose durable 60-second lease has expired. Lease expiry,
+registration age, or a changed process instance is never itself proof that the predecessor died,
+stopped, failed, or completed. The reconciler first reads durable runtime, Stop, and deterministic
+reply-receipt evidence in the same transaction used to claim.
 
-The reconciler performs observation and classification only. A proven reply receipt completes the
-turn; a proven cancellation acknowledgement confirms cancellation; a proven deterministic failure
-records failure. With no conclusive receipt, the turn remains `pending_reconciliation` (or
-`pending_cancellation` after Stop) until `reconcile_deadline_at`. At that deadline it becomes
-`ambiguous` with reason `fast_answer_runtime_outcome_unknown`. The reconciler never invokes a
-provider, repeats a Concierge read, persists a reply, or calls the runtime cancelled by inference.
-A late provider response cannot cross the superseded generation or reply fence.
+Heartbeat renewal and reconciliation claim are reciprocal conditional writes over the exact
+`owner_instance_id`, `lease_generation`, and `lease_expires_at`. A heartbeat may renew only while
+its generation still owns the row and its lease is not expired under the database clock. If it wins
+before expiry, a claim using the old expiry fails. A reconciler may claim only while the exact
+predecessor generation and expiry remain current and expired. If it wins, it advances the generation
+and atomically copies that predecessor's last durable `lease_expires_at` into immutable
+`reconcile_anchor_expires_at = L`, then writes `reconcile_deadline_at = D = L + 15 minutes`. If an
+anchor already exists for that fenced generation, repeated sweeps and replacement reconcilers reuse
+it; they never recompute either value from claim time, scan time, startup time, or the current clock.
+
+The winning generation fences a merely partitioned predecessor: if the old process later regains the
+database, its stale heartbeat, phase, reply, and completion writes fail, and it must cancel its local
+work. The reconciler performs observation and classification only. On every sweep, including the
+deadline sweep, a proven reply receipt completes the turn, a proven cancellation acknowledgement
+confirms cancellation, and a proven deterministic failure records failure according to the existing
+durable precedence. Lease expiry or age never overwrites a receipt.
+
+With no conclusive receipt, the turn remains `pending_reconciliation` (or
+`pending_cancellation` after Stop) before `D`. At the first successful sweep at or after `D`, it
+becomes `ambiguous` with reason `fast_answer_runtime_outcome_unknown`. Because sweeps are at most 60
+seconds apart, the earliest ambiguity is `D` and the latest is `D + 60 seconds` when the Switchboard
+supervisor runs and the durable store accepts the scan/claim/read/write transactions continuously
+from `L` through `D + 60 seconds`. The total bound after the last accepted heartbeat is therefore at
+most 60 seconds of remaining lease, 15 minutes of reconciliation budget, and 60 seconds of scan
+latency. It does not bound healthy execution.
+
+If the durable store is unavailable around lease expiry or `D`, the system cannot promise a timely
+durable transition. It preserves the last readable pending/unavailable state and never fabricates
+completion, confirmed cancellation, or ambiguity. On recovery, the next successful startup/periodic
+sweep (no later than 60 seconds after availability returns while the supervisor and store remain
+available) captures or reuses the original `L`, checks receipts first, and immediately applies the
+already-expired `D` when applicable. An outage, restart, or repeated sweep cannot extend the budget.
+The reconciler never invokes a provider, repeats a Concierge read, persists a reply, or calls the
+runtime cancelled by inference. A late provider response cannot cross the superseded generation or
+reply fence.
 
 ## Decision 4: Catalog resolution is typed and selection is deterministic
 
@@ -361,14 +389,19 @@ implementation, and its result cannot be inferred from the stub.
 | Reply write conflicts | canonical reply wins | no changed overwrite | existing reply or structured conflict |
 | Reply write outcome unknown | pending reconciliation/ambiguous | receipt lookup only; no replay | durable unknown outcome |
 | SSE reaches 45/300 seconds | observation ended | runtime continues; Stop remains available | lane-named timeout; thread stays open |
-| Runtime lease expires | predecessor liveness unproven | fence generation; inspect receipts only | pending reconciliation/cancellation |
-| Runtime process crashes active | outcome unproven | startup/60s reconciler; no replay; 15m bound | receipt-backed result or `fast_answer_runtime_outcome_unknown` ambiguity |
+| Healthy runtime passes registration minute 15 | live lease remains authoritative | continue normal execution; no reconciliation | active until normal provider/completion outcome |
+| Runtime lease expires around a sweep | predecessor liveness unproven | claim exact expiry/generation; capture immutable `L`; inspect receipts | takeover between `L` and `L+60s` under availability |
+| Heartbeat races takeover | one conditional write wins | renewal blocks stale claim, or generation fence blocks stale heartbeat | active under renewal or pending reconciliation under takeover |
+| Reconciler restarts/repeats | captured `L` and `D` remain durable | reuse anchor/deadline; no replay or extension | unchanged pending or one terminal outcome |
+| Durable store unavailable around `D` | durable outcome unavailable | preserve pending/unavailable; receipt-first next sweep after recovery | no false timely terminal claim |
+| Runtime process crashes active | outcome unproven | startup/60s reconciler; `D=L+15m`; no replay | receipt-backed result or ambiguity in `[D,D+60s]` under availability |
 
 ## Compatibility and Sequencing
 
 The delta is additive and leaves active whole-requirement bodies untouched. Future implementation
 must first consume the landed durable dashboard turn projection and message-scoped Stop API. It must
-then widen the durable session phase and intent-lane representation through a new cumulative core
+then widen the durable session phase, intent-lane representation, fenced runtime lease, immutable
+expired-lease reconciliation anchor/deadline, and answer receipt through a new cumulative core
 migration and real-Postgres replay tests; no current migration is edited.
 
 PR #3960 changes dashboard conversation identity and API/query seams. Implementation must serialize

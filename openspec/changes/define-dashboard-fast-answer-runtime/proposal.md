@@ -38,7 +38,8 @@ The current implementation cannot safely be widened by removing the dashboard ex
   Register it before catalog or provider work, claim the existing pre-invoke fence, heartbeat a
   fenced 60-second lease at least every 20 seconds, and make the live task addressable through
   Switchboard's existing `cancel_session` MCP boundary. A startup/60-second reconciler preserves
-  receipts and marks an unprovable outcome ambiguous by a 15-minute deadline without replay.
+  receipts and, after lease takeover, anchors a 15-minute ambiguity budget to the predecessor
+  generation's last durable lease expiry without imposing an execution-duration limit or replay.
 - Replace the fast-answer call site's nullable catalog tuple with `matched`, `no_match`, and
   `unavailable` outcomes. A match carries at most three ordered, provenance-bearing candidates and
   an explicit selected-hit rule; any malformed returned candidate poisons the whole result to
@@ -120,10 +121,16 @@ Owner approval is requested for this exact set of twelve choices:
 3. Use one Switchboard-owned `fast_answer` runtime identity across catalog resolution,
    classification, Concierge reads, answer phrasing, and reply settlement. Register it before
    catalog/provider work with a 60-second fenced lease, heartbeat at least every 20 seconds, and
-   reconcile on startup and at most every 60 seconds to a receipt-backed result or ambiguity by 15
-   minutes. Lease expiry alone is not death or Stop proof; a newly claimed generation fences a
-   partitioned predecessor, and an unproven deadline outcome uses reason
-   `fast_answer_runtime_outcome_unknown` without replay.
+   reconcile on startup and at most every 60 seconds. A healthy runtime may renew for its full
+   execution duration regardless of registration age. On expired-lease takeover, atomically capture
+   that predecessor generation's last durable `lease_expires_at` as immutable anchor `L` and set
+   `D = L + 15 minutes`; neither restarts nor repeated sweeps may move `L` or `D`. Lease expiry alone
+   is not death or Stop proof; a newly claimed generation fences a partitioned predecessor. Under a
+   running supervisor and continuously writable durable store from `L` through `D + 60 seconds`, the
+   first scan at or after `D` preserves any proven receipt or records
+   `fast_answer_runtime_outcome_unknown` ambiguity between `D` and `D + 60 seconds`, without replay.
+   A storage outage suspends only that wall-clock promise; recovery settles receipt-first within the
+   next 60-second sweep from the original `L` and `D`.
 4. Address Stop through the existing message-scoped dashboard API and Switchboard's registered
    `cancel_session` MCP tool; confirm cancellation only after all invoke claims are released.
 5. Authorize only the exact checked-in V1 tool-name allowlist in `design.md`, intersected with
@@ -164,8 +171,11 @@ This correction makes four material choices explicit for owner review:
 - Any malformed catalog candidate poisons the whole result to `unavailable`. This gives up partial
   selection when one row is corrupt so incomplete evidence can never strengthen an owner choice.
 - Fast runtimes add durable instance/generation/lease/heartbeat evidence and a bounded operational
-  reconciler. This is more schema and operational machinery, but it closes the forever-live invoke
-  and unacknowledgeable Stop failure after a Switchboard crash.
+  reconciler. The ambiguity budget begins at an expired generation's last durable lease expiry, so a
+  healthy runtime may renew beyond minute 15 while a crashed runtime still converges under explicit
+  lease, scan, and durable-store availability bounds. This is more schema and operational machinery,
+  but it closes the forever-live invoke and unacknowledgeable Stop failure without creating an
+  execution timeout or a restart-extendable deadline.
 - Fast model resolution is exact-cheap and catalog-only, with no provider failover. This sacrifices
   fast-path availability when cheap API capacity is absent or fails, while preserving predictable
   latency/cost, an executable call bound, and safe pre-effect fallback to the existing Spawner.
