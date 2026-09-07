@@ -13,10 +13,15 @@ ID: REQ-passive-interaction-sync-001
 Source: RFC 0033 §Source-aware interaction identity (Proposed amendment to RFC 0013 D4)
 Scope: v1-mandatory
 
-#### Scenario: Discord bot-token message resolves to a relationship
-- **WHEN** interaction sync processes an eligible shipped Discord bot-token message whose sender identity is a Discord user ID
+#### Scenario: Discord bot-token direct message resolves to a relationship
+- **WHEN** interaction sync processes a shipped Discord bot-token message whose authenticated request context reports `chat_type="private"`, `participant_count=2`, and `interaction_eligible=true` and whose sender identity is a Discord user ID
 - **THEN** it SHALL resolve that sender through the canonical `has-handle` value `discord:<user_id>`
 - **AND** a resolved non-owner sender SHALL contribute a Discord interaction fact under the same direction and group-size scoring rules as other eligible message sources
+
+#### Scenario: Discord large or unknown context cannot receive DM weight
+- **WHEN** a Discord event comes from a guild, group DM, non-DM channel type, or size/context that the shipped bot-token connector cannot authenticate as a direct message
+- **THEN** interaction sync SHALL exclude it from interaction fact creation
+- **AND** observed-sender count SHALL not downgrade the context to a one-participant DM or assign undiluted DM weight
 
 #### Scenario: Source endpoint is server-attested
 - **WHEN** interaction sync derives the stable key for a message group

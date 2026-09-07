@@ -25,15 +25,46 @@ Scope: v1-reserved
 - **THEN** no provider session, webhook listener, polling loop, or background task SHALL start unless a separately configured Watched Source instance is enabled
 
 #### Scenario: Missing catalog pair blocks activation
-- **WHEN** a configured Watched Source has no enabled exact pair in the inbound catalog
-- **THEN** the connector SHALL refuse activation with a bounded configuration error
+- **WHEN** Switchboard's source-pair preflight denies or cannot authoritatively check a configured Watched Source pair
+- **THEN** the connector SHALL refuse activation with a bounded denied or unavailable error
 - **AND** it SHALL not open a provider connection or submit an envelope
+
+### Requirement: Switchboard Source-Pair Preflight
+Before opening a provider connection, a Watched Source SHALL call the Switchboard MCP tool
+`source.pair.preflight` with a `source_pair_preflight.v1` request containing only its canonical
+channel and provider. Switchboard SHALL perform the check through its catalog read authority and
+return a bounded `authorized`, `denied`, or `unavailable` decision with an opaque catalog generation,
+`checked_at`, and `valid_until`. The connector MUST NOT receive direct catalog access.
+
+ID: REQ-connector-watched-source-005
+Source: RFC 0033 §Watched Source activation preflight (Proposed; owner sign-off required)
+Scope: v1-reserved
+
+#### Scenario: Authorized preflight permits a bounded connection lease
+- **WHEN** Switchboard finds the exact enabled pair in a fresh catalog snapshot
+- **THEN** it SHALL return `status="authorized"` with `valid_until` no later than that snapshot's 60-second expiry
+- **AND** the connector MAY open its configured provider connection only while that authorization remains current
+
+#### Scenario: Denied or unavailable preflight prevents provider effects
+- **WHEN** Switchboard returns `denied` or `unavailable`, the MCP call fails, or the response expires before the connection opens
+- **THEN** the connector SHALL remain inactive and SHALL not authenticate to, poll, subscribe to, or acknowledge an event from the provider
+- **AND** the response and connector status SHALL expose only a bounded error code
+
+#### Scenario: Active connector renews before authorization expiry
+- **WHEN** an active connector approaches `valid_until`
+- **THEN** it SHALL obtain a new `authorized` preflight before observing another provider event
+- **AND** failure to renew SHALL stop the provider session and event acquisition at expiry
+
+#### Scenario: Disable race remains fail-closed at ingest
+- **WHEN** a pair is disabled after preflight authorization but before the connector submits an event
+- **THEN** Switchboard's authoritative per-envelope catalog validation SHALL reject the pair on refresh or snapshot expiry
+- **AND** preflight SHALL provide no reservation, write privilege, or bypass of the per-envelope decision
 
 ### Requirement: Watched Source Lifecycle Conformance
 Every Watched Source SHALL implement first-baseline behavior, source filtering, filtered-event
 flush, replay-queue drain, checkpointing, heartbeat, metrics, rate limiting, backoff, and graceful
-shutdown as required by `connector-base-spec`. Webhook profiles SHALL additionally authenticate the
-provider before acknowledging an event as accepted.
+shutdown as required by `connector-base-spec`. A webhook profile SHALL authenticate and normalize a
+bounded request, obtain durable Switchboard acceptance, and only then return a provider-success 2xx.
 
 ID: REQ-connector-watched-source-002
 Source: RFC 0033 §Watched Source lifecycle (Proposed; owner sign-off required)
@@ -53,6 +84,22 @@ Scope: v1-reserved
 - **WHEN** a webhook signature, timestamp, destination, or configured provider account cannot be authenticated
 - **THEN** the connector SHALL reject the request before filtering, persistence, acknowledgment as accepted, or Switchboard submission
 - **AND** its logs and metrics SHALL identify only a bounded failure category, never the credential, body, sender, or recipient
+
+#### Scenario: Raw request is buffered only for verification
+- **WHEN** a webhook request is at most 1,048,576 bytes and requires its exact URL, form parameters, or raw JSON bytes for provider signature validation
+- **THEN** the connector MAY hold that request in process memory only for bounded parsing and signature verification
+- **AND** the verification buffer SHALL not be persisted, logged, traced, metered by content, sent to an LLM, or treated as an accepted canonical event
+- **AND** a request exceeding the bound SHALL be rejected before full buffering
+
+#### Scenario: Successful acknowledgment follows durable acceptance
+- **WHEN** an authenticated webhook event is normalized and Switchboard returns `accepted` or `duplicate` for its stable provider event identity
+- **THEN** the connector SHALL return the provider-success 2xx response
+- **AND** it SHALL release the verification-only raw buffer after the request completes
+
+#### Scenario: Unknown durability returns a retryable provider failure
+- **WHEN** Switchboard rejects the event, is unavailable, or its acceptance result is lost or unknown
+- **THEN** the connector SHALL return a non-2xx response and SHALL not represent the event as accepted
+- **AND** any provider retry SHALL reuse the same external event and idempotency identities so an earlier accepted attempt deduplicates
 
 ### Requirement: Per-Source Failure Isolation and Partial Effects
 One Watched Source instance SHALL isolate provider accounts or configured endpoints from each other.

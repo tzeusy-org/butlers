@@ -1,6 +1,6 @@
 ## 1. Authority and Baseline Gates
 
-- [ ] 1.1 Obtain independent exact-head semantic and security review of RFC 0033 and all six capability deltas; correct every blocking finding before presenting an owner decision.
+- [ ] 1.1 Obtain independent exact-head semantic and security review of RFC 0033 and all seven capability deltas; correct every blocking finding before presenting an owner decision.
 - [ ] 1.2 Record exact owner approval of the reviewed artifact, including provider, account/number capability, public ingress route, call-event subset, SMS privacy profile, finite retention period, and continued SMS-egress disposition.
 - [ ] 1.3 Refresh the cited official provider contracts and obtain account-specific confirmation of regional number capability, registration requirements, webhook/auth availability, and any idempotency or reconciliation primitive; keep the owner-device slice blocked if any required fact is unproven.
 - [ ] 1.4 Reconcile the exact landed state of PR #4046 (`bu-poven`), PR #3960 (`bu-7exe4.2`), RFC 0023, and their active deltas; rebuild any colliding block against the then-current baseline without importing unapproved behavior.
@@ -14,11 +14,12 @@
 ## 3. Catalog Validation, Cache, and Read Surface
 
 - [ ] 3.1 Introduce the bounded source token type and one Switchboard-owned semantic validator that reads immutable complete catalog snapshots before deduplication or persistence.
-- [ ] 3.2 Implement 60-second refresh, 300-second maximum staleness, atomic whole-snapshot swap, and safe error categories without payload or identity echo.
-- [ ] 3.3 Extend `tests/core/test_routing_contracts.py` with malformed, unknown, disabled, mismatched, known-cached, unseen-during-failure, stale-cache, partial-refresh, and concurrent-snapshot behavior.
+- [ ] 3.2 Implement a refresh start deadline no later than 60 seconds after the prior complete load, strict expiry at 60 seconds of snapshot age, atomic whole-snapshot swap, and safe error categories without payload or identity echo.
+- [ ] 3.3 Extend `tests/core/test_routing_contracts.py` with malformed, unknown, disabled, mismatched, known-cached, unseen-during-failure, stale-cache, partial-refresh, concurrent-snapshot, and clock-controlled disable-at-deadline behavior.
 - [ ] 3.4 Extend `tests/integration/test_connector_conformance.py` so every existing connector pair matches the seed and a catalog-only regression pair passes after enforcement without a Literal or pair-matrix edit.
 - [ ] 3.5 Add `GET /api/ingestion/source-catalog` and its field-by-field content-blind DTO; test healthy, genuinely empty, and source-unavailable envelopes plus absence of all mutation routes.
 - [ ] 3.6 Add the bounded owner read presentation using the Dispatch status/error/focus conventions; test keyboard operation, unavailable-state honesty, and absence of connector health, credentials, identities, bodies, and outbound capability.
+- [ ] 3.7 Add the Switchboard `source.pair.preflight` MCP contract and connector client path; test authorized, denied, unavailable, expired-before-connect, renewal failure, disable-after-preflight, and absence of connector catalog grants.
 
 ## 4. Additive Enforcement and Rollback
 
@@ -30,22 +31,22 @@
 
 - [ ] 5.1 Add database-enforced daily interaction identity over entity, source channel, date, direction, and attested source endpoint; preserve one incoming and one outgoing fact per tuple.
 - [ ] 5.2 Move grouped message `valid_at` to the deterministic earliest real event time and migrate every interaction writer before retiring hour-offset tables.
-- [ ] 5.3 Add Discord to the explicit interaction source map using `discord:<user_id>` `has-handle` resolution and only the shipped bot-token event shape.
-- [ ] 5.4 Extend `tests/jobs/test_interaction_sync.py` with Discord resolution, actual Dunbar-input change, repeated run, concurrent run, thirteenth scoring source, two-channel same-day, two-endpoint same-day, unresolved/degraded, and rollback-compatibility cases.
-- [ ] 5.5 Extend `tests/connectors/test_discord_user_connector.py` with stable provider message/user/endpoint identity and reconnect replay coverage; assert no OAuth v2 token, scope, consent, or direct-message behavior is introduced.
+- [ ] 5.3 Add Discord to the explicit interaction source map using `discord:<user_id>` `has-handle` resolution, authenticated bot-token `DM` context only, and explicit ineligibility for guild, group, other, or unknown context.
+- [ ] 5.4 Extend `tests/jobs/test_interaction_sync.py` with authenticated Discord DM resolution, actual Dunbar-input change, large-guild and size-unknown exclusion despite one observed sender, repeated run, concurrent run, thirteenth scoring source, two-channel same-day, two-endpoint same-day, unresolved/degraded, and rollback-compatibility cases.
+- [ ] 5.5 Extend `tests/connectors/test_discord_user_connector.py` with stable provider message/user/endpoint identity, proven-DM context, guild/group/unknown ineligibility, and reconnect replay coverage; assert no OAuth v2 token, scope, consent, guild-member, or direct-message authority is introduced.
 
 ## 6. Watched Source Profile
 
 - [ ] 6.1 Implement the reusable Watched Source connector profile by composing connector-base filtering, filtered-event flush, replay drain, checkpoint, heartbeat, metrics, rate limits, backoff, and shutdown contracts.
 - [ ] 6.2 Add behavior tests for first baseline, restart resume, duplicate provider event, lost Switchboard result with stable retry identity, filtered-event flush failure, checkpoint rollback, and independent per-source backoff.
-- [ ] 6.3 Add authenticated-webhook contract tests for valid signature, invalid signature, stale timestamp, wrong account/number, duplicate event, out-of-order event, bounded body, and content-blind failure telemetry.
+- [ ] 6.3 Add authenticated-webhook contract tests for valid signature, invalid signature, stale timestamp, wrong account/number, duplicate event, out-of-order event, 1 MiB verification buffer/rejection, buffer non-persistence, 2xx-after-accepted-or-duplicate, non-2xx unknown durability, and content-blind failure telemetry.
 - [ ] 6.4 Add deactivation/revocation race tests proving no newly observed event crosses the linearized stop boundary and accepted history is not replayed, rewritten, or silently deleted.
 
 ## 7. Owner-Device Inbound Bridge
 
 - [ ] 7.1 After Tasks 1.2 and 1.3 only, add the selected provider adapter, exact catalog pair migration, Tier 2 owner credential types, authenticated ingress route, and approved event mapping without adding outbound SMS.
 - [ ] 7.2 Implement call-lifecycle metadata with monotonic state handling and no audio, recording, transcription, media fetch, stream, or call-control behavior.
-- [ ] 7.3 Implement the approved SMS privacy profile and retention enforcement; test metadata-only omission or content-enabled protected ingestion, expiry, and absence from logs, metrics, status, browser DTOs, and generic audit metadata.
+- [ ] 7.3 Implement the approved SMS privacy profile and retention enforcement; test metadata-only body omission across every persistence/LLM seam or content-enabled lineage redaction across filtered events, dead letters, message inbox, route inbox, and verbatim session/process artifacts; verify body-free ingestion metadata survives, derived artifacts follow separate retention, post-expiry exports are redacted, and restored managed backups sweep before reads.
 - [ ] 7.4 Add content-blind setup/status/revocation API and UI behavior; test server-derived actor attribution, repeated activation, partial-configuration rollback, immediate pending feedback, keyboard/focus behavior, safe recovery copy, and credential/value non-disclosure.
 - [ ] 7.5 Add provider-adapter tests for signed inbound events, stable provider IDs, duplicates, out-of-order callbacks, account/number binding, rate/backoff behavior, revocation, and provider/API partial failures using recorded synthetic fixtures only.
 

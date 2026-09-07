@@ -66,11 +66,14 @@ The wire accepts only lowercase ASCII tokens up to 64 characters. Switchboard va
 enabled pair before dedupe and persistence. This preserves cheap bounded parsing while moving the
 open set to durable authority.
 
-The cache is a complete immutable snapshot refreshed every 60 seconds with a 300-second maximum
-stale age. A fresh last-known-good snapshot preserves already-known traffic during a brief catalog
-read failure; it never admits an unseen pair. After the bound, all ingest stops with a retryable
-availability error. This is deliberately stricter than triage's fail-open cache: source identity is
-an admission boundary, while triage only chooses what happens after admission.
+The cache is a complete immutable snapshot. Switchboard begins the next refresh no later than 60
+seconds after the preceding complete load, and a snapshot is usable only while its age is strictly
+less than 60 seconds. A fresh last-known-good snapshot preserves already-known traffic during a
+brief catalog read failure; it never admits an unseen pair. At expiry, all ingest stops with a
+retryable availability error. A committed disablement therefore stops acceptance on the next
+successful refresh or expiry, whichever comes first. This is deliberately stricter than triage's
+fail-open cache: source identity is an admission boundary, while triage only chooses what happens
+after admission.
 
 ### 3. Representation, propagation, enforcement
 
@@ -96,7 +99,12 @@ began. The database writer must linearize duplicates, so concurrent runs do not 
 check-then-insert race.
 
 Discord uses the existing `has-handle` value `discord:<user_id>`. The explicit relationship source
-map adds Discord; the general ingest catalog does not imply scoring eligibility.
+map adds Discord; the general ingest catalog does not imply scoring eligibility. Because the
+shipped event does not provide a trustworthy guild population, eligibility is limited to context
+the bot-token connector can prove is Discord channel type `DM` with no `guild_id`. Guild, group,
+other, and unknown contexts are explicitly ineligible. This prevents the current observed-sender
+fallback from giving a quiet large channel undiluted DM weight without adding OAuth or member-list
+authority.
 
 ### 5. Watched Source composes connector-base
 
@@ -108,6 +116,20 @@ from a catalog row.
 Checkpoint movement is per event/source and follows durable acceptance or durable filtered-event
 accounting. Independent endpoints back off independently. Revocation stops future observation at a
 linearized boundary while retained canonical history follows existing retention contracts.
+
+Connector runtimes receive no catalog grant. They call Switchboard's bounded
+`source.pair.preflight` MCP tool before provider connection and renew before its expiry, which can
+never outlive the catalog snapshot's 60-second acceptance window. Denied, unavailable, failed, or
+expired preflight keeps the connector inactive. Preflight does not reserve authority; Switchboard
+still validates every envelope, and an active connector stops observation if renewal fails.
+
+This change chooses synchronous durable Switchboard acceptance for webhook acknowledgment rather
+than adding a connector-owned durable ingress queue. A webhook handler may buffer at most 1 MiB of
+exact request bytes in memory to perform provider signature validation, then normalizes the event
+and calls Switchboard. It returns provider-success 2xx only for `accepted` or `duplicate`; rejection,
+unavailability, timeout, or unknown durability returns non-2xx and the provider retry reuses the
+same event identity. The verification buffer is released and never becomes persistence, logging,
+telemetry, tracing, or LLM input.
 
 ### 6. Provider choice is owner policy; technical recommendation is Telnyx first
 
@@ -122,12 +144,25 @@ ingress topology, and account-specific restrictions cannot be derived from publi
 must approve the provider and the provider must confirm those facts for the intended account before
 implementation.
 
-### 7. Proposed privacy default minimizes call content
+### 7. Proposed privacy default is metadata-only
 
 The recommended privacy profile is call lifecycle metadata only, with no audio-bearing feature,
-plus inbound SMS content through the protected ingest path with a 30-day provider/raw-content
-ceiling. The owner may instead choose metadata-only SMS, accepting that message content cannot be
-routed. Credentials and verification material are Tier 2 secured owner identity data.
+plus metadata-only inbound SMS. Exact request bytes may exist briefly in the 1 MiB verification
+buffer, but the body never enters canonical ingest or an LLM. Credentials and verification
+material are Tier 2 secured owner identity data.
+
+Content-enabled SMS is a separate owner option. The proposed 30-day period applies to direct source
+copies in connector filter/dead-letter payloads, Switchboard raw/normalized messages, route inbox
+envelopes, and verbatim session prompt/transcript fields. Expiry redacts those content fields while
+preserving lineage. It does not promise deletion of `public.ingestion_events` metadata, LLM output,
+tool calls, facts, memories, episodes, summaries, embeddings, earlier owner exports, or still-live
+managed backups. New exports see redacted state; restored managed backups run the sweep before
+normal reads. If the owner rejects any derived/backup survival, content-enabled activation needs a
+separate cross-system lineage-cascade and backup-erasure contract.
+
+The body-free canonical metadata that can survive includes the remote E.164 party identity. The
+owner must accept that identity-retention boundary explicitly; the direct-copy TTL is not a phone-
+metadata deletion promise.
 
 This is a proposal for exact owner review. The implementation packet cannot treat the recommendation
 as approval. A different provider, SMS profile, retention period, or ingress route changes the
@@ -158,8 +193,8 @@ absence of proof is not permission to retry.
 
 ## Risks / Trade-offs
 
-- **[Catalog availability becomes ingress-critical]** → Bound a last-known-good snapshot to five
-  minutes, expose degraded availability, and reject before persistence after expiry.
+- **[Catalog availability becomes ingress-critical]** → Bound a last-known-good snapshot to less
+  than 60 seconds, expose degraded availability, and reject before persistence at expiry.
 - **[Cached disablement can take up to 60 seconds]** → Treat emergency disable as connector
   shutdown plus catalog disable; the cache interval is the maximum semantic propagation delay.
 - **[Two rollout authorities can drift]** → Require exact parity before enforcement and delete the
@@ -169,8 +204,14 @@ absence of proof is not permission to retry.
   after it. Reconcile the baseline during archive so both stages remain legible.
 - **[Discord messages may lack a relationship handle]** → Preserve unresolved-sender/degraded
   behavior; do not fabricate identity or broaden OAuth access.
+- **[A large Discord context can look like one sender]** → Score only authenticated direct-message
+  context; mark every guild, group, or unknown context ineligible before downstream fallback.
 - **[Webhook retries and ordering can duplicate/regress lifecycle]** → Deduplicate stable event IDs
   and apply monotonic lifecycle rules under a database transaction.
+- **[A provider may require acknowledgment sooner than Switchboard can durably accept]** → Keep the
+  bridge inactive unless the selected provider's retry/timeout contract supports the synchronous
+  boundary; a future durable queue is a separately specified storage boundary, not an implicit
+  fallback.
 - **[Public ingress increases attack surface]** → Require TLS, provider signature/freshness
   validation, expected account/number binding, bounded bodies, rate limits, and no acceptance before
   authentication. The concrete exposure route remains an owner decision.
@@ -178,6 +219,9 @@ absence of proof is not permission to retry.
   the owner gate and again before implementation; fail closed when the expected primitive is absent.
 - **[Status projection leaks sensitive data]** → Build field-by-field content-blind DTOs and audit
   metadata; test forbidden field/value classes across API and UI.
+- **[A short source TTL can be mistaken for complete erasure]** → Name every direct store, redact
+  lineage-linked content there, disclose derived/export/backup survival, and default to metadata-only
+  unless the owner accepts those boundaries.
 - **[SMS send result is ambiguous]** → No adapter in this change; a later adapter must reconcile the
   same immutable attempt or stop without resend.
 - **[Foreign drafts move governing text]** → Recheck PR #4046 and #3960 immediately before semantic
@@ -213,10 +257,12 @@ contract:
 1. Telnyx (recommended if eligible) or Twilio;
 2. exact provider account/number and confirmed regional capabilities;
 3. owned public HTTPS ingress route;
-4. enabled call lifecycle subset;
-5. metadata-only or content-enabled inbound SMS;
-6. finite provider/raw-content retention (recommended 30 days); and
-7. continued outbound SMS deferral, unless a separate approved effect artifact is ready.
+4. provider webhook retry/timeout compatibility with durable-before-2xx acknowledgment;
+5. enabled call lifecycle subset;
+6. metadata-only or content-enabled inbound SMS;
+7. finite direct-copy retention (recommended 30 days) and acceptance of body-free identity,
+   derived, export, and backup survival; and
+8. continued outbound SMS deferral, unless a separate approved effect artifact is ready.
 
 Until an independently reviewed exact artifact records all seven and receives owner sign-off, the
 bridge remains `not_approved` and `bu-8cdl1.14` is not ready for the owner-device implementation

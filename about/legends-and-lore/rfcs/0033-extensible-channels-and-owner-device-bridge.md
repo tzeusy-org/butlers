@@ -106,14 +106,18 @@ exact enabled pair against one full catalog snapshot before deduplication or per
 
 The cache contract is explicit:
 
-- refresh interval: 60 seconds;
-- maximum last-known-good age: 300 seconds from the last complete successful load;
+- begin the next refresh no later than 60 seconds after the last complete successful load;
+- maximum usable last-known-good age: strictly less than 60 seconds;
 - atomic whole-snapshot replacement;
 - a failed or partial refresh never changes the snapshot or its success time;
 - a fresh cached snapshot may continue admitting pairs it already contains;
 - a pair absent from the cached snapshot is never admitted during failure; and
-- after 300 seconds, every ingest is rejected before persistence as retryable
+- at 60 seconds of snapshot age, every ingest is rejected before persistence as retryable
   `source_catalog_unavailable` until a full load succeeds.
+
+A committed disablement therefore stops acceptance on the next complete refresh or snapshot expiry,
+whichever comes first. Even if the refresh read fails or hangs, the prior enabled snapshot cannot
+authorize the pair at or after 60 seconds of age.
 
 Unknown, disabled, and mismatched pairs fail closed. Safe errors expose only canonical tokens and
 one of `invalid_source_syntax`, `unknown_source_pair`, `disabled_source_pair`, or
@@ -164,6 +168,20 @@ source_channel = discord
 lookup          = has-handle "discord:<provider_user_id>"
 ```
 
+The shipped connector does not currently carry an authenticated guild participant count, and the
+observed-sender fallback cannot distinguish a quiet large channel from a DM. Discord interaction
+eligibility therefore fails closed: only an authenticated bot-token event whose current
+Gateway/REST context proves channel type `DM` with no `guild_id` is eligible. That event carries
+`chat_type="private"`, `participant_count=2`, and `interaction_eligible=true`. Guild messages,
+group DMs, other channel types, and unknown context carry `interaction_eligible=false`; downstream
+sender counting cannot reclassify them. This uses only the shipped bot-token access and adds no
+OAuth, member-list, guild-visibility, or direct-message authority.
+
+Discord's official Channel resource distinguishes `DM` type 1 from `GROUP_DM` type 3 and guild
+channel types ([Channel resource](https://docs.discord.com/developers/resources/channel)); the
+Gateway `MESSAGE_CREATE` payload documents `guild_id` as optional and therefore its absence alone
+is not sufficient proof ([Gateway events](https://docs.discord.com/developers/events/gateway-events)).
+
 The provider message ID and connector endpoint retain source idempotency. Discord's official API
 reference identifies Discord object IDs as Snowflakes and documents bot-token and OAuth bearer
 authentication as separate mechanisms ([Discord API Reference](https://docs.discord.com/developers/reference));
@@ -179,10 +197,22 @@ checkpoint/resume, first baseline for delta sources, heartbeat, metrics, rate li
 per-source isolation, and graceful shutdown.
 
 A catalog pair is necessary for activation but never sufficient. Configuration enables a specific
-instance. Poll sources persist a checkpoint only after durable acceptance or accounted filtering.
-Webhook sources authenticate signature, freshness, expected account, and destination before
-acknowledging acceptance. A Switchboard timeout retries the same event identity; provider events
-remain at-least-once and Switchboard remains the deduplication boundary.
+instance. Because connector runtimes have no catalog read grant, each instance calls the
+Switchboard MCP boundary through `source.pair.preflight` before opening a provider connection. Its
+`source_pair_preflight.v1` request contains only channel/provider; Switchboard returns `authorized`,
+`denied`, or `unavailable` plus an opaque generation and authorization expiry no later than the
+underlying catalog snapshot's 60-second expiry. An active connector renews before expiry and stops
+provider observation if it cannot. Preflight reserves nothing: authoritative per-envelope
+validation still catches a disable race.
+
+Poll sources persist a checkpoint only after durable acceptance or accounted filtering. Webhook
+sources may hold at most 1,048,576 exact request bytes in process memory solely because Telnyx
+verifies the raw JSON bytes and Twilio validation depends on the exact URL plus form parameters or
+raw JSON body. That verification buffer is never persistence, logging, tracing, telemetry, or LLM
+input and is released after the request. The connector returns provider-success 2xx only after
+signature/freshness/account/destination validation and a durable Switchboard `accepted` or
+`duplicate` result. A rejected, unavailable, or unknown acceptance result returns non-2xx. Provider
+retry reuses the same stable event identity, so an earlier acceptance deduplicates.
 
 ## D7: Owner-Device Provider Decision
 
@@ -203,8 +233,10 @@ provider. Before implementation dispatch, an exact owner act must record:
 3. public HTTPS ingress route and ownership;
 4. provider authentication and webhook-verification material;
 5. enabled inbound event types;
-6. one privacy profile and finite retention period; and
-7. revocation and credential-deletion expectations.
+6. metadata-only SMS or content-enabled SMS with a finite direct-copy retention period and explicit
+   derived/backup survival acceptance; and
+7. revocation and credential-deletion expectations; and
+8. provider webhook retry/timeout behavior compatible with the durable-before-2xx boundary.
 
 Provider documentation and account capability must be refreshed at that gate because these facts
 can change. Without all seven, owner-device implementation remains blocked.
@@ -215,9 +247,11 @@ The proposed default for exact owner review is:
 
 - call lifecycle metadata only (`initiated`, `ringing`, `answered`, terminal), with no audio,
   recording, transcription, media stream, or call-control effects;
-- content-enabled inbound SMS so the message can enter the ordinary routing path, with a 30-day
-  raw/provider-content retention ceiling; alternatively, the owner may choose metadata-only SMS,
-  which omits the body and cannot support content routing;
+- metadata-only inbound SMS, which permits sender/time perception but omits the body from canonical
+  ingest and therefore cannot support content routing;
+- an optional content-enabled profile only if the owner accepts the direct-copy, derived, export,
+  and backup boundaries below; 30 days is the proposed direct-copy period, not a universal erasure
+  promise;
 - identity-bound provider credentials and verification material in secured Tier 2 owner
   `entity_info`;
 - stable E.164 remote-party identity resolved through the existing `has-phone` contract;
@@ -226,6 +260,31 @@ The proposed default for exact owner review is:
   callback body in logs, metrics, generic audit, catalog/status API, or setup UI; and
 - revocation stops polling/webhook acceptance and removes runtime credential availability without
   rewriting accepted history.
+
+The exact retention classes are:
+
+1. **Verification-only raw request:** at most 1 MiB held in memory for signature verification and
+   released after the request. It is never durable under either profile.
+2. **Direct source copies:** `connectors.filtered_events.full_payload`/`subject_or_preview`,
+   `switchboard.dead_letter_queue.original_payload`, `switchboard.message_inbox.raw_payload`/
+   `normalized_text`, per-butler `route_inbox.route_envelope`, and linked `sessions.prompt` or
+   retained process/transcript fields containing the verbatim source. In the content-enabled
+   profile, a lineage-aware sweep replaces body/provider fields with a fixed redaction marker at
+   the approved deadline while retaining body-free identity, timing, dedupe, routing, and redaction
+   evidence.
+3. **Canonical registry metadata:** `public.ingestion_events` contains no body/provider payload and
+   may survive as lineage, including body-free source/sender identity such as an E.164 party.
+4. **Derived semantic data:** `sessions.result`, `sessions.tool_calls`, facts, memories, episodes,
+   summaries, and embeddings follow their own retention. This source sweep does not claim it can
+   identify or erase paraphrases/inferences, so they may survive.
+5. **Exports and backups:** new exports after expiry see the redacted live form; earlier
+   owner-controlled exports are not retroactively changed. Managed backups may retain pre-expiry
+   direct content until their own expiry, and restore must run the source sweep before normal
+   runtime or product reads resume.
+
+An owner who requires complete derived or backup erasure must keep content-enabled SMS inactive
+until a separate lineage-cascade and backup-erasure contract is approved and implemented. The
+metadata-only profile remains available without that prerequisite.
 
 The owner UI is a content-blind setup/status view. Before approval it shows `not_approved` and has
 no effect action. After a separate implementation is authorized, it explains provider,
@@ -265,9 +324,12 @@ This draft deliberately avoids three foreign authorities:
 | Registration | Runtime attempts catalog write | Database denial; no self-registration fallback. |
 | Interaction sync | Concurrent/replayed group | One fact for the stable source tuple; losers observe existing. |
 | Interaction sync | Resolution returns no contacts for non-empty input | Preserve existing degraded result; do not advance as an all-clear. |
+| Discord scoring | Guild, group, or unknown context | Mark ineligible; never infer DM weight from observed sender count. |
 | Watched Source | One endpoint fails | Independent sources continue; failed source backs off with safe status. |
+| Watched Source | Preflight denied, unavailable, or expired | Do not open or continue provider observation; renew only through Switchboard. |
 | Watched Source | Switchboard result lost | Retain checkpoint; repeat the same ingest identity. |
-| Webhook ingress | Invalid/stale/wrong-account signature | Reject before acknowledgement as accepted or canonical persistence. |
+| Webhook ingress | Invalid/stale/wrong-account signature | Reject before canonical persistence and return non-2xx. |
+| Webhook ingress | Accepted/duplicate not durably confirmed | Return non-2xx; provider retry reuses the stable event identity. |
 | Setup | Partial configuration or repeated activate | Remain inactive; at most one attempt; name missing safe categories. |
 | Revocation | In-flight webhook/poll race | Linearize revocation; no event observed after the revocation boundary. |
 | Future SMS | Timeout before provider start | Retry only when durable evidence proves no provider effect began. |
@@ -304,8 +366,10 @@ the exact reviewed digest, including:
 
 1. provider Option A or B;
 2. call-lifecycle event subset;
-3. SMS metadata-only or content-enabled privacy profile;
-4. finite retention period (proposed 30 days for provider/raw content);
+3. SMS metadata-only (recommended) or content-enabled privacy profile;
+4. for content-enabled SMS, finite direct-copy retention (proposed 30 days) and explicit acceptance
+   of body-free canonical identity, derived data, and managed-backup survival under their separate policies;
 5. ingress route and exposure; and
-6. continued deferral of outbound SMS or a separately reviewed activation delta composed with the
+6. provider retry/timeout compatibility with durable-before-2xx acknowledgment; and
+7. continued deferral of outbound SMS or a separately reviewed activation delta composed with the
    then-current RFC 0023 policy.

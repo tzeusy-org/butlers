@@ -56,24 +56,29 @@ Scope: v1-mandatory
 - **AND** they MUST NOT contain the envelope payload, normalized text, sender identity, endpoint identity, recipient, credential, or raw provider response
 
 ### Requirement: Bounded Last-Known-Good Catalog Cache
-Switchboard SHALL refresh the full catalog snapshot at most every 60 seconds, swap snapshots
-atomically, and retain the last successfully loaded snapshot for no more than 300 seconds. A read
-failure MUST NOT admit an unseen pair, partially replace the snapshot, or extend the last-success
-time.
+Switchboard SHALL begin a full catalog refresh no later than 60 seconds after the preceding
+successful load, swap snapshots atomically, and use a last successfully loaded snapshot only while
+its age is strictly less than 60 seconds. A read failure MUST NOT admit an unseen pair, partially
+replace the snapshot, extend the last-success time, or permit acceptance at or after snapshot expiry.
 
 ID: REQ-source-channel-catalog-003
 Source: RFC 0033 §Two-stage validation and bounded cache (Proposed; owner sign-off required)
 Scope: v1-mandatory
 
 #### Scenario: Fresh last-known-good snapshot preserves a known pair
-- **WHEN** a catalog refresh fails and the last successful full snapshot is at most 300 seconds old
+- **WHEN** a catalog refresh fails and the last successful full snapshot is less than 60 seconds old
 - **THEN** an enabled pair present in that snapshot SHALL remain valid
 - **AND** a pair absent from that snapshot SHALL still be rejected
 
 #### Scenario: Stale or absent snapshot stops ingestion safely
-- **WHEN** no successful full snapshot exists or its age exceeds 300 seconds
+- **WHEN** no successful full snapshot exists or its age reaches 60 seconds
 - **THEN** Switchboard SHALL reject every envelope before persistence with `error_code="source_catalog_unavailable"` and `retryable=true`
 - **AND** it SHALL expose degraded catalog availability without presenting the cached pair set as current
+
+#### Scenario: Committed disablement has a sixty-second acceptance bound
+- **WHEN** a pair is disabled immediately after a complete catalog snapshot loads
+- **THEN** Switchboard SHALL stop accepting that pair on the next successful refresh or when that snapshot reaches 60 seconds of age, whichever occurs first
+- **AND** a clock-controlled test SHALL prove no event for the disabled pair is accepted at or after that deadline
 
 #### Scenario: Failed refresh preserves one coherent generation
 - **WHEN** a refresh reads only part of the catalog or raises before the full snapshot is validated

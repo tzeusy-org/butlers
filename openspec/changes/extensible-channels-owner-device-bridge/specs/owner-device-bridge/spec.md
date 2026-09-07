@@ -9,7 +9,7 @@ approves an exact provider, authentication, privacy, retention, and ingress cont
 The owner-device bridge SHALL remain inactive until one exact reviewed artifact records the owner-
 selected provider, provisioned account and number identity, authentication mechanism, webhook
 ingress route, enabled event kinds, privacy profile, retention period, revocation behavior, and
-regional/provider prerequisites. This draft MUST NOT reserve provider-specific catalog slugs,
+regional/provider retry and acknowledgment prerequisites. This draft MUST NOT reserve provider-specific catalog slugs,
 create credentials, expose ingress, activate a connector, or make SMS deliverable.
 
 ID: REQ-owner-device-bridge-001
@@ -82,9 +82,10 @@ Scope: v1-reserved
 - **AND** it SHALL not fetch, record, transcribe, store, or expose the audio-bearing resource
 
 ### Requirement: [TARGET-STATE] Exact Privacy Profile and Retention
-Before activation, the owner SHALL choose and approve an exact SMS body policy and finite retention
-period. Call lifecycle ingestion SHALL be metadata-only. Status, telemetry, audit, and setup
-surfaces SHALL remain content-blind under every profile.
+Before activation, the owner SHALL choose and approve either metadata-only SMS or content-enabled
+SMS with an exact finite source-content retention period and explicit acceptance of the derived and
+backup survival boundaries below. Call lifecycle ingestion SHALL be metadata-only. Status,
+telemetry, audit, and setup surfaces SHALL remain content-blind under every profile.
 
 ID: REQ-owner-device-bridge-004
 Source: RFC 0033 §Privacy profiles and retention (Proposed; owner sign-off required)
@@ -92,18 +93,39 @@ Scope: v1-reserved
 
 #### Scenario: Metadata-only SMS profile
 - **WHEN** the owner selects metadata-only SMS perception
-- **THEN** canonical events SHALL omit the SMS body and raw provider body while retaining only approved routing-safe metadata
-- **AND** neither classification nor downstream history SHALL receive the body
+- **THEN** after authenticated in-memory verification, canonical events SHALL use `ingestion_tier="metadata"`, `payload.raw=null`, and a body-free fixed summary
+- **AND** no SMS body SHALL enter connector persistence, Switchboard raw or normalized content, routing/classification, session artifacts, memory, facts, episodes, embeddings, audit, telemetry, or product reads
 
 #### Scenario: Content-enabled SMS profile
 - **WHEN** the owner selects content-enabled SMS perception with an exact retention period
 - **THEN** the connector SHALL admit the SMS body only through the standard protected ingest payload path
 - **AND** the body SHALL be absent from logs, metrics, catalog/status APIs, generic audit metadata, and browser setup payloads
 
-#### Scenario: Retention expiry removes retained provider content
-- **WHEN** the approved retention period expires
-- **THEN** retained owner-device provider content SHALL become unavailable through ordinary product reads
-- **AND** deletion or redaction evidence SHALL contain no copied message body, phone number, credential, or raw provider response
+#### Scenario: Source-content expiry redacts direct persisted copies
+- **WHEN** content-enabled SMS reaches the approved source-content retention deadline
+- **THEN** a lineage-aware sweep SHALL replace the SMS body and provider payload fields with a fixed redaction marker in `connectors.filtered_events.full_payload` and `subject_or_preview`, `switchboard.dead_letter_queue.original_payload`, `switchboard.message_inbox.raw_payload` and `normalized_text`, each routed butler's `route_inbox.route_envelope`, linked `{schema}.sessions.prompt`, and linked `{schema}.session_process_logs.command` or `stderr` when they contain the verbatim source content
+- **AND** it SHALL preserve body-free identifiers, timestamps, lifecycle state, deduplication keys, routing outcomes, and redaction evidence rather than deleting canonical lineage rows
+
+#### Scenario: Canonical ingestion registry remains body-free
+- **WHEN** either SMS privacy profile creates a `public.ingestion_events` row
+- **THEN** that row SHALL contain source, event, deduplication, tier, and routing metadata only and SHALL contain no SMS body or raw provider payload
+- **AND** the metadata row, including body-free source/sender identity such as an E.164 party, MAY survive source-content expiry as canonical lineage and SHALL be disclosed as such before activation
+
+#### Scenario: Derived semantic data follows separate retention
+- **WHEN** content-enabled SMS has produced `sessions.result`, `sessions.tool_calls`, facts, memories, episodes, summaries, or embeddings
+- **THEN** source-content expiry SHALL not claim to identify, retract, or erase those derived artifacts
+- **AND** they MAY survive under their owning retention policies unless a separately approved lineage-cascade contract governs them
+- **AND** the setup surface SHALL disclose this survival before content-enabled activation
+
+#### Scenario: Backup and export boundary is explicit
+- **WHEN** source content expires in the live database
+- **THEN** exports created after expiry SHALL contain only the redacted live representation, while owner-controlled exports made earlier are not retroactively modified
+- **AND** managed backups MAY retain pre-expiry source content until their own configured expiry, and a restored backup SHALL run the owner-device retention sweep before normal runtime or product reads resume
+
+#### Scenario: Owner requires complete downstream erasure
+- **WHEN** the owner does not accept survival of derived artifacts or managed-backup copies until their independent expiry
+- **THEN** content-enabled SMS SHALL remain unavailable
+- **AND** activation SHALL require a separately approved cross-system lineage-cascade and backup-erasure contract; the metadata-only profile remains the bounded option
 
 ### Requirement: [TARGET-STATE] Content-Blind Setup, Status, and Revocation
 The owner-device setup surface SHALL explain the selected provider, requested capabilities, privacy
@@ -118,7 +140,7 @@ Scope: v1-reserved
 
 #### Scenario: First glance explains authority and privacy
 - **WHEN** the owner opens the bridge setup surface
-- **THEN** it SHALL show the selected provider, inbound event kinds, privacy profile, retention period, ingress exposure, and whether outbound SMS is unsupported
+- **THEN** it SHALL show the selected provider, inbound event kinds, privacy profile, direct-copy retention period, body-free canonical identity survival, derived/export/backup survival, ingress exposure, and whether outbound SMS is unsupported
 - **AND** no credential value, full phone number, sender or recipient, message body, or provider payload SHALL be present
 
 #### Scenario: Activation is repeat-safe and truthful
