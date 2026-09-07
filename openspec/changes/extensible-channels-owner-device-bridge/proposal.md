@@ -50,6 +50,8 @@ message send.
 
 ### Modified Capabilities
 
+- `connector-base-spec`: Replaces closed source enums and static Pydantic pair authority at the
+  staged catalog cutover while preserving every other `ingest.v1` field and scenario.
 - `passive-interaction-sync`: Source-aware interaction identity, Discord resolution, concurrent
   replay behavior, and removal of the channel-capacity dependency on timestamp offsets.
 - `connector-discord`: Limits the new relationship input to the shipped bot-token event contract
@@ -74,5 +76,9 @@ message send.
 - **External providers:** no new dependency is selected. Twilio and Telnyx facts are sourced from
   their official documentation in the design; account eligibility, number availability,
   regulatory requirements, and the actual ingress route remain owner/provider prerequisites.
+- **Tooling follow-up:** `aib-7an` owns the separate `spec-trace-check.py` delta-Purpose defect.
+  OpenSpec 1.9 accepts an authored Purpose on each new-capability delta and carries it into the new
+  main spec on archive; the current checker falsely reports those three headings as errors. This
+  change preserves the valid prose and does not modify the shared checker.
 - **Tests:** +0 ~0 -0 in this specification-only change. Future behavior verification is named in
   `tasks.md`; no live canary or exact test-count obligation is introduced.

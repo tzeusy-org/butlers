@@ -19,9 +19,19 @@ Scope: v1-mandatory
 - **THEN** the connector SHALL reuse the same provider message ID and its existing source-scoped idempotency identity
 - **AND** Switchboard acceptance and downstream interaction sync SHALL not create a duplicate canonical event or interaction fact
 
-#### Scenario: Existing scope and participant gates still apply
-- **WHEN** a Discord event falls outside the configured guild/channel allowlist or exceeds the existing interaction participant gate
-- **THEN** it SHALL remain excluded from passive interaction evidence according to the shipped connector and connector-base contracts
+#### Scenario: Authenticated direct-message context is eligible
+- **WHEN** the shipped bot-token connector can prove from its authenticated Gateway/REST context that a message belongs to Discord channel type `DM`, with no `guild_id`
+- **THEN** it SHALL persist `chat_type="private"`, `participant_count=2`, and `interaction_eligible=true` in the canonical request context
+- **AND** passive interaction sync SHALL apply DM group weight to the one non-owner sender
+
+#### Scenario: Guild, group, or unknown context is ineligible
+- **WHEN** a Discord message has a `guild_id`, is a group-DM or other non-DM channel type, or lacks enough authenticated context to prove channel type `DM`
+- **THEN** the connector SHALL persist `interaction_eligible=false` and SHALL not label the context as private
+- **AND** passive interaction sync SHALL create no interaction fact from that event
+
+#### Scenario: Existing source allowlist still applies
+- **WHEN** a Discord event falls outside the configured guild/channel allowlist
+- **THEN** it SHALL remain excluded according to the shipped connector contract
 - **AND** relationship scoring SHALL not turn an excluded event into an eligible one
 
 #### Scenario: OAuth v2 remains unresolved
