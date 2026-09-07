@@ -7,9 +7,9 @@ capability specs with WHEN/THEN acceptance scenarios.
 
 | Directory | Question it answers |
 |---|---|
-| [specs/](specs/) | What are the current, adopted capability contracts (185 spec directories)? |
-| [changes/](changes/) | Which capability changes are proposed or in flight (108 active)? |
-| [changes/archive/](changes/archive/) | Which proposed changes have already landed or been superseded (186 archived)? |
+| [specs/](specs/) | What are the current, adopted capability contracts? |
+| [changes/](changes/) | Which capability changes are proposed or in flight? |
+| [changes/archive/](changes/archive/) | Which proposed changes have already landed or been superseded? |
 
 ## Reading Order
 
