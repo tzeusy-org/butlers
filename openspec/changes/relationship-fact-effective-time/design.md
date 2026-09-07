@@ -100,20 +100,41 @@ the earlier occurrence and reuses it on retries. A correction retains the occurr
 "the same relationship held again" distinct from "the dates on this occurrence were wrong" before
 overlap policy exists.
 
-The existing `UNIQUE (subject, predicate, object) WHERE validity = 'active'` index is replaced by an
-active occurrence uniqueness index over `(subject, predicate, object,
+The final schema uses an active occurrence uniqueness index over `(subject, predicate, object,
 COALESCE(effective_period_id, '00000000-0000-0000-0000-000000000000'::uuid))`. This representation
 allows more than one active occurrence for one SPO. It does not decide whether a predicate is
 single-valued or whether two periods overlap; `bu-4ss0u` owns that later exclusion policy.
 
+The existing `UNIQUE (subject, predicate, object) WHERE validity = 'active'` index cannot be removed
+in the expand migration. The deployed writer names that exact inference target in `ON CONFLICT`; if
+the index disappears while that writer is live, PostgreSQL rejects the statement before it can
+write. The rollout therefore carries both indexes through a transition stage. While both exist, the
+legacy index intentionally prevents repeated active occurrences even though the final expression
+index is present.
+
 ### 4. Make corrections explicit compare-and-swap operations
 
-The writer gains optional `effective_period_id`, the four bound fields, and `corrects_fact_id`.
-Temporal arguments are a complete packet: omitting all of them selects the legacy default
-occurrence with unknown bounds. For each side, a concrete timestamp requires a concrete precision;
-a concrete precision requires a timestamp; and `unbounded` requires the timestamp to be omitted.
-The unknown form omits both fields for that side. `corrects_fact_id` is an operation argument and is
-not stored as a new column.
+The writer gains optional nullable `effective_period_id`, the four bound fields, and
+`corrects_fact_id`. It does not track JSON key presence. Omission and explicit JSON `null` have the
+same canonical meaning at every optional position:
+
+| Input | Assert/replay mode (`corrects_fact_id` omitted or null) | Correction mode (`corrects_fact_id` non-null) |
+|---|---|---|
+| `effective_period_id` omitted/null | Default NULL occurrence | Inherit the target row's occurrence id |
+| `effective_period_id` non-null | Use that stable non-zero occurrence id | Must equal the target row's occurrence id |
+| Bound value omitted/null and precision omitted/null | Unknown bound | Desired replacement bound is unknown |
+| Bound value omitted/null and precision `unbounded` | Explicitly open bound | Desired replacement bound is explicitly open |
+| Bound value non-null and concrete precision | Normalize and store the concrete bound | Normalize as the desired replacement bound |
+| Bound value non-null with omitted/null/`unbounded` precision | Invalid | Invalid |
+| Bound value omitted/null with concrete precision | Invalid | Invalid |
+
+`corrects_fact_id` omitted or explicit null selects assert/replay mode. A non-null value selects
+compare-and-swap correction mode even when every other temporal key is omitted or null. Therefore
+`corrects_fact_id` alone means "replace this exact active version with wholly unknown effective
+bounds while retaining its occurrence id." A correction packet is the complete desired result, not
+a partial patch: a caller changing only one bound must resend the other desired bound. The string
+`unknown`, empty strings, and the all-zero UUID are invalid rather than aliases. `corrects_fact_id`
+is an operation argument and is not stored as a new column.
 
 For a new or repeated occurrence, `corrects_fact_id` is absent. If the active occurrence slot is
 empty, the writer inserts it. If that slot already holds an identical normalized temporal packet and
@@ -122,18 +143,19 @@ still appended under the existing evidence deduplication contract. If the occupi
 the call fails and instructs the caller to name the exact row it intends to correct. This prevents a
 repeated-period request or a stale retry from silently becoming a correction.
 
-For correction, `corrects_fact_id` must identify the active row with the same SPO and effective
-period id. Under the existing transaction and per-occurrence lock, the writer supersedes exactly
-that row, inserts one active replacement with the corrected packet, preserves the old packet on the
-old row, and carries evidence forward. The compare-and-swap precondition makes two concurrent
-different corrections deterministic: the transaction that locks and commits the named row first
-succeeds; the other finds that exact id no longer active, fails as stale, and performs no fact,
-evidence, coverage, or projection write. The caller may inspect the new active version and retry a
-deliberate correction against its id.
+For correction, `corrects_fact_id` must identify the active row with the same SPO. An omitted/null
+period id inherits that row's occurrence id; a supplied id must match it. Under the existing
+transaction and per-occurrence lock, the writer supersedes exactly that row, inserts one active
+replacement with the complete desired packet, preserves the old packet on the old row, and carries
+evidence forward. The compare-and-swap precondition makes two concurrent different corrections
+deterministic: the transaction that successfully locks the named row while it is active and commits
+first succeeds; the other finds that exact id no longer active, fails as stale, and performs no
+fact, evidence, coverage, approval-context, or projection write. The caller may inspect the new
+active version and retry a deliberate correction against its id.
 
-This rule applies only when a temporal packet is present. Calls that omit the whole temporal packet
-retain the current default-occurrence behavior for non-temporal provenance changes, so existing
-callers remain compatible.
+Calls with all temporal values omitted or null and no correction target retain the current
+default-occurrence behavior for non-temporal provenance changes, so existing callers remain
+compatible. There is no separate "explicit all-null packet" branch.
 
 ### 5. Keep effective validity independent of every existing axis
 
@@ -150,16 +172,20 @@ temporal correction.
 
 ### 6. Preserve temporal intent through approval and evidence paths
 
-The normalized caller-controlled temporal packet, `effective_period_id`, and `corrects_fact_id` are
-part of `pending_actions.tool_args` because they are part of the exact assertion the owner reviews.
-They are not server provenance. `src` and `observed_at` remain only in server-written
+The normalized caller-controlled temporal packet, resolved `effective_period_id`, and
+`corrects_fact_id` are part of `pending_actions.tool_args` because they are part of the exact
+assertion the owner reviews. The parked JSON uses one canonical shape: all six temporal keys are
+present; unknown/default values are JSON null; concrete bounds are normalized UTC strings; and UUIDs
+are canonical strings. Thus omitted and explicit-null requests deduplicate and replay identically.
+These values are not server provenance. `src` and `observed_at` remain only in server-written
 `relationship.fact_approval_context` as specified by `fact-evidence-and-coverage`.
 
-Approval verification compares the stored temporal packet as well as the SPO identity; dispatch may
-not alter it. Approved replay uses the parked normalized packet, source, observation time, evidence,
-session, and action id. A temporal correction carries prior evidence to the replacement and appends
-the approved evidence under existing ledger rules. It never rewrites evidence or the old effective
-packet.
+Approval deduplication and verification compare the canonical stored temporal packet, correction
+target, and SPO identity; dispatch may not alter them. Approved replay uses the parked normalized
+packet, source, observation time, evidence, session, and action id. Pre-temporal pending actions that
+carry none of the six keys normalize to the same all-null/default packet on replay. A temporal
+correction carries prior evidence to the replacement and appends the approved evidence under
+existing ledger rules. It never rewrites evidence or the old effective packet.
 
 ### 7. Leave readers assertion-current
 
@@ -196,17 +222,52 @@ admits one correction and returns a visible stale-write failure to the other.
 
 ## Migration and Compatibility Plan
 
-Implementation under `bu-h3b7t` chooses the then-free Relationship migration revision. The migration
-adds the five nullable columns with no temporal backfill, adds the named shape, canonical-alignment,
-range, and non-zero-period checks, and replaces only the active-SPO unique index with the
-occurrence-scoped equivalent.
-Legacy rows remain the null occurrence with unknown bounds; no value is synthesized from
-`created_at`, `observed_at`, or `last_seen`.
+Implementation under `bu-h3b7t` chooses then-free Relationship revisions for two separate schema
+acts. A single migration that swaps the indexes is forbidden because it cannot serve both the
+deployed old writer and repeated-period writes.
 
-Downgrade removes only the temporal columns, constraints, and occurrence index, then restores the
-old active-SPO index. Because multiple active occurrences may exist by then, downgrade must first
-fail closed with a diagnostic if collapsing the occurrence dimension would violate old uniqueness;
-it must not delete, supersede, or choose rows automatically.
+1. **Expand schema while the old writer remains valid.** The first migration adds the five nullable
+   columns with no temporal backfill, adds the named shape, canonical-alignment, range, and
+   non-zero-period checks, and creates the occurrence-scoped unique index. It MUST retain
+   `uq_ef_spo_active` unchanged. The exact deployed insert with
+   `ON CONFLICT (subject, predicate, object) WHERE validity='active' DO NOTHING` MUST continue to
+   prepare and execute against this two-index schema. Legacy rows remain the null occurrence with
+   unknown bounds; no value is synthesized from `created_at`, `observed_at`, or `last_seen`.
+2. **Deploy a transition writer while both indexes remain.** The new writer uses targetless
+   `ON CONFLICT DO NOTHING` plus its locked re-read/CAS path, so its insert SQL is valid with the
+   legacy index present, with both indexes present, and with only the final occurrence index. Before
+   approval parking or any write, it checks whether `relationship.uq_ef_spo_active` exists. While it
+   exists, any temporal intent (a non-null bound or precision, a non-null period id, or a non-null
+   correction target) MUST fail with a stable `temporal_cutover_pending` error. Omitted/all-null
+   calls continue the old single-slot behavior. This prevents an old writer from later replacing a
+   temporal row with an all-null version and prevents the legacy index from turning a repeated
+   occurrence into an unexplained conflict.
+3. **Prove the writer transition.** Every Relationship writer instance must report the transition
+   writer's exact image/code identity, old instances must be absent, and real-PostgreSQL transition
+   tests must pass before the second migration is authorized. Process health or elapsed rollout time
+   alone is insufficient proof. No temporal approval may be parked during this stage because the
+   cutover check precedes parking.
+4. **Contract the legacy index, then enable temporal writes.** A later migration drops only
+   `uq_ef_spo_active`; it leaves the occurrence index and temporal columns/checks in place. The same
+   transition writer detects that absence and enables normalized temporal assertions, explicit
+   repeated period ids, and CAS corrections. This index absence is the schema capability signal;
+   there is no time-based or process-local feature flag. Old-writer SQL is expected to fail after
+   this point, which is why step 3 is a hard prerequisite.
+
+Rollback is bounded by the same compatibility facts:
+
+- Before step 4, code rollback is safe: disable/drain the transition writer, restore the old writer,
+  then optionally reverse the expand migration. Temporal intent has been rejected, the old conflict
+  target still exists, and no temporal payload needs preservation.
+- After step 4 but before any temporal write is admitted, an operator MAY quiesce all fact writers,
+  prove there is at most one active row per SPO, recreate `uq_ef_spo_active`, and then roll code back.
+  The proof and index creation must occur in one controlled no-write window.
+- After any temporal assertion, correction, or repeated occurrence is admitted, automatic downgrade
+  or old-writer rollback is prohibited. Multiple active occurrences may make the legacy index
+  impossible to recreate, and even a single temporal occurrence could be silently replaced by old
+  code with an all-null packet. Recovery must roll forward or use a separately reviewed,
+  data-preserving procedure; it MUST NOT delete, choose, supersede, flatten, or discard temporal rows
+  merely to make the legacy index build.
 
 ## Risks and Mitigations
 
@@ -215,6 +276,10 @@ it must not delete, supersede, or choose rows automatically.
 - Coarse intervals drift by timezone: coarse values carry no timezone and normalize in UTC by rule.
 - A correction overwrites another correction: exact-row compare-and-swap makes the loser stale with
   no partial writes.
+- An old writer loses its inferred conflict target: the expand migration retains that index until
+  exact old-writer absence is proven, and the transition writer uses targetless conflict handling.
+- Temporal behavior starts while mixed writer versions are live: the transition writer rejects
+  temporal intent while the legacy index exists and checks before approval parking or persistence.
 - Repeated periods overlap before cardinality enforcement: the representation permits this by
   design, and `bu-4ss0u` is the explicit enforcement owner.
 - Current reads appear to mean "effective now": scenarios pin their continued assertion-current
