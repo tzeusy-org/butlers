@@ -10,15 +10,16 @@
 //   - Outcome record (two mono lines)
 //   - KV band, metadata block
 //   - Provenance section (omitted when no source episode)
-//
-// No commit footer — mutations live only on the fact page.
+//   - Commit footer (Retire; the only rule mutation, bu-6t8ix.3)
 //
 // Binding docs:
 // - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Rule"
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §4, §6
 // ---------------------------------------------------------------------------
 
+import { useState } from "react";
 import { useParams } from "react-router";
+import { toast } from "sonner";
 
 import {
   DetailEyebrow,
@@ -29,16 +30,79 @@ import {
   StateLine,
 } from "@/components/memory/DetailSkeleton";
 import { Mono } from "@/components/ui/Mono";
+import { Voice } from "@/components/ui/Voice";
 import { Badge } from "@/components/ui/badge";
 import { Page } from "@/components/ui/page";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { useRule } from "@/hooks/use-memory";
+import { useRetireRule, useRule } from "@/hooks/use-memory";
 import { formatDayStamp, permanenceTag } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
+import type { MemoryRule } from "@/api/types.ts";
 
 /** First 8 chars of an id for inline provenance labels. */
 function shortFragment(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+// ---------------------------------------------------------------------------
+// Commit footer (Retire)
+// ---------------------------------------------------------------------------
+
+/**
+ * The only mutation on the rule surface: retire (stops the rule from firing,
+ * kept on the books for reference — bu-6t8ix.3). One-step confirm, mirroring
+ * FactDetailPage's Retract: the pill becomes `Retire (confirm?)` for 5s, no
+ * modal. Once retired there is no un-retire verb yet, so the button becomes a
+ * disabled `Retired` label instead of re-arming.
+ */
+function CommitFooter({ rule }: { rule: MemoryRule }) {
+  const retireMutation = useRetireRule();
+  const [armed, setArmed] = useState(false);
+  const isRetired = rule.retired_at != null;
+
+  const onRetire = () => {
+    if (isRetired) return;
+    if (!armed) {
+      setArmed(true);
+      // Disarm after 5s if the owner does not follow through.
+      window.setTimeout(() => setArmed(false), 5000);
+      return;
+    }
+    setArmed(false);
+    retireMutation.mutate(rule.id, {
+      onError: (err) =>
+        toast.error("Failed to retire rule", {
+          description: err instanceof Error ? err.message : undefined,
+        }),
+    });
+  };
+
+  return (
+    <footer className="flex flex-col gap-3 border-t border-[var(--border-soft)] pt-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          disabled={retireMutation.isPending || isRetired}
+          onClick={onRetire}
+          className={cn(
+            "inline-flex h-7 items-center rounded-full px-3.5",
+            "font-mono text-[11px] font-medium",
+            "border border-[var(--border)] bg-transparent text-fg",
+            "transition-colors hover:border-fg",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
+            "disabled:pointer-events-none disabled:opacity-40",
+          )}
+        >
+          {isRetired ? "Retired" : armed ? "Retire (confirm?)" : "Retire"}
+        </button>
+        <Voice variant="italic" as="span" className="text-[13px] text-[var(--mfg)]">
+          {isRetired
+            ? "This rule no longer fires; kept on the books for reference."
+            : "Stops the rule from firing; kept on the books for reference."}
+        </Voice>
+      </div>
+    </footer>
+  );
 }
 
 export default function RuleDetailPage() {
@@ -62,6 +126,11 @@ export default function RuleDetailPage() {
   // audit query). Label it explicitly rather than leaving it distinguishable
   // only via the raw metadata block below.
   const forgotten = rule?.metadata?.["forgotten"] === true;
+
+  // Retired (bu-6t8ix.3): the rule stopped firing via an explicit owner
+  // action (distinct from forgotten — a retired rule was not necessarily
+  // wrong, it's just no longer enforced). Surfaced the same way forgotten is.
+  const retired = rule?.retired_at != null;
 
   const provenance =
     rule?.source_episode_id != null ? (
@@ -87,6 +156,7 @@ export default function RuleDetailPage() {
           <div className="flex gap-1.5">
             <Badge variant="secondary">{rule.maturity}</Badge>
             {forgotten && <Badge variant="secondary">forgotten</Badge>}
+            {retired && <Badge variant="secondary">retired</Badge>}
           </div>
         ) : undefined
       }
@@ -149,6 +219,9 @@ export default function RuleDetailPage() {
 
           {/* Provenance — omitted when no source episode. */}
           <ProvenanceSection>{provenance}</ProvenanceSection>
+
+          {/* Commit footer — the only rule mutation (Retire, bu-6t8ix.3). */}
+          <CommitFooter rule={rule} />
         </div>
       )}
     </Page>
