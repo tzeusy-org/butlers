@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-06-14
+**Amended:** 2026-09-09 — Pocket retired, Readwise promoted to spec-first status (bu-ecu3w)
 
 ## Summary
 
@@ -120,8 +121,9 @@ path; the user-token automation path was rejected for the same ban risk that gat
 | Notion | P2 | Useful as a knowledge base, but the API **lacks change detection** (no sync tokens) — must poll and diff; rate-limited. |
 | Obsidian vault | P2 | Technically trivial (a file watcher), high value for vault users — but it depends on a generic FileWatch base that v1 does not build (see below) and on the vault being host-accessible. |
 | Google Drive / Dropbox cloud storage | P2 | Google Drive *metadata* events are in v1 (v1.md:90). Full-text content extraction (PDF parsing, format conversion) is a different problem and is deferred. |
-| Browser bookmarks / reading list | P3 | Low standalone value; infrequently accessed. Raindrop/Pocket APIs are the easy path if ever needed. |
-| Readwise / Pocket (reading highlights) | P2 | Low complexity via Readwise, but Readwise is a paid subscription and the value is niche to heavy readers. |
+| Browser bookmarks / reading list | P3 | Low standalone value; infrequently accessed. |
+| Pocket (reading highlights) | **RETIRED** | Mozilla shut Pocket down on 2025-07-08 and ended API transactions on 2025-10-08 (https://blog.mozilla.org/en/mozilla/building-whats-next/). No longer a viable candidate under any priority — see Amendment 1. |
+| Readwise (reading highlights) | **SPEC-FIRST** (see Amendment 1) | No longer a blanket P2 deferral. A connector contract is drafted in `openspec/changes/specify-readwise-reading-capture/` (spec-only; no code, credential, or provider effect). Promotion to v1 scope remains gated on an owner-provisioned `readwise_token` subscription/token and acceptance of that contract — the paid-subscription cost that originally justified deferral is now an explicit execution gate on the contract, not a reason to skip specifying it. |
 
 ### Social Media
 
@@ -232,6 +234,42 @@ The practical decision rule that falls out of this catalogue:
 - If it is a **new sidecar or transport model (Signal)**, it waits until the existing model
   (WhatsApp) is proven solid.
 
+## Amendments Applied
+
+### Amendment 1 (2026-09-09) — Pocket Retirement and Readwise Spec-First Promotion
+
+Applied per `openspec/changes/specify-readwise-reading-capture` (bu-ecu3w), a spec-first
+prerequisite for `bu-27dxl.15` (perception expansion) under the coordinator-reviewed run-6
+shaping packet (`/home/tze/.local/share/butlers/coordinator-evidence/run6-shaping-20260906/`).
+
+**Summary:** The combined "Readwise / Pocket" deferral row is split. Pocket is retired outright —
+Mozilla shut the service down on 2025-07-08 and ended API transactions on 2025-10-08, so it is no
+longer a viable candidate at any priority. Readwise is promoted from a blanket P2 deferral to
+**spec-first** status: its connector contract (auth, cursor/pagination, rate limits, dedup/update
+identity, deletion handling, content sensitivity, truthful annotation provenance) is drafted in
+`openspec/changes/specify-readwise-reading-capture/specs/connector-readwise/spec.md`. This
+amendment does **not** move Readwise into the v1 connector roster (§"The v1 Connector Roster"
+above is unchanged) and does not itself authorize any account, token, credential, or provider
+action — those remain gated on a separate owner act naming the actual subscription/token/content
+consent, per that change's proposal.
+
+**Changes made:**
+- §"Deferred Connectors" → "Productivity & Knowledge" table: the "Readwise / Pocket" row is split
+  into a "Pocket" row marked **RETIRED** (with the shutdown citation) and a "Readwise" row marked
+  **SPEC-FIRST**, pointing at the drafted contract and naming the token/subscription execution
+  gate explicitly.
+- This "Amendments Applied" section is added (RFC 0018 previously had none).
+
+**Not in scope:** No RFC 0003 channel/provider pairing or RFC 0004 `entity_info` credential-type
+registration is applied to those RFCs by this amendment. The drafted connector spec proposes a
+`reading/readwise` pairing and a `readwise_token` credential type; per this repo's existing
+amendment convention (RFC 0003 Amendments 1-2, RFC 0004 Amendment 2), those RFCs are amended
+together with the implementation that makes the enum values real, not by a drafting-only packet.
+
+**Backward compatibility:** Doctrine/scope-record change only. No code, migration, credential,
+runtime, or provider behavior changes. No existing connector, deferral entry, or v1 roster member
+is affected.
+
 ## References
 
 - `about/heart-and-soul/v1.md` — v1 scope doctrine. Connector roster (lines 82-99), success
@@ -242,3 +280,5 @@ The practical decision rule that falls out of this catalogue:
   approval and resolver layers, in lieu of a connector-level privacy-tier abstraction.
 - `docs/plans/connector-gaps.md` (deleted) — the planning catalogue this RFC supersedes as the
   durable home for connector scope and deferral rationale.
+- `openspec/changes/specify-readwise-reading-capture/` — the drafted Readwise connector contract
+  (Amendment 1).
