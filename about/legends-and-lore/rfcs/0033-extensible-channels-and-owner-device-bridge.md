@@ -13,15 +13,18 @@ also replaces relationship interaction hour slots with a source-aware stable key
 already-shipped Discord bot-token source to passive scoring, and defines Watched Source as a
 connector profile.
 
-The owner-device calls/SMS bridge remains reserved and inactive. This RFC presents researched
-Twilio and Telnyx options plus a proposed privacy/authentication contract, but it selects neither
-provider and does not authorize ingress exposure, credential setup, activation, or SMS delivery.
+The owner-device calls/SMS bridge remains reserved and inactive. This RFC presents Telnyx as the
+only researched V1 candidate and retains Twilio as an ineligible future alternative requiring a
+separate contract. It selects no provider and does not authorize ingress exposure, credential
+setup, activation, or SMS delivery.
 
 ## Existing Contracts and Precedence
 
 - RFC 0003 currently enumerates valid `ingest.v1` channel/provider pairs and the runtime enforces
-  the same closed `Literal` and static pair matrix. After the enforcement cutover defined here,
-  the catalog becomes semantic authority while the `ingest.v1` field meanings remain unchanged.
+  a larger closed `Literal` and static pair matrix. On adoption, `LEGACY_SOURCE_PAIRS_V1` below
+  becomes the single pre-cutover set and supersedes RFC 0003's stale field-contract wording;
+  after enforcement cutover, the catalog becomes semantic authority while the `ingest.v1` field
+  meanings remain unchanged.
 - RFC 0013 D4 assigns arbitrary per-channel hours so daily incoming/outgoing facts do not collide.
   After source-aware persistence is deployed to every writer, the stable source tuple defined here
   supersedes those hour markers and `valid_at` returns to real event time.
@@ -73,26 +76,44 @@ public.source_channel_catalog (
 )
 ```
 
-Registration is migration-only for this move: the migration owner writes; Switchboard and the
-dashboard API receive read access; connector, butler, and Messenger runtime roles receive no direct
-access; and no runtime role receives a write grant. A later audited owner mutation API would be a
-new trust boundary and needs its own approved change.
+Registration is migration-only for this move: the migration owner writes and Switchboard alone
+receives runtime `SELECT`. Connector, butler, Messenger, and dashboard runtime roles receive no
+direct table access and no runtime role receives a write grant. The owner-facing dashboard API
+reads the bounded projection through Switchboard rather than SQL. A later audited owner mutation API
+would be a new trust boundary and needs its own approved change.
 
-The seed is the exact 20-pair set currently enforced in
-`roster/switchboard/tools/routing/contracts.py`:
+`LEGACY_SOURCE_PAIRS_V1` is the one authoritative pre-cutover tuple set. It is the exact 20-pair
+value currently enforced by the `SourceChannel`/`SourceProvider` projections and
+`_ALLOWED_PROVIDERS_BY_CHANNEL` in `roster/switchboard/tools/routing/contracts.py`:
 
 ```text
-telegram_bot/telegram             telegram_user_client/telegram
-slack/slack                       email/gmail
-email/imap                        api/internal
-mcp/internal                      voice/live-listener
-whatsapp_user_client/whatsapp     google_calendar/google_calendar
-spotify_user_client/spotify       owntracks/owntracks
-dashboard/internal                home_assistant/home_assistant
-gaming/steam                      google_drive/google_drive
-discord/discord                   wellness/google_health
-wellness/home_assistant           activitywatch/activitywatch
+activitywatch/activitywatch
+api/internal
+dashboard/internal
+discord/discord
+email/gmail
+email/imap
+gaming/steam
+google_calendar/google_calendar
+google_drive/google_drive
+home_assistant/home_assistant
+mcp/internal
+owntracks/owntracks
+slack/slack
+spotify_user_client/spotify
+telegram_bot/telegram
+telegram_user_client/telegram
+voice/live-listener
+wellness/google_health
+wellness/home_assistant
+whatsapp_user_client/whatsapp
 ```
+
+The 11-pair baseline connector-base list and RFC 0003's stale original field-contract list are
+retained only as historical text. They are non-operative after this RFC is adopted and MUST NOT
+seed, validate, test, or define compatibility. A set-equality guard compares all tuples in
+`LEGACY_SOURCE_PAIRS_V1` with the runtime Literal projections, static pair matrix, and migration seed;
+cardinality 20 alone is not evidence of parity.
 
 The catalog read API exposes only `channel`, `provider`, and `enabled`, plus an envelope-level
 `source_available`. It offers no mutation and must not be combined with connector instance,
@@ -127,7 +148,7 @@ one of `invalid_source_syntax`, `unknown_source_pair`, `disabled_source_pair`, o
 
 Rollout has three serialized stages:
 
-1. **Representation.** Add both tables, constraints, complete seed, and read-only grants. The
+1. **Representation.** Add the catalog table, constraints, complete seed, and read-only grants. The
    static validator remains sole authority.
 2. **Propagation.** Add the catalog loader, exact static-vs-catalog parity guard, content-blind read
    API, and update every validator/conformance consumer. Both authorities must agree; disagreement
@@ -137,7 +158,7 @@ Rollout has three serialized stages:
    pair without editing validator code.
 
 Binary rollback first disables any catalog-only connector configuration and returns to the static
-seeded set. The catalog tables and accepted rows remain. Rollback never rewrites stored source
+seeded set. The catalog table and accepted rows remain. Rollback never rewrites stored source
 identity, replays provider payloads, or maps a catalog-only event onto a legacy pair. Schema
 downgrade is forbidden while a runtime depends on catalog-only pairs; the safe rollback is an
 application rollback with additive data retained.
@@ -199,11 +220,21 @@ per-source isolation, and graceful shutdown.
 A catalog pair is necessary for activation but never sufficient. Configuration enables a specific
 instance. Because connector runtimes have no catalog read grant, each instance calls the
 Switchboard MCP boundary through `source.pair.preflight` before opening a provider connection. Its
-`source_pair_preflight.v1` request contains only channel/provider; Switchboard returns `authorized`,
-`denied`, or `unavailable` plus an opaque generation and authorization expiry no later than the
-underlying catalog snapshot's 60-second expiry. An active connector renews before expiry and stops
-provider observation if it cannot. Preflight reserves nothing: authoritative per-envelope
-validation still catches a disable race.
+`source_pair_preflight.v1` request names connector type, channel/provider, and the trusted configured
+connector endpoint identity, but those caller fields carry no authority. At the exact configured
+Switchboard MCP origin, bearer middleware first resolves the connector-base server-held principal:
+connector type, allowed source-pair set, allowed endpoint-identity set, exact Switchboard audience,
+and active/revoked state. Any missing, invalid, expired, revoked, cross-connector, out-of-scope,
+endpoint-mismatched, wrong-audience, redirected, or alternate-origin request is rejected before a
+catalog read. Only an exact match can receive `authorized`, `denied`, or `unavailable` plus an
+opaque principal-bound authorization reference, catalog generation, and expiry no later than the
+underlying snapshot's 60-second expiry. The response reflects no secret or endpoint identity.
+
+An active connector renews before expiry and stops provider observation if it cannot. Preflight
+reserves nothing: authoritative per-envelope validation still catches a disable race. A Watched
+Source whose endpoint identity is not already registered in its server-held principal remains
+inactive; this RFC grants no provider identity read, endpoint discovery call, URL rotation, or
+placeholder authority to break that bootstrap boundary.
 
 Poll sources persist a checkpoint only after durable acceptance or accounted filtering. Webhook
 sources may hold at most 1,048,576 exact request bytes in process memory solely because Telnyx
@@ -216,30 +247,33 @@ retry reuses the same stable event identity, so an earlier acceptance deduplicat
 
 ## D7: Owner-Device Provider Decision
 
-The first bridge is intentionally provider-neutral until the owner chooses. Research performed on
-2026-09-07 supports two credible options:
+The first bridge remains inactive until the owner chooses. Research performed on 2026-09-07
+supports one conditional V1 candidate and one future alternative:
 
 | Option | Verified capabilities | Material constraint |
 |---|---|---|
-| **A — Telnyx (recommended subject to eligibility)** | Messaging webhooks are Ed25519-signed, document stable event IDs for deduplication, retries, and out-of-order delivery ([Messaging webhooks](https://developers.telnyx.com/docs/messaging/messages/receiving-webhooks)). Voice webhooks carry unique event IDs, call-leg/session IDs, signatures, retry metadata, and recommend `command_id` for 60-second duplicate-command suppression ([Voice API webhooks](https://developers.telnyx.com/docs/voice/programmable-voice/voice-api-webhooks)). API requests use bearer API keys ([Voice commands](https://developers.telnyx.com/docs/voice/programmable-voice/sending-commands)). | Regional number availability, account eligibility, registration, exact key scope, and public webhook ingress must be confirmed for the owner's account. The documented voice command window is not a general SMS-send idempotency guarantee. |
-| **B — Twilio** | Incoming SMS uses configured webhooks and outgoing messages expose stable Message SIDs plus status callbacks ([Message resource](https://www.twilio.com/docs/messaging/api/message-resource), [incoming SMS webhook](https://www.twilio.com/docs/messaging/guides/webhook-request)). Calls expose Call SIDs and progress callbacks ([Call resource](https://www.twilio.com/docs/voice/api/call-resource)). Twilio signs webhook requests and recommends SDK validation ([Webhook security](https://www.twilio.com/docs/usage/webhooks/webhooks-security)); restricted API keys can scope Messaging and Voice REST access ([Restricted API keys](https://www.twilio.com/docs/iam/api-keys/restricted-api-keys)). | Regional number availability, account eligibility, registration, public webhook ingress, and webhook Auth Token handling must be confirmed. The cited Message create contract does not document a general client idempotency parameter, so a timeout without a returned SID is ambiguous and cannot be blindly retried. |
+| **A — Telnyx, conditional V1 candidate** | Messaging webhooks are Ed25519-signed, document stable event IDs for deduplication, retries, and out-of-order delivery ([Messaging webhooks](https://developers.telnyx.com/docs/messaging/messages/receiving-webhooks)). Voice webhooks carry unique event IDs, call-leg/session IDs, signatures, retry metadata, and recommend `command_id` for 60-second duplicate-command suppression ([Voice API webhooks](https://developers.telnyx.com/docs/voice/programmable-voice/voice-api-webhooks)). API requests use bearer API keys ([Voice commands](https://developers.telnyx.com/docs/voice/programmable-voice/sending-commands)). | Regional number availability, account eligibility, registration, exact key scope, public webhook ingress, and exact owner approval remain unproven prerequisites. The documented voice command window is not a general SMS-send idempotency guarantee. |
+| **B — Twilio, future alternative only** | Incoming SMS webhook parameters include a stable `MessageSid` but no timestamp ([Incoming message webhook](https://www.twilio.com/docs/messaging/guides/webhook-request), [timestamp guidance](https://help.twilio.com/articles/46569585455003)). Twilio signs the exact URL and request parameters/body ([Webhook security](https://www.twilio.com/docs/usage/webhooks/webhooks-security)). Webhook connection overrides document default retry policy `ct`; retrying 4xx/5xx/read-timeout outcomes requires explicit `rp` configuration ([Connection overrides](https://www.twilio.com/docs/usage/webhooks/webhooks-connection-overrides)). | This does not satisfy this RFC's signed freshness proof or durable-before-2xx retry assumption. Twilio is not eligible for V1 selection. A separate owner-approved provider contract must define freshness/replay proof and retry configuration before it can become a candidate; this RFC grants no MessageSid lookup, provider read, webhook URL mutation/rotation, or fallback authority. |
 
-The recommended owner decision is Option A if the provider confirms a suitable number and account
-in the owner's region; otherwise Option B. Technical preference does not select or provision a
-provider. Before implementation dispatch, an exact owner act must record:
+The V1 owner decision is Telnyx after it confirms a suitable account/number in the owner's region,
+or continued deferral. Twilio cannot be selected under this artifact. Technical eligibility does
+not select or provision Telnyx. Before implementation dispatch, the one authoritative owner gate
+must record all eight subjects below:
 
-1. provider and provisioned account/number identity;
+1. Telnyx selection or continued provider deferral, plus the provisioned account/number identity
+   when selected;
 2. verified number capabilities and regional/registration prerequisites;
 3. public HTTPS ingress route and ownership;
 4. provider authentication and webhook-verification material;
 5. enabled inbound event types;
 6. metadata-only SMS or content-enabled SMS with a finite direct-copy retention period and explicit
-   derived/backup survival acceptance; and
+   acceptance of body-free canonical identity plus derived/export/backup survival;
 7. revocation and credential-deletion expectations; and
-8. provider webhook retry/timeout behavior compatible with the durable-before-2xx boundary.
+8. provider webhook retry/timeout behavior compatible with the durable-before-2xx boundary and
+   explicit acknowledgment that outbound SMS remains deferred under this artifact.
 
 Provider documentation and account capability must be refreshed at that gate because these facts
-can change. Without all seven, owner-device implementation remains blocked.
+can change. Without all eight, owner-device implementation remains blocked.
 
 ## D8: Proposed Privacy, Authentication, and Owner Experience
 
@@ -326,6 +360,7 @@ This draft deliberately avoids three foreign authorities:
 | Interaction sync | Resolution returns no contacts for non-empty input | Preserve existing degraded result; do not advance as an all-clear. |
 | Discord scoring | Guild, group, or unknown context | Mark ineligible; never infer DM weight from observed sender count. |
 | Watched Source | One endpoint fails | Independent sources continue; failed source backs off with safe status. |
+| Watched Source | Missing/revoked/cross-connector credential or endpoint/audience mismatch | Reject before catalog lookup; open no provider connection. |
 | Watched Source | Preflight denied, unavailable, or expired | Do not open or continue provider observation; renew only through Switchboard. |
 | Watched Source | Switchboard result lost | Retain checkpoint; repeat the same ingest identity. |
 | Webhook ingress | Invalid/stale/wrong-account signature | Reject before canonical persistence and return non-2xx. |
@@ -340,14 +375,16 @@ This draft deliberately avoids three foreign authorities:
 Future implementation must execute behavior at the owning seams rather than assert text or symbol
 presence:
 
-- real-PostgreSQL migrations/grants and complete legacy seed;
-- static/catalog parity, malformed/unknown/disabled/mismatched pairs, cache freshness, atomic
-  refresh, and a catalog-only channel;
+- real-PostgreSQL migrations/grants, exact `LEGACY_SOURCE_PAIRS_V1` set equality, Switchboard-only
+  runtime `SELECT`, and direct read/write denial for connector, butler, Messenger, and dashboard roles;
+- static/catalog parity including equal-cardinality substitution, malformed/unknown/disabled/
+  mismatched pairs, cache freshness, atomic refresh, and a catalog-only channel;
 - registration/API/UI degraded and content-blind projections;
 - Discord resolution and a measurable Dunbar input change;
 - stable-key repeated and concurrent interaction sync with distinct channel/endpoint cases;
-- Watched Source first baseline, restart resume, filtered-event flush, replay, checkpoint failure,
-  per-source backoff, and authenticated webhook rejection;
+- Watched Source principal/type/pair/endpoint/audience positive binding, missing/revoked/cross-
+  connector negative cases, first baseline, restart resume, filtered-event flush, replay,
+  checkpoint failure, per-source backoff, and authenticated webhook rejection;
 - owner-device setup/revocation API and keyboard/focus/error UI behavior without secret/content
   projection;
 - audit actor attribution and content-blind payloads; and
@@ -362,14 +399,6 @@ explicit authority.
 
 The artifact is ready for independent semantic/security review once its local and hosted checks
 pass. It is not owner-ready for implementation until the review returns GO and the owner approves
-the exact reviewed digest, including:
-
-1. provider Option A or B;
-2. call-lifecycle event subset;
-3. SMS metadata-only (recommended) or content-enabled privacy profile;
-4. for content-enabled SMS, finite direct-copy retention (proposed 30 days) and explicit acceptance
-   of body-free canonical identity, derived data, and managed-backup survival under their separate policies;
-5. ingress route and exposure; and
-6. provider retry/timeout compatibility with durable-before-2xx acknowledgment; and
-7. continued deferral of outbound SMS or a separately reviewed activation delta composed with the
-   then-current RFC 0023 policy.
+the exact reviewed digest for all eight subjects in the single authoritative D7 owner gate. This
+section adds no second checklist. Outbound SMS remains deferred unless a separate reviewed
+activation delta composes with the then-current RFC 0023 policy.

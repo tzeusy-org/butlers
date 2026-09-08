@@ -31,24 +31,40 @@ Scope: v1-reserved
 
 ### Requirement: Switchboard Source-Pair Preflight
 Before opening a provider connection, a Watched Source SHALL call the Switchboard MCP tool
-`source.pair.preflight` with a `source_pair_preflight.v1` request containing only its canonical
-channel and provider. Switchboard SHALL perform the check through its catalog read authority and
-return a bounded `authorized`, `denied`, or `unavailable` decision with an opaque catalog generation,
-`checked_at`, and `valid_until`. The connector MUST NOT receive direct catalog access.
+`source.pair.preflight` at the exact configured Switchboard MCP origin with a
+`source_pair_preflight.v1` request naming its connector type, canonical channel/provider, and trusted
+configured endpoint identity. Switchboard SHALL authenticate the existing connector-base bearer
+token first, derive the connector principal, allowed source-pair scope, allowed endpoint identities,
+and Switchboard audience from server-held token authority, and compare every request field with that
+principal. Caller-supplied identity is never authority. Only then SHALL Switchboard read the catalog
+and return a bounded `authorized`, `denied`, or `unavailable` decision with an opaque authorization
+reference, catalog generation, `checked_at`, and `valid_until`. The connector MUST NOT receive
+direct catalog access.
 
 ID: REQ-connector-watched-source-005
 Source: RFC 0033 §Watched Source activation preflight (Proposed; owner sign-off required)
 Scope: v1-reserved
 
 #### Scenario: Authorized preflight permits a bounded connection lease
-- **WHEN** Switchboard finds the exact enabled pair in a fresh catalog snapshot
+- **WHEN** an active bearer principal matches the connector type, exact source pair, configured connector endpoint identity, and configured Switchboard audience and Switchboard finds that pair in a fresh catalog snapshot
 - **THEN** it SHALL return `status="authorized"` with `valid_until` no later than that snapshot's 60-second expiry
-- **AND** the connector MAY open its configured provider connection only while that authorization remains current
+- **AND** the connector MAY open its configured provider connection only while that authorization remains current and only at the exact configured Switchboard MCP origin
+- **AND** the response SHALL carry no token, token digest, principal claims, credential, or endpoint identity
 
-#### Scenario: Denied or unavailable preflight prevents provider effects
-- **WHEN** Switchboard returns `denied` or `unavailable`, the MCP call fails, or the response expires before the connection opens
+#### Scenario: Missing or invalid principal is rejected before catalog lookup
+- **WHEN** the bearer token is missing, invalid, expired, revoked, bound to another connector type, source pair, connector endpoint identity, or Switchboard audience, or the client follows a redirect or calls another origin
+- **THEN** Switchboard SHALL reject the preflight before any catalog read and SHALL return no authorization reference
+- **AND** the connector SHALL not authenticate to, poll, subscribe to, or acknowledge an event from the provider
+
+#### Scenario: Authenticated denial or unavailability prevents provider effects
+- **WHEN** a valid matching principal receives `denied` or `unavailable`, the MCP call fails, or the response expires before the connection opens
 - **THEN** the connector SHALL remain inactive and SHALL not authenticate to, poll, subscribe to, or acknowledge an event from the provider
 - **AND** the response and connector status SHALL expose only a bounded error code
+
+#### Scenario: Cross-connector credential cannot borrow source authority
+- **WHEN** a valid connector A bearer token requests connector B's source pair or configured endpoint identity
+- **THEN** Switchboard SHALL reject it before catalog lookup even when the requested catalog pair is enabled
+- **AND** no request field, heartbeat row, or connector registry row SHALL widen the bearer principal's source scope
 
 #### Scenario: Active connector renews before authorization expiry
 - **WHEN** an active connector approaches `valid_until`
