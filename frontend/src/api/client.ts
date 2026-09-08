@@ -2653,6 +2653,23 @@ export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
   );
 }
 
+/**
+ * Retry consolidation for a dead-lettered episode: resets consolidation_status
+ * to 'pending' (clearing attempts/lease/dead_letter_reason) so the next
+ * scheduled consolidation sweep reconsolidates it. POST
+ * /api/butlers/{butler}/memory/episodes/{id}/retry-consolidation (bu-6t8ix.2).
+ * Returns the refreshed episode. 409 if the episode is not dead_letter.
+ */
+export function retryEpisodeConsolidation(
+  butler: string,
+  episodeId: string,
+): Promise<ApiResponse<Episode>> {
+  return apiFetch<ApiResponse<Episode>>(
+    `/butlers/${encodeURIComponent(butler)}/memory/episodes/${encodeURIComponent(episodeId)}/retry-consolidation`,
+    { method: "POST" },
+  );
+}
+
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
