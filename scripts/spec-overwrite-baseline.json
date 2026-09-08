@@ -265,12 +265,6 @@
       "scenario": "Skipped update types",
       "digest": "f869a64a828c",
       "excerpt": "- **THEN** it is silently skipped — no ingest submission — UNLESS it is a `callback_query` whose `callback_data` carr..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Gap-interview one-tap callback routed",
-      "digest": "fb6755c89b24",
-      "excerpt": "\"Gap-interview one-tap callback routed\" is not in the block"
     }
   ],
   "define-infrastructure-reliability-lifecycle/connector-base-spec/Connector Liveness and Eligibility": [
@@ -549,24 +543,6 @@
       "scenario": null,
       "digest": "c974081782da",
       "excerpt": "A routed butler session SHALL confirm its interpretation of a dashboard statement (or acknowledge a filed bug report)..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "conversation_reply persists the confirm-loop message",
-      "digest": "44e38674818c",
-      "excerpt": "\"conversation_reply persists the confirm-loop message\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "conversation_reply rejects an unknown conversation_id",
-      "digest": "8940dd719fba",
-      "excerpt": "\"conversation_reply rejects an unknown conversation_id\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "conversation_reply is available to every butler",
-      "digest": "1e6d08fa5156",
-      "excerpt": "\"conversation_reply is available to every butler\" is not in the block"
     }
   ],
   "durable-dashboard-terminal-action-recovery/staffer-qa/Pluggable Discovery Source Architecture": [
@@ -605,128 +581,6 @@
       "scenario": "QA module MCP tool registration",
       "digest": "bf06cec9d345",
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/staffer-qa/V1 Discovery Sources": [
-    {
-      "kind": "clause",
-      "scenario": "Log scanner source",
-      "digest": "f0cba01ffd08",
-      "excerpt": "- **AND** all filtering is tool-based (JSON parsing, regex, severity checks) — no LLM invocation"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "52223f90dc23",
-      "excerpt": "- **AND** the view is read-only (structurally enforced — no INSERT/UPDATE/DELETE), date-filtered, and created via aud..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "8ea84368008f",
-      "excerpt": "- **AND** event summaries extracted from session records are passed through `anonymize()` before storage (session err..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "e2f8510a5094",
-      "excerpt": "- **AND** computes fingerprints using the same algorithm as log scanner findings"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "092c6a2eb242",
-      "excerpt": "- **AND** excludes rows that represent expected or controlled outcomes rather than product/runtime failures"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "b8d8d54b57e4",
-      "excerpt": "- short (`<= 60s`) Switchboard mini-model classification timeout rows with `trigger_source = \"classification\"` (or th..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "b545d0eb4563",
-      "excerpt": "- synthetic startup-recovery rows (`orphaned: daemon restart`)"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Session record source",
-      "digest": "41b6d4c3bb85",
-      "excerpt": "- spawner guardrail terminations whose error text contains an intentional-stop marker (`token_budget_exceeded`, `tool..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "38b9a1516494",
-      "excerpt": "- **THEN** butlers relay `report_error` findings to the QA staffer via Switchboard's `route()` MCP tool, calling the ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "dc5590ed9cb3",
-      "excerpt": "- **AND** the QA staffer's `report_finding` MCP tool handler queues received findings in an in-memory buffer"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "95d8ad4e1c15",
-      "excerpt": "- **AND** the patrol cycle drains the buffer and includes those findings alongside batch sources"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Butler report source (reactive relay via Switchboard)",
-      "digest": "474c1b8fdb43",
-      "excerpt": "- **AND** if the buffer exceeds `max_reactive_buffer` (default: 50), oldest entries are dropped with a WARNING"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "b598bb8f4e6a",
-      "excerpt": "- **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "ce8fc8c93405",
-      "excerpt": "- **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `swit..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "f523edb68dd6",
-      "excerpt": "- **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) an..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "f8f0aa842aef",
-      "excerpt": "- **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-b..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "c35d9d283211",
-      "excerpt": "- **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_dead..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "a62a85c9f77a",
-      "excerpt": "- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, o..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "818e26c77b45",
-      "excerpt": "- **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Infra state source",
-      "digest": "fe706b47f658",
-      "excerpt": "- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is rai..."
     }
   ],
   "durable-issue-condition-ledger/dashboard-api/Issues Aggregation": [
@@ -991,12 +845,6 @@
   ],
   "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Catalog Verify-All API": [
     {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "6f51fdbd2323",
-      "excerpt": "The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify every enabled model in parallel. The v..."
-    },
-    {
       "kind": "clause",
       "scenario": "Verify-all parallel execution",
       "digest": "d87b2b9b4b23",
@@ -1013,18 +861,6 @@
       "scenario": "Verify-all parallel execution",
       "digest": "f33ee18555cc",
       "excerpt": "- **AND** `last_verified_error` is set to the truncated exception text on failure (or `\"verification returned an empt..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Verify-all parallel execution",
-      "digest": "a75efeed4834",
-      "excerpt": "- **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Verify-all parallel execution",
-      "digest": "a26dbc600359",
-      "excerpt": "- **AND** `audit.append(\"models.verify_all\", actor=\"owner\")` is invoked once per accepted run"
     }
   ],
   "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Hourly Automated Verification Sweep": [
@@ -1033,48 +869,6 @@
       "scenario": null,
       "digest": "273145c68301",
       "excerpt": "The dashboard-api process SHALL run an hourly background sweep (`butlers.jobs.model_verify.run_model_verify_loop`, st..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Hourly sweep runs independently of the manual rate limit",
-      "digest": "6366ebf823c7",
-      "excerpt": "- **WHEN** the sweep's interval (default `DEFAULT_MODEL_VERIFY_INTERVAL_S = 3600`, overridable via `MODEL_VERIFY_INTE..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Hourly sweep runs independently of the manual rate limit",
-      "digest": "47ed07f40120",
-      "excerpt": "- **THEN** the sweep calls `run_verify_all_models(pool, audit_actor=\"model_verify_sweep\")` directly, bypassing the ma..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Hourly sweep runs independently of the manual rate limit",
-      "digest": "e3fc5f5e853d",
-      "excerpt": "- **AND** `audit.append(\"models.verify_all\", actor=\"model_verify_sweep\")` is invoked, distinguishing an automated run..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Sweep sleeps first and tolerates a bad tick",
-      "digest": "a2ceb7069905",
-      "excerpt": "- **WHEN** the dashboard-api process starts"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Sweep sleeps first and tolerates a bad tick",
-      "digest": "921a28a8a3f8",
-      "excerpt": "- **THEN** the sweep loop sleeps for one interval before its first run (mirrors `run_secrets_lifecycle_loop`), so it ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Sweep sleeps first and tolerates a bad tick",
-      "digest": "d4a8bb5bb6b4",
-      "excerpt": "- **AND** a single sweep's failure is logged and swallowed; the loop continues on its next interval rather than dying"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Sweep sleeps first and tolerates a bad tick",
-      "digest": "8ba4ba0ebae1",
-      "excerpt": "- **AND** when no shared credential pool is configured, the sweep is a no-op tick (logged at WARNING) rather than rai..."
     }
   ],
   "harden-runtime-auth-and-breaker-attention/dashboard-spend-dashboard/Fleet-Halt Visibility": [
@@ -1327,18 +1121,6 @@
       "scenario": "Envelope structure for dashboard messages",
       "digest": "648f7052fd7c",
       "excerpt": "- `event.external_event_id`: `\"{message_id}\"`, where dashboard UI provides one immutable client-generated ID for a ne..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Sticky follow-up pinning for classification-routed conversations",
-      "digest": "79e3e7382fb7",
-      "excerpt": "\"Sticky follow-up pinning for classification-routed conversations\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Optional page context on dashboard messages",
-      "digest": "68ac9b770c09",
-      "excerpt": "\"Optional page context on dashboard messages\" is not in the block"
     }
   ],
   "reconcile-dashboard-conversation-contracts/ingestion-event-registry/Ingestion Event Table": [
@@ -1515,106 +1297,18 @@
       "excerpt": "Once a week, the system SHALL attempt to actually restore the most recent backup artifact into a scratch database, ve..."
     }
   ],
-  "source-grounded-education/butler-education/MANIFESTO.md Content": [
+  "specify-state-first-secrets-passport-index/butler-secrets/Passport-Book Information Architecture": [
     {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "37ab42967e0a",
-      "excerpt": "The education butler's MANIFESTO.md SHALL define its value proposition, scope, and persona in a way that guides all f..."
+      "kind": "clause",
+      "scenario": "Spine grouping order",
+      "digest": "1fea3eb1af91",
+      "excerpt": "- **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revok..."
     },
     {
-      "kind": "scenario",
-      "scenario": "Value proposition articulates the core offering",
-      "digest": "e28ede42642c",
-      "excerpt": "\"Value proposition articulates the core offering\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Scope boundaries are defined",
-      "digest": "0b4b49b06512",
-      "excerpt": "\"Scope boundaries are defined\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Persona section conveys educator character",
-      "digest": "d5417d8e57f5",
-      "excerpt": "\"Persona section conveys educator character\" is not in the block"
-    }
-  ],
-  "source-grounded-education/module-education-curriculum/Topic decomposition into concept graph": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "ebbc1ce5df4d",
-      "excerpt": "Curriculum planning SHALL be split into two layers"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "29765615fb2e",
-      "excerpt": "1. LLM orchestration layer (butler session level). An ephemeral LLM session, spawned by the curriculum-planning skill..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "ed15858ed33c",
-      "excerpt": "2. Validation and sequencing layer (`curriculum_generate()`). After the nodes and edges are persisted, `curriculum_ge..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Basic topic decomposition creates nodes and edges",
-      "digest": "bc2126446781",
-      "excerpt": "\"Basic topic decomposition creates nodes and edges\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Every node has a populated effort estimate",
-      "digest": "da530f4b18be",
-      "excerpt": "\"Every node has a populated effort estimate\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Root node is recorded on the mind map",
-      "digest": "17fe7e7ec230",
-      "excerpt": "\"Root node is recorded on the mind map\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "All edges are prerequisite edges by default",
-      "digest": "e2f70f6937d1",
-      "excerpt": "\"All edges are prerequisite edges by default\" is not in the block"
-    }
-  ],
-  "source-grounded-education/module-education-teaching-flows/Teaching Phase — Explain, Question, Evaluate": [
-    {
-      "kind": "scenario",
-      "scenario": "Session delivers explanation for current node",
-      "digest": "682319c63207",
-      "excerpt": "\"Session delivers explanation for current node\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Session asks comprehension question after explanation",
-      "digest": "c03d6862c318",
-      "excerpt": "\"Session asks comprehension question after explanation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Session evaluates user answer and gives feedback",
-      "digest": "dd0b7f9cb2f2",
-      "excerpt": "\"Session evaluates user answer and gives feedback\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Mastery updated after teaching evaluation",
-      "digest": "9d5789245b4b",
-      "excerpt": "\"Mastery updated after teaching evaluation\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Flow advances to QUIZZING after teaching evaluation",
-      "digest": "10bc40a4698a",
-      "excerpt": "\"Flow advances to QUIZZING after teaching evaluation\" is not in the block"
+      "kind": "clause",
+      "scenario": "Spine grouping order",
+      "digest": "6126f96aa1fb",
+      "excerpt": "- **AND** the `stale` group contains credentials in the `warn` state (set, but either never successfully probed or no..."
     }
   ],
   "true-bidirectional-email-correspondence/connector-base-spec/Authentication and Token Management": [
