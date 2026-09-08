@@ -21,6 +21,14 @@
       "excerpt": "- **THEN** the `session_process_logs` table is created with the specified schema and index"
     }
   ],
+  "amend-secrets-inventory-label-minimization/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
+    {
+      "kind": "clause",
+      "scenario": "Inventory rows are content-blind",
+      "digest": "176715cfc640",
+      "excerpt": "- **AND** operator-authored labels on system and CLI rows — `key`, `category`, `description` — are outside this contr..."
+    }
+  ],
   "approval-abandon-recovery/module-approvals/Retention Policy": [
     {
       "kind": "clause",
