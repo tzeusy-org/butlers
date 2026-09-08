@@ -1465,7 +1465,7 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
     """
     logger.info("Running finance bill reconciliation sweep job")
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     counts: dict[str, int] = {"submitted": 0, "accepted": 0, "filtered": 0, "errors": 0}
 
     async def _submit(**kwargs: Any) -> bool:
@@ -1616,7 +1616,7 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             "status": status,
         }
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     anomalies = result.get("anomalies", [])
 
     severity_order = {"high": 0, "medium": 1, "low": 2}
@@ -1809,7 +1809,7 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """
     logger.info("Running finance monthly digest job")
 
-    today = date.today()
+    today = datetime.now(UTC).date()
     first_of_this_month = today.replace(day=1)
     last_month_end = first_of_this_month
     last_month_start = (first_of_this_month - timedelta(days=1)).replace(day=1)
