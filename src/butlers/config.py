@@ -350,7 +350,8 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
 
     Returns a RuntimeSeedConfig using dataclass defaults for any absent fields.
     This section is operational-only; model selection lives in the model
-    catalog, while runtime adapter type lives in top-level ``[runtime]``.
+    catalog, while runtime adapter type is fixed for the whole roster in
+    butlers.core.runtimes.DEFAULT_RUNTIME_TYPE.
     """
     seed_section = butler_section.get("runtime_seed", {})
 
