@@ -138,6 +138,7 @@ class Rule(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    retired_at: str | None = None
 
 
 class MemoryStats(BaseModel):

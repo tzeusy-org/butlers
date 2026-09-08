@@ -21,6 +21,7 @@ import {
   getRules,
   inspectMemory,
   promoteEntity,
+  retireRule,
   retractFact,
   retryEpisodeConsolidation,
   revealEntitySecret,
@@ -40,6 +41,7 @@ import type {
   Fact,
   FactParams,
   MemoryInspectParams,
+  MemoryRule,
   PaginatedResponse,
   RuleParams,
   UpdateEntityRequest,
@@ -266,6 +268,41 @@ export function useRule(ruleId: string | null) {
     queryKey: ["memory-rule", ruleId],
     queryFn: () => getRule(ruleId!),
     enabled: !!ruleId,
+  });
+}
+
+/**
+ * Retire a rule (PATCH /rules/:id/retire). On success, invalidates the
+ * single-rule and rules-list caches so the detail page reflects the retired
+ * state immediately. bu-6t8ix.3.
+ */
+export function useRetireRule() {
+  return useOptimisticMutation<ApiResponse<MemoryRule>, string, ListSnapshot>({
+    mutationFn: (ruleId: string) => retireRule(ruleId),
+    cancelQueryKeys: (ruleId) => [
+      ["memory-rule", ruleId],
+      ["memory-rules"],
+    ],
+    applyOptimisticUpdate: (ruleId, queryClient) => {
+      // The precise server timestamp reconciles on settle; a client
+      // timestamp is sufficient to make the commit footer reflect the
+      // retirement immediately.
+      const retiredAt = new Date().toISOString();
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<MemoryRule>>(
+        queryClient,
+        ["memory-rule", ruleId],
+        (current) =>
+          current
+            ? { ...current, data: { ...current.data, retired_at: retiredAt } }
+            : current,
+      );
+      return detailSnapshot;
+    },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (ruleId) => [
+      ["memory-rule", ruleId],
+      ["memory-rules"],
+    ],
   });
 }
 

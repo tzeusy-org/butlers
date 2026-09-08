@@ -160,6 +160,7 @@ export {
   deleteResearch,
   getRule,
   getRules,
+  retireRule,
   getRegistry,
   getRoutingLog,
   setButlerEligibility,

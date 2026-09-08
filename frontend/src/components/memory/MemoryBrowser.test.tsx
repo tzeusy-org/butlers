@@ -218,6 +218,7 @@ describe("MemoryBrowser", () => {
           last_evaluated_at: null,
           tags: [],
           metadata: {},
+          retired_at: null,
         },
       },
     ];

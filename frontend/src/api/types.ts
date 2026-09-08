@@ -2912,6 +2912,8 @@ export interface MemoryRule {
   last_evaluated_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Set when the rule has been retired (stops firing, kept for reference). */
+  retired_at: string | null;
 }
 
 /** Aggregated statistics across all memory tiers. */

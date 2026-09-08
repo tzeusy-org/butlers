@@ -2929,6 +2929,52 @@ async def retry_dead_letter_episode(
 
 
 # ---------------------------------------------------------------------------
+# Retire (stop a rule from firing, without soft-deleting it)
+# ---------------------------------------------------------------------------
+
+
+async def retire_rule(
+    pool: Pool,
+    rule_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> bool:
+    """Retire a rule: it stops firing, but is kept on the books.
+
+    Sets ``retired_at`` to now(). Distinct from ``forget_memory``: forgetting
+    a rule means it was wrong (soft-deleted, like a fact's retraction);
+    retiring a rule means it may still be correct but the owner has decided
+    it no longer needs to be enforced. ``search.semantic_search`` and
+    ``search.keyword_search`` both exclude ``retired_at IS NOT NULL`` rows —
+    that is the evaluation-path guard that actually stops a retired rule from
+    being surfaced into an agent's context.
+
+    Idempotent: retiring an already-retired rule keeps its original
+    ``retired_at`` (``COALESCE``) rather than bumping it, so "when was this
+    retired" stays accurate across repeat calls.
+
+    The catalog disownment cascade runs in the same transaction as the
+    ``retired_at`` write, mirroring ``forget_memory``'s plain path — a
+    retired rule must stop being served via the cross-butler
+    ``public.memory_catalog`` (Fleet Knowledge) too, not just locally.
+
+    Returns:
+        True if the rule was found and updated, False if not found.
+    """
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                f"UPDATE {table} SET retired_at = COALESCE(retired_at, now()) WHERE id = $1",
+                rule_id,
+            )
+            found = result.endswith("1")
+            if found:
+                await _cascade_catalog_disownment(conn, "rules", [rule_id])
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Rule feedback — mark_helpful
 # ---------------------------------------------------------------------------
 
