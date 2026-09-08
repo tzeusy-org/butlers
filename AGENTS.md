@@ -167,6 +167,20 @@ General rule this is an instance of: verify against the CI job's actual steps in
 against a remembered list of commands. A verification list assembled from memory omits exactly the
 gate nobody remembers.
 
+### Cheap standing pre-push checks for new test and copy files
+
+When you add a new test file or new frontend copy inventory entry, run these **cheap, deterministic**
+checks before pushing, even when skipping the full `make check` gate:
+
+```bash
+make check-ci-test-shards     # Registers new test files in CI shard manifests
+make check-guards             # Validates documentation guards (dashes, spec, names, frontend-copy inventory)
+```
+
+These checks are cheap (seconds, not minutes) and catch misregistration at the source rather than
+on CI preflight. They examine only the diff, not the full suite, so they complement your targeted
+test runs without the wall-clock cost of `make check`.
+
 ### Two unarchived OpenSpec changes can silently overwrite each other
 
 `openspec archive` writes the **whole** requirement into the baseline. So when two unarchived
