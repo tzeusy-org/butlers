@@ -121,7 +121,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -425,7 +430,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Check lock file is up to date
         run: uv lock --check
@@ -595,7 +605,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -684,7 +699,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -773,7 +793,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -862,7 +887,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -951,7 +981,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1040,7 +1075,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1162,7 +1202,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1284,7 +1329,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1406,7 +1456,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1527,7 +1582,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1646,7 +1706,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -1832,7 +1897,12 @@ jobs:
 
       - name: Install uv
         if: ${{ steps.gate.outputs.shards_ran == 'true' }}
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: Wandalen/wretry.action@v3.8.0
+        with:
+          action: astral-sh/setup-uv@v8.1.0
+          attempt_limit: 3
+          attempt_delay: 5000
+          time_out: 600000
 
       - name: Install dependencies for coverage aggregation
         if: ${{ steps.gate.outputs.shards_ran == 'true' }}
