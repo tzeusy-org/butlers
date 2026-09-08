@@ -110,13 +110,14 @@ columns, constraints, and occurrence index while retaining the deployed
 writer's inferred `ON CONFLICT` target MUST continue preparing and executing throughout that stage.
 While both indexes exist, the legacy index SHALL intentionally prevent multiple active occurrences.
 
-Only after every Relationship writer instance is proven to run SQL compatible with both index
-layouts, and every old writer is proven absent, MAY a later cutover migration drop
+Only after every Relationship instance is proven to contain the complete compatible/fenced mutator
+inventory, and every old image is proven absent, MAY a later cutover migration drop
 `uq_ef_spo_active`. Temporal assertions, corrections, and repeated-period writes MUST remain disabled
 until that cutover. The final writer SHALL use targetless `ON CONFLICT DO NOTHING` plus locked
-re-read/CAS behavior so it remains valid before and after the drop. It SHALL treat presence of the
-legacy index as the fail-closed `temporal_cutover_pending` capability state, checked before approval
-parking or persistence.
+re-read/CAS behavior so it remains valid before and after the drop. Every mutator SHALL treat
+presence of the legacy index as the fail-closed `temporal_cutover_pending` capability state where
+applicable, checked before approval parking or persistence. Central-writer compatibility alone SHALL
+NOT authorize cutover.
 
 Schema rollback SHALL be allowed only while temporal writes have remained disabled, or during a
 quiesced no-write window after proving there is at most one active row per SPO and no temporal value
@@ -250,14 +251,20 @@ arguments at the writer boundary. The public MCP wrapper SHALL continue keeping 
 `observed_at` server-held. Temporal values are caller-controlled assertion content, not provenance.
 
 The wire contract SHALL treat omission and explicit JSON null identically; it SHALL NOT depend on
-whether an optional key was present. With `corrects_fact_id` omitted or null,
-`effective_period_id` omitted/null means the default occurrence and each omitted/null bound plus
-omitted/null precision means an unknown boundary. With `corrects_fact_id` non-null, correction mode
-is selected even if every other temporal argument is omitted/null; the desired replacement then has
-unknown bounds and inherits the target row's occurrence id. A supplied period id in correction mode
-MUST match the target. For either bound, `unbounded` requires a null/omitted timestamp, a concrete
-precision requires a concrete value, and a concrete value requires concrete precision. Correction
-input SHALL be a complete desired replacement packet, not a partial patch.
+whether an optional key was present. When all five stored temporal values and `corrects_fact_id` are
+omitted/null, the request SHALL mean an ordinary assertion with no temporal intent. It SHALL use the
+default occurrence: if no active default occurrence exists, the writer SHALL create it with unknown
+bounds; if one exists, unchanged comparison and any non-temporal replacement SHALL use and preserve
+that row's stored packet, including known bounds.
+
+When any stored temporal value is non-null and `corrects_fact_id` is omitted/null, the request SHALL
+be an explicit temporal assertion/replay whose values are the desired packet. When
+`corrects_fact_id` is non-null, correction mode SHALL be selected even if every other temporal
+argument is omitted/null; the desired replacement then has unknown bounds and inherits the target
+row's occurrence id. A supplied period id in correction mode MUST match the target. For either bound,
+`unbounded` requires a null/omitted timestamp, a concrete precision requires a concrete value, and a
+concrete value requires concrete precision. Correction input SHALL be a complete desired replacement
+packet, not a partial patch. Clearing a known packet to unknown MUST use explicit correction mode.
 
 The central writer is responsible for:
 - Predicate validation against `relationship.entity_predicate_registry`.
@@ -292,9 +299,10 @@ verified, lastSeen)` differ across calls.
 Temporal idempotency SHALL refine that rule by occurrence. Replaying the same SPO, occurrence id,
 normalized temporal packet, and assertion fields SHALL return the existing active fact id and SHALL
 NOT create or supersede a fact row. Existing evidence behavior remains additive and deduplicated.
-For the default NULL occurrence, omitted and explicit-null temporal arguments SHALL retain identical
-existing behavior. For an explicit period, an occupied occurrence whose temporal packet differs
-SHALL fail unless `corrects_fact_id` names its exact active row.
+For the default NULL occurrence, omitted and explicit-null temporal arguments SHALL preserve an
+existing packet and SHALL create unknown only when the slot is empty. For an explicit period, an
+occupied occurrence whose temporal packet differs SHALL fail unless `corrects_fact_id` names its
+exact active row.
 
 A temporal correction SHALL be an immutable-version replacement. `corrects_fact_id` MUST resolve to
 an active row with the same subject, predicate, and object. An omitted/null period id SHALL inherit
@@ -302,6 +310,11 @@ that row's occurrence id, while a supplied id MUST match it. The writer SHALL lo
 mark exactly the named row superseded, insert one active replacement with the complete desired
 packet, keep the old packet unchanged, and carry its evidence forward. `corrects_fact_id` SHALL be
 operation input only and SHALL NOT become stored temporal state.
+
+An exact correction retry SHALL be idempotent when the named target is already superseded and the
+one active row for that occurrence has the same complete desired packet and assertion fields: the
+writer SHALL return the active successor as unchanged. A different successor SHALL make the retry
+fail stale. A retracted target SHALL NOT serve as an idempotent correction witness.
 
 Two concurrent identical replays SHALL converge on the same active row. Two different corrections
 that name the same active fact id SHALL use compare-and-swap semantics: the transaction that
@@ -329,6 +342,16 @@ pre-temporal pending action with none of the keys SHALL normalize to the all-nul
 failed or stale replay SHALL roll back every fact, evidence, coverage, approval-context, and
 graph-projection effect.
 
+Before parking, the writer SHALL resolve the request against the current occurrence. For an ordinary
+reassertion over a known default occurrence, the parked packet SHALL contain that row's stored values,
+not all nulls. `relationship.fact_approval_context` SHALL add
+`temporal_request_mode TEXT NULL CHECK (temporal_request_mode IN ('ordinary', 'explicit',
+'correction'))` and `temporal_base_fact_id UUID NULL`. Approved replay SHALL verify that frozen mode
+and base. A preserve action requires its base to remain active. A no-base ordinary create may insert
+unknown only while the default slot is empty or already contains the identical unknown packet; a
+known row appearing in that slot makes the replay stale. Later ordinary provenance replacement of an
+approved known fact SHALL again preserve its packet.
+
 **Owner-gate trusted-source exemption (as built):** the owner gate has a
 trusted-source carve-out (`roster/relationship/tools/relationship_assert_fact.py:179-217`).
 When `src` is an owner-self source (`"owner-bootstrap"` from daemon startup, or
@@ -344,6 +367,64 @@ Trusted-source exemption SHALL change only whether approval parking occurs. It S
 temporal validation, occurrence uniqueness, explicit-correction preconditions, atomic evidence, or
 concurrency behavior.
 
+Temporal admission SHALL cover every production mutation path, not only the central insert helper.
+The transition's exact inventory SHALL include:
+
+- central insert/supersession, SPO retraction, and preferred-channel helpers in
+  `roster/relationship/tools/relationship_assert_fact.py`;
+- owner-handle bootstrap in `src/butlers/owner_bootstrap.py`;
+- subject/object collision, cardinality, and repoint updates in
+  `roster/relationship/tools/entity_merge.py::merge_entity_pair`;
+- legacy subject/object repoint updates in
+  `roster/relationship/tools/contacts.py::contact_merge`;
+- contact delete, verify, value update, and entity-forget mutations in
+  `roster/relationship/api/router.py`;
+- hard-delete FK cascades from Google and Steam companion-entity deletion; and
+- historical direct DML in Relationship migrations 019, 027, and 028, which SHALL remain ordered
+  before temporal expansion and SHALL NOT become post-cutover repair paths.
+
+The implementation SHALL add a static production-DML inventory guard. Any direct
+`relationship.entity_facts` INSERT, UPDATE, DELETE, or mutating helper absent from the exact
+inventory SHALL block cutover. Every inventoried path SHALL either preserve each selected row's id,
+occurrence id, bounds, precision, evidence, and projection as its operation permits, or reject an
+unsupported/ambiguous request before its first write.
+
+Occurrence-safe behavior SHALL be:
+
+- Ordinary central-writer provenance reassertion preserves the active occurrence's packet. Explicit
+  correction remains the only way to clear or change it.
+- Owner bootstrap is insert-only unknown-default behavior. It SHALL no-op when any active occurrence
+  of its SPO exists, and SHALL NOT create a default sibling beside an explicit occurrence.
+- `retract_contact_info_fact` and hash-addressed contact delete/verify/update SHALL fail
+  `temporal_occurrence_ambiguous` before writes when more than one active occurrence matches their
+  SPO/hash selector. Exact-id lifecycle or verification updates SHALL preserve the selected packet.
+  A different-value contact edit SHALL fail `temporal_mutator_unsupported` before retraction or
+  approval parking when the selected row is temporal-bearing; same-value provenance reassertion
+  SHALL preserve it.
+- Preferred-channel set/clear and generic temporal assertion of `prefers-channel` SHALL remain
+  fenced: any temporal intent, temporal-bearing current row, or multiple active occurrence SHALL fail
+  before writes. The existing unknown-default singleton behavior MAY continue until `bu-4ss0u`
+  defines period-aware policy for this single-valued predicate.
+- Entity merge SHALL lock and plan every affected occurrence before any mutation, repoint each safe
+  row without changing its packet, and update its graph projection in the same transaction. It SHALL
+  NOT apply SPO-only or predicate-only confidence collapse. A collision in the projected final
+  occurrence key SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
+  evidence, or projection write.
+- Legacy `contact_merge` SHALL preflight before its first contact/entity/fact write. If an affected
+  row is temporal-bearing, multiple occurrences share an SPO, or the projected merge collides, it
+  SHALL fail `temporal_mutator_unsupported`; its current best-effort/swallowed direct updates SHALL
+  run only for the proven all-unknown/default singleton set until replaced by the compatible merge
+  service.
+- Entity forget SHALL intentionally retract every matched occurrence without altering its packet and
+  SHALL remove every corresponding projection in the same transaction. Explicit Google/Steam
+  companion-entity hard delete SHALL retain its destructive all-version FK cascade and SHALL remove
+  all attached evidence/projections atomically rather than choosing an occurrence.
+
+A row SHALL be temporal-bearing when any effective bound or precision is non-null or when its period
+id is non-null. The later index cutover MUST remain unauthorized until the exact deployed image
+contains the complete inventory and each compatible behavior or fence, old images are absent, the
+static inventory is clean, and the named real-PostgreSQL transition/mutator tests pass.
+
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
 
 #### Scenario: Direct SQL writes are blocked
@@ -353,16 +434,27 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
 
 #### Scenario: Omitted temporal arguments preserve legacy writer behavior
 
-- **WHEN** an existing caller omits every temporal argument
-- **THEN** the writer MUST use the NULL default occurrence and store unknown lower and upper bounds
+- **WHEN** an existing caller omits every temporal argument and no active default occurrence exists
+- **THEN** the writer MUST create the NULL default occurrence with unknown lower and upper bounds
 - **AND** existing idempotency and non-temporal provenance supersession behavior MUST remain valid
 - **AND** the writer MUST NOT derive a bound from assertion or observation time
+
+#### Scenario: Ordinary provenance reassertion preserves a known default packet
+
+- **WHEN** an ordinary caller omits or sends null for every temporal argument while reasserting an
+  existing default occurrence with known or unbounded effective fields
+- **THEN** unchanged comparison and any non-temporal provenance replacement MUST use and copy the
+  stored occurrence packet
+- **AND** the request MUST NOT be rejected as an ambiguous unknown correction
+- **AND** the stored packet MUST NOT be cleared to unknown
+- **AND** clearing it to unknown MUST require a non-null `corrects_fact_id`
 
 #### Scenario: Explicit null and omission are the same wire request
 
 - **WHEN** one caller omits all six temporal arguments and another explicitly sends each as JSON null
-- **THEN** both requests MUST normalize to the same default occurrence with unknown bounds in
-  assert/replay mode
+- **THEN** both requests MUST normalize to the same ordinary no-temporal-intent mode
+- **AND** both MUST create unknown only when the default occurrence is absent and preserve its packet
+  when it exists
 - **AND** they MUST take the same idempotency, approval-deduplication, persistence, and replay path
 - **AND** no implementation may branch on optional-key presence
 
@@ -399,6 +491,13 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
 - **AND** it MUST NOT interpret the request as a legacy replay or a partial patch preserving old
   bounds
 
+#### Scenario: Exact correction retry finds only its matching successor
+
+- **WHEN** a correction is retried after its named target was superseded by the same complete desired
+  packet and assertion fields
+- **THEN** the writer MUST return the active successor for that occurrence as unchanged
+- **AND** it MUST fail stale if the successor differs or the target was retracted
+
 #### Scenario: Recording a known end does not retract the fact
 
 - **WHEN** an explicit correction replaces an unknown or unbounded upper bound with a concrete
@@ -425,6 +524,8 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
   correction target without accepting replacements from the dispatch caller
 - **AND** the parked payload MUST preserve all six temporal keys in canonical form, including JSON
   nulls, so omitted and explicit-null proposals replay identically
+- **AND** server-held approval context MUST preserve the resolved request mode and exact base fact id
+  so an ordinary known-packet reassertion cannot replay as an unknown create or correction
 - **AND** it MUST use `src`, `observed_at`, evidence, session, and action id from the server-held
   approval records
 - **AND** an altered or stale replay MUST fail atomically
@@ -443,6 +544,50 @@ This single-ingress contract preserves RFC 0006 schema isolation and RDF integri
 - **THEN** targetless conflict handling and locked re-read/CAS MUST work against both layouts
 - **AND** the deployed old-writer inferred conflict statement MUST work before cutover and MUST be
   proven to fail after cutover, establishing why exact old-writer absence is a hard prerequisite
+
+#### Scenario: Mutator inventory blocks incomplete cutover
+
+- **WHEN** the production DML guard finds an unclassified direct `entity_facts` mutation/helper, or
+  the deployed image lacks any required occurrence behavior or fence
+- **THEN** temporal admission and removal of `uq_ef_spo_active` MUST remain blocked
+- **AND** proof of the central writer alone MUST NOT satisfy the cutover gate
+
+#### Scenario: Entity merge preserves every occurrence or writes nothing
+
+- **WHEN** an entity merge would repoint subject/object references for multiple effective occurrences
+- **THEN** every non-colliding row MUST retain its id, occurrence id, temporal packet, and evidence
+  while its projection is updated in the same transaction
+- **AND** the merge MUST NOT supersede rows merely because their post-merge SPO or predicate matches
+- **AND** any final occurrence-key collision MUST fail before any entity, contact, fact, evidence, or
+  projection write
+
+#### Scenario: Legacy contact merge is fenced before partial mutation
+
+- **WHEN** `contact_merge` would touch a temporal-bearing row, an SPO with multiple occurrences, or a
+  projected occurrence collision
+- **THEN** it MUST fail `temporal_mutator_unsupported` before its first contact/entity/fact write
+- **AND** its best-effort direct repoint blocks MUST NOT swallow a temporal-safety failure
+
+#### Scenario: Ambiguous contact lifecycle selector writes nothing
+
+- **WHEN** SPO/hash-based contact retract, delete, verify, or update matches more than one active
+  occurrence
+- **THEN** the operation MUST fail `temporal_occurrence_ambiguous` before any write
+- **AND** an exact single-row lifecycle/verification update MUST retain that row's temporal packet
+
+#### Scenario: Preferred-channel mutation remains temporally fenced
+
+- **WHEN** preferred-channel set/clear sees temporal intent, a temporal-bearing current row, or more
+  than one active occurrence
+- **THEN** it MUST fail before predicate-wide supersession, retraction, or insertion
+- **AND** only the existing unknown-default singleton behavior MAY continue before `bu-4ss0u`
+
+#### Scenario: Intentional all-occurrence lifecycle operations preserve history
+
+- **WHEN** entity forget retracts all matching occurrences, or an explicit Google/Steam companion
+  hard delete cascades through all fact versions
+- **THEN** no path may choose one occurrence or rewrite a temporal packet
+- **AND** fact lifecycle, evidence, and graph projection effects MUST commit or roll back atomically
 
 #### Scenario: Evidence carry-forward does not rewrite effective time
 

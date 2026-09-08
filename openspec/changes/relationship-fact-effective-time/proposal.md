@@ -20,9 +20,11 @@ cannot express that distinction.
   bound. Both unknown bounds mean unspecified effective time, not truth for all time.
 - Define `instant`, `day`, `month`, `year`, and `unbounded` as the only stored precision tokens, with
   UTC normalization for exact and coarse inputs.
-- Canonicalize omitted and explicit JSON `null` temporal arguments identically. A non-null
-  `corrects_fact_id` alone selects correction mode and represents a correction to wholly unknown
-  bounds; correction input is a complete desired replacement packet, not a partial patch.
+- Canonicalize omitted and explicit JSON `null` temporal arguments identically. With no correction
+  target, an all-null ordinary reassertion preserves a known default occurrence packet and creates
+  unknown bounds only when that occurrence is absent. A non-null `corrects_fact_id` alone selects
+  correction mode and deliberately replaces the target with wholly unknown bounds; correction input
+  is a complete desired packet, not a partial patch.
 - Scope active uniqueness and idempotency to the effective occurrence. The null period id is the
   backward-compatible default occurrence; a stable non-null period id represents a distinct repeat
   of the same triple.
@@ -35,6 +37,10 @@ cannot express that distinction.
   active-SPO conflict target, the transition writer works with both index layouts and fails closed on
   temporal intent before cutover, and a later cutover removes the legacy index only after old-writer
   absence is proven. Repeated periods become writable only after that cutover.
+- Make cutover proof cover every production `entity_facts` mutator. Entity/contact merge, contact
+  lifecycle and verification, preferred-channel, owner bootstrap, entity forget, hard-delete
+  cascades, and historical migration paths must preserve occurrence packets or fail before writes;
+  an inventory guard blocks unclassified direct DML.
 
 ## Capabilities
 
