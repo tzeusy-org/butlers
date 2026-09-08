@@ -44,7 +44,7 @@ import { Mono } from "@/components/ui/Mono";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { Pill } from "@/components/ui/Pill";
 import { Voice } from "@/components/ui/Voice";
-import { useEpisodes } from "@/hooks/use-memory";
+import { useEpisodes, useRetryEpisodeConsolidation } from "@/hooks/use-memory";
 import {
   type MemoryEpisodeStatus,
   useMemoryUrlState,
@@ -136,6 +136,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
   const navigate = useNavigate();
   const tz = useTimezone();
   const [expanded, setExpanded] = useState(false);
+  const retryConsolidation = useRetryEpisodeConsolidation();
 
   const time = formatEpisodeTime(episode.created_at, tz);
   // Importance is ink: the time gutter — and ONLY the time gutter — brightens to
@@ -193,20 +194,47 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
             {episode.content}
           </span>
           {expanded && (
-            <a
-              href={`/memory/episodes/${episode.id}`}
-              onClick={(e) => {
-                // The open link is the unambiguous navigation affordance; the
-                // row body only toggles. Stop propagation so a click here does
-                // not re-collapse the row before navigating.
-                e.preventDefault();
-                e.stopPropagation();
-                openEpisode();
-              }}
-              className="mt-1.5 inline-block font-mono text-[11px] text-[var(--mfg)] underline [text-underline-offset:3px] hover:text-fg"
-            >
-              open ↗
-            </a>
+            <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3">
+              <a
+                href={`/memory/episodes/${episode.id}`}
+                onClick={(e) => {
+                  // The open link is the unambiguous navigation affordance; the
+                  // row body only toggles. Stop propagation so a click here does
+                  // not re-collapse the row before navigating.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openEpisode();
+                }}
+                className="inline-block font-mono text-[11px] text-[var(--mfg)] underline [text-underline-offset:3px] hover:text-fg"
+              >
+                open ↗
+              </a>
+              {episode.consolidation_status === "dead_letter" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    // Same stop-propagation discipline as the open link above:
+                    // this is a real mutation nested in the row's own toggle
+                    // target, not a collapse/expand trigger.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    retryConsolidation.mutate({
+                      butler: episode.butler,
+                      episodeId: episode.id,
+                    });
+                  }}
+                  disabled={retryConsolidation.isPending}
+                  className="inline-block font-mono text-[11px] text-[var(--red-text)] underline [text-underline-offset:3px] hover:text-fg disabled:opacity-50"
+                >
+                  {retryConsolidation.isPending ? "retrying…" : "retry ↺"}
+                </button>
+              )}
+              {retryConsolidation.isError && (
+                <Voice as="span" className="text-[11px] text-[var(--red-text)]">
+                  Retry failed. Still dead-lettered.
+                </Voice>
+              )}
+            </div>
           )}
         </div>
       </div>

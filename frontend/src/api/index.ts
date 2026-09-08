@@ -106,6 +106,7 @@ export {
   retractFact,
   getEpisode,
   getEpisodes,
+  retryEpisodeConsolidation,
   getFact,
   getFacts,
   getHealth,

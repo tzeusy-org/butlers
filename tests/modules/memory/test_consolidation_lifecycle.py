@@ -31,6 +31,10 @@ from butlers.modules.memory.consolidation_parser import (
     ConsolidationResult,
     parse_consolidation_output,
 )
+from butlers.modules.memory.storage import (
+    EpisodeNotDeadLetterError,
+    retry_dead_letter_episode,
+)
 
 docker_available = shutil.which("docker") is not None
 
@@ -45,8 +49,12 @@ _LIFECYCLE_SCHEMA_SQL = """
 CREATE TABLE episodes (
     id UUID PRIMARY KEY,
     butler TEXT NOT NULL,
+    session_id UUID,
     content TEXT NOT NULL,
     importance DOUBLE PRECISION NOT NULL DEFAULT 5.0,
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    last_referenced_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id TEXT NOT NULL DEFAULT 'shared',
@@ -747,6 +755,93 @@ async def test_terminal_failure_dead_letters_once_and_never_replays(
             "payload": {"attempts": MAX_CONSOLIDATION_ATTEMPTS, "outcome": "dead_letter"},
         }
         assert "secret" not in str(event["payload"]).lower()
+
+
+async def test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_scheduler(
+    provisioned_postgres_pool,
+) -> None:
+    """The retry reset is a genuine re-enqueue, not a cosmetic status relabel.
+
+    Resets a dead-lettered episode via ``storage.retry_dead_letter_episode``,
+    then proves the reset actually matters by running the real scheduler
+    claim query (``run_consolidation``) against it: a relabel with poisoned
+    lifecycle fields (stale attempts/lease) would not be reclaimable, so the
+    live worker lease this asserts on is direct evidence of reconsideration
+    (bu-6t8ix.2 acceptance criterion 4).
+    """
+    async with provisioned_postgres_pool() as pool:
+        await _install_lifecycle_schema(pool)
+        await _install_artifact_schema(pool)
+        episode_id = await _insert_episode(
+            pool,
+            status="dead_letter",
+            attempts=MAX_CONSOLIDATION_ATTEMPTS,
+            dead_letter_reason="terminal",
+            last_error="Consolidation execution failed.",
+            leased_until=datetime.now(UTC) - timedelta(seconds=1),
+            leased_by="abandoned-worker",
+        )
+
+        updated = await retry_dead_letter_episode(pool, episode_id)
+        assert updated["consolidation_status"] == "pending"
+
+        row = await _episode_lifecycle(pool, episode_id)
+        assert row["consolidation_status"] == "pending"
+        assert row["consolidation_attempts"] == 0
+        assert row["dead_letter_reason"] is None
+        assert row["last_consolidation_error"] is None
+        assert row["next_consolidation_retry_at"] is None
+        assert row["leased_by"] is None
+        assert (
+            await pool.fetchval(
+                "SELECT event_type FROM memory_events WHERE memory_id = $1",
+                episode_id,
+            )
+            == "episode_consolidation_retry_requested"
+        )
+
+        # The proof: the real scheduler claims it on the very next sweep,
+        # exactly like a freshly-stored pending episode.
+        spawner = _BlockingUnsuccessfulSpawner()
+        scheduled_run = asyncio.create_task(
+            run_consolidation(
+                pool=pool,
+                embedding_engine=_StaticEmbeddingEngine(),
+                cc_spawner=spawner,
+                batch_size=10,
+            )
+        )
+        await asyncio.wait_for(spawner.started.wait(), timeout=5)
+        assert (await _episode_lifecycle(pool, episode_id))["leased_by"]
+        spawner.release.set()
+        stats = await scheduled_run
+        assert stats["episodes_processed"] == 1
+
+
+async def test_retry_dead_letter_episode_rejects_non_dead_letter_status(
+    provisioned_postgres_pool,
+) -> None:
+    """A non-dead_letter episode is rejected, not silently reset."""
+    async with provisioned_postgres_pool() as pool:
+        await _install_lifecycle_schema(pool)
+        episode_id = await _insert_episode(pool, status="failed", attempts=1)
+
+        with pytest.raises(EpisodeNotDeadLetterError):
+            await retry_dead_letter_episode(pool, episode_id)
+
+        row = await _episode_lifecycle(pool, episode_id)
+        assert row["consolidation_status"] == "failed"
+        assert row["consolidation_attempts"] == 1
+        assert await pool.fetchval("SELECT count(*) FROM memory_events") == 0
+
+
+async def test_retry_dead_letter_episode_returns_none_for_unknown_id(
+    provisioned_postgres_pool,
+) -> None:
+    """An id with no matching episode returns None rather than raising."""
+    async with provisioned_postgres_pool() as pool:
+        await _install_lifecycle_schema(pool)
+        assert await retry_dead_letter_episode(pool, uuid.uuid4()) is None
 
 
 async def test_success_transition_is_fenced_and_clears_retry_lifecycle_state(

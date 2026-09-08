@@ -2999,6 +2999,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/memory/EpisodesRegister.tsx`
 
 - open ↗
+- Retry failed. Still dead-lettered.
 - the daybook
 
 ## `frontend/src/components/memory/FactsRegister.tsx`
@@ -4193,4 +4194,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3286*
+*Total strings: 3287*
