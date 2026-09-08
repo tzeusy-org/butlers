@@ -7,6 +7,8 @@
 - [x] 1.3 Preserve every baseline clause and scenario name in both MODIFIED requirement bodies.
 - [x] 1.4 Resolve explicit-null/omission semantics and the old/new writer index transition raised by
       exact-head review without enabling temporal effects in this draft.
+- [x] 1.5 Resolve ordinary known-packet reassertion and inventory every production direct mutator,
+      assigning occurrence-preserving behavior or a pre-write fence before temporal admission.
 
 ## 2. Draft verification
 
@@ -22,16 +24,24 @@
       index while retaining `uq_ef_spo_active`; prove the deployed old-writer SQL still prepares and
       writes against that real PostgreSQL schema.
 - [ ] 3.2 Deploy a transition writer using targetless conflict handling that canonicalizes the full
-      presence/null matrix and rejects temporal intent while the legacy index exists; prove omitted
-      and explicit-null writes and approvals replay identically.
+      presence/null matrix, preserves known packets on ordinary reassertion, freezes approval mode
+      and base identity, and rejects temporal intent while the legacy index exists; prove omitted and
+      explicit-null writes and approvals replay identically.
 - [ ] 3.3 After proving exact old-writer absence, add a separate then-free cutover migration that
-      removes the legacy index and enables temporal/repeated-period behavior, with the specified
-      rollback refusal once temporal data exists.
-- [ ] 3.4 Add real-PostgreSQL scenarios for the actual old/new SQL transition; legacy rows;
+      removes the legacy index and enables temporal/repeated-period behavior only after the complete
+      production mutator inventory is compatible or fenced, with the specified rollback refusal once
+      temporal data exists.
+- [ ] 3.4 Add the static production-DML inventory guard and implement the specified behavior/fence for
+      owner bootstrap, entity merge, contact merge, SPO/hash lifecycle and verification, contact
+      value edit, preferred-channel, entity forget, and explicit companion-entity cascades.
+- [ ] 3.5 Add real-PostgreSQL scenarios for the actual old/new SQL transition; legacy rows;
       unknown/open/partial/coarse intervals; invalid packets; identical replay; correction to
-      unknown; repeated periods; and two truly concurrent CAS transactions whose loser rolls back
-      fact, evidence, coverage, approval-context, and projection effects.
-- [ ] 3.5 Preserve unchanged assertion-current read boundaries and execute the full Relationship
+      unknown and retry; ordinary known-packet provenance replacement; repeated periods; entity and
+      contact merge collision/no-collision paths; ambiguous and exact lifecycle paths;
+      preferred-channel fences; all-occurrence forget/cascade; and two truly concurrent CAS
+      transactions whose loser rolls back fact, evidence, coverage, approval-context, and projection
+      effects.
+- [ ] 3.6 Preserve unchanged assertion-current read boundaries and execute the full Relationship
       migration chain through expand and cutover without reserving revision numbers in this draft.
 
 ## 4. Separately owned follow-ups

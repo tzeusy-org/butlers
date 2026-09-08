@@ -116,32 +116,47 @@ index is present.
 
 The writer gains optional nullable `effective_period_id`, the four bound fields, and
 `corrects_fact_id`. It does not track JSON key presence. Omission and explicit JSON `null` have the
-same canonical meaning at every optional position:
+same canonical meaning at every optional position. Request mode is derived from values and current
+state, never key presence:
 
-| Input | Assert/replay mode (`corrects_fact_id` omitted or null) | Correction mode (`corrects_fact_id` non-null) |
+| Wire values | Mode | Meaning |
+|---|---|---|
+| All five stored temporal values and `corrects_fact_id` omitted/null | Ordinary no-temporal-intent assertion | Use the default occurrence; create unknown bounds only if it does not exist, otherwise preserve its stored packet |
+| Any stored temporal value non-null and `corrects_fact_id` omitted/null | Explicit temporal assertion/replay | The supplied values form the desired packet for the named/default occurrence |
+| `corrects_fact_id` non-null | Explicit CAS correction | The bound values are the complete desired replacement packet, including all-null meaning unknown |
+
+Within explicit temporal assertion and correction modes, field normalization is:
+
+| Input | Assert/replay mode | Correction mode |
 |---|---|---|
 | `effective_period_id` omitted/null | Default NULL occurrence | Inherit the target row's occurrence id |
 | `effective_period_id` non-null | Use that stable non-zero occurrence id | Must equal the target row's occurrence id |
-| Bound value omitted/null and precision omitted/null | Unknown bound | Desired replacement bound is unknown |
+| Bound value omitted/null and precision omitted/null | Desired bound is unknown | Desired replacement bound is unknown |
 | Bound value omitted/null and precision `unbounded` | Explicitly open bound | Desired replacement bound is explicitly open |
 | Bound value non-null and concrete precision | Normalize and store the concrete bound | Normalize as the desired replacement bound |
 | Bound value non-null with omitted/null/`unbounded` precision | Invalid | Invalid |
 | Bound value omitted/null with concrete precision | Invalid | Invalid |
 
-`corrects_fact_id` omitted or explicit null selects assert/replay mode. A non-null value selects
-compare-and-swap correction mode even when every other temporal key is omitted or null. Therefore
-`corrects_fact_id` alone means "replace this exact active version with wholly unknown effective
-bounds while retaining its occurrence id." A correction packet is the complete desired result, not
-a partial patch: a caller changing only one bound must resend the other desired bound. The string
-`unknown`, empty strings, and the all-zero UUID are invalid rather than aliases. `corrects_fact_id`
-is an operation argument and is not stored as a new column.
+A non-null `corrects_fact_id` selects compare-and-swap correction mode even when every other
+temporal key is omitted or null. Therefore `corrects_fact_id` alone means "replace this exact active
+version with wholly unknown effective bounds while retaining its occurrence id." A correction
+packet is the complete desired result, not a partial patch: a caller changing only one bound must
+resend the other desired bound. The string `unknown`, empty strings, and the all-zero UUID are
+invalid rather than aliases. `corrects_fact_id` is an operation argument and is not stored as a new
+column.
 
-For a new or repeated occurrence, `corrects_fact_id` is absent. If the active occurrence slot is
-empty, the writer inserts it. If that slot already holds an identical normalized temporal packet and
-identical assertion fields, replay is unchanged and returns the existing fact id; cited evidence is
-still appended under the existing evidence deduplication contract. If the occupied packet differs,
-the call fails and instructs the caller to name the exact row it intends to correct. This prevents a
-repeated-period request or a stale retry from silently becoming a correction.
+For an ordinary no-temporal-intent assertion, the writer first reads the default occurrence. If none
+exists, it inserts the canonical unknown packet. If one exists, its stored temporal packet becomes
+the resolved packet for unchanged comparison and for any non-temporal provenance replacement. A
+known default packet is never compared against an invented unknown desired packet and is never
+cleared by an ordinary reassertion.
+
+For an explicit new or repeated occurrence, `corrects_fact_id` is absent. If the active occurrence
+slot is empty, the writer inserts the normalized desired packet. If that slot already holds the same
+packet and identical assertion fields, replay is unchanged and returns the existing fact id; cited
+evidence is still appended under the existing evidence deduplication contract. If the occupied
+packet differs, the call fails and instructs the caller to name the exact row it intends to correct.
+This prevents a repeated-period request or a stale retry from silently becoming a correction.
 
 For correction, `corrects_fact_id` must identify the active row with the same SPO. An omitted/null
 period id inherits that row's occurrence id; a supplied id must match it. Under the existing
@@ -153,9 +168,15 @@ first succeeds; the other finds that exact id no longer active, fails as stale, 
 fact, evidence, coverage, approval-context, or projection write. The caller may inspect the new
 active version and retry a deliberate correction against its id.
 
+An exact retry of a correction is idempotent after the first commit: if the named target is already
+superseded and the one active row for its occurrence has the same complete desired temporal packet
+and assertion fields, the writer returns that active row as unchanged. If the active successor
+differs, the retry fails stale. A retracted target is never an idempotent correction witness.
+
 Calls with all temporal values omitted or null and no correction target retain the current
-default-occurrence behavior for non-temporal provenance changes, so existing callers remain
-compatible. There is no separate "explicit all-null packet" branch.
+default-occurrence behavior for non-temporal provenance changes and copy any known stored packet, so
+existing callers remain compatible. There is no separate "explicit all-null packet" branch and no
+way to clear known bounds without explicit CAS correction.
 
 ### 5. Keep effective validity independent of every existing axis
 
@@ -180,12 +201,27 @@ are canonical strings. Thus omitted and explicit-null requests deduplicate and r
 These values are not server provenance. `src` and `observed_at` remain only in server-written
 `relationship.fact_approval_context` as specified by `fact-evidence-and-coverage`.
 
+Before parking, the writer resolves the request against the current occurrence. For an ordinary
+reassertion over a known default occurrence, `tool_args` carries that occurrence's exact stored
+packet rather than the caller's all-null wire shape. The approval context is extended with
+`temporal_request_mode TEXT NULL CHECK (temporal_request_mode IN ('ordinary', 'explicit',
+'correction'))` and `temporal_base_fact_id UUID NULL`. The mode records how the packet was resolved;
+the base id records the exact active version observed for a preserve/replay or correction. Existing
+approval rows keep both columns NULL and retain pre-temporal all-null/default semantics.
+
 Approval deduplication and verification compare the canonical stored temporal packet, correction
 target, and SPO identity; dispatch may not alter them. Approved replay uses the parked normalized
 packet, source, observation time, evidence, session, and action id. Pre-temporal pending actions that
 carry none of the six keys normalize to the same all-null/default packet on replay. A temporal
 correction carries prior evidence to the replacement and appends the approved evidence under
 existing ledger rules. It never rewrites evidence or the old effective packet.
+
+Replay also verifies the frozen mode and base. An ordinary preserve action requires its base row to
+remain the active default occurrence; an ordinary create action with no base may insert unknown only
+if the slot is still empty or already contains the identical unknown packet. If another writer has
+placed a known packet in that slot, replay fails stale instead of clearing or reinterpreting it. A
+correction requires its exact target or the idempotent-successor rule above. Later ordinary
+provenance reassertions over an approved known packet again resolve to preserve mode and copy it.
 
 ### 7. Leave readers assertion-current
 
@@ -196,6 +232,39 @@ readers. An active row with a closed effective interval remains visible to those
 `bu-1ypjo` will define opt-in as-of selection, including the treatment of unknown bounds and the
 selection of the latest assertion version within an occurrence. No endpoint or parameter is added
 here.
+
+### 8. Admit temporal writes only after every entity_facts mutator is compatible or fenced
+
+The source inventory at reviewed head `49939f26e3dc3e1e4d9a9f8ab54c2e8aca50d039` contains the
+following production DML paths. Test fixtures are not production mutators. Earlier Relationship
+migrations are listed because a fresh real-PostgreSQL chain must prove their ordering even though
+they do not execute after the temporal head on an upgraded schema.
+
+| Path | Current mutation shape | Required transition behavior |
+|---|---|---|
+| `roster/relationship/tools/relationship_assert_fact.py::_insert_active_fact`, `_upsert_fact`, `relationship_assert_fact` | Active insert and immutable-version supersession | Implement occurrence-scoped targetless insert, no-temporal-intent preservation, explicit assertion, CAS correction, approval replay, evidence/coverage, and projection rules from this design |
+| `roster/relationship/tools/relationship_assert_fact.py::retract_contact_info_fact` | SPO-wide retraction with a single returned id | Lock and retract exactly one active occurrence; if more than one matches the SPO-only request, fail `temporal_occurrence_ambiguous` before any write |
+| `roster/relationship/tools/relationship_assert_fact.py::_supersede_active_prefers_channel`, `assert_prefers_channel`, `retract_prefers_channel` | Predicate-wide supersession/retraction and direct all-null insert | Keep `prefers-channel` temporally fenced: reject temporal intent through the generic writer, and reject set/clear before writes if any matching row is temporal-bearing or more than one active occurrence exists. The legacy unknown-default singleton behavior may continue until `bu-4ss0u` gives this single-valued predicate period-aware policy |
+| `src/butlers/owner_bootstrap.py` | Direct targetless insert of the owner handle | Remain insert-only and unknown-default. After cutover, first test for any active occurrence of the SPO; if one exists, no-op without replacing or adding a default sibling. If none exists, insert the unknown default with targetless conflict handling |
+| `roster/relationship/tools/entity_merge.py::merge_entity_pair` | Subject/object repoint, SPO collision supersession, and predicate-wide single-cardinality winner selection | Lock and plan every affected occurrence before entity/contact/fact writes. Repoint rows without changing id, occurrence id, packet, evidence, or lifecycle. Do not run SPO-only or predicate-only confidence collapse. If the projected final occurrence keys collide, fail `temporal_occurrence_collision` before any write. Reconcile every graph projection in the same transaction |
+| `roster/relationship/tools/contacts.py::contact_merge` | Legacy best-effort subject/object repoint with swallowed errors after contact mutations | Before its first contact/entity/fact write, inspect both linked entities. If any affected row is temporal-bearing, if multiple occurrences share an SPO, or if the projected merge would collide, fail `temporal_mutator_unsupported`. The legacy direct blocks may run only for the provably all-unknown/default singleton set until they are replaced by the compatible merge service |
+| `roster/relationship/api/router.py::delete_entity_contact`, `verify_entity_contact`, `update_entity_contact` | Hash-to-row selection followed by exact-id lifecycle/verification update; value edit retracts one row then calls the central writer | Resolve the complete matching occurrence set. More than one match fails `temporal_occurrence_ambiguous` before writes. Exact-id retract/verify preserves the packet. Same-value provenance reassertion uses no-temporal-intent preservation. A different-value edit is allowed only for an unknown default occurrence; a temporal-bearing occurrence fails `temporal_mutator_unsupported` before retraction or approval parking |
+| `roster/relationship/api/router.py::forget_entity` | Bulk lifecycle retraction of every active subject/object row | Continue as an intentional all-occurrence lifecycle operation. Retract every matched row without altering its packet and remove each graph projection in the same transaction |
+| `src/butlers/google_account_registry.py::disconnect_account` and `src/butlers/steam_account_registry.py::disconnect_account` | Explicit hard-delete of a companion `public.entities` row, invoking FK cascade | Preserve the existing destructive all-version cascade. Real-PostgreSQL coverage must prove every occurrence and attached evidence/projection is removed atomically; these paths never choose or rewrite one occurrence |
+| Relationship migrations `019_prefix_telegram_has_handle`, `027_prefix_telegram_ingress_handles`, and `028_backfill_entity_info_nonsecret_to_facts` | Historical direct UPDATE/INSERT before the temporal migration | Keep them ordered before temporal expansion in fresh-chain execution. They MUST NOT be reused as post-cutover repair paths; the full chain proves they finish while legacy uniqueness still exists |
+
+A row is temporal-bearing when any effective bound or precision is non-null or when
+`effective_period_id` is non-null. Lifecycle changes by exact row id may update `validity`,
+`verified`, and `updated_at` only as their existing contract permits; they never rewrite the temporal
+packet. An SPO-, predicate-, subject-, or object-wide mutation must either deliberately transition
+every selected occurrence while preserving each packet, or reject ambiguity before its first write.
+
+The transition must add a static production-DML inventory guard over `roster/relationship/` and
+`src/butlers/`. Every direct `relationship.entity_facts` INSERT/UPDATE/DELETE and every helper that
+performs one must map to a row above. A new or unclassified mutator fails the guard and blocks
+cutover. Runtime image proof covers every inventoried mutator, not only the central writer symbol.
+No temporal assertion may be admitted until the exact deployed image contains every required
+compatible behavior or fence.
 
 ## Alternatives Considered
 
@@ -242,17 +311,20 @@ deployed old writer and repeated-period writes.
    calls continue the old single-slot behavior. This prevents an old writer from later replacing a
    temporal row with an all-null version and prevents the legacy index from turning a repeated
    occurrence into an unexplained conflict.
-3. **Prove the writer transition.** Every Relationship writer instance must report the transition
-   writer's exact image/code identity, old instances must be absent, and real-PostgreSQL transition
-   tests must pass before the second migration is authorized. Process health or elapsed rollout time
-   alone is insufficient proof. No temporal approval may be parked during this stage because the
-   cutover check precedes parking.
+3. **Prove the complete mutator transition.** Every Relationship instance must report the exact
+   image/code identity containing the transition writer plus every compatible behavior or fence in
+   the mutation inventory; old instances must be absent; the static inventory guard must be clean;
+   and real-PostgreSQL transition, merge, lifecycle, preference, cascade, approval, and concurrency
+   tests must pass before the second migration is authorized. Process health, one writer-symbol
+   check, or elapsed rollout time is insufficient proof. No temporal approval may be parked during
+   this stage because the cutover check precedes parking.
 4. **Contract the legacy index, then enable temporal writes.** A later migration drops only
    `uq_ef_spo_active`; it leaves the occurrence index and temporal columns/checks in place. The same
-   transition writer detects that absence and enables normalized temporal assertions, explicit
-   repeated period ids, and CAS corrections. This index absence is the schema capability signal;
-   there is no time-based or process-local feature flag. Old-writer SQL is expected to fail after
-   this point, which is why step 3 is a hard prerequisite.
+   transition code detects that absence and enables normalized temporal assertions, explicit
+   repeated period ids, and CAS corrections only through compatible or fenced paths. This index
+   absence is the schema capability signal; there is no time-based or process-local feature flag.
+   Old-writer SQL and any unfenced SPO-only mutator are unsafe after this point, which is why step 3
+   is a hard prerequisite.
 
 Rollback is bounded by the same compatibility facts:
 
@@ -280,6 +352,8 @@ Rollback is bounded by the same compatibility facts:
   exact old-writer absence is proven, and the transition writer uses targetless conflict handling.
 - Temporal behavior starts while mixed writer versions are live: the transition writer rejects
   temporal intent while the legacy index exists and checks before approval parking or persistence.
+- A non-central mutator collapses occurrences: cutover requires a complete static DML inventory and
+  exact-image proof that every path is occurrence-preserving or fails before its first write.
 - Repeated periods overlap before cardinality enforcement: the representation permits this by
   design, and `bu-4ss0u` is the explicit enforcement owner.
 - Current reads appear to mean "effective now": scenarios pin their continued assertion-current
