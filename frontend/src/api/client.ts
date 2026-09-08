@@ -2727,6 +2727,17 @@ export function getRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
   );
 }
 
+/**
+ * Retire a rule: it stops firing but stays on the books (retired_at set).
+ * PATCH /api/memory/rules/{id}/retire (bu-6t8ix.3). Returns the refreshed rule.
+ */
+export function retireRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
+  return apiFetch<ApiResponse<MemoryRule>>(
+    `/memory/rules/${encodeURIComponent(ruleId)}/retire`,
+    { method: "PATCH" },
+  );
+}
+
 /** Fetch recent memory activity. */
 export function getMemoryActivity(
   limit?: number,

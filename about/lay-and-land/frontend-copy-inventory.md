@@ -741,6 +741,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/RuleDetailPage.tsx`
 
 - derived from episode {}
+- Failed to retire rule
 
 ## `frontend/src/pages/SecretsPage.tsx`
 
