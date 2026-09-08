@@ -174,7 +174,7 @@ checks before pushing, even when skipping the full `make check` gate:
 
 ```bash
 make check-ci-test-shards     # Registers new test files in CI shard manifests
-make check-frontend-copy      # Validates new copy additions (if applicable)
+make check-guards             # Validates documentation guards (dashes, spec, names, frontend-copy inventory)
 ```
 
 These checks are cheap (seconds, not minutes) and catch misregistration at the source rather than
