@@ -2496,6 +2496,25 @@ class CorrectionGuardError(Exception):
         self.message = message
 
 
+class EpisodeNotDeadLetterError(Exception):
+    """Raised when retry_dead_letter_episode is asked to reset a non-dead_letter episode.
+
+    Attributes:
+        current_status: The episode's actual ``consolidation_status``.
+        message: Human-readable explanation suitable for an API error response.
+    """
+
+    def __init__(self, current_status: str) -> None:
+        message = (
+            "Episode is not in dead_letter state "
+            f"(current consolidation_status: {current_status!r}); only a "
+            "dead-lettered episode can be retried"
+        )
+        super().__init__(message)
+        self.current_status = current_status
+        self.message = message
+
+
 async def forget_memory(
     pool: Pool,
     memory_type: str,
@@ -2821,6 +2840,92 @@ async def confirm_memory(
         memory_id,
     )
     return result.endswith("1")
+
+
+# ---------------------------------------------------------------------------
+# Retry consolidation (dead_letter -> pending)
+# ---------------------------------------------------------------------------
+
+
+async def retry_dead_letter_episode(
+    pool: Pool,
+    episode_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
+) -> dict | None:
+    """Reset a dead-lettered episode so the scheduler reconsolidates it.
+
+    Resetting only the status label would leave the episode's terminal retry
+    state poisoned — ``consolidation_attempts`` already at the ceiling, and a
+    stale ``dead_letter_reason``/lease still set — so a manual retry must also
+    clear those fields.  Once reset, the episode's ``consolidation_status`` of
+    ``'pending'`` is unconditionally eligible for
+    :func:`butlers.modules.memory.consolidation.run_consolidation`'s claim
+    query on the very next scheduled sweep, the same path a freshly-stored
+    episode takes — this is a genuine re-enqueue, not a cosmetic relabel.
+
+    Args:
+        pool: asyncpg connection pool for the memory database.
+        episode_id: UUID of the episode to retry.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
+
+    Returns:
+        The updated episode row (dict) if the reset succeeded, or ``None`` if
+        no episode with that id exists.
+
+    Raises:
+        EpisodeNotDeadLetterError: If the episode exists but its
+            ``consolidation_status`` is not ``'dead_letter'``.
+    """
+    table = _memory_relation("episode", memory_schema)
+
+    row = await pool.fetchrow(
+        f"SELECT consolidation_status FROM {table} WHERE id = $1",
+        episode_id,
+    )
+    if row is None:
+        return None
+    if row["consolidation_status"] != "dead_letter":
+        raise EpisodeNotDeadLetterError(row["consolidation_status"])
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            updated = await conn.fetchrow(
+                f"""
+                UPDATE {table}
+                SET consolidation_status        = 'pending',
+                    consolidation_attempts      = 0,
+                    dead_letter_reason          = NULL,
+                    last_consolidation_error    = NULL,
+                    next_consolidation_retry_at = NULL,
+                    leased_until                = NULL,
+                    leased_by                   = NULL
+                WHERE id = $1 AND consolidation_status = 'dead_letter'
+                RETURNING id, butler, session_id, content, importance, reference_count,
+                          consolidated, consolidation_status, created_at,
+                          last_referenced_at, expires_at, metadata
+                """,
+                episode_id,
+            )
+            if updated is None:
+                # Raced with a concurrent transition between the pre-check and
+                # this guarded UPDATE — report the current terminal reality.
+                raise EpisodeNotDeadLetterError("dead_letter")
+
+            await conn.execute(
+                """
+                INSERT INTO memory_events
+                    (event_type, actor, memory_type, memory_id, payload)
+                VALUES
+                    ('episode_consolidation_retry_requested', 'dashboard_api',
+                     'episode', $1, $2)
+                """,
+                episode_id,
+                {"outcome": "reset_to_pending"},
+            )
+
+    return dict(updated)
 
 
 # ---------------------------------------------------------------------------

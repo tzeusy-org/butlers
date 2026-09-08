@@ -2603,6 +2603,70 @@ async def get_butler_memory_stats(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation
+# ---------------------------------------------------------------------------
+
+
+@butler_memory_router.post(
+    "/{name}/memory/episodes/{episode_id}/retry-consolidation",
+    response_model=ApiResponse[Episode],
+)
+async def retry_episode_consolidation(
+    name: str,
+    episode_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Episode]:
+    """Reset a dead_letter episode to 'pending' so it is reconsolidated.
+
+    Delegates to ``storage.retry_dead_letter_episode`` on the named butler's
+    own pool — backs the daybook register's per-episode retry-consolidation
+    verb (the dead-letter action the memory attention rail card links to).
+    The reset clears the terminal retry state (attempts, dead_letter_reason,
+    lease) so the episode is unconditionally eligible for the next scheduled
+    ``run_consolidation`` sweep, not merely relabelled.
+
+    Errors:
+    - 404: Butler is not registered, or no episode with this id exists on it.
+    - 400: ``episode_id`` is not a valid UUID.
+    - 409: The episode exists but is not in dead_letter state.
+    - 503: The butler has no reachable memory pool.
+    """
+    from butlers.modules.memory import storage as _storage
+
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    try:
+        eid = _uuid.UUID(episode_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid episode id (must be a UUID)") from exc
+
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    memory_schema = _memory_source_schema(db, name)
+    try:
+        updated = await _storage.retry_dead_letter_episode(pool, eid, memory_schema=memory_schema)
+    except _storage.EpisodeNotDeadLetterError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except Exception as exc:
+        if _is_missing_memory_schema_error(
+            exc, schema_absent_at_start=_memory_schema_absent_at_start(db, name)
+        ):
+            raise HTTPException(
+                status_code=503, detail=f"Memory tables unavailable for butler '{name}'"
+            ) from exc
+        raise
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    return ApiResponse[Episode](data=_row_to_episode(updated))
+
+
+# ---------------------------------------------------------------------------
 # GET /api/memory/retention-policies
 # ---------------------------------------------------------------------------
 

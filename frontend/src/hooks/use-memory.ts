@@ -22,6 +22,7 @@ import {
   inspectMemory,
   promoteEntity,
   retractFact,
+  retryEpisodeConsolidation,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
@@ -101,6 +102,26 @@ export function useEpisode(episodeId: string | undefined) {
     queryKey: ["memory-episode", episodeId],
     queryFn: () => getEpisode(episodeId!),
     enabled: !!episodeId,
+  });
+}
+
+/**
+ * Retry consolidation for a dead-lettered episode (POST
+ * /butlers/{butler}/memory/episodes/{id}/retry-consolidation). On success,
+ * invalidates the single-episode and episodes-list caches so the daybook and
+ * detail page reflect the reset to 'pending' immediately, plus memory-stats
+ * so the rail's dead-letter count drops. bu-6t8ix.2.
+ */
+export function useRetryEpisodeConsolidation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ butler, episodeId }: { butler: string; episodeId: string }) =>
+      retryEpisodeConsolidation(butler, episodeId),
+    onSuccess: (_, { episodeId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-episode", episodeId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-episodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
+    },
   });
 }
 
