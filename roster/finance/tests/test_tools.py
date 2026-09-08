@@ -57,7 +57,7 @@ class TestTrackSubscription:
         """Creating a subscription returns a SubscriptionRecord dict."""
         from butlers.tools.finance import track_subscription
 
-        renewal = date.today() + timedelta(days=30)
+        renewal = datetime.now(UTC).date() + timedelta(days=30)
         result = await track_subscription(
             pool=pool,
             service="Netflix",
@@ -79,7 +79,7 @@ class TestTrackSubscription:
         """Creating subscription with all optional fields persists them."""
         from butlers.tools.finance import track_subscription
 
-        renewal = date.today() + timedelta(days=7)
+        renewal = datetime.now(UTC).date() + timedelta(days=7)
         result = await track_subscription(
             pool=pool,
             service="Spotify",
@@ -103,7 +103,7 @@ class TestTrackSubscription:
         """Cancellation door fields (URL, notice period, cancel-by) persist."""
         from butlers.tools.finance import track_subscription
 
-        renewal = date.today() + timedelta(days=30)
+        renewal = datetime.now(UTC).date() + timedelta(days=30)
         cancel_by = renewal - timedelta(days=7)
         result = await track_subscription(
             pool=pool,
@@ -131,7 +131,7 @@ class TestTrackSubscription:
             amount=29.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
         )
 
         assert result["cancellation_url"] is None
@@ -142,7 +142,7 @@ class TestTrackSubscription:
         """Re-upserting without door fields keeps the previously-set values (COALESCE)."""
         from butlers.tools.finance import track_subscription
 
-        renewal_1 = date.today() + timedelta(days=30)
+        renewal_1 = datetime.now(UTC).date() + timedelta(days=30)
         first = await track_subscription(
             pool=pool,
             service="Hulu",
@@ -155,7 +155,7 @@ class TestTrackSubscription:
         )
         assert first["cancellation_url"] == "https://hulu.com/cancel"
 
-        renewal_2 = date.today() + timedelta(days=31)
+        renewal_2 = datetime.now(UTC).date() + timedelta(days=31)
         second = await track_subscription(
             pool=pool,
             service="Hulu",
@@ -178,7 +178,7 @@ class TestTrackSubscription:
             amount=9.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             metadata={
                 "expected_signal_source": {
                     "producer": "connector:gmail",
@@ -199,7 +199,7 @@ class TestTrackSubscription:
             amount=9.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             _expected_signal_source=FinanceSignalSource(
                 "connector:gmail", "gmail:user:owner@example.invalid"
             ),
@@ -222,7 +222,7 @@ class TestTrackSubscription:
             amount=9.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             metadata={"plan": "old"},
             _expected_signal_source=gmail,
         )
@@ -232,7 +232,7 @@ class TestTrackSubscription:
             amount=10.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=31),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=31),
             metadata={"plan": "new"},
         )
 
@@ -274,7 +274,7 @@ class TestTrackSubscription:
             amount=9.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             _expected_signal_source=FinanceSignalSource(
                 "connector:gmail", "gmail:user:owner@example.invalid"
             ),
@@ -298,7 +298,7 @@ class TestTrackSubscription:
             amount=10.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=31),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=31),
             _expected_signal_source=current_source,
         )
 
@@ -328,7 +328,7 @@ class TestTrackSubscription:
             amount=9.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             _expected_signal_source=gmail,
         )
         updated = await track_subscription(
@@ -337,7 +337,7 @@ class TestTrackSubscription:
             amount=11.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=31),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=31),
             _expected_signal_source=FinanceSignalSource("owner"),
         )
 
@@ -362,7 +362,7 @@ class TestTrackSubscription:
         """Calling track_subscription twice with same service+frequency updates in place."""
         from butlers.tools.finance import track_subscription
 
-        renewal_1 = date.today() + timedelta(days=30)
+        renewal_1 = datetime.now(UTC).date() + timedelta(days=30)
         first = await track_subscription(
             pool=pool,
             service="Adobe Creative Cloud",
@@ -372,7 +372,7 @@ class TestTrackSubscription:
             next_renewal=renewal_1,
         )
 
-        renewal_2 = date.today() + timedelta(days=31)
+        renewal_2 = datetime.now(UTC).date() + timedelta(days=31)
         second = await track_subscription(
             pool=pool,
             service="Adobe Creative Cloud",
@@ -394,14 +394,14 @@ class TestTrackSubscription:
         """Same service but different frequency creates a separate record."""
         from butlers.tools.finance import track_subscription
 
-        renewal = date.today() + timedelta(days=365)
+        renewal = datetime.now(UTC).date() + timedelta(days=365)
         await track_subscription(
             pool=pool,
             service="Adobe Creative Cloud",
             amount=54.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
         )
         yearly = await track_subscription(
             pool=pool,
@@ -430,7 +430,7 @@ class TestTrackSubscription:
             amount=7.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=15),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=15),
             status="cancelled",
         )
         assert result["status"] == "cancelled"
@@ -445,7 +445,7 @@ class TestTrackSubscription:
             amount=10.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=20),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=20),
             status="paused",
         )
         assert result["status"] == "paused"
@@ -461,7 +461,7 @@ class TestTrackSubscription:
                 amount=5.00,
                 currency="USD",
                 frequency="monthly",
-                next_renewal=date.today() + timedelta(days=30),
+                next_renewal=datetime.now(UTC).date() + timedelta(days=30),
                 status="expired",  # invalid
             )
 
@@ -476,14 +476,14 @@ class TestTrackSubscription:
                 amount=5.00,
                 currency="USD",
                 frequency="biweekly",  # invalid
-                next_renewal=date.today() + timedelta(days=14),
+                next_renewal=datetime.now(UTC).date() + timedelta(days=14),
             )
 
     async def test_renewal_date_string_normalized(self, pool):
         """ISO string renewal date is normalized to a date object."""
         from butlers.tools.finance import track_subscription
 
-        renewal_str = (date.today() + timedelta(days=30)).isoformat()
+        renewal_str = (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
         result = await track_subscription(
             pool=pool,
             service="Dropbox",
@@ -511,7 +511,7 @@ class TestTrackSubscription:
             amount=14.99,
             currency="USD",
             frequency="monthly",
-            next_renewal=date.today() + timedelta(days=30),
+            next_renewal=datetime.now(UTC).date() + timedelta(days=30),
             account_id=account_id,
         )
         # _row_to_dict serializes UUIDs to strings
@@ -521,7 +521,7 @@ class TestTrackSubscription:
         """On upsert, metadata is merged (not replaced)."""
         from butlers.tools.finance import track_subscription
 
-        renewal = date.today() + timedelta(days=30)
+        renewal = datetime.now(UTC).date() + timedelta(days=30)
         await track_subscription(
             pool=pool,
             service="Notion",
@@ -557,7 +557,7 @@ class TestTrackBill:
         """Creating a bill returns a BillRecord dict."""
         from butlers.tools.finance import track_bill
 
-        due = date.today() + timedelta(days=7)
+        due = datetime.now(UTC).date() + timedelta(days=7)
         result = await track_bill(
             pool=pool,
             payee="PG&E",
@@ -578,9 +578,9 @@ class TestTrackBill:
         """Creating bill with all optional fields persists them."""
         from butlers.tools.finance import track_bill
 
-        due = date.today() + timedelta(days=5)
-        period_start = date.today().replace(day=1)
-        period_end = date.today()
+        due = datetime.now(UTC).date() + timedelta(days=5)
+        period_start = datetime.now(UTC).date().replace(day=1)
+        period_end = datetime.now(UTC).date()
         paid_time = datetime.now(UTC)
 
         result = await track_bill(
@@ -611,7 +611,7 @@ class TestTrackBill:
         """Calling track_bill twice with same payee+due_date updates in place."""
         from butlers.tools.finance import track_bill
 
-        due = date.today() + timedelta(days=10)
+        due = datetime.now(UTC).date() + timedelta(days=10)
         first = await track_bill(
             pool=pool,
             payee="Rent",
@@ -637,8 +637,8 @@ class TestTrackBill:
         """Same payee but different due_date creates a separate record."""
         from butlers.tools.finance import track_bill
 
-        due_1 = date.today() + timedelta(days=5)
-        due_2 = date.today() + timedelta(days=35)
+        due_1 = datetime.now(UTC).date() + timedelta(days=5)
+        due_2 = datetime.now(UTC).date() + timedelta(days=35)
         await track_bill(pool=pool, payee="Internet", amount=60.00, currency="USD", due_date=due_1)
         await track_bill(pool=pool, payee="Internet", amount=60.00, currency="USD", due_date=due_2)
 
@@ -649,7 +649,7 @@ class TestTrackBill:
         """Case/whitespace/trailing-period variants of a payee dedupe via payee_key."""
         from butlers.tools.finance import track_bill
 
-        due = date.today() + timedelta(days=9)
+        due = datetime.now(UTC).date() + timedelta(days=9)
         first = await track_bill(
             pool=pool, payee="Tailscale Inc.", amount=5.00, currency="USD", due_date=due
         )
@@ -668,7 +668,7 @@ class TestTrackBill:
         """autopay/predicted flags persist and default to false when omitted."""
         from butlers.tools.finance import track_bill
 
-        due = date.today() + timedelta(days=4)
+        due = datetime.now(UTC).date() + timedelta(days=4)
         flagged = await track_bill(
             pool=pool,
             payee="Endowus",
@@ -698,7 +698,7 @@ class TestTrackBill:
                 payee="Arta Finance",
                 amount=0.00,
                 currency="USD",
-                due_date=date.today() - timedelta(days=3),
+                due_date=datetime.now(UTC).date() - timedelta(days=3),
                 status="overdue",
             )
 
@@ -711,7 +711,7 @@ class TestTrackBill:
             payee="Water Bill",
             amount=40.00,
             currency="USD",
-            due_date=date.today() - timedelta(days=2),
+            due_date=datetime.now(UTC).date() - timedelta(days=2),
             status="paid",
         )
         assert result["status"] == "paid"
@@ -725,7 +725,7 @@ class TestTrackBill:
             payee="Gas Bill",
             amount=50.00,
             currency="USD",
-            due_date=date.today() - timedelta(days=5),
+            due_date=datetime.now(UTC).date() - timedelta(days=5),
             status="overdue",
         )
         assert result["status"] == "overdue"
@@ -740,7 +740,7 @@ class TestTrackBill:
                 payee="Phone",
                 amount=50.00,
                 currency="USD",
-                due_date=date.today() + timedelta(days=3),
+                due_date=datetime.now(UTC).date() + timedelta(days=3),
                 status="unpaid",  # invalid
             )
 
@@ -754,7 +754,7 @@ class TestTrackBill:
                 payee="Phone",
                 amount=50.00,
                 currency="USD",
-                due_date=date.today() + timedelta(days=3),
+                due_date=datetime.now(UTC).date() + timedelta(days=3),
                 frequency="biweekly",  # invalid
             )
 
@@ -762,7 +762,7 @@ class TestTrackBill:
         """ISO string due_date is normalized to a date object."""
         from butlers.tools.finance import track_bill
 
-        due_str = (date.today() + timedelta(days=7)).isoformat()
+        due_str = (datetime.now(UTC).date() + timedelta(days=7)).isoformat()
         result = await track_bill(
             pool=pool,
             payee="Credit Card",
@@ -782,7 +782,7 @@ class TestTrackBill:
             payee="Electric",
             amount=70.00,
             currency="USD",
-            due_date=date.today() + timedelta(days=1),
+            due_date=datetime.now(UTC).date() + timedelta(days=1),
             status="paid",
             paid_at=paid_str,
         )
@@ -820,7 +820,7 @@ class TestUpcomingBills:
         """Bill with due_date within days_ahead is included in needs_action."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=5)
+        due = datetime.now(UTC).date() + timedelta(days=5)
         await track_bill(pool=pool, payee="Rent", amount=1800.00, currency="USD", due_date=due)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
@@ -831,7 +831,7 @@ class TestUpcomingBills:
         """Bill with due_date beyond horizon is not included."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=20)
+        due = datetime.now(UTC).date() + timedelta(days=20)
         await track_bill(
             pool=pool, payee="Distant Bill", amount=100.00, currency="USD", due_date=due
         )
@@ -848,7 +848,7 @@ class TestUpcomingBills:
             payee="Phone",
             amount=50.00,
             currency="USD",
-            due_date=date.today(),
+            due_date=datetime.now(UTC).date(),
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
@@ -860,7 +860,7 @@ class TestUpcomingBills:
         """Bill due within horizon but not today gets urgency=due_soon."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=7)
+        due = datetime.now(UTC).date() + timedelta(days=7)
         await track_bill(pool=pool, payee="Internet", amount=60.00, currency="USD", due_date=due)
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
@@ -872,7 +872,7 @@ class TestUpcomingBills:
         """Bill with status=overdue gets urgency=overdue."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        past_due = date.today() - timedelta(days=3)
+        past_due = datetime.now(UTC).date() - timedelta(days=3)
         await track_bill(
             pool=pool,
             payee="Gas",
@@ -891,7 +891,7 @@ class TestUpcomingBills:
         """Bill past due_date with status=pending is classified as overdue."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        past_due = date.today() - timedelta(days=2)
+        past_due = datetime.now(UTC).date() - timedelta(days=2)
         await track_bill(
             pool=pool,
             payee="Water",
@@ -909,7 +909,7 @@ class TestUpcomingBills:
         """include_overdue=False excludes bills past the due date."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        past_due = date.today() - timedelta(days=2)
+        past_due = datetime.now(UTC).date() - timedelta(days=2)
         await track_bill(
             pool=pool,
             payee="Old Bill",
@@ -926,7 +926,7 @@ class TestUpcomingBills:
         """include_overdue=True includes bills that are past due."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        past_due = date.today() - timedelta(days=5)
+        past_due = datetime.now(UTC).date() - timedelta(days=5)
         await track_bill(
             pool=pool,
             payee="Old Overdue",
@@ -943,7 +943,7 @@ class TestUpcomingBills:
         """Paid bills are not included in upcoming_bills."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=3)
+        due = datetime.now(UTC).date() + timedelta(days=3)
         await track_bill(
             pool=pool,
             payee="Already Paid",
@@ -965,14 +965,14 @@ class TestUpcomingBills:
             payee="Bill A",
             amount=50.00,
             currency="USD",
-            due_date=date.today() + timedelta(days=3),
+            due_date=datetime.now(UTC).date() + timedelta(days=3),
         )
         await track_bill(
             pool=pool,
             payee="Bill B",
             amount=100.00,
             currency="USD",
-            due_date=date.today() + timedelta(days=10),
+            due_date=datetime.now(UTC).date() + timedelta(days=10),
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
@@ -987,14 +987,14 @@ class TestUpcomingBills:
             payee="Rent",
             amount=1800.00,
             currency="USD",
-            due_date=date.today() + timedelta(days=5),
+            due_date=datetime.now(UTC).date() + timedelta(days=5),
         )
         await track_bill(
             pool=pool,
             payee="Internet",
             amount=60.00,
             currency="USD",
-            due_date=date.today() + timedelta(days=8),
+            due_date=datetime.now(UTC).date() + timedelta(days=8),
         )
 
         result = await upcoming_bills(pool=pool, days_ahead=14)
@@ -1004,7 +1004,7 @@ class TestUpcomingBills:
         """Autopay bills are FYIs, never actionable, and excluded from the owed total."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=4)
+        due = datetime.now(UTC).date() + timedelta(days=4)
         await track_bill(pool=pool, payee="Manual Bill", amount=63.00, currency="SGD", due_date=due)
         await track_bill(
             pool=pool,
@@ -1028,7 +1028,7 @@ class TestUpcomingBills:
         """Predicted rows surface as heads-up, not as confirmed obligations."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=6)
+        due = datetime.now(UTC).date() + timedelta(days=6)
         await track_bill(
             pool=pool,
             payee="KCUTS",
@@ -1048,7 +1048,7 @@ class TestUpcomingBills:
         """$0 placeholders are counted but never surfaced in any bucket."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due = date.today() + timedelta(days=2)
+        due = datetime.now(UTC).date() + timedelta(days=2)
         await track_bill(
             pool=pool,
             payee="Arta Finance",
@@ -1079,7 +1079,7 @@ class TestUpcomingBills:
         from butlers.tools.finance import track_bill, upcoming_bills
 
         # Bill due in 30 days — out of default 14-day window but in 60-day window
-        due_30 = date.today() + timedelta(days=30)
+        due_30 = datetime.now(UTC).date() + timedelta(days=30)
         await track_bill(
             pool=pool,
             payee="Quarterly Bill",
@@ -1099,9 +1099,9 @@ class TestUpcomingBills:
         """needs_action items are returned sorted by due_date ascending."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
-        due_a = date.today() + timedelta(days=8)
-        due_b = date.today() + timedelta(days=3)
-        due_c = date.today() + timedelta(days=12)
+        due_a = datetime.now(UTC).date() + timedelta(days=8)
+        due_b = datetime.now(UTC).date() + timedelta(days=3)
+        due_c = datetime.now(UTC).date() + timedelta(days=12)
         await track_bill(pool=pool, payee="Bill A", amount=10.00, currency="USD", due_date=due_a)
         await track_bill(pool=pool, payee="Bill B", amount=20.00, currency="USD", due_date=due_b)
         await track_bill(pool=pool, payee="Bill C", amount=30.00, currency="USD", due_date=due_c)
