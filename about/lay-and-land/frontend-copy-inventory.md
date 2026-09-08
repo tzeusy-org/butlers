@@ -4195,4 +4195,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3287*
+*Total strings: 3288*
