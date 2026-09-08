@@ -2437,3 +2437,187 @@ def test_backfill_memory_facts_edges_is_idempotent(memory_migrated_db: str) -> N
     assert result["first_count"] == 1, result
     assert result["second_count"] == 0, result
     assert result["total_rows"] == 1, result
+
+
+# ---------------------------------------------------------------------------
+# Rule retirement (bu-6t8ix.3) — mem_012, storage.retire_rule, and the
+# evaluation-path guard that actually stops a retired rule from firing.
+# ---------------------------------------------------------------------------
+
+
+def test_rules_table_has_retired_at_column(memory_migrated_db: str) -> None:
+    """mem_012 adds a nullable retired_at column to rules."""
+    cols = _get_column_names(memory_migrated_db, "rules")
+    assert "retired_at" in cols
+
+
+async def _retire_rule_and_check_catalog(db_url: str) -> dict:
+    """Retire a rule twice and probe both the row and its catalog entry.
+
+    Mirrors ``_forget_fact_and_rule_and_check_catalog`` (see
+    ``test_forget_memory_marks_catalog_entries_stale``): ``retire_rule``
+    (bu-6t8ix.3) must cascade disownment to ``public.memory_catalog`` in the
+    same transaction as ``forget_memory``'s plain path, or the cross-butler
+    Fleet Knowledge surface would keep serving a retired rule indefinitely.
+    The second call also proves idempotency: COALESCE keeps the original
+    ``retired_at`` rather than bumping it on a repeat retire.
+    """
+    from butlers.modules.memory.storage import retire_rule, store_rule
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        rule_id = await store_rule(
+            pool,
+            content="Always double-check delivery addresses before dispatch",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+
+        first_retire = await retire_rule(pool, rule_id)
+        retired_at_first = await pool.fetchval(
+            "SELECT retired_at FROM rules WHERE id = $1", rule_id
+        )
+
+        second_retire = await retire_rule(pool, rule_id)
+        retired_at_second = await pool.fetchval(
+            "SELECT retired_at FROM rules WHERE id = $1", rule_id
+        )
+
+        catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            rule_id,
+        )
+
+        return {
+            "first_retire": first_retire,
+            "second_retire": second_retire,
+            "retired_at_first": retired_at_first,
+            "retired_at_second": retired_at_second,
+            "catalog_row": dict(catalog_row) if catalog_row else None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_retire_rule_marks_catalog_entry_stale_and_is_idempotent(
+    memory_migrated_db: str,
+) -> None:
+    """retire_rule cascades catalog disownment and keeps its retired_at across repeats."""
+    result = asyncio.run(_retire_rule_and_check_catalog(memory_migrated_db))
+
+    assert result["first_retire"] is True
+    assert result["second_retire"] is True
+    assert result["retired_at_first"] is not None
+    # Idempotent: a second retire does not bump retired_at (COALESCE), so
+    # "when was this retired" stays accurate across repeat calls.
+    assert result["retired_at_second"] == result["retired_at_first"]
+
+    row = result["catalog_row"]
+    assert row is not None, "expected a catalog row for the retired rule"
+    assert row["confidence"] == 0
+    assert row["invalid_at"] is not None
+
+
+async def _store_and_retire_rule_then_search(db_url: str) -> dict:
+    """Store two rules, retire one, then probe search.semantic_search and
+    search.keyword_search directly.
+
+    These are the exact functions ``search.recall()`` (and therefore
+    ``memory_context()``'s "Active Rules" section injected into an agent's
+    system prompt) call to retrieve rules. This is the load-bearing
+    evaluation-path guard the retire feature exists for: a retire verb that
+    flips ``retired_at`` without either search function excluding it would be
+    a silent no-op — the rule would keep firing.
+    """
+    from butlers.modules.memory import search as _search
+    from butlers.modules.memory.storage import retire_rule, store_rule
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        # A fixed, non-zero embedding: pgvector's cosine distance operator
+        # rejects an all-zero vector, and every store in this test shares one
+        # engine — content-based ranking is irrelevant, only presence/absence
+        # in the result set is under test.
+        engine = MagicMock()
+        engine.embed.return_value = [0.1] * 384
+        engine.model_name = "test-model"
+
+        live_id = await store_rule(
+            pool,
+            content="Always confirm bookings twice before sending",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="general",
+        )
+        retired_id = await store_rule(
+            pool,
+            content="Always confirm bookings twice before sending",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="general",
+        )
+
+        retired = await retire_rule(pool, retired_id)
+
+        semantic_results = await _search.semantic_search(
+            pool,
+            [0.1] * 384,
+            "rules",
+            tenant_id="shared",
+            limit=10,
+        )
+        keyword_results = await _search.keyword_search(
+            pool,
+            "confirm bookings",
+            "rules",
+            tenant_id="shared",
+            limit=10,
+        )
+
+        return {
+            "retired": retired,
+            "live_id": live_id,
+            "retired_id": retired_id,
+            "semantic_ids": {r["id"] for r in semantic_results},
+            "keyword_ids": {r["id"] for r in keyword_results},
+        }
+    finally:
+        await pool.close()
+
+
+def test_retired_rule_is_excluded_from_semantic_and_keyword_search(
+    memory_migrated_db: str,
+) -> None:
+    """A retired rule is excluded from both search.semantic_search and
+    search.keyword_search (bu-6t8ix.3) -- the primitives recall()/
+    memory_context() use to surface "Active Rules". A live sibling with
+    identical content stays retrievable through both, proving the exclusion
+    is keyed on retired_at and not an accident of the query shape."""
+    result = asyncio.run(_store_and_retire_rule_then_search(memory_migrated_db))
+
+    assert result["retired"] is True
+
+    assert result["retired_id"] not in result["semantic_ids"]
+    assert result["live_id"] in result["semantic_ids"]
+
+    assert result["retired_id"] not in result["keyword_ids"]
+    assert result["live_id"] in result["keyword_ids"]

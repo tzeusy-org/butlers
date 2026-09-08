@@ -741,6 +741,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/pages/RuleDetailPage.tsx`
 
 - derived from episode {}
+- Failed to retire rule
 
 ## `frontend/src/pages/SecretsPage.tsx`
 
@@ -4194,4 +4195,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3287*
+*Total strings: 3288*

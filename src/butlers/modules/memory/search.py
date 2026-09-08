@@ -120,9 +120,13 @@ async def semantic_search(
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
 
-    # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE).
+    # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE) and retired
+    # (retired_at IS NULL) rules — neither is a live standing order, and this
+    # is the evaluation-path guard that stops a retired rule from firing (it
+    # backs recall()/memory_context()'s "Active Rules" injection).
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
+        conditions.append("retired_at IS NULL")
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
@@ -210,8 +214,10 @@ async def keyword_search(
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
 
+    # See semantic_search above for why both exclusions apply.
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
+        conditions.append("retired_at IS NULL")
 
     where = " AND ".join(conditions)
 
