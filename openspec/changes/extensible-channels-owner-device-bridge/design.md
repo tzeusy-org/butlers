@@ -47,7 +47,8 @@ It remains specification-only and unapproved.
 
 Use one exact-pair table in `public`, owned by the migration role. The pair is the authority unit,
 so one channel can admit multiple providers without a second enablement state that can disagree.
-Switchboard and the dashboard API can read; runtime callers cannot write.
+Switchboard alone receives runtime `SELECT`; the dashboard API reads its bounded projection through
+Switchboard, and every other runtime role has neither direct read nor write privilege.
 
 Rejected alternatives:
 
@@ -77,7 +78,9 @@ after admission.
 
 ### 3. Representation, propagation, enforcement
 
-The static and catalog sets must match exactly before any runtime type is relaxed. Consumer
+RFC 0033 `LEGACY_SOURCE_PAIRS_V1`, both runtime Literal projections, the static pair matrix, and the
+catalog seed must be equal before any runtime type is relaxed. The comparison rejects missing,
+extra, or substituted tuples even at equal cardinality. Consumer
 propagation includes ingest construction, Pydantic validation, connector conformance, direct
 dashboard ingress, filtering, identity resolution, relationship sync, and read projections. Only
 then does semantic catalog enforcement become authoritative.
@@ -118,10 +121,21 @@ accounting. Independent endpoints back off independently. Revocation stops futur
 linearized boundary while retained canonical history follows existing retention contracts.
 
 Connector runtimes receive no catalog grant. They call Switchboard's bounded
-`source.pair.preflight` MCP tool before provider connection and renew before its expiry, which can
-never outlive the catalog snapshot's 60-second acceptance window. Denied, unavailable, failed, or
-expired preflight keeps the connector inactive. Preflight does not reserve authority; Switchboard
-still validates every envelope, and an active connector stops observation if renewal fails.
+`source.pair.preflight` MCP tool at the exact configured Switchboard origin before provider
+connection. Switchboard authenticates the connector-base bearer token first and derives a
+server-held principal binding connector type, allowed source pairs, allowed configured endpoint
+identities, Switchboard audience, and active/revoked state. It rejects missing, invalid, expired,
+revoked, cross-connector, out-of-scope, endpoint-mismatched, redirected, or wrong-audience requests
+before catalog lookup. A matching response carries only an opaque principal-bound reference and
+expiry that cannot outlive the snapshot's 60-second acceptance window. Denied, unavailable,
+failed, or expired preflight keeps the connector inactive. Preflight does not reserve authority;
+Switchboard still validates every envelope, and an active connector stops observation if renewal
+fails.
+
+Watched Source therefore requires its trusted connector endpoint identity to be provisioned into
+the bearer principal before provider connection. If it is absent, the connector remains inactive.
+No provider identity read, endpoint discovery call, URL rotation, or caller placeholder is an
+authorized bootstrap path in this change.
 
 This change chooses synchronous durable Switchboard acceptance for webhook acknowledgment rather
 than adding a connector-owned durable ingress queue. A webhook handler may buffer at most 1 MiB of
@@ -131,18 +145,19 @@ unavailability, timeout, or unknown durability returns non-2xx and the provider 
 same event identity. The verification buffer is released and never becomes persistence, logging,
 telemetry, tracing, or LLM input.
 
-### 6. Provider choice is owner policy; technical recommendation is Telnyx first
+### 6. Telnyx is the only conditional V1 candidate
 
-RFC 0033 records the official primary-source research and exact limitations. Telnyx is the proposed
-first choice because its current docs explicitly describe signed webhook event IDs, duplicate and
-out-of-order delivery, and a voice command dedupe primitive. Twilio is the fallback because it has
-signed callbacks, stable Message/Call SIDs, restricted keys, and mature messaging/voice resources,
-but its cited Message create contract does not document a general create idempotency parameter.
+RFC 0033 records the official primary-source research and exact limitations. Telnyx is the only V1
+candidate because its current docs explicitly describe signed webhook event IDs, duplicate and
+out-of-order delivery, and a voice command dedupe primitive. It is not selected: eligibility,
+number capability, regional registration, ingress topology, and account-specific restrictions
+cannot be derived from public docs and require provider evidence plus exact owner approval.
 
-Neither option is selected. Provider eligibility, number capability, regional registration,
-ingress topology, and account-specific restrictions cannot be derived from public docs. The owner
-must approve the provider and the provider must confirm those facts for the intended account before
-implementation.
+Twilio is retained only as future research. Its incoming-message webhook has a stable MessageSid but
+no signed timestamp, and its default connection override policy does not retry 4xx, 5xx, or read
+timeout outcomes. Keeping it eligible would require new authenticated provider reads or webhook
+configuration authority that this change does not grant. A separate approved provider-specific
+freshness/replay and retry contract is required before Twilio can become a candidate.
 
 ### 7. Proposed privacy default is metadata-only
 
@@ -215,8 +230,13 @@ absence of proof is not permission to retry.
 - **[Public ingress increases attack surface]** → Require TLS, provider signature/freshness
   validation, expected account/number binding, bounded bodies, rate limits, and no acceptance before
   authentication. The concrete exposure route remains an owner decision.
+- **[A caller can forge preflight scope or target an alternate endpoint]** → Authenticate the
+  connector bearer before catalog lookup, compare every request dimension with server-held scope,
+  pin the Switchboard audience/origin, and deny direct catalog access to every other runtime role.
 - **[Provider API behavior can drift]** → Refresh official documentation and account capability at
   the owner gate and again before implementation; fail closed when the expected primitive is absent.
+- **[Twilio does not meet the generic freshness/retry contract]** → Exclude it from V1 eligibility;
+  retain only research links and require a separate exact contract before reconsideration.
 - **[Status projection leaks sensitive data]** → Build field-by-field content-blind DTOs and audit
   metadata; test forbidden field/value classes across API and UI.
 - **[A short source TTL can be mistaken for complete erasure]** → Name every direct store, redact
@@ -231,7 +251,8 @@ absence of proof is not permission to retry.
 
 This plan describes future implementation order; no step runs in this change.
 
-1. Add catalog representation, constraints, complete 20-pair seed, and least-privilege grants.
+1. Add catalog representation, constraints, an exact `LEGACY_SOURCE_PAIRS_V1` seed, and
+   Switchboard-only runtime `SELECT` grants.
    Keep the static validator authoritative.
 2. Add the loader/cache, static-vs-catalog parity check, content-blind read API/UI, and update every
    consumer to accept the bounded token type internally while enforcing the static set.
@@ -251,19 +272,11 @@ retiring source-aware constraints; no accepted fact is time-shifted or rewritten
 
 ## Owner Decision Gate
 
-These choices are non-deferrable because each changes the provider, privacy, or authentication
-contract:
+The single authoritative checklist is RFC 0033 D7's eight-item owner gate. Task 1.2 must carry all
+eight subjects exactly; summaries and UI copy reference that list instead of creating another.
+Each subject is non-deferrable because it changes provider, privacy, authentication, or retention
+authority.
 
-1. Telnyx (recommended if eligible) or Twilio;
-2. exact provider account/number and confirmed regional capabilities;
-3. owned public HTTPS ingress route;
-4. provider webhook retry/timeout compatibility with durable-before-2xx acknowledgment;
-5. enabled call lifecycle subset;
-6. metadata-only or content-enabled inbound SMS;
-7. finite direct-copy retention (recommended 30 days) and acceptance of body-free identity,
-   derived, export, and backup survival; and
-8. continued outbound SMS deferral, unless a separate approved effect artifact is ready.
-
-Until an independently reviewed exact artifact records all seven and receives owner sign-off, the
+Until an independently reviewed exact artifact records all eight and receives owner sign-off, the
 bridge remains `not_approved` and `bu-8cdl1.14` is not ready for the owner-device implementation
 slice.

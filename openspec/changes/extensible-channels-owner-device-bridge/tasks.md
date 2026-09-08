@@ -1,15 +1,15 @@
 ## 1. Authority and Baseline Gates
 
 - [ ] 1.1 Obtain independent exact-head semantic and security review of RFC 0033 and all seven capability deltas; correct every blocking finding before presenting an owner decision.
-- [ ] 1.2 Record exact owner approval of the reviewed artifact, including provider, account/number capability, public ingress route, call-event subset, SMS privacy profile, finite retention period, and continued SMS-egress disposition.
-- [ ] 1.3 Refresh the cited official provider contracts and obtain account-specific confirmation of regional number capability, registration requirements, webhook/auth availability, and any idempotency or reconciliation primitive; keep the owner-device slice blocked if any required fact is unproven.
+- [ ] 1.2 Record one exact owner act covering all eight RFC 0033 gate subjects: Telnyx selection or continued deferral; confirmed account/number capability and regional/registration prerequisites; owned public HTTPS ingress route; provider authentication and webhook verification material; enabled inbound event types; metadata-only SMS or content-enabled direct-copy TTL plus explicit body-free identity/derived/export/backup survival acceptance; revocation and credential deletion; and provider retry/timeout compatibility with durable-before-2xx acknowledgment plus explicit continued outbound-SMS deferral under this artifact.
+- [ ] 1.3 Refresh the cited official Telnyx contracts and obtain account-specific confirmation of regional number capability, registration requirements, webhook/auth availability, retry/timeout behavior, and any idempotency or reconciliation primitive; keep the owner-device slice blocked if any required fact is unproven. Twilio remains future research and requires a separate approved freshness/retry contract before eligibility.
 - [ ] 1.4 Reconcile the exact landed state of PR #4046 (`bu-poven`), PR #3960 (`bu-7exe4.2`), RFC 0023, and their active deltas; rebuild any colliding block against the then-current baseline without importing unapproved behavior.
 
 ## 2. Catalog Representation and Grants
 
 - [ ] 2.1 Add an additive core migration for `public.source_channel_catalog` with bounded token checks, exact pair uniqueness, enablement, timestamps, and migration-only write ownership.
-- [ ] 2.2 Seed the exact 20 legacy pairs and add a fail-closed parity check that compares the full static and catalog sets before propagation or enforcement.
-- [ ] 2.3 Add real-PostgreSQL migration tests proving complete/idempotent seeding, constraints, Switchboard read access, denial of connector/butler/Messenger/dashboard runtime writes, and non-destructive downgrade refusal where catalog-only dependencies remain.
+- [ ] 2.2 Seed exactly RFC 0033 `LEGACY_SOURCE_PAIRS_V1` and add a fail-closed set-equality check against both runtime Literal projections and the full static pair matrix before propagation or enforcement; include equal-cardinality missing/extra substitution failures.
+- [ ] 2.3 Add real-PostgreSQL migration tests proving complete/idempotent seeding, constraints, Switchboard-only runtime SELECT, denial of direct SELECT and every write privilege to connector/butler/Messenger/dashboard runtime roles, and non-destructive downgrade refusal where catalog-only dependencies remain.
 
 ## 3. Catalog Validation, Cache, and Read Surface
 
@@ -19,7 +19,7 @@
 - [ ] 3.4 Extend `tests/integration/test_connector_conformance.py` so every existing connector pair matches the seed and a catalog-only regression pair passes after enforcement without a Literal or pair-matrix edit.
 - [ ] 3.5 Add `GET /api/ingestion/source-catalog` and its field-by-field content-blind DTO; test healthy, genuinely empty, and source-unavailable envelopes plus absence of all mutation routes.
 - [ ] 3.6 Add the bounded owner read presentation using the Dispatch status/error/focus conventions; test keyboard operation, unavailable-state honesty, and absence of connector health, credentials, identities, bodies, and outbound capability.
-- [ ] 3.7 Add the Switchboard `source.pair.preflight` MCP contract and connector client path; test authorized, denied, unavailable, expired-before-connect, renewal failure, disable-after-preflight, and absence of connector catalog grants.
+- [ ] 3.7 Implement the connector-base bearer principal binding and Switchboard `source.pair.preflight` MCP/client path; test the exact positive connector/type/pair/endpoint/audience path, missing/invalid/expired/revoked credentials, cross-connector and out-of-scope pair/endpoint attempts, redirected or wrong Switchboard origin, unavailable/expired-before-connect, renewal failure, disable-after-preflight, opaque responses, and absence of direct catalog privileges for every non-Switchboard runtime role.
 
 ## 4. Additive Enforcement and Rollback
 

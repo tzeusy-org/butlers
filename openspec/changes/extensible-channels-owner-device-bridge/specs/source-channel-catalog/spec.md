@@ -87,8 +87,9 @@ Scope: v1-mandatory
 
 ### Requirement: Migration-Only Registration and Content-Blind Read Projection
 Catalog writes SHALL remain migration-owned for this change. Runtime roles SHALL receive only the
-least privilege required to read the catalog, and the owner API SHALL expose a read-only projection
-with catalog availability while offering no create, edit, enable, disable, or delete mutation.
+least privilege required for Switchboard to read the catalog, and the owner API SHALL expose a
+Switchboard-backed read-only projection with catalog availability while offering no create, edit,
+enable, disable, or delete mutation.
 
 ID: REQ-source-channel-catalog-004
 Source: RFC 0033 §Writer and operator boundaries (Proposed; owner sign-off required)
@@ -97,11 +98,11 @@ Scope: v1-mandatory
 #### Scenario: Runtime grants are read-only
 - **WHEN** catalog migrations and grants are inspected on real PostgreSQL
 - **THEN** Switchboard's runtime role SHALL be able to select catalog rows
-- **AND** connector, butler, dashboard runtime, and Messenger roles SHALL have no catalog write privilege
+- **AND** connector, butler, dashboard runtime, and Messenger roles SHALL be denied direct `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, and `TRIGGER` privileges on every catalog table defined by this change
 
 #### Scenario: Read API distinguishes unavailable from empty
 - **WHEN** the owner requests `GET /api/ingestion/source-catalog`
-- **THEN** the response SHALL contain the canonical pair rows and `source_available=true` when the catalog read succeeds
+- **THEN** the dashboard API SHALL obtain the bounded projection from Switchboard and return the canonical pair rows with `source_available=true` when that read succeeds
 - **AND** a failed catalog read SHALL return an empty data array with `source_available=false`, never a truthful-looking empty catalog
 
 #### Scenario: Projection reveals capability facts only
@@ -110,7 +111,7 @@ Scope: v1-mandatory
 - **AND** the response MUST NOT expose endpoint identities, connector configuration, credentials, message bodies, sender or recipient identities, health evidence, or outbound-delivery capability
 
 ### Requirement: Additive Legacy-Pair Rollout and Non-Destructive Rollback
-The catalog rollout SHALL preserve all 20 currently valid channel/provider pairs and their meanings
+The catalog rollout SHALL preserve every exact tuple in RFC 0033 `LEGACY_SOURCE_PAIRS_V1` and its meaning
 before any static validation is relaxed. Cutover and rollback MUST NOT replay, rewrite, delete, or
 reinterpret previously accepted events.
 
@@ -120,8 +121,8 @@ Scope: v1-mandatory
 
 #### Scenario: Seed is complete before propagation
 - **WHEN** the catalog representation is introduced
-- **THEN** one enabled row SHALL exist for every pair accepted by the pre-change static validator
-- **AND** an exact parity check SHALL block propagation or enforcement while any legacy pair is missing, disabled, or assigned a different meaning
+- **THEN** the enabled catalog tuple set SHALL equal RFC 0033 `LEGACY_SOURCE_PAIRS_V1`, the runtime Literal projections, and the complete static pair matrix
+- **AND** the equality check SHALL block propagation or enforcement for a missing, extra, disabled, duplicated, or substituted tuple even when the compared sets have the same count
 
 #### Scenario: New pair requires no validator code edit after cutover
 - **WHEN** a migration adds an enabled catalog-only test channel and provider after semantic enforcement is active

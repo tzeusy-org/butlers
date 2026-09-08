@@ -52,6 +52,12 @@ Scope: v1-reserved
 - **THEN** the connector SHALL reject it before persistence or Switchboard submission
 - **AND** the audit result SHALL contain only a bounded failure category
 
+#### Scenario: Twilio remains ineligible under the generic webhook gate
+- **WHEN** an implementation proposes Twilio using only its signed incoming-message URL/parameters/body and stable MessageSid
+- **THEN** the bridge SHALL remain inactive because those facts do not provide this requirement's signed freshness proof or configured non-2xx retry contract
+- **AND** no MessageSid lookup, provider read, webhook URL mutation/rotation, or fallback SHALL be inferred
+- **AND** Twilio eligibility SHALL require a separate exact owner-approved provider contract
+
 #### Scenario: Sender resolves through phone identity
 - **WHEN** an authenticated inbound SMS or call event contains a remote E.164 party
 - **THEN** identity resolution SHALL use the existing `has-phone` relationship identity contract

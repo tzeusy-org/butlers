@@ -29,8 +29,9 @@ message send.
   base lifecycle instead of bypassing Switchboard classification, filtering, replay, checkpoint,
   heartbeat, or observability contracts.
 - Reserve an owner-device calls/SMS bridge behind an exact provider, authentication, consent,
-  privacy, retention, and ingress-topology owner decision. The reviewed provider options are
-  Twilio and Telnyx; neither is selected by this draft.
+  privacy, retention, and ingress-topology owner decision. Telnyx is the only researched V1
+  candidate and remains conditional; Twilio is retained only as a future alternative that needs a
+  separately approved freshness/retry contract. No provider is selected by this draft.
 - Preserve the current `sms` unsupported response. SMS delivery requires a later, separately
   approved OpenSpec change, an implemented adapter, credential/reachability checks, and the
   applicable approval-delivery policy. Unknown post-handoff outcomes may never be blindly retried.
@@ -73,9 +74,10 @@ message send.
   envelope and is currently conflicting; this draft must be rebuilt against any version that
   lands before owner review or merge. Proposed RFC 0023 and its active change remain separate
   authority for durable approval presentation and provider-handoff recovery.
-- **External providers:** no new dependency is selected. Twilio and Telnyx facts are sourced from
-  their official documentation in the design; account eligibility, number availability,
-  regulatory requirements, and the actual ingress route remain owner/provider prerequisites.
+- **External providers:** no new dependency is selected. Telnyx facts are sourced from official
+  documentation but account eligibility, number availability, regulatory requirements, and the
+  actual ingress route remain owner/provider prerequisites. Twilio research is retained for a
+  future change and grants no V1 eligibility.
 - **Tooling follow-up:** `aib-7an` owns the separate `spec-trace-check.py` delta-Purpose defect.
   OpenSpec 1.9 accepts an authored Purpose on each new-capability delta and carries it into the new
   main spec on archive; the current checker falsely reports those three headings as errors. This
