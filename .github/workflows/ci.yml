@@ -125,7 +125,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -444,7 +444,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -629,7 +629,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -733,7 +733,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -837,7 +837,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -941,7 +941,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1045,7 +1045,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1149,7 +1149,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1286,7 +1286,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1423,7 +1423,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1560,7 +1560,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1696,7 +1696,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -1830,7 +1830,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
@@ -2031,7 +2031,7 @@ jobs:
           set -euo pipefail
           max_attempts=5
           for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
               echo "uv installed on attempt ${attempt}"
               break
             fi
