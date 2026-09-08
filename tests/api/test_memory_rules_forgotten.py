@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS rules (
     last_applied_at      TIMESTAMPTZ,
     last_evaluated_at    TIMESTAMPTZ,
     tags                 JSONB DEFAULT '[]'::jsonb,
-    metadata             JSONB DEFAULT '{}'::jsonb
+    metadata             JSONB DEFAULT '{}'::jsonb,
+    retired_at           TIMESTAMPTZ
 );
 """
 

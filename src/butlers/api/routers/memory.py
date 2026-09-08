@@ -1274,7 +1274,7 @@ async def list_rules(
             f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
-            f" last_evaluated_at, tags, metadata"
+            f" last_evaluated_at, tags, metadata, retired_at"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1334,7 +1334,7 @@ async def get_rule(
                 "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                 " effectiveness_score, applied_count, success_count, harmful_count,"
                 " source_episode_id, source_butler, created_at, last_applied_at,"
-                " last_evaluated_at, tags, metadata"
+                " last_evaluated_at, tags, metadata, retired_at"
                 f" FROM {relation} WHERE id = $1",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
@@ -1353,6 +1353,91 @@ async def get_rule(
         _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
     return ApiResponse[Rule](data=_row_to_rule(rows[0]))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/memory/rules/{rule_id}/retire
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/rules/{rule_id}/retire", response_model=ApiResponse[Rule])
+async def retire_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Rule]:
+    """Retire a rule: it stops firing but stays on the books (sets retired_at).
+
+    Distinct from ``POST /facts/{id}/retract``: a retired rule may still be
+    correct — the owner has just decided it no longer needs enforcing.
+    ``metadata->>'forgotten'`` remains the "this rule was wrong" signal;
+    ``retired_at`` is "this is deliberately decommissioned". Delegates to
+    ``storage.retire_rule`` on whichever butler pool owns the rule, then
+    returns the updated row so the rule-detail commit footer can reflect the
+    retirement immediately. Idempotent: retiring an already-retired rule
+    keeps its original ``retired_at``.
+
+    Errors:
+    - 400: ``rule_id`` is not a valid UUID.
+    - 404: no memory pool holds a rule with this id.
+    - 503: no database pools are available.
+    """
+    from butlers.modules.memory import storage as _storage
+
+    try:
+        rule_uuid = _uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid rule id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    # Locate the pool that owns this rule, retire it there, and re-fetch the
+    # updated row. See confirm_fact for the schema-loss classification rule.
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
+        try:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "rules")
+            episodes_relation = _memory_relation(db, name, "episodes")
+            tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            retired = await _storage.retire_rule(
+                pool,
+                rule_uuid,
+                memory_schema=memory_schema,
+            )
+            if not retired:
+                continue
+            row = await pool.fetchrow(
+                _with_source_episode_status(
+                    "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+                    " effectiveness_score, applied_count, success_count, harmful_count,"
+                    " source_episode_id, source_butler, created_at, last_applied_at,"
+                    " last_evaluated_at, tags, metadata, retired_at"
+                    f" FROM {relation} WHERE id = $1",
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
+                rule_uuid,
+            )
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="rule retirement source unavailable")
+            logger.debug(
+                "Skipping pool %s while retiring rule %s (pool lacks memory tables or failed)",
+                name,
+                rule_id,
+                exc_info=True,
+            )
+            continue
+        if row is None:
+            continue
+        return ApiResponse[Rule](data=_row_to_rule(row))
+
+    _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
 
 # ---------------------------------------------------------------------------
@@ -2490,6 +2575,7 @@ def _row_to_rule(r) -> Rule:
         last_evaluated_at=str(r["last_evaluated_at"]) if r["last_evaluated_at"] else None,
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
+        retired_at=str(r["retired_at"]) if r.get("retired_at") else None,
     )
 
 
