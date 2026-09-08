@@ -76,6 +76,7 @@ import {
   useConversations,
   useConversationMessages,
   useConversationSearch,
+  useMessageSearch,
 } from "@/hooks/use-conversations.ts";
 
 // ---------------------------------------------------------------------------
@@ -1155,5 +1156,168 @@ describe("ChatContent — page-context capture", () => {
     });
 
     expect(createConversationMock.mock.calls[0][1]).not.toHaveProperty("page_context");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Message-search jump-to-message scroll/highlight parity with
+// FloatingChatWidget (bu-qaisp)
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp)", () => {
+  const JUMP_CONVERSATIONS = [
+    {
+      id: "conv-a",
+      butler_name: "switchboard",
+      title: "Thread A",
+      status: "active",
+      created_at: "2026-08-01T00:00:00.000Z",
+      updated_at: "2026-08-02T00:00:00.000Z",
+      message_count: 1,
+      routed_butler: null,
+    },
+    {
+      id: "conv-b",
+      butler_name: "switchboard",
+      title: "Thread B",
+      status: "active",
+      created_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-07-02T00:00:00.000Z",
+      message_count: 1,
+      routed_butler: null,
+    },
+  ];
+
+  const MESSAGE_A: Message = {
+    id: "msg-a",
+    conversation_id: "conv-a",
+    role: "user",
+    content: "Hello from A",
+    tool_calls: null,
+    error: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    duration_ms: null,
+    session_id: null,
+    request_id: null,
+    created_at: "2026-08-02T00:00:00.000Z",
+  };
+
+  const MESSAGE_TARGET: Message = {
+    ...MESSAGE_A,
+    id: "msg-target",
+    conversation_id: "conv-b",
+    content: "Found me via search",
+  };
+
+  function mockHooksForJumpToMessage() {
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: JUMP_CONVERSATIONS, meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+
+    vi.mocked(useConversationMessages).mockImplementation(
+      (_butlerName: string, conversationId: string | null) => {
+        if (conversationId === "conv-a") {
+          return {
+            data: { data: [MESSAGE_A], meta: {} },
+            isLoading: false,
+          } as unknown as ReturnType<typeof useConversationMessages>;
+        }
+        if (conversationId === "conv-b") {
+          return {
+            data: { data: [MESSAGE_TARGET], meta: {} },
+            isLoading: false,
+          } as unknown as ReturnType<typeof useConversationMessages>;
+        }
+        return {
+          data: { data: [], meta: {} },
+          isLoading: false,
+        } as unknown as ReturnType<typeof useConversationMessages>;
+      },
+    );
+
+    vi.mocked(useConversationSearch).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversationSearch>);
+
+    vi.mocked(useMessageSearch).mockReturnValue({
+      data: {
+        data: [
+          {
+            message_id: "msg-target",
+            conversation_id: "conv-b",
+            role: "user",
+            created_at: "2026-07-02T00:00:00.000Z",
+            butler_name: "switchboard",
+            session_id: null,
+            snippet: "Found me via search",
+            highlight_ranges: [],
+            deep_link: "/butlers/switchboard",
+          },
+        ],
+        meta: { next_cursor: null, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useMessageSearch>);
+  }
+
+  it("switches to the matched conversation and scrolls/highlights the anchor message on a same-butler search-result click", async () => {
+    mockHooksForJumpToMessage();
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    try {
+      renderChatContent();
+
+      // Auto-resumed to conv-a first (sidebar entry + header title).
+      expect(screen.getAllByText("Thread A")).toHaveLength(2);
+
+      fireEvent.change(screen.getByPlaceholderText("Search..."), {
+        target: { value: "search" },
+      });
+
+      const searchResult = await screen.findByTestId("message-search-result");
+      fireEvent.click(searchResult);
+
+      // Switched to the matched conversation (conv-b) — its title now shows
+      // only in the header, since the sidebar is displaying search results.
+      await waitFor(() => expect(screen.getByText("Thread B")).toBeDefined());
+      expect(screen.getByText("Found me via search")).toBeDefined();
+
+      // The matched message's bubble is scrolled into view and highlighted,
+      // mirroring FloatingChatWidget's scrollToMessageAnchor wiring.
+      await waitFor(() =>
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "center" }),
+      );
+      const bubble = document.getElementById("message-msg-target");
+      expect(bubble?.classList.contains("chat-message-highlight")).toBe(true);
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it("leaves plain conversation switches (no messageId) unaffected — no scroll/highlight call", async () => {
+    mockHooksForJumpToMessage();
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
+
+    try {
+      renderChatContent();
+
+      expect(screen.getAllByText("Thread A")).toHaveLength(2);
+
+      fireEvent.click(screen.getByText("Thread B"));
+
+      await waitFor(() => expect(screen.getAllByText("Thread B")).toHaveLength(2));
+      expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
   });
 });

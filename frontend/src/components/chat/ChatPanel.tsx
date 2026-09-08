@@ -45,7 +45,7 @@ import {
   isConfirmedConversationCancellation,
   type SendError,
 } from "./send-error-utils.ts";
-import { createClientMessageId } from "./message-id.ts";
+import { createClientMessageId, scrollToMessageAnchor } from "./message-id.ts";
 import {
   optimisticUserMessageId,
   reconcileConversationMessages,
@@ -89,6 +89,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Set by a message-search jump-to-message result (bu-qaisp, parity with
+  // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
+  // has rendered (see the effect below).
+  const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   // Per-message opt-out for the ContextChip (bu-0ynlk.4) — resets to true
   // after every send so removal only ever applies to the one message it was
@@ -675,6 +679,17 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   const visibleMessages =
     localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
+
+  // Once the jumped-to conversation's messages have rendered, scroll/focus
+  // the anchor message. A miss (bubble not in the DOM yet) just waits for
+  // the next render that changes visibleMessages.
+  useEffect(() => {
+    if (!pendingScrollMessageId) return;
+    if (scrollToMessageAnchor(pendingScrollMessageId)) {
+      setPendingScrollMessageId(null);
+    }
+  }, [pendingScrollMessageId, visibleMessages.length]);
+
   const visibleDispatchReceipt =
     streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
       ? streaming.dispatchReceipt
@@ -686,9 +701,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       <ConversationList
         butlerName={butlerName}
         activeConversationId={activeConversationId}
-        onSelectConversation={(id) => {
+        onSelectConversation={(id, messageId) => {
           abandonCurrentStream();
           setActiveConversationId(id);
+          setPendingScrollMessageId(messageId ?? null);
           setSendError(null);
         }}
         onNewConversation={handleNewConversation}
