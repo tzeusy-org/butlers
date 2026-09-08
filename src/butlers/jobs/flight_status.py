@@ -18,6 +18,13 @@ Degraded-mode honesty (CLAUDE.md "Degraded-Mode Response Envelope"):
   ``flight_status_feed_status.last_error`` is set (sanitized -- the
   AviationStack ``access_key`` query param is never logged or stored) and
   ``consecutive_failures`` increments. The job never raises.
+- Key configured but there are zero selectable legs to poll (nothing booked
+  in the poll window) -> a benign, not a failed, pass:
+  ``flight_status_feed_status.last_error`` still reports
+  ``"no selectable legs"`` as informational text (so a dashboard can tell
+  "verified nothing to check" apart from "never polled"), but
+  ``consecutive_failures`` resets to 0 exactly as a genuine success would --
+  it is never counted toward outage detection.
 - A single flight's poll failing does not abort the sweep -- the remaining
   legs are still checked, matching the atmosphere job's per-cycle resilience.
 
@@ -163,26 +170,36 @@ async def _record_attempt(
     legs_checked: int,
     delays_detected: int,
     error: str | None,
+    benign_empty: bool = False,
 ) -> None:
+    """Persist the outcome of one poll cycle.
+
+    ``benign_empty`` marks a zero-selectable-legs pass: it is counted as a
+    success for ``consecutive_failures`` bookkeeping (reset to 0) even though
+    ``error`` carries informational text ("no selectable legs") rather than
+    ``NULL``. Only a real :class:`FlightStatusFetchError` increments
+    ``consecutive_failures``.
+    """
     now = datetime.now(UTC)
-    if error is None:
+    if error is None or benign_empty:
         await pool.execute(
             """
             INSERT INTO public.flight_status_feed_status (
                 id, configured, last_attempt_at, last_success_at, last_error,
                 consecutive_failures, legs_checked, delays_detected, updated_at
-            ) VALUES (1, true, $1, $1, NULL, 0, $2, $3, $1)
+            ) VALUES (1, true, $1, $1, $2, 0, $3, $4, $1)
             ON CONFLICT (id) DO UPDATE SET
                 configured = true,
                 last_attempt_at = $1,
                 last_success_at = $1,
-                last_error = NULL,
+                last_error = $2,
                 consecutive_failures = 0,
-                legs_checked = $2,
-                delays_detected = $3,
+                legs_checked = $3,
+                delays_detected = $4,
                 updated_at = $1
             """,
             now,
+            error,
             legs_checked,
             delays_detected,
         )
@@ -282,6 +299,11 @@ async def run_flight_status_check(
     # a real fetch error) so `flight_status_feed_status.last_error` never
     # reports NULL over a pass that verified nothing.
     last_error: str | None = "no selectable legs" if not legs else None
+    # Tracks whether the eventual `last_error` is still the benign
+    # zero-legs marker set above, as opposed to a real fetch failure
+    # recorded below -- only the former should be exempted from
+    # `consecutive_failures` bookkeeping.
+    benign_empty = not legs
     notified: list[dict[str, Any]] = []
 
     try:
@@ -294,6 +316,7 @@ async def run_flight_status_check(
             except FlightStatusFetchError as exc:
                 logger.warning("flight_status_check: fetch failed for %s: %s", flight_number, exc)
                 last_error = str(exc)
+                benign_empty = False
                 continue
 
             legs_checked += 1
@@ -324,6 +347,7 @@ async def run_flight_status_check(
         legs_checked=legs_checked,
         delays_detected=delays_detected,
         error=last_error,
+        benign_empty=benign_empty,
     )
 
     return {
