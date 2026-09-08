@@ -154,6 +154,10 @@ class MemoryStats(BaseModel):
     established_rules: int = 0
     proven_rules: int = 0
     anti_pattern_rules: int = 0
+    # Retired rules (bu-6t8ix.3) are excluded from the maturity buckets above
+    # (a retired rule is not a live standing order) and counted separately
+    # here instead of being silently dropped from any total.
+    retired_rules: int = 0
     # Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
     last_consolidation_at: str | None = None
     last_consolidation_facts_produced: int | None = None

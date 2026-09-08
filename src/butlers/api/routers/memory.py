@@ -471,27 +471,37 @@ async def get_memory_stats(
             "total_rules": await pool.fetchval(f"SELECT count(*) FROM {rules_relation}") or 0,
             # Maturity buckets exclude forgotten rules (metadata->>'forgotten' —
             # rules have no validity column, so this JSONB flag is the sole
-            # soft-delete signal; see forget_memory/run_decay_sweep in storage.py).
-            # A forgotten rule is not a live belief and must not inflate any
+            # soft-delete signal; see forget_memory/run_decay_sweep in storage.py)
+            # and retired rules (retired_at IS NOT NULL, bu-6t8ix.3 — a
+            # deliberately decommissioned rule that stays on the books but no
+            # longer fires). Neither is a live belief and must not inflate any
             # maturity count, matching the memory_stats MCP tool's convention.
             "candidate_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'candidate'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "established_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'established'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "proven_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'proven'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "anti_pattern_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'anti_pattern'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
+            )
+            or 0,
+            "retired_rules": await pool.fetchval(
+                f"SELECT count(*) FROM {rules_relation} WHERE retired_at IS NOT NULL"
             )
             or 0,
             "last_consolidation_at": last_run["consolidated_at"] if last_run else None,
@@ -575,6 +585,7 @@ async def get_memory_stats(
         totals.established_rules += row["established_rules"]
         totals.proven_rules += row["proven_rules"]
         totals.anti_pattern_rules += row["anti_pattern_rules"]
+        totals.retired_rules += row["retired_rules"]
 
         run_at = row["last_consolidation_at"]
         if run_at is not None and (
@@ -3016,7 +3027,10 @@ async def inspect_memory(
             # Forgotten rules are excluded unconditionally here (no override,
             # unlike GET /rules) — this is the inspect search bar, and the MCP
             # recall/keyword_search paths (search.py) already hard-exclude
-            # forgotten rules from search results the same way.
+            # forgotten rules from search results the same way. Retired rules
+            # (retired_at, bu-6t8ix.3) are NOT excluded — operators still need
+            # to find them here — but retired_at is selected so the caller can
+            # tell them apart from live rules.
             forgotten_clause = "(metadata->>'forgotten')::boolean IS NOT TRUE"
             rule_args: list[object] = []
             idx = 1
@@ -3034,7 +3048,7 @@ async def inspect_memory(
                     f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                     f" effectiveness_score, applied_count, success_count, harmful_count,"
                     f" source_episode_id, source_butler, created_at, last_applied_at,"
-                    f" last_evaluated_at, tags, metadata"
+                    f" last_evaluated_at, tags, metadata, retired_at"
                     f" FROM {rules_relation}{rule_cond}"
                     f" ORDER BY created_at DESC"
                     f" LIMIT ${idx}",

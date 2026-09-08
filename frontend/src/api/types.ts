@@ -2928,6 +2928,8 @@ export interface MemoryStats {
   established_rules: number;
   proven_rules: number;
   anti_pattern_rules: number;
+  /** Retired rules (bu-6t8ix.3), excluded from the maturity buckets above. */
+  retired_rules: number;
   /**
    * Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
    * Mirrors src/butlers/api/models/memory.py::MemoryStats.
