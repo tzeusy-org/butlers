@@ -123,6 +123,34 @@ function activityBins(): { bins: Array<{ date: string; count: number }> } {
   return { bins };
 }
 
+/** Merged activity response consumed by the detail page's ActivityTimeline. */
+function activityStream(): unknown {
+  return {
+    items: [
+      {
+        id: "episode-1",
+        ts: "2026-05-20T12:00:00Z",
+        kind: "episode",
+        src: "chronicler",
+        episode_id: "episode-1",
+        summary: "Lunch with Alice",
+      },
+      {
+        id: "fact-1",
+        ts: "2026-05-18T00:00:00Z",
+        kind: "interaction",
+        src: "relationship",
+        predicate: "interaction_in_person",
+      },
+    ],
+    total: 2,
+    limit: 50,
+    offset: 0,
+    degraded: false,
+    degraded_reason: null,
+  };
+}
+
 /** A relationship CompareFact (types.ts CompareFact). */
 function compareFact(
   id: string,
@@ -354,7 +382,15 @@ async function installDetailStubs(
   // 90-day sparkline
   await page.route(
     `**/api/relationship/entities/${ENTITY_ID}/activity**`,
-    (route) => json(route, activityBins()),
+    (route) => {
+      const requestUrl = new URL(route.request().url());
+      return json(
+        route,
+        requestUrl.searchParams.get("bins") === "daily"
+          ? activityBins()
+          : activityStream(),
+      );
+    },
   );
 
   // delta-since-last-visit (read) — the fact ids here also seed the fact list
@@ -674,6 +710,11 @@ test.describe("entity-v3: detail quick-refresh blocks", () => {
       timeout: TIMEOUT_MS,
     });
     await expect(page.getByTestId("sparkline-stick")).toHaveCount(90);
+
+    // The full stream uses the same rendered page and real client/hook path;
+    // Chronicle rows must survive alongside relationship activity.
+    await expect(page.getByText("Lunch with Alice")).toBeVisible();
+    await expect(page.getByText("Chronicle episode · Chronicle")).toBeVisible();
 
     // Core dates block + at least one row.
     await expect(page.getByTestId("core-dates-block")).toBeVisible();

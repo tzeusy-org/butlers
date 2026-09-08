@@ -327,6 +327,7 @@ import type {
   CreateEntityInteractionRequest,
   CreateEntityGiftRequest,
   CreateEntityReachOutDraftRequest,
+  EntityActivityResponse,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
@@ -3112,6 +3113,26 @@ export function getEntityTimeline(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
   return apiFetch<EntityTimelineItem[]>(path);
+}
+
+/**
+ * Fetch the merged relationship and Chronicler activity stream for an entity.
+ *
+ * The activity route is the canonical source for the detail page's unified
+ * stream. The optional AbortSignal is forwarded so TanStack Query can cancel
+ * an obsolete entity request when navigation or a refetch supersedes it.
+ */
+export function getEntityActivity(
+  entityId: string,
+  params?: { limit?: number; offset?: number; signal?: AbortSignal },
+): Promise<EntityActivityResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/activity`;
+  return apiFetch<EntityActivityResponse>(path, { signal: params?.signal });
 }
 
 /** Fetch message thread summaries for a relationship entity. */

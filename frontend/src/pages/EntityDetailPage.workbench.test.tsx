@@ -57,6 +57,7 @@ const useRelationshipEntitiesByIds = vi
 const useEntityFacts = vi.fn();
 
 vi.mock("@/hooks/use-entities", () => ({
+  useEntityActivity: vi.fn(() => ({ data: { items: [] }, isLoading: false, isError: false })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),

@@ -8,7 +8,7 @@ import { useEntity } from "@/hooks/use-memory";
 import {
   useEntityDeltaFacts,
   useEntityFacts,
-  useEntityTimeline,
+  useEntityActivity,
   useRelationshipEntitiesByIds,
 } from "@/hooks/use-entities";
 import type { EntityDetail, EntityFact } from "@/api/types";
@@ -88,6 +88,7 @@ vi.mock("@/hooks/use-entities", () => ({
     isSuccess: false,
     error: null,
   })),
+  useEntityActivity: vi.fn(() => ({ data: { items: [] }, isLoading: false, isError: false })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
@@ -198,18 +199,91 @@ describe("EntityDetailPage — identity hero", () => {
     setEntityState(BASE_ENTITY);
     const html = renderPage();
     expect(html).toContain("Activity");
+    expect(html).toContain("No activity recorded yet.");
   });
 
-  it("shows an activity error state (not 'No activity recorded yet.') on timeline load failure", () => {
-    // bu-mkd5r three-way contract: a down timeline backend must not read as a
+  it("renders relationship and Chronicle rows from the merged activity response", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "episode-1",
+            ts: "2026-06-01T12:00:00Z",
+            kind: "episode",
+            src: "chronicler",
+            episode_id: "episode-1",
+            summary: "Lunch with Alice",
+          },
+          {
+            id: "fact-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            predicate: "contact_note",
+          },
+        ],
+        total: 2,
+        limit: 50,
+        offset: 0,
+        degraded: false,
+        degraded_reason: null,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+
+    expect(html).toContain("Lunch with Alice");
+    expect(html).toContain("Chronicle episode · Chronicle");
+    expect(html).toContain("Relationship · contact note");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("keeps partial activity visible while naming unavailable Chronicle data", () => {
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityActivity).mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "fact-1",
+            ts: "2026-05-30T12:00:00Z",
+            kind: "note",
+            src: "relationship",
+            predicate: "contact_note",
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        degraded: true,
+        degraded_reason: "chronicler_activity_unavailable",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityActivity>);
+
+    const html = renderPage();
+
+    expect(html).toContain('data-testid="entity-activity-degraded"');
+    expect(html).toContain("Chronicle activity: unavailable");
+    expect(html).toContain("Relationship · contact note");
+    expect(html).not.toContain("No activity recorded yet.");
+  });
+
+  it("shows an activity error state (not 'No activity recorded yet.') on activity load failure", () => {
+    // bu-mkd5r three-way contract: a down activity backend must not read as a
     // genuinely quiet history.
     setEntityState(BASE_ENTITY);
-    vi.mocked(useEntityTimeline).mockReturnValue({
+    vi.mocked(useEntityActivity).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof useEntityTimeline>);
+    } as unknown as ReturnType<typeof useEntityActivity>);
     const html = renderPage();
     expect(html).toContain("entity-timeline-error");
     expect(html).not.toContain("No activity recorded yet.");

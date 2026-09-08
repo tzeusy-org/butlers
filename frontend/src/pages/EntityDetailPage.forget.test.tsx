@@ -101,6 +101,7 @@ vi.mock("@/hooks/use-entities", () => ({
     isSuccess: false,
     error: null,
   })),
+  useEntityActivity: vi.fn(() => ({ data: { items: [] }, isLoading: false, isError: false })),
   useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
