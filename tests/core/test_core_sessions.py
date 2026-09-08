@@ -510,7 +510,7 @@ async def test_friction_summary_zero_fills_and_counts_by_kind(pool):
     assert summary["total"] == 2
 
     # Invalid period raises, same contract as sessions_summary.
-    with pytest.raises((ValueError, Exception)):
+    with pytest.raises(ValueError):
         await friction_summary(pool, period="invalid_period")
 
 
