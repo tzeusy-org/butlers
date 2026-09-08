@@ -116,6 +116,7 @@ async def _setup_health_schema(pool) -> None:
     await pool.execute(CREATE_MEDICATION_DOSES_SQL)
     await pool.execute(CREATE_SYMPTOMS_SQL)
     for migration_name in (
+        "core_087_public_state.py",
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",
     ):
@@ -965,6 +966,60 @@ async def test_recovery_state_published_as_depleted_for_high_severity(
     assert kwargs["payload"]["max_severity"] == 8
     year_week = now.strftime("%Y-W%W")
     assert kwargs["dedup_key"] == f"{year_week}-depleted"
+
+
+async def test_publish_recovery_state_event_claims_state_via_state_claim_if_changed(
+    provisioned_postgres_pool,
+):
+    """bu-s7v6t: exercise the real state_claim_if_changed call inside
+    _publish_recovery_state_event's publish_domain_event_once -> _claim_and_record_event
+    chain against public.state (provisioned here by core_087), instead of mocking
+    publish_domain_event_once itself away. Only the downstream event-log/fan-out
+    calls (which need the separate domain_events tables, out of scope here) are
+    stubbed; the claim itself runs for real and must actually win.
+    """
+    from butlers.jobs._roster.health_jobs import _publish_recovery_state_event
+
+    record_event_mock = AsyncMock(return_value=str(uuid.uuid4()))
+    get_active_subscribers_mock = AsyncMock(return_value=[])
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+
+        now = _utcnow()
+        year_week = now.strftime("%Y-W%W")
+        dedup_key = f"{year_week}-recovering"
+
+        with (
+            patch("butlers.core_tools._domain_events.record_event", new=record_event_mock),
+            patch(
+                "butlers.core_tools._domain_events.get_active_subscribers",
+                new=get_active_subscribers_mock,
+            ),
+        ):
+            await _publish_recovery_state_event(
+                pool,
+                recovery={
+                    "state": "recovering",
+                    "max_severity": 4,
+                    "symptom_count": 1,
+                    "window_days": 7,
+                },
+                now_utc=now,
+                dedup_key=dedup_key,
+            )
+
+        state_row = await pool.fetchrow(
+            "SELECT value FROM state WHERE key = $1",
+            "domain_event_once:health.recovery_state:health.recovery_state",
+        )
+
+    # The claim must have actually won (state row written with the dedup_key
+    # value) and reached record_event, rather than raising asyncpg's
+    # UndefinedTableError for a missing public.state (the bug this test covers).
+    assert state_row is not None
+    assert state_row["value"] == dedup_key
+    record_event_mock.assert_awaited_once()
 
 
 async def test_symptom_trend_excludes_symptoms_outside_7_days(provisioned_postgres_pool):
