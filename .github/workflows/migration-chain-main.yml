@@ -32,7 +32,22 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        run: |
+          set -euo pipefail
+          max_attempts=5
+          for attempt in $(seq 1 "${max_attempts}"); do
+            if timeout 120 bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'; then
+              echo "uv installed on attempt ${attempt}"
+              break
+            fi
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "::error::uv install failed after ${max_attempts} attempts" >&2
+              exit 1
+            fi
+            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
+            sleep 10
+          done
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Install dependencies
         run: uv sync --frozen --dev
