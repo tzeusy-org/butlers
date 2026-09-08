@@ -175,6 +175,21 @@ async def test_configured_no_legs_records_zero_check_attempt():
     # write `last_error = NULL` as if a real poll had verified something.
     assert result["last_error"] == "no selectable legs"
 
+    # But it also must not be counted as a genuine failure: bu-tbm43 --
+    # consecutive_failures resets to 0 on a benign zero-legs pass exactly
+    # like a real success, not the increment branch a real outage takes.
+    status_calls = [
+        c for c in pool.execute.call_args_list if "flight_status_feed_status" in c.args[0]
+    ]
+    assert len(status_calls) == 1
+    sql, params = status_calls[0].args[0], status_calls[0].args[1:]
+    assert "consecutive_failures = 0" in sql
+    assert (
+        "consecutive_failures = public.flight_status_feed_status.consecutive_failures + 1"
+        not in sql
+    )
+    assert "no selectable legs" in params
+
 
 # ---------------------------------------------------------------------------
 # run_flight_status_check — delay past threshold notifies once
@@ -278,6 +293,50 @@ async def test_fetch_failure_records_error_without_crashing():
         c for c in pool.execute.call_args_list if "flight_status_feed_status" in c.args[0]
     ]
     assert len(status_calls) == 1
+    # A genuine fetch failure is not the benign zero-legs case: it must
+    # still take the increment branch, unchanged from before bu-tbm43.
+    sql = status_calls[0].args[0]
+    assert "consecutive_failures = public.flight_status_feed_status.consecutive_failures + 1" in sql
+
+    await client.aclose()
+
+
+async def test_mixed_success_and_failure_still_increments_consecutive_failures():
+    """One leg succeeds and one leg's fetch fails in the same sweep.
+
+    A real failure anywhere in the sweep must still increment
+    consecutive_failures even though other legs in the same pass resolved
+    fine -- the benign-empty exemption is only for the zero-legs case, not
+    for "this particular leg happened to succeed".
+    """
+    ok_leg = _leg_row(metadata={"flight_number": "OK123"})
+    failing_leg = _leg_row(metadata={"flight_number": "BAD456"})
+    pool = _make_pool(leg_rows=[ok_leg, failing_leg])
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("flight_iata") == "BAD456":
+            return httpx.Response(503, json={"error": "boom"})
+        return httpx.Response(200, json=_FLIGHT_PAYLOAD_ON_TIME)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+
+    with patch(
+        "butlers.jobs.flight_status.CredentialStore",
+        return_value=_mock_credential_store("fake-key"),
+    ):
+        result = await run_flight_status_check(pool, http_client=client)
+
+    assert result["skipped"] is False
+    assert result["legs_checked"] == 1
+    assert result["last_error"] is not None
+    assert result["last_error"] != "no selectable legs"
+
+    status_calls = [
+        c for c in pool.execute.call_args_list if "flight_status_feed_status" in c.args[0]
+    ]
+    assert len(status_calls) == 1
+    sql = status_calls[0].args[0]
+    assert "consecutive_failures = public.flight_status_feed_status.consecutive_failures + 1" in sql
 
     await client.aclose()
 
