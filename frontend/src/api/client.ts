@@ -386,8 +386,8 @@ import type {
   FinanceUpcomingBillsParams,
   FinanceBulkUpdateRequest,
   FinanceBulkUpdateResponse,
-  TravelTrip,
   TravelTripSummary,
+  TravelTripsResponse,
   TravelUpcomingModel,
   TravelTripsParams,
   TravelExpiringDocumentsResponse,
@@ -6437,7 +6437,7 @@ export function patchFinanceBulkMetadata(
 /** List trips with optional status and date range filters, paginated. */
 export function getTravelTrips(
   params?: TravelTripsParams,
-): Promise<PaginatedResponse<TravelTrip>> {
+): Promise<TravelTripsResponse> {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);
   if (params?.from_date) sp.set("from_date", params.from_date);
@@ -6445,7 +6445,7 @@ export function getTravelTrips(
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
-  return apiFetch<PaginatedResponse<TravelTrip>>(qs ? `/travel/trips?${qs}` : "/travel/trips");
+  return apiFetch<TravelTripsResponse>(qs ? `/travel/trips?${qs}` : "/travel/trips");
 }
 
 /** Fetch full trip summary (legs, accommodations, reservations, docs, timeline, alerts). */

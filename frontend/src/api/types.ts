@@ -8152,6 +8152,14 @@ export interface TravelTripSummary {
   documents: TravelDocument[];
   timeline: TravelTimelineEntry[];
   alerts: TravelAlert[];
+  /** Leg ids excluded from `legs` because their row could not be normalized. */
+  unreadable_leg_ids: string[];
+  /** Accommodation ids excluded from `accommodations` because their row could not be normalized. */
+  unreadable_accommodation_ids: string[];
+  /** Reservation ids excluded from `reservations` because their row could not be normalized. */
+  unreadable_reservation_ids: string[];
+  /** Document ids excluded from `documents` because their row could not be normalized. */
+  unreadable_document_ids: string[];
 }
 
 /** An upcoming trip with legs, accommodations, and days until departure. */
@@ -8189,6 +8197,17 @@ export interface TravelTripsParams {
   to_date?: string;
   offset?: number;
   limit?: number;
+}
+
+/** Pagination metadata for GET /api/travel/trips, plus per-row degraded-mode disclosure. */
+export interface TravelTripsMeta extends PaginationMeta {
+  /** Trip ids excluded from `data` because their row could not be normalized. */
+  unreadable_trip_ids: string[];
+}
+
+/** Paginated trips list response, with per-row degraded-mode disclosure. */
+export interface TravelTripsResponse extends PaginatedResponse<TravelTrip> {
+  meta: TravelTripsMeta;
 }
 
 /** A document expiring within the requested look-ahead window. */
