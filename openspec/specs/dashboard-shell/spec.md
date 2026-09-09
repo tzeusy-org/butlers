@@ -136,6 +136,35 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 - **AND** the main content area below the header fills remaining vertical space with `overflow-y-auto` and 24px padding (`p-6`)
 - **AND** the header contains the `PageHeader` component alongside the mobile hamburger button (on small screens)
 
+### Requirement: Chat Dock Rail (>= xl breakpoint)
+
+The shell SHALL accept an optional `chatDock` slot, rendering the global "Talk to Butlers" chat surface as a docked rail — a sibling column of `<main>`, never an overlay — at or above the `xl` Tailwind breakpoint (1280px). Below that breakpoint, or when the dock has been collapsed, the floating popover widget (`FloatingChatWidget`) is the only chat posture (bu-0ynlk.11).
+
+#### Scenario: Docked rail at >= xl
+
+- **WHEN** the viewport width is at or above the `xl` breakpoint (1280px) and the dock has not been collapsed
+- **THEN** `Shell`'s `chatDock` prop renders inside an `<aside>` element (implicit `role="complementary"`, no explicit `role` attribute — redundant on `<aside>`) with a hairline `border-l border-border` and no shadow class
+- **AND** the `<aside>` is a flex sibling of `<main>`, not an absolutely-positioned overlay
+- **AND** the floating popover widget does not render at the same time
+- **AND** the docked chat renders `ChatDock`, sharing the Switchboard-routed conversation set with the popover
+
+#### Scenario: Popover fallback below xl or while collapsed
+
+- **WHEN** the viewport width is below the `xl` breakpoint, or the docked rail has been collapsed via its Collapse button
+- **THEN** the shell renders no `chatDock` landmark
+- **AND** the floating popover widget (`FloatingChatWidget`, bottom-right button) is the only chat posture
+- **AND** if the dock was collapsed while the viewport is still >= xl, the popover's trigger button reopens the dock instead of opening the popover itself
+
+#### Scenario: Dock open/collapsed state persists
+
+- **WHEN** the operator collapses or reopens the docked rail
+- **THEN** the choice is persisted to `localStorage` under `butlers.chat-dock-open` (boolean) and survives a reload at the same viewport width
+
+#### Scenario: Dock width persists
+
+- **WHEN** the operator drags the dock's resize handle (a `role="separator"` splitter, keyboard-adjustable via arrow keys)
+- **THEN** the width is clamped between 360px and 560px and persisted to `localStorage` under `butlers.chat-dock-width`, restored on the next mount
+
 ### Requirement: Sidebar Navigation (56px Icon Rail)
 
 The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. It SHALL consist of a brand mark, icon-only navigation items with floating tooltips, butler status dots, live badge indicators, and a footer status summary.
@@ -237,6 +266,8 @@ The route map SHALL include the Settings Console sub-routes and the ingestion di
 - **WHEN** the router is initialized
 - **THEN** the following routes are registered:
   - `/` -- Overview dashboard
+  - `/chat` -- Full-page chat, the global "Talk to Butlers" surface (bu-0ynlk.11)
+  - `/chat/:conversationId` -- Full-page chat deep-linked to one conversation, resolved cross-butler by id (parameterized)
   - `/butlers` -- Butler list
   - `/butlers/:name` -- Butler detail (parameterized)
   - `/sessions` -- Session list

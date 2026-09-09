@@ -11,14 +11,14 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ExternalLinkIcon } from "lucide-react";
+import { ExternalLinkIcon, LinkIcon } from "lucide-react";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TypingIndicator } from "./TypingIndicator";
 import { ToolCallDetails } from "./ToolCallDetails";
-import { messageAnchorId } from "./message-id.ts";
+import { chatMessageDeepLink, messageAnchorId } from "./message-id.ts";
 import { LiveAnnouncer } from "./live-announcer.ts";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { Message, PricingMap } from "@/api/types.ts";
@@ -100,6 +100,9 @@ export function MessageThreadSkeleton() {
 interface MessageBubbleProps {
   message: Message;
   pricingMap: PricingMap | null;
+  /** Owning conversation, for the copy-link deep link (bu-0ynlk.11) — null
+   * before the create-conversation response has assigned one yet. */
+  conversationId: string | null;
   /** Streaming content appended to this message (while SSE is active). */
   streamingContent?: string;
   interrupted?: boolean;
@@ -112,6 +115,7 @@ interface MessageBubbleProps {
 function MessageBubble({
   message,
   pricingMap,
+  conversationId,
   streamingContent,
   interrupted,
   cancelled,
@@ -125,10 +129,23 @@ function MessageBubble({
     message.model,
     pricingMap,
   );
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  function handleCopyLink() {
+    if (!conversationId || !navigator.clipboard) return;
+    navigator.clipboard.writeText(
+      `${window.location.origin}${chatMessageDeepLink(conversationId, message.id)}`,
+    );
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 1200);
+  }
+
+  const deepLinkPath = conversationId ? chatMessageDeepLink(conversationId, message.id) : null;
 
   return (
     <div
       id={messageAnchorId(message.id)}
+      tabIndex={-1}
       className={cn(
         "flex flex-col gap-1 max-w-[85%]",
         isUser ? "self-end items-end" : "self-start items-start",
@@ -232,6 +249,18 @@ function MessageBubble({
           >
             View lineage
           </a>
+        )}
+
+        {/* Copy-link (bu-0ynlk.11): deep link to /chat/{conversationId}#m-{messageId} */}
+        {!isUser && deepLinkPath && (
+          <button
+            type="button"
+            onClick={handleCopyLink}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+            title={linkCopied ? "Copied" : `Copy link (${deepLinkPath})`}
+          >
+            <LinkIcon className="size-3" />
+          </button>
         )}
       </div>
     </div>
@@ -534,6 +563,7 @@ export function MessageThread({
               key={msg.id}
               message={msg}
               pricingMap={pricingMap}
+              conversationId={conversationId}
               streamingContent={isStreamingTarget ? streaming.content : undefined}
               interrupted={isStreamingTarget ? streaming.interrupted : undefined}
               cancelled={isStreamingTarget ? streaming.cancelled : undefined}

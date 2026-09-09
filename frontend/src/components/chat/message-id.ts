@@ -34,24 +34,38 @@ export function createClientMessageId(): string {
  * DOM id for a message bubble anchor. Shared between `MessageThread` (which
  * sets it) and `scrollToMessageAnchor` (which looks it up) so a
  * conversation_recall / message-search jump-to-message result can find its
- * bubble once the conversation's messages have rendered (bu-0ynlk.9).
+ * bubble once the conversation's messages have rendered (bu-0ynlk.9), and so
+ * the full-page /chat/:conversationId route (bu-0ynlk.11) can deep-link a
+ * specific message via `#m-{messageId}` (see `chatMessageDeepLink` below).
  */
 export function messageAnchorId(messageId: string): string {
-  return `message-${messageId}`;
+  return `m-${messageId}`;
 }
 
 /**
- * Scroll a message bubble into view and briefly highlight it.
+ * The full-page deep link for one message: `/chat/{conversationId}#m-{messageId}`
+ * (bu-0ynlk.11 — the per-assistant-message copy-link action).
+ */
+export function chatMessageDeepLink(conversationId: string, messageId: string): string {
+  return `/chat/${conversationId}#${messageAnchorId(messageId)}`;
+}
+
+/**
+ * Scroll a message bubble into view, focus it, and briefly highlight it.
  *
  * A no-op when the message isn't in the DOM yet (e.g. the conversation's
  * messages haven't finished loading) — callers should retry once loading
- * completes rather than treating a miss as an error.
+ * completes rather than treating a miss as an error. Focusing (the bubble
+ * carries `tabIndex={-1}`, see `MessageThread.tsx`) is what makes the
+ * `#m-{id}` URL fragment behave like a real in-page anchor for keyboard and
+ * screen-reader navigation, not just a scroll position.
  */
 export function scrollToMessageAnchor(messageId: string): boolean {
   if (typeof document === "undefined") return false;
   const el = document.getElementById(messageAnchorId(messageId));
   if (!el) return false;
   el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.focus({ preventScroll: true });
   el.classList.add("chat-message-highlight");
   window.setTimeout(() => el.classList.remove("chat-message-highlight"), 2000);
   return true;

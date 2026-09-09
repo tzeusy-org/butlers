@@ -444,6 +444,43 @@ describe("MessageThread — session link (bu-0ynlk.5)", () => {
   });
 });
 
+describe("MessageThread — copy-link deep anchor (bu-0ynlk.11)", () => {
+  it("copies the /chat/{conversationId}#m-{messageId} URL when the copy-link button is clicked", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+    const message = makeAssistantMessage({ id: "message-42" });
+
+    render(
+      <MessageThread
+        messages={[message]}
+        streaming={null}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    screen.getByTitle(/Copy link/).click();
+
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/chat/conversation-1#m-message-42`,
+    );
+  });
+
+  it("omits the copy-link button when no conversationId is known yet", () => {
+    const message = makeAssistantMessage();
+
+    render(
+      <MessageThread messages={[message]} streaming={null} pricingMap={null} conversationId={null} />,
+    );
+
+    expect(screen.queryByTitle(/Copy link/)).toBeNull();
+  });
+});
+
 describe("MessageThread — tool call visibility (bu-0ynlk.5)", () => {
   // openspec/specs/dashboard-chat-ui/spec.md:80-86
   // Requirement: Message Thread Display

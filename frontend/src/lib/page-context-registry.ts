@@ -39,6 +39,11 @@ const SNAPSHOT = (summary: string): PageContextDescriptor => ({ policy: "snapsho
 /** One descriptor per `SHELL_CAPABILITIES` path (see shell-capability.ts). */
 export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/": SNAPSHOT("Overview"),
+  // Chat surfaces attach only the route, never conversation content itself
+  // (bu-0ynlk.11) — the ContextChip must not recursively snapshot the very
+  // conversation it's attached to.
+  "/chat": { policy: "ref-only", summary: "Chat" },
+  "/chat/:conversationId": { policy: "ref-only", summary: "Conversation" },
   "/butlers": SNAPSHOT("Butlers"),
   "/qa": SNAPSHOT("QA"),
   "/ingestion": SNAPSHOT("Ingestion timeline"),
