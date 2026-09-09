@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_PREDICATE_REGISTRY
+from butlers.testing.schema_standins import (
+    CONTACT_ENTITY_MAP,
+    ENTITY_PREDICATE_REGISTRY,
+    PENDING_ACTIONS,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -130,43 +134,11 @@ async def _setup_relationship_schema(pool) -> None:
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
     )
-    # bu-2jtfw.11: minimal pending_actions DDL -- the stale-contact producer
-    # parks a prepared action via park_prepared_action. Mirrors the columns
-    # and partial unique index approvals_013/014 add in production (not the
-    # full approvals migration chain, matching this file's local-DDL
-    # convention for every other table it sets up).
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pending_actions (
-            id UUID PRIMARY KEY,
-            tool_name TEXT NOT NULL,
-            tool_args JSONB NOT NULL,
-            agent_summary TEXT,
-            session_id UUID,
-            status TEXT NOT NULL DEFAULT 'pending',
-            origin TEXT,
-            requested_at TIMESTAMPTZ NOT NULL,
-            expires_at TIMESTAMPTZ,
-            decided_by TEXT,
-            decided_at TIMESTAMPTZ,
-            execution_result JSONB,
-            approval_rule_id UUID,
-            why TEXT,
-            evidence JSONB NOT NULL DEFAULT '[]',
-            blast_radius TEXT,
-            reversibility TEXT,
-            deduplication_key TEXT
-        )
-        """
-    )
-    await pool.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_actions_active_deduplication_key
-        ON pending_actions (deduplication_key)
-        WHERE deduplication_key IS NOT NULL
-          AND status IN ('pending', 'approved', 'rejected', 'abandoned')
-        """
-    )
+    # bu-2jtfw.11: the stale-contact producer parks a prepared action via
+    # park_prepared_action, so this fixture needs pending_actions -- the
+    # shared stand-in (not the full approvals migration chain, matching this
+    # file's local-DDL convention for every other table it sets up).
+    await pool.execute(PENDING_ACTIONS.ddl())
 
 
 async def _setup_insight_tables(pool) -> None:
