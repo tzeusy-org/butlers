@@ -32,6 +32,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,7 @@ from butlers.core.mcp_urls import (
     runtime_mcp_url,
 )
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.model_capabilities import ModelFeature
 from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
@@ -628,6 +630,7 @@ class Spawner:
         conversation_id: uuid.UUID | None = None,
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -710,6 +713,15 @@ class Spawner:
             invocation, but for a dashboard turn it deliberately leaves the
             durable session unresolved so recovery can surface ambiguity rather
             than inventing a failed terminal outcome.
+        attachments:
+            Optional ``IngestAttachment``-shaped dicts (``media_type``,
+            ``storage_ref``, ...) carried by the triggering message
+            (bu-2jtfw.7). When any entry's ``media_type`` starts with
+            ``"image/"``, the derived :class:`~butlers.core.dispatch_intent.DispatchIntent`
+            requires :attr:`~butlers.core.model_capabilities.ModelFeature.VISION`,
+            so a catalog with no vision-capable model resolves this dispatch as
+            unmeetable rather than silently handing the image to a text-only
+            model that would hallucinate a description.
 
         Returns
         -------
@@ -825,6 +837,7 @@ class Spawner:
                         conversation_id=conversation_id,
                         dashboard_turn_id=dashboard_turn_id,
                         route_lease_lost=route_lease_lost,
+                        attachments=attachments,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -856,6 +869,7 @@ class Spawner:
                             conversation_id=conversation_id,
                             dashboard_turn_id=dashboard_turn_id,
                             route_lease_lost=route_lease_lost,
+                            attachments=attachments,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1217,6 +1231,7 @@ class Spawner:
         conversation_id: uuid.UUID | None = None,
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
+        attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1297,8 +1312,15 @@ class Spawner:
         # runtime that cannot accept tools (``ApiAdapter`` raises on non-empty
         # ``mcp_servers``) must be disqualified during resolution rather than at invoke
         # time, when the session has already been created and the fallback is a failure.
+        _has_image_attachment = bool(attachments) and any(
+            str(att.get("media_type", "")).startswith("image/") for att in attachments
+        )
+        _vision_required = (ModelFeature.VISION,) if _has_image_attachment else ()
         dispatch_intent = derive_dispatch_intent(
-            trigger_source, complexity, deadline_s=timeout_override
+            trigger_source,
+            complexity,
+            deadline_s=timeout_override,
+            extra_required_features=_vision_required,
         )
         if self._pool is not None:
             try:

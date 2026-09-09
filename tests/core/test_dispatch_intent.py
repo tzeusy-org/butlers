@@ -362,6 +362,54 @@ def test_required_unknown_fails_closed_except_at_observe() -> None:
 
 
 @pytest.mark.unit
+def test_image_bearing_trigger_against_no_vision_catalog_is_unmeetable() -> None:
+    """An image-bearing dispatch with no VISION-proven candidate is unmeetable (bu-2jtfw.7).
+
+    Mirrors the production call site (``spawner._run``): a route trigger whose
+    attachments include an image adds ``ModelFeature.VISION`` via
+    ``extra_required_features``. Against a catalog descriptor that never
+    declares vision support (EMPTY_CAPABILITIES — the fail-closed default for
+    a catalog with no vision-capable model row), the candidate must be
+    excluded rather than silently handed the image as if it were text.
+    """
+    intent = derive_dispatch_intent(
+        "route", "workhorse", extra_required_features=(ModelFeature.VISION,)
+    )
+    assert ModelFeature.VISION in intent.required_features
+
+    # "route" also requires TOOL_USE (its trigger-class baseline); hold that
+    # satisfied throughout so every assertion below isolates VISION alone.
+    tool_capable = CapabilityDescriptor(features={ModelFeature.TOOL_USE: True})
+
+    verdict = evaluate_fit(intent, tool_capable)
+    assert not verdict.eligible
+    assert any(
+        finding.code is FitCode.CAPABILITY_UNKNOWN and finding.detail == str(ModelFeature.VISION)
+        for finding in verdict.exclusions
+    )
+
+    # An explicit vision=false catalog row is excluded the same way an
+    # explicit tool_use=false row is (test_required_unsupported_always_excludes).
+    vision_unsupported = evaluate_fit(
+        intent,
+        CapabilityDescriptor(features={ModelFeature.TOOL_USE: True, ModelFeature.VISION: False}),
+    )
+    assert not vision_unsupported.eligible
+    assert any(
+        finding.code is FitCode.CAPABILITY_UNSUPPORTED
+        and finding.detail == str(ModelFeature.VISION)
+        for finding in vision_unsupported.exclusions
+    )
+
+    # A catalog row that actually declares vision support is eligible.
+    vision_supported = evaluate_fit(
+        intent,
+        CapabilityDescriptor(features={ModelFeature.TOOL_USE: True, ModelFeature.VISION: True}),
+    )
+    assert vision_supported.eligible
+
+
+@pytest.mark.unit
 def test_unmet_preferred_feature_is_advisory_only() -> None:
     """Preferences are recorded on the receipt; they never disqualify and never re-rank."""
     verdict = evaluate_fit(
