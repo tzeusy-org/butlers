@@ -1118,6 +1118,23 @@ async def _run_relationship_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_prepared_action_orphan_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale origin='prepared' pending actions (bu-2jtfw.11).
+
+    Deterministic, zero-LLM. See
+    ``butlers.modules.approvals.operations.sweep_orphaned_prepared_actions``
+    for why this exists as a dedicated sweep rather than relying on the
+    existing on-touch expiry path.
+    """
+    del job_args
+    from butlers.modules.approvals.operations import sweep_orphaned_prepared_actions
+
+    return await sweep_orphaned_prepared_actions(pool)
+
+
 async def _run_relationship_interaction_sync_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1930,6 +1947,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             "session_process_logs_prune": _run_session_process_logs_prune_job,
+            "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
         },
         "travel": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,

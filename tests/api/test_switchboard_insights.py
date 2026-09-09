@@ -95,6 +95,7 @@ def _sample_row(**overrides):
         "status": "pending",
         "delivered_at": None,
         "delivery_attempt_count": 0,
+        "prepared_action_id": None,
     }
     base.update(overrides)
     return base
@@ -127,9 +128,25 @@ async def test_insights_happy_path_maps_all_fields(app):
     assert item["metadata"] == {"amount": "42.00"}
     assert item["status"] == "pending"
     assert item["delivered_at"] is None
+    assert item["prepared_action_id"] is None
     assert item["delivery_attempt_count"] == 0
     assert item["expires_at"] is not None
     assert item["created_at"] is not None
+
+
+async def test_insights_surfaces_prepared_action_id(app):
+    prepared_id = "22222222-2222-2222-2222-222222222222"
+    app, _ = _app_with_mock(
+        app, fetch_rows=[_make_row(_sample_row(prepared_action_id=prepared_id))]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/insights")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data[0]["prepared_action_id"] == prepared_id
 
 
 # ---------------------------------------------------------------------------

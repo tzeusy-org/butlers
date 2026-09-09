@@ -177,7 +177,7 @@ CONNECTOR_REGISTRY = TableStandin(
 # creates all five, 003 adds fingerprint versions and their CHECKs/indexes, 005
 # adds pending-action blast_radius/reversibility and their CHECKs, 007 adds the
 # suggestion source-action link, 012 adds the 'abandoned' status and
-# 'action_abandoned' event type, and 013 adds deduplication_key.
+# 'action_abandoned' event type, 013 adds deduplication_key, and 014 adds origin.
 PENDING_ACTIONS = TableStandin(
     table="pending_actions",
     chains=("core", "approvals"),
@@ -202,6 +202,7 @@ PENDING_ACTIONS = TableStandin(
         ("blast_radius", "TEXT"),
         ("reversibility", "TEXT"),
         ("deduplication_key", "TEXT"),
+        ("origin", "TEXT"),
     ),
     table_constraints=(
         (
@@ -217,6 +218,10 @@ PENDING_ACTIONS = TableStandin(
             "CONSTRAINT pending_actions_reversibility_check CHECK ("
             "reversibility IS NULL OR reversibility IN "
             "('reversible', 'compensable', 'irreversible'))"
+        ),
+        (
+            "CONSTRAINT pending_actions_origin_check CHECK ("
+            "origin IS NULL OR origin IN ('prepared'))"
         ),
     ),
     # approvals_001 (two lookup indexes), approvals_013 (dedup uniqueness).

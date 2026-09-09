@@ -52,55 +52,14 @@ record written through the dashboard remains visible to the MCP tools.
 - **WHEN** the identical record already exists for that entity inside the duplicate window
 - **THEN** the response status MUST be 409 and the body MUST carry `existing_id`
 
-### Requirement: Reach-out drafts are drafted, never sent
-
-The dashboard API SHALL expose `GET` and `POST
-/api/relationship/entities/{id}/reach-out-drafts` over a `reach_out_draft`
-relationship fact carrying `metadata.status = 'draft'` and the owner's intended
-`channel`. The fact is temporal and append-only: each draft coexists with the
-others rather than superseding them.
-
-Neither handler, nor the writer behind them, MUST contact a channel, queue an
-outbound message, call `notify()`, reach the MCP manager, or touch a connector.
-There is no send path behind this surface, and `channel` records intent only.
-Turning a draft into a sent message MUST remain a separate, deliberate act
-outside this endpoint pair.
-
-`POST` MUST enforce the Clause 12a owner gate and MUST return 404, 422, and 409
-on the same terms as the other entity write endpoints. `GET` MUST return 404 for
-an unknown entity, MUST scope to `validity = 'active' AND scope = 'relationship'`,
-MUST order by `created_at DESC`, and MUST support `?limit=` and `?offset=`
-pagination on the same defaults and bounds as the other entity tab reads.
-
-`reach_out_draft` MUST NOT require a schema migration or a seeded registry row;
-it enters the predicate registry through the normal novel-predicate path at
-`status = 'proposed'`.
-
-#### Scenario: Drafting stores an inert fact
-
-- **WHEN** an owner calls `POST /api/relationship/entities/{id}/reach-out-drafts` with a message
-- **THEN** the response status MUST be 201 with `status = "draft"`
-- **AND** a `reach_out_draft` fact MUST exist for that entity with `metadata.status = 'draft'`
-
-#### Scenario: Drafting sends nothing
-
-- **WHEN** a reach-out draft is created through the endpoint
-- **THEN** no MCP call, `notify()` call, connector call, or outbound queue write MUST occur
-- **AND** the stored record MUST carry no sent, delivered, or queued state
-
-#### Scenario: Drafts list newest first for a known entity
-
-- **WHEN** `GET /api/relationship/entities/{id}/reach-out-drafts` is called for an entity with several drafts
-- **THEN** the response MUST list them ordered by `created_at DESC`
-- **AND** an unknown entity UUID MUST return 404
-
 ### Requirement: Entity operator verb rail
 
 Entity detail and the Plex dossier SHALL each render one operator verb rail
-offering `log-interaction`, `gift-idea`, `draft-reach-out`, and `note`, writing
-through the endpoints above. Entity detail SHALL additionally render a drafts
-panel listing existing reach-out drafts, labelled so that a reader cannot mistake
-a draft for something that was sent.
+offering `log-interaction`, `gift-idea`, and `note`, writing through the
+endpoints above. (A fourth verb, `draft-reach-out`, and entity detail's
+accompanying drafts panel, shipped alongside these and were later retired in
+bu-2jtfw.11 — see the "Reach-out drafts are drafted, never sent (RETIRED)"
+requirement above.)
 
 The rail MUST report the real state of a write and nothing more: a pending write
 MUST read as pending rather than as success, a completed write MUST appear only
@@ -122,12 +81,6 @@ rail MUST offer no send affordance for any verb.
 - **WHEN** a write is refused as a duplicate, for owner-only authorization, for a missing entity, or as invalid input
 - **THEN** the rail MUST show one sentence naming that cause
 - **AND** MUST NOT render a raw error object or leave the form silently unchanged
-
-#### Scenario: The draft verb offers no send
-
-- **WHEN** the `draft-reach-out` form is open
-- **THEN** it MUST state that the draft is saved only and nothing is sent
-- **AND** no control in the rail MUST offer to send it
 
 ## MODIFIED Requirements
 

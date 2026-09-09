@@ -322,11 +322,9 @@ import type {
   EntityLoan,
   EntityNote,
   EntityInteraction,
-  EntityReachOutDraft,
   CreateEntityNoteRequest,
   CreateEntityInteractionRequest,
   CreateEntityGiftRequest,
-  CreateEntityReachOutDraftRequest,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
@@ -3043,27 +3041,16 @@ export function getEntityGifts(
   return apiFetch<EntityGift[]>(path);
 }
 
-/** Fetch reach-out drafts for a relationship entity (drafts only; nothing sent). */
-export function getEntityReachOutDrafts(
-  entityId: string,
-  params?: { limit?: number; offset?: number },
-): Promise<EntityReachOutDraft[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`;
-  return apiFetch<EntityReachOutDraft[]>(path);
-}
-
 // ---------------------------------------------------------------------------
-// Relationship butler: entity-level tab writes — the log-interaction,
-// gift-idea, and draft-reach-out operator verbs (bu-6t8ix.4).
+// Relationship butler: entity-level tab writes — the log-interaction and
+// gift-idea operator verbs (bu-6t8ix.4). A third verb, draft-reach-out
+// (getEntityReachOutDrafts/createEntityReachOutDraft), shipped alongside
+// these and was retired in bu-2jtfw.11, replaced by the prepared-action
+// mechanism surfaced on the insight digest.
 //
 // Each POST persists through the relationship butler's own fact-store tool, so
 // a dashboard-authored record is indistinguishable from a butler-authored one.
-// All four are owner-gated (403 `owner_required`) and answer 409 with an
+// Both are owner-gated (403 `owner_required`) and answer 409 with an
 // `existing_id` rather than writing a duplicate.
 // ---------------------------------------------------------------------------
 
@@ -3096,22 +3083,6 @@ export function createEntityGift(
 ): Promise<EntityGift> {
   return apiFetch<EntityGift>(
     `/relationship/entities/${encodeURIComponent(entityId)}/gifts`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
-/**
- * Draft a reach-out message for a relationship entity.
- *
- * Drafts only. There is no send endpoint behind this call, and the backend
- * contacts no channel: `channel` records intent, not delivery.
- */
-export function createEntityReachOutDraft(
-  entityId: string,
-  request: CreateEntityReachOutDraftRequest,
-): Promise<EntityReachOutDraft> {
-  return apiFetch<EntityReachOutDraft>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/reach-out-drafts`,
     { method: "POST", body: JSON.stringify(request) },
   );
 }

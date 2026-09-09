@@ -123,4 +123,58 @@ async def park_pending_action(
     )
 
 
-__all__ = ["park_pending_action"]
+async def park_prepared_action(
+    pool: Any,
+    *,
+    action_id: uuid.UUID,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    agent_summary: str | None,
+    requested_at: datetime,
+    expires_at: datetime,
+    why: str | None = None,
+    evidence: Sequence[dict[str, str]] | None = None,
+    blast_radius: str | None = None,
+    reversibility: str | None = None,
+    deduplication_key: str,
+) -> None:
+    """Insert one ``status='pending', origin='prepared'`` row. Never pushes.
+
+    bu-2jtfw.11: a prepared action is a proactive draft parked on the
+    approval spine by an insight-scan producer, surfaced only through the
+    insight digest's door (see ``roster/switchboard/tools/insight/broker.py``)
+    -- never through an owner push. Unlike :func:`park_pending_action`, this
+    is deliberately NOT the choke point every park path routes through: it is
+    a second, narrower entry point for exactly one shape of row, and it must
+    never call :func:`~butlers.modules.approvals.notifications.emit_approval_push`.
+
+    ``expires_at`` and ``deduplication_key`` are required (not optional, unlike
+    ``park_pending_action``): every prepared action must eventually be swept
+    by the nightly orphan sweep, and every prepared action concerns some
+    durable real-world identity (a contact, a subscription, a thread) that a
+    concurrent scan must not double-park -- see ``approvals_013``'s partial
+    unique index on ``deduplication_key``.
+
+    ``tool_args`` must already be JSON-safe, matching :func:`park_pending_action`.
+    """
+    await pool.execute(
+        "INSERT INTO pending_actions "
+        "(id, tool_name, tool_args, agent_summary, session_id, status, origin, "
+        "requested_at, expires_at, why, evidence, blast_radius, reversibility, "
+        "deduplication_key) "
+        "VALUES ($1, $2, $3, $4, NULL, 'pending', 'prepared', $5, $6, $7, $8, $9, $10, $11)",
+        action_id,
+        tool_name,
+        tool_args,
+        agent_summary,
+        requested_at,
+        expires_at,
+        why,
+        list(evidence) if evidence is not None else [],
+        blast_radius,
+        reversibility,
+        deduplication_key,
+    )
+
+
+__all__ = ["park_pending_action", "park_prepared_action"]
