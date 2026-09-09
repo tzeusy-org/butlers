@@ -16,8 +16,9 @@ The Curriculum tab SHALL render the selected mind map as an interactive directed
 carries them: `concept_type` as a tag beside the mastery status, and each `source_refs` entry as a
 row bearing a leading provenance label in plain words, the entry's `location`, and its optional
 `note`. A node whose metadata carries neither annotation SHALL render exactly as before.
-- Provenance SHALL be resolved against the source registry
-(`GET /api/education/sources`) and rendered in exactly one of four states:
+- Provenance SHALL be resolved against the source registry, by requesting
+`GET /api/education/sources?source_ids=...` with the `source_id`s present on the node's
+`source_refs` (never the full registry), and rendered in exactly one of four states:
   - **Referenced** when the entry records `provenance: "referenced"` (or names a source and records
   no provenance) AND the registry resolves its `source_id`. Only this state SHALL render the
   resolved source title or a link to the registered source's URL.
