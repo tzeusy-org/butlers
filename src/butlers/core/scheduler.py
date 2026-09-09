@@ -87,7 +87,7 @@ async def _continuity_block_for_task(
     """Return the task-continuity injection block for one opted-in recurring task.
 
     Reads the single "live" row from ``public.task_continuity`` for
-    ``(butler_name, task_name)`` -- see ``core_226_task_continuity_ledger.py``.
+    ``(butler_name, task_name)`` -- see ``core_229_task_continuity_ledger.py``.
     Never raises: continuity is an additive opt-in convenience, not a
     fail-closed honesty layer like the blind-spot preamble, so a query error
     here degrades to ``None`` (today's behavior) rather than blocking dispatch.
@@ -742,7 +742,7 @@ async def sync_schedules(
     _has_budget = await _has_column(pool, "scheduled_tasks", "max_token_budget")
     _budget_select = ", max_token_budget" if _has_budget else ""
 
-    # Detect whether the continuity column exists (added in core_226).
+    # Detect whether the continuity column exists (added in core_229).
     _has_continuity = await _has_column(pool, "scheduled_tasks", "continuity")
     _continuity_select = ", continuity" if _has_continuity else ""
 

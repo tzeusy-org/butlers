@@ -13,7 +13,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 _MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_226_task_continuity_ledger.py"
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_229_task_continuity_ledger.py"
 )
 
 
