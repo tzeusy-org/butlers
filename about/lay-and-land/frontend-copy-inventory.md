@@ -1345,6 +1345,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/butler-detail/ButlerDomainEventsPanel.tsx`
 
 - no reaction recorded
+- contract unavailable
 - no standing subscriptions
 - no recent deliveries
 - recent deliveries
@@ -4208,4 +4209,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3298*
+*Total strings: 3299*
