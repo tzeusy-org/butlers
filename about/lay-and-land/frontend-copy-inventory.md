@@ -1835,6 +1835,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Updated:
 - Max Concurrent
 - Max Queued
+- Tool Exposure Policy
+- Applies to newly planned sessions, no daemon restart needed.
+- Automatic verified discovery uses native tool search only when verified for the resolved runtime and model, falling back to a separately verified eager profile when one is available; otherwise the session is unavailable rather than guaranteed native discovery.
 - Core Groups
 - All groups enabled (no filter set)
 
@@ -4195,4 +4198,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3288*
+*Total strings: 3291*

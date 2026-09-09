@@ -6235,12 +6235,16 @@ export interface QaAllowedRepoPatch {
 // Runtime Config
 // ---------------------------------------------------------------------------
 
+/** Accepted tool_exposure_policy values — closed to eager_filtered|auto. */
+export type ToolExposurePolicy = "eager_filtered" | "auto";
+
 /** Response from GET /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
   max_concurrent: number;
   max_queued: number;
+  tool_exposure_policy: ToolExposurePolicy;
   seeded_at: string | null;
   updated_at: string | null;
   field_tiers: Record<string, "hot" | "cold">;
@@ -6251,6 +6255,7 @@ export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
   max_concurrent?: number;
   max_queued?: number;
+  tool_exposure_policy?: ToolExposurePolicy;
 }
 
 /** Response from PATCH /api/butlers/{name}/runtime-config. */

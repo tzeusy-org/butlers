@@ -3,6 +3,7 @@ roster/relationship/tests/test_tools.py
 roster/travel/tests/test_migration_travel_002.py
 tests/api/test_conversation_recall_search_db.py
 tests/api/test_optional_schema_lifecycle_db.py
+tests/config/test_runtime_config_policy_migration_integration.py
 tests/config/test_switchboard_connector_operational_role_migration.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
