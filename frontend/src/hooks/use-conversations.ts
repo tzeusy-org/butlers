@@ -5,6 +5,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   listConversations,
+  getConversationById,
   getConversationMessages,
   searchConversations,
   searchMessages,
@@ -21,6 +22,9 @@ export const conversationKeys = {
     ["conversations", butlerName, "list", params] as const,
   detail: (butlerName: string, conversationId: string) =>
     ["conversations", butlerName, conversationId] as const,
+  /** Cross-butler identity lookup by id alone (bu-0ynlk.11) — the
+   * /chat/:conversationId deep link, not scoped to a known butlerName. */
+  byId: (conversationId: string) => ["conversations", "by-id", conversationId] as const,
   messages: (butlerName: string, conversationId: string) =>
     ["conversation-messages", butlerName, conversationId] as const,
   search: (butlerName: string, query: string) =>
@@ -73,6 +77,23 @@ export function useConversationMessages(
     queryFn: () => getConversationMessages(butlerName, conversationId!),
     enabled: !!butlerName && !!conversationId,
     staleTime: 0,
+  });
+}
+
+/**
+ * Cross-butler conversation identity lookup by id alone (bu-0ynlk.11) — the
+ * /chat/:conversationId deep link and cmdk recall resolve the owning
+ * `butler_name` this way before fetching messages. `retry: false` since a
+ * 404 here is a legitimate terminal state (unknown/deleted conversation),
+ * not a transient failure worth retrying.
+ */
+export function useConversationById(conversationId: string | null) {
+  return useQuery({
+    queryKey: conversationKeys.byId(conversationId ?? ""),
+    queryFn: () => getConversationById(conversationId!),
+    enabled: !!conversationId,
+    retry: false,
+    staleTime: 10_000,
   });
 }
 

@@ -17,6 +17,7 @@ import { EventBusProvider, useEventBus } from '../lib/event-bus'
 import { type ClientLinkStatus, useClientLink } from '../hooks/use-client-link'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
 import { ChatDock } from '../components/chat/ChatDock'
+import { ChatRecallCommands } from '../components/chat/ChatRecallCommands'
 import { useMediaQuery } from '../hooks/use-media-query'
 import { readBooleanSetting, writeBooleanSetting } from '../lib/local-settings'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
@@ -177,6 +178,10 @@ function RootLayoutInner() {
             <EntityFinder />
             {/* Registers the always-available "Run <butler>" actions. */}
             <GlobalActionsRegistrar />
+            {/* Recent-thread cmdk recall (bu-0ynlk.11) — mounted regardless of
+                chat posture so recall works the same whether the dock or the
+                popover is currently showing. */}
+            <ChatRecallCommands />
             <ShortcutHints />
             <Toaster />
             {/* Floating chat widget (bu-p6ey8.3) — bottom-right button on every

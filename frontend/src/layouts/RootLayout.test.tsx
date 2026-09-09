@@ -59,6 +59,7 @@ vi.mock("../hooks/use-client-link", () => ({
 }))
 vi.mock("../components/layout/EntityFinder", () => ({ default: () => null }))
 vi.mock("../components/layout/GlobalActionsRegistrar", () => ({ GlobalActionsRegistrar: () => null }))
+vi.mock("../components/chat/ChatRecallCommands", () => ({ ChatRecallCommands: () => null }))
 vi.mock("../components/ErrorBoundary", () => ({
   ErrorBoundary: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))

@@ -27,8 +27,7 @@ import { useConversations, useConversationMessages } from "@/hooks/use-conversat
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 import { readNumberSetting, writeNumberSetting } from "@/lib/local-settings.ts";
-
-const WIDGET_BUTLER = "switchboard";
+import { WIDGET_BUTLER } from "./chat-constants.ts";
 
 const DOCK_WIDTH_KEY = "butlers.chat-dock-width";
 const DOCK_MIN_WIDTH = 360;
