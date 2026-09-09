@@ -38,6 +38,8 @@ def _fact_to_medication(row: dict[str, Any]) -> dict[str, Any]:
         "schedule": meta.get("schedule", []),
         "active": meta.get("active", True),
         "notes": meta.get("notes"),
+        "quantity": meta.get("quantity"),
+        "quantity_updated_at": meta.get("quantity_updated_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at") or row.get("created_at"),
     }
@@ -66,8 +68,17 @@ async def medication_add(
     frequency: str,
     schedule: list[str] | None = None,
     notes: str | None = None,
+    quantity: int | None = None,
 ) -> dict[str, Any]:
-    """Add a medication with dosage, frequency, optional schedule and notes."""
+    """Add a medication with dosage, frequency, optional schedule and notes.
+
+    ``quantity`` is the real count of doses in the current supply (e.g. "90
+    pills"). It is optional because callers do not always know it, but when
+    provided it is the only honest basis for a refill-depletion estimate: the
+    insight-scan job (bu-dtmbn) refuses to guess a standard supply size, so a
+    medication added without ``quantity`` never generates a refill insight
+    until a real quantity is recorded via this tool or ``medication_update``.
+    """
     from butlers.modules.memory.storage import store_fact
 
     embedding_engine = _get_embedding_engine()
@@ -83,6 +94,9 @@ async def medication_add(
     }
     if notes is not None:
         metadata["notes"] = notes
+    if quantity is not None:
+        metadata["quantity"] = quantity
+        metadata["quantity_updated_at"] = now.isoformat()
 
     # Use a name-keyed subject so multiple medications coexist as independent
     # property facts. Supersession is keyed on (subject, predicate) ONLY when
@@ -117,6 +131,8 @@ async def medication_add(
         "schedule": schedule or [],
         "active": True,
         "notes": notes,
+        "quantity": quantity,
+        "quantity_updated_at": metadata.get("quantity_updated_at"),
         "created_at": now,
         "updated_at": now,
     }
@@ -127,18 +143,24 @@ async def medication_update(
     medication_id: str,
     **fields: Any,
 ) -> dict[str, Any]:
-    """Update a medication. Allowed fields: name, dosage, frequency, schedule, active, notes.
+    """Update a medication.
+
+    Allowed fields: name, dosage, frequency, schedule, active, notes, quantity.
 
     Implemented as a superseding ``store_fact`` (property-fact semantics): the
     existing medication fact is looked up by ``id``, its metadata is merged with
     the supplied fields, and a new fact is written with the same subject key so
     the previous fact is superseded.  This is the same write path the butler's
     own tools use, so dashboard edits and butler edits are indistinguishable.
+
+    Setting ``quantity`` doubles as "logging a refill": it stamps
+    ``quantity_updated_at`` to now, which the insight-scan job (bu-dtmbn) uses
+    as the anchor for counting doses consumed against the new supply.
     """
     from butlers.modules.memory.storage import store_fact
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
-    allowed = {"name", "dosage", "frequency", "schedule", "active", "notes"}
+    allowed = {"name", "dosage", "frequency", "schedule", "active", "notes", "quantity"}
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
     if not updates:
@@ -157,17 +179,19 @@ async def medication_update(
     existing_meta = row.get("metadata", {})
     existing_subject = row["subject"] or f"medication:{existing_meta.get('name', medication_id)}"
 
+    embedding_engine = _get_embedding_engine()
+    now = datetime.now(UTC)
+
     # Merge updates into existing metadata.
     new_meta = dict(existing_meta)
     new_meta.update(updates)
+    if "quantity" in updates:
+        new_meta["quantity_updated_at"] = now.isoformat()
 
     name = new_meta.get("name", "")
     dosage = new_meta.get("dosage", "")
     frequency = new_meta.get("frequency", "")
     content = f"{name} {dosage} {frequency}".strip()
-
-    embedding_engine = _get_embedding_engine()
-    now = datetime.now(UTC)
 
     # Re-store with the same subject key to supersede the previous medication
     # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
@@ -195,6 +219,8 @@ async def medication_update(
         "schedule": list(new_meta.get("schedule") or []),
         "active": bool(new_meta.get("active", True)),
         "notes": new_meta.get("notes"),
+        "quantity": new_meta.get("quantity"),
+        "quantity_updated_at": new_meta.get("quantity_updated_at"),
         "created_at": now,
         "updated_at": now,
     }

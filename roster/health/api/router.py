@@ -550,6 +550,8 @@ async def list_medications(
                 schedule=list(meta.get("schedule") or []),
                 active=bool(meta.get("active", True)),
                 notes=meta.get("notes"),
+                quantity=meta.get("quantity"),
+                quantity_updated_at=meta.get("quantity_updated_at"),
                 created_at=r["created_at"].isoformat(),
                 updated_at=r["created_at"].isoformat(),
             )
@@ -867,6 +869,8 @@ def _medication_response(result: dict) -> Medication:
         schedule=list(result.get("schedule") or []),
         active=bool(result.get("active", True)),
         notes=result.get("notes"),
+        quantity=result.get("quantity"),
+        quantity_updated_at=result.get("quantity_updated_at"),
         created_at=_isoformat(result.get("created_at")),
         updated_at=_isoformat(result.get("updated_at") or result.get("created_at")),
     )
@@ -893,6 +897,7 @@ async def create_medication(
         frequency=body.frequency,
         schedule=body.schedule,
         notes=body.notes,
+        quantity=body.quantity,
     )
     return _medication_response(result)
 
