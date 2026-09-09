@@ -717,6 +717,7 @@ class ApprovalsModule(Module):
             tool_args=action.tool_args,
             tool_fn=_tool_fn,
             decision_memory_writer=self._decision_memory_writer,
+            origin_butler=self._butler_name,
         )
         if not execution.success:
             return {
@@ -820,6 +821,7 @@ class ApprovalsModule(Module):
                 tool_args=action.tool_args,
                 tool_fn=_tool_fn,
                 decision_memory_writer=self._decision_memory_writer,
+                origin_butler=self._butler_name,
             )
         # Post-approval autonomy tracker hook (task 7.1)
         # Wrap in try/except so tracker failure doesn't block approval
