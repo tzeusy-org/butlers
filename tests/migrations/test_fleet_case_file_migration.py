@@ -448,9 +448,11 @@ async def test_switchboard_role_can_insert_case_other_roles_cannot(
 async def test_switchboard_role_can_update_case_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
 ) -> None:
-    # RLS enforces UPDATE differently from INSERT: the USING clause silently
-    # excludes rows a role isn't allowed to touch (command tag "UPDATE 0")
-    # rather than raising — there is no existing row's WITH CHECK to violate.
+    # fleet_cases_update_switchboard carries both a USING and a WITH CHECK
+    # clause (identical predicates: current_user = 'butler_switchboard_rw').
+    # A disallowed role's UPDATE still comes back as a silent "UPDATE 0"
+    # rather than raising: USING excludes the row before it can be selected
+    # for update, so WITH CHECK is never reached to reject it either.
     bootstrap_pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
     try:
         case_row = await bootstrap_pool.fetchrow(
@@ -547,8 +549,10 @@ async def test_switchboard_role_can_insert_link_other_roles_cannot(
 async def test_switchboard_role_can_update_link_other_roles_cannot(
     fresh_core_only_db_url: str, fresh_core_only_bootstrap_url: str
 ) -> None:
-    # Same USING-vs-WITH CHECK asymmetry as the fleet_cases UPDATE case above:
-    # a disallowed UPDATE is a silent "UPDATE 0", not an exception.
+    # Same USING/WITH CHECK behavior as the fleet_cases UPDATE case above:
+    # fleet_case_links_update_switchboard also has both clauses (identical
+    # predicates), so a disallowed UPDATE is still a silent "UPDATE 0" —
+    # USING excludes the row before WITH CHECK is ever evaluated.
     bootstrap_pool = await _bootstrap_pool(fresh_core_only_bootstrap_url)
     try:
         case_row = await bootstrap_pool.fetchrow(
