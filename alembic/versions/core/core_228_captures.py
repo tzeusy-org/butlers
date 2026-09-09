@@ -1,7 +1,7 @@
 """captures: a durable ledger for capture(), the second-brain intake verb
 
-Revision ID: core_225
-Revises: core_224
+Revision ID: core_228
+Revises: core_227
 Create Date: 2026-09-09 00:00:00.000000
 
 Creates ``public.captures`` -- the durable receipt row written synchronously
@@ -24,8 +24,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_225"
-down_revision = "core_224"
+revision = "core_228"
+down_revision = "core_227"
 branch_labels = None
 depends_on = None
 
