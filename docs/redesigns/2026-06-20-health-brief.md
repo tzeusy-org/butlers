@@ -1,5 +1,11 @@
 # health redesign — integration brief
 
+> **Status: Shipped -> `openspec/changes/archive/2026-06-24-health-dashboard-overview-redesign`.**
+> §0 was that change's cited binding design intent; the change is archived and its `/health`
+> Overview + trajectory-reframed pages landed in the live specs
+> `openspec/specs/dashboard-domain-pages/spec.md`, `openspec/specs/butler-health/spec.md`, and
+> `openspec/specs/proactive-insight-engine/spec.md`.
+
 **Date:** 2026-06-20
 **Version:** v1
 **Bundle path:** `none` — no Claude Design bundle exists for health; originated from the top-level Dispatch design language (now the spec `openspec/specs/dashboard-design-language/spec.md`; kit at `.claude/skills/butlers-redesign-prompt/references/dispatch-kit/`).

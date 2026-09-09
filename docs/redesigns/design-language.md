@@ -1,5 +1,7 @@
 # Butlers — Design Language (graduated)
 
+> **Status: Superseded-by -> `openspec/specs/dashboard-design-language/spec.md`.**
+
 This copy graduated on 2026-07-03. The canonical, binding Dispatch design language is now the
 spec: **`openspec/specs/dashboard-design-language/spec.md`**.
 

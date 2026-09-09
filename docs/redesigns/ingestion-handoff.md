@@ -1,5 +1,10 @@
 # Ingestion redesign — Claude Code handoff
 
+> **Status: Active.** Cited as the preserved binding design language and handoff by
+> `openspec/specs/dashboard-ingestion-dispatch-console/spec.md` (a live, unarchived spec) and
+> `AGENTS.md` (ingestion closure evidence). The prototype this document describes has graduated
+> into shipped `frontend/` code; this file remains the porting-recipe provenance the spec cites.
+
 > A working prototype of the new `/ingestion` page lives in this folder.
 > Open `Ingestion.html` directly in a browser (no server required) to
 > review. This document is the recipe for porting it into the real
