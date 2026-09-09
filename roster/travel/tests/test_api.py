@@ -387,6 +387,32 @@ async def test_list_trips_schema_prefix():
 
 
 @pytest.mark.asyncio
+async def test_list_trips_excludes_and_discloses_unreadable_trip():
+    """One trip whose row cannot be normalized (unparseable metadata) must be
+    excluded from `data` and disclosed by id in `meta.unreadable_trip_ids` --
+    not a 500 for the whole list (mirrors /upcoming's degraded-mode
+    disclosure, bu-kvaxq)."""
+    good_trip = _trip_row(id=_TRIP_UUID, name="Readable Trip")
+    bad_trip_id = str(uuid.uuid4())
+    bad_trip = _trip_row(id=bad_trip_id, name="Corrupt Trip", metadata="not-valid-json")
+    app, _ = _make_app(fetch_rows=[good_trip, bad_trip], fetchval_return=2)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get("/api/travel/trips")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["id"] == _TRIP_UUID
+    assert body["meta"]["unreadable_trip_ids"] == [bad_trip_id]
+    # Total still reflects the DB's matching-row count, not the post-exclusion count.
+    assert body["meta"]["total"] == 2
+
+
+@pytest.mark.asyncio
 async def test_list_trips_filter_by_date_range():
     """GET /api/travel/trips filters by from_date and to_date."""
     app, mock_pool = _make_app(fetch_rows=[], fetchval_return=0)
@@ -530,6 +556,74 @@ async def test_get_trip_summary_survives_double_encoded_leg_metadata():
     assert response.status_code == 200
     body = response.json()
     assert body["legs"][0]["metadata"] == {"flight_number": "DD94XR"}
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_excludes_and_discloses_unreadable_leg():
+    """One leg row whose metadata cannot be normalized must be excluded from
+    `legs` and disclosed by id in `unreadable_leg_ids` -- not a 500 for the
+    whole trip summary (bu-kvaxq)."""
+    trip = _trip_row(id=_TRIP_UUID)
+    good_leg = _leg_row(trip_id=_TRIP_UUID)
+    bad_leg_id = str(uuid.uuid4())
+    bad_leg = _leg_row(trip_id=_TRIP_UUID, id=bad_leg_id, metadata="not-valid-json")
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[good_leg, bad_leg], [], [], []])
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["legs"]) == 1
+    assert body["unreadable_leg_ids"] == [bad_leg_id]
+    assert body["unreadable_accommodation_ids"] == []
+    assert body["unreadable_reservation_ids"] == []
+    assert body["unreadable_document_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_corrupt_top_level_trip_row_returns_documented_error():
+    """A corrupt top-level trip row (not a sub-collection) has no
+    exclude-and-continue path -- it must fail with an honest, documented
+    error (502) rather than an unhandled 500 (bu-kvaxq)."""
+    trip = _trip_row(id=_TRIP_UUID, metadata="not-valid-json")
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], []])
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 502
+    assert _TRIP_UUID in response.json()["detail"]
 
 
 @pytest.mark.asyncio

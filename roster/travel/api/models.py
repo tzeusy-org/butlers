@@ -113,6 +113,13 @@ class TripSummaryModel(BaseModel):
     documents: list[DocumentModel] = []
     timeline: list[TimelineEntryModel] = []
     alerts: list[AlertModel] = []
+    # Sub-collection rows excluded because they could not be normalized (e.g.
+    # corrupt metadata) -- named-list degraded-mode envelope, mirroring
+    # UpcomingTravelModel.unreadable_trip_ids, never silently dropped.
+    unreadable_leg_ids: list[str] = []
+    unreadable_accommodation_ids: list[str] = []
+    unreadable_reservation_ids: list[str] = []
+    unreadable_document_ids: list[str] = []
 
 
 class UpcomingTripModel(BaseModel):
