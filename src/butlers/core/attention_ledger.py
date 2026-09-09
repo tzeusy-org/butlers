@@ -182,7 +182,7 @@ def is_priority_urgent(priority_score: int | None) -> bool:
 
 
 async def record_attention_event(
-    pool: asyncpg.Pool | None,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     *,
     origin_butler: str,
     source: Source,
@@ -411,7 +411,7 @@ async def find_notify_dispatch_for_session(
 
 
 async def attention_event_recorded_since(
-    pool: asyncpg.Pool | None,
+    pool: asyncpg.Pool | asyncpg.Connection | None,
     *,
     dedup_key: str,
     since: datetime,
