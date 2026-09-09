@@ -272,6 +272,8 @@ A recurring PROMPT-mode scheduled task MAY opt in to carrying forward what its p
 
 When a session concludes, it MAY call the `carry_forward(task_name, content)` core tool to record its own conclusion. `record_carry_forward()` SHALL write to `public.task_continuity` in a transaction that archives (sets `is_live=false` on) any other live row for that `(butler_name, task_name)` before inserting the new live row, so at most one row is live per butler+task at a time. A repeated call within the same session (same `session_id`) SHALL update the existing row for that session rather than creating a duplicate (`ON CONFLICT (butler_name, task_name, session_id) DO UPDATE`).
 
+The `carry_forward` core tool SHALL NOT be registered for staffer-typed butlers (`ButlerType.STAFFER`: concierge, messenger, switchboard, qa), matching the existing non-STAFFER scoping already drawn around other narrative/dispatch-adjacent core tools (e.g. `notify`, the `temporal` group). `continuity=true` is restricted to PROMPT-mode schedules, and staffer butlers' schedules are exclusively job-mode deterministic handlers; the tool would have no reachable caller there. This also keeps the tool off the tightest-margin staffer's surface (Concierge sits at its RFC 0002 30-50 tool budget ceiling — see `openspec/specs/butler-concierge/spec.md`).
+
 `tick()` SHALL, only for tasks with `continuity=true`, read the current live row via `fetch_live_carry_forward()` after preparing the dispatched prompt and append a continuity block to it:
 - naming the previous run's `session_id`, `recorded_at`, and age, plus the recorded `content`, when a live row exists;
 - the literal text "the last run recorded no carry-forward" when no live row exists for that task (never fabricated content).
@@ -308,6 +310,11 @@ Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior
 - **WHEN** `fetch_live_carry_forward()` raises for an opted-in task
 - **THEN** the exception is logged and the tick proceeds
 - **AND** the dispatched prompt omits the continuity block entirely (not a fail-closed placeholder)
+
+#### Scenario: Staffer butlers do not receive the carry_forward tool
+- **WHEN** a staffer-typed butler (`ButlerType.STAFFER`) registers its core tools
+- **THEN** `carry_forward` is NOT among them
+- **AND** this does not affect any other butler's tool registration
 
 #### Scenario: Legacy schema without the continuity column
 - **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`

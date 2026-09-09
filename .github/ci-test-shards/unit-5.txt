@@ -18,6 +18,7 @@ tests/core/test_chronicler_day_close_refresh_tool.py
 tests/core/test_fleet_cases.py
 tests/core/test_sessions_friction.py
 tests/core/test_spawner_blind_spot_injection.py
+tests/core_tools/test_continuity.py
 tests/core_tools/test_conversation_recall.py
 tests/core_tools/test_dashboard_answer_block.py
 tests/core_tools/test_dashboard_confirm_block.py
