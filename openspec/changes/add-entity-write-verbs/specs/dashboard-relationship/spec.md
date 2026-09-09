@@ -52,25 +52,6 @@ record written through the dashboard remains visible to the MCP tools.
 - **WHEN** the identical record already exists for that entity inside the duplicate window
 - **THEN** the response status MUST be 409 and the body MUST carry `existing_id`
 
-### Requirement: Reach-out drafts are drafted, never sent (RETIRED)
-
-Retired in bu-2jtfw.11. The inert-fact reach-out-draft endpoint pair
-described by this requirement (an owner-authored message that could never be
-sent) is removed; the owning fact predicate, tool module, and frontend drafts
-panel are gone along with it. The dashboard-relationship spec no longer
-defines this surface — it never carried the canonical
-`openspec/specs/dashboard-relationship/spec.md` tree, so no MODIFIED entry is
-needed there.
-
-The gap this requirement described (relationship's reach-out could be
-drafted but never sent) is now closed by a different mechanism entirely: a
-prepared action parked on the approvals spine
-(`src/butlers/modules/approvals/park.py`'s `park_prepared_action`), surfaced
-as a door on the insight digest (`roster/switchboard/tools/insight/broker.py`)
-rather than as an entity-tab drafts panel. See
-`docs/redesigns/2026-09-05-jarvis-pursuit.md` (Ranked move #11) for the
-design.
-
 ### Requirement: Entity operator verb rail
 
 Entity detail and the Plex dossier SHALL each render one operator verb rail
