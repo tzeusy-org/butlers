@@ -55,6 +55,7 @@ from butlers.api.routers.calendar_workspace import (
 from butlers.api.routers.calendar_workspace import (
     router as calendar_workspace_router,
 )
+from butlers.api.routers.captures import router as captures_router
 from butlers.api.routers.channel_defaults import router as channel_defaults_router
 from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.contacts import router as contacts_router
@@ -685,6 +686,7 @@ def create_app(
     app.include_router(beads_router)
     app.include_router(memory_router)
     app.include_router(butler_memory_router)
+    app.include_router(captures_router)
     app.include_router(oauth_router)
     app.include_router(cli_auth_router)
     app.include_router(sse_router)

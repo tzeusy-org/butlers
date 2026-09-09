@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.general import vocabulary as _vocabulary
 from butlers.tools.general._helpers import _deep_merge
 
 logger = logging.getLogger(__name__)
@@ -20,17 +21,36 @@ async def item_create(
     data: dict[str, Any],
     tags: list[str] | None = None,
 ) -> uuid.UUID:
-    """Create an item in a collection, creating the collection if needed."""
+    """Create an item in a declared collection.
+
+    An exact-name ``collections`` row already existing is itself proof of a
+    prior deliberate action (``collection_create`` or an earlier
+    ``item_create``) and is used directly. Otherwise ``collection_name`` is
+    resolved through the collection vocabulary (exact, punctuation-
+    insensitive, or trigram-near match against a declared canonical name or
+    alias): General no longer auto-vivifies a brand-new collection from any
+    string a caller hands it. Raises ``UnknownCollectionError`` naming the
+    nearest candidates and the ``collection_declare`` verb when nothing
+    resolves closely enough.
+    """
     tags_value = list(tags) if tags is not None else []
 
-    # Resolve the collection with a lightweight read on the common path so we
-    # avoid taking a row-level write lock (and generating a dead tuple) on the
-    # collections row for every item insert. Only fall back to an upsert when
-    # the collection does not exist yet, which also stays safe against a
-    # concurrent create race via ON CONFLICT.
+    # Cheap read on the common path so we avoid taking a row-level write lock
+    # (and generating a dead tuple) on the collections row for every item
+    # insert. A hit here means the name is already a real, deliberately
+    # created collection -- no vocabulary check needed.
     collection_id = await pool.fetchval(
         "SELECT id FROM collections WHERE name = $1", collection_name
     )
+    if collection_id is None:
+        canonical_name = await _vocabulary.resolve_collection_name(pool, collection_name)
+        # The vocabulary may resolve to a *different* existing collection
+        # (an alias, a punctuation variant); re-check under the canonical
+        # name before falling back to an upsert, which also stays safe
+        # against a concurrent create race via ON CONFLICT.
+        collection_id = await pool.fetchval(
+            "SELECT id FROM collections WHERE name = $1", canonical_name
+        )
     if collection_id is None:
         collection_id = await pool.fetchval(
             """
@@ -39,7 +59,7 @@ async def item_create(
             ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
             RETURNING id
             """,
-            collection_name,
+            canonical_name,
         )
 
     item_id = await pool.fetchval(

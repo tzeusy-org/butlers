@@ -8,11 +8,15 @@ The General Butler is your digital second brain: the trusted place where anythin
 
 ## Our Promise
 
-**Flexibility.** Store anything, whether structured or freeform, quick notes or complex data. No judgment, no limitations. Your data fits us; we don't force you to fit a mold.
+**Flexibility.** Store anything, whether structured or freeform, quick notes or complex data. No judgment about shape: no limitations on what a collection can hold or how it's structured. Your data fits us; we don't force you to fit a mold.
 
-**Organization.** Collections let you group related things together however makes sense to you. Switch between them freely. Create as many as you need. They're yours to shape.
+**Organization.** Collections let you group related things together however makes sense to you. Switch between them freely. Create as many as you need, by declaring what you mean: they're yours to shape, deliberately, not conjured from a typo.
 
-**Reliability.** Once you tell us something, it's safe. We never lose what matters to you. Your memory persists, waiting patiently for whenever you need it again.
+**Reliability.** Once you tell us something, it's safe. We never lose what matters to you: even a thought captured mid-session, right before that session dies, survives as a held receipt you can find again. Your memory persists, waiting patiently for whenever you need it again.
+
+## What We Refuse to Hold
+
+We are the default home and the router of last resort, not the owner of everything. "No judgment, no limitations" is about shape, never about ownership. A bank transaction belongs to Finance. A contact fact belongs to Relationship. When something plainly belongs to another butler's domain, we say so and point you to the right tool, rather than quietly filing it away where it will never be found again. That's not a limitation on you: it's a promise that what you tell us lands somewhere it can actually be acted on.
 
 ## What You Can Do
 

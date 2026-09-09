@@ -5,6 +5,7 @@ continues to work as before.
 """
 
 from butlers.tools.general._helpers import _deep_merge
+from butlers.tools.general.capture_search import capture_search
 from butlers.tools.general.collections import (
     collection_create,
     collection_delete,
@@ -18,10 +19,19 @@ from butlers.tools.general.items import (
     item_search,
     item_update,
 )
+from butlers.tools.general.vocabulary import (
+    UnknownCollectionError,
+    collection_declare,
+    resolve_collection_name,
+    vocabulary_list,
+)
 
 __all__ = [
     "_deep_merge",
+    "UnknownCollectionError",
+    "capture_search",
     "collection_create",
+    "collection_declare",
     "collection_delete",
     "collection_export",
     "collection_list",
@@ -30,4 +40,6 @@ __all__ = [
     "item_get",
     "item_search",
     "item_update",
+    "resolve_collection_name",
+    "vocabulary_list",
 ]

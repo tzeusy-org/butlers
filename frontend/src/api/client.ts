@@ -7084,3 +7084,27 @@ export function deleteTimelineSavedView(id: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Captures (bu-2jtfw.9) -- the second brain's intake ledger.
+// ---------------------------------------------------------------------------
+
+import type { CapturesListResponse } from "./types.ts";
+
+/**
+ * GET /api/captures -- list rows from the capture() ledger, most recent first.
+ *
+ * `state` filters by receipt_state ("held" surfaces orphans whose routing
+ * session never finished). Always resolves with HTTP 200; check
+ * `meta.sources_degraded` before treating an empty page as "nothing held".
+ */
+export function getCaptures(
+  params: { state?: "held" | "routed" | "refused"; limit?: number; cursor?: string } = {},
+): Promise<CapturesListResponse> {
+  const query = new URLSearchParams();
+  if (params.state) query.set("state", params.state);
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.cursor) query.set("cursor", params.cursor);
+  const qs = query.toString();
+  return apiFetch<CapturesListResponse>(`/captures${qs ? `?${qs}` : ""}`);
+}

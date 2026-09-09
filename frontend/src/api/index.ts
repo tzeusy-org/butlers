@@ -1246,6 +1246,9 @@ export {
   deleteTimelineSavedView,
 } from "./client.ts";
 
+export { getCaptures } from "./client.ts";
+export type { CaptureSummary, CapturesListMeta, CapturesListResponse } from "./types.ts";
+
 export type {
   TimelineSavedViewEntry,
   TimelineSavedViewCreateRequest,
