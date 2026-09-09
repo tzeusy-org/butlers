@@ -103,7 +103,7 @@ describe("ChatRecallCommands — recent-thread recall (bu-0ynlk.11)", () => {
     renderRecall();
 
     expect(registeredCommands).toMatchObject([
-      { id: "chat-recall:unavailable", label: "Recent conversations unavailable — retry" },
+      { id: "chat-recall:unavailable", label: "Recent conversations unavailable, retry" },
     ]);
 
     registeredCommands[0].perform();
