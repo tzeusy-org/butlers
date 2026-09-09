@@ -110,6 +110,60 @@ async def expire_pending_action_if_stale(
     return {"error": f"Cannot transition from '{latest_action.status.value}' to '{target_action}'"}
 
 
+async def sweep_orphaned_prepared_actions(
+    pool: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Expire every stale ``origin='prepared'`` pending action.
+
+    bu-2jtfw.11: a prepared action is parked silently (no owner push) and
+    surfaces only through the insight candidate that referenced it. If that
+    candidate's insert fails after the action was successfully parked, the
+    action is orphaned -- nothing will ever render its door, and nothing will
+    ever approve it. This sweep is the failure-mode-(a) backstop: it never
+    executes an orphaned action, it only expires it once ``expires_at`` has
+    passed, exactly like the existing ``pending -> expired`` transition
+    ``expire_pending_action_if_stale`` already performs for one action at a
+    time. Scoped to ``origin='prepared'`` only -- ordinary gated actions are
+    unaffected and keep their existing (on-touch) expiry path.
+    """
+    effective_now = now or datetime.now(UTC)
+    rows = await pool.fetch(
+        "SELECT id, tool_name FROM pending_actions "
+        "WHERE origin = 'prepared' AND status = $1 "
+        "AND expires_at IS NOT NULL AND expires_at < $2",
+        ActionStatus.PENDING.value,
+        effective_now,
+    )
+
+    expired_ids: list[str] = []
+    for row in rows:
+        expired_row = await pool.fetchrow(
+            "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
+            "WHERE id = $4 AND status = $5 "
+            "RETURNING id",
+            ActionStatus.EXPIRED.value,
+            "system:prepared_action_sweep",
+            effective_now,
+            row["id"],
+            ActionStatus.PENDING.value,
+        )
+        if expired_row is not None:
+            await record_approval_event(
+                pool,
+                ApprovalEventType.ACTION_EXPIRED,
+                actor="system:prepared_action_sweep",
+                action_id=row["id"],
+                reason="prepared action expired unactioned",
+                metadata={"tool_name": row["tool_name"]},
+                occurred_at=effective_now,
+            )
+            expired_ids.append(str(row["id"]))
+
+    return {"expired_count": len(expired_ids), "expired_ids": expired_ids}
+
+
 async def approve_action(
     pool: Any,
     action_id: str,

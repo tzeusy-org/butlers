@@ -19,4 +19,6 @@ tests/migrations/test_dead_letter_unanswerable_category_migration.py
 tests/migrations/test_fleet_case_file_migration.py
 tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py
+tests/modules/approvals/test_prepared_actions.py
+tests/modules/approvals/test_prepared_execution.py
 tests/scripts/test_pg_restore_definer_ownership.py
