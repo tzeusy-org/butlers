@@ -56,6 +56,7 @@ import {
   sendMessage,
 } from "@/api/index.ts";
 import type {
+  ConversationSsePhaseData,
   ConversationSummary,
   CreateConversationRequest,
   Message,
@@ -449,11 +450,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               break;
             }
             case "phase": {
-              const data = event.data as {
-                phase?: unknown;
-                target?: unknown;
-                tool?: unknown;
-              };
+              const data = event.data as ConversationSsePhaseData;
               const phase = typeof data.phase === "string" ? data.phase : null;
               if (!phase) break;
               setStreaming((prev) =>
