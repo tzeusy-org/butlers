@@ -1036,10 +1036,11 @@ async def _run_health_insight_scan_job(
 ) -> dict[str, Any]:
     """Run health butler insight scan job.
 
-    Requests an ``HaEnvironmentReader`` from ``build_ha_environment_reader``,
-    which always returns ``None`` today: health has no Home Assistant
-    connector or entity-snapshot source of its own. The ``None`` reader is
-    passed through so ``_scan_environment_correlation`` is skipped cleanly.
+    Builds a concrete ``HaEnvironmentReader`` from the health butler's own HA
+    credentials (stored in ``public.entity_info``) and passes it into the scan
+    so that ``_scan_environment_correlation`` can run in production.  When HA
+    credentials are absent the reader is ``None`` and the correlation section is
+    skipped cleanly — same behaviour as before this fix.
     """
     del job_args
     from butlers.jobs._roster_loader import load_roster_jobs
