@@ -130,6 +130,43 @@ async def _setup_relationship_schema(pool) -> None:
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
     )
+    # bu-2jtfw.11: minimal pending_actions DDL -- the stale-contact producer
+    # parks a prepared action via park_prepared_action. Mirrors the columns
+    # and partial unique index approvals_013/014 add in production (not the
+    # full approvals migration chain, matching this file's local-DDL
+    # convention for every other table it sets up).
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_actions (
+            id UUID PRIMARY KEY,
+            tool_name TEXT NOT NULL,
+            tool_args JSONB NOT NULL,
+            agent_summary TEXT,
+            session_id UUID,
+            status TEXT NOT NULL DEFAULT 'pending',
+            origin TEXT,
+            requested_at TIMESTAMPTZ NOT NULL,
+            expires_at TIMESTAMPTZ,
+            decided_by TEXT,
+            decided_at TIMESTAMPTZ,
+            execution_result JSONB,
+            approval_rule_id UUID,
+            why TEXT,
+            evidence JSONB NOT NULL DEFAULT '[]',
+            blast_radius TEXT,
+            reversibility TEXT,
+            deduplication_key TEXT
+        )
+        """
+    )
+    await pool.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_actions_active_deduplication_key
+        ON pending_actions (deduplication_key)
+        WHERE deduplication_key IS NOT NULL
+          AND status IN ('pending', 'approved', 'rejected', 'abandoned')
+        """
+    )
 
 
 async def _setup_insight_tables(pool) -> None:
@@ -693,6 +730,59 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
         )
         assert len(rows) == 1
         assert rows[0]["priority"] == 45
+
+
+@pytest.mark.pg_clock
+async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    """bu-2jtfw.11: the stale-contact candidate links a silently-parked prepared action."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_relationship_schema(pool)
+        await _setup_insight_tables(pool)
+
+        contact_id = await _insert_contact(pool, first_name="Priya", stay_in_touch_days=14)
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=35),
+        )
+
+        await run_insight_scan(pool)
+
+        candidate = await pool.fetchrow(
+            "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
+        )
+        assert candidate is not None
+        assert candidate["prepared_action_id"] is not None
+
+        action = await pool.fetchrow(
+            "SELECT origin, status, tool_name, tool_args, deduplication_key "
+            "FROM pending_actions WHERE id = $1",
+            candidate["prepared_action_id"],
+        )
+        assert action is not None
+        assert action["origin"] == "prepared"
+        assert action["status"] == "pending"
+        assert action["tool_name"] == "notify"
+        tool_args = action["tool_args"]
+        assert tool_args["intent"] == "send"
+        assert "Priya" in tool_args["message"]
+        assert action["deduplication_key"].startswith("relationship:prepared-reach-out:")
+
+        # A same-week re-run must not double-park (approvals_013's active
+        # deduplication_key uniqueness) -- it must reuse the same row.
+        await run_insight_scan(pool)
+        rows = await pool.fetch(
+            "SELECT id FROM pending_actions WHERE deduplication_key = $1",
+            action["deduplication_key"],
+        )
+        assert len(rows) == 1
 
 
 @pytest.mark.pg_clock
