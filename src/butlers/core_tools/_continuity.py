@@ -1,10 +1,23 @@
-"""Task-continuity core tools: carry_forward.
+"""Task-continuity core tools: carry_forward (non-STAFFER only).
 
 Backs the general task-continuity ledger (bu-2jtfw.13): a recurring task
 opted into ``continuity=true`` calls ``carry_forward`` to record what its run
 concluded, and the scheduler's dispatch seam
 (:func:`butlers.core.scheduler._continuity_block_for_task`) injects that
 record into the next opted-in run's prompt.
+
+``continuity=true`` is restricted to PROMPT-mode schedules (see
+``ScheduleConfig`` validation): it exists to carry narrative conclusions
+forward for LLM-authored digests and reviews. Every staffer butler
+(concierge, messenger, switchboard, qa) currently declares only job-mode
+schedules -- deterministic Python handlers, not narrative prompts -- so
+``carry_forward`` has no reachable caller there. Gating it out matches the
+existing non-STAFFER convention already drawn for the same reason around
+other narrative/dispatch-adjacent tools (see ``_notifications.py``'s
+``notify``, ``_temporal.py``'s deadline/event_chain/seasonal tools), and
+keeps it off the tightest-margin staffer's tool surface (Concierge sits at
+its RFC 0002 30-50 budget ceiling; see
+``openspec/specs/butler-concierge/spec.md``).
 """
 
 from __future__ import annotations
@@ -14,6 +27,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from butlers.config import ButlerType
 from butlers.core.task_continuity import record_carry_forward
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
@@ -22,7 +36,10 @@ logger = logging.getLogger(__name__)
 
 
 def register_continuity_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
-    """Register the carry_forward continuity-ledger tool."""
+    """Register the carry_forward continuity-ledger tool (non-STAFFER only)."""
+    if ctx.butler_type == ButlerType.STAFFER:
+        return
+
     pool = ctx.pool
     butler_name = ctx.butler_name
 
