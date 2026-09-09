@@ -25,6 +25,8 @@ def _mock_row(
     include_catalog_read_sensitivity: bool = True,
     max_concurrent: int = 3,
     max_queued: int = 10,
+    tool_exposure_policy: str = "eager_filtered",
+    include_tool_exposure_policy: bool = True,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> MagicMock:
@@ -38,6 +40,8 @@ def _mock_row(
     }
     if include_catalog_read_sensitivity:
         data["catalog_read_sensitivity"] = catalog_read_sensitivity
+    if include_tool_exposure_policy:
+        data["tool_exposure_policy"] = tool_exposure_policy
     row = MagicMock()
     row.__getitem__ = lambda self, key: data[key]
     row.keys = lambda: data.keys()
@@ -80,6 +84,8 @@ def test_get_success_returns_field_tiers():
     assert "field_tiers" in data
     assert data["field_tiers"]["core_groups"] == "cold"
     assert data["field_tiers"]["catalog_read_sensitivity"] == "hot"
+    assert data["field_tiers"]["tool_exposure_policy"] == "hot"
+    assert data["tool_exposure_policy"] == "eager_filtered"
     # Hot runtime-selection fields removed from this endpoint
     for field in ("model", "runtime_type", "args", "session_timeout_s"):
         assert field not in data
@@ -94,6 +100,17 @@ def test_get_legacy_row_missing_catalog_authority_fails_closed_normal():
 
     assert resp.status_code == 200
     assert resp.json()["catalog_read_sensitivity"] == "normal"
+
+
+def test_get_legacy_row_missing_exposure_policy_fails_closed_eager_filtered():
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=_mock_row(include_tool_exposure_policy=False))
+    app = _make_app(_make_db_manager(pool=pool))
+
+    resp = TestClient(app).get("/api/butlers/test/runtime-config")
+
+    assert resp.status_code == 200
+    assert resp.json()["tool_exposure_policy"] == "eager_filtered"
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +147,14 @@ def test_get_legacy_row_missing_catalog_authority_fails_closed_normal():
             True,
             422,
         ),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
+            {"tool_exposure_policy": "caller-invented"},
+            "test",
+            True,
+            422,
+        ),
     ],
     ids=[
         "get-404-unknown",
@@ -137,6 +162,7 @@ def test_get_legacy_row_missing_catalog_authority_fails_closed_normal():
         "patch-422-negative",
         "patch-422-bad-catalog-authority",
         "patch-422-removed-field",
+        "patch-422-bad-exposure-policy",
     ],
 )
 def test_runtime_config_error_paths(method, path, body, butler_name, known, expected):
@@ -175,6 +201,14 @@ def test_patch_cold_field_returns_restart_required():
     )
     assert resp_authority.status_code == 200
     assert resp_authority.json()["restart_required"] == []
+
+    # bu-ondtw.2: tool_exposure_policy is hot — a policy-only PATCH applies to
+    # subsequent sessions and must never claim a restart is needed.
+    resp_policy = client.patch(
+        "/api/butlers/test/runtime-config", json={"tool_exposure_policy": "auto"}
+    )
+    assert resp_policy.status_code == 200
+    assert resp_policy.json()["restart_required"] == []
 
     # bu-27dxl.5.3: "delegation" is a known group — PATCH accepts it like any
     # other, instead of the 422 unknown-group rejection it got previously.

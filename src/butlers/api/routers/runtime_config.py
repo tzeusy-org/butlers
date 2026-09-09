@@ -50,7 +50,11 @@ FIELD_TIERS: dict[str, str] = {
     "catalog_read_sensitivity": "hot",
     "max_concurrent": "cold",
     "max_queued": "cold",
+    "tool_exposure_policy": "hot",
 }
+
+# Closed set of accepted tool_exposure_policy values.
+TOOL_EXPOSURE_POLICIES: frozenset[str] = frozenset({"eager_filtered", "auto"})
 
 
 class RuntimeConfigResponse(BaseModel):
@@ -61,6 +65,7 @@ class RuntimeConfigResponse(BaseModel):
     catalog_read_sensitivity: str = "normal"
     max_concurrent: int = 3
     max_queued: int = 10
+    tool_exposure_policy: str = "eager_filtered"
     seeded_at: str | None = None
     updated_at: str | None = None
     field_tiers: dict[str, str] = FIELD_TIERS
@@ -75,12 +80,20 @@ class RuntimeConfigPatch(BaseModel):
     catalog_read_sensitivity: str | None = None
     max_concurrent: int | None = None
     max_queued: int | None = None
+    tool_exposure_policy: str | None = None
 
     @field_validator("catalog_read_sensitivity")
     @classmethod
     def validate_catalog_read_sensitivity(cls, value: str | None) -> str | None:
         if value is not None and value not in {"normal", "internal", "confidential"}:
             raise ValueError("catalog_read_sensitivity must be normal, internal, or confidential")
+        return value
+
+    @field_validator("tool_exposure_policy")
+    @classmethod
+    def validate_tool_exposure_policy(cls, value: str | None) -> str | None:
+        if value is not None and value not in TOOL_EXPOSURE_POLICIES:
+            raise ValueError("tool_exposure_policy must be eager_filtered or auto")
         return value
 
     @field_validator("core_groups")
@@ -123,6 +136,11 @@ def _row_to_response(row: Any) -> RuntimeConfigResponse:
     except (KeyError, IndexError):
         # Legacy/partial rows have no evidence of elevated read authority.
         catalog_read_sensitivity = "normal"
+    try:
+        tool_exposure_policy = row["tool_exposure_policy"]
+    except (KeyError, IndexError):
+        # Legacy/partial rows preserve the conservative eager behavior.
+        tool_exposure_policy = "eager_filtered"
 
     return RuntimeConfigResponse(
         butler_name=row["butler_name"],
@@ -130,6 +148,7 @@ def _row_to_response(row: Any) -> RuntimeConfigResponse:
         catalog_read_sensitivity=catalog_read_sensitivity,
         max_concurrent=row["max_concurrent"],
         max_queued=row["max_queued"],
+        tool_exposure_policy=tool_exposure_policy,
         seeded_at=str(row["seeded_at"]) if row["seeded_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
     )
@@ -186,6 +205,8 @@ async def patch_runtime_config(
         updates["max_concurrent"] = patch.max_concurrent
     if patch.max_queued is not None:
         updates["max_queued"] = patch.max_queued
+    if patch.tool_exposure_policy is not None:
+        updates["tool_exposure_policy"] = patch.tool_exposure_policy
 
     restart_required: list[str] = []
     if updates:
