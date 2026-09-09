@@ -532,7 +532,7 @@ async def list_insight_candidates(
         rows = await pool.fetch(
             "SELECT id, origin_butler, priority, category, dedup_key, cooldown_days,"
             " expires_at, message, channel, metadata, created_at, status,"
-            " delivered_at, delivery_attempt_count"
+            " delivered_at, delivery_attempt_count, prepared_action_id"
             " FROM public.insight_candidates"
             f" WHERE {where}"
             " ORDER BY priority DESC, created_at ASC"
@@ -560,6 +560,7 @@ async def list_insight_candidates(
             status=r["status"],
             delivered_at=str(r["delivered_at"]) if r["delivered_at"] else None,
             delivery_attempt_count=int(r["delivery_attempt_count"] or 0),
+            prepared_action_id=str(r["prepared_action_id"]) if r["prepared_action_id"] else None,
         )
         for r in rows
     ]
