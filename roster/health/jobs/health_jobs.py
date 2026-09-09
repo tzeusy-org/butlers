@@ -486,8 +486,8 @@ async def run_insight_scan(
         med_id = str(med_row["id"])
         med_name = med_row["name"]
         frequency = med_row["frequency"] or "daily"
-        quantity = med_row["quantity"]
-        quantity_updated_at = med_row["quantity_updated_at"]
+        quantity = med_row.get("quantity")
+        quantity_updated_at = med_row.get("quantity_updated_at")
 
         if quantity is None or quantity_updated_at is None:
             # No real supply quantity has ever been recorded for this medication
