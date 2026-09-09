@@ -4006,6 +4006,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Owner conditions
 - QA dispatch suppression counts
 
+## `frontend/src/components/system/StoredFunctionsTile.tsx`
+
+- Stored Functions
+- Deployed bodies vs. init-db.sql
+- Could not load stored-function drift status.
+- if (isError) return
+- Stored-function check unavailable.
+- The comparison itself failed. This is not a clean bill of health.
+
 ## `frontend/src/components/system/UptimeTile.tsx`
 
 - Uptime
@@ -4198,4 +4207,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3291*
+*Total strings: 3297*
