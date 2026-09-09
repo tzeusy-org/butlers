@@ -7546,6 +7546,39 @@ export interface DriftFacts {
 }
 
 /**
+ * One deployed stored function whose body left the committed definition
+ * (bu-bi5an). Digests only -- never a body -- since a stored body can hold
+ * operator-supplied literals.
+ */
+export interface StoredFunctionEntry {
+  function: string;
+  /** init-db.sql line(s) of the committed variant(s), for locating the source. */
+  committed_lines: number[];
+  committed_digests: string[];
+  deployed_digests: string[];
+}
+
+/**
+ * Deployed stored-function bodies vs the configured bootstrap source
+ * (bu-bi5an, bu-uoctv).
+ *
+ * `not_deployed` is a legitimate state, not drift: a function only exists
+ * once its migration chain has run the bootstrap installer. `is_drifted`
+ * reflects `drifted` only -- never treat `not_deployed` as an alarm.
+ * `stored_function_check_available: false` means the comparison itself
+ * failed -- per the fleet-wide degraded-envelope convention, never render
+ * this as a truthful all-clear.
+ */
+export interface StoredFunctionFacts {
+  checked_at: string;
+  is_drifted: boolean;
+  drifted: StoredFunctionEntry[];
+  not_deployed: string[];
+  matched_count: number;
+  stored_function_check_available: boolean;
+}
+
+/**
  * One episode row from public.infra_conditions or public.owner_conditions
  * (bu-27dxl.6.2 / bu-ep4ks.3 / bu-ep4ks.6).
  *

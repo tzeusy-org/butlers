@@ -70,6 +70,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(() => ({ data: undefined, isPending: false, isError: false, error: null })),
   useInsightDeliveryState: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDriftFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
+  useStoredFunctionFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDeploymentFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useSystemConditions: vi.fn(() => ({
     data: { data: { conditions: [], total: 0, conditions_available: true } },
