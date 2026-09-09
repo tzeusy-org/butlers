@@ -351,6 +351,48 @@ The system prompt is read from `CLAUDE.md` in the butler's config directory. Inc
 - **THEN** the failure is logged at WARNING level
 - **AND** the invocation proceeds with the system prompt without context preamble
 
+### Requirement: Blind-Spot Preamble Injection
+The spawner SHALL inject a composed-prompt layer summarizing the health of each module-declared "expected signal" — a signal a module has registered in `public.expected_signals` as a name it expects to arrive on a cadence. The layer is added after the context preamble and before routing instructions. Declared signal-key patterns are resolved per butler from a static per-module registry (`MODULE_BLIND_SPOT_SIGNAL_PATTERNS` in `blind_spot_declarations.py`), keyed by enabled module name.
+
+Evaluation SHALL be fail-closed by construction: `evaluate_declared_signals()` re-evaluates each declared signal fresh and catches any exception, setting `query_failed=True` rather than raising or silently omitting results.
+
+Behavior:
+- silent (no preamble layer) when there are no declared signal patterns for the butler's enabled modules, or when every declared signal currently evaluates PRESENT and the query itself succeeded.
+- byte-identical composed prompt to a butler with no declared blind-spot signals when every declared signal is PRESENT.
+- typed block naming each non-PRESENT signal's `signal_key`, `producer`, `last_observed_at`, and the evaluator's `now` clock, when at least one declared signal is not PRESENT.
+- explicit "source health could not be evaluated" text (`BLIND_SPOT_QUERY_FAILED_TEXT`) instead of any signal detail, when the query itself raised.
+
+The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot_preamble_enabled` (added by migration `core_225`, default `true`). Reading the flag SHALL be fail-open — if the runtime_config accessor raises, or the column does not yet exist on an unmigrated schema, the layer defaults to enabled.
+
+`GET /api/butlers/{name}` SHALL project the identical evaluation (`declared_signal_patterns()` + `evaluate_declared_signals()`) so the dashboard's `blind_spots` field never disagrees with what the next spawned session's prompt will say.
+
+#### Scenario: No declared signals means byte-identical prompt
+- **WHEN** a butler's enabled modules declare no blind-spot signal patterns
+- **THEN** `_compose_system_prompt()` receives `blind_spot_preamble=None`
+- **AND** the composed prompt is unchanged from a butler with the blind-spot feature absent
+
+#### Scenario: All declared signals present means byte-identical prompt
+- **WHEN** every signal_key_like_pattern-matched row in `public.expected_signals` evaluates to `measurability="present"`
+- **THEN** `fetch_blind_spot_preamble()` returns `None`
+- **AND** the composed system prompt is unchanged from today's
+
+#### Scenario: Non-present signal renders a typed block
+- **WHEN** at least one declared signal evaluates to `absent` or `unmeasurable`
+- **THEN** the composed prompt includes a block naming that signal's key, producer, last_observed_at (or "never observed"), and the evaluator's clock
+
+#### Scenario: Query failure renders the fail-closed disclosure
+- **WHEN** `evaluate_declared_signals()` catches an exception while querying or re-evaluating expected signals
+- **THEN** the composed prompt's blind-spot layer reads "source health could not be evaluated" instead of omitting the layer or fabricating signal state
+
+#### Scenario: Kill switch disables the layer
+- **WHEN** `runtime_config.blind_spot_preamble_enabled` is `false` for a butler
+- **THEN** the spawner SHALL NOT call `fetch_blind_spot_preamble()` and no blind-spot layer is added, regardless of declared signal state
+
+#### Scenario: Dashboard and prompt agree
+- **WHEN** `GET /api/butlers/{name}` is called for a butler with a non-present declared signal
+- **THEN** the response's `blind_spots` list contains that signal
+- **AND** the next spawned session for that butler carries the same signal in its composed prompt's blind-spot layer
+
 ### Requirement: Dynamic Model Resolution at Spawn Time
 The spawner SHALL resolve the model dynamically at spawn time using the model catalog instead of reading a static model from `butler.toml`. The `trigger()` method gains a `complexity` parameter that drives model selection. The spawner MAY use same-tier failover only after the initial catalog candidate has been selected.
 

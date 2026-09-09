@@ -5,6 +5,8 @@ tests/api/test_conversation_recall_search_db.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_runtime_config_policy_migration_integration.py
 tests/config/test_switchboard_connector_operational_role_migration.py
+tests/core/test_scheduler_continuity.py
+tests/core/test_task_continuity.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
 tests/integration/test_fleet_case_contribution_roundtrip.py
@@ -19,6 +21,8 @@ tests/migrations/test_dead_letter_unanswerable_category_migration.py
 tests/migrations/test_fleet_case_file_migration.py
 tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py
+tests/migrations/test_runtime_config_blind_spot_flag_migration.py
+tests/migrations/test_task_continuity_migration.py
 tests/modules/approvals/test_prepared_actions.py
 tests/modules/approvals/test_prepared_execution.py
 tests/scripts/test_pg_restore_definer_ownership.py
