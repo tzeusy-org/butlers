@@ -464,9 +464,15 @@ async def run_insight_scan(
     # mirroring the dashboard API read surface (roster/health/api/router.py
     # GET /medications) and the medication_add write path: name/frequency/active
     # live in metadata. The legacy health.medications relational table is orphaned.
+    # ``quantity``/``quantity_updated_at`` are the honest supply-tracking fields
+    # written by medication_add/medication_update (bu-dtmbn): a real pill count
+    # and the timestamp it was last set (initial fill or logged refill). Without
+    # them we have no genuine data to estimate depletion from.
     med_rows = await db_pool.fetch(
         """
-        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency
+        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency,
+               (metadata->>'quantity')::numeric AS quantity,
+               (metadata->>'quantity_updated_at')::timestamptz AS quantity_updated_at
         FROM facts
         WHERE predicate = 'medication'
           AND validity = 'active'
@@ -480,21 +486,19 @@ async def run_insight_scan(
         med_id = str(med_row["id"])
         med_name = med_row["name"]
         frequency = med_row["frequency"] or "daily"
+        quantity = med_row["quantity"]
+        quantity_updated_at = med_row["quantity_updated_at"]
+
+        if quantity is None or quantity_updated_at is None:
+            # No real supply quantity has ever been recorded for this medication
+            # (see medication_add/medication_update). We refuse to fabricate a
+            # depletion estimate from an assumed supply size — honest disclosure
+            # is "we can't tell", not a guessed number (bu-dtmbn).
+            continue
 
         doses_per_day = _frequency_to_doses_per_day(frequency)
 
-        # Count doses logged in the past 30 days to estimate supply remaining
-        # We use actual logging rate to estimate how fast the supply is depleted.
-        # The spec says: depletion estimation based on prescribed frequency vs logged doses.
-        # We assume the user logs every dose taken, so dose log rate ≈ consumption rate.
-        # Supply estimate requires knowing the initial quantity — since we don't track
-        # quantity, we use a proxy: check if there's a gap in recent logging vs expected.
-        # The approach: compute how many doses should have been logged in the past N days
-        # vs how many were actually logged, then project forward.
-        #
-        # Simpler heuristic per spec: estimate days of supply based on prescribed frequency
-        # and compare to dose logging pattern. We check the last 30 days of doses.
-        window_start = now_utc - timedelta(days=30)
+        # Count real doses consumed since the supply was last set/refilled.
         # Doses are temporal facts (predicate='took_dose', scope='health') with
         # valid_at=taken_at; medication_id and skipped live in metadata. Mirrors the
         # medication_log_dose write path and the dashboard GET /medications/{id}/doses
@@ -512,32 +516,14 @@ async def run_insight_scan(
             ORDER BY valid_at DESC
             """,
             med_id,
-            window_start,
+            quantity_updated_at,
         )
 
-        if not dose_rows:
-            # No doses logged in 30 days — can't estimate depletion
-            continue
-
-        # Estimate depletion using a standard 30-day supply assumption.
-        # Without an explicit supply quantity in the schema, we compute how many days
-        # of a 30-day supply have been consumed based on the prescribed dose frequency:
-        #   days_consumed = doses_logged / doses_per_day
-        # Days remaining = 30 - days_consumed.  If remaining <= threshold, fire insight.
-        #
         # dose_rows already filters skipped=false, so all rows are non-skipped doses
+        # consumed since the last recorded fill/refill.
         doses_logged = len(dose_rows)
 
-        if doses_logged <= 0:
-            continue
-
-        # Estimate how many days of supply were consumed based on dose frequency
-        # Assume a standard refill is 30 days. Days of supply already used:
-        days_consumed = doses_logged / doses_per_day if doses_per_day > 0 else float(doses_logged)
-
-        # Project days remaining assuming a 30-day supply was available at window start
-        supply_days = 30  # standard assumption
-        days_remaining = max(0.0, supply_days - days_consumed)
+        days_remaining = max(0.0, (float(quantity) - doses_logged) / doses_per_day)
 
         if days_remaining > _REFILL_WARNING_DAYS:
             continue

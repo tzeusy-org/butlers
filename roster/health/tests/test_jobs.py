@@ -218,12 +218,19 @@ async def _insert_medication(
     dosage: str = "100mg",
     frequency: str = "daily",
     active: bool = True,
+    quantity: int | None = None,
+    quantity_updated_at: datetime | None = None,
 ) -> str:
     """Insert a medication FACT into public.facts and return its UUID string.
 
     Medications are property facts (predicate='medication', scope='health',
     validity='active') with name/dosage/frequency/active in metadata — the same
     surface ``medication_add`` writes and ``run_insight_scan`` now reads.
+
+    ``quantity``/``quantity_updated_at`` mirror the honest supply-tracking
+    fields ``medication_add``/``medication_update`` write (bu-dtmbn): a real
+    pill count and when it was last set. Omit them to simulate a medication
+    with no recorded supply data.
     """
     med_id = str(uuid.uuid4())
     metadata = {
@@ -233,6 +240,9 @@ async def _insert_medication(
         "schedule": [],
         "active": active,
     }
+    if quantity is not None:
+        metadata["quantity"] = quantity
+        metadata["quantity_updated_at"] = (quantity_updated_at or _utcnow()).isoformat()
     # The pool registers a JSONB codec that serializes Python objects directly,
     # so pass the dict (not a pre-serialized string) to avoid double-encoding.
     await pool.execute(
@@ -674,9 +684,17 @@ async def test_medication_refill_within_14_days_generates_candidate(provisioned_
         await _setup_health_schema(pool)
         await _setup_insight_tables(pool)
 
-        med_id = await _insert_medication(pool, name="Metformin", frequency="daily", active=True)
         now = _utcnow()
-        # Log 28 doses over the last 28 days (daily), depleting a 30-day supply
+        med_id = await _insert_medication(
+            pool,
+            name="Metformin",
+            frequency="daily",
+            active=True,
+            quantity=30,
+            quantity_updated_at=now - timedelta(days=30),
+        )
+        # Log 28 doses over the last 28 days (daily), consuming 28 of a real
+        # 30-pill supply recorded 30 days ago -- 2 days remain.
         for i in range(28):
             await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
@@ -701,8 +719,15 @@ async def test_medication_refill_critical_priority_within_3_days(provisioned_pos
         await _setup_health_schema(pool)
         await _setup_insight_tables(pool)
 
-        med_id = await _insert_medication(pool, name="Insulin", frequency="daily", active=True)
         now = _utcnow()
+        med_id = await _insert_medication(
+            pool,
+            name="Insulin",
+            frequency="daily",
+            active=True,
+            quantity=30,
+            quantity_updated_at=now - timedelta(days=30),
+        )
         # Log 29 doses over the last 29 days — only ~1 day remaining
         for i in range(29):
             await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
@@ -724,8 +749,14 @@ async def test_medication_refill_dedup_key_format(provisioned_postgres_pool):
         await _setup_health_schema(pool)
         await _setup_insight_tables(pool)
 
-        med_id = await _insert_medication(pool, name="Lisinopril", active=True)
         now = _utcnow()
+        med_id = await _insert_medication(
+            pool,
+            name="Lisinopril",
+            active=True,
+            quantity=30,
+            quantity_updated_at=now - timedelta(days=30),
+        )
         for i in range(28):
             await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
@@ -746,8 +777,14 @@ async def test_medication_refill_skipped_doses_excluded_from_count(provisioned_p
         await _setup_health_schema(pool)
         await _setup_insight_tables(pool)
 
-        med_id = await _insert_medication(pool, name="TestMed", active=True)
         now = _utcnow()
+        med_id = await _insert_medication(
+            pool,
+            name="TestMed",
+            active=True,
+            quantity=30,
+            quantity_updated_at=now - timedelta(days=30),
+        )
         # Log 10 real doses and 20 skipped — should only count 10 consumed
         for i in range(10):
             await _insert_dose(
@@ -760,13 +797,80 @@ async def test_medication_refill_skipped_doses_excluded_from_count(provisioned_p
 
         result = await run_insight_scan(pool)
 
-        # With only 10 doses consumed out of a 30-day supply, there are 20 days remaining
-        # which is > 14, so no refill candidate should be generated
+        # With only 10 real doses consumed out of a genuine 30-pill supply,
+        # there are 20 days remaining which is > 14, so no refill candidate
+        # should be generated
         refill_rows = await pool.fetch(
             "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
         )
         assert len(refill_rows) == 0
         assert result["candidates_proposed"] == 0
+
+
+async def test_medication_refill_no_quantity_recorded_excluded(provisioned_postgres_pool):
+    """No refill candidate is fabricated when no real supply quantity was ever recorded.
+
+    Regression test for bu-dtmbn: the insight-scan job used to assume a
+    fabricated "standard 30-day supply" whenever dose-logging alone suggested
+    depletion. This dose pattern would have fired a candidate under that old
+    fabricated math; honestly, we have no real quantity for this medication so
+    no candidate should be generated at all.
+    """
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        med_id = await _insert_medication(pool, name="UnknownSupplyMed", active=True)
+        now = _utcnow()
+        for i in range(29):
+            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+
+        result = await run_insight_scan(pool)
+
+        refill_rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+        )
+        assert len(refill_rows) == 0
+        assert result["candidates_proposed"] == 0
+
+
+async def test_medication_refill_uses_real_quantity_and_refill_anchor(provisioned_postgres_pool):
+    """Depletion is computed from the real recorded quantity and refill timestamp.
+
+    A medication refilled to 10 real pills 5 days ago, with 5 daily doses
+    logged since, has genuinely 5 days remaining -- independent of any
+    fabricated 30-day assumption.
+    """
+    from butlers.jobs._roster.health_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_health_schema(pool)
+        await _setup_insight_tables(pool)
+
+        now = _utcnow()
+        med_id = await _insert_medication(
+            pool,
+            name="RefilledMed",
+            frequency="daily",
+            active=True,
+            quantity=10,
+            quantity_updated_at=now - timedelta(days=5),
+        )
+        for i in range(5):
+            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT priority, message FROM insight_candidates WHERE category = 'medication-refill'"
+        )
+        assert len(rows) == 1
+        # 5 days remaining is within the 7-day urgent band (priority 75) but
+        # outside the 3-day critical band.
+        assert rows[0]["priority"] == 75
+        assert "5 day" in rows[0]["message"]
 
 
 # ---------------------------------------------------------------------------
