@@ -837,6 +837,7 @@ export {
   updateEducationMindMapStatus,
   getDunbarRanking,
   listConversations,
+  getConversationById,
   getConversationMessages,
   searchConversations,
   searchMessages,

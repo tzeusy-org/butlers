@@ -77,15 +77,7 @@ import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
 import { OPEN_CHAT_WIDGET_EVENT } from "@/lib/shortcut-help";
 import { announce } from "@/lib/shell-announcer";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** The staffer butler that owns dashboard chat-widget conversations (see
- * design doc § Storage scope — all widget threads live under Switchboard's
- * schema; the routed-to domain butler is metadata, not storage location). */
-const WIDGET_BUTLER = "switchboard";
+import { WIDGET_BUTLER } from "./chat-constants.ts";
 
 // ---------------------------------------------------------------------------
 // WidgetPanel — mounted only while the widget is open

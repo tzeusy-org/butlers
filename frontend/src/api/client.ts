@@ -5317,6 +5317,17 @@ export function listConversations(
   );
 }
 
+/**
+ * GET /api/conversations/{id} — cross-butler conversation identity lookup by
+ * id alone, regardless of owning butler_name (bu-0ynlk.11). Backs the
+ * /chat/:conversationId deep-link route and cmdk recent-thread recall.
+ * Raw (unwrapped) body — the response model carries no `data` envelope.
+ * Throws `ApiError` with `status === 404` when the id is unknown.
+ */
+export function getConversationById(conversationId: string): Promise<ConversationSummary> {
+  return apiFetch<ConversationSummary>(`/conversations/${encodeURIComponent(conversationId)}`);
+}
+
 /** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
 export function getConversationMessages(
   butlerName: string,
