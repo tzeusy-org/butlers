@@ -9,6 +9,12 @@ import {
 interface ShellProps {
   header: ReactNode
   children: ReactNode
+  /**
+   * The docked chat rail (bu-0ynlk.11) — a sibling column of `<main>`, never
+   * an overlay. Omit to render no dock (the popover posture handles chat
+   * instead, see RootLayout's posture host).
+   */
+  chatDock?: ReactNode
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'butlers.sidebar-collapsed'
@@ -21,7 +27,7 @@ function readCollapsedPreference(): boolean {
   }
 }
 
-export default function Shell({ header, children }: ShellProps) {
+export default function Shell({ header, children, chatDock }: ShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(readCollapsedPreference)
 
@@ -90,6 +96,19 @@ export default function Shell({ header, children }: ShellProps) {
           {children}
         </main>
       </div>
+
+      {/* Docked chat rail (bu-0ynlk.11) — a sibling column, never an overlay
+          over main. Whether to pass `chatDock` at all is RootLayout's call
+          (viewport + persisted open state, see useMediaQuery there); Shell
+          itself only lays it out. Hairline border only, deliberately no
+          shadow class (the dashboard design language reserves shadows for
+          elevated overlays; the dock pushes, it does not float). */}
+      {chatDock && (
+        // `<aside>` is implicitly role="complementary" — no explicit role attribute needed.
+        <aside aria-label="Chat" className="flex flex-col border-l border-border">
+          {chatDock}
+        </aside>
+      )}
     </div>
   )
 }

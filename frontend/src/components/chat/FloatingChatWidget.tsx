@@ -386,7 +386,16 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 // FloatingChatWidget — trigger button + panel toggle, mounted in RootLayout
 // ---------------------------------------------------------------------------
 
-export function FloatingChatWidget() {
+export interface FloatingChatWidgetProps {
+  /**
+   * When set (>= xl viewport, dock collapsed — see RootLayout's posture
+   * host), the trigger reopens the docked rail instead of the popover, so
+   * closing the dock is never a one-way trip back to a settings toggle.
+   */
+  onExpandDock?: () => void;
+}
+
+export function FloatingChatWidget({ onExpandDock }: FloatingChatWidgetProps = {}) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreTriggerFocusRef = useRef(false);
@@ -443,10 +452,10 @@ export function FloatingChatWidget() {
         id: "talk-to-butlers",
         label: "Talk to Butlers",
         keywords: ["chat", "switchboard", "message", "conversation"],
-        perform: () => setOpen(true),
+        perform: () => (onExpandDock ? onExpandDock() : setOpen(true)),
       },
     ],
-    [],
+    [onExpandDock],
   );
   useRegisterCommands(commands);
 
@@ -464,7 +473,7 @@ export function FloatingChatWidget() {
           // intercept every click. Stacking above it avoids the collision
           // entirely; the panel anchors to the same spot when open.
           className="fixed bottom-20 right-4 z-40 size-12 rounded-full p-0 shadow-lg"
-          onClick={() => setOpen(true)}
+          onClick={() => (onExpandDock ? onExpandDock() : setOpen(true))}
           aria-label={hasUnread ? "Talk to Butlers (new reply)" : "Talk to Butlers"}
           title="Talk to Butlers"
           data-testid="floating-chat-trigger"

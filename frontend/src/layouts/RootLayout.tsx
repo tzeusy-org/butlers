@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Outlet } from 'react-router'
 import Shell from '../components/layout/Shell'
 import PageHeader from '../components/layout/PageHeader'
@@ -16,7 +16,15 @@ import { type EventBusHealth } from '../hooks/use-event-stream'
 import { EventBusProvider, useEventBus } from '../lib/event-bus'
 import { type ClientLinkStatus, useClientLink } from '../hooks/use-client-link'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
+import { ChatDock } from '../components/chat/ChatDock'
+import { useMediaQuery } from '../hooks/use-media-query'
+import { readBooleanSetting, writeBooleanSetting } from '../lib/local-settings'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
+
+// Tailwind's default `xl` breakpoint (1280px) — the docked chat rail's
+// default posture threshold (bu-0ynlk.11 behavior matrix).
+const CHAT_DOCK_MEDIA_QUERY = '(min-width: 1280px)'
+const CHAT_DOCK_OPEN_KEY = 'butlers.chat-dock-open'
 
 // Same connected/reconnecting/down grouping LiveIndicator renders, so the
 // shell's sr-only announcement always says the same thing sighted users see.
@@ -67,6 +75,22 @@ function RootLayoutInner() {
   // `status` is threaded down into PageHeader so the shell's Live indicator
   // reflects actual socket health.
   const { health: eventBusHealth, lastEventAt } = useEventBus()
+
+  // Chat posture host (bu-0ynlk.11): the docked rail is the default at
+  // >= xl, persisted-closable back to the popover. Below xl, the popover
+  // (FloatingChatWidget) is the only posture regardless of the persisted
+  // preference -- the dock never renders where it wouldn't fit.
+  const isXlViewport = useMediaQuery(CHAT_DOCK_MEDIA_QUERY)
+  const [dockOpen, setDockOpen] = useState(() => readBooleanSetting(CHAT_DOCK_OPEN_KEY, true))
+  const showDock = isXlViewport && dockOpen
+  function closeDock() {
+    writeBooleanSetting(CHAT_DOCK_OPEN_KEY, false)
+    setDockOpen(false)
+  }
+  function reopenDock() {
+    writeBooleanSetting(CHAT_DOCK_OPEN_KEY, true)
+    setDockOpen(true)
+  }
 
   // This browser's own network link (bu-8cdl1.13), separate from fleet
   // health above -- lets the shell tell a client-side connection drop apart
@@ -141,6 +165,7 @@ function RootLayoutInner() {
                   lastEventAt={lastEventAt}
                 />
               }
+              chatDock={showDock ? <ChatDock onClose={closeDock} /> : undefined}
             >
               <ErrorBoundary>
                 <Outlet />
@@ -158,8 +183,12 @@ function RootLayoutInner() {
                 route, opening a compact popover chat panel routed through the
                 Switchboard butler. Also registers the "Talk to Butlers" cmdk
                 command. Mounted here (not inside Shell.tsx) since Shell has no
-                floating layer. */}
-            <FloatingChatWidget />
+                floating layer. The docked rail (bu-0ynlk.11) replaces it at
+                >= xl while open; below that (or while collapsed) the popover
+                is the only posture. */}
+            {!showDock && (
+              <FloatingChatWidget onExpandDock={isXlViewport ? reopenDock : undefined} />
+            )}
             {/* Shell-level sr-only announcer (bu-qvnce.10) — one aria-live
                 region for stream-state edges, page-title changes, and the
                 ingestion ledger's new-event counts. */}
