@@ -8,7 +8,7 @@ Provides the frontend conversational interface for the Butlers dashboard, enabli
 
 ### Requirement: Chat Panel on Butler Detail Page
 
-The chat interface SHALL render as a slide-out panel on the butler detail page (`/butlers/:name`), toggled by a dedicated button in the butler detail header area.
+The chat interface SHALL render as a slide-out panel on the butler detail page (`/butlers/:name`), toggled by a dedicated button in the butler detail header area. This is a per-butler thread view, distinct from the global "Talk to Butlers" surface's three postures (docked rail, full page, popover) described under Requirement: Global Chat Postures — `MessageThread`, `MessageInput`, and the send/stream/stop turn logic (`useConversationTurn`) are shared, but this panel is scoped to one butler's own conversations rather than the Switchboard-routed set.
 
 #### Scenario: Chat panel toggle
 
@@ -28,6 +28,72 @@ The chat interface SHALL render as a slide-out panel on the butler detail page (
 - **WHEN** the viewport width is below the `sm` breakpoint (640px)
 - **THEN** the chat panel opens as a full-width overlay instead of a side panel (`w-full sm:max-w-[480px]`)
 - **AND** the standard Sheet close button is retained for navigation
+
+### Requirement: Global Chat Postures
+
+The global "Talk to Butlers" surface (Switchboard-routed conversations, distinct from the per-butler panel above) SHALL present exactly one of three postures at a time, chosen by viewport width and an explicit collapse/expand toggle, never stacked (bu-0ynlk.11):
+
+- **Docked rail** — a persistent sidebar column at or above the `xl` breakpoint (1280px), the default posture. See `dashboard-shell` spec, Requirement: Chat Dock Rail.
+- **Full page** — `/chat` and `/chat/:conversationId`, reached via the dock/popover's "Open in full page" action, a copy-link, or cmdk recall.
+- **Popover** — the floating bottom-right widget, the only posture below `xl` or while the dock has been explicitly collapsed.
+
+All three postures render the same `MessageThread`/`MessageInput` components and drive their send/stream/stop turn state through the one shared `useConversationTurn` hook (`frontend/src/hooks/use-conversation-turn.ts`) — there is exactly one implementation of that turn logic, not a per-posture copy.
+
+#### Scenario: Postures are mutually exclusive
+
+- **WHEN** any dashboard route is rendered
+- **THEN** at most one of {docked rail, full page, popover} is mounted at a time
+- **AND** the docked rail and the popover in particular are never both mounted (the dock's presence is what decides whether the popover renders at all)
+
+#### Scenario: Each mounted instance owns its own turn state
+
+- **WHEN** a conversation is actively streaming in one posture (e.g. the dock) and the operator navigates to `/chat/{id}` for that same conversation in another tab or after the dock collapses
+- **THEN** the full-page instance calls `useConversationTurn` independently and does not receive a live mirror of the other posture's in-flight stream — it resumes from the persisted message history once the turn completes
+- **AND** this is a deliberate scope boundary (cross-posture live-turn mirroring is out of scope for this capability)
+
+### Requirement: Full-Page Chat Route
+
+`/chat` and `/chat/:conversationId` SHALL render the full-page chat posture (`ChatPage`), resolving a specific conversation cross-butler by id.
+
+#### Scenario: Bare /chat starts or resumes composing for the Switchboard butler
+
+- **WHEN** `/chat` is visited with no `:conversationId`
+- **THEN** the page renders the composer for a not-yet-created conversation against the Switchboard butler
+- **AND** sending the first message creates the conversation and the URL updates (via a replace navigation) to `/chat/{newId}` once the id is known
+
+#### Scenario: /chat/:conversationId resolves cross-butler
+
+- **WHEN** `/chat/:conversationId` is visited
+- **THEN** the frontend calls `GET /api/conversations/{id}` to resolve the owning `butler_name` before fetching messages — the conversation may belong to any butler, not only the Switchboard (any assistant message's copy-link, wherever it renders, points here)
+- **AND** once resolved, messages are fetched via the existing per-butler `GET /api/butlers/{name}/conversations/{id}/messages` route using that resolved `butler_name`
+
+#### Scenario: Unknown conversation id renders an explicit not-found state
+
+- **WHEN** `GET /api/conversations/{id}` returns 404 for the `:conversationId` in the URL
+- **THEN** the page renders an explicit "Conversation not found" empty state with an action to start a new conversation
+- **AND** it SHALL NOT render a blank or infinitely-loading thread
+
+#### Scenario: A `#m-{messageId}` fragment scrolls to and focuses that message
+
+- **WHEN** `/chat/:conversationId#m-{messageId}` is visited and the thread finishes loading
+- **THEN** the named message bubble is scrolled into view and receives keyboard focus (the bubble carries `tabIndex={-1}` for this purpose)
+- **AND** if no message with that id is in the loaded thread, the thread still renders normally with no scroll and no error — a stale or incorrect fragment is a silent no-op
+
+#### Scenario: Copy-link produces a full-page deep link
+
+- **WHEN** the operator clicks the copy-link action on an assistant message (any posture, any butler's conversation)
+- **THEN** the clipboard receives `{origin}/chat/{conversationId}#m-{messageId}`, matching the anchor `scrollToMessageAnchor` looks for
+
+### Requirement: Recent-Thread Recall (Command Palette)
+
+Recently-updated Switchboard conversations SHALL be reachable through the command palette (cmdk), alongside the existing "Talk to Butlers" command, navigating directly to `/chat/{id}`.
+
+#### Scenario: Recent threads appear as palette commands
+
+- **WHEN** the command palette is opened
+- **THEN** recent Switchboard conversations each appear as a command labeled with the conversation's title (or "Untitled conversation")
+- **AND** selecting one navigates to `/chat/{conversationId}`
+- **AND** this recall list is registered once, mounted regardless of which chat posture (dock or popover) is currently showing
 
 ### Requirement: Conversation List Sidebar
 
@@ -278,6 +344,28 @@ TanStack Query hooks SHALL manage conversation data fetching and caching.
 - **WHEN** a new message is sent or a conversation is created
 - **THEN** the `["conversations", butlerName]` query is invalidated to refresh the list
 - **AND** the `["conversation-messages", butlerName, conversationId]` query is invalidated after `message_complete`
+
+### Requirement: Cross-Butler Conversation Lookup
+
+`GET /api/conversations/{conversation_id}` SHALL resolve a conversation's identity by id alone, independent of which butler owns it, for the `/chat/:conversationId` deep link and cmdk recall (bu-0ynlk.11).
+
+#### Scenario: Lookup succeeds for any owning butler
+
+- **WHEN** `GET /api/conversations/{id}` is called for a conversation owned by any butler's schema
+- **THEN** the response returns that conversation's `id`, `butler_name`, `title`, `status`, `created_at`, `updated_at`, `message_count`, and `routed_butler` (when set) as a raw JSON object, not paginated or wrapped in a `data` envelope — this is a single-resource lookup, not a list
+- **AND** no butler-scoped filter is required — `public.dashboard_conversations` is a shared, mount-boundary-safe table keyed by its UUID7 primary key
+
+#### Scenario: Unknown id 404s
+
+- **WHEN** `GET /api/conversations/{id}` is called for an id with no matching row
+- **THEN** the response is HTTP 404
+- **AND** this endpoint being a single-resource, non-aggregating lookup, the fleet-wide degraded-mode/cursor-pagination envelope conventions do not apply — an unreachable shared pool SHALL instead fail with a hard 503, consistent with other single-resource endpoints that have no partial/degraded rendering to offer
+
+#### Scenario: useConversationById hook
+
+- **WHEN** `useConversationById(conversationId)` is called
+- **THEN** it returns the lookup using `useQuery` with key `["conversations", "by-id", conversationId]`
+- **AND** `retry` is disabled — a 404 here is a legitimate terminal state, not a transient failure worth retrying
 
 ### Requirement: Session Linkage Navigation
 
