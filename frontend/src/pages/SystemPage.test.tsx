@@ -23,6 +23,7 @@ import {
   useHealthPosture,
   useInsightDeliveryState,
   useInstanceFacts,
+  useStoredFunctionFacts,
 } from "@/hooks/use-system";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -66,6 +67,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(),
   useInsightDeliveryState: vi.fn(),
   useDriftFacts: vi.fn(),
+  useStoredFunctionFacts: vi.fn(),
   useDeploymentFacts: vi.fn(),
   useSystemConditions: vi.fn(() => ({
     data: { data: { conditions: [], total: 0, conditions_available: true } },
@@ -227,6 +229,13 @@ function setAllLoading() {
     error: null,
   } as AnyMock);
 
+  vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    data: undefined,
+    isPending: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
   vi.mocked(useDeploymentFacts).mockReturnValue({
     data: undefined,
     isPending: true,
@@ -307,6 +316,23 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
         first_detected_at: null,
         escalated: false,
         drift_check_available: true,
+      },
+      meta: {},
+    },
+    isPending: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
+  vi.mocked(useStoredFunctionFacts).mockReturnValue({
+    data: {
+      data: {
+        checked_at: "2026-06-17T10:00:00Z",
+        is_drifted: false,
+        drifted: [],
+        not_deployed: [],
+        matched_count: 3,
+        stored_function_check_available: true,
       },
       meta: {},
     },
