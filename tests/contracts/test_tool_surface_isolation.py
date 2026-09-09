@@ -109,6 +109,7 @@ class TestEphemeralMcpConfig:
             "domain_events",
             "fleet_cases",
             "graph",
+            "continuity",
         } == {group for group in inventory.values() if group is not None}
         assert {
             "cancel_session",

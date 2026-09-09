@@ -272,7 +272,8 @@ def upgrade() -> None:
                 resolution_source   TEXT DEFAULT 'toml_fallback',
                 healing_fingerprint TEXT,
                 started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-                completed_at        TIMESTAMPTZ
+                completed_at        TIMESTAMPTZ,
+                continuation_of_session_id UUID
             )
         """)
 
