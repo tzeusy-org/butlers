@@ -27,6 +27,7 @@ tests/api/test_calendar_accounts_sources.py
 tests/api/test_calendar_conflict_radar.py
 tests/api/test_calendar_subscribe_import_ics.py
 tests/api/test_calendar_workspace_search.py
+tests/api/test_chat_stream.py
 tests/api/test_connector_summaries_hourly.py
 tests/api/test_conversations.py
 tests/api/test_daily_activity.py

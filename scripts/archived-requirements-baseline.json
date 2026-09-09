@@ -5861,6 +5861,12 @@
       "scenario": "Switchboard unreachable during submission",
       "digest": "7a799e734caa",
       "excerpt": "- **AND** a client retry that resubmits the same message content is deduplicated idempotently at the Switchboard inge..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "SSE stream for new conversation",
+      "digest": "3c47decb94a8",
+      "excerpt": "- **AND** an `event: token` with `data: {\"content\": \"...\"}` carries the full `conversation_reply` message text once i..."
     }
   ],
   "2026-07-10-finance-alerts-category-anomaly-scenario/finance-alerts/Automated Periodic Summaries": [
