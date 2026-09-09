@@ -29,7 +29,7 @@ The health butler provides measurement, medication, condition, symptom, meal, an
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the health butler
 - **THEN** it has access to: `measurement_log`, `measurement_history`, `measurement_latest`, `medication_add`, `medication_list`, `medication_log_dose`, `medication_history`, `condition_add`, `condition_list`, `condition_update`, `symptom_log`, `symptom_history`, `symptom_search`, `meal_log`, `meal_history`, `nutrition_summary`, `research_save`, `research_search`, `health_summary`, `trend_report`, and calendar tools
-- **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_history`, `breathing_rate_history`, `activity_summary`, `vo2_max_latest`
+- **AND** it SHALL additionally have access to: `health_sleep_latest`, `health_sleep_history`, `health_hr_history`, `health_hrv_history`, `health_spo2_history`, `health_breathing_rate_history`, `health_activity_summary`, `health_vo2_max_latest`
 
 ### Requirement: Health Data Conventions
 
