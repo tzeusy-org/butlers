@@ -397,6 +397,16 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Primary calendar updated
 - Failed to set primary: {}
 
+## `frontend/src/pages/ChatPage.tsx`
+
+- Start a new conversation
+- Recent
+- Conversation not found
+- This conversation may have been deleted, or the link is incorrect.
+- New conversation
+- Recent conversations
+- conversation history
+
 ## `frontend/src/pages/ChroniclesPage.tsx`
 
 - Regeneration produced no usable summary.
@@ -1997,6 +2007,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Dunbar tier {}
 - No relationship tier
 
+## `frontend/src/components/chat/ChatDock.tsx`
+
+- Talk to Butlers
+- Resize chat dock
+- New conversation
+- Open in full page
+- Collapse chat dock
+- Collapse
+- Recent conversations
+- conversation history
+
 ## `frontend/src/components/chat/ChatPanel.tsx`
 
 - conversation history
@@ -2059,6 +2080,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - View lineage
 - No messages yet. Start the conversation below.
 - View session
+- Copied
+- Copy link ({})
 
 ## `frontend/src/components/chat/ToolCallDetails.tsx`
 
@@ -2977,6 +3000,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Navigation
 - Open navigation menu
+- Chat
 
 ## `frontend/src/components/layout/Sidebar.tsx`
 
@@ -4201,4 +4225,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3291*
+*Total strings: 3309*

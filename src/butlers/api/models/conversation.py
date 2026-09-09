@@ -254,6 +254,30 @@ class ConversationMessage(BaseModel):
     )
 
 
+class ConversationDetail(BaseModel):
+    """Cross-butler conversation identity (``GET /api/conversations/{id}``, bu-0ynlk.11).
+
+    Deliberately narrower than ``ConversationSummary``: this lookup resolves a
+    conversation by id alone, regardless of owning ``butler_name`` (mount-boundary
+    safe — ``id`` is a globally unique UUID7 primary key on the shared
+    ``public.dashboard_conversations`` table). Callers (the ``/chat/:conversationId``
+    full-page route and cmdk recall) use the resolved ``butler_name`` to then fetch
+    the thread's messages through the existing per-butler
+    ``GET /api/butlers/{name}/conversations/{id}/messages`` route, so this response
+    does not duplicate message fetching or the ``latest_assistant_reply_at``
+    unread-badge aggregate (both butler-scoped concerns this endpoint does not compute).
+    """
+
+    id: UUID
+    butler_name: str
+    title: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+    routed_butler: str | None = None
+
+
 class ConversationSearchResult(ConversationSummary):
     """Conversation search result with matching message snippet."""
 

@@ -24,6 +24,11 @@ GET  /api/conversations/messages/search
     ts_rank ordering and highlight ranges — distinct from the per-butler,
     per-conversation substring search above.
 
+GET  /api/conversations/{conversation_id}
+    Cross-butler conversation identity lookup by id alone, regardless of
+    owning butler_name (bu-0ynlk.11 — the /chat/:conversationId full-page
+    route and cmdk recent-thread recall). 404 when the id is unknown.
+
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
 
@@ -141,6 +146,7 @@ from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_create,
     conversation_get,
+    conversation_get_by_id_any_butler,
     conversation_list,
     conversation_message_count_increment,
     conversation_search,
@@ -167,6 +173,7 @@ from butlers.api.models import (
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
+    ConversationDetail,
     ConversationMessage,
     ConversationSearchResult,
     ConversationStats,
@@ -1587,6 +1594,46 @@ async def search_messages(
         data=[MessageSearchResult(**item) for item in result["items"]],
         meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/conversations/{conversation_id}
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation_by_id(
+    conversation_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConversationDetail:
+    """Cross-butler conversation lookup by id (bu-0ynlk.11).
+
+    Resolves a conversation regardless of its owning ``butler_name`` — the
+    ``/chat/:conversationId`` full-page route and cmdk recent-thread recall
+    both address a conversation by id alone before they know which butler
+    owns it. ``id`` is a UUID7 primary key on the shared
+    ``public.dashboard_conversations`` table, so this lookup is
+    mount-boundary safe without a butler-scoped filter (see
+    ``conversation_get_by_id_any_butler``). Callers fetch the thread's
+    messages afterward through the existing per-butler
+    ``GET /api/butlers/{name}/conversations/{id}/messages`` route using the
+    ``butler_name`` this response resolves.
+
+    Returns 404 when the id is unknown.
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    conversation = await conversation_get_by_id_any_butler(pool, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found."},
+        )
+
+    return ConversationDetail(**conversation)
 
 
 # ---------------------------------------------------------------------------
