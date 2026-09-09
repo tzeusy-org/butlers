@@ -931,6 +931,7 @@ export {
   listDomainEventSubscriptions,
   listDomainEventDeliveries,
   listDomainEventReactions,
+  listDomainEventContracts,
   getHealingDispatchEvents,
 } from "./client.ts";
 
@@ -938,6 +939,7 @@ export type {
   DelegationLedgerParams,
   DomainEventSubscriptionsParams,
   DomainEventDeliveriesParams,
+  DomainEventContractsParams,
   HealingDispatchEventsParams,
   SystemConditionsParams,
 } from "./client.ts";
@@ -948,6 +950,7 @@ export type {
   ButlerHeartbeat,
   ConditionEntry,
   ConditionsFacts,
+  ContractEntry,
   DatabaseFacts,
   DelegationLedgerEntry,
   DeliveryEntry,

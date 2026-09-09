@@ -20,6 +20,22 @@
  * failure this panel now has to be able to show. Each row carries a
  * keyboard-reachable trace button that expands the append-only reaction
  * ledger for that event.
+ *
+ * bu-d3k9e adds each subscription's contract, joined client-side by
+ * `event_type` against GET /api/domain-events/contracts. `public.
+ * butler_subscriptions` has no column that pins a subscription to the
+ * schema_version it was created against -- `domain_event_contracts` is a
+ * single-row-per-event_type projection of whatever the publisher's git
+ * declaration says *right now*, not a version history -- so there is no
+ * literal "the subscriber's bound version drifted from the publisher's
+ * latest" signal to read. The drift marker below instead flags the one
+ * misalignment that same response genuinely proves: an active subscription
+ * whose butler is no longer in the contract's current `permitted_subscribers`
+ * (narrowed after the subscription was created), or whose event_type no
+ * longer has any declared contract at all. Both are real, actionable, and
+ * derivable from this one fetch; a subscriber's own record of which
+ * `schema_version` it last handled is not, without a schema change tracked
+ * separately.
  */
 
 import { useId, useState } from "react"
@@ -32,8 +48,9 @@ import {
   useDomainEventSubscriptions,
   useDomainEventDeliveries,
   useDomainEventReactions,
+  useDomainEventContracts,
 } from "@/hooks/use-domain-events"
-import type { SubscriptionEntry, DeliveryEntry, ReactionSummary } from "@/api/types"
+import type { SubscriptionEntry, DeliveryEntry, ReactionSummary, ContractEntry } from "@/api/types"
 
 const ROW_LIMIT = 5
 
@@ -113,7 +130,35 @@ function ReactionTrace({ eventId, traceId }: { eventId: string; traceId: string 
   )
 }
 
-function SubscriptionRow({ entry }: { entry: SubscriptionEntry }) {
+/**
+ * The one drift signal `GET /api/domain-events/contracts` can actually prove
+ * for a subscription: it names an event_type the publisher no longer
+ * declares, or names a butler the current contract no longer permits. `null`
+ * means aligned (or contracts failed to load, handled separately by the
+ * caller so a fetch outage never renders as a false "aligned").
+ */
+function contractDrift(
+  entry: SubscriptionEntry,
+  contract: ContractEntry | undefined,
+): { label: string; tone: Tone } | null {
+  if (!entry.active) return null
+  if (!contract) return { label: "no contract", tone: "red" }
+  if (!contract.permitted_subscribers.includes(entry.subscriber_butler)) {
+    return { label: "not permitted", tone: "red" }
+  }
+  return null
+}
+
+function SubscriptionRow({
+  entry,
+  contract,
+  contractsError,
+}: {
+  entry: SubscriptionEntry
+  contract: ContractEntry | undefined
+  contractsError: boolean
+}) {
+  const drift = contractsError ? null : contractDrift(entry, contract)
   return (
     <li
       className="py-1.5 border-b border-border/40 last:border-b-0"
@@ -122,10 +167,38 @@ function SubscriptionRow({ entry }: { entry: SubscriptionEntry }) {
       <p className="text-sm truncate" title={entry.event_type}>
         {entry.event_type}
       </p>
-      <div className="flex items-center gap-1.5 mt-0.5">
+      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
         <MonoLabel color={entry.active ? "dim" : "red"} className="text-[10px]">
           {entry.active ? "active" : "inactive"}
         </MonoLabel>
+        <span className="font-mono text-[10px] opacity-60" aria-hidden>
+          ·
+        </span>
+        {contractsError ? (
+          <span data-testid="subscription-contract-unavailable">
+            <MonoLabel color="dim" className="text-[10px] opacity-60">
+              contract unavailable
+            </MonoLabel>
+          </span>
+        ) : contract ? (
+          <span data-testid="subscription-contract-version">
+            <MonoLabel color="dim" className="text-[10px] opacity-60">
+              contract v{contract.schema_version}
+            </MonoLabel>
+          </span>
+        ) : null}
+        {drift ? (
+          <>
+            <span className="font-mono text-[10px] opacity-60" aria-hidden>
+              ·
+            </span>
+            <span data-testid="subscription-drift">
+              <MonoLabel color={drift.tone} className="text-[10px]">
+                {drift.label}
+              </MonoLabel>
+            </span>
+          </>
+        ) : null}
         <span className="font-mono text-[10px] opacity-60" aria-hidden>
           ·
         </span>
@@ -189,10 +262,14 @@ function SubscriptionList({
   entries,
   isLoading,
   isError,
+  contractsByEventType,
+  contractsError,
 }: {
   entries: SubscriptionEntry[]
   isLoading: boolean
   isError: boolean
+  contractsByEventType: Map<string, ContractEntry>
+  contractsError: boolean
 }) {
   if (isLoading) {
     return <MonoLabel color="dim">loading</MonoLabel>
@@ -206,7 +283,12 @@ function SubscriptionList({
   return (
     <ul data-testid="subscriptions-list">
       {entries.map((entry) => (
-        <SubscriptionRow key={entry.id} entry={entry} />
+        <SubscriptionRow
+          key={entry.id}
+          entry={entry}
+          contract={contractsByEventType.get(entry.event_type)}
+          contractsError={contractsError}
+        />
       ))}
     </ul>
   )
@@ -249,6 +331,14 @@ export function ButlerDomainEventsPanel({ butlerName }: ButlerDomainEventsPanelP
     subscriber_butler: butlerName,
     limit: ROW_LIMIT,
   })
+  // Every publisher's contracts, not just this butler's own subscriptions:
+  // a subscription's event_type may be owned by a different butler entirely.
+  const contracts = useDomainEventContracts()
+  const contractRows = contracts.isError ? undefined : contracts.data?.data
+  const contractsByEventType = new Map<string, ContractEntry>()
+  if (contractRows) {
+    for (const contract of contractRows) contractsByEventType.set(contract.event_type, contract)
+  }
 
   return (
     <Panel title="domain events" span={4} className="sm:col-span-2" testId="panel-domain-events">
@@ -261,6 +351,8 @@ export function ButlerDomainEventsPanel({ butlerName }: ButlerDomainEventsPanelP
             entries={subscriptions.data?.data ?? []}
             isLoading={subscriptions.isLoading}
             isError={subscriptions.isError}
+            contractsByEventType={contractsByEventType}
+            contractsError={contracts.isError}
           />
         </div>
         <div>

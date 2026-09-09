@@ -10067,6 +10067,28 @@ export interface ReactionEntry {
 }
 
 /**
+ * One materialized publisher-owned event contract from
+ * public.domain_event_contracts (bu-6jv4m.8) -- each butler's published copy
+ * of its own `roster/<butler>/domain_events.toml` declaration, refreshed at
+ * startup. Read surface only: the TOML is the source of truth.
+ */
+export interface ContractEntry {
+  event_type: string;
+  publisher: string;
+  schema_version: number;
+  summary: string;
+  /** "standard" | "minimized-derived" */
+  retention_policy: string;
+  /** "expected" | "optional" */
+  reaction_expectation: string;
+  reaction_contract: string;
+  permitted_subscribers: string[];
+  required_fields: string[];
+  optional_fields: string[];
+  materialized_at: string;
+}
+
+/**
  * One public.domain_event_deliveries row joined with its event -- a fan-out
  * delivery attempt to (or from) a butler on the domain-event bus (bu-317s5).
  */
