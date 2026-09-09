@@ -30,6 +30,7 @@ import { PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { cn } from "@/lib/utils";
 import type { ConversationSummary } from "@/api/types.ts";
 import { ApiError } from "@/api/index.ts";
@@ -84,10 +85,12 @@ export default function ChatPage() {
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
-  const { data: recentConversationsData } = useConversations(WIDGET_BUTLER);
+  const { data: recentConversationsData, isError: isRecentConversationsError } =
+    useConversations(WIDGET_BUTLER);
+  const recentConversationsResult = recentConversationsData?.data;
   const recentConversations: ConversationSummary[] = useMemo(
-    () => recentConversationsData?.data ?? [],
-    [recentConversationsData],
+    () => recentConversationsResult ?? [],
+    [recentConversationsResult],
   );
 
   const {
@@ -196,6 +199,13 @@ export default function ChatPage() {
             <PlusIcon />
           </Button>
         </div>
+        {isRecentConversationsError && (
+          <SourceDegradedNote
+            className="mb-2"
+            label="Recent conversations"
+            testId="chat-page-recent-degraded"
+          />
+        )}
         {recentConversations.map((conversation) => (
           <button
             key={conversation.id}

@@ -20,19 +20,37 @@ const RECENT_THREAD_LIMIT = 10;
 
 export function ChatRecallCommands() {
   const navigate = useNavigate();
-  const { data } = useConversations(WIDGET_BUTLER, { limit: RECENT_THREAD_LIMIT });
-  const conversations: ConversationSummary[] = useMemo(() => data?.data ?? [], [data]);
-
-  const commands = useMemo<PaletteCommand[]>(
-    () =>
-      conversations.map((conversation) => ({
-        id: `chat-recall:${conversation.id}`,
-        label: conversation.title ?? "Untitled conversation",
-        keywords: ["chat", "conversation", "recent", "recall"],
-        perform: () => navigate(`/chat/${conversation.id}`),
-      })),
-    [conversations, navigate],
+  const { data, isError, refetch } = useConversations(WIDGET_BUTLER, {
+    limit: RECENT_THREAD_LIMIT,
+  });
+  const conversationsResult = data?.data;
+  const conversations: ConversationSummary[] = useMemo(
+    () => conversationsResult ?? [],
+    [conversationsResult],
   );
+
+  const commands = useMemo<PaletteCommand[]>(() => {
+    // A failed fetch must not register zero commands identically to a
+    // genuinely empty recent-threads list — name the degraded source inline
+    // (query-boundary.tsx's SourceDegradedNote convention, adapted to the
+    // command-palette medium since this registrar has no render surface).
+    if (isError) {
+      return [
+        {
+          id: "chat-recall:unavailable",
+          label: "Recent conversations unavailable — retry",
+          keywords: ["chat", "conversation", "recent", "recall", "error"],
+          perform: () => void refetch(),
+        },
+      ];
+    }
+    return conversations.map((conversation) => ({
+      id: `chat-recall:${conversation.id}`,
+      label: conversation.title ?? "Untitled conversation",
+      keywords: ["chat", "conversation", "recent", "recall"],
+      perform: () => navigate(`/chat/${conversation.id}`),
+    }));
+  }, [conversations, isError, navigate, refetch]);
 
   useRegisterCommands(commands);
 

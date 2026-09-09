@@ -91,4 +91,22 @@ describe("ChatRecallCommands — recent-thread recall (bu-0ynlk.11)", () => {
 
     expect(registeredCommands).toMatchObject([{ label: "Untitled conversation" }]);
   });
+
+  it("registers a retry command instead of silently showing zero threads when the fetch errors", () => {
+    const refetchMock = vi.fn();
+    vi.mocked(useConversations).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: refetchMock,
+    } as unknown as ReturnType<typeof useConversations>);
+
+    renderRecall();
+
+    expect(registeredCommands).toMatchObject([
+      { id: "chat-recall:unavailable", label: "Recent conversations unavailable — retry" },
+    ]);
+
+    registeredCommands[0].perform();
+    expect(refetchMock).toHaveBeenCalled();
+  });
 });

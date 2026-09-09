@@ -170,6 +170,31 @@ describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
     expect(screen.getByText("Conversation not found")).toBeTruthy();
     expect(screen.queryByTestId("chat-page")).toBeNull();
   });
+
+  it("names the degraded recent-conversations source instead of rendering an empty sidebar", () => {
+    vi.mocked(useConversations).mockReturnValue({
+      data: undefined,
+      isError: true,
+    } as AnyMock);
+    vi.mocked(useConversationById).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    vi.mocked(useConversationMessages).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(usePricingMap).mockReturnValue({ data: null } as AnyMock);
+    mockTurn([]);
+
+    renderPage("/chat");
+
+    expect(screen.getByTestId("chat-page-recent-degraded")).toBeTruthy();
+  });
 });
 
 describe("ChatPage — #m-{id} anchor scroll (bu-0ynlk.11)", () => {
