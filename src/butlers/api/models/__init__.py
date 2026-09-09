@@ -192,6 +192,16 @@ class ProcessFacts(BaseModel):
     config_path: str
 
 
+class BlindSpotSignal(BaseModel):
+    """One declared expected signal not confirmed PRESENT as of evaluation time."""
+
+    signal_key: str
+    producer: str
+    last_observed_at: datetime | None = None
+    state: str
+    unmeasurable_reason: str | None = None
+
+
 class ButlerDetail(ButlerSummary):
     """Full butler detail with config, modules, skills, and schedule."""
 
@@ -202,6 +212,13 @@ class ButlerDetail(ButlerSummary):
     schedules: list[ScheduleEntry] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     process_facts: ProcessFacts | None = None
+    # Blind-spot projection — derived from the same
+    # butlers.core.expected_signals.evaluate_declared_signals() call the
+    # spawner's preamble injection uses, so this endpoint and the injected
+    # prompt can never disagree (bu-2jtfw.13).
+    blind_spots: list[BlindSpotSignal] = Field(default_factory=list)
+    blind_spots_evaluated_at: datetime | None = None
+    blind_spots_query_failed: bool = False
 
 
 class SessionSummary(BaseModel):
