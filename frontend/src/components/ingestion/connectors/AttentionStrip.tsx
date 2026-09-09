@@ -16,6 +16,13 @@
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Connector with auth issue"
  * Reference: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §"Attention strip"
+ *
+ * Not shared with pages/SettingsConsolePage.tsx's inline AttentionStrip
+ * (bu-q5mb1): that one renders a vertical bordered list of server-computed,
+ * bus-live AttentionItem rows with capping/expand-collapse — a different data
+ * shape (pre-derived items vs. raw ConnectorSummary[]) and a different layout
+ * with no overlapping render logic. Kept separate deliberately rather than
+ * forced into one parameterized primitive.
  */
 
 import { Link } from 'react-router'
