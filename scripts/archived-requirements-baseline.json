@@ -2047,6 +2047,12 @@
       "scenario": "Tool inventory",
       "digest": "59a299bef53a",
       "excerpt": "- **THEN** it SHALL have access to the existing tools (`measurement_log`, `measurement_history`, `measurement_latest`..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Tool inventory",
+      "digest": "27c8ab68c555",
+      "excerpt": "- **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_h..."
     }
   ],
   "2026-04-24-google-health-connector/connector-google-health/Owner Contact Info Registration": [
@@ -6247,6 +6253,14 @@
       "scenario": "A failed cancel attempt is never rendered as calm",
       "digest": "e393cd393e47",
       "excerpt": "- **THEN** the frontend surfaces the failure message inline in the thread and re-enables the Stop button for another ..."
+    }
+  ],
+  "2026-09-02-repair-openspec-strict-validation/butler-health/Health Butler Tool Surface": [
+    {
+      "kind": "clause",
+      "scenario": "Tool inventory",
+      "digest": "27c8ab68c555",
+      "excerpt": "- **AND** it SHALL additionally have access to: `sleep_latest`, `sleep_history`, `hr_history`, `hrv_history`, `spo2_h..."
     }
   ],
   "add-connectors-schema/ingestion-event-registry/Ingestion Event List (Paginated)": [
