@@ -13,6 +13,7 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
+from butlers.core.spawner_context import _compose_system_prompt
 
 pytestmark = pytest.mark.unit
 
@@ -178,3 +179,35 @@ class TestSpawnedPromptParityAcrossRuntimes:
             "section (roster/relationship/AGENTS.md 'Scope Filter' heading) — a Claude-runtime "
             "session would silently skip the scope='relationship' facts-table guard."
         )
+
+
+class TestBlindSpotPreambleComposition:
+    """bu-2jtfw.13 AC1: a blind-spot-free composition is byte-identical to today's."""
+
+    def test_none_blind_spot_preamble_leaves_composition_unchanged(self) -> None:
+        without_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+        )
+        with_none_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+            blind_spot_preamble=None,
+        )
+        assert without_param == with_none_param
+
+    def test_blind_spot_preamble_layers_between_context_and_routing(self) -> None:
+        composed = _compose_system_prompt(
+            "base",
+            None,
+            context_preamble="context",
+            blind_spot_preamble="blind-spot-block",
+            routing_instructions="routing",
+        )
+        assert composed == "base\n\ncontext\n\nblind-spot-block\n\nrouting"

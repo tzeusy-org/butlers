@@ -198,9 +198,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 """
 
 _BUTLER_TOML_WITH_MODULES = """\
@@ -212,9 +209,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 {modules_section}
 """
@@ -228,9 +222,6 @@ description = "{description}"
 [butler.db]
 name = "butlers"
 schema = "{name}"
-
-[runtime]
-type = "claude"
 
 [[butler.schedule]]
 name = "morning-check"

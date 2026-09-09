@@ -102,6 +102,7 @@ from butlers.core.spawner_context import (
     _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
     _memory_context_token_budget,
     _memory_module_enabled,
+    fetch_blind_spot_preamble,
     fetch_general_timezone_instruction,
     fetch_memory_context,
     fetch_routing_instructions,
@@ -1951,12 +1952,33 @@ class Spawner:
                     final_prompt,
                     token_budget=_memory_context_token_budget(self._config),
                 )
+
+            blind_spot_preamble_enabled = True
+            if self._runtime_config_accessor is not None:
+                try:
+                    blind_spot_preamble_enabled = (
+                        await self._runtime_config_accessor.get()
+                    ).blind_spot_preamble_enabled
+                except Exception:
+                    logger.warning(
+                        "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                        self._config.name,
+                        exc_info=True,
+                    )
+            blind_spot_preamble = await fetch_blind_spot_preamble(
+                self._pool,
+                self._config.name,
+                self._config,
+                enabled=blind_spot_preamble_enabled,
+            )
+
             system_prompt = _compose_system_prompt(
                 system_prompt,
                 memory_ctx,
                 general_timezone_instruction=general_timezone_instruction,
                 routing_instructions=routing_ctx,
                 context_preamble=context_preamble_ctx,
+                blind_spot_preamble=blind_spot_preamble,
             )
 
             # Build credential env.

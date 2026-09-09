@@ -41,6 +41,7 @@ class RuntimeConfig:
     max_concurrent: int = 3
     max_queued: int = 10
     tool_exposure_policy: str = "eager_filtered"
+    blind_spot_preamble_enabled: bool = True
     seeded_at: str | None = None
     updated_at: str | None = None
 
@@ -62,6 +63,13 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
         # evidence must preserve the conservative eager behavior, never opt a
         # butler into native discovery by omission.
         tool_exposure_policy = "eager_filtered"
+    try:
+        blind_spot_preamble_enabled = bool(row["blind_spot_preamble_enabled"])
+    except (KeyError, IndexError):
+        # Rolling startup can briefly project a pre-core_228 row shape. Default
+        # to the preamble being active — matching the migration's own column
+        # default — never silently opting a butler out by omission.
+        blind_spot_preamble_enabled = True
 
     return RuntimeConfig(
         butler_name=row["butler_name"],
@@ -70,6 +78,7 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
         max_concurrent=row["max_concurrent"],
         max_queued=row["max_queued"],
         tool_exposure_policy=tool_exposure_policy,
+        blind_spot_preamble_enabled=blind_spot_preamble_enabled,
         seeded_at=str(row["seeded_at"]) if row["seeded_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
     )
