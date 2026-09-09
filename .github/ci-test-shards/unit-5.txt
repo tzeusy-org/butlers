@@ -4,6 +4,7 @@ roster/relationship/tests/test_entity_tabs.py
 roster/travel/tests/test_migration_travel_002.py
 tests/api/test_api_health_facts_reads.py
 tests/api/test_api_qa.py
+tests/api/test_butler_detail_blind_spots.py
 tests/api/test_butler_friction_summary.py
 tests/api/test_conversations_message_search_unit.py
 tests/api/test_memory_retry_consolidation.py
@@ -12,9 +13,11 @@ tests/api/test_page_context_model.py
 tests/api/test_spend_runtime_attention.py
 tests/api/test_switchboard_fleet_cases.py
 tests/core/test_attachment_view.py
+tests/core/test_blind_spot_declarations.py
 tests/core/test_chronicler_day_close_refresh_tool.py
 tests/core/test_fleet_cases.py
 tests/core/test_sessions_friction.py
+tests/core/test_spawner_blind_spot_injection.py
 tests/core_tools/test_conversation_recall.py
 tests/core_tools/test_dashboard_answer_block.py
 tests/core_tools/test_dashboard_confirm_block.py
