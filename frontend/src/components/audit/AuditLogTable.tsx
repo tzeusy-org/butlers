@@ -35,8 +35,10 @@ import {
 //   - "u:<provider>"   -> /secrets?focus=u:<provider> (credential passport
 //                         deep-link focus routing, already used by the
 //                         secrets page for the same scheme)
-// "rule:<id>" (spend rules) has no per-rule deep link on /spend yet --
-// left as plain text; see PR follow-ups.
+//   - "rule:<id>"      -> /spend, carrying that id as ?rule= (SpendPage
+//                         scrolls to and flashes the matching routing-rule
+//                         row, resolved entirely from the rule list it
+//                         already fetches -- bu-lygbct)
 // ---------------------------------------------------------------------------
 
 function actorHref(actor: string): string {
@@ -59,6 +61,11 @@ function targetHref(target: string): string | null {
   }
   if (target.startsWith("u:")) {
     return `/secrets?focus=${encodeURIComponent(target)}`;
+  }
+  if (target.startsWith("rule:")) {
+    const id = target.slice("rule:".length);
+    if (!id) return null;
+    return `/spend?rule=${encodeURIComponent(id)}`;
   }
   return null;
 }
