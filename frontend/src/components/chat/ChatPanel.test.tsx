@@ -869,7 +869,7 @@ describe("ChatContent — Stop button", () => {
     await waitFor(() => {
       expect(screen.getByText("Cancelled by owner")).toBeDefined();
     });
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps the optimistic message visible through a confirmed Stop before conversation_created", async () => {
@@ -931,7 +931,7 @@ describe("ChatContent — Stop button", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -942,7 +942,7 @@ describe("ChatContent — Stop button", () => {
       });
     });
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
     expect(screen.queryByRole("link", { name: "finance" })).toBeNull();
 
@@ -975,7 +975,7 @@ describe("ChatContent — Stop button", () => {
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
     expect(screen.queryByText("Waiting for the in-flight ingress to settle.")).toBeNull();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("keeps an SSE-confirmed Stop visible when its POST later says already finished", async () => {
@@ -1006,7 +1006,7 @@ describe("ChatContent — Stop button", () => {
     });
 
     expect(screen.getByText("Cancelled by owner")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("This turn was stopped.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("This turn was stopped.");
   });
 
   it("ignores a late Stop result after the owner starts a different turn", async () => {
@@ -1021,7 +1021,7 @@ describe("ChatContent — Stop button", () => {
 
     fireEvent.click(screen.getByTestId("chat-stop-button"));
     expect((screen.getByTestId("chat-stop-button") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("status").textContent).toBe("Stopping this turn.");
+    expect(screen.getByTestId("chat-stop-status").textContent).toBe("Stopping this turn.");
     fireEvent.click(screen.getByText("New"));
 
     scriptedEvents = [

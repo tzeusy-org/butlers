@@ -117,6 +117,16 @@ export function ShortcutRegistryProvider({ children }: { children: ReactNode }) 
   const bindings = useMemo(() => Array.from(scopes.values()).flat(), [scopes]);
   const registryValue = useMemo(() => ({ register, unregister }), [register, unregister]);
 
+  // Mirrored into a module-scope snapshot (same "small store, no context"
+  // tradeoff as `window.__pendingGNav` and `lib/shell-announcer.ts`) so the
+  // app-wide `use-keyboard-shortcuts.ts` listener — which mounts once at the
+  // shell root, outside this provider's subtree — can check whether the
+  // currently-routed page has already claimed a bare key (e.g. Calendar's
+  // "c" for Create event) before treating it as a global shortcut.
+  useEffect(() => {
+    activeBindingsSnapshot = bindings;
+  }, [bindings]);
+
   return (
     <ShortcutRegistryContext.Provider value={registryValue}>
       <ShortcutHintEntriesContext.Provider value={bindings}>
@@ -176,6 +186,19 @@ function matchesBinding(binding: ShortcutBinding, e: KeyboardEvent): boolean {
     !!e.metaKey === !!binding.metaKey &&
     !!e.shiftKey === !!binding.shiftKey &&
     !!e.altKey === !!binding.altKey
+  );
+}
+
+let activeBindingsSnapshot: ShortcutBinding[] = [];
+
+/**
+ * Whether the currently-mounted page has registered a bare (no-modifier) key
+ * binding for `key` — e.g. Calendar's "c" for Create event. A global
+ * shortcut that would otherwise claim the same bare key should defer to it.
+ */
+export function isBareKeyClaimedByPage(key: string): boolean {
+  return activeBindingsSnapshot.some(
+    (b) => b.key === key && !b.ctrlKey && !b.metaKey && !b.shiftKey && !b.altKey,
   );
 }
 
