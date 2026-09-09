@@ -104,7 +104,7 @@ export default function Shell({ header, children, chatDock }: ShellProps) {
           shadow class (the dashboard design language reserves shadows for
           elevated overlays; the dock pushes, it does not float). */}
       {chatDock && (
-        // `<aside>` is implicitly role="complementary" — no explicit role attribute needed.
+        // aside is implicitly role=complementary — no explicit role attribute needed.
         <aside aria-label="Chat" className="flex flex-col border-l border-border">
           {chatDock}
         </aside>
