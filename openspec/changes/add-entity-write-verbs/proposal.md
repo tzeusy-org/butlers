@@ -19,9 +19,12 @@ path by accident.
 - Add owner-gated `POST` endpoints for notes, interactions, and gifts on the
   entity tab surface, writing the same `facts` rows the matching GET endpoints
   already read.
-- Add `reach_out_draft` as a temporal, append-only relationship fact with a
-  `GET`/`POST` pair, carrying `status: 'draft'` and no delivery path of any
-  kind.
+- Add an inert reach-out draft as a temporal, append-only relationship fact
+  with a `GET`/`POST` pair, carrying `status: 'draft'` and no delivery path
+  of any kind. (Retired in bu-2jtfw.11 — replaced by the prepared-action
+  mechanism on the approval spine; see
+  `openspec/specs/dashboard-relationship/spec.md` and
+  `src/butlers/modules/approvals/park.py`.)
 - Surface all four verbs as one entity verb rail rendered on both entity detail
   and the Plex dossier, with honest pending, duplicate, and rejection states.
 - Extend the Clause 12a owner-gate endpoint list to name the four new mutations.

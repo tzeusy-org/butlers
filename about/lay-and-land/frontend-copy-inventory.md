@@ -476,8 +476,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Couldn&rsquo;t load activity. Retry.
 - Retry
 - Gifts
-- Drafts
-- not sent
 - Loans
 - Message threads
 - Facts
@@ -3385,8 +3383,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Saving...
 - Save interaction
 - Save gift idea
-- Save draft
-- Saved as a draft only. Nothing is sent.
 - Save note
 - Record something
 - Log an interaction
@@ -3396,10 +3392,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Capture a gift idea
 - Gift idea
 - Occasion
-- Draft a reach-out
-- Draft message
-- What do you want to say?
-- Channel
 - Add a note
 - Note
 - Something worth remembering
@@ -4209,4 +4201,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3299*
+*Total strings: 3291*

@@ -1,7 +1,7 @@
 ## 1. Write path in the canonical store
 
 - [x] 1.1 Add `gift_add_for_entity` and `note_create_for_entity` entity-keyed writers with duplicate detection, `scope = 'relationship'`, and `entity_id` set.
-- [x] 1.2 Add the `reach_out` tool module writing an inert temporal `reach_out_draft` fact with `status: 'draft'` and no delivery path.
+- [x] 1.2 Add the `reach_out` tool module writing an inert temporal reach-out-draft fact with `status: 'draft'` and no delivery path. (Retired in bu-2jtfw.11 — replaced by the prepared-action mechanism.)
 - [x] 1.3 Widen `note_list` and `gift_list` subject matching so contact-keyed reads still see entity-keyed writes.
 
 ## 2. API surface
