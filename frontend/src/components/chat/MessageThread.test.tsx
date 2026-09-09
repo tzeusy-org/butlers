@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
 
 import { MessageThread, type StreamingState } from "./MessageThread.tsx";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import type { Message } from "@/api/types.ts";
+
+vi.mock("@/hooks/use-prefers-reduced-motion", () => ({
+  usePrefersReducedMotion: vi.fn(() => false),
+}));
+
+beforeEach(() => {
+  vi.mocked(usePrefersReducedMotion).mockReturnValue(false);
+});
 
 afterEach(() => cleanup());
 
@@ -46,7 +55,7 @@ describe("MessageThread — pending conversation activity", () => {
       />,
     );
 
-    expect(screen.getByRole("status").textContent).toBe("Sending to Switchboard.");
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe("Sending to Switchboard.");
     expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
   });
 
@@ -69,8 +78,7 @@ describe("MessageThread — pending conversation activity", () => {
       />,
     );
 
-    expect(screen.getAllByRole("status")).toHaveLength(1);
-    expect(screen.getByRole("status").textContent).toBe(
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe(
       "Routed to finance; waiting for a reply.",
     );
     const dots = container.querySelectorAll("span.animate-bounce");
@@ -111,7 +119,6 @@ describe("MessageThread — pending conversation activity", () => {
       />,
     );
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
 
     rerender(
       <MessageThread
@@ -122,7 +129,6 @@ describe("MessageThread — pending conversation activity", () => {
       />,
     );
     expect(screen.queryByTestId("chat-activity-status")).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("smoothly scrolls when live conversation activity changes", () => {
@@ -149,6 +155,152 @@ describe("MessageThread — pending conversation activity", () => {
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth" });
     } finally {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it("scrolls instantly (not smoothly) under prefers-reduced-motion", () => {
+    vi.mocked(usePrefersReducedMotion).mockReturnValue(true);
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <MessageThread
+          messages={[]}
+          streaming={{
+            conversationId: "conversation-1",
+            messageId: "message-1",
+            content: "",
+            pending: true,
+            interrupted: false,
+          }}
+          pricingMap={null}
+          conversationId="conversation-1"
+        />,
+      );
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto" });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+});
+
+describe("MessageThread — sr-only live announcer region (bu-0ynlk.13)", () => {
+  function streamAt(content: string, overrides: Partial<StreamingState> = {}): StreamingState {
+    return {
+      conversationId: "conversation-1",
+      messageId: "message-1",
+      content,
+      pending: false,
+      interrupted: false,
+      ...overrides,
+    };
+  }
+
+  it("renders a polite, non-atomic sr-only status region alongside the message list", () => {
+    render(
+      <MessageThread
+        messages={[]}
+        streaming={streamAt("")}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    const region = screen.getByTestId("chat-reply-live-region");
+    expect(region.getAttribute("role")).toBe("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.getAttribute("aria-atomic")).toBe("false");
+    expect(region.className).toContain("sr-only");
+  });
+
+  it("batches a streamed reply into sentence spans — not one child per token", () => {
+    const { rerender } = render(
+      <MessageThread
+        messages={[]}
+        streaming={streamAt("")}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    const fullText = "This is the first sentence. This is the second sentence.";
+    let acc = "";
+    for (const token of fullText.split(" ")) {
+      acc = acc ? `${acc} ${token}` : token;
+      rerender(
+        <MessageThread
+          messages={[]}
+          streaming={streamAt(acc)}
+          pricingMap={null}
+          conversationId="conversation-1"
+        />,
+      );
+    }
+    // One more whitespace token — the trailing sentence only crosses its
+    // boundary once whitespace follows it, same as the first sentence did.
+    rerender(
+      <MessageThread
+        messages={[]}
+        streaming={streamAt(`${fullText} `)}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+
+    const region = screen.getByTestId("chat-reply-live-region");
+    expect(region.children).toHaveLength(2);
+    expect(region.textContent).toBe(
+      "This is the first sentence.This is the second sentence.",
+    );
+  });
+
+  it("appends a 'Reply complete' span once streaming ends, only when the reply ran long", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <MessageThread
+          messages={[]}
+          streaming={streamAt("Slow reply.", { pending: false })}
+          pricingMap={null}
+          conversationId="conversation-1"
+        />,
+      );
+
+      vi.advanceTimersByTime(3500);
+
+      const committedMessage: Message = {
+        id: "message-1",
+        conversation_id: "conversation-1",
+        role: "assistant",
+        content: "Slow reply.",
+        tool_calls: null,
+        error: null,
+        model: null,
+        input_tokens: null,
+        output_tokens: null,
+        duration_ms: null,
+        session_id: null,
+        request_id: null,
+        created_at: "2026-09-05T00:00:00Z",
+      };
+      act(() => {
+        rerender(
+          <MessageThread
+            messages={[committedMessage]}
+            streaming={null}
+            pricingMap={null}
+            conversationId="conversation-1"
+          />,
+        );
+      });
+
+      const region = screen.getByTestId("chat-reply-live-region");
+      expect(region.textContent).toContain("Reply complete");
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
