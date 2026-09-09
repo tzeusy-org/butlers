@@ -7,6 +7,7 @@ from typing import Any
 
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._chronicler import register_chronicler_tools
+from butlers.core_tools._continuity import register_continuity_tools
 from butlers.core_tools._conversation_recall import register_conversation_recall_tool
 from butlers.core_tools._conversation_reply import register_conversation_reply_tool
 from butlers.core_tools._delegation import register_delegation_tools
@@ -65,6 +66,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
     register_chronicler_tools(ctx, mcp, _core_tool)
+    register_continuity_tools(ctx, mcp, _core_tool)
     register_scheduling_tools(ctx, mcp, _core_tool)
     register_session_tools(ctx, mcp, _core_tool)
     register_notification_tools(ctx, mcp, _core_tool)
