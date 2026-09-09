@@ -164,11 +164,17 @@ or session context was lost (see Execution discipline §3).
    `docs/redesigns/YYYY-MM-DD-jarvis-pursuit.md` (north star, tier board + movement, themes,
    ranked moves) and `-data.json` (full per-agent structured output; document the
    `jq '.audits[] | select(.page=="<key>")'` access pattern in the md).
-2. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
+2. **Index-append (same commit as the dossier pair)** — append one row for the new run to the
+   "Pursuit / audit dossiers" table in `docs/redesigns/README.md` (newest run first, numbered
+   sequentially from the prior top row): `| N (YYYY-MM-DD) | [YYYY-MM-DD-jarvis-pursuit.md](YYYY-MM-DD-jarvis-pursuit.md) |`,
+   with a trailing `— <lens>` note only for a non-standard-lens run (cf. the 2026-09-02
+   dashboard-chat and 2026-07-28 talk-to-butlers rows). Do this for every dated dossier pair
+   this skill writes, so the index cannot rot again.
+3. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
    version of the dossier.
-3. **Gated beads epic** — see protocol below; every child ships packet-complete (structured
+4. **Gated beads epic** — see protocol below; every child ships packet-complete (structured
    `design` + `acceptance_criteria`) or the fleet will skip it after release.
-4. **Memory** — write/update a `reference` memory with the artifact URL, dossier path, epic id,
+5. **Memory** — write/update a `reference` memory with the artifact URL, dossier path, epic id,
    and gate id, linking `[[reference-jarvis-frontend-audit-2026-07]]` and successors.
 
 ## Bead-filing protocol (CRITICAL — fleet-trigger hazard)

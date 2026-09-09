@@ -1,5 +1,12 @@
 # entity redesign — integration brief v3
 
+> **Status: Shipped -> `openspec/changes/archive/2026-06-12-entity-v3-lifecycle-and-depth`.**
+> All 9 task groups in that change's `tasks.md` are checked off against real PRs/beads
+> (schema+lifecycle `bu-mxxjy`/`bu-4mh9a`, merge-review backend `bu-9wcxm`, lookup tool
+> `bu-vqy9j`, read endpoints `bu-tzvm6`/`bu-bjvny`, guardrails `bu-odlcq`/`bu-awv4f`, frontend
+> rewire `bu-ekad9`, MCP merge tools `bu-csvop`). §0 (design intent) remains the cited source
+> of intent for the shipped lifecycle/merge-review/lookup surfaces.
+
 **Date:** 2026-06-12
 **Version:** v3
 **Bundle path:** `pr/overview/entity-redesign/`
