@@ -1808,6 +1808,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Week ahead schedule
 - Upcoming checklist
 - Trips roster
+- Trip detail
 
 ## `frontend/src/components/butler-detail/GoogleHealthStatusCard.tsx`
 
@@ -4207,4 +4208,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3297*
+*Total strings: 3298*

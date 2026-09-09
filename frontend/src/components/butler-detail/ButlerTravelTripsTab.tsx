@@ -455,7 +455,7 @@ interface TripRosterProps {
 function TripRoster({ onTripClick }: TripRosterProps) {
   const [page, setPage] = useState(0);
 
-  const { data: tripsResp, isLoading } = useTravelTrips({
+  const { data: tripsResp, isLoading, refetch } = useTravelTrips({
     offset: page * TRIPS_PAGE_SIZE,
     limit: TRIPS_PAGE_SIZE,
   });
@@ -463,11 +463,25 @@ function TripRoster({ onTripClick }: TripRosterProps) {
   const trips = tripsResp?.data ?? [];
   const total = tripsResp?.meta?.total ?? 0;
   const hasMore = tripsResp?.meta?.has_more ?? false;
+  // Trip ids excluded from `trips` because their row could not be normalized —
+  // disclose rather than let the roster read as a complete, truthful list
+  // (mirrors the KPI strip's unreadable_trip_ids treatment, bu-2jtfw.1).
+  const unreadableTripIds = tripsResp?.meta?.unreadable_trip_ids ?? [];
   const totalPages = Math.max(1, Math.ceil(total / TRIPS_PAGE_SIZE));
   const currentPage = page + 1;
 
   return (
     <Panel title="Trips roster" sub="all trips" span={4}>
+      {unreadableTripIds.length > 0 && (
+        <div className="pb-3">
+          <SourceDegradedNote
+            label="Trips roster"
+            detail={`partial: ${unreadableTripIds.length} trip${unreadableTripIds.length === 1 ? "" : "s"} excluded (unreadable)`}
+            onRetry={() => void refetch()}
+            testId="trip-roster-partial-degraded"
+          />
+        </div>
+      )}
       {isLoading ? (
         <div className="space-y-2" data-testid="trip-roster-loading">
           {Array.from({ length: 3 }, (_, i) => (
@@ -544,8 +558,30 @@ interface TripDetailDrawerProps {
   onClose: () => void;
 }
 
+/** Builds the disclosure detail line for the drawer's excluded-rows note. */
+function buildUnreadableDetail(counts: { label: string; count: number }[]): string {
+  const parts = counts
+    .filter((c) => c.count > 0)
+    .map((c) => `${c.count} ${c.label}${c.count === 1 ? "" : "s"}`);
+  return `partial: ${parts.join(", ")} excluded (unreadable)`;
+}
+
 function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
-  const { data: summary, isLoading } = useTravelTripSummary(tripId);
+  const { data: summary, isLoading, refetch } = useTravelTripSummary(tripId);
+
+  // Sub-collection ids excluded from the summary because their row could not
+  // be normalized — never render the drawer's lists as truthfully complete
+  // over a real partial failure (mirrors /upcoming's unreadable_trip_ids,
+  // bu-2jtfw.1 / bu-kvaxq).
+  const unreadableLegIds = summary?.unreadable_leg_ids ?? [];
+  const unreadableAccommodationIds = summary?.unreadable_accommodation_ids ?? [];
+  const unreadableReservationIds = summary?.unreadable_reservation_ids ?? [];
+  const unreadableDocumentIds = summary?.unreadable_document_ids ?? [];
+  const unreadableCount =
+    unreadableLegIds.length +
+    unreadableAccommodationIds.length +
+    unreadableReservationIds.length +
+    unreadableDocumentIds.length;
 
   return (
     <Sheet open={tripId != null} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -585,6 +621,19 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
             </p>
           ) : (
             <>
+              {unreadableCount > 0 && (
+                <SourceDegradedNote
+                  label="Trip detail"
+                  detail={buildUnreadableDetail([
+                    { label: "leg", count: unreadableLegIds.length },
+                    { label: "accommodation", count: unreadableAccommodationIds.length },
+                    { label: "reservation", count: unreadableReservationIds.length },
+                    { label: "document", count: unreadableDocumentIds.length },
+                  ])}
+                  onRetry={() => void refetch()}
+                  testId="trip-drawer-partial-degraded"
+                />
+              )}
               {/* Trip meta */}
               <div data-testid="drawer-trip-meta">
                 <p className="text-xs text-muted-foreground mb-1">Destination</p>

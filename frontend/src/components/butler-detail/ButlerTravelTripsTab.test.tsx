@@ -518,6 +518,55 @@ describe("ButlerTravelTripsTab — trip roster", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: Trip roster — degraded state (bu-aom4bg)
+//
+// meta.unreadable_trip_ids discloses trips excluded from the roster because
+// their row could not be normalized -- never a silent short list.
+// ---------------------------------------------------------------------------
+
+describe("ButlerTravelTripsTab — trip roster degraded state", () => {
+  afterEach(() => cleanup());
+
+  it("does not show the partial-degraded note when unreadable_trip_ids is empty", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    renderTab();
+    expect(screen.queryByTestId("trip-roster-partial-degraded")).toBeNull();
+  });
+
+  it("discloses excluded trips when meta.unreadable_trip_ids is non-empty", () => {
+    vi.resetAllMocks();
+    vi.mocked(useUpcomingTravel).mockReturnValue(
+      { data: UPCOMING_DATA, isLoading: false } as unknown as ReturnType<typeof useUpcomingTravel>,
+    );
+    vi.mocked(useTravelTrips).mockReturnValue(
+      {
+        data: {
+          ...TRIPS_PAGE,
+          meta: { ...TRIPS_PAGE.meta, unreadable_trip_ids: ["trip-corrupt"] },
+        },
+        isLoading: false,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useTravelTrips>,
+    );
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      { data: TRIP_SUMMARY, isLoading: false } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+    vi.mocked(useExpiringDocuments).mockReturnValue(
+      { data: { documents: [] }, isLoading: false } as unknown as ReturnType<typeof useExpiringDocuments>,
+    );
+
+    renderTab();
+
+    const note = screen.getByTestId("trip-roster-partial-degraded");
+    expect(note.textContent).toContain("1");
+    expect(note.textContent).toContain("excluded");
+    // The readable trips still render normally alongside the disclosure.
+    expect(screen.getAllByTestId("trip-roster-row").length).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: Trip detail drawer — open/close
 // ---------------------------------------------------------------------------
 
@@ -557,6 +606,40 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     expect(screen.getByTestId("trip-detail-drawer")).toBeDefined();
     fireEvent.click(screen.getByTestId("trip-drawer-close"));
     expect(screen.queryByTestId("trip-detail-drawer")).toBeNull();
+  });
+
+  it("does not show the partial-degraded note when no unreadable_*_ids are present", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+    expect(screen.queryByTestId("trip-drawer-partial-degraded")).toBeNull();
+  });
+
+  it("discloses excluded sub-collection rows when unreadable_*_ids are non-empty", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      {
+        data: {
+          ...TRIP_SUMMARY,
+          unreadable_leg_ids: ["leg-corrupt"],
+          unreadable_accommodation_ids: [],
+          unreadable_reservation_ids: [],
+          unreadable_document_ids: ["doc-corrupt-1", "doc-corrupt-2"],
+        },
+        isLoading: false,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+
+    const note = screen.getByTestId("trip-drawer-partial-degraded");
+    expect(note.textContent).toContain("1 leg");
+    expect(note.textContent).toContain("2 documents");
+    expect(note.textContent).toContain("excluded");
+    // The readable legs/accommodations still render normally alongside the disclosure.
+    expect(screen.getAllByTestId("timeline-entry").length).toBeGreaterThanOrEqual(1);
   });
 });
 

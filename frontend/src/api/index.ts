@@ -1130,7 +1130,9 @@ export type {
   TravelTimelineEntry,
   TravelTrip,
   TravelTripSummary,
+  TravelTripsMeta,
   TravelTripsParams,
+  TravelTripsResponse,
   TravelUpcomingModel,
   TravelUpcomingTrip,
 } from "./types.ts";
