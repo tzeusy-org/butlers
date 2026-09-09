@@ -250,7 +250,12 @@ class IngestPayloadV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     raw: dict[str, Any] | None = None
-    normalized_text: NonEmptyStr
+    # Not a NonEmptyStr: a captioned-media message's normalized_text is the
+    # caption, which is legitimately "" when the sender attached media with no
+    # caption. The connector must never synthesize a placeholder like "Photo"
+    # to satisfy a non-empty constraint (bu-2jtfw.7) — the real content lives
+    # in `attachments`, not in this field.
+    normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
     attachments: tuple[IngestAttachment, ...] | None = None
 
 
