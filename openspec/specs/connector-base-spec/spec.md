@@ -121,11 +121,12 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 
 #### Scenario: Payload with tiered content (IngestPayloadV1)
 - **WHEN** `payload` is populated
-- **THEN** `raw` is the full provider payload dict (required non-None for Tier 1 "full", must be None for Tier 2 "metadata"), `normalized_text` is a non-empty string (the best available human-readable text), and `attachments` is an optional tuple of `IngestAttachment` records
+- **THEN** `raw` is the full provider payload dict (required non-None for Tier 1 "full", must be None for Tier 2 "metadata"), `normalized_text` is the best available human-readable text and is non-empty whenever the message carries text, a caption, or any other author-supplied text content, and `attachments` is an optional tuple of `IngestAttachment` records
+- **AND** `normalized_text` MAY be the empty string only for a captionless media message, per the Media Normalization Obligation below
 
 #### Scenario: Attachment metadata (IngestAttachment)
 - **WHEN** an attachment is included
-- **THEN** it contains: `media_type` (MIME type string), `storage_ref` (storage reference for lazy fetch), `size_bytes` (uncompressed size), `filename` (optional), `width` and `height` (optional, for images)
+- **THEN** it contains: `media_type` (MIME type string), `storage_ref` (storage reference for lazy fetch, `None` when materialization failed or has not yet occurred), `size_bytes` (uncompressed size; `0` when `storage_ref` is `None`, never `None` itself — the field is non-nullable), `filename` (optional), `width` and `height` (optional, for images)
 
 #### Scenario: Control directives (IngestControlV1)
 - **WHEN** `control` is populated
@@ -141,6 +142,25 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 - **WHEN** a message is ingested with `source.channel = "dashboard"`
 - **THEN** the message SHALL bypass discretion evaluation entirely (operator messages are always intentional)
 - **AND** the message proceeds directly to Switchboard classification/routing
+
+### Requirement: Media Normalization Obligation
+
+A connector that receives a message carrying non-text content (an image, document, or other media attachment, as opposed to plain text) MUST materialize an `IngestAttachment` for that content and MUST NOT synthesize a media-type descriptor (e.g. `"Photo"`, `"[Photo]"`, `"[Document]"`) into `normalized_text` as a substitute for the real content. `normalized_text` for such a message is the message's caption verbatim, or the empty string when there is no caption — never a fabricated placeholder that would let an uncaptioned attachment masquerade as text content a downstream consumer already understood.
+
+#### Scenario: Non-text content is materialized, not described
+- **WHEN** a connector receives a message whose content is non-text (e.g. a Telegram photo or document)
+- **THEN** the connector fetches the media bytes and stores them via BlobStore, producing an `IngestAttachment` with a real `storage_ref` on success
+- **AND** `payload.normalized_text` is set to the message's caption (or `""` when the message has no caption) — never a synthesized descriptor string
+
+#### Scenario: Materialization failure preserves the message
+- **WHEN** a connector's attempt to fetch or store the media bytes fails (source API error, expired reference, blob store unavailable)
+- **THEN** the connector still submits the envelope with `payload.normalized_text` set to the caption (or `""`), and an `IngestAttachment` whose `storage_ref` is `None` and `size_bytes` is `0`
+- **AND** the connector records the failure in `connectors.filtered_events` with `status='error'` for operator visibility
+- **AND** the message is NOT dropped solely because attachment materialization failed — a fetch failure degrades the attachment, it does not withhold the message
+
+#### Scenario: Idempotent materialization across replay
+- **WHEN** the same source message is processed more than once (retry, at-least-once redelivery, or an operator-triggered replay)
+- **THEN** the connector puts at most one blob per media id — a prior successful materialization for the same `(endpoint_identity, external_message_id, media_id)` is detected and its existing `storage_ref` is reused rather than re-fetching and re-storing the bytes
 
 ### Requirement: Deduplication Strategy
 The Switchboard SHALL compute a stable deduplication key for each ingest submission using a priority-based strategy. Concurrency control SHALL be enforced to prevent race conditions on concurrent submissions with the same key.
