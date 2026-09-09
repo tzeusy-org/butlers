@@ -35,7 +35,7 @@ Live-fetched official documentation (<https://docs.github.com/en/rest/activity/e
   request-based rate-limit budget as a full poll.
 - A fine-grained PAT can be scoped to the `Events` user permission (read) alone, sufficient
   to read private events for the authenticated user.
-- `page` / `per_page` (max 100) paginate; default `per_page` for this endpoint is 15.
+- `page` / `per_page` (max 100) paginate; default `per_page` for this endpoint is 30.
 
 The nearest implemented precedents are `connector-steam` (PAT-style credential, per-account
 polling, state-diff-based event detection, multi-account registry with a companion entity)
