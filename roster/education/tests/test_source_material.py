@@ -105,6 +105,40 @@ async def test_list_source_returns_source_ids_and_preserves_metadata() -> None:
     state_list.assert_awaited_once_with(pool, prefix=SOURCE_KEY_PREFIX, keys_only=False)
 
 
+async def test_get_many_resolves_present_ids_and_omits_missing_ones() -> None:
+    """A batch lookup returns hits only — a missing id is a miss, not an error."""
+    from butlers.tools.education.source_material import source_material_get_many
+
+    present_id = "6f31cb42-09f9-4ca6-8e24-3dc2c1d0c2fd"
+    pool = AsyncMock()
+
+    async def _state_get(_pool: Any, key: str) -> dict[str, Any] | None:
+        if key == f"{SOURCE_KEY_PREFIX}{present_id}":
+            return _source_value()
+        return None
+
+    with patch(
+        "butlers.tools.education.source_material.state_get",
+        AsyncMock(side_effect=_state_get),
+    ):
+        result = await source_material_get_many(pool, [present_id, "missing-id"])
+
+    assert result == [{"source_id": present_id, **_source_value()}]
+
+
+async def test_get_many_with_no_ids_returns_empty_without_querying() -> None:
+    from butlers.tools.education.source_material import source_material_get_many
+
+    pool = AsyncMock()
+    with patch(
+        "butlers.tools.education.source_material.state_get", new_callable=AsyncMock
+    ) as state_get:
+        result = await source_material_get_many(pool, [])
+
+    assert result == []
+    state_get.assert_not_awaited()
+
+
 async def test_remove_source_deletes_only_registry_key_and_leaves_dangling_refs() -> None:
     from butlers.tools.education.source_material import source_material_remove
 

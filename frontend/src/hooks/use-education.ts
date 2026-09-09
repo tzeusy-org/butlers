@@ -55,18 +55,23 @@ export function useMindMap(mindMapId: string | null) {
 }
 
 /**
- * List registered source material.
+ * Resolve specific registered sources by ID.
  *
- * Backs the node detail panel's source-annotation lookup. The registry is
- * small and changes only when the owner registers or removes a source, so it
- * rides the slow cadence. Consumers MUST distinguish `isLoading`/`isError`
- * from a resolved miss: an unreachable registry says nothing about whether a
- * `source_id` is still registered.
+ * Backs the node detail panel's source-annotation lookup: rather than
+ * fetching the entire registry, this resolves only the `source_id`s present
+ * on the node currently open. `sourceIds` is deduped and sorted before it
+ * reaches the query key, so the cache is keyed on content, not ref order.
+ * The query is disabled (no request) when there is nothing to resolve.
+ * Consumers MUST distinguish `isLoading`/`isError` from a resolved miss: an
+ * unreachable registry says nothing about whether a `source_id` is still
+ * registered.
  */
-export function useEducationSources() {
+export function useEducationSources(sourceIds: string[]) {
+  const ids = Array.from(new Set(sourceIds)).sort();
   return useQuery({
-    queryKey: ["education", "sources"],
-    queryFn: getEducationSources,
+    queryKey: ["education", "sources", ids],
+    queryFn: () => getEducationSources(ids),
+    enabled: ids.length > 0,
     refetchInterval: EDUCATION_POLL_SLOW_MS,
   });
 }

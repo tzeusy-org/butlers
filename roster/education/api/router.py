@@ -33,7 +33,7 @@ from butlers.tools.education.analytics import (
 from butlers.tools.education.mastery import mastery_detect_struggles, mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
-from butlers.tools.education.source_material import source_material_list
+from butlers.tools.education.source_material import source_material_get_many
 from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
 from butlers.tools.education.teaching_flows import teaching_flow_list
 
@@ -427,18 +427,34 @@ async def get_cross_topic_analytics(
 
 @router.get("/sources", response_model=list[SourceMaterialResponse])
 async def list_source_material(
+    source_ids: str = Query(
+        ...,
+        min_length=1,
+        description=(
+            "Comma-separated source_id values to resolve. An ID absent from "
+            "the registry (its source was removed) is simply left out of the "
+            "response rather than raised as an error."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> list[SourceMaterialResponse]:
-    """Return every registered source, so callers can resolve a ``source_id``.
+    """Resolve specific ``source_id``s against the registry.
 
     Mind map nodes carry ``metadata.source_refs`` entries that name a source by
-    ID only. This endpoint is the registry side of that lookup: an ID absent
-    from this list is a dangling reference (its source was removed), and the
-    caller must say so rather than render it as a citation.
+    ID only. This endpoint is the registry side of that lookup: a caller passes
+    the source_ids present on the node it is rendering, and an ID absent from
+    the response is a dangling reference (its source was removed), which the
+    caller must say so rather than render it as a citation. The registry is
+    never fetched in full — this endpoint only ever resolves the IDs it is
+    asked about.
     """
     pool = _pool(db)
 
-    sources = await source_material_list(pool)
+    ids = list(dict.fromkeys(s.strip() for s in source_ids.split(",") if s.strip()))
+    if not ids:
+        return []
+
+    sources = await source_material_get_many(pool, ids)
     return [
         SourceMaterialResponse(
             source_id=str(s["source_id"]),
