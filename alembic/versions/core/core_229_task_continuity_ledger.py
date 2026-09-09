@@ -1,7 +1,7 @@
 """Create the shared task-continuity ledger and its dispatch-seam columns.
 
-Revision ID: core_226
-Revises: core_225
+Revision ID: core_229
+Revises: core_228
 Create Date: 2026-09-09 00:05:00.000000
 
 bu-2jtfw.13: a recurring task that opts in (``scheduled_tasks.continuity =
@@ -30,8 +30,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_226"
-down_revision = "core_225"
+revision = "core_229"
+down_revision = "core_228"
 branch_labels = None
 depends_on = None
 
@@ -75,7 +75,7 @@ def _grant_best_effort(role: str) -> None:
 
 def upgrade() -> None:
     op.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_226:task_continuity', 0))"
+        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_229:task_continuity', 0))"
     )
     op.execute(
         """
@@ -143,6 +143,6 @@ def downgrade() -> None:
     op.execute("ALTER TABLE scheduled_tasks DROP COLUMN IF EXISTS continuity")
     op.execute("ALTER TABLE sessions DROP COLUMN IF EXISTS continuation_of_session_id")
     op.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_226:task_continuity', 0))"
+        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_229:task_continuity', 0))"
     )
     op.execute("DROP TABLE IF EXISTS public.task_continuity")

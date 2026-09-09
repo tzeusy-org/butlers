@@ -362,7 +362,7 @@ Behavior:
 - typed block naming each non-PRESENT signal's `signal_key`, `producer`, `last_observed_at`, and the evaluator's `now` clock, when at least one declared signal is not PRESENT.
 - explicit "source health could not be evaluated" text (`BLIND_SPOT_QUERY_FAILED_TEXT`) instead of any signal detail, when the query itself raised.
 
-The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot_preamble_enabled` (added by migration `core_225`, default `true`). Reading the flag SHALL be fail-open — if the runtime_config accessor raises, or the column does not yet exist on an unmigrated schema, the layer defaults to enabled.
+The layer SHALL be gated by a per-butler kill switch: `runtime_config.blind_spot_preamble_enabled` (added by migration `core_228`, default `true`). Reading the flag SHALL be fail-open — if the runtime_config accessor raises, or the column does not yet exist on an unmigrated schema, the layer defaults to enabled.
 
 `GET /api/butlers/{name}` SHALL project the identical evaluation (`declared_signal_patterns()` + `evaluate_declared_signals()`) so the dashboard's `blind_spots` field never disagrees with what the next spawned session's prompt will say.
 

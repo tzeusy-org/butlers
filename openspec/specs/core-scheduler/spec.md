@@ -268,7 +268,7 @@ Scheduled tasks SHALL carry optional fields for calendar module integration: `ti
 - **AND** a partial unique index enforces non-null `calendar_event_id` uniqueness
 
 ### Requirement: Task Continuity Ledger (Opt-In)
-A recurring PROMPT-mode scheduled task MAY opt in to carrying forward what its previous run concluded, via a `continuity` boolean field (TOML `[[butler.schedule]]` entry, or `schedule_create`/`schedule_update` — PROMPT mode only; setting `continuity=true` with `dispatch_mode="job"` SHALL raise a `ConfigError`). `sync_schedules()` SHALL persist the field to `scheduled_tasks.continuity` (migration `core_226`).
+A recurring PROMPT-mode scheduled task MAY opt in to carrying forward what its previous run concluded, via a `continuity` boolean field (TOML `[[butler.schedule]]` entry, or `schedule_create`/`schedule_update` — PROMPT mode only; setting `continuity=true` with `dispatch_mode="job"` SHALL raise a `ConfigError`). `sync_schedules()` SHALL persist the field to `scheduled_tasks.continuity` (migration `core_229`).
 
 When a session concludes, it MAY call the `carry_forward(task_name, content)` core tool to record its own conclusion. `record_carry_forward()` SHALL write to `public.task_continuity` in a transaction that archives (sets `is_live=false` on) any other live row for that `(butler_name, task_name)` before inserting the new live row, so at most one row is live per butler+task at a time. A repeated call within the same session (same `session_id`) SHALL update the existing row for that session rather than creating a duplicate (`ON CONFLICT (butler_name, task_name, session_id) DO UPDATE`).
 
@@ -310,7 +310,7 @@ Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior
 - **AND** the dispatched prompt omits the continuity block entirely (not a fail-closed placeholder)
 
 #### Scenario: Legacy schema without the continuity column
-- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_226`
+- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`
 - **THEN** the column probe treats `continuity` as absent
 - **AND** every task is treated as `continuity_enabled=False`, with no behavior change from before the ledger existed
 

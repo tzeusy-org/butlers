@@ -66,7 +66,7 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
     try:
         blind_spot_preamble_enabled = bool(row["blind_spot_preamble_enabled"])
     except (KeyError, IndexError):
-        # Rolling startup can briefly project a pre-core_225 row shape. Default
+        # Rolling startup can briefly project a pre-core_228 row shape. Default
         # to the preamble being active — matching the migration's own column
         # default — never silently opting a butler out by omission.
         blind_spot_preamble_enabled = True

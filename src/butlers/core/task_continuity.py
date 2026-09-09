@@ -3,7 +3,7 @@
 Backs the ``carry_forward`` core tool (``butlers.core_tools._continuity``) and
 the scheduler's dispatch-seam injection
 (``butlers.core.scheduler._continuity_block_for_task``). See
-``core_226_task_continuity_ledger.py`` for the table shape and its two unique
+``core_229_task_continuity_ledger.py`` for the table shape and its two unique
 indexes: ``(butler_name, task_name, session_id)`` for same-session dedup and
 the partial ``(butler_name, task_name) WHERE is_live`` for the single live
 row per task.

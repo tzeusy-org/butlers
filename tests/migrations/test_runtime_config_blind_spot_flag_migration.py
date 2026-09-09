@@ -1,4 +1,4 @@
-"""Real-Postgres contract for core_225's runtime_config blind-spot kill switch."""
+"""Real-Postgres contract for core_228's runtime_config blind-spot kill switch."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
-    / "alembic/versions/core/core_225_runtime_config_blind_spot_flag.py"
+    / "alembic/versions/core/core_228_runtime_config_blind_spot_flag.py"
 )
 
 
