@@ -230,7 +230,7 @@ export function ChatDock({ onClose }: ChatDockProps) {
           <SourceDegradedNote
             className="mx-3 mt-2"
             label="Recent conversations"
-            detail="couldn't load — starting a new conversation"
+            detail="couldn't load, starting a new conversation"
             testId="chat-dock-conversations-degraded"
           />
         )}

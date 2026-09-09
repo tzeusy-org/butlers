@@ -38,7 +38,7 @@ export function ChatRecallCommands() {
       return [
         {
           id: "chat-recall:unavailable",
-          label: "Recent conversations unavailable — retry",
+          label: "Recent conversations unavailable, retry",
           keywords: ["chat", "conversation", "recent", "recall", "error"],
           perform: () => void refetch(),
         },

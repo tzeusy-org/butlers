@@ -404,6 +404,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Conversation not found
 - This conversation may have been deleted, or the link is incorrect.
 - New conversation
+- Recent conversations
 - conversation history
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
@@ -2014,6 +2015,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Open in full page
 - Collapse chat dock
 - Collapse
+- Recent conversations
 - conversation history
 
 ## `frontend/src/components/chat/ChatPanel.tsx`
@@ -4223,4 +4225,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3307*
+*Total strings: 3309*
