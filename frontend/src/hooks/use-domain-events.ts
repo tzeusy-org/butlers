@@ -10,8 +10,10 @@ import {
   listDomainEventSubscriptions,
   listDomainEventDeliveries,
   listDomainEventReactions,
+  listDomainEventContracts,
   type DomainEventSubscriptionsParams,
   type DomainEventDeliveriesParams,
+  type DomainEventContractsParams,
 } from "@/api/index.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
@@ -20,6 +22,20 @@ export function useDomainEventSubscriptions(params: DomainEventSubscriptionsPara
   return useQuery({
     queryKey: ["domain-event-subscriptions", params],
     queryFn: () => listDomainEventSubscriptions(params),
+    refetchInterval,
+  });
+}
+
+/**
+ * Every materialized publisher contract, not just this butler's own: a
+ * subscription's bound version has to be compared against its publisher's
+ * current contract, which may belong to a different butler entirely.
+ */
+export function useDomainEventContracts(params: DomainEventContractsParams = {}) {
+  const refetchInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["domain-event-contracts", params],
+    queryFn: () => listDomainEventContracts(params),
     refetchInterval,
   });
 }
