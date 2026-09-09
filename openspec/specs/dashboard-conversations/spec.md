@@ -291,7 +291,7 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
 - **THEN** the response is a `StreamingResponse` with `media_type: "text/event-stream"`
 - **AND** the first event is `event: conversation_created` with `data: {"conversation_id": "...", "title": "..."}`
-- **AND** an `event: token` with `data: {"content": "..."}` carries the full `conversation_reply` message text once it arrives (not incremental generation — token-level streaming is out of scope)
+- **AND** one or more `event: token` events with `data: {"content": "..."}` carry the `conversation_reply` message text — a single event carrying the full text when the routed runtime cannot stream incrementally (every runtime adapter today), or several events whose concatenated `content` fields are byte-for-byte identical to the persisted reply row's content when a streaming-capable producer publishes incremental deltas on the turn's chat-stream channel (see the Real-Time Processing Phase Events requirement's Trust boundary)
 - **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known
 - **AND** an `event: done` is sent to signal the stream is finished
 
@@ -345,6 +345,30 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
 - **THEN** a `: keepalive` SSE comment is sent to prevent connection timeout
+
+### Requirement: Real-Time Processing Phase Events
+
+The conversation streaming endpoints SHALL emit `event: phase` with `data: {"phase": "...", "target"?: "...", "tool"?: "..."}` whenever the API can truthfully observe a real-time processing transition for the current turn. A phase is never fabricated or guessed to fill a gap in the sequence — only a phase the backend can actually observe is emitted, and any phase a given turn's runtime cannot observe (e.g. `thinking`, which requires a streaming-capable producer) is simply not emitted for that turn.
+
+Trust boundary: `phase` and `token` events are display-only, sourced from the routed butler's live processing where observable. The persisted `conversation_reply` row (see the Conversation Reply Channel requirement) remains the sole source of truth — `message_complete` is always emitted from that row, and a turn with no streaming producer at all still completes normally via a single `token` event followed by `message_complete`, exactly as before this requirement existed.
+
+#### Scenario: Classifying and routed phases
+
+- **WHEN** a Switchboard-addressed (widget) conversation turn begins
+- **THEN** an `event: phase` with `data: {"phase": "classifying"}` is sent before the classification request is submitted
+- **AND** once classification resolves, an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent naming the butler now handling the turn
+- **WHEN** a pinned per-butler conversation turn begins (no classification occurs)
+- **THEN** an `event: phase` with `data: {"phase": "routed", "target": "<butler_name>"}` is sent immediately, naming the pinned butler
+
+#### Scenario: Starting-session phase
+
+- **WHEN** the API has registered the turn as cancellable and is about to begin polling for the routed butler's `conversation_reply`
+- **THEN** an `event: phase` with `data: {"phase": "starting_session", "target": "<routed_butler>"}` is sent
+
+#### Scenario: Writing phase precedes streamed content
+
+- **WHEN** the first `event: token` of a turn (whether a single full-text event or the first of several incremental deltas) is about to be sent
+- **THEN** an `event: phase` with `data: {"phase": "writing"}` is sent immediately before it, at most once per turn
 
 ### Requirement: Dashboard Ingestion Envelope Construction
 

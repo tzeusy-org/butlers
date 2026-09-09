@@ -50,11 +50,13 @@ vi.mock("@/api/client.ts", () => ({
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
+const getConversationMessagesMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
+  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -122,6 +124,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   scriptedEvents = [];
   activeSseEventHandler = null;
+  // Safe default for the non-abort-stream-failure recovery refetch
+  // (bu-0ynlk.7) -- see FloatingChatWidget.test.tsx for the dedicated
+  // recovery-path coverage; ChatPanel shares the same code path.
+  getConversationMessagesMock.mockResolvedValue({ data: [] });
   mockHooksEmpty();
   window.localStorage.clear();
 });
