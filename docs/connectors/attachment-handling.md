@@ -38,7 +38,7 @@ When a butler needs the actual content, it triggers an on-demand fetch: download
 
 ## Envelope Contract
 
-The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). Existing consumers using `storage_ref` continue to work for eager paths. Lazy paths expose enough identity to trigger a fetch and then call `get_attachment(storage_ref)`.
+The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py` (bu-2jtfw.7). Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
 
 ## Metrics
 
