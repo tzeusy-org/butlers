@@ -94,6 +94,7 @@ vi.mock("@/hooks/use-delegation", () => ({
 vi.mock("@/hooks/use-domain-events", () => ({
   useDomainEventSubscriptions: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useDomainEventDeliveries: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useDomainEventContracts: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({
