@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import { PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,7 @@ import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 export default function ChatPage() {
   const { conversationId: routeConversationId } = useParams<{ conversationId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const routeId = routeConversationId ?? null;
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(routeId);
@@ -130,12 +131,12 @@ export default function ChatPage() {
   const scrolledForRef = useRef<string | null>(null);
   useEffect(() => {
     if (isLoadingMessages) return;
-    const hash = window.location.hash;
+    const hash = location.hash;
     if (!hash.startsWith("#m-")) return;
     if (scrolledForRef.current === hash) return;
     scrolledForRef.current = hash;
     scrollToMessageAnchor(hash.slice(3));
-  }, [isLoadingMessages, visibleMessages]);
+  }, [isLoadingMessages, visibleMessages, location.hash]);
 
   function handleSend() {
     const text = inputValue.trim();
