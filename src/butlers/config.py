@@ -95,11 +95,14 @@ class RuntimeSeedConfig:
     Fields:
 
     - ``core_groups`` / ``catalog_read_sensitivity`` /
-      ``max_concurrent_sessions`` / ``max_queued_sessions`` are the operational
+      ``max_concurrent_sessions`` / ``max_queued_sessions`` /
+      ``tool_exposure_policy`` are the operational
       tuning knobs that map to the DB-backed
       ``runtime_config`` row. The Spawner prefers the DB row via
       :class:`RuntimeConfigAccessor` and falls back to the values here when
-      no accessor is wired.
+      no accessor is wired. ``tool_exposure_policy`` is hot: the DB-backed
+      row is authoritative per invocation, and this seed value only applies
+      before the row is first seeded.
     - ``liveness_ttl_seconds`` / ``route_contract_min`` / ``route_contract_max``
       are registration-only and are not stored in ``runtime_config``.
 
@@ -117,6 +120,7 @@ class RuntimeSeedConfig:
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
+    tool_exposure_policy: Literal["eager_filtered", "auto"] = "eager_filtered"
 
 
 @dataclass
@@ -414,6 +418,13 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
     route_contract_min = int(seed_section.get("route_contract_min", 1))
     route_contract_max = int(seed_section.get("route_contract_max", 1))
 
+    tool_exposure_policy = seed_section.get("tool_exposure_policy", "eager_filtered")
+    if tool_exposure_policy not in {"eager_filtered", "auto"}:
+        raise ConfigError(
+            "Invalid butler.runtime_seed.tool_exposure_policy: "
+            f"{tool_exposure_policy!r}. Expected eager_filtered or auto."
+        )
+
     return RuntimeSeedConfig(
         core_groups=core_groups,
         catalog_read_sensitivity=catalog_read_sensitivity,
@@ -422,6 +433,7 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
         liveness_ttl_seconds=liveness_ttl_seconds,
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
+        tool_exposure_policy=tool_exposure_policy,
     )
 
 

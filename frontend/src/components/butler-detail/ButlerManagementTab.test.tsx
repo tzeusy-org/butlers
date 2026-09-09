@@ -286,12 +286,15 @@ const RUNTIME_CONFIG = {
   core_groups: ["infra"] as string[] | null,
   max_concurrent: 3,
   max_queued: 10,
+  tool_exposure_policy: "eager_filtered" as "eager_filtered" | "auto",
   seeded_at: null,
   updated_at: "2026-06-14T00:00:00Z",
-  field_tiers: { max_concurrent: "cold", max_queued: "cold", core_groups: "cold" } as Record<
-    string,
-    "hot" | "cold"
-  >,
+  field_tiers: {
+    max_concurrent: "cold",
+    max_queued: "cold",
+    core_groups: "cold",
+    tool_exposure_policy: "hot",
+  } as Record<string, "hot" | "cold">,
 };
 
 describe("RuntimeConfigCard — mounted on Manage tab", () => {
@@ -322,6 +325,13 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     for (const group of ["graph", "delegation", "domain_events", "fleet_cases"]) {
       expect(screen.getByText(group)).toBeTruthy();
     }
+    // bu-ondtw.2: the exposure-policy choices and its concise fallback
+    // guidance are always shown, not only after an edit or save.
+    expect(screen.getByText("Eager filtered")).toBeTruthy();
+    expect(screen.getByText("Automatic verified discovery")).toBeTruthy();
+    expect(
+      screen.getByText("Applies to newly planned sessions, no daemon restart needed."),
+    ).toBeTruthy();
   });
 
   it("surfaces the cold (restart required) tier badge for ceiling fields", () => {
@@ -359,6 +369,49 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     expect(mutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ max_concurrent: 5 }),
     );
+  });
+
+  it("saving only the exposure policy shows no restart-required notification", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ restart_required: [] });
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+
+    renderTab();
+
+    fireEvent.click(screen.getByText("Automatic verified discovery"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save"));
+    });
+
+    expect(mutateAsync).toHaveBeenCalledWith({ tool_exposure_policy: "auto" });
+    expect(screen.queryByText(/Restart required for/)).toBeNull();
+  });
+
+  it("a failed exposure-policy save reverts to the last server-confirmed choice", async () => {
+    const mutateAsync = vi.fn().mockRejectedValue(new Error("validation failed"));
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync,
+      isPending: false,
+      isError: true,
+      error: new Error("validation failed"),
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+
+    renderTab();
+
+    fireEvent.click(screen.getByText("Automatic verified discovery"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save"));
+    });
+
+    // The confirmed policy (Eager filtered) is shown as selected again; the
+    // card never presents the failed edit as the effective policy.
+    const eagerBadge = screen.getByText("Eager filtered");
+    expect(eagerBadge.getAttribute("data-variant")).toBe("default");
+    const autoBadge = screen.getByText("Automatic verified discovery");
+    expect(autoBadge.getAttribute("data-variant")).toBe("outline");
   });
 });
 
