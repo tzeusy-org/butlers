@@ -2740,14 +2740,25 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     async def _auto_retract_owner_fact(fact_id: uuid.UUID) -> bool:
         """Soft-retract an owner-entity fact (mark validity='retracted').
 
-        Mirrors the memory_forget tool's retraction SQL. Idempotent: only flips
-        rows still 'active'. Returns True on success, False on DB error.
+        Idempotent: only flips rows still 'active', leaving an already
+        'retracted'/'superseded' row untouched -- unlike memory_forget's
+        unconditional UPDATE, which has no such guard. When a row is actually
+        flipped, cascades the same memory_catalog disownment + entity_graph_edges
+        deletion forget_memory() performs, in the same transaction (bu-9ltqm).
+        Returns True on success, False on DB error.
         """
+        from butlers.modules.memory.storage import cascade_fact_retraction
+
         try:
-            await db_pool.execute(
-                "UPDATE facts SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
-                fact_id,
-            )
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "UPDATE facts SET validity = 'retracted' "
+                        "WHERE id = $1 AND validity = 'active' RETURNING id",
+                        fact_id,
+                    )
+                    if row is not None:
+                        await cascade_fact_retraction(conn, [row["id"]])
             return True
         except Exception:
             logger.exception(
