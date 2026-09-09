@@ -68,8 +68,7 @@ async def _park_and_approve(pool, *, action_id: uuid.UUID, tool_args: dict) -> N
         deduplication_key=f"relationship:prepared-reach-out:{action_id}",
     )
     await pool.execute(
-        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-        "WHERE id = $4",
+        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 WHERE id = $4",
         ActionStatus.APPROVED.value,
         "human:owner",
         now,
