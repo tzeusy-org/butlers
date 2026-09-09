@@ -1,18 +1,14 @@
 """Tests for butlers.jobs.health_ha_reader — HaEnvironmentReader factory.
 
 Verifies that:
-1. ``build_ha_environment_reader`` returns ``None`` when HA credentials are absent.
-2. ``build_ha_environment_reader`` returns an async callable when credentials are set.
-3. The reader callable fetches history from the HA REST API and classifies readings.
-4. The public reader preserves supported sensor aliases and comfort thresholds.
-5. ``_run_health_insight_scan_job`` in scheduled_jobs.py injects the reader into
-   ``run_insight_scan``, wiring the environment-correlation path in production.
+1. ``build_ha_environment_reader`` always returns ``None`` -- health has no
+   HA environment-entity source to build a working reader from.
+2. ``_run_health_insight_scan_job`` in scheduled_jobs.py wires whatever the
+   factory returns into ``run_insight_scan`` (reader present or ``None``).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,347 +19,39 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# build_ha_environment_reader — always unavailable for health
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(*, snapshot_rows: list[dict] | None = None) -> MagicMock:
-    """Build a mock pool that returns snapshot_rows for ha_entity_snapshot queries."""
+async def test_build_ha_environment_reader_returns_none():
+    """No HA entity-snapshot source exists for health; always returns None."""
     pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.execute = AsyncMock()
 
-    def _fetch_side_effect(sql: str, *args: Any, **kwargs: Any) -> list[Any]:
-        if "ha_entity_snapshot" in sql:
-            if snapshot_rows is not None:
-                return [_make_row(r) for r in snapshot_rows]
-            return []
-        return []
-
-    pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-    return pool
-
-
-def _make_row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: data[key]
-    return row
-
-
-def _make_ha_ctx(ha_url: str | None, ha_token: str | None) -> MagicMock:
-    """Build a mock HomeJobContext returned by HomeJobContext.create()."""
-    ctx = MagicMock()
-    ctx.ha_url = ha_url
-    ctx.ha_token = ha_token
-    return ctx
-
-
-def _mock_hjc_class(
-    ha_url: str | None,
-    ha_token: str | None,
-    mock_client: MagicMock | None = None,
-) -> MagicMock:
-    """Return a mock HomeJobContext *class* covering both usage sites in the module.
-
-    ``build_ha_environment_reader`` calls ``HomeJobContext.create(pool)`` (classmethod)
-    to get credentials.  The reader closure later calls ``HomeJobContext(url, token)``
-    as an async context manager.  Patching the class itself (not just ``create``)
-    keeps both usages consistent on the same mock object.
-    """
-    creds_instance = _make_ha_ctx(ha_url, ha_token)
-
-    cm_instance = MagicMock()
-    cm_instance.client = mock_client
-    cm_instance.__aenter__ = AsyncMock(return_value=cm_instance)
-    cm_instance.__aexit__ = AsyncMock(return_value=None)
-
-    mock_cls = MagicMock()
-    mock_cls.create = AsyncMock(return_value=creds_instance)
-    mock_cls.return_value = cm_instance  # HomeJobContext(url, token) call
-    return mock_cls
-
-
-# ---------------------------------------------------------------------------
-# build_ha_environment_reader — credential guard
-# ---------------------------------------------------------------------------
-
-
-async def test_build_ha_environment_reader_no_credentials_returns_none():
-    """Returns None when HA URL is absent — no credentials configured."""
-    pool = _make_pool()
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url=None, ha_token=None),
-    ):
-        result = await build_ha_environment_reader(pool)
+    result = await build_ha_environment_reader(pool)
 
     assert result is None
 
 
-async def test_build_ha_environment_reader_no_token_returns_none():
-    """Returns None when token is absent even if URL is set."""
-    pool = _make_pool()
+async def test_build_ha_environment_reader_ignores_pool_contents():
+    """The pool argument is unused -- result does not depend on its contents."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=AssertionError("pool should not be queried"))
 
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token=None),
-    ):
-        result = await build_ha_environment_reader(pool)
+    result = await build_ha_environment_reader(pool)
 
     assert result is None
-
-
-async def test_build_ha_environment_reader_with_credentials_returns_callable():
-    """Returns an async callable when both URL and token are present."""
-    pool = _make_pool()
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc"),
-    ):
-        reader = await build_ha_environment_reader(pool)
-
-    assert reader is not None
-    assert callable(reader)
-
-
-# ---------------------------------------------------------------------------
-# build_ha_environment_reader — reader behaviour through its public callable
-# ---------------------------------------------------------------------------
-
-
-async def test_reader_returns_empty_when_no_env_entities():
-    """Reader returns [] when ha_entity_snapshot has no environmental sensors."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "switch.living_room_light"}])
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc"),
-    ):
-        reader = await build_ha_environment_reader(pool)
-
-    assert reader is not None
-    readings = await reader()
-    assert readings == []
-
-
-async def test_reader_returns_empty_when_snapshot_table_missing():
-    """Reader returns [] when ha_entity_snapshot query raises (table not yet created)."""
-    pool = MagicMock()
-    pool.fetch = AsyncMock(side_effect=Exception("relation 'ha_entity_snapshot' does not exist"))
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc"),
-    ):
-        reader = await build_ha_environment_reader(pool)
-
-    assert reader is not None
-    readings = await reader()
-    assert readings == []
-
-
-async def test_reader_normalizes_all_supported_environment_entity_aliases():
-    """The returned reader maps every supported alias and excludes irrelevant entities."""
-    base = datetime(2026, 1, 1, tzinfo=UTC)
-    aliases = [
-        ("sensor.bedroom_temperature", "temperature", "72.0"),
-        ("sensor.living_room_temp", "temperature", "72.0"),
-        ("sensor.bathroom_humidity", "humidity", "45.0"),
-        ("sensor.bedroom_humid", "humidity", "45.0"),
-        ("sensor.office_co2", "co2", "800.0"),
-        ("sensor.carbon_dioxide_level", "co2", "800.0"),
-        ("sensor.indoor_air_quality", "air_quality", "good"),
-        ("sensor.aqi_sensor", "air_quality", "good"),
-        ("sensor.pm25_outdoor", "air_quality", "good"),
-    ]
-    rejected_entity_ids = [
-        "light.living_room",
-        "switch.bedroom_fan",
-        "binary_sensor.motion_detected",
-    ]
-    pool = _make_pool(
-        snapshot_rows=[
-            *({"entity_id": entity_id} for entity_id, _, _ in aliases),
-            *({"entity_id": entity_id} for entity_id in rejected_entity_ids),
-        ]
-    )
-    history_response = [
-        [
-            {
-                "entity_id": entity_id,
-                "state": state,
-                "last_changed": (base + timedelta(minutes=index)).isoformat(),
-            }
-        ]
-        for index, (entity_id, _, state) in enumerate(aliases)
-    ]
-    mock_response = MagicMock(status_code=200)
-    mock_response.json.return_value = history_response
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=mock_response)
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc", mock_client=mock_client),
-    ):
-        reader = await build_ha_environment_reader(pool)
-        assert reader is not None
-        readings = await reader()
-
-    expected = {
-        base + timedelta(minutes=index): (metric, False)
-        for index, (_, metric, _) in enumerate(aliases)
-    }
-    assert {
-        reading["captured_at"]: (reading["metric"], reading["adverse"]) for reading in readings
-    } == expected
-    requested_entity_ids = set(
-        mock_client.get.await_args.kwargs["params"]["filter_entity_id"].split(",")
-    )
-    assert requested_entity_ids == {entity_id for entity_id, _, _ in aliases}
-
-
-async def test_reader_classifies_all_supported_comfort_thresholds():
-    """The returned reader preserves every supported threshold and malformed-state result."""
-    base = datetime(2026, 1, 2, tzinfo=UTC)
-    entity_for_metric = {
-        "temperature": "sensor.bedroom_temperature",
-        "humidity": "sensor.bathroom_humidity",
-        "co2": "sensor.office_co2",
-        "air_quality": "sensor.indoor_air_quality",
-    }
-    threshold_cases = [
-        ("temperature", "60.0", True),
-        ("temperature", "80.0", True),
-        ("temperature", "72.0", False),
-        ("temperature", "20.0", False),
-        ("temperature", "19.0", True),
-        ("temperature", "25.0", True),
-        ("temperature", "unavailable", False),
-        ("temperature", None, False),
-        ("humidity", "20.0", True),
-        ("humidity", "70.0", True),
-        ("humidity", "45.0", False),
-        ("humidity", "off", False),
-        ("co2", "1500.0", True),
-        ("co2", "800.0", False),
-        ("co2", "", False),
-        ("air_quality", "poor", True),
-        ("air_quality", "very_poor", True),
-        ("air_quality", "hazardous", True),
-        ("air_quality", "good", False),
-        ("air_quality", "60.0", True),
-        ("air_quality", "40.0", False),
-    ]
-    pool = _make_pool(
-        snapshot_rows=[{"entity_id": entity_id} for entity_id in entity_for_metric.values()]
-    )
-    history_response = [
-        [
-            {
-                "entity_id": entity_for_metric[metric],
-                "state": state,
-                "last_changed": (base + timedelta(minutes=index)).isoformat(),
-            }
-        ]
-        for index, (metric, state, _) in enumerate(threshold_cases)
-    ]
-    mock_response = MagicMock(status_code=200)
-    mock_response.json.return_value = history_response
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=mock_response)
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc", mock_client=mock_client),
-    ):
-        reader = await build_ha_environment_reader(pool)
-        assert reader is not None
-        readings = await reader()
-
-    expected = {
-        base + timedelta(minutes=index): (metric, adverse)
-        for index, (metric, _, adverse) in enumerate(threshold_cases)
-    }
-    assert {
-        reading["captured_at"]: (reading["metric"], reading["adverse"]) for reading in readings
-    } == expected
-
-
-async def test_reader_returns_empty_on_ha_api_error():
-    """Reader returns [] when HA REST API call fails — no exception raised."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "sensor.bedroom_temperature"}])
-
-    # cm_instance.__aenter__ raising simulates a connection error
-    mock_cls = _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc")
-    mock_cls.return_value.__aenter__ = AsyncMock(side_effect=Exception("Connection refused"))
-
-    with patch("butlers.jobs.health_ha_reader.HomeJobContext", mock_cls):
-        reader = await build_ha_environment_reader(pool)
-        assert reader is not None
-        readings = await reader()
-
-    assert readings == []
-
-
-async def test_reader_returns_empty_on_ha_non_200():
-    """Reader returns [] when HA history API returns a non-200 status."""
-    pool = _make_pool(snapshot_rows=[{"entity_id": "sensor.bedroom_temperature"}])
-
-    mock_response = MagicMock()
-    mock_response.status_code = 503
-
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=mock_response)
-
-    with patch(
-        "butlers.jobs.health_ha_reader.HomeJobContext",
-        _mock_hjc_class(ha_url="http://ha.local:8123", ha_token="tok_abc", mock_client=mock_client),
-    ):
-        reader = await build_ha_environment_reader(pool)
-        assert reader is not None
-        readings = await reader()
-
-    assert readings == []
-
-
-# ---------------------------------------------------------------------------
-# _parse_ha_datetime — datetime parsing
-# ---------------------------------------------------------------------------
-
-
-def test_parse_ha_datetime_branches():
-    """_parse_ha_datetime: ISO-Z → UTC-aware datetime; None/invalid → None;
-    existing datetime passes through unchanged."""
-    from butlers.jobs.health_ha_reader import _parse_ha_datetime
-
-    iso = _parse_ha_datetime("2024-01-15T10:30:00Z")
-    assert iso is not None
-    assert iso.tzinfo is not None
-    assert iso.year == 2024 and iso.month == 1
-
-    assert _parse_ha_datetime(None) is None
-    assert _parse_ha_datetime("not-a-date") is None
-
-    dt = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
-    assert _parse_ha_datetime(dt) == dt
+    pool.fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
 # _run_health_insight_scan_job dispatch wiring
-# Proves (a) reader is constructed/injected at dispatch and (b) the
-# environment-correlation path executes when the reader is present.
+# Proves (a) the factory's return value is injected into run_insight_scan and
+# (b) a None reader is passed through cleanly when HA is unavailable.
 # ---------------------------------------------------------------------------
 
 
-async def test_dispatch_injects_reader_when_ha_configured():
-    """_run_health_insight_scan_job passes the reader to run_insight_scan.
-
-    Proves requirement (a): reader is constructed and injected at dispatch.
-    """
+async def test_dispatch_injects_reader_when_factory_returns_callable():
+    """_run_health_insight_scan_job passes a non-None reader through unchanged."""
     from butlers.scheduled_jobs import _run_health_insight_scan_job
 
     pool = MagicMock()
@@ -388,14 +76,14 @@ async def test_dispatch_injects_reader_when_ha_configured():
 
     mock_mod.run_insight_scan.assert_awaited_once()
     call_kwargs = mock_mod.run_insight_scan.call_args
-    # The reader must be passed as ha_environment_reader keyword argument.
     assert call_kwargs.kwargs.get("ha_environment_reader") is fake_reader
 
 
 async def test_dispatch_passes_none_reader_when_ha_absent():
     """_run_health_insight_scan_job passes None reader when HA is not configured.
 
-    Environment correlation is skipped cleanly — same as before this fix.
+    Environment correlation is skipped cleanly -- the real-world default,
+    since build_ha_environment_reader always returns None for health.
     """
     from butlers.scheduled_jobs import _run_health_insight_scan_job
 
@@ -407,7 +95,7 @@ async def test_dispatch_passes_none_reader_when_ha_absent():
     with (
         patch(
             "butlers.jobs.health_ha_reader.build_ha_environment_reader",
-            new=AsyncMock(return_value=None),  # no credentials
+            new=AsyncMock(return_value=None),
         ),
         patch(
             "butlers.jobs._roster_loader.load_roster_jobs",
@@ -419,9 +107,3 @@ async def test_dispatch_passes_none_reader_when_ha_absent():
     mock_mod.run_insight_scan.assert_awaited_once()
     call_kwargs = mock_mod.run_insight_scan.call_args
     assert call_kwargs.kwargs.get("ha_environment_reader") is None
-
-
-# The end-to-end environment-correlation scan path (reader present → candidate
-# fires) is covered by test_environment_correlation_submits_via_mcp_tool in
-# test_health_jobs.py; the dispatch wiring above only needs to prove the reader
-# is constructed/injected (and skipped when HA is absent).
