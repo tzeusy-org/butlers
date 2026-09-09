@@ -71,13 +71,13 @@ Retroactive promotion re-check (bu-mul8i):
 
     Observability: each pass logs promoted spans and returns the count as
     ``AdapterResult.episodes_promoted`` (persisted in the job result by
-    ``chronicler/jobs.py::_adapter_result_to_dict``). ``[decision]`` The
-    ``chronicles`` fleet-event payload published by ``_run_adapter`` is
-    deliberately left unchanged — its shape is asserted wire-exactly by
-    consumers' tests, and a promotion-only run advertising a
-    freshness ping with all-zero counters would be less honest than no ping
-    at all. A promotion-only tick therefore does not publish; the next
-    material projection or rollup run refreshes downstream aggregates.
+    ``chronicler/jobs.py::_adapter_result_to_dict``). ``episodes_promoted``
+    is also part of ``_run_adapter``'s freshness gate and ``chronicles``
+    fleet-event payload (bu-yvqh9): a promotion-only tick (no rows, points,
+    or episode opens/closes, but a span flipped layer=evidence ->
+    layer=activity) now publishes, since dashboard caches keyed on layer
+    must not go stale for a full adapter interval after a promotion has
+    already landed.
 
 Lane discipline (bu-whhll.14 composition, design §1.5): ``room_activity_episode``
 resolves to the new ``ambient`` category → ``rest`` lane
