@@ -1040,6 +1040,7 @@ class InsightCandidate(BaseModel):
     status: str
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
+    prepared_action_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
