@@ -139,6 +139,36 @@ async def test_list_conversations_200_and_503(app):
 
 
 # ---------------------------------------------------------------------------
+# Cross-butler conversation lookup by id — GET /api/conversations/{id}
+# (bu-0ynlk.11 — /chat/:conversationId, cmdk recall)
+# ---------------------------------------------------------------------------
+
+
+async def test_get_conversation_by_id_returns_thread_for_any_butler_and_404s_when_unknown(
+    app,
+) -> None:
+    row = _make_conversation_row()
+    _app_with_mock_db(app, fetchrow_result=row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/conversations/{_CONV_ID}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == str(_CONV_ID)
+    assert body["butler_name"] == _BUTLER
+    # Resolved by id alone -- the caller does not know (or pass) butler_name.
+    assert "latest_assistant_reply_at" not in body
+
+    _app_with_mock_db(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_404 = await client.get(f"/api/conversations/{uuid4()}")
+    assert resp_404.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Search conversations — summary contract + snippet
 # ---------------------------------------------------------------------------
 
