@@ -35,7 +35,11 @@ _skip_without_docker = pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker 
 
 
 def _prepare_core_222(postgres_container) -> str:
-    """Create a real core database at core_222, immediately before core_223."""
+    """Create a real core database at core_222, immediately before core_224.
+
+    core_223 is claimed by a different, still-open PR (#4043) that has not
+    landed on main, so this migration chains directly after core_222.
+    """
     from alembic import command
     from butlers.migrations import _build_alembic_config
     from butlers.testing.migration import create_migration_db, migration_db_name
@@ -46,11 +50,11 @@ def _prepare_core_222(postgres_container) -> str:
     return db_url
 
 
-def _apply_core_223(db_url: str) -> None:
+def _apply_core_224(db_url: str) -> None:
     from alembic import command
     from butlers.migrations import _build_alembic_config
 
-    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_223")
+    command.upgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_224")
 
 
 @_skip_without_docker
@@ -69,7 +73,7 @@ def test_migration_defaults_existing_row_to_eager_filtered_under_db_constraint(
     finally:
         engine.dispose()
 
-    _apply_core_223(db_url)
+    _apply_core_224(db_url)
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -101,7 +105,7 @@ def test_downgrade_removes_column_without_dropping_existing_rows(postgres_contai
     from butlers.migrations import _build_alembic_config
 
     db_url = _prepare_core_222(postgres_container)
-    _apply_core_223(db_url)
+    _apply_core_224(db_url)
     command.downgrade(_build_alembic_config(db_url, chains=["core"]), "core@core_222")
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")

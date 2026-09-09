@@ -235,7 +235,7 @@ def test_row_to_config_preserves_tool_exposure_policy():
 
 
 def test_row_to_config_missing_tool_exposure_policy_fails_closed_eager_filtered():
-    """A rolling pre-core_223 row shape must never opt a butler into native discovery."""
+    """A rolling pre-core_224 row shape must never opt a butler into native discovery."""
     row_data = _make_row()
     del row_data["tool_exposure_policy"]
 

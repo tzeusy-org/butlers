@@ -58,7 +58,7 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
     try:
         tool_exposure_policy = row["tool_exposure_policy"]
     except (KeyError, IndexError):
-        # Rolling startup can briefly project a pre-core_223 row shape. Missing
+        # Rolling startup can briefly project a pre-core_224 row shape. Missing
         # evidence must preserve the conservative eager behavior, never opt a
         # butler into native discovery by omission.
         tool_exposure_policy = "eager_filtered"

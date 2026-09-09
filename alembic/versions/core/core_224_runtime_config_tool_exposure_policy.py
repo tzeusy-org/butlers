@@ -1,6 +1,6 @@
 """Add the conservative tool_exposure_policy column to runtime_config.
 
-Revision ID: core_223
+Revision ID: core_224
 Revises: core_222
 Create Date: 2026-09-09 00:00:00.000000
 
@@ -11,13 +11,17 @@ not activate native tool discovery on any existing or fresh schema. The
 runtime-config accessor and dashboard API read/write this column as the hot
 per-invocation exposure policy; no session planner or native-admission
 behavior is introduced here.
+
+Chains directly after core_222: core_223 is claimed by a different, still-open
+PR (#4043, ``core_223_token_usage_ledger_composition_and_resume.py``) that has
+not landed on main, so this revision does not chain after it.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "core_223"
+revision = "core_224"
 down_revision = "core_222"
 branch_labels = None
 depends_on = None
