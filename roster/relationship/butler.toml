@@ -118,6 +118,12 @@ dispatch_mode = "job"
 job_name = "fact_retraction_curation"
 
 [[butler.schedule]]
+name = "prepared-action-orphan-sweep"
+cron = "30 3 * * *"
+dispatch_mode = "job"
+job_name = "prepared_action_orphan_sweep"
+
+[[butler.schedule]]
 name = "entity-dedup-curation"
 cron = "0 6 * * 2"
 dispatch_mode = "job"
