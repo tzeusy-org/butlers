@@ -2431,6 +2431,47 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
     });
     expect(screen.queryByText(/No routing rules are configured/)).toBeNull();
   });
+
+  it("deep-links ?rule=<id> to the matching row and flashes it (bu-lygbct)", async () => {
+    // Real timers throughout (matches every other test in this file):
+    // the highlight's own removal timeout aside, `findByTestId` below polls
+    // via a real setTimeout while the rules query resolves, which would
+    // deadlock under fake timers -- nothing left to advance them.
+    const store = makeRulesStore([
+      {
+        id: "rule-a",
+        position: 1,
+        condition: {},
+        action: { model: "claude-haiku" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: "rule-b",
+        position: 2,
+        condition: {},
+        action: { model: "claude-sonnet" },
+        saved_7d: null,
+        created_at: "",
+        updated_at: "",
+      },
+    ]);
+    mockRulesApi(store);
+
+    await act(async () => {
+      renderPage(["/?rule=rule-b"]);
+    });
+
+    const row = await screen.findByTestId("spend-rule-row-rule-b");
+    expect(row.classList.contains("spend-rule-highlight")).toBe(true);
+    // The rule the audit row did NOT reference stays unflashed.
+    expect(
+      screen
+        .getByTestId("spend-rule-row-rule-a")
+        .classList.contains("spend-rule-highlight"),
+    ).toBe(false);
+  });
 });
 
 /** REQ-dashboard-spend-dashboard-001. */
