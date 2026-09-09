@@ -1,11 +1,12 @@
-"""Entity-keyed tab WRITE endpoints — notes, interactions, gifts, reach-out drafts.
+"""Entity-keyed tab WRITE endpoints — notes, interactions, gifts.
 
 bu-6t8ix.4: entity detail and Plex exposed notes / interactions / gifts as
-GET-only, so the ``log-interaction``, ``gift-idea``, and ``draft-reach-out``
-operator verbs had no write path (bu-86c4c.15 / PR #2894 deferred all three
-rather than wire a button to nothing).
+GET-only, so the ``log-interaction`` and ``gift-idea`` operator verbs had no
+write path (bu-86c4c.15 / PR #2894 deferred them rather than wire a button to
+nothing). A third verb, draft-reach-out, shipped alongside these and was
+later retired in bu-2jtfw.11, replaced by the prepared-action mechanism.
 
-These tests cover the four POST routes that close that gap.  Each route
+These tests cover the POST routes that close that gap.  Each route
 persists through the relationship butler's own fact-store tools — the same
 ``facts`` rows the sibling GET endpoints read — so a dashboard-authored record
 is indistinguishable from a butler-authored one.  No new tables or predicates
@@ -31,7 +32,6 @@ from fastapi import FastAPI
 import butlers.tools.relationship.gifts as gifts_tools
 import butlers.tools.relationship.interactions as interactions_tools
 import butlers.tools.relationship.notes as notes_tools
-import butlers.tools.relationship.reach_out as reach_out_tools
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_mcp_manager
@@ -369,130 +369,8 @@ class TestCreateEntityGift:
         resp = await _post(app, f"{_BASE}/{_ENT_ID}/gifts", {"description": "Mug"})
         assert resp.status_code == 404
 
-
-# ---------------------------------------------------------------------------
-# POST/GET /entities/{id}/reach-out-drafts  — the ``draft-reach-out`` verb
-# ---------------------------------------------------------------------------
-
-
-class TestReachOutDrafts:
-    async def test_returns_201_with_draft_status(self, monkeypatch):
-        fact_id = uuid.uuid4()
-        seen: dict = {}
-
-        async def fake_create(pool, entity_id, message, *, channel=None):
-            seen.update(entity_id=entity_id, message=message, channel=channel)
-            return {
-                "id": fact_id,
-                "entity_id": entity_id,
-                "message": message,
-                "channel": channel,
-                "status": "draft",
-                "created_at": _NOW,
-            }
-
-        monkeypatch.setattr(reach_out_tools, "reach_out_draft_create", fake_create)
-
-        app, _, mcp = _make_app()
-        resp = await _post(
-            app,
-            f"{_BASE}/{_ENT_ID}/reach-out-drafts",
-            {"message": "Been a while — coffee next week?", "channel": "telegram"},
-        )
-
-        assert resp.status_code == 201, resp.text
-        body = resp.json()
-        assert body["id"] == str(fact_id)
-        assert body["message"] == "Been a while — coffee next week?"
-        assert body["channel"] == "telegram"
-        assert body["status"] == "draft"
-        assert seen["channel"] == "telegram"
-
-    async def test_drafting_sends_nothing_externally(self, monkeypatch):
-        """A draft is inert: no butler tool call, no MCP client, no send."""
-
-        async def fake_create(pool, entity_id, message, *, channel=None):
-            return {
-                "id": uuid.uuid4(),
-                "entity_id": entity_id,
-                "message": message,
-                "channel": channel,
-                "status": "draft",
-                "created_at": _NOW,
-            }
-
-        monkeypatch.setattr(reach_out_tools, "reach_out_draft_create", fake_create)
-
-        app, _, mcp = _make_app()
-        resp = await _post(
-            app,
-            f"{_BASE}/{_ENT_ID}/reach-out-drafts",
-            {"message": "Hello there", "channel": "email"},
-        )
-
-        assert resp.status_code == 201, resp.text
-        # The MCP manager is the only route out of this process to a butler
-        # (and therefore to a channel).  It must be untouched.
-        assert mcp.mock_calls == []
-
-    async def test_duplicate_returns_409(self, monkeypatch):
-        existing = uuid.uuid4()
-
-        async def fake_create(pool, entity_id, message, *, channel=None):
-            return {"skipped": "duplicate", "existing_id": str(existing)}
-
-        monkeypatch.setattr(reach_out_tools, "reach_out_draft_create", fake_create)
-
-        app, _, _ = _make_app()
-        resp = await _post(app, f"{_BASE}/{_ENT_ID}/reach-out-drafts", {"message": "Hello there"})
-
-        assert resp.status_code == 409, resp.text
-        detail = resp.json()["detail"]
-        assert detail["code"] == "duplicate_reach_out_draft"
-        assert detail["existing_id"] == str(existing)
-
-    async def test_blank_message_rejected(self):
-        app, _, _ = _make_app()
-        resp = await _post(app, f"{_BASE}/{_ENT_ID}/reach-out-drafts", {"message": ""})
-        assert resp.status_code == 422
-
-    async def test_non_owner_returns_403(self, monkeypatch):
-        monkeypatch.setattr(reach_out_tools, "reach_out_draft_create", AsyncMock())
-        app, _, _ = _make_app(caller_is_owner=False)
-        resp = await _post(app, f"{_BASE}/{_ENT_ID}/reach-out-drafts", {"message": "Hi there"})
-        _assert_owner_required(resp)
-
-    async def test_missing_entity_returns_404(self, monkeypatch):
-        monkeypatch.setattr(reach_out_tools, "reach_out_draft_create", AsyncMock())
-        app, _, _ = _make_app(entity_exists=False)
-        resp = await _post(app, f"{_BASE}/{_ENT_ID}/reach-out-drafts", {"message": "Hi there"})
-        assert resp.status_code == 404
-
-    async def test_list_returns_drafts(self):
-        fact_id = uuid.uuid4()
-        app, pool, _ = _make_app()
-        row = MagicMock()
-        data = {
-            "id": fact_id,
-            "content": "Been a while — coffee next week?",
-            "metadata": {"channel": "telegram", "status": "draft"},
-            "created_at": _NOW,
-        }
-        row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
-        pool.fetch = AsyncMock(return_value=[row])
-
-        async with _client(app) as client:
-            resp = await client.get(f"{_BASE}/{_ENT_ID}/reach-out-drafts")
-
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == str(fact_id)
-        assert body[0]["channel"] == "telegram"
-        assert body[0]["status"] == "draft"
-
-    async def test_list_missing_entity_returns_404(self):
-        app, _, _ = _make_app(entity_exists=False)
-        async with _client(app) as client:
-            resp = await client.get(f"{_BASE}/{_ENT_ID}/reach-out-drafts")
-        assert resp.status_code == 404
+    # The draft-reach-out verb (POST/GET /entities/{id}/reach-out-drafts) and
+    # its inert fact predicate were retired in bu-2jtfw.11, replaced by the
+    # prepared-action mechanism on the approvals spine -- see
+    # tests/modules/approvals/test_prepared_actions.py and
+    # roster/relationship/jobs/relationship_jobs.py's stale-contact producer.

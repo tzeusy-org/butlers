@@ -7045,21 +7045,6 @@ export interface EntityInteraction {
   direction: string | null;
 }
 
-/**
- * A drafted reach-out for a relationship entity (predicate='reach_out_draft').
- *
- * A draft is drafted, never sent: there is no send endpoint behind this
- * surface, and `channel` records the channel the owner had in mind rather
- * than a delivery attempt. `status` is always "draft" today.
- */
-export interface EntityReachOutDraft {
-  id: string;
-  message: string | null;
-  channel: string | null;
-  status: string;
-  created_at: string | null;
-}
-
 /** Request body for POST /api/relationship/entities/{id}/notes. */
 export interface CreateEntityNoteRequest {
   content: string;
@@ -7085,12 +7070,6 @@ export interface CreateEntityInteractionRequest {
 export interface CreateEntityGiftRequest {
   description: string;
   occasion?: string | null;
-}
-
-/** Request body for POST /api/relationship/entities/{id}/reach-out-drafts. */
-export interface CreateEntityReachOutDraftRequest {
-  message: string;
-  channel?: string | null;
 }
 
 /** A gift fact for a relationship entity (predicate='gift'). */
