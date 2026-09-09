@@ -92,6 +92,27 @@ def _row_to_document(r: dict) -> DocumentModel:
     return DocumentModel(**_row_to_dict(r))
 
 
+def _rows_to_models(rows: list, converter, entity_label: str) -> tuple[list, list[str]]:
+    """Convert rows to models, excluding-and-disclosing any that fail to convert.
+
+    Mirrors /upcoming's per-row degraded-mode pattern: a single corrupt row
+    (e.g. unparseable metadata) must not fail the whole sub-collection.
+    Returns (converted_models, unreadable_row_ids).
+    """
+    models = []
+    unreadable_ids: list[str] = []
+    for r in rows:
+        raw_id = str(r["id"])
+        try:
+            models.append(converter(dict(r)))
+        except Exception:
+            logger.warning(
+                "get_trip_summary: excluding unreadable %s %s", entity_label, raw_id, exc_info=True
+            )
+            unreadable_ids.append(raw_id)
+    return models, unreadable_ids
+
+
 # ---------------------------------------------------------------------------
 # GET /trips — filtered, paginated trip listing
 # ---------------------------------------------------------------------------
@@ -156,11 +177,27 @@ async def list_trips(
         limit,
     )
 
-    data = [_row_to_trip(dict(r)) for r in rows]
+    data: list[TripModel] = []
+    unreadable_trip_ids: list[str] = []
+    for r in rows:
+        raw_trip_id = str(r["id"])
+        try:
+            data.append(_row_to_trip(dict(r)))
+        except Exception:
+            # A single unreadable trip (e.g. corrupt metadata) must not 500 the
+            # whole list; exclude it and disclose the id, mirroring /upcoming's
+            # degraded-mode envelope.
+            logger.warning("list_trips: excluding unreadable trip %s", raw_trip_id, exc_info=True)
+            unreadable_trip_ids.append(raw_trip_id)
 
     return PaginatedResponse[TripModel](
         data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+        meta=PaginationMeta(
+            total=total,
+            offset=offset,
+            limit=limit,
+            unreadable_trip_ids=unreadable_trip_ids,
+        ),
     )
 
 
@@ -188,7 +225,19 @@ async def get_trip_summary(
     if trip_row is None:
         raise HTTPException(status_code=404, detail=f"Trip not found: {trip_id}")
 
-    trip = _row_to_trip(dict(trip_row))
+    try:
+        trip = _row_to_trip(dict(trip_row))
+    except Exception:
+        # The top-level trip row is the entire response's subject -- there is
+        # no sub-collection to exclude-and-continue over. Fail with an honest,
+        # documented error instead of an unhandled 500.
+        logger.warning(
+            "get_trip_summary: trip %s row is corrupt and unreadable", trip_id, exc_info=True
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Trip {trip_id} data is corrupt and could not be read",
+        )
 
     legs_rows = await pool.fetch(
         "SELECT id, trip_id, type, carrier, departure_airport_station, departure_city,"
@@ -197,7 +246,7 @@ async def get_trip_summary(
         " FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at ASC",
         trip_id,
     )
-    legs = [_row_to_leg(dict(r)) for r in legs_rows]
+    legs, unreadable_leg_ids = _rows_to_models(legs_rows, _row_to_leg, "leg")
 
     acc_rows = await pool.fetch(
         "SELECT id, trip_id, type, name, address, check_in, check_out,"
@@ -205,7 +254,9 @@ async def get_trip_summary(
         " FROM travel.accommodations WHERE trip_id = $1::uuid ORDER BY check_in ASC",
         trip_id,
     )
-    accommodations = [_row_to_accommodation(dict(r)) for r in acc_rows]
+    accommodations, unreadable_accommodation_ids = _rows_to_models(
+        acc_rows, _row_to_accommodation, "accommodation"
+    )
 
     res_rows = await pool.fetch(
         "SELECT id, trip_id, type, provider, datetime, confirmation_number,"
@@ -213,16 +264,19 @@ async def get_trip_summary(
         " FROM travel.reservations WHERE trip_id = $1::uuid ORDER BY datetime ASC",
         trip_id,
     )
-    reservations = [_row_to_reservation(dict(r)) for r in res_rows]
+    reservations, unreadable_reservation_ids = _rows_to_models(
+        res_rows, _row_to_reservation, "reservation"
+    )
 
     documents: list[DocumentModel] = []
+    unreadable_document_ids: list[str] = []
     if include_documents:
         doc_rows = await pool.fetch(
             "SELECT id, trip_id, type, blob_ref, expiry_date, metadata, created_at"
             " FROM travel.documents WHERE trip_id = $1::uuid ORDER BY created_at ASC",
             trip_id,
         )
-        documents = [_row_to_document(dict(r)) for r in doc_rows]
+        documents, unreadable_document_ids = _rows_to_models(doc_rows, _row_to_document, "document")
 
     # Build timeline
     timeline: list[TimelineEntryModel] = []
@@ -277,6 +331,10 @@ async def get_trip_summary(
         documents=documents,
         timeline=timeline,
         alerts=alerts,
+        unreadable_leg_ids=unreadable_leg_ids,
+        unreadable_accommodation_ids=unreadable_accommodation_ids,
+        unreadable_reservation_ids=unreadable_reservation_ids,
+        unreadable_document_ids=unreadable_document_ids,
     )
 
 
