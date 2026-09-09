@@ -360,6 +360,7 @@ import type {
   HeartbeatFacts,
   InsightDeliveryState,
   DriftFacts,
+  StoredFunctionFacts,
   ConditionsFacts,
   HealingDispatchEvent,
   DelegationLedgerEntry,
@@ -6082,6 +6083,16 @@ export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliverySt
  */
 export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
   return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
+}
+
+/**
+ * Fetch the stored-function drift comparison (bu-bi5an).
+ *
+ * Always returns HTTP 200. `stored_function_check_available: false` means the
+ * comparison itself failed -- treat that as "unknown", not "clean".
+ */
+export function getStoredFunctionFacts(): Promise<ApiResponse<StoredFunctionFacts>> {
+  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/stored-functions");
 }
 
 /** Params for getSystemConditions(). */

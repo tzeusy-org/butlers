@@ -924,6 +924,7 @@ export {
   getButlerHeartbeats,
   getInsightDeliveryState,
   getDriftFacts,
+  getStoredFunctionFacts,
   getSystemConditions,
   getDeploymentFacts,
   listDelegationLedger,
@@ -963,6 +964,8 @@ export type {
   ReactionEntry,
   ReactionSummary,
   SchemaSize,
+  StoredFunctionEntry,
+  StoredFunctionFacts,
   SubscriptionEntry,
   TableSize,
 } from "./types.ts";
