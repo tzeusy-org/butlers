@@ -158,7 +158,7 @@ def _build_route_runtime_context(
         for att in attachments:
             filename = att.get("filename", "unnamed")
             media_type = att.get("media_type", "unknown")
-            size_kb = att.get("size_bytes", 0) / 1024
+            size_kb = (att.get("size_bytes") or 0) / 1024
             storage_ref = att.get("storage_ref")
             if storage_ref:
                 att_lines.append(
@@ -166,17 +166,24 @@ def _build_route_runtime_context(
                     f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
                 )
             else:
+                # No retrieval tool exists for a storage_ref-less attachment yet
+                # (bu-2jtfw.7 S4, attachment_materialize, is unimplemented) — say
+                # so honestly instead of promising an "on-demand retrieval" verb
+                # that does not exist.
                 att_lines.append(
                     f"  - filename={filename}, media_type={media_type}, "
-                    f"size={size_kb:.1f}KB, status=pending_lazy_fetch"
+                    "status=unavailable (could not be fetched; no storage_ref)"
                 )
         context_parts.append(
             f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
             + "\n".join(att_lines)
-            + "\n\nTo retrieve an attachment, call `get_attachment(storage_ref=<storage_ref>)` "
-            "using the EXACT storage_ref value shown above (starts with 's3://'). "
-            "Do NOT pass the filename. "
-            "Lazy-fetch attachments (no storage_ref) require on-demand retrieval."
+            + "\n\nTo view an IMAGE attachment, call "
+            "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
+            "value shown above (starts with 's3://') — it returns the image itself. "
+            "For a non-image attachment with a storage_ref, call "
+            "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
+            "filename as storage_ref. An attachment shown as status=unavailable has "
+            "no retrieval tool yet — do not guess at its contents; say so plainly."
         )
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(
         source_channel, addressed=addressed
@@ -1095,6 +1102,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                     # unresolved for recovery rather than recording a
                                     # false terminal failure.
                                     route_lease_lost=lease_lost,
+                                    attachments=parsed_route.input.attachments,
                                 ),
                             )
                             if lease_lost.is_set():

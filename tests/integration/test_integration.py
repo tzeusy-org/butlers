@@ -395,7 +395,7 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
-        assert len(set(registered_tools)) == 64
+        assert len(set(registered_tools)) == 65
         assert {"state_list", "notify", "seasonal_period_create", "route.execute"} <= set(
             registered_tools
         )
