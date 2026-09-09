@@ -15,6 +15,7 @@ import os
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import anyio
 from croniter import croniter
@@ -33,6 +34,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import (
     ApiResponse,
+    BlindSpotSignal,
     ButlerConfigResponse,
     ButlerDetail,
     ButlerSummary,
@@ -249,6 +251,47 @@ async def _fetch_registered_duration(
 
     elapsed = (datetime.now(UTC) - registered_at).total_seconds()
     return max(elapsed, 0.0)
+
+
+async def _fetch_blind_spots(
+    db: DatabaseManager,
+    butler_name: str,
+    modules: dict[str, Any],
+) -> tuple[list[BlindSpotSignal], datetime | None, bool]:
+    """Return the same declared-signal blind-spot projection the spawner injects.
+
+    Derives its patterns from :func:`butlers.core.blind_spot_declarations.declared_signal_patterns`
+    and evaluates them via :func:`butlers.core.expected_signals.evaluate_declared_signals` --
+    the exact functions the spawner's preamble injection calls (bu-2jtfw.13 AC5:
+    this endpoint and the injected preamble must never disagree).
+
+    Returns an empty, non-failed projection when the butler's pool is
+    unavailable or it has no eligible declared dependencies.
+    """
+    from butlers.core.blind_spot_declarations import declared_signal_patterns
+    from butlers.core.expected_signals import evaluate_declared_signals
+
+    patterns = declared_signal_patterns(modules)
+    if not patterns:
+        return [], None, False
+
+    try:
+        pool = db.pool(butler_name)
+    except KeyError:
+        return [], None, False
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=patterns)
+    signals = [
+        BlindSpotSignal(
+            signal_key=s.signal_key,
+            producer=s.producer,
+            last_observed_at=s.last_observed_at,
+            state=s.state.value,
+            unmeasurable_reason=s.unmeasurable_reason,
+        )
+        for s in snapshot.signals
+    ]
+    return signals, snapshot.evaluated_at, snapshot.query_failed
 
 
 def _build_process_facts(
@@ -915,6 +958,9 @@ async def get_butler_detail(
     last_session_started_at = await _fetch_last_session_started_at(db, name)
     registered_duration = await _fetch_registered_duration(db, name)
     process_facts = _build_process_facts(connection_info, roster_dir, registered_duration)
+    blind_spots, blind_spots_evaluated_at, blind_spots_query_failed = await _fetch_blind_spots(
+        db, name, config.modules
+    )
 
     detail = ButlerDetail(
         name=config.name,
@@ -930,6 +976,9 @@ async def get_butler_detail(
         sessions_24h=sessions_map.get(name, 0),
         last_session_started_at=last_session_started_at,
         process_facts=process_facts,
+        blind_spots=blind_spots,
+        blind_spots_evaluated_at=blind_spots_evaluated_at,
+        blind_spots_query_failed=blind_spots_query_failed,
     )
 
     return ApiResponse[ButlerDetail](data=detail)

@@ -81,6 +81,7 @@ class ScheduleConfig:
     job_args: dict[str, Any] | None = None
     max_token_budget: int | None = None
     complexity: str | None = None
+    continuity: bool = False
 
 
 @dataclass
@@ -498,6 +499,10 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             )
         complexity = normalized_complexity
 
+    raw_continuity = entry.get("continuity", False)
+    if not isinstance(raw_continuity, bool):
+        raise ConfigError(f"{entry_path}.continuity must be a boolean when set")
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -512,12 +517,15 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             dispatch_mode=dispatch_mode,
             max_token_budget=max_token_budget,
             complexity=complexity,
+            continuity=raw_continuity,
         )
 
     if prompt is not None:
         raise ConfigError(f"{entry_path}.prompt is not allowed when dispatch_mode='job'")
     if job_name is None or not job_name.strip():
         raise ConfigError(f"{entry_path} with dispatch_mode='job' requires non-empty job_name")
+    if raw_continuity:
+        raise ConfigError(f"{entry_path}.continuity is only valid when dispatch_mode='prompt'")
 
     return ScheduleConfig(
         name=name,

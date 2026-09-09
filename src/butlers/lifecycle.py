@@ -368,6 +368,7 @@ async def run_startup(daemon: Any) -> None:
             "job_args": s.job_args,
             "max_token_budget": s.max_token_budget,
             "complexity": s.complexity,
+            "continuity": s.continuity,
         }
         for s in daemon.config.schedules
         if not (_is_staffer and s.job_name == "daily_briefing_contribution")

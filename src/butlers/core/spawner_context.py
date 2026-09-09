@@ -119,14 +119,17 @@ def _compose_system_prompt(
     general_timezone_instruction: str | None = None,
     routing_instructions: str | None = None,
     context_preamble: str | None = None,
+    blind_spot_preamble: str | None = None,
 ) -> str:
     """Compose the runtime system prompt from base instructions, routing instructions, and memory.
 
     Layering order (stable for token-cache efficiency):
     1. Base system prompt (CLAUDE.md — static)
     2. Situational context preamble (dynamic, from context bus)
-    3. Owner routing instructions (semi-static, sorted by priority)
-    4. Memory context (dynamic per-request)
+    3. Blind-spot preamble (dynamic; absent whenever every declared signal is
+       PRESENT, so this layer is byte-identical no-op text in the happy path)
+    4. Owner routing instructions (semi-static, sorted by priority)
+    5. Memory context (dynamic per-request)
 
     Contract:
     - Runtime always receives the raw CLAUDE.md-derived system prompt when no
@@ -139,6 +142,8 @@ def _compose_system_prompt(
         prompt = f"{prompt}\n\n{general_timezone_instruction}"
     if context_preamble:
         prompt = f"{prompt}\n\n{context_preamble}"
+    if blind_spot_preamble:
+        prompt = f"{prompt}\n\n{blind_spot_preamble}"
     if routing_instructions:
         prompt = f"{prompt}\n\n{routing_instructions}"
     if memory_context:
@@ -361,6 +366,41 @@ async def fetch_situational_context_preamble(
                 exc_info=True,
             )
         return None
+
+
+async def fetch_blind_spot_preamble(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+    config: ButlerConfig,
+    *,
+    enabled: bool = True,
+) -> str | None:
+    """Fetch the declared-signal blind-spot preamble for *butler_name*.
+
+    Unlike the other fetchers in this module, this is deliberately
+    **fail-closed**: :func:`butlers.core.expected_signals.evaluate_declared_signals`
+    catches its own DB errors and reports them as a typed "could not be
+    evaluated" block rather than degrading to ``None``. Omitting this layer on
+    error would be indistinguishable from "every declared signal is present",
+    which is the exact honesty failure this preamble exists to prevent.
+
+    *enabled* is the ``runtime_config.blind_spot_preamble_enabled`` kill
+    switch (default on). When ``False``, or when the butler declares no
+    eligible module dependencies, this returns ``None`` -- matching today's
+    prompt exactly (see the design's Rollback contract).
+    """
+    if not enabled or pool is None:
+        return None
+
+    from butlers.core.blind_spot_declarations import declared_signal_patterns
+    from butlers.core.expected_signals import evaluate_declared_signals, format_blind_spot_preamble
+
+    patterns = declared_signal_patterns(config.modules)
+    if not patterns:
+        return None
+
+    snapshot = await evaluate_declared_signals(pool, signal_key_like_patterns=patterns)
+    return format_blind_spot_preamble(snapshot)
 
 
 async def store_session_episode(
