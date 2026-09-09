@@ -32,15 +32,42 @@ instructs its worker to use `/excalidraw-diagram` to create or update one
 
 Numbering convention, grouped by concern:
 
-| Prefix | Concern | Typical contents |
-|--------|---------|-----------------|
-| `01-`  | System topology | All butlers, connectors, DB, LLM runtimes, dashboard |
-| `02-`  | Butler specification | Core + modules anatomy, MCP, spawner, config |
-| `03x-` | Fixed butler designs | Switchboard (a), General (b), and any future fixed butlers |
-| `04x-` | Rostered butler user flows | One diagram per rostered specialist butler |
-| `05-`  | Connector design | ingest.v1 envelope, dedup, heartbeat, implemented connectors |
-| `06x-` | Core component deep-dives | Spawner (a), Scheduler (b), State Store (c), Startup (d), DB Schema (e) |
-| `07x-` | Dashboard | API gateway (a), core data flows (b) |
+| Prefix | Concern | Typical contents | Directory |
+|--------|---------|-----------------|-----------|
+| `01-`  | System topology | All butlers, connectors, DB, LLM runtimes, dashboard | `architecture/` |
+| `02-`  | Butler specification | Core + modules anatomy, MCP, spawner, config | `butlers/` |
+| `03x-` | Fixed butler designs | Switchboard (a), General (b), and any future fixed butlers | `butlers/` |
+| `04x-` | Rostered butler user flows | One diagram per rostered specialist butler | `butlers/` |
+| `05-`  | Connector design | ingest.v1 envelope, dedup, heartbeat, implemented connectors | `connectors/` |
+| `06x-` | Core component deep-dives | Spawner (a), Scheduler (b), State Store (c), Startup (d), DB Schema (e) | `runtime/` (a-c), `architecture/` (d-e) |
+| `07x-` | Dashboard | API gateway (a), core data flows (b) | `frontend/` |
+
+## Directory Layout
+
+`docs/diagrams/` is organized into category subdirectories, not a flat file
+list. Numbered diagrams (above) live in the directory noted in the table;
+additional descriptively-named diagrams (no numeric prefix) also live under
+their category:
+
+- `architecture/` — system topology, database schema, startup/routing flows
+- `butlers/` — butler specification and per-butler user-flow diagrams
+- `concepts/` — cross-cutting concepts (butler lifecycle, modules and
+  connectors, switchboard routing)
+- `connectors/` — connector design and ingestion pipeline
+- `data/` — schema topology
+- `frontend/` — dashboard diagrams
+- `identity/` — OAuth flow, owner identity bootstrap
+- `modules/` — module system, approval flow, entity data model, predicate
+  lifecycle
+- `operations/` — deployment diagrams
+- `runtime/` — spawner, scheduler, state store, session lifecycle
+- `testing/` — test pyramid
+
+Each `.excalidraw` source may have a matching `<name>_dark.svg` export
+alongside it in the same directory. Place new or updated diagrams in the
+matching category subdirectory (e.g.
+`docs/diagrams/runtime/06a-spawner-runtime.excalidraw`) — never directly
+under `docs/diagrams/`.
 
 ## Workflow
 
@@ -56,8 +83,9 @@ Gather in parallel:
    `ls roster/*/api/router.py`. Count core and butler-specific routers.
 4. **Connectors** — `ls src/butlers/connectors/` (or scan for connector
    dirs). Note new/removed connectors.
-5. **Existing diagrams** — `ls docs/diagrams/*.excalidraw`; record what
-   already exists and its naming.
+5. **Existing diagrams** — `find docs/diagrams -name '*.excalidraw'`; record
+   what already exists, its naming, and which category subdirectory it lives
+   in (see Directory Layout below).
 6. **Specs** — `ls openspec/specs/` for reference material to cite in bead
    descriptions.
 
@@ -103,14 +131,15 @@ Description:
 
   Reference: <spec paths, source files the worker should read>
 
-  [If updating] Existing file: docs/diagrams/<name>.excalidraw — read it
-  first and preserve layout/style where possible. Update only the parts
-  that changed.
+  [If updating] Existing file: docs/diagrams/<category>/<name>.excalidraw —
+  read it first and preserve layout/style where possible. Update only the
+  parts that changed.
 
 Acceptance criteria:
   1. Diagram renders in Excalidraw without errors
   2. <Content-specific checks — one per major element>
-  3. File saved as docs/diagrams/<name>.excalidraw
+  3. File saved as docs/diagrams/<category>/<name>.excalidraw (see
+     Directory Layout for the category)
 
 Estimate: 60  (minutes)
 ```
@@ -158,8 +187,8 @@ Present the created beads as a table:
   names, file paths. Never say "various tools"; enumerate them.
 - **Reference source files** — `Reference:` lines pointing to specs, source
   code, and config files the worker should read.
-- **Specify the output path** — every bead names its output file in
-  `docs/diagrams/`.
+- **Specify the output path** — every bead names its output file as
+  `docs/diagrams/<category>/<name>.excalidraw` (see Directory Layout).
 - **Request consistent color coding** — butlers=blue, connectors=green,
   DB=orange, LLM runtimes=purple, dashboard=teal, external channels=gray.
 - **Request a legend** for topology diagrams.
