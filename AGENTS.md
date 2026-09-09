@@ -1874,6 +1874,18 @@ Corollary for reviewers: a branch that changes wire shape and has NO folder unde
 is the shape to be suspicious of. Contract movement belongs in a delta; the baseline moves only at
 `openspec archive`.
 
+### A spec-overwrite ratchet "healing" commit needs a collector re-run, not a file diff
+
+An additive-only diff to `scripts/spec-overwrite-baseline.json` does not by itself prove a "healing"
+commit (one that restores baseline content an earlier archive silently dropped) actually repaired
+every ratchet entry it removes. Rerun the unchanged `collect()` classifier from
+`check_spec_overwrites.py` against the healing commit AND its parent and diff the per-record output;
+an entry can disappear from the ratchet purely because its baseline clause was already absent for
+unrelated reasons BEFORE the commit, which the commit did not prove and should not get credit for.
+Precedent: PR #4053 initially claimed 128 healed ratchet records; re-running the collector against
+the additive PR #3958 commit and its parent (`bu-c96yi` review) found only 103 with exact
+before/after provenance, and the other 25 were restored to the ratchet as still-frozen.
+
 ### Secrets: CLI `label` is an alias for the `description` column
 
 `_fetch_single_cli_secret` (`src/butlers/api/routers/secrets_v2.py`) builds `CliRuntimeDetail(...,
