@@ -258,6 +258,22 @@ class IngestPayloadV1(BaseModel):
     normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
     attachments: tuple[IngestAttachment, ...] | None = None
 
+    @model_validator(mode="after")
+    def _validate_normalized_text_or_attachments(self) -> IngestPayloadV1:
+        """normalized_text stays non-empty for text/caption content.
+
+        It MAY be empty only for a captionless media message, i.e. when
+        `attachments` carries the real content instead (bu-2jtfw.7).
+        """
+        if not self.normalized_text and not self.attachments:
+            raise PydanticCustomError(
+                "normalized_text_or_attachments_required",
+                "payload.normalized_text must be non-empty unless payload.attachments "
+                "is non-empty.",
+                {},
+            )
+        return self
+
 
 PayloadType = Literal["conversation_history"]
 
