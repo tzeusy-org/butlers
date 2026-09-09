@@ -17,6 +17,7 @@ import { useNavigate } from "react-router";
 import { MessageCircleIcon, Maximize2Icon, PlusIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import type { ConversationSummary } from "@/api/types.ts";
 import { ConversationHeader } from "./ConversationHeader.tsx";
 import { ConversationReadError } from "./ConversationReadError.tsx";
@@ -76,11 +77,15 @@ export function ChatDock({ onClose }: ChatDockProps) {
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
-  const { data: conversationsData, isLoading: isLoadingConversations } =
-    useConversations(WIDGET_BUTLER);
+  const {
+    data: conversationsData,
+    isLoading: isLoadingConversations,
+    isError: isConversationsError,
+  } = useConversations(WIDGET_BUTLER);
+  const conversationsResult = conversationsData?.data;
   const conversations: ConversationSummary[] = useMemo(
-    () => conversationsData?.data ?? [],
-    [conversationsData],
+    () => conversationsResult ?? [],
+    [conversationsResult],
   );
 
   const {
@@ -221,6 +226,15 @@ export function ChatDock({ onClose }: ChatDockProps) {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
+        {isConversationsError && !activeConversationId && (
+          <SourceDegradedNote
+            className="mx-3 mt-2"
+            label="Recent conversations"
+            detail="couldn't load — starting a new conversation"
+            testId="chat-dock-conversations-degraded"
+          />
+        )}
+
         <ConversationHeader
           butlerName={WIDGET_BUTLER}
           conversation={activeConversation}
