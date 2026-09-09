@@ -2399,6 +2399,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Entities appear as the General butler stores structured data.
 - Search entities...
 
+## `frontend/src/components/general/HeldCapturesPanel.tsx`
+
+- Held captures
+- Nothing held -- every capture has been routed.
+- Held
+- Captures ledger
+
 ## `frontend/src/components/health/ConditionForm.tsx`
 
 - Name
@@ -4201,4 +4208,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3291*
+*Total strings: 3295*

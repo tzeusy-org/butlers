@@ -53,6 +53,26 @@ async def pool(provisioned_postgres_pool):
             "CREATE INDEX IF NOT EXISTS idx_collection_items_tags_gin"
             " ON collection_items USING GIN (tags)"
         )
+        await p.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS collection_vocabulary (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                canonical_name TEXT NOT NULL UNIQUE,
+                shape_description TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS collection_aliases (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                alias TEXT NOT NULL UNIQUE,
+                canonical_name TEXT NOT NULL
+                    REFERENCES collection_vocabulary (canonical_name) ON DELETE CASCADE,
+                merged_into TEXT
+                    REFERENCES collection_vocabulary (canonical_name) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
 
         yield p
 
@@ -180,9 +200,29 @@ async def test_item_create(pool):
     assert entity["data"]["age"] == 30
 
 
-async def test_item_create_auto_creates_missing_collection(pool):
-    """item_create auto-creates a collection so capture does not fail."""
-    from butlers.tools.general import collection_list, item_create, item_get
+async def test_item_create_unknown_collection_raises_and_creates_nothing(pool):
+    """item_create no longer auto-vivifies -- an undeclared name raises."""
+    from butlers.tools.general import item_create
+    from butlers.tools.general.vocabulary import UnknownCollectionError
+
+    with pytest.raises(UnknownCollectionError, match="collection_declare"):
+        await item_create(
+            pool,
+            "episodes",
+            {"summary": "Captured note"},
+            tags=["auto-created"],
+        )
+
+    count = await pool.fetchval("SELECT count(*) FROM collections WHERE name = 'episodes'")
+    assert count == 0
+
+
+async def test_item_create_resolves_declared_collection(pool):
+    """item_create succeeds once the collection has been declared."""
+    from butlers.tools.general import item_create, item_get
+    from butlers.tools.general.vocabulary import collection_declare
+
+    await collection_declare(pool, "episodes", "A captured note or observation.")
 
     eid = await item_create(
         pool,
@@ -195,9 +235,6 @@ async def test_item_create_auto_creates_missing_collection(pool):
     assert entity is not None
     assert entity["data"] == {"summary": "Captured note"}
     assert entity["tags"] == ["auto-created"]
-
-    collections = await collection_list(pool)
-    assert [c["name"] for c in collections] == ["episodes"]
 
 
 async def test_item_create_with_tags(pool):

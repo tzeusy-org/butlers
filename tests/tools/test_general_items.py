@@ -10,21 +10,25 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_item_create_auto_creates_collection_before_insert() -> None:
-    """item_create resolves-or-creates the collection, then inserts the item.
+async def test_item_create_resolves_via_vocabulary_before_insert(monkeypatch) -> None:
+    """A collection unknown to the ``collections`` table resolves through the
+    vocabulary before falling back to the ON CONFLICT upsert + item insert.
 
-    The common path is a lightweight SELECT; a new collection name falls back
-    to an ON CONFLICT upsert before the item insert. This exercises the
-    new-collection path (SELECT misses, upsert creates, item inserts).
+    The vocabulary resolution itself is exercised by
+    ``roster/general/tests/test_collection_vocabulary.py``; this test only
+    pins that ``item_create`` calls it on a miss and uses its result.
     """
-    from butlers.tools.general.items import item_create
+    from butlers.tools.general import items as items_mod
 
     collection_id = uuid.uuid4()
     expected_id = uuid.uuid4()
-    fetchval_mock = AsyncMock(side_effect=[None, collection_id, expected_id])
+    fetchval_mock = AsyncMock(side_effect=[None, None, collection_id, expected_id])
     pool = SimpleNamespace(fetchval=fetchval_mock)
 
-    item_id = await item_create(
+    resolve_mock = AsyncMock(return_value="episodes")
+    monkeypatch.setattr(items_mod._vocabulary, "resolve_collection_name", resolve_mock)
+
+    item_id = await items_mod.item_create(
         pool,
         "episodes",
         {"summary": "Captured note"},
@@ -32,18 +36,23 @@ async def test_item_create_auto_creates_collection_before_insert() -> None:
     )
 
     assert item_id == expected_id
-    assert fetchval_mock.await_count == 3
+    resolve_mock.assert_awaited_once_with(pool, "episodes")
+    assert fetchval_mock.await_count == 4
 
-    select_call = fetchval_mock.await_args_list[0].args
-    assert "SELECT id FROM collections" in select_call[0]
-    assert select_call[1] == "episodes"
+    first_select = fetchval_mock.await_args_list[0].args
+    assert "SELECT id FROM collections" in first_select[0]
+    assert first_select[1] == "episodes"
 
-    coll_insert_call = fetchval_mock.await_args_list[1].args
+    second_select = fetchval_mock.await_args_list[1].args
+    assert "SELECT id FROM collections" in second_select[0]
+    assert second_select[1] == "episodes"
+
+    coll_insert_call = fetchval_mock.await_args_list[2].args
     assert "INSERT INTO collections" in coll_insert_call[0]
     assert "ON CONFLICT (name) DO UPDATE" in coll_insert_call[0]
     assert coll_insert_call[1] == "episodes"
 
-    item_insert_call = fetchval_mock.await_args_list[2].args
+    item_insert_call = fetchval_mock.await_args_list[3].args
     assert "INSERT INTO collection_items" in item_insert_call[0]
     assert item_insert_call[1] == collection_id
     assert item_insert_call[2] == {"summary": "Captured note"}

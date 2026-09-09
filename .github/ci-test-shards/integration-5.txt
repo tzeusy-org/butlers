@@ -1,13 +1,18 @@
 roster/concierge/tests/test_dashboard_read.py
+roster/general/tests/test_collection_vocabulary.py
+roster/general/tests/test_vocabulary_no_punctuation_twins.py
 roster/relationship/tests/test_tools.py
 roster/travel/tests/test_migration_travel_002.py
 tests/api/test_conversation_recall_search_db.py
 tests/api/test_optional_schema_lifecycle_db.py
 tests/config/test_runtime_config_policy_migration_integration.py
 tests/config/test_switchboard_connector_operational_role_migration.py
+tests/integration/test_capture_ledger_real_pg.py
 tests/integration/test_commitments_entity_graph_edges.py
 tests/integration/test_entity_graph_walk.py
 tests/integration/test_fleet_case_contribution_roundtrip.py
+tests/integration/test_general_search_vector_real_pg.py
+tests/integration/test_general_vocabulary_real_pg.py
 tests/integration/test_runtime_attention_daemon_wiring.py
 tests/integration/test_runtime_attention_delivery_worker.py
 tests/jobs/test_flight_status.py
@@ -21,4 +26,5 @@ tests/migrations/test_runtime_attention_outbox_migration.py
 tests/migrations/test_runtime_attention_producer_upgrade.py
 tests/modules/approvals/test_prepared_actions.py
 tests/modules/approvals/test_prepared_execution.py
+tests/modules/memory/test_catalog_admits_captures.py
 tests/scripts/test_pg_restore_definer_ownership.py

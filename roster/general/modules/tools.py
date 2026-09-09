@@ -60,8 +60,10 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers import context_bus as _ctx
+    from butlers.tools.general import capture_search as _capture_search
     from butlers.tools.general import collections as _coll
     from butlers.tools.general import items as _items
+    from butlers.tools.general import vocabulary as _vocab
 
     # =============================================================
     # Situational context-bus tools (RFC 0009)
@@ -275,3 +277,49 @@ def register_tools(mcp: Any, module: Any) -> None:
     async def item_delete(item_id: uuid.UUID) -> None:
         """Delete an item."""
         await _items.item_delete(module._get_pool(), item_id)
+
+    # =============================================================
+    # Collection vocabulary tools
+    # =============================================================
+
+    @mcp.tool()
+    async def collection_declare(name: str, shape_description: str) -> uuid.UUID:
+        """Declare a new canonical collection ``item_create`` can resolve to.
+
+        ``shape_description`` is required and must be non-empty -- a
+        declared collection with no shape is rejected. Declaring the same
+        name twice is safe and returns the existing collection's id.
+        """
+        return await _vocab.collection_declare(module._get_pool(), name, shape_description)
+
+    @mcp.tool()
+    async def vocabulary_list() -> list[dict[str, Any]]:
+        """List all declared canonical collections and their shape description."""
+        return await _vocab.vocabulary_list(module._get_pool())
+
+    # =============================================================
+    # Capture search
+    # =============================================================
+
+    @mcp.tool()
+    async def capture_search(
+        query: str,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Keyword-search collection items, bounded by limit and a keyset cursor.
+
+        Returns ``{"items": [...], "next_cursor", "has_more", "degraded",
+        "degraded_reason"}``. ``degraded=True`` means the search index was
+        unavailable and a slower containment fallback was used.
+        """
+        return await _capture_search.capture_search(
+            module._get_pool(),
+            query,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            cursor=cursor,
+        )

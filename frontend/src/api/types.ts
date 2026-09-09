@@ -10110,3 +10110,34 @@ export interface DeliveryEntry {
    */
   reaction: ReactionSummary | null;
 }
+
+/** A row from public.captures -- capture()'s durable ledger (bu-2jtfw.9). */
+export interface CaptureSummary {
+  capture_id: string;
+  channel: string;
+  content: string;
+  receipt_state: "held" | "routed" | "refused";
+  routed_kind?: string | null;
+  target_schema?: string | null;
+  target_table?: string | null;
+  target_row_id?: string | null;
+  refusal_reason?: string | null;
+  source_butler: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Keyset pagination metadata for /api/captures. */
+export interface CapturesListMeta {
+  limit: number;
+  next_cursor?: string | null;
+  has_more: boolean;
+  /** Non-null/non-empty means the ledger pool was unreachable -- an empty
+   * `data` array in that case is not "no held captures", it's "couldn't ask". */
+  sources_degraded?: string[] | null;
+}
+
+export interface CapturesListResponse {
+  data: CaptureSummary[];
+  meta: CapturesListMeta;
+}
