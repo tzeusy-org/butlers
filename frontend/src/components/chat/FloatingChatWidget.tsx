@@ -85,8 +85,11 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
+import { useVisualViewportHeight } from "@/hooks/use-visual-viewport-height.ts";
 import { usePageContextCapture, type PageContextSnapshot } from "@/lib/page-context.tsx";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
+import { OPEN_CHAT_WIDGET_EVENT } from "@/lib/shortcut-help";
+import { announce } from "@/lib/shell-announcer";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -136,10 +139,27 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   const capturePageContext = usePageContextCapture();
   // This anchored popover deliberately leaves page tab order available, while
   // still following the shared focus-in/Escape/restore choreography.
-  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
+  // Initial focus lands on the composer (not the panel title, bu-0ynlk.13's
+  // wrong-focus-target fix); `obscureGuard` covers WCAG 2.2 2.4.11 for
+  // elements the non-trapping panel could otherwise visually cover.
+  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLTextAreaElement>({
     onClose,
     trapFocus: false,
+    obscureGuard: true,
   });
+  const viewportHeight = useVisualViewportHeight();
+
+  // The global 'c' shortcut (use-keyboard-shortcuts.ts) opens the widget when
+  // closed AND, per the behavior matrix, refocuses the composer when it's
+  // already open — the mount-triggered focus-in above already covers the
+  // "just opened" case, so this listener only needs to matter while mounted.
+  useEffect(() => {
+    function handleOpenChatWidget() {
+      initialFocusRef.current?.focus();
+    }
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+    return () => window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+  }, [initialFocusRef]);
 
   const [viewMode, setViewMode] = useState<"thread" | "history">("thread");
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -644,7 +664,8 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown provides the shared Escape/focus choreography; the rule's static role allowlist does not recognize the WAI-ARIA dialog pattern.
     <div
       ref={rootRef}
-      className="fixed bottom-20 right-4 z-40 flex h-[min(560px,70vh)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
+      className="fixed bottom-20 right-4 z-40 flex h-[min(560px,80dvh)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
+      style={viewportHeight != null ? { maxHeight: Math.min(560, viewportHeight - 96) } : undefined}
       role="dialog"
       aria-labelledby="floating-chat-widget-title"
       data-testid="floating-chat-panel"
@@ -653,20 +674,18 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b bg-card/80 px-3 py-2 shrink-0">
         <h2
-          ref={initialFocusRef}
           id="floating-chat-widget-title"
-          tabIndex={-1}
-          className="flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+          className="flex items-center gap-1.5 rounded-sm text-sm font-medium"
         >
           <MessageCircleIcon className="size-4 text-muted-foreground" />
           Talk to Butlers
         </h2>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1.5">
           {viewMode === "thread" ? (
             <>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setViewMode("history")}
                 aria-label="Conversation history"
                 title="History"
@@ -676,7 +695,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               </Button>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={handleNewConversation}
                 aria-label="New conversation"
                 title="New conversation"
@@ -688,7 +707,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           ) : (
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               onClick={() => setViewMode("thread")}
               aria-label="Back to conversation"
               title="Back"
@@ -699,7 +718,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           )}
           <Button
             variant="ghost"
-            size="icon-xs"
+            size="icon-sm"
             onClick={onClose}
             aria-label="Close chat"
             title="Close"
@@ -765,6 +784,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           )}
 
           <MessageInput
+            ref={initialFocusRef}
             value={inputValue}
             onChange={setInputValue}
             onSend={handleSendClick}
@@ -823,6 +843,31 @@ export function FloatingChatWidget() {
   // "Unread badge"). Always mounted (unlike WidgetPanel, which unmounts on
   // close) so polling continues regardless of open/closed state.
   const hasUnread = useChatUnreadBadge(WIDGET_BUTLER, open);
+
+  // Route the unread badge through the shell announcer (bu-0ynlk.13) so a
+  // screen-reader user hears about a reply that arrived while the panel was
+  // closed, not just a visual dot. Announce only on the false->true edge —
+  // the badge stays true across every subsequent ~60s poll, and re-announcing
+  // identical text is silent to screen readers anyway (see shell-announcer's
+  // `announce`), but this keeps the intent explicit: once per new reply.
+  const hadUnreadRef = useRef(false);
+  useEffect(() => {
+    if (hasUnread && !hadUnreadRef.current) {
+      announce("New reply from Butlers");
+    }
+    hadUnreadRef.current = hasUnread;
+  }, [hasUnread]);
+
+  // Global 'c' shortcut (use-keyboard-shortcuts.ts): open the widget if it's
+  // closed. WidgetPanel's own listener (mounted only while open) handles
+  // refocusing the composer when it's already open.
+  useEffect(() => {
+    function handleOpenChatWidget() {
+      setOpen(true);
+    }
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+    return () => window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+  }, []);
 
   // "Talk to Butlers" cmdk command (bu-86c4c.7 command spine) — opens the
   // widget from anywhere, same pattern as GlobalActionsRegistrar.
