@@ -4159,14 +4159,21 @@ export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
 }
 
 /**
- * List every registered source.
+ * Resolve specific registered sources by ID.
  *
- * The node detail panel resolves each `metadata.source_refs` entry against
- * this list: a hit yields the source's title, a miss means the source was
- * removed and the reference must be shown as unregistered rather than cited.
+ * The node detail panel calls this with the `source_id`s named by one node's
+ * `metadata.source_refs`, never the whole registry: a hit yields the source's
+ * title, a miss means the source was removed and the reference must be shown
+ * as unregistered rather than cited. An empty `sourceIds` array resolves to
+ * `[]` without a request — there is nothing to look up.
  */
-export function getEducationSources(): Promise<EducationSourceMaterial[]> {
-  return apiFetch<EducationSourceMaterial[]>("/education/sources");
+export function getEducationSources(
+  sourceIds: string[],
+): Promise<EducationSourceMaterial[]> {
+  if (sourceIds.length === 0) return Promise.resolve([]);
+  const sp = new URLSearchParams();
+  sp.set("source_ids", sourceIds.join(","));
+  return apiFetch<EducationSourceMaterial[]>(`/education/sources?${sp.toString()}`);
 }
 
 /** Get frontier nodes for a mind map. */
