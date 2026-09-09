@@ -5677,6 +5677,7 @@ export interface ConversationCancelResponse {
 export type ConversationSseEventType =
   | "conversation_created"
   | "dispatch_accepted"
+  | "phase"
   | "token"
   | "message_complete"
   | "error"
@@ -5686,6 +5687,20 @@ export type ConversationSseEventType =
 export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
+}
+
+/**
+ * Shape of the `data` payload on a `phase` SSE event (bu-0ynlk.7) — real-time
+ * processing status, never fabricated: a phase is only emitted when the
+ * backend can truthfully observe it (see
+ * `src/butlers/api/routers/conversations.py` module docstring).
+ */
+export interface ConversationSsePhaseData {
+  phase: "classifying" | "routed" | "starting_session" | "thinking" | "writing" | string;
+  /** The butler handling this turn (`routed`/`starting_session`). */
+  target?: string | null;
+  /** The tool call in progress (`thinking` only). */
+  tool?: string | null;
 }
 
 /**

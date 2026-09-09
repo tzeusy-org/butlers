@@ -185,6 +185,109 @@ describe("MessageThread — pending conversation activity", () => {
       HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     }
   });
+
+  it("updates the status text in order as phase events arrive (bu-0ynlk.7)", () => {
+    const base: StreamingState = {
+      conversationId: "conversation-1",
+      messageId: "message-1",
+      content: "",
+      pending: true,
+      interrupted: false,
+    };
+
+    const { rerender } = render(
+      <MessageThread
+        messages={[]}
+        streaming={{ ...base, phase: { name: "classifying" } }}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe("Classifying your message.");
+
+    rerender(
+      <MessageThread
+        messages={[]}
+        streaming={{ ...base, phase: { name: "routed", target: "Finance" } }}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe("Routed to Finance.");
+
+    rerender(
+      <MessageThread
+        messages={[]}
+        streaming={{
+          ...base,
+          phase: { name: "thinking", tool: "spend_summary" },
+        }}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe("Thinking (tool: spend_summary).");
+
+    rerender(
+      <MessageThread
+        messages={[]}
+        streaming={{ ...base, phase: { name: "writing" } }}
+        pricingMap={null}
+        conversationId="conversation-1"
+      />,
+    );
+    expect(screen.getByTestId("chat-activity-status").textContent).toBe("Writing a reply.");
+  });
+
+  it("throttles the scroll effect to at most once per 100ms under a burst of updates", () => {
+    vi.useFakeTimers();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const base: StreamingState = {
+        conversationId: "conversation-1",
+        messageId: "message-1",
+        content: "",
+        pending: false,
+        interrupted: false,
+      };
+
+      const { rerender } = render(
+        <MessageThread
+          messages={[]}
+          streaming={base}
+          pricingMap={null}
+          conversationId="conversation-1"
+        />,
+      );
+      // The leading update in the burst scrolls immediately.
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // 50 rapid content updates, all within one 100ms window.
+      for (let i = 0; i < 50; i++) {
+        rerender(
+          <MessageThread
+            messages={[]}
+            streaming={{ ...base, content: "x".repeat(i + 1) }}
+            pricingMap={null}
+            conversationId="conversation-1"
+          />,
+        );
+      }
+      // No more than the leading call so far -- nothing in the burst was
+      // allowed to fire on its own within the throttle window.
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // Advance past the throttle window: exactly one trailing call fires.
+      vi.advanceTimersByTime(150);
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("MessageThread — sr-only live announcer region (bu-0ynlk.13)", () => {
