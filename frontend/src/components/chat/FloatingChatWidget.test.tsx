@@ -68,17 +68,23 @@ vi.mock("@/api/client.ts", () => ({
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
+const getConversationMessagesMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
+  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
 // bypassing real stream parsing entirely.
 let scriptedEvents: Array<{ event: string; data: unknown }> = [];
 let activeSseEventHandler: ((event: { event: string; data: unknown }) => void) | null = null;
+// bu-0ynlk.7: simulates a non-abort transport failure (network reset, proxy
+// drop) interrupting the stream after `scriptedEvents` has been replayed,
+// rather than the stream completing normally with `done`.
+let simulateStreamFailure: Error | null = null;
 vi.mock("./sse-utils.ts", () => ({
   consumeSseStream: async (
     _response: Response,
@@ -86,6 +92,11 @@ vi.mock("./sse-utils.ts", () => ({
   ) => {
     activeSseEventHandler = onEvent;
     for (const evt of scriptedEvents) onEvent(evt);
+    if (simulateStreamFailure) {
+      const err = simulateStreamFailure;
+      simulateStreamFailure = null;
+      throw err;
+    }
   },
 }));
 
@@ -284,6 +295,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   scriptedEvents = [];
   activeSseEventHandler = null;
+  simulateStreamFailure = null;
+  // Safe default for the non-abort-stream-failure recovery refetch
+  // (bu-0ynlk.7) -- most tests never exercise that path, but an unconfigured
+  // mock returning `undefined` would throw on `.data` access if one did.
+  getConversationMessagesMock.mockResolvedValue({ data: [] });
   mockHooksWithConversations();
   // useChatUnreadBadge's watermark is a real (unmocked) module-scope store —
   // reset it + localStorage so badge state never leaks across tests.
@@ -746,6 +762,87 @@ describe("FloatingChatWidget — unread badge", () => {
 // ---------------------------------------------------------------------------
 // Send-error classification
 // ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — stream-failure recovery (bu-0ynlk.7)", () => {
+  it("recovers silently when the reply already landed despite a non-abort stream failure", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "conversation_created",
+        data: { conversation_id: "conv-recovered-1", title: null },
+      },
+    ];
+    simulateStreamFailure = new Error("network reset");
+    getConversationMessagesMock.mockResolvedValue({
+      data: [
+        {
+          id: "reply-1",
+          conversation_id: "conv-recovered-1",
+          role: "assistant",
+          content: "Here's your answer.",
+          tool_calls: null,
+          error: null,
+          model: null,
+          input_tokens: null,
+          output_tokens: null,
+          duration_ms: null,
+          session_id: null,
+          request_id: null,
+          created_at: "2027-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    await waitFor(() => {
+      expect(getConversationMessagesMock).toHaveBeenCalledWith("switchboard", "conv-recovered-1");
+    });
+    expect(screen.queryByTestId("chat-widget-error-banner")).toBeNull();
+  });
+
+  it("still shows the failure banner when the refetch proves no reply landed", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "conversation_created",
+        data: { conversation_id: "conv-unrecovered-1", title: null },
+      },
+    ];
+    simulateStreamFailure = new Error("network reset");
+    getConversationMessagesMock.mockResolvedValue({ data: [] });
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    await waitFor(() => {
+      expect(getConversationMessagesMock).toHaveBeenCalledWith(
+        "switchboard",
+        "conv-unrecovered-1",
+      );
+    });
+    expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
+      "Failed to send message.",
+    );
+  });
+});
 
 describe("FloatingChatWidget — send-error classification", () => {
   it("uses doctrine-compliant copy for a generic transport failure", async () => {

@@ -10,7 +10,7 @@
  * - Auto-scroll to bottom
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
@@ -265,6 +265,13 @@ export interface StreamingState {
   dispatchReceipt?: {
     routedButler: string | null;
   };
+  /** Latest real-time phase update (bu-0ynlk.7) — supersedes dispatchReceipt's
+   * text below once at least one phase event has arrived for this turn. */
+  phase?: {
+    name: string;
+    target?: string | null;
+    tool?: string | null;
+  };
 }
 
 export interface MessageThreadProps {
@@ -277,6 +284,26 @@ export interface MessageThreadProps {
 }
 
 function pendingActivityStatus(streaming: StreamingState): string {
+  const phase = streaming.phase;
+  if (phase) {
+    switch (phase.name) {
+      case "classifying":
+        return "Classifying your message.";
+      case "routed":
+        return phase.target ? `Routed to ${phase.target}.` : "Routed.";
+      case "starting_session":
+        return phase.target
+          ? `Starting session with ${phase.target}.`
+          : "Starting session.";
+      case "thinking":
+        return phase.tool ? `Thinking (tool: ${phase.tool}).` : "Thinking.";
+      case "writing":
+        return "Writing a reply.";
+      default:
+        break;
+    }
+  }
+
   if (!streaming.dispatchReceipt) return "Sending to Switchboard.";
 
   return streaming.dispatchReceipt.routedButler
@@ -392,10 +419,38 @@ export function MessageThread({
     setUserScrolledUp(distFromBottom > 100);
   }
 
-  // Auto-scroll to bottom when new messages arrive, unless user scrolled up
+  // Throttled auto-scroll (bu-0ynlk.7): real token streaming can update
+  // `streaming.content` many times a second, and scrolling on every single
+  // update is both wasted work and visually janky. Leading+trailing throttle
+  // at SCROLL_THROTTLE_MS -- the first update in a burst scrolls right away,
+  // a burst mid-window schedules exactly one trailing scroll at the window's
+  // edge (never more than one pending timer), so a sustained burst still
+  // follows along roughly every SCROLL_THROTTLE_MS rather than only jumping
+  // once at the very end. Refs (not state) so scheduling survives across
+  // rapid effect re-runs instead of being cancelled/restarted by each one.
+  const SCROLL_THROTTLE_MS = 120;
+  const lastScrollAtRef = useRef(0);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scrollToBottom = useCallback(() => {
+    lastScrollAtRef.current = Date.now();
+    bottomRef.current?.scrollIntoView({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+    });
+  }, [prefersReducedMotion]);
+
+  // Auto-scroll to bottom when new messages/phase/content arrive, unless the
+  // user scrolled up.
   useEffect(() => {
-    if (!userScrolledUp) {
-      bottomRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
+    if (userScrolledUp) return;
+    const elapsed = Date.now() - lastScrollAtRef.current;
+    if (elapsed >= SCROLL_THROTTLE_MS) {
+      scrollToBottom();
+    } else if (scrollTimeoutRef.current === null) {
+      scrollTimeoutRef.current = setTimeout(() => {
+        scrollTimeoutRef.current = null;
+        scrollToBottom();
+      }, SCROLL_THROTTLE_MS - elapsed);
     }
   }, [
     messages.length,
@@ -404,10 +459,22 @@ export function MessageThread({
     streaming?.cancelled,
     streaming?.content,
     streaming?.dispatchReceipt?.routedButler,
+    streaming?.phase?.name,
+    streaming?.phase?.target,
+    streaming?.phase?.tool,
     streaming?.pending,
     userScrolledUp,
     prefersReducedMotion,
+    scrollToBottom,
   ]);
+
+  // Unmount cleanup only -- the throttle's pending timer must survive across
+  // the effect above's own re-runs (see comment there).
+  useEffect(() => {
+    return () => {
+      if (scrollTimeoutRef.current !== null) clearTimeout(scrollTimeoutRef.current);
+    };
+  }, []);
 
   const isStreamingThisConversation =
     streaming !== null &&

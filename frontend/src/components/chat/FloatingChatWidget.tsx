@@ -52,9 +52,11 @@ import { Button } from "@/components/ui/button";
 import {
   cancelConversationMessageTurn,
   createConversation,
+  getConversationMessages,
   sendMessage,
 } from "@/api/index.ts";
 import type {
+  ConversationSsePhaseData,
   ConversationSummary,
   CreateConversationRequest,
   Message,
@@ -447,6 +449,24 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               );
               break;
             }
+            case "phase": {
+              const data = event.data as ConversationSsePhaseData;
+              const phase = typeof data.phase === "string" ? data.phase : null;
+              if (!phase) break;
+              setStreaming((prev) =>
+                prev?.messageId === messageId
+                  ? {
+                      ...prev,
+                      phase: {
+                        name: phase,
+                        target: typeof data.target === "string" ? data.target : undefined,
+                        tool: typeof data.tool === "string" ? data.tool : undefined,
+                      },
+                    }
+                  : prev,
+              );
+              break;
+            }
             case "token": {
               const token =
                 typeof event.data === "string"
@@ -518,15 +538,44 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           }, 1500);
           interruptedTimeoutRef.current = timeout;
         } else {
+          // Non-abort stream failure (network blip, proxy drop, ...): the
+          // reply may have already landed server-side even though this SSE
+          // connection itself failed, so refetch before declaring failure
+          // (bu-0ynlk.7) rather than clobbering a completed reply with a
+          // spurious error banner.
+          const conversationIdForRecovery = currentConversationId ?? activeConversationId;
+          let replyLanded = false;
+          if (conversationIdForRecovery) {
+            try {
+              const refetched = await getConversationMessages(
+                WIDGET_BUTLER,
+                conversationIdForRecovery,
+              );
+              replyLanded = refetched.data.some(
+                (m) =>
+                  m.role === "assistant" &&
+                  new Date(m.created_at).getTime() > new Date(userMessage.created_at).getTime(),
+              );
+            } catch {
+              // Refetch itself failed — fall through to the honest failure path.
+            }
+          }
           activeMessageIdRef.current = null;
           abortRef.current = null;
           setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-          setSendError({
-            kind: "generic",
-            message: "Failed to send message.",
-            failedText: trimmed,
-            messageId,
-          });
+          if (replyLanded && conversationIdForRecovery) {
+            void queryClient.invalidateQueries({ queryKey: conversationKeys.all(WIDGET_BUTLER) });
+            void queryClient.invalidateQueries({
+              queryKey: conversationKeys.messages(WIDGET_BUTLER, conversationIdForRecovery),
+            });
+          } else {
+            setSendError({
+              kind: "generic",
+              message: "Failed to send message.",
+              failedText: trimmed,
+              messageId,
+            });
+          }
         }
       }
     },

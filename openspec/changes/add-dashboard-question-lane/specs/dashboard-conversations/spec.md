@@ -113,7 +113,7 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
 - **THEN** the response is a `StreamingResponse` with `media_type: "text/event-stream"`
 - **AND** the first event is `event: conversation_created` with `data: {"conversation_id": "...", "title": "..."}`
-- **AND** an `event: token` with `data: {"content": "..."}` carries the full `conversation_reply` message text once it arrives (not incremental generation — token-level streaming is out of scope)
+- **AND** one or more `event: token` events with `data: {"content": "..."}` carry the `conversation_reply` message text — a single event carrying the full text when the routed runtime cannot stream incrementally (every runtime adapter today), or several events whose concatenated `content` fields are byte-for-byte identical to the persisted reply row's content when a streaming-capable producer publishes incremental deltas on the turn's chat-stream channel (see the Real-Time Processing Phase Events requirement's Trust boundary)
 - **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": [], "sources": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known; `sources` is the list passed to `conversation_reply` (or `[]` if omitted)
 - **AND** an `event: done` is sent to signal the stream is finished
 
