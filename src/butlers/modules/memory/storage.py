@@ -598,6 +598,26 @@ async def _cascade_catalog_disownment(
     )
 
 
+async def cascade_fact_retraction(
+    conn: Connection,
+    fact_ids: list[uuid.UUID],
+    *,
+    invalid_at: datetime | None = None,
+) -> None:
+    """Public entry point for the catalog/graph-edge cascade on retracted facts.
+
+    For callers outside this module that must retract ``facts`` rows via raw
+    SQL on a connection/transaction they already hold (bu-9ltqm) -- e.g. a
+    bulk retraction that doesn't compose with ``forget_memory``'s own
+    per-memory transaction management, or a call site that needs its own
+    idempotency guard on the retracting ``UPDATE`` -- rather than going
+    through ``forget_memory`` one fact at a time. MUST be called on the same
+    connection/transaction as the retracting UPDATE, or the catalog/graph
+    state can diverge from the canonical retraction on a crash.
+    """
+    await _cascade_catalog_disownment(conn, "facts", fact_ids, invalid_at=invalid_at)
+
+
 async def _backfill_facts_to_catalog(
     pool: Pool,
     *,
