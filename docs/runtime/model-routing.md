@@ -49,7 +49,7 @@ tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings
 
 `{schema}.runtime_config` is no longer cold-only. It holds `core_groups`, `max_concurrent`, and
 `max_queued` (cold: require a daemon restart to take effect) alongside `catalog_read_sensitivity`
-and, as of migration `core_223`, `tool_exposure_policy` (hot: a PATCH takes effect for the next
+and, as of migration `core_224`, `tool_exposure_policy` (hot: a PATCH takes effect for the next
 planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
 `butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
 (`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
