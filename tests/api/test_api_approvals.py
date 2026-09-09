@@ -2767,3 +2767,63 @@ async def test_dispatch_approved_notify_error_payload_stays_retryable():
     assert outcome.kind == "rejected"
     assert outcome.action is None
     mark_executed.assert_not_awaited()
+
+
+async def test_dispatch_approved_action_outcome_notify_passes_origin_butler():
+    """The notify dispatch path must forward ``action_butler`` as ``origin_butler``.
+
+    ``park_prepared_action`` always parks with ``tool_name="notify"``, so this is
+    the real production path a dashboard approval takes for a prepared reach-out.
+    Without ``origin_butler`` reaching ``execute_approved_action``, the
+    attention-ledger-on-failure write for ``origin='prepared'`` actions
+    (bu-2jtfw.11) can never fire for an owner-approved action, even though
+    ``execute_approved_action`` itself supports it. This exercises the router's
+    call site directly rather than ``execute_approved_action`` in isolation, so
+    a regression here cannot hide behind a test that already supplies the
+    parameter.
+    """
+    from unittest.mock import patch
+
+    from butlers.api.routers.approvals import _dispatch_approved_action_outcome
+
+    action_id = uuid4()
+    mock_mcp, mock_db, mock_pool, _ = _build_dispatch_mocks(
+        action_id=action_id,
+        tool_name="notify",
+        tool_args={"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+        mcp_text_payload='{"ok": true}',
+        mcp_is_error=False,
+    )
+    executed_row = _make_action(tool_name="notify", status="executed")
+    executed_row["id"] = action_id
+
+    async def _mock_acquire_conn():
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=executed_row)
+        return conn
+
+    class _ExecutedAcquire:
+        async def __aenter__(self):
+            return await _mock_acquire_conn()
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool.acquire = lambda: _ExecutedAcquire()
+
+    with patch(
+        "butlers.api.routers.approvals.execute_approved_action", new_callable=AsyncMock
+    ) as mock_execute:
+        mock_execute.return_value = MagicMock(success=True, error=None)
+        outcome = await _dispatch_approved_action_outcome(
+            mock_mcp,
+            mock_db,
+            mock_pool,
+            str(action_id),
+            "notify",
+            {"channel": "email", "message": "Hello", "recipient": "owner@example.com"},
+            "relationship",
+        )
+
+    assert mock_execute.await_args.kwargs["origin_butler"] == "relationship"
+    assert outcome.kind == "executed"

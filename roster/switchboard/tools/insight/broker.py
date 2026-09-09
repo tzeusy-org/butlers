@@ -809,9 +809,7 @@ _PREPARED_ACTION_TERMINAL_LINES: dict[str, str] = {
 # ships only the relationship producer, and guessing a door affordance for an
 # unresolvable status would be worse than omitting it.
 _PREPARED_ACTION_STATUS_QUERIES: dict[str, str] = {
-    "relationship": (
-        "SELECT status FROM public.resolve_relationship_prepared_action_status($1)"
-    ),
+    "relationship": ("SELECT status FROM public.resolve_relationship_prepared_action_status($1)"),
 }
 
 
@@ -1715,9 +1713,7 @@ async def delivery_cycle(
     if any(c.get("prepared_action_id") is not None for c in selected):
         _prepared_statuses = await _resolve_prepared_action_statuses(pool, selected)
         selected = [
-            _decorate_candidate_with_door(
-                c, _prepared_statuses.get(str(c["prepared_action_id"]))
-            )
+            _decorate_candidate_with_door(c, _prepared_statuses.get(str(c["prepared_action_id"])))
             if c.get("prepared_action_id") is not None
             else c
             for c in selected

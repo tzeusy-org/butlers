@@ -74,9 +74,7 @@ def _prepared_kwargs(**overrides: object) -> dict:
 async def test_park_prepared_action_inserts_origin_prepared_and_never_pushes(pool) -> None:
     """The row lands with origin='prepared', status='pending', and no push is attempted."""
     kwargs = _prepared_kwargs()
-    with patch(
-        "butlers.modules.approvals.park.emit_approval_push", new=AsyncMock()
-    ) as spy_push:
+    with patch("butlers.modules.approvals.park.emit_approval_push", new=AsyncMock()) as spy_push:
         await park_prepared_action(pool, **kwargs)
         spy_push.assert_not_called()
 

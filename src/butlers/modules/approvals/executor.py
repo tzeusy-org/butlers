@@ -387,8 +387,7 @@ async def execute_approved_action(
                     )
                 except Exception:  # noqa: BLE001 -- ledger write is best-effort
                     logger.warning(
-                        "Could not record attention-ledger row for failed prepared "
-                        "action %s",
+                        "Could not record attention-ledger row for failed prepared action %s",
                         action_id,
                         exc_info=True,
                     )

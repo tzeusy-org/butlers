@@ -786,6 +786,78 @@ async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
 
 
 @pytest.mark.pg_clock
+async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_action(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    """bu-2jtfw.11: two concurrent scan ticks racing the same dedup key must not
+    crash ``run_insight_scan`` -- the loser reuses the winner's row instead of
+    surfacing an unhandled ``UniqueViolationError``.
+
+    Unlike the sequential same-week re-run above (which never reaches the
+    INSERT because the pre-check already finds a row), this forces both ticks
+    past the pre-check simultaneously so the real conflict happens at the
+    database's unique index, exercising the ``except asyncpg.UniqueViolationError``
+    branch directly.
+    """
+    import asyncio
+    import sys
+    from unittest.mock import patch
+
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
+
+    _mock_stale_contact_gate(monkeypatch, is_overdue=True)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_relationship_schema(pool)
+        await _setup_insight_tables(pool)
+
+        contact_id = await _insert_contact(pool, first_name="Rosa", stay_in_touch_days=14)
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=35),
+        )
+
+        real_park = relationship_jobs.park_prepared_action
+        both_reached_park = asyncio.Event()
+        arrivals = 0
+        arrivals_lock = asyncio.Lock()
+
+        async def _synchronized_park(*args, **kwargs):
+            nonlocal arrivals
+            async with arrivals_lock:
+                arrivals += 1
+                if arrivals == 2:
+                    both_reached_park.set()
+            await asyncio.wait_for(both_reached_park.wait(), timeout=5)
+            return await real_park(*args, **kwargs)
+
+        with patch.object(relationship_jobs, "park_prepared_action", new=_synchronized_park):
+            first, second = await asyncio.gather(
+                run_insight_scan(pool),
+                run_insight_scan(pool),
+            )
+
+        assert first.get("errors", 0) == 0
+        assert second.get("errors", 0) == 0
+
+        rows = await pool.fetch(
+            "SELECT id FROM pending_actions WHERE deduplication_key LIKE "
+            "'relationship:prepared-reach-out:%'"
+        )
+        assert len(rows) == 1
+
+        candidates = await pool.fetch(
+            "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
+        )
+        prepared_action_ids = {c["prepared_action_id"] for c in candidates}
+        assert prepared_action_ids == {rows[0]["id"]}
+
+
+@pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
     provisioned_postgres_pool,
     monkeypatch,

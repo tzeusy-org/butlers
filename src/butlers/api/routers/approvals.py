@@ -1188,6 +1188,7 @@ async def _dispatch_approved_action_outcome(
             tool_args=tool_args,
             tool_fn=_deliver_notify,
             decision_memory_writer=decision_memory_writer,
+            origin_butler=action_butler,
         )
         if not execution.success:
             if dispatch_failure is not None:
