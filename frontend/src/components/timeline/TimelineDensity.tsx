@@ -23,10 +23,6 @@ export function TimelineDensity({
   onRetry,
 }: TimelineDensityProps) {
   const timezone = useTimezone();
-  const buckets = histogram?.data ?? [];
-  const selectedIndex = buckets.findIndex(
-    (bucket) => Date.parse(bucket.start) === Date.parse(selectedSince ?? ""),
-  );
   const [activeIndex, setActiveIndex] = useState(0);
   const buttonsRef = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -45,6 +41,10 @@ export function TimelineDensity({
 
   if (!histogram) return null;
 
+  const buckets = histogram.data;
+  const selectedIndex = buckets.findIndex(
+    (bucket) => Date.parse(bucket.start) === Date.parse(selectedSince ?? ""),
+  );
   const { meta } = histogram;
   const maxCount = Math.max(1, ...buckets.map((bucket) => bucket.count));
   const total = buckets.reduce((sum, bucket) => sum + bucket.count, 0);

@@ -84,11 +84,12 @@ export function useTimelineLedger(
   options: { enabled?: boolean } = {},
 ): UseTimelineLedgerResult {
   const qc = useQueryClient();
-  const filtersKey = JSON.stringify(filters);
+  const enabled = options.enabled !== false;
+  const scopeKey = JSON.stringify({ filters, enabled });
 
   const head = useTimeline(
     { ...filters, limit: PAGE_SIZE },
-    { refetchInterval: HEAD_POLL_MS, enabled: options.enabled },
+    { refetchInterval: HEAD_POLL_MS, enabled },
   );
 
   const [pinned, setPinned] = useState(true);
@@ -100,11 +101,11 @@ export function useTimelineLedger(
   const [loadMoreError, setLoadMoreError] = useState(false);
   const paginationRequestRef = useRef(0);
 
-  // A filter change invalidates any accumulated history — start over, live.
-  const prevFiltersKeyRef = useRef(filtersKey);
+  // A filter or enabled-state change invalidates accumulated history.
+  const prevScopeKeyRef = useRef(scopeKey);
   useEffect(() => {
-    if (prevFiltersKeyRef.current === filtersKey) return;
-    prevFiltersKeyRef.current = filtersKey;
+    if (prevScopeKeyRef.current === scopeKey) return;
+    prevScopeKeyRef.current = scopeKey;
     paginationRequestRef.current += 1;
     setPinned(true);
     setCommitted(null);
@@ -113,7 +114,7 @@ export function useTimelineLedger(
     setCommittedDegradedButlers(null);
     setLoadMoreError(false);
     setIsLoadingMore(false);
-  }, [filtersKey]);
+  }, [scopeKey]);
 
   const headData = head.data?.data;
   const headEvents = useMemo(() => headData ?? [], [headData]);
@@ -125,16 +126,21 @@ export function useTimelineLedger(
   // Newly-arrived head events not yet reflected in the committed snapshot —
   // only meaningful while unpinned (pinned view already renders them).
   const newCount = useMemo(() => {
-    if (pinned || !committedIds) return 0;
+    if (!enabled || pinned || !committedIds) return 0;
     return headEvents.filter((e) => !committedIds.has(e.id)).length;
-  }, [pinned, committedIds, headEvents]);
+  }, [enabled, pinned, committedIds, headEvents]);
 
-  const events = pinned ? headEvents : (committed ?? headEvents);
+  // A disabled TanStack query may still expose data cached under the same key.
+  // Invalid URL state is fail-closed, so cached live rows must not escape while
+  // the request that could validate their scope is disabled.
+  const events = enabled ? (pinned ? headEvents : (committed ?? headEvents)) : [];
 
-  const hasMore = pinned ? (head.data?.meta.has_more ?? false) : committedCursor !== undefined;
+  const hasMore = enabled
+    ? (pinned ? (head.data?.meta.has_more ?? false) : committedCursor !== undefined)
+    : false;
 
   const loadMore = useCallback(() => {
-    if (isLoadingMore) return;
+    if (!enabled || isLoadingMore) return;
     const baseline = committed ?? headEvents;
     const baselineCursor = committed !== null ? committedCursor : head.data?.meta.cursor;
     if (!baselineCursor) return;
@@ -181,7 +187,7 @@ export function useTimelineLedger(
       .finally(() => {
         if (paginationRequestRef.current === requestId) setIsLoadingMore(false);
       });
-    // filters is a fresh object each render; filtersKey is the stable dep.
+    // filters is a fresh object each render; scopeKey is the stable dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     committed,
@@ -192,7 +198,8 @@ export function useTimelineLedger(
     head.data,
     isLoadingMore,
     qc,
-    filtersKey,
+    scopeKey,
+    enabled,
   ]);
 
   const showNewEvents = useCallback(() => {
@@ -206,30 +213,36 @@ export function useTimelineLedger(
     setIsLoadingMore(false);
   }, []);
 
-  const degradedSources = pinned
-    ? (head.data?.meta.degraded_sources ?? [])
-    : (committedDegradedSources ?? head.data?.meta.degraded_sources ?? []);
-  const degradedButlers = pinned
-    ? (head.data?.meta.degraded_butlers ?? [])
-    : (committedDegradedButlers ?? head.data?.meta.degraded_butlers ?? []);
+  const degradedSources = enabled
+    ? pinned
+      ? (head.data?.meta.degraded_sources ?? [])
+      : (committedDegradedSources ?? head.data?.meta.degraded_sources ?? [])
+    : [];
+  const degradedButlers = enabled
+    ? pinned
+      ? (head.data?.meta.degraded_butlers ?? [])
+      : (committedDegradedButlers ?? head.data?.meta.degraded_butlers ?? [])
+    : [];
 
   return {
     events,
-    isLoading: head.isLoading && events.length === 0,
-    isFetching: head.isFetching && events.length > 0,
-    isError: !!head.isError && events.length === 0,
-    isLiveFeedDown: !!head.isError,
-    refetch: () => void head.refetch(),
+    isLoading: enabled && head.isLoading && events.length === 0,
+    isFetching: enabled && head.isFetching && events.length > 0,
+    isError: enabled && !!head.isError && events.length === 0,
+    isLiveFeedDown: enabled && !!head.isError,
+    refetch: () => {
+      if (enabled) void head.refetch();
+    },
     hasMore,
     loadMore,
-    loadMoreError,
+    loadMoreError: enabled && loadMoreError,
     retryLoadMore: loadMore,
-    isLoadingMore,
-    pinned,
+    isLoadingMore: enabled && isLoadingMore,
+    pinned: enabled ? pinned : true,
     newCount,
     showNewEvents,
     degradedSources,
     degradedButlers,
-    heartbeatRollup: head.data?.meta.heartbeat_rollup ?? EMPTY_ROLLUP,
+    heartbeatRollup: enabled ? (head.data?.meta.heartbeat_rollup ?? EMPTY_ROLLUP) : EMPTY_ROLLUP,
   };
 }

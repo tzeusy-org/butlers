@@ -89,9 +89,14 @@ function LocationProbe() {
   return <output data-testid="timeline-location">{location.search}</output>;
 }
 
-function BrowserBack() {
+function BrowserHistoryControls() {
   const navigate = useNavigate();
-  return <button type="button" onClick={() => navigate(-1)}>Browser back</button>;
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>Browser back</button>
+      <button type="button" onClick={() => navigate(1)}>Browser forward</button>
+    </>
+  );
 }
 
 describe("TimelinePage — error vs empty state", () => {
@@ -477,7 +482,7 @@ describe("TimelinePage — density and historical seek", () => {
       <MemoryRouter initialEntries={["/timeline?type=session&trace=trace-001"]}>
         <TimelinePage />
         <LocationProbe />
-        <BrowserBack />
+        <BrowserHistoryControls />
       </MemoryRouter>,
     );
     const bars = screen.getAllByTestId("timeline-density-bucket");
@@ -511,6 +516,10 @@ describe("TimelinePage — density and historical seek", () => {
     expect(restoredInitial.get("type")).toBe("session");
     expect(restoredInitial.get("trace")).toBe("trace-001");
 
+    fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
+    expect(screen.getByTestId("timeline-location").textContent).toBe(`?${selected.toString()}`);
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-04T16:20:00Z"));
     const restoredUrl = `/timeline?${selected.toString()}`;
     mounted.unmount();
     renderDom(
@@ -524,6 +533,13 @@ describe("TimelinePage — density and historical seek", () => {
         until: "2026-07-04T14:02:00.000Z",
       }),
       { enabled: true },
+    );
+    expect(useTimelineHistogram).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        since: "2026-07-04T14:00:00.000Z",
+        until: "2026-07-04T15:00:00.000Z",
+      }),
+      true,
     );
   });
 

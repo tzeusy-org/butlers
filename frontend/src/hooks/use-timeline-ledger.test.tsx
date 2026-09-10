@@ -81,6 +81,14 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
 describe("useTimelineLedger", () => {
   it("renders the live head page directly while pinned", async () => {
     const page1 = [makeEvent("e3", "2026-07-04T14:32:00Z"), makeEvent("e2", "2026-07-04T14:31:00Z")];
@@ -274,5 +282,69 @@ describe("useTimelineLedger", () => {
 
     await waitFor(() => expect(result.current.pinned).toBe(true));
     expect(result.current.newCount).toBe(0);
+  });
+
+  it("hides cached live rows when disabled by invalid URL state", async () => {
+    mockGetTimeline.mockResolvedValue(response([makeEvent("live", "2026-07-04T15:00:00Z")]));
+
+    const { Wrapper } = makeWrapper();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useTimelineLedger({}, { enabled }),
+      { wrapper: Wrapper, initialProps: { enabled: true } },
+    );
+
+    await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["live"]));
+    rerender({ enabled: false });
+
+    expect(result.current.events).toEqual([]);
+    expect(result.current.hasMore).toBe(false);
+    expect(result.current.isLiveFeedDown).toBe(false);
+  });
+
+  it("keeps the newest interval and filters when an earlier request resolves late", async () => {
+    const stale = deferred<TimelineResponse>();
+    const destination = deferred<TimelineResponse>();
+    mockGetTimeline.mockImplementation((params: { since?: string }) =>
+      params.since === "2026-07-04T14:01:00Z" ? stale.promise : destination.promise,
+    );
+
+    const { Wrapper } = makeWrapper();
+    const { result, rerender } = renderHook(
+      ({ filters }) => useTimelineLedger(filters),
+      {
+        wrapper: Wrapper,
+        initialProps: {
+          filters: {
+            since: "2026-07-04T14:01:00Z",
+            until: "2026-07-04T14:02:00Z",
+            event_type: ["session"],
+          },
+        },
+      },
+    );
+
+    rerender({
+      filters: {
+        since: "2026-07-04T14:02:00Z",
+        until: "2026-07-04T14:03:00Z",
+        event_type: ["error"],
+      },
+    });
+    destination.resolve(response([makeEvent("destination", "2026-07-04T14:02:30Z")]));
+    await waitFor(() =>
+      expect(result.current.events.map((event) => event.id)).toEqual(["destination"]),
+    );
+
+    stale.resolve(response([makeEvent("stale", "2026-07-04T14:01:30Z")]));
+    await act(async () => {
+      await stale.promise;
+    });
+    expect(result.current.events.map((event) => event.id)).toEqual(["destination"]);
+    expect(mockGetTimeline).toHaveBeenCalledWith({
+      since: "2026-07-04T14:02:00Z",
+      until: "2026-07-04T14:03:00Z",
+      event_type: ["error"],
+      limit: 50,
+    });
   });
 });
