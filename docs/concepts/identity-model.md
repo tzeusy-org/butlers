@@ -58,7 +58,9 @@ Travel parties also reference this shared identity anchor. `travel.travellers.en
 remains a local party member with a stable traveller key and a null `entity_id` rather than minting
 shared identity. If that exact name later resolves, Travel promotes the existing local party member
 instead of creating a duplicate; caller-supplied IDs are accepted only for live, unmerged person
-entities. `travel.leg_passengers` records which party members occupy each shared leg.
+entities. When a linked source person has since been merged into a canonical survivor, the next
+booking ingest repoints the trip-local traveller and deduplicates its leg participation against the
+survivor. `travel.leg_passengers` records which party members occupy each shared leg.
 Relational facts remain owned by the Relationship butler and are never copied into the travel schema.
 
 ## Owner Contact

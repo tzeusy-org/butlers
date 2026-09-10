@@ -246,8 +246,6 @@ async def _raise_connection_door(
     except asyncpg.UniqueViolationError:
         # A concurrent recompute tick already parked the door for this pair.
         pass
-    except Exception:
-        logger.warning("recompute_trip_connections: failed to park connection door", exc_info=True)
 
 
 async def _withdraw_connection_door(
@@ -274,18 +272,18 @@ async def _recompute_trip_connections_locked(
 ) -> dict[str, Any]:
     """Re-derive every connection verdict for one trip and upsert ``travel.connections``.
 
-    Never raises: a failure anywhere in derivation, persistence, or the
-    door/alert side effects is logged and swallowed, returning
-    ``{"trip_id", "connections": [], "error": "recompute_failed"}`` rather
-    than propagating into the booking-ingestion or flight-status call sites
-    that trigger this after every leg mutation.
+    Failures propagate to the transaction owner so a verdict transition and
+    its required approval-door mutation either commit together or both roll
+    back. The public wrapper logs and converts the failure to an error result.
     """
     effective_now = now or datetime.now(UTC)
     try:
         leg_rows = await pool.fetch(
             "SELECT id, departure_at, arrival_at, departure_airport_station, "
-            "arrival_airport_station, carrier, metadata "
-            "FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at ASC",
+            "arrival_airport_station, carrier, metadata, booking_record_id, segment_index "
+            "FROM travel.legs WHERE trip_id = $1::uuid "
+            "ORDER BY (booking_record_id IS NULL OR segment_index IS NULL), "
+            "booking_record_id, segment_index, departure_at, id",
             trip_id,
         )
         legs = [dict(row) for row in leg_rows]
@@ -408,7 +406,7 @@ async def _recompute_trip_connections_locked(
         return {"trip_id": trip_id, "connections": results}
     except Exception:
         logger.warning("recompute_trip_connections failed for trip_id=%s", trip_id, exc_info=True)
-        return {"trip_id": trip_id, "connections": [], "error": "recompute_failed"}
+        raise
 
 
 async def recompute_trip_connections(
@@ -430,7 +428,6 @@ async def recompute_trip_connections(
                 )
                 return await _recompute_trip_connections_locked(conn, trip_id, now=now)
     except Exception:
-        logger.warning("recompute_trip_connections failed for trip_id=%s", trip_id, exc_info=True)
         return {"trip_id": trip_id, "connections": [], "error": "recompute_failed"}
 
 

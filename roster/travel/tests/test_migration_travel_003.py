@@ -131,7 +131,23 @@ async def pool(provisioned_postgres_pool):
 @_session_loop
 class TestMigrationRunsAgainstPostgres:
     async def test_upgrade_creates_every_new_table(self, pool) -> None:
-        p, _trip_id = pool
+        p, trip_id = pool
+        second_trip_id = await p.fetchval(
+            "INSERT INTO travel.trips (name, destination, start_date, end_date, status) "
+            "VALUES ('Return fragment', 'Singapore', '2026-06-10', '2026-06-10', 'planned') "
+            "RETURNING id"
+        )
+        await p.execute(
+            "UPDATE travel.legs SET carrier = 'Test Air', pnr = 'DD94XR' WHERE trip_id = $1",
+            trip_id,
+        )
+        await p.execute(
+            "INSERT INTO travel.legs (trip_id, type, carrier, pnr, departure_at, arrival_at) "
+            "VALUES ($1, 'flight', 'Test Air', 'DD94XR', "
+            "'2026-06-10T10:00:00+00:00', '2026-06-10T16:00:00+00:00')",
+            second_trip_id,
+        )
+        original_leg_trips = await p.fetch("SELECT id, trip_id FROM travel.legs ORDER BY id")
         async with p.acquire() as conn:
             for statement in _upgrade_statements():
                 await conn.execute(statement)
@@ -169,9 +185,27 @@ class TestMigrationRunsAgainstPostgres:
             """
         )
         assert booking_trip_column is True
+        assert (
+            await p.fetchval(
+                "SELECT to_regclass('travel.booking_fragmentation_inventory') IS NOT NULL"
+            )
+            is True
+        )
+        candidate = await p.fetchrow(
+            "SELECT provider, record_locator, trip_ids, trip_count, leg_ids "
+            "FROM travel.booking_fragmentation_inventory"
+        )
+        assert candidate["provider"] == "test air"
+        assert candidate["record_locator"] == "DD94XR"
+        assert candidate["trip_count"] == 2
+        assert set(candidate["trip_ids"]) == {trip_id, second_trip_id}
+        assert len(candidate["leg_ids"]) == 2
+        assert (
+            await p.fetch("SELECT id, trip_id FROM travel.legs ORDER BY id") == original_leg_trips
+        )
 
-    async def test_upgrade_seeds_curated_and_backfilled_minimum_connect(self, pool) -> None:
-        p, _trip_id = pool
+        # Re-running the migration remains safe and leaves the dry-run
+        # inventory read-only: it reports fragmentation without merging it.
         async with p.acquire() as conn:
             for statement in _upgrade_statements():
                 await conn.execute(statement)
@@ -193,14 +227,6 @@ class TestMigrationRunsAgainstPostgres:
             assert row is not None, f"{airport} was not backfilled"
             assert row["source"] == "backfill"
             assert row["minimum_connect_minutes"] == 60
-
-    async def test_upgrade_is_idempotent(self, pool) -> None:
-        p, _trip_id = pool
-        async with p.acquire() as conn:
-            for statement in _upgrade_statements():
-                await conn.execute(statement)
-            for statement in _upgrade_statements():
-                await conn.execute(statement)
 
         count = await p.fetchval(
             "SELECT count(*) FROM travel.airport_minimum_connect WHERE airport_code = 'PEK'"
@@ -244,6 +270,10 @@ class TestMigrationRunsAgainstPostgres:
         ):
             exists = await p.fetchval("SELECT to_regclass($1) IS NOT NULL", f"travel.{table}")
             assert exists is False, f"travel.{table} survived downgrade"
+        assert (
+            await p.fetchval("SELECT to_regclass('travel.booking_fragmentation_inventory') IS NULL")
+            is True
+        )
 
         for column in ("segment_index", "booking_record_id"):
             has_column = await p.fetchval(

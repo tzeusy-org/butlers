@@ -50,6 +50,18 @@ represent the people travelling separately from the shared transport legs.
 - **AND** an unresolved booking name remains a stable local party member without creating shared identity
 - **AND** each traveller-to-leg participation is represented once
 - **AND** the trip date range widens to cover every attached segment
+- **AND** the canonical record locator is projected through each leg's `pnr` field
+
+#### Scenario: Booking writes preserve atomic identity and enrichment
+- **WHEN** a provider-scoped leg contains a value that cannot be bound to the Travel schema
+- **THEN** no booking record, trip, leg, traveller participation, or booking event is persisted
+- **AND** re-ingesting a known segment with sparse data preserves its populated fields and operational timestamps
+- **AND** explicit itinerary or operational changes use the dedicated update paths
+
+#### Scenario: Existing fragmented bookings remain reviewable
+- **WHEN** the journey-identity migration finds one normalized provider and record locator across multiple legacy trips
+- **THEN** its dry-run inventory reports the candidate trip and leg identifiers without merging or deleting data
+- **AND** later ingestion reuses an existing candidate trip rather than creating another fragment
 
 #### Scenario: Record locator identity is incomplete
 - **WHEN** a flight booking has no record locator or no nonblank provider scope
@@ -60,6 +72,7 @@ represent the people travelling separately from the shared transport legs.
 - **WHEN** a name-keyed local traveller later resolves to a live canonical `public.entities` person
 - **THEN** Travel promotes or merges the existing party member instead of creating a duplicate traveller or leg participation
 - **AND** caller-supplied entity IDs are accepted only when they identify a live, unmerged person
+- **AND** re-ingestion after a canonical entity merge repoints and deduplicates stale Travel traveller and leg-participation links
 
 ### Requirement: Journey Connection Integrity
 Travel SHALL derive connection integrity from adjacent same-journey legs and SHALL never claim a
@@ -71,6 +84,8 @@ connection is safe without minimum-connect evidence.
 - **AND** the response states the available minutes and evidence used for the verdict
 - **AND** same-carrier and interline minimums are distinguished
 - **AND** a negative available-minute gap remains represented as `broken` rather than being removed
+- **AND** mutable operational timestamps cannot reorder structurally indexed segments or remove their connection
+- **AND** legs without structural segment identity use chronological ordering as an explicit fallback
 
 #### Scenario: Minimum-connect evidence is unavailable
 - **WHEN** no minimum-connect record exists for the connecting airport
@@ -84,6 +99,7 @@ connection is safe without minimum-connect evidence.
 - **AND** Travel raises one deduplicated connection-risk alert and one approval door for that transition
 - **AND** a later recovery withdraws the still-pending door
 - **AND** concurrent recomputes serialize verdict persistence with approval-door creation or withdrawal
+- **AND** a failed required approval-door write rolls back the verdict transition so a later recompute retries it
 
 #### Scenario: Journey has no connection
 - **WHEN** a trip contains no adjacent connecting leg pair

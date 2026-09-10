@@ -23,6 +23,22 @@ _VALID_LEG_TYPES = ("flight", "train", "bus", "ferry")
 _VALID_ACCOMMODATION_TYPES = ("hotel", "airbnb", "hostel")
 _VALID_RESERVATION_TYPES = ("car_rental", "restaurant", "activity", "tour")
 
+_LEG_TEXT_FIELDS = (
+    "provider",
+    "record_locator",
+    "carrier",
+    "departure_airport_station",
+    "departure",
+    "departure_city",
+    "arrival_airport_station",
+    "arrival",
+    "arrival_city",
+    "confirmation_number",
+    "pnr",
+    "seat",
+    "source_message_id",
+)
+
 _VALID_TRIP_STATUSES = ("planned", "active", "completed", "cancelled")
 
 # Status transition rules: forward-only, no backward transitions.
@@ -247,6 +263,52 @@ def _leg_insert_fields(
     )
 
 
+def _validate_leg_payload(payload: dict[str, Any]) -> None:
+    """Reject values asyncpg cannot bind before booking identity is persisted."""
+    for field in _LEG_TEXT_FIELDS:
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"record_booking: leg field {field!r} must be a string")
+
+    segment_index = payload.get("segment_index")
+    if segment_index is not None and (
+        isinstance(segment_index, bool) or not isinstance(segment_index, int) or segment_index < 0
+    ):
+        raise ValueError("record_booking: segment_index must be a non-negative integer")
+
+    metadata = payload.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("record_booking: leg metadata must be an object")
+
+    passengers = payload.get("passengers")
+    if passengers is not None and not isinstance(passengers, list):
+        raise ValueError("record_booking: passengers must be a list")
+    for passenger in passengers or []:
+        if not isinstance(passenger, dict):
+            raise ValueError("record_booking: each passenger must be an object")
+        for field in ("name", "seat"):
+            value = passenger.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"record_booking: passenger {field} must be a string")
+
+    # Timestamp parsing and required-field checks share the exact insert path.
+    fields = _leg_insert_fields(payload, payload.get("source_message_id"))
+    departure_at = fields[4]
+    arrival_at = fields[7]
+    try:
+        arrival_precedes_departure = arrival_at < departure_at
+    except TypeError as exc:
+        raise ValueError(
+            "record_booking: leg timestamps must use compatible timezone offsets"
+        ) from exc
+    if arrival_precedes_departure:
+        raise ValueError("record_booking: leg arrival_at must not precede departure_at")
+    try:
+        json.dumps(fields[9])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("record_booking: leg metadata must be JSON-serializable") from exc
+
+
 async def _insert_leg_by_segment(
     pool: asyncpg.Pool,
     trip_id: str,
@@ -284,13 +346,17 @@ async def _insert_leg_by_segment(
         ON CONFLICT (booking_record_id, segment_index)
             WHERE booking_record_id IS NOT NULL AND segment_index IS NOT NULL
             DO UPDATE SET
-            carrier = EXCLUDED.carrier,
-            departure_airport_station = EXCLUDED.departure_airport_station,
-            departure_city = EXCLUDED.departure_city,
-            departure_at = EXCLUDED.departure_at,
-            arrival_airport_station = EXCLUDED.arrival_airport_station,
-            arrival_city = EXCLUDED.arrival_city,
-            arrival_at = EXCLUDED.arrival_at,
+            carrier = COALESCE($16, travel.legs.carrier),
+            departure_airport_station = COALESCE(
+                EXCLUDED.departure_airport_station, travel.legs.departure_airport_station
+            ),
+            departure_city = COALESCE(EXCLUDED.departure_city, travel.legs.departure_city),
+            departure_at = travel.legs.departure_at,
+            arrival_airport_station = COALESCE(
+                EXCLUDED.arrival_airport_station, travel.legs.arrival_airport_station
+            ),
+            arrival_city = COALESCE(EXCLUDED.arrival_city, travel.legs.arrival_city),
+            arrival_at = travel.legs.arrival_at,
             confirmation_number = COALESCE(
                 EXCLUDED.confirmation_number, travel.legs.confirmation_number
             ),
@@ -314,6 +380,7 @@ async def _insert_leg_by_segment(
         meta,
         booking_record_id,
         segment_index,
+        payload.get("carrier"),
     )
     entity_id = str(row["id"])
     created = bool(row["inserted"])
@@ -472,10 +539,29 @@ async def _resolve_trip_via_booking_record(
             trip_event_payload: dict[str, Any] | None = None
 
             if trip_id is None:
-                created_trip = await _create_trip_from_payload(conn, payload)
-                trip_id = created_trip["trip_id"]
-                trip_created = True
-                trip_event_payload = created_trip
+                # A pre-migration PNR may already exist on one or more legacy
+                # trips. Reuse one existing container so re-ingest cannot
+                # create a third fragment; the read-only migration inventory
+                # exposes every multi-trip candidate for owner reconciliation.
+                legacy_trip_id = await conn.fetchval(
+                    """
+                    SELECT trip_id
+                    FROM travel.legs
+                    WHERE lower(btrim(COALESCE(carrier, ''))) = $1
+                      AND upper(btrim(COALESCE(pnr, ''))) = $2
+                    ORDER BY departure_at, trip_id
+                    LIMIT 1
+                    """,
+                    provider,
+                    record_locator,
+                )
+                if legacy_trip_id is not None:
+                    trip_id = str(legacy_trip_id)
+                else:
+                    created_trip = await _create_trip_from_payload(conn, payload)
+                    trip_id = created_trip["trip_id"]
+                    trip_created = True
+                    trip_event_payload = created_trip
                 await conn.execute(
                     "UPDATE travel.booking_records SET trip_id = $1::uuid WHERE id = $2::uuid",
                     trip_id,
@@ -590,20 +676,39 @@ async def _attach_passengers(
                     )
 
                 rows = await conn.fetch(
-                    "SELECT id, traveller_key FROM travel.travellers "
-                    "WHERE trip_id = $1::uuid AND traveller_key = ANY($2::text[]) FOR UPDATE",
+                    """
+                    SELECT traveller.id, traveller.traveller_key, traveller.entity_id
+                    FROM travel.travellers AS traveller
+                    LEFT JOIN public.entities AS linked_entity
+                      ON linked_entity.id = traveller.entity_id
+                    WHERE traveller.trip_id = $1::uuid
+                      AND (
+                          traveller.traveller_key = ANY($2::text[])
+                          OR linked_entity.metadata ->> 'merged_into' = $3
+                      )
+                    FOR UPDATE OF traveller
+                    """,
                     trip_id,
                     lock_keys,
+                    str(entity_id) if entity_id else None,
                 )
                 by_key = {row["traveller_key"]: row for row in rows}
                 entity_row = by_key.get(entity_key) if entity_key else None
                 name_row = by_key.get(name_key) if name_key else None
 
-                if (
-                    entity_row is not None
-                    and name_row is not None
-                    and entity_row["id"] != name_row["id"]
-                ):
+                stale_rows = [
+                    row
+                    for row in rows
+                    if entity_id is not None
+                    and row["entity_id"] is not None
+                    and str(row["entity_id"]) != str(entity_id)
+                ]
+                survivor = entity_row or name_row or (stale_rows[0] if stale_rows else None)
+                duplicate_rows = [
+                    row for row in rows if survivor is not None and row["id"] != survivor["id"]
+                ]
+
+                for duplicate in duplicate_rows:
                     await conn.execute(
                         """
                         INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat)
@@ -612,14 +717,18 @@ async def _attach_passengers(
                         ON CONFLICT (leg_id, traveller_id) DO UPDATE SET
                             seat = COALESCE(travel.leg_passengers.seat, EXCLUDED.seat)
                         """,
-                        entity_row["id"],
-                        name_row["id"],
+                        survivor["id"],
+                        duplicate["id"],
                     )
                     await conn.execute(
-                        "DELETE FROM travel.travellers WHERE id = $1::uuid", name_row["id"]
+                        "DELETE FROM travel.travellers WHERE id = $1::uuid", duplicate["id"]
                     )
-                    traveller_id = str(entity_row["id"])
-                elif name_row is not None and entity_key is not None:
+
+                if (
+                    survivor is not None
+                    and entity_key is not None
+                    and (entity_row is None or survivor["id"] != entity_row["id"])
+                ):
                     traveller_row = await conn.fetchrow(
                         "UPDATE travel.travellers SET entity_id = $1::uuid, "
                         "traveller_key = $2, display_name = COALESCE(display_name, $3) "
@@ -627,11 +736,11 @@ async def _attach_passengers(
                         entity_id,
                         entity_key,
                         name,
-                        name_row["id"],
+                        survivor["id"],
                     )
                     traveller_id = str(traveller_row["id"])
-                elif entity_row is not None or name_row is not None:
-                    traveller_id = str((entity_row or name_row)["id"])
+                elif survivor is not None:
+                    traveller_id = str(survivor["id"])
                 else:
                     traveller_row = await conn.fetchrow(
                         """
@@ -885,7 +994,7 @@ async def record_booking(
     # before creating a trip or binding a provider-scoped booking record.
     if entity_type == "leg":
         try:
-            _leg_insert_fields(payload, source_message_id)
+            _validate_leg_payload(payload)
             passengers = await _validated_passengers(pool, payload.get("passengers") or [])
             payload = {**payload, "passengers": passengers}
         except ValueError as exc:
@@ -912,6 +1021,10 @@ async def record_booking(
 
     provider = str(payload.get("provider") or "").strip()
     if record_locator and provider:
+        # ``record_locator`` is the canonical identity. Keep the legacy leg
+        # projection populated for API, briefing, calendar, and dashboard
+        # consumers that still read ``legs.pnr`` directly.
+        payload = {**payload, "record_locator": record_locator, "pnr": record_locator.upper()}
         (
             trip_id,
             trip_created,

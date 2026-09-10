@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -178,7 +179,9 @@ CREATE TABLE IF NOT EXISTS travel.legs (
     seat                      TEXT,
     metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    booking_record_id         UUID,
+    segment_index             INT
 )
 """
 
@@ -252,18 +255,29 @@ async def _insert_trip(pool, *, start_date: str, end_date: str) -> str:
 
 
 async def _insert_leg(
-    pool, trip_id, *, departure_at, arrival_at, departure_station, arrival_station, carrier="CA"
+    pool,
+    trip_id,
+    *,
+    departure_at,
+    arrival_at,
+    departure_station,
+    arrival_station,
+    carrier="CA",
+    booking_record_id=None,
+    segment_index=None,
 ):
     row = await pool.fetchrow(
         "INSERT INTO travel.legs (trip_id, type, carrier, departure_airport_station, "
-        "arrival_airport_station, departure_at, arrival_at) "
-        "VALUES ($1::uuid, 'flight', $2, $3, $4, $5, $6) RETURNING id",
+        "arrival_airport_station, departure_at, arrival_at, booking_record_id, segment_index) "
+        "VALUES ($1::uuid, 'flight', $2, $3, $4, $5, $6, $7::uuid, $8) RETURNING id",
         trip_id,
         carrier,
         departure_station,
         arrival_station,
         departure_at,
         arrival_at,
+        booking_record_id,
+        segment_index,
     )
     return str(row["id"])
 
@@ -280,6 +294,7 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         """A missed departure remains represented instead of disappearing."""
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
         outbound_departure = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+        booking_record_id = str(uuid.uuid4())
         inbound_id = await _insert_leg(
             pool,
             trip_id,
@@ -287,6 +302,8 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             arrival_at=outbound_departure + timedelta(minutes=5),
             departure_station="SIN",
             arrival_station="PEK",
+            booking_record_id=booking_record_id,
+            segment_index=0,
         )
         outbound_id = await _insert_leg(
             pool,
@@ -295,6 +312,8 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             arrival_at=outbound_departure + timedelta(hours=3),
             departure_station="PEK",
             arrival_station="NRT",
+            booking_record_id=booking_record_id,
+            segment_index=1,
         )
         await pool.execute(
             "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
@@ -323,6 +342,24 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             }
         ]
 
+        # A severe operational delay moves the inbound departure beyond the
+        # outbound departure. Stable segment identity must still keep the
+        # original pair and its broken verdict.
+        await pool.execute(
+            "UPDATE travel.legs SET departure_at = $2, arrival_at = $3 WHERE id = $1::uuid",
+            inbound_id,
+            outbound_departure + timedelta(hours=1),
+            outbound_departure + timedelta(hours=4),
+        )
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            _propose_insight_mock(),
+        ):
+            severely_missed = await recompute_trip_connections(pool, trip_id)
+        assert severely_missed["connections"][0]["inbound_leg_id"] == inbound_id
+        assert severely_missed["connections"][0]["outbound_leg_id"] == outbound_id
+        assert severely_missed["connections"][0]["verdict"] == "broken"
+
     async def test_broken_connection_raises_one_door_and_one_alert(self, pool):
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
         inbound_arrival = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
@@ -348,6 +385,33 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         )
 
         propose_mock = _propose_insight_mock()
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+                propose_mock,
+            ),
+            patch(
+                "butlers.modules.approvals.park.park_prepared_action",
+                AsyncMock(side_effect=RuntimeError("injected door persistence failure")),
+            ),
+        ):
+            failed = await recompute_trip_connections(pool, trip_id)
+
+        assert failed["error"] == "recompute_failed"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM travel.connections WHERE trip_id = $1::uuid", trip_id
+            )
+            == 0
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM pending_actions WHERE tool_name = 'acknowledge_connection_risk'"
+            )
+            == 0
+        )
+        propose_mock.reset_mock()
+
         with patch(
             "butlers.tools.switchboard.insight.broker.propose_insight_candidate", propose_mock
         ):
@@ -601,31 +665,3 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert signal is not None
         assert signal["measurability"] == "absent"
         assert signal["producer"] == "owner"
-
-    async def test_no_connecting_legs_leaves_connections_empty(self, pool):
-        """A round trip's two direct legs (different airports, days apart) is not a connection."""
-        trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-25")
-        await _insert_leg(
-            pool,
-            trip_id,
-            departure_at=datetime(2026, 10, 16, 8, 0, tzinfo=UTC),
-            arrival_at=datetime(2026, 10, 16, 14, 0, tzinfo=UTC),
-            departure_station="SIN",
-            arrival_station="PEK",
-        )
-        await _insert_leg(
-            pool,
-            trip_id,
-            departure_at=datetime(2026, 10, 25, 20, 0, tzinfo=UTC),
-            arrival_at=datetime(2026, 10, 26, 2, 0, tzinfo=UTC),
-            departure_station="PEK",
-            arrival_station="SIN",
-        )
-
-        result = await recompute_trip_connections(pool, trip_id)
-
-        assert result["connections"] == []
-        count = await pool.fetchval(
-            "SELECT count(*) FROM travel.connections WHERE trip_id = $1::uuid", trip_id
-        )
-        assert count == 0

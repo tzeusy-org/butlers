@@ -461,7 +461,9 @@ _CONNECTIONS_SCHEMA_SQL = """
 ALTER TABLE travel.legs
     ADD COLUMN IF NOT EXISTS departure_airport_station TEXT,
     ADD COLUMN IF NOT EXISTS arrival_airport_station TEXT,
-    ADD COLUMN IF NOT EXISTS carrier TEXT;
+    ADD COLUMN IF NOT EXISTS carrier TEXT,
+    ADD COLUMN IF NOT EXISTS booking_record_id UUID,
+    ADD COLUMN IF NOT EXISTS segment_index INT;
 
 CREATE TABLE IF NOT EXISTS public.flight_status_feed_status (
     id                      SMALLINT PRIMARY KEY DEFAULT 1,
@@ -535,29 +537,34 @@ class TestDelayRepairsConnectionAgainstPostgres:
             # 120 minutes available -- exactly the comfortable 'holds'
             # boundary against a 90-minute minimum before the delay lands.
             outbound_departure = inbound_arrival + timedelta(minutes=120)
+            booking_record_id = uuid.uuid4()
 
             inbound_id = await pool.fetchval(
                 """
                 INSERT INTO travel.legs (trip_id, type, departure_airport_station,
-                                          arrival_airport_station, departure_at, arrival_at, metadata)
-                VALUES ($1::uuid, 'flight', 'SIN', 'PEK', $2, $3, $4)
+                                          arrival_airport_station, departure_at, arrival_at, metadata,
+                                          booking_record_id, segment_index)
+                VALUES ($1::uuid, 'flight', 'SIN', 'PEK', $2, $3, $4, $5, 0)
                 RETURNING id
                 """,
                 trip_id,
                 scheduled_departure,
                 inbound_arrival,
                 {"flight_number": "DD94XR"},
+                booking_record_id,
             )
             outbound_id = await pool.fetchval(
                 """
                 INSERT INTO travel.legs (trip_id, type, departure_airport_station,
-                                          arrival_airport_station, departure_at, arrival_at)
-                VALUES ($1::uuid, 'flight', 'PEK', 'NRT', $2, $3)
+                                          arrival_airport_station, departure_at, arrival_at,
+                                          booking_record_id, segment_index)
+                VALUES ($1::uuid, 'flight', 'PEK', 'NRT', $2, $3, $4, 1)
                 RETURNING id
                 """,
                 trip_id,
                 outbound_departure,
                 outbound_departure + timedelta(hours=3),
+                booking_record_id,
             )
             original_updated_at = await pool.fetchval(
                 "SELECT updated_at FROM travel.legs WHERE id = $1::uuid", inbound_id
@@ -618,3 +625,41 @@ class TestDelayRepairsConnectionAgainstPostgres:
             )
             assert door is not None
             assert door["status"] == "pending"
+
+            # Cross the mutable-time reorder threshold. Even with the inbound
+            # now departing after the outbound, segment identity preserves the
+            # original connection and its broken verdict.
+            severe_payload = {
+                "data": [
+                    {
+                        "flight_status": "active",
+                        "departure": {
+                            "scheduled": scheduled_departure.isoformat(),
+                            "estimated": (scheduled_departure + timedelta(hours=6)).isoformat(),
+                            "delay": 360,
+                        },
+                    }
+                ]
+            }
+            severe_client = _mock_client(severe_payload)
+            with (
+                patch(
+                    "butlers.jobs.flight_status.CredentialStore",
+                    return_value=_mock_credential_store("fake-key"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+                    AsyncMock(return_value={"status": "accepted"}),
+                ),
+            ):
+                await run_flight_status_check(pool, http_client=severe_client)
+            await severe_client.aclose()
+
+            severe_connection = await pool.fetchrow(
+                "SELECT inbound_leg_id, outbound_leg_id, verdict FROM travel.connections "
+                "WHERE trip_id = $1::uuid",
+                trip_id,
+            )
+            assert severe_connection["inbound_leg_id"] == inbound_id
+            assert severe_connection["outbound_leg_id"] == outbound_id
+            assert severe_connection["verdict"] == "broken"

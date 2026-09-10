@@ -28,6 +28,10 @@ recomputed by ``roster/travel/tools/connections.py`` and
 Downgrade restores the owner traveller's per-leg seat onto the legacy
 ``travel.legs.seat`` column before dropping the party tables. Derived
 connection data is discarded, but owner seat data survives rollback.
+
+The migration never merges existing trips automatically. Operators review the
+read-only ``travel.booking_fragmentation_inventory`` view first; it reports
+normalized provider/locator groups whose legacy legs span multiple trip IDs.
 """
 
 from __future__ import annotations
@@ -186,9 +190,24 @@ def upgrade() -> None:
         CREATE INDEX IF NOT EXISTS idx_connections_trip
             ON travel.connections (trip_id)
     """)
+    op.execute("""
+        CREATE OR REPLACE VIEW travel.booking_fragmentation_inventory AS
+        SELECT
+            lower(btrim(carrier)) AS provider,
+            upper(btrim(pnr)) AS record_locator,
+            array_agg(DISTINCT trip_id ORDER BY trip_id) AS trip_ids,
+            count(DISTINCT trip_id) AS trip_count,
+            array_agg(id ORDER BY departure_at, id) AS leg_ids
+        FROM travel.legs
+        WHERE NULLIF(btrim(carrier), '') IS NOT NULL
+          AND NULLIF(btrim(pnr), '') IS NOT NULL
+        GROUP BY lower(btrim(carrier)), upper(btrim(pnr))
+        HAVING count(DISTINCT trip_id) > 1
+    """)
 
 
 def downgrade() -> None:
+    op.execute("DROP VIEW IF EXISTS travel.booking_fragmentation_inventory")
     op.execute("DROP TABLE IF EXISTS travel.connections")
     op.execute("DROP TABLE IF EXISTS travel.airport_minimum_connect")
     op.execute("""

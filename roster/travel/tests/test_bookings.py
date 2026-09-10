@@ -390,28 +390,36 @@ class TestRecordBookingLeg:
         assert result["entity_type"] == "leg"
         assert any("Unknown entity_type" in w for w in result["warnings"])
 
-    async def test_missing_departure_at_returns_warning(self, pool):
-        """Malformed PNR input creates no booking, trip, leg, or publishable event."""
+    async def test_invalid_leg_input_is_rejected_before_any_persistence(self, pool):
+        """Every malformed DB-bound value fails before booking identity is written."""
         from butlers.tools.travel.bookings import record_booking
 
-        result = await record_booking(
-            pool=pool,
-            payload={
-                "entity_type": "leg",
-                "record_locator": "MALFORMED",
-                "provider": "Test Air",
-                "arrival": "CDG",
-                # departure_at is missing — should trigger warning
-            },
-        )
+        valid = {
+            "entity_type": "leg",
+            "record_locator": "MALFORMED",
+            "provider": "Test Air",
+            "departure_at": "2026-10-16T08:00:00+00:00",
+            "arrival_at": "2026-10-16T14:00:00+00:00",
+        }
+        malformed_payloads = [
+            {key: value for key, value in valid.items() if key != "departure_at"},
+            {**valid, "segment_index": "first"},
+            {**valid, "passengers": [{"name": "Alice", "seat": 14}]},
+            {**valid, "arrival_at": "2026-10-16T07:00:00+00:00"},
+            {**valid, "metadata": {"not_json": object()}},
+        ]
 
-        assert result["entity_id"] is None
-        assert result["created"] is False
-        assert result["trip_created"] is False
-        assert result["trip_event_payload"] is None
-        assert len(result["warnings"]) > 0
-        assert await pool.fetchval("SELECT count(*) FROM travel.trips") == 0
-        assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 0
+        for payload in malformed_payloads:
+            result = await record_booking(pool=pool, payload=payload)
+
+            assert result["entity_id"] is None
+            assert result["created"] is False
+            assert result["trip_created"] is False
+            assert result["trip_event_payload"] is None
+            assert result["warnings"]
+            assert await pool.fetchval("SELECT count(*) FROM travel.trips") == 0
+            assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 0
+            assert await pool.fetchval("SELECT count(*) FROM travel.legs") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +488,8 @@ class TestRecordBookingIdentity:
         from butlers.tools.travel.bookings import record_booking
 
         results = [
-            await record_booking(pool=pool, payload=payload) for payload in self._fixture_payloads()
+            await record_booking(pool=pool, payload=payload)
+            for payload in reversed(self._fixture_payloads())
         ]
 
         trip_ids = {r["trip_id"] for r in results}
@@ -514,26 +523,25 @@ class TestRecordBookingIdentity:
         assert traveller_count == 2
         assert await pool.fetchval("SELECT count(*) FROM public.entities") == 0
 
+        legs = await pool.fetch(
+            "SELECT confirmation_number, pnr FROM travel.legs "
+            "WHERE trip_id = $1::uuid ORDER BY segment_index",
+            trip_id,
+        )
+        assert [row["confirmation_number"] for row in legs] == [
+            self._SHARED_CONFIRMATION,
+            self._SHARED_CONFIRMATION,
+        ]
+        assert [row["pnr"] for row in legs] == [self._RECORD_LOCATOR, self._RECORD_LOCATOR]
+        trip_metadata = await pool.fetchval(
+            "SELECT metadata FROM travel.trips WHERE id = $1::uuid", trip_id
+        )
+        assert trip_metadata["identity_confidence"] == "strong"
+
         # Both segments converged one leg each, not one leg per passenger.
         assert results[0]["entity_id"] == results[1]["entity_id"]
         assert results[2]["entity_id"] == results[3]["entity_id"]
         assert results[0]["entity_id"] != results[2]["entity_id"]
-
-    async def test_dd94xr_fixture_order_independent(self, pool):
-        """The same fixture ingested in a different order converges identically."""
-        from butlers.tools.travel.bookings import record_booking
-
-        payloads = list(reversed(self._fixture_payloads()))
-        results = [await record_booking(pool=pool, payload=payload) for payload in payloads]
-
-        trip_ids = {r["trip_id"] for r in results}
-        assert len(trip_ids) == 1
-        trip_id = trip_ids.pop()
-
-        leg_count = await pool.fetchval(
-            "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", trip_id
-        )
-        assert leg_count == 2
 
     async def test_dd94xr_live_api_seams_return_party_and_legs(self, pool):
         """The real DB state survives both dashboard routes, not only direct SQL assertions."""
@@ -566,34 +574,31 @@ class TestRecordBookingIdentity:
         assert legs_response.status_code == 200
         assert len(legs_response.json()) == 2
 
-    async def test_return_leg_not_deduped_when_sharing_confirmation_number(self, pool):
-        """Regression: two segments sharing one confirmation_number must not merge."""
-        from butlers.tools.travel.bookings import record_booking
-
-        outbound_result = await record_booking(
-            pool=pool, payload=self._segment_payload(segment_index=0, passenger_name="Alice")
-        )
-        return_result = await record_booking(
-            pool=pool, payload=self._segment_payload(segment_index=1, passenger_name="Alice")
-        )
-
-        assert outbound_result["entity_id"] != return_result["entity_id"]
-        assert outbound_result["deduped"] is False
-        assert return_result["deduped"] is False
-
-        confirmation_leg_count = await pool.fetchval(
-            "SELECT count(*) FROM travel.legs WHERE confirmation_number = $1",
-            self._SHARED_CONFIRMATION,
-        )
-        assert confirmation_leg_count == 2
-
     async def test_reingesting_same_segment_is_idempotent(self, pool):
-        """Re-ingesting the same PNR segment returns created=False, same leg id."""
+        """Same-segment convergence is idempotent and never erases populated fields."""
         from butlers.tools.travel.bookings import record_booking
 
         payload = self._segment_payload(segment_index=0, passenger_name="Alice Traveller")
+        payload.update(
+            carrier="Operating Air",
+            departure_city="Singapore",
+            arrival_city="Beijing",
+        )
         first = await record_booking(pool=pool, payload=payload)
-        second = await record_booking(pool=pool, payload=payload)
+        sparse = {
+            key: value
+            for key, value in payload.items()
+            if key
+            not in {
+                "carrier",
+                "departure_airport_station",
+                "departure_city",
+                "arrival_airport_station",
+                "arrival_city",
+                "metadata",
+            }
+        }
+        second = await record_booking(pool=pool, payload=sparse)
 
         assert first["created"] is True
         assert second["created"] is False
@@ -604,6 +609,37 @@ class TestRecordBookingIdentity:
             "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", first["trip_id"]
         )
         assert leg_count == 1
+
+        preserved = await pool.fetchrow(
+            "SELECT carrier, departure_airport_station, departure_city, "
+            "arrival_airport_station, arrival_city, pnr FROM travel.legs WHERE id = $1::uuid",
+            first["entity_id"],
+        )
+        assert tuple(preserved.values()) == (
+            "Operating Air",
+            "SIN",
+            "Singapore",
+            "PEK",
+            "Beijing",
+            self._RECORD_LOCATOR,
+        )
+
+        reverse_sparse = {**sparse, "record_locator": "SPARSE2", "source_message_id": "sparse2"}
+        reverse_full = {**payload, "record_locator": "SPARSE2", "source_message_id": "full2"}
+        sparse_first = await record_booking(pool=pool, payload=reverse_sparse)
+        await record_booking(pool=pool, payload=reverse_full)
+        enriched = await pool.fetchrow(
+            "SELECT carrier, departure_airport_station, departure_city, "
+            "arrival_airport_station, arrival_city FROM travel.legs WHERE id = $1::uuid",
+            sparse_first["entity_id"],
+        )
+        assert tuple(enriched.values()) == (
+            "Operating Air",
+            "SIN",
+            "Singapore",
+            "PEK",
+            "Beijing",
+        )
 
     async def test_concurrent_ingestion_converges_on_one_trip(self, pool):
         """Two sessions racing the same PNR converge on one trip, one leg per segment."""
@@ -653,18 +689,6 @@ class TestRecordBookingIdentity:
             "SELECT metadata FROM travel.trips WHERE id = $1::uuid", result["trip_id"]
         )
         assert metadata["identity_confidence"] == "weak"
-
-    async def test_record_locator_stamps_strong_identity_confidence(self, pool):
-        from butlers.tools.travel.bookings import record_booking
-
-        result = await record_booking(
-            pool=pool, payload=self._segment_payload(segment_index=0, passenger_name="Alice")
-        )
-
-        metadata = await pool.fetchval(
-            "SELECT metadata FROM travel.trips WHERE id = $1::uuid", result["trip_id"]
-        )
-        assert metadata["identity_confidence"] == "strong"
 
     async def test_party_reuses_an_existing_canonical_person_entity(self, pool):
         """Travel links to the shared identity spine instead of minting a duplicate person."""
@@ -732,32 +756,64 @@ class TestRecordBookingIdentity:
             == 1
         )
 
-    @pytest.mark.parametrize(
-        ("entity_type", "metadata"),
-        [
+        source_entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+            "VALUES ('Alice duplicate', 'person', $1::jsonb) RETURNING id",
+            {"merged_into": str(entity_id)},
+        )
+        source_traveller_id = await pool.fetchval(
+            "INSERT INTO travel.travellers (trip_id, entity_id, traveller_key, display_name) "
+            "VALUES ($1::uuid, $2::uuid, $3, 'Alice duplicate') RETURNING id",
+            first["trip_id"],
+            source_entity_id,
+            f"entity:{source_entity_id}",
+        )
+        await pool.execute(
+            "INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat) "
+            "VALUES ($1::uuid, $2::uuid, '14A')",
+            first["entity_id"],
+            source_traveller_id,
+        )
+
+        payload["passengers"] = [{"entity_id": str(entity_id), "name": "Alice Traveller"}]
+        await record_booking(pool=pool, payload=payload)
+
+        party = await pool.fetch(
+            "SELECT entity_id FROM travel.travellers WHERE trip_id = $1::uuid",
+            first["trip_id"],
+        )
+        assert [row["entity_id"] for row in party] == [entity_id]
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM travel.leg_passengers WHERE leg_id = $1::uuid",
+                first["entity_id"],
+            )
+            == 1
+        )
+
+    async def test_supplied_entity_id_must_be_a_live_canonical_person(self, pool):
+        from butlers.tools.travel.bookings import record_booking
+
+        invalid_states = [
             ("place", {}),
             ("person", {"merged_into": str(uuid.uuid4())}),
             ("person", {"deleted_at": "2026-09-10T00:00:00Z"}),
-        ],
-    )
-    async def test_supplied_entity_id_must_be_a_live_canonical_person(
-        self, pool, entity_type, metadata
-    ):
-        from butlers.tools.travel.bookings import record_booking
+        ]
+        for index, (entity_type, metadata) in enumerate(invalid_states):
+            entity_id = await pool.fetchval(
+                "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+                "VALUES ('Invalid Traveller', $1, $2::jsonb) RETURNING id",
+                entity_type,
+                metadata,
+            )
+            payload = self._segment_payload(segment_index=index, passenger_name="Invalid Traveller")
+            payload["record_locator"] = f"INVALID{index}"
+            payload["passengers"] = [{"entity_id": str(entity_id), "name": "Invalid Traveller"}]
 
-        entity_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
-            "VALUES ('Invalid Traveller', $1, $2::jsonb) RETURNING id",
-            entity_type,
-            metadata,
-        )
-        payload = self._segment_payload(segment_index=0, passenger_name="Invalid Traveller")
-        payload["passengers"] = [{"entity_id": str(entity_id), "name": "Invalid Traveller"}]
+            result = await record_booking(pool=pool, payload=payload)
 
-        result = await record_booking(pool=pool, payload=payload)
-
-        assert result["entity_id"] is None
-        assert result["trip_created"] is False
+            assert result["entity_id"] is None
+            assert result["trip_created"] is False
         assert result["warnings"] == [
             "record_booking: passenger entity_id must identify a live person"
         ]
@@ -775,6 +831,31 @@ class TestRecordBookingIdentity:
 
         assert first["trip_id"] != second["trip_id"]
         assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 2
+
+        legacy_trip_ids = []
+        for day in (1, 10):
+            legacy_trip_id = await pool.fetchval(
+                "INSERT INTO travel.trips (name, destination, start_date, end_date, status) "
+                "VALUES ($1, 'Legacy', $2, $2, 'planned') RETURNING id",
+                f"Legacy fragment {day}",
+                date(2026, 11, day),
+            )
+            legacy_trip_ids.append(legacy_trip_id)
+            await pool.execute(
+                "INSERT INTO travel.legs (trip_id, type, carrier, pnr, departure_at, arrival_at) "
+                "VALUES ($1, 'flight', 'Legacy Air', 'LEGACY1', $2, $3)",
+                legacy_trip_id,
+                datetime(2026, 11, day, 8, tzinfo=UTC),
+                datetime(2026, 11, day, 12, tzinfo=UTC),
+            )
+
+        legacy_payload = self._segment_payload(segment_index=1, passenger_name="Alice Traveller")
+        legacy_payload.update(provider="Legacy Air", record_locator="LEGACY1")
+        trip_count_before = await pool.fetchval("SELECT count(*) FROM travel.trips")
+        reconciled = await record_booking(pool=pool, payload=legacy_payload)
+
+        assert await pool.fetchval("SELECT count(*) FROM travel.trips") == trip_count_before
+        assert uuid.UUID(reconciled["trip_id"]) in legacy_trip_ids
 
     async def test_blank_provider_uses_weak_matching_not_pnr_identity(self, pool):
         """A locator without provider context is not a strong global identity."""
