@@ -966,6 +966,14 @@ async def test_timeline_intervals_reject_invalid_bounds(app, params, expected_st
 @pytest.mark.parametrize(
     ("event_types", "butlers", "failed_butlers", "pool_error", "expected"),
     [
+        pytest.param(
+            ["session"],
+            ["atlas"],
+            [],
+            None,
+            (1, 1, "complete"),
+            id="selected-session-source-healthy-zero",
+        ),
         (["session"], ["atlas", "home"], ["home"], None, (2, 1, "partial")),
         (["session"], ["atlas", "home"], ["atlas", "home"], None, (2, 0, "unavailable")),
         (["notification"], None, [], KeyError("missing"), (1, 0, "unavailable")),
