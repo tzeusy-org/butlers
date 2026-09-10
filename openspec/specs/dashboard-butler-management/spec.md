@@ -465,7 +465,7 @@ detail view and SHALL be documented here as a consolidated reference.
 - **THEN** a tabbed browser shows three tabs: Facts, Rules, Episodes
 - **AND** when opened inside a butler detail page, all queries are scope-filtered to that butler
 
-#### Scenario: Contact detail compatibility alias
+#### Scenario: Contact detail tabs
 - **WHEN** `/contacts/:contactId` is visited
 - **THEN** the route MUST replace-navigate to `/entities/index?has=contact`
 - **AND** it MUST NOT render the retired contact-detail page or its former tabs

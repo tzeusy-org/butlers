@@ -17,6 +17,9 @@ house-ledger retains URL-backed maturity filtering plus anti-pattern attention.
 5. Preserve `maturity=anti_pattern` as a working deep link from the memory attention rail.
 6. Rebuild every affected MODIFIED requirement as a complete body and archive this superseding
    change so historical requirement delivery remains auditable.
+7. Preserve the existing `Contact detail tabs` scenario heading while replacing its body with the
+   compatibility-alias guarantee. OpenSpec matches scenario names during archive, so correcting
+   the body without renaming the heading keeps the delta archive-safe.
 
 ## Non-goals
 

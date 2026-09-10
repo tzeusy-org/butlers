@@ -8,6 +8,8 @@
 - [x] 2.1 Correct health identity and the measurements route.
 - [x] 2.2 Replace retired contacts and costs page contracts with compatibility aliases and
   canonical successor ownership.
+- [x] 2.2a Reconcile the dashboard-butler-management contact-detail reference through a complete,
+  scenario-name-preserving MODIFIED requirement.
 - [x] 2.3 Preserve reusable contacts and Spend consumers.
 - [x] 2.4 Preserve memory maturity URL state and the anti-pattern attention row.
 - [x] 2.5 Rebuild affected MODIFIED requirements after collision scans.

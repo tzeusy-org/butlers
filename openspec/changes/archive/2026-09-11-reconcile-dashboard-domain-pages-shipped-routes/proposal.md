@@ -26,6 +26,8 @@ None.
 
 ### Modified Capabilities
 
+- `dashboard-butler-management`: the legacy contact-detail tab reference becomes a compatibility
+  alias contract without renaming its existing scenario heading.
 - `dashboard-domain-pages`: routes, identity, memory filters, and shared Spend readers match the
   shipped dashboard.
 - `dashboard-relationship`: contact compatibility aliases point to the entity index.
