@@ -558,7 +558,7 @@ Required query support:
 - `/api/ingestion/connectors/{connectorType}/{endpointIdentity}/stats`:
   - `period` (`24h` | `7d` | `30d`)
 
-`ConnectorSummariesResponse.data.connectors` is runtime-authoritative:
+`ApiResponse.data.connectors` is runtime-authoritative:
 storage-only checkpoints are nested under their parent, deleted identities are
 omitted, and archived identities are explicitly marked so callers can keep them
 out of active attention and fleet views. The `cross-summary` response is the
