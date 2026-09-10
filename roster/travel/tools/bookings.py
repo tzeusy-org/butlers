@@ -586,21 +586,35 @@ async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None
     canonical = name.strip()
     existing = await pool.fetchval(
         """
-        SELECT COALESCE(survivor.id, source.id)
-        FROM public.entities AS source
-        LEFT JOIN public.entities AS survivor
-          ON survivor.id::text = source.metadata ->> 'merged_into'
-         AND survivor.entity_type = 'person'
-         AND (survivor.metadata ->> 'merged_into') IS NULL
-         AND (survivor.metadata ->> 'deleted_at') IS NULL
-        WHERE source.entity_type = 'person'
-          AND lower(source.canonical_name) = lower($1)
-          AND (source.metadata ->> 'deleted_at') IS NULL
-          AND (
-              (source.metadata ->> 'merged_into') IS NULL
-              OR survivor.id IS NOT NULL
-          )
-        ORDER BY (source.metadata ->> 'merged_into') IS NULL DESC
+        WITH RECURSIVE lineage AS (
+            SELECT source.id,
+                   source.metadata,
+                   ARRAY[source.id] AS visited,
+                   (source.metadata ->> 'merged_into') IS NULL AS source_is_live,
+                   0 AS depth
+            FROM public.entities AS source
+            WHERE source.entity_type = 'person'
+              AND lower(source.canonical_name) = lower($1)
+              AND (source.metadata ->> 'deleted_at') IS NULL
+
+            UNION ALL
+
+            SELECT successor.id,
+                   successor.metadata,
+                   lineage.visited || successor.id,
+                   lineage.source_is_live,
+                   lineage.depth + 1
+            FROM lineage
+            JOIN public.entities AS successor
+              ON successor.id::text = lineage.metadata ->> 'merged_into'
+            WHERE successor.entity_type = 'person'
+              AND (successor.metadata ->> 'deleted_at') IS NULL
+              AND NOT successor.id = ANY(lineage.visited)
+        )
+        SELECT id
+        FROM lineage
+        WHERE (metadata ->> 'merged_into') IS NULL
+        ORDER BY source_is_live DESC, depth ASC
         LIMIT 1
         """,
         canonical,
@@ -688,17 +702,45 @@ async def _attach_passengers(
 
         rows = await db.fetch(
             """
-                    SELECT traveller.id, traveller.traveller_key, traveller.entity_id
-                    FROM travel.travellers AS traveller
-                    LEFT JOIN public.entities AS linked_entity
-                      ON linked_entity.id = traveller.entity_id
-                    WHERE traveller.trip_id = $1::uuid
-                      AND (
-                          traveller.traveller_key = ANY($2::text[])
-                          OR linked_entity.metadata ->> 'merged_into' = $3
-                      )
-                    FOR UPDATE OF traveller
-                    """,
+            WITH RECURSIVE linked_lineage AS (
+                SELECT traveller.id AS traveller_id,
+                       linked_entity.id AS entity_id,
+                       linked_entity.metadata,
+                       ARRAY[linked_entity.id] AS visited
+                FROM travel.travellers AS traveller
+                JOIN public.entities AS linked_entity
+                  ON linked_entity.id = traveller.entity_id
+                WHERE traveller.trip_id = $1::uuid
+                  AND linked_entity.entity_type = 'person'
+                  AND (linked_entity.metadata ->> 'deleted_at') IS NULL
+
+                UNION ALL
+
+                SELECT linked_lineage.traveller_id,
+                       successor.id,
+                       successor.metadata,
+                       linked_lineage.visited || successor.id
+                FROM linked_lineage
+                JOIN public.entities AS successor
+                  ON successor.id::text = linked_lineage.metadata ->> 'merged_into'
+                WHERE successor.entity_type = 'person'
+                  AND (successor.metadata ->> 'deleted_at') IS NULL
+                  AND NOT successor.id = ANY(linked_lineage.visited)
+            )
+            SELECT traveller.id, traveller.traveller_key, traveller.entity_id
+            FROM travel.travellers AS traveller
+            WHERE traveller.trip_id = $1::uuid
+              AND (
+                  traveller.traveller_key = ANY($2::text[])
+                  OR EXISTS (
+                      SELECT 1
+                      FROM linked_lineage
+                      WHERE linked_lineage.traveller_id = traveller.id
+                        AND linked_lineage.entity_id = $3::uuid
+                  )
+              )
+            FOR UPDATE OF traveller
+            """,
             trip_id,
             lock_keys,
             str(entity_id) if entity_id else None,

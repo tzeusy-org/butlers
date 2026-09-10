@@ -776,10 +776,15 @@ class TestRecordBookingIdentity:
             == 1
         )
 
+        intermediate_entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+            "VALUES ('Alice intermediate', 'person', $1::jsonb) RETURNING id",
+            {"merged_into": str(entity_id)},
+        )
         source_entity_id = await pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
             "VALUES ('Alice duplicate', 'person', $1::jsonb) RETURNING id",
-            {"merged_into": str(entity_id)},
+            {"merged_into": str(intermediate_entity_id)},
         )
         source_traveller_id = await pool.fetchval(
             "INSERT INTO travel.travellers (trip_id, entity_id, traveller_key, display_name) "
