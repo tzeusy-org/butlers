@@ -56,7 +56,9 @@ The function is safe to call before migrations have run --- it catches all datab
 Travel parties also reference this shared identity anchor. `travel.travellers.entity_id` points to
 `public.entities.id` when an exact canonical person is already known; an unresolved booking name
 remains a local party member with a stable traveller key and a null `entity_id` rather than minting
-shared identity. `travel.leg_passengers` records which party members occupy each shared leg.
+shared identity. If that exact name later resolves, Travel promotes the existing local party member
+instead of creating a duplicate; caller-supplied IDs are accepted only for live, unmerged person
+entities. `travel.leg_passengers` records which party members occupy each shared leg.
 Relational facts remain owned by the Relationship butler and are never copied into the travel schema.
 
 ## Owner Contact

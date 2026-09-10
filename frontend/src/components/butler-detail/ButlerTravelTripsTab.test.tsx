@@ -243,6 +243,7 @@ const TRIP_SUMMARY = {
   ],
   connection_reason: null,
   unreadable_party_ids: [],
+  unreadable_connection_ids: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -652,6 +653,7 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
           unreadable_accommodation_ids: [],
           unreadable_reservation_ids: [],
           unreadable_document_ids: ["doc-corrupt-1", "doc-corrupt-2"],
+          unreadable_connection_ids: ["connection-corrupt"],
         },
         isLoading: false,
         refetch: vi.fn(),
@@ -664,6 +666,7 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     const note = screen.getByTestId("trip-drawer-partial-degraded");
     expect(note.textContent).toContain("1 leg");
     expect(note.textContent).toContain("2 documents");
+    expect(note.textContent).toContain("1 connection");
     expect(note.textContent).toContain("excluded");
     // The readable legs/accommodations still render normally alongside the disclosure.
     expect(screen.getAllByTestId("timeline-entry").length).toBeGreaterThanOrEqual(1);

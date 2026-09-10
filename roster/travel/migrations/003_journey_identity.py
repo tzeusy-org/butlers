@@ -25,9 +25,9 @@ and ``travel.connections`` (one row per adjacent leg pair, derived --
 recomputed by ``roster/travel/tools/connections.py`` and
 ``src/butlers/jobs/flight_status.py``, never hand-edited).
 
-All additive: downgrade drops only what this revision created and restores
-nothing onto the pre-existing tables it touched (``travel.legs`` loses the
-two new nullable columns; no other table's rows are altered).
+Downgrade restores the owner traveller's per-leg seat onto the legacy
+``travel.legs.seat`` column before dropping the party tables. Derived
+connection data is discarded, but owner seat data survives rollback.
 """
 
 from __future__ import annotations
@@ -191,6 +191,19 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS travel.connections")
     op.execute("DROP TABLE IF EXISTS travel.airport_minimum_connect")
+    op.execute("""
+        UPDATE travel.legs AS leg
+        SET seat = owner_seat.seat
+        FROM (
+            SELECT lp.leg_id, lp.seat
+            FROM travel.leg_passengers AS lp
+            JOIN travel.travellers AS traveller ON traveller.id = lp.traveller_id
+            JOIN public.entities AS entity ON entity.id = traveller.entity_id
+            WHERE 'owner' = ANY(COALESCE(entity.roles, '{}'::text[]))
+              AND lp.seat IS NOT NULL
+        ) AS owner_seat
+        WHERE leg.id = owner_seat.leg_id
+    """)
     op.execute("DROP TABLE IF EXISTS travel.leg_passengers")
     op.execute("DROP TABLE IF EXISTS travel.travellers")
     op.execute("DROP INDEX IF EXISTS travel.ux_legs_booking_record_segment")

@@ -125,7 +125,11 @@ def _find_connecting_pairs(
         if inbound_arrival_airport != outbound_departure_airport:
             continue
         gap = outbound["departure_at"] - inbound["arrival_at"]
-        if gap.total_seconds() < 0 or gap > _MAX_CONNECTION_GAP:
+        # Once the inbound arrival moves past the outbound departure, this is
+        # still the same connection -- it is now definitively broken. Only a
+        # large positive gap means the adjacent legs are separate journey
+        # segments rather than a transfer.
+        if gap > _MAX_CONNECTION_GAP:
             continue
         pairs.append((inbound, outbound))
     return pairs
@@ -265,7 +269,7 @@ async def _withdraw_connection_door(
         )
 
 
-async def recompute_trip_connections(
+async def _recompute_trip_connections_locked(
     pool: Any, trip_id: str, *, now: datetime | None = None
 ) -> dict[str, Any]:
     """Re-derive every connection verdict for one trip and upsert ``travel.connections``.
@@ -402,6 +406,29 @@ async def recompute_trip_connections(
             )
 
         return {"trip_id": trip_id, "connections": results}
+    except Exception:
+        logger.warning("recompute_trip_connections failed for trip_id=%s", trip_id, exc_info=True)
+        return {"trip_id": trip_id, "connections": [], "error": "recompute_failed"}
+
+
+async def recompute_trip_connections(
+    pool: Any, trip_id: str, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Serialize one trip's verdict transitions and their approval-door effects.
+
+    The advisory transaction lock is acquired before reading legs or the
+    previous verdict. Concurrent poll/manual recomputes therefore observe the
+    row actually left by their predecessor, and persistence plus door changes
+    commit as one transition instead of acting from a stale pre-upsert read.
+    """
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"travel-connections:{trip_id}",
+                )
+                return await _recompute_trip_connections_locked(conn, trip_id, now=now)
     except Exception:
         logger.warning("recompute_trip_connections failed for trip_id=%s", trip_id, exc_info=True)
         return {"trip_id": trip_id, "connections": [], "error": "recompute_failed"}

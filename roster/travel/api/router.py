@@ -349,7 +349,7 @@ async def get_trip_summary(
         " FROM travel.connections WHERE trip_id = $1::uuid ORDER BY computed_at ASC",
         trip_id,
     )
-    connections, _unreadable_connection_ids = _rows_to_models(
+    connections, unreadable_connection_ids = _rows_to_models(
         connection_rows, _row_to_connection, "connection"
     )
 
@@ -363,12 +363,15 @@ async def get_trip_summary(
         alerts=alerts,
         party=party,
         connections=connections,
-        connection_reason=None if connections else "no_connection_on_journey",
+        connection_reason=(
+            None if connections or unreadable_connection_ids else "no_connection_on_journey"
+        ),
         unreadable_leg_ids=unreadable_leg_ids,
         unreadable_accommodation_ids=unreadable_accommodation_ids,
         unreadable_reservation_ids=unreadable_reservation_ids,
         unreadable_document_ids=unreadable_document_ids,
         unreadable_party_ids=unreadable_party_ids,
+        unreadable_connection_ids=unreadable_connection_ids,
     )
 
 

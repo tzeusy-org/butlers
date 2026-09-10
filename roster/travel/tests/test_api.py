@@ -677,6 +677,45 @@ async def test_get_trip_summary_connections_rendered():
         }
     ]
     assert body["connection_reason"] is None
+    assert body["unreadable_connection_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_discloses_unreadable_connection():
+    """A corrupt connection row is excluded and cannot impersonate an empty journey."""
+    trip = _trip_row(id=_TRIP_UUID)
+    leg1 = _leg_row(trip_id=_TRIP_UUID)
+    leg2 = _leg_row(trip_id=_TRIP_UUID)
+    bad_connection_id = str(uuid.uuid4())
+    connection = _connection_row(
+        id=bad_connection_id,
+        trip_id=_TRIP_UUID,
+        inbound_leg_id=str(leg1["id"]),
+        outbound_leg_id=str(leg2["id"]),
+        evidence="not-an-object",
+    )
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[leg1, leg2], [], [], [], [], [connection]])
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connections"] == []
+    assert body["connection_reason"] is None
+    assert body["unreadable_connection_ids"] == [bad_connection_id]
 
 
 @pytest.mark.asyncio

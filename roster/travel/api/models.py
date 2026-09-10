@@ -147,6 +147,7 @@ class TripSummaryModel(BaseModel):
     unreadable_reservation_ids: list[str] = []
     unreadable_document_ids: list[str] = []
     unreadable_party_ids: list[str] = []
+    unreadable_connection_ids: list[str] = []
 
 
 class UpcomingTripModel(BaseModel):

@@ -1800,6 +1800,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Traveller party
 - No travellers recorded.
 - Connections
+- Connection data unavailable.
 - No connection on this journey.
 - Alerts
 - Timeline
@@ -4222,4 +4223,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3306*
+*Total strings: 3307*

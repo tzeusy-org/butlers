@@ -65,7 +65,8 @@ _PRE_MIGRATION_SCHEMA = """
 CREATE SCHEMA IF NOT EXISTS travel;
 
 CREATE TABLE IF NOT EXISTS public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    roles TEXT[] NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS travel.trips (
@@ -207,12 +208,32 @@ class TestMigrationRunsAgainstPostgres:
         assert count == 1
 
     async def test_downgrade_drops_new_tables_and_columns(self, pool) -> None:
-        p, _trip_id = pool
+        p, trip_id = pool
         async with p.acquire() as conn:
             for statement in _upgrade_statements():
                 await conn.execute(statement)
+            owner_id = await conn.fetchval(
+                "INSERT INTO public.entities (roles) VALUES (ARRAY['owner']) RETURNING id"
+            )
+            traveller_id = await conn.fetchval(
+                "INSERT INTO travel.travellers "
+                "(trip_id, entity_id, traveller_key, display_name) "
+                "VALUES ($1, $2, $3, 'Owner') RETURNING id",
+                trip_id,
+                owner_id,
+                f"entity:{owner_id}",
+            )
+            leg_id = await conn.fetchval("SELECT id FROM travel.legs WHERE trip_id = $1", trip_id)
+            await conn.execute(
+                "INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat) "
+                "VALUES ($1, $2, '14A')",
+                leg_id,
+                traveller_id,
+            )
             for statement in _downgrade_statements():
                 await conn.execute(statement)
+
+        assert await p.fetchval("SELECT seat FROM travel.legs WHERE id = $1", leg_id) == "14A"
 
         for table in (
             "booking_records",

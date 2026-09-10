@@ -578,12 +578,14 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
   const unreadableReservationIds = summary?.unreadable_reservation_ids ?? [];
   const unreadableDocumentIds = summary?.unreadable_document_ids ?? [];
   const unreadablePartyIds = summary?.unreadable_party_ids ?? [];
+  const unreadableConnectionIds = summary?.unreadable_connection_ids ?? [];
   const unreadableCount =
     unreadableLegIds.length +
     unreadableAccommodationIds.length +
     unreadableReservationIds.length +
     unreadableDocumentIds.length +
-    unreadablePartyIds.length;
+    unreadablePartyIds.length +
+    unreadableConnectionIds.length;
 
   return (
     <Sheet open={tripId != null} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -632,6 +634,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                     { label: "reservation", count: unreadableReservationIds.length },
                     { label: "document", count: unreadableDocumentIds.length },
                     { label: "traveller", count: unreadablePartyIds.length },
+                    { label: "connection", count: unreadableConnectionIds.length },
                   ])}
                   onRetry={() => void refetch()}
                   testId="trip-drawer-partial-degraded"
@@ -669,7 +672,9 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
               {/* Connection integrity */}
               <div data-testid="drawer-connections">
                 <p className="text-xs font-medium text-muted-foreground mb-2">Connections</p>
-                {summary.connections.length === 0 ? (
+                {summary.connections.length === 0 && unreadableConnectionIds.length > 0 ? (
+                  <EmptyStateLine>Connection data unavailable.</EmptyStateLine>
+                ) : summary.connections.length === 0 ? (
                   <EmptyStateLine>No connection on this journey.</EmptyStateLine>
                 ) : (
                   <ul className="divide-y divide-border/60">

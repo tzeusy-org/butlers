@@ -8138,6 +8138,8 @@ export interface TravelTripSummary {
   unreadable_document_ids: string[];
   /** Traveller ids excluded from `party` because their row could not be normalized. */
   unreadable_party_ids: string[];
+  /** Connection ids excluded because their derived row could not be normalized. */
+  unreadable_connection_ids: string[];
 }
 
 /** An upcoming trip with legs, accommodations, and days until departure. */

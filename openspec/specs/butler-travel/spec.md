@@ -51,10 +51,15 @@ represent the people travelling separately from the shared transport legs.
 - **AND** each traveller-to-leg participation is represented once
 - **AND** the trip date range widens to cover every attached segment
 
-#### Scenario: Record locator is unavailable
-- **WHEN** a flight booking has no record locator
+#### Scenario: Record locator identity is incomplete
+- **WHEN** a flight booking has no record locator or no nonblank provider scope
 - **THEN** Travel may use the existing date-and-destination heuristic
 - **AND** the resulting trip carries `metadata.identity_confidence = "weak"` rather than implying confirmed identity
+
+#### Scenario: Traveller identity becomes resolvable
+- **WHEN** a name-keyed local traveller later resolves to a live canonical `public.entities` person
+- **THEN** Travel promotes or merges the existing party member instead of creating a duplicate traveller or leg participation
+- **AND** caller-supplied entity IDs are accepted only when they identify a live, unmerged person
 
 ### Requirement: Journey Connection Integrity
 Travel SHALL derive connection integrity from adjacent same-journey legs and SHALL never claim a
@@ -65,6 +70,7 @@ connection is safe without minimum-connect evidence.
 - **THEN** Travel stores and returns a connection verdict of `holds`, `tight`, `broken`, or `unknown`
 - **AND** the response states the available minutes and evidence used for the verdict
 - **AND** same-carrier and interline minimums are distinguished
+- **AND** a negative available-minute gap remains represented as `broken` rather than being removed
 
 #### Scenario: Minimum-connect evidence is unavailable
 - **WHEN** no minimum-connect record exists for the connecting airport
@@ -77,11 +83,13 @@ connection is safe without minimum-connect evidence.
 - **THEN** the leg's operational timestamps and `updated_at` move
 - **AND** Travel raises one deduplicated connection-risk alert and one approval door for that transition
 - **AND** a later recovery withdraws the still-pending door
+- **AND** concurrent recomputes serialize verdict persistence with approval-door creation or withdrawal
 
 #### Scenario: Journey has no connection
 - **WHEN** a trip contains no adjacent connecting leg pair
 - **THEN** `GET /api/travel/trips/{trip_id}` returns `connections: []`
 - **AND** it returns `connection_reason: "no_connection_on_journey"`
+- **AND** an unreadable stored connection is excluded and disclosed by ID instead of being reported as no connection
 
 ### Requirement: Travel Butler Schedules
 The travel butler SHALL run upcoming travel checks, document expiry scans, and insight scans.

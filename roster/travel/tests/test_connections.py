@@ -11,6 +11,7 @@ data.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -275,6 +276,53 @@ def _propose_insight_mock():
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 class TestRecomputeTripConnectionsAgainstPostgres:
+    async def test_negative_gap_remains_a_broken_connection(self, pool):
+        """A missed departure remains represented instead of disappearing."""
+        trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
+        outbound_departure = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+        inbound_id = await _insert_leg(
+            pool,
+            trip_id,
+            departure_at=outbound_departure - timedelta(hours=3),
+            arrival_at=outbound_departure + timedelta(minutes=5),
+            departure_station="SIN",
+            arrival_station="PEK",
+        )
+        outbound_id = await _insert_leg(
+            pool,
+            trip_id,
+            departure_at=outbound_departure,
+            arrival_at=outbound_departure + timedelta(hours=3),
+            departure_station="PEK",
+            arrival_station="NRT",
+        )
+        await pool.execute(
+            "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
+            "VALUES ('PEK', 90)"
+        )
+
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            _propose_insight_mock(),
+        ):
+            result = await recompute_trip_connections(pool, trip_id)
+
+        assert result["connections"] == [
+            {
+                "inbound_leg_id": inbound_id,
+                "outbound_leg_id": outbound_id,
+                "verdict": "broken",
+                "available_minutes": -5,
+                "evidence": {
+                    "connecting_airport": "PEK",
+                    "interline": False,
+                    "inbound_carrier": "CA",
+                    "outbound_carrier": "CA",
+                    "minimum_minutes": 90,
+                },
+            }
+        ]
+
     async def test_broken_connection_raises_one_door_and_one_alert(self, pool):
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
         inbound_arrival = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
@@ -430,6 +478,83 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             "WHERE tool_name = 'acknowledge_connection_risk' ORDER BY requested_at"
         )
         assert [row["status"] for row in door_statuses] == ["rejected", "pending"]
+
+    async def test_concurrent_recovery_cannot_overtake_broken_door_creation(self, pool):
+        """The connection row and approval-door transition share one serialized transaction."""
+        import butlers.tools.travel.connections as connection_module
+
+        trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
+        inbound_arrival = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+        inbound_id = await _insert_leg(
+            pool,
+            trip_id,
+            departure_at=inbound_arrival - timedelta(hours=3),
+            arrival_at=inbound_arrival,
+            departure_station="SIN",
+            arrival_station="PEK",
+        )
+        outbound_id = await _insert_leg(
+            pool,
+            trip_id,
+            departure_at=inbound_arrival + timedelta(minutes=150),
+            arrival_at=inbound_arrival + timedelta(hours=4),
+            departure_station="PEK",
+            arrival_station="NRT",
+        )
+        await pool.execute(
+            "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
+            "VALUES ('PEK', 90)"
+        )
+        await recompute_trip_connections(pool, trip_id)
+
+        # Make the connection broken, then pause that transition immediately
+        # before its door insert. A recovery recompute started at this point
+        # must wait rather than withdraw a door that does not exist yet.
+        await pool.execute(
+            "UPDATE travel.legs SET arrival_at = $2 WHERE id = $1::uuid",
+            inbound_id,
+            inbound_arrival + timedelta(minutes=100),
+        )
+        raising = asyncio.Event()
+        release = asyncio.Event()
+        original_raise = connection_module._raise_connection_door
+
+        async def paused_raise(*args, **kwargs):
+            raising.set()
+            await release.wait()
+            await original_raise(*args, **kwargs)
+
+        with (
+            patch.object(connection_module, "_raise_connection_door", paused_raise),
+            patch(
+                "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+                _propose_insight_mock(),
+            ),
+        ):
+            broken_task = asyncio.create_task(recompute_trip_connections(pool, trip_id))
+            await raising.wait()
+            await pool.execute(
+                "UPDATE travel.legs SET arrival_at = $2 WHERE id = $1::uuid",
+                inbound_id,
+                inbound_arrival,
+            )
+            recovery_task = asyncio.create_task(recompute_trip_connections(pool, trip_id))
+            await asyncio.sleep(0)
+            assert not recovery_task.done()
+            release.set()
+            await asyncio.gather(broken_task, recovery_task)
+
+        connection = await pool.fetchrow(
+            "SELECT verdict FROM travel.connections WHERE inbound_leg_id = $1::uuid "
+            "AND outbound_leg_id = $2::uuid",
+            inbound_id,
+            outbound_id,
+        )
+        assert connection["verdict"] == "holds"
+        statuses = await pool.fetch(
+            "SELECT status FROM pending_actions WHERE tool_name = 'acknowledge_connection_risk'"
+        )
+        assert [row["status"] for row in statuses] == ["rejected"]
 
     async def test_unknown_minimum_emits_expected_signal_never_an_alert(self, pool):
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
