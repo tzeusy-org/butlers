@@ -179,11 +179,12 @@ not tonal: sentence-case vs Title Case, "Loading…" vs "Loading butlers…".
    `GroupsPage.tsx`, plus a few in `CalendarWorkspacePage.tsx` and
    `SettingsSpendPage.tsx`) and is a residual cleanup, not the
    systemic leak the snapshot described.*
-3. **Repeated patterns are not yet components.** A `StatsCard` shape is
-   reimplemented inline in DashboardPage, CostsPage, QaOverviewPage,
-   and others. Loading skeletons are bespoke per page. Empty states
-   are split between the shared `EmptyState` component and ad-hoc
-   inline divs.
+3. **Repeated patterns were not yet components.** In the initial snapshot, a
+   `StatsCard` shape was reimplemented inline in `DashboardPage`, the now-retired
+   `CostsPage`, `QaOverviewPage`, and others. Loading skeletons were bespoke per
+   page, while empty states were split between the shared `EmptyState` component
+   and ad-hoc inline divs. Current spend topology uses `SpendPage`; see
+   [`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md).
 4. **Date and time formatting is anarchy.** Three formatters appear
    across pages: `toLocaleString()` (locale-dependent), `toISOString()`
    (raw), and `date-fns format()` (curated). There is no single
@@ -1061,21 +1062,20 @@ exemption in the Non-negotiable rules above ("A `<Progress>` whose internal
 
 ---
 
-## Detail-page canonicalization
+## Historical detail-page canonicalization
 
-The detail-page archetype today has seven divergent
-implementations (`ButlerDetailPage`, `ContactDetailPage`,
-`EntityDetailPage`, `EpisodeDetailPage`, `FactDetailPage`,
-`RuleDetailPage`, `ConnectorDetailPage`). They each invented their
-own header, metadata strip, body composition, and action placement.
-Their content is legitimately different; their bones should not be.
+The May 2026 detail-page audit compared seven then-current implementations,
+including the now-retired `ContactDetailPage`, and found that each had invented
+its own header, metadata strip, body composition, and action placement. The
+legacy `/contacts/:contactId` route now redirects to the filtered entity index;
+current route and component ownership is recorded in
+[`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md).
 
-A `craft-and-care` audit is selecting the cleanest existing
-implementation as the canonical template. See
+The retained `craft-and-care` audit records how the cleanest existing
+implementation was selected as the canonical template. See
 [`about/lay-and-land/detail-page-audit.md`](../lay-and-land/detail-page-audit.md)
-for the analysis, the chosen winner, and the migration order. Once
-elected, the winner becomes the body of a shared `<DetailPage>`
-shell and the other six pages migrate onto it.
+for the historical analysis, chosen winner, and migration order. It is decision
+evidence, not a current component inventory.
 
 ---
 

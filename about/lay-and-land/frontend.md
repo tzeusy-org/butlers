@@ -180,11 +180,11 @@ nested layouts.
 | Telemetry | `/audit-log` | `AuditLogPage` |
 | Approvals | `/approvals`, `/approvals/rules` | `ApprovalsPage`, `ApprovalRulesPage` |
 | Calendar | `/calendar` | `CalendarWorkspacePage` |
-| Relationships | `/contacts`, `/contacts/:contactId` | `ContactsPage`, `ContactDetailPage` |
+| Relationships | `/contacts`, `/contacts/:contactId` | compatibility redirects to `/entities/index?has=contact` |
 | Relationships | `/groups` | `GroupsPage` |
 | Relationships | `/butlers/relationship/entities/:entityId` | `RelationshipEntityDetailPage` |
-| Health | `/health/measurements\|medications\|conditions\|symptoms\|meals\|research` | five pages |
-| Costs | `/costs` | `CostsPage` |
+| Health | `/health`, `/health/measurements\|medications\|conditions\|symptoms\|meals\|research` | `HealthOverviewPage`, six child pages |
+| Spend | `/spend` | `SpendPage` (`/costs` and `/settings/spend` redirect here) |
 | Memory | `/memory`, `/memory/facts/:factId`, `/memory/rules/:ruleId`, `/memory/episodes/:episodeId` | `MemoryPage`, three detail pages |
 | Entities | `/entities`, `/entities/:entityId` | `EntitiesPage`, `EntityDetailPage` |
 | Settings | `/settings`, `/secrets` | `SettingsPage`, `SecretsPage` |
@@ -197,10 +197,6 @@ nested layouts.
 **Observed orphans:**
 - `/sessions/:id` (`SessionDetailPage`): not in `nav-config.ts`; only
   reachable from inline links and the SessionDetailDrawer.
-- `/butlers/relationship/entities/:entityId` (`RelationshipEntityDetailPage`):
-  under-namespaced; not in nav.
-- `/health/research` (`ResearchPage`): exists in router but no nav
-  entry; the Health group only links to `/health/measurements`.
 
 **Stability:** the routing surface is **Maturing**, paths are settling,
 but there is unresolved namespace drift between
@@ -224,17 +220,18 @@ PRs #1345, #1346, #1351, #1361) but has since migrated to the
 **editorial** archetype (`<Page archetype="editorial">`) as the
 operational triage cockpit — see "Editorial archetype layout" below
 for its current code and layout detail. `QaOverviewPage` still uses
-the older stats-grid + chart layout; `CostsPage` has migrated to the
-**workspace** archetype (`<Page archetype="workspace">`, `CostsPage.tsx:111`)
--- see "D. Workspace / canvas" below.
+the older stats-grid + chart layout. `SpendPage`, the canonical spend surface,
+uses `<Page archetype="overview">` with its own KPI strip and time-window
+controls. No current route component uses `<Page archetype="workspace">`;
+see "D. Workspace / canvas" below.
 
 The topology graph lives at `/system`, not on `/`.
 
 ### B. List / index
 Filterable table-of-things. Header + filter bar + table + manual
-pagination. Examples: `ContactsPage`, `EntitiesPage`,
-`AuditLogPage`, `IngestionPage`, `NotificationsPage`,
-`QaInvestigationsPage`. (`ButlersPage` was a List-archetype page
+pagination. Examples: `SessionsPage`, `AuditLogPage`,
+`IngestionConnectorsPage`, `NotificationsPage`, `IssuesPage`,
+`ConditionsPage`, and `SymptomsPage`. (`ButlersPage` was a List-archetype page
 historically but has since moved to the **status-board** archetype --
 see "F. Status board" below.)
 
@@ -243,11 +240,10 @@ primitive is used directly, with each page wiring its own pagination
 buttons and filter state.
 
 ### C. Detail / drilldown
-One-thing-with-tabs. Examples: `ButlerDetailPage`,
-`ContactDetailPage`, `EntityDetailPage`, `ConnectorDetailPage`,
-`QaInvestigationDetailPage`, `RelationshipEntityDetailPage`,
-`FactDetailPage`, `RuleDetailPage`, `EpisodeDetailPage`,
-`QaPatrolDetailPage`.
+One-thing-with-tabs or a focused record drilldown. Examples:
+`ButlerDetailPage`, `SessionDetailPage`, `ConnectorDetailPage`,
+`QaInvestigationDetailPage`, `FactDetailPage`, `RuleDetailPage`,
+`EpisodeDetailPage`, and `QaPatrolDetailPage`.
 
 These are the most divergent archetype: layout, header structure,
 tab usage, and breadcrumbing all vary. Some use shadcn `Tabs`; some
@@ -258,21 +254,21 @@ context.
 Stateful, time-aware, multi-region surface that combines a primary
 visualization with scrubber/control affordances and secondary aggregations.
 The user explores time and state interactively: scrubbing a timeline,
-adjusting a time window. Examples: `CostsPage` (`<Page archetype="workspace">`
-with `<TimeWindowPicker>` + `<Scrubber>` over the cost-over-time chart),
-`CalendarWorkspacePage` (custom hour-grid via inline `style={height}`;
-predates the `<Page>` primitive and does not use it).
+adjusting a time window. `CalendarWorkspacePage` is conceptually
+workspace-like (custom hour-grid via inline `style={height}`) but predates the
+`<Page>` primitive and does not use this archetype. `SpendPage` contains a
+`<TimeWindowPicker>` but intentionally uses the overview archetype.
 
-**Reference implementation:** `CostsPage` -- the only page currently using
-`<Page archetype="workspace">`.
+**Reference implementation:** None currently. The archetype remains available
+in the shared `<Page>` primitive, but no live route component selects it.
 
 **Required primitives:** `<Page archetype="workspace">`, `<Scrubber>`,
 `<TimeWindowPicker>`, `MapPanContext.Provider` (when geographic exploration
 applies -- no current workspace page needs this), aggregation chart slot.
 
 **When to use:** Pages where the user explores time and state interactively.
-Current examples: CostsPage, CalendarWorkspacePage; future candidates include
-SessionsPage (if upgraded to show butler activity timelines).
+Current conceptual example: `CalendarWorkspacePage`; future candidates include
+`SessionsPage` (if upgraded to show butler activity timelines).
 
 Note: Chronicles previously exercised this archetype but has since moved to
 `archetype="editorial"` (see "Editorial archetype layout" below) -- its
@@ -501,7 +497,7 @@ not literals.
 | Concern | Where it shows up | Note |
 |---|---|---|
 | H1 size varies | `text-2xl` (pre-migration pages; also `<BoardHeader>` by design, `BoardHeader.tsx:97`) vs `text-3xl` (`<Page>` HeadingBlock, `page.tsx:106`) | `<Page>` enforces `text-3xl` for overview/list/detail/workspace/editor archetypes; the editorial archetype (`ChroniclesPage`, `DashboardPage`) uses a 44px Display headline instead (`page.tsx:151`); the status-board archetype renders no `<Page>` `<h1>` -- `<BoardHeader>` owns a `text-2xl` h1 by design; remaining `text-2xl` pages pre-date migration |
-| `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` moved off `StatsCard` to its own `RuntimeSummaryKpi` KPI strip (`DashboardPage.tsx:153`, no-Card strip); `StatItem` is no longer used anywhere in `frontend/src`. Remaining pages are candidates for a shared KPI-strip pattern |
+| KPI strip implementations diverge | `QaOverviewPage`, `DashboardPage`, `SpendPage` | Each page owns a separate KPI presentation; `StatItem` is no longer used anywhere in `frontend/src`. Remaining pages are candidates for a shared KPI-strip pattern |
 | Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
 | Inline `style={{...}}` | FactDetailPage:101, RuleDetailPage:97, CalendarWorkspacePage:188 | Tailwind arbitrary values |
@@ -513,7 +509,7 @@ not literals.
 Stability of the design language overall: **Maturing**. Every part
 works, several parts disagree, none of the disagreements are
 load-bearing yet. The right time to consolidate is *before* the next
-major surface (e.g. another workspace-grade UI like CostsPage, or a
+major surface (e.g. the first current `<Page archetype="workspace">` consumer, or a
 second editorial-grade page like Chronicles) arrives.
 
 ---
@@ -608,8 +604,8 @@ interface PageProps {
   operator-tool H1 size (not `text-2xl`). The `<Page>` `HeadingBlock` uses
   `text-3xl`.
   Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `QaOverviewPage`)
-  will adopt `text-3xl` when they migrate. (`CostsPage` has already migrated
-  and uses `text-3xl` via the shared heading block.)
+  will adopt `text-3xl` when they migrate. `SpendPage` uses `text-3xl` via the
+  overview archetype's shared heading block.
   It is also used for `<title>` via a `useEffect` if there is no other title
   manager.
 - `description` renders as `text-muted-foreground mt-1` below the title.
@@ -693,22 +689,20 @@ Reference pages: `EntityDetailPage`, `ButlerDetailPage` (tabs pattern).
 
 #### D. Workspace (`archetype="workspace"`)
 
-Reference page: `CostsPage` (the only current `archetype="workspace"` page;
-`CalendarWorkspacePage` is conceptually workspace-like but predates the
-`<Page>` primitive and does not use it).
+Reference page: none currently. `CalendarWorkspacePage` is conceptually
+workspace-like but predates the `<Page>` primitive and does not use it;
+`SpendPage` uses `archetype="overview"`.
 
 - Max content width: unrestricted. Workspace pages are canvas-grade and own
   their own internal layout.
-- Content padding: inherited from shell (`p-6`). `CostsPage` adds no extra
-  clearance; a workspace page with floating/overlay elements may still
-  override with additional `pb-*` inside `children`, not in `<Page>`.
-- Heading block: same structure as overview. `CostsPage` passes only `title`
-  ("Costs & Usage") today; a `description` sentence is optional, not required.
-- Section rhythm: `CostsPage` composes `<TimeWindowPicker>`, a stats grid, a
-  `<Card>` holding the primary chart plus `<Scrubber>`, and
-  `<CostBreakdownTable>` as direct children of `<Page>`, relying on its
-  `space-y-6` root gap rather than its own `<section aria-label="...">`
-  wrappers.
+- Content padding: inherited from shell (`p-6`). A workspace page with
+  floating/overlay elements may override with additional `pb-*` inside
+  `children`, not in `<Page>`.
+- Heading block: same structure as overview. A `description` sentence is
+  optional, not required.
+- Section rhythm: workspace controls, the primary visualization, and secondary
+  aggregations are direct children of `<Page>`, relying on its `space-y-6`
+  root gap rather than page-owned spacing wrappers.
 - `loading` prop renders a single full-width skeleton block; there is no
   per-widget skeleton at the `<Page>` level for workspaces.
 
@@ -935,9 +929,9 @@ Migration order (rough priority by blast radius and visitor frequency):
    and `loading` prop be disallowed (or ignored) for `archetype="workspace"`?
 
    **Reviewer answer:** Allow `loading` for workspace but keep the coarse
-   placeholder. `CostsPage` -- the current `archetype="workspace"` consumer --
-   passes `loading={summaryLoading || dailyLoading}` straight to `<Page>` and
-   relies on the coarse `h-96` placeholder rather than per-widget skeletons.
+   placeholder. The shared `<Page>` implementation provides the `h-96`
+   workspace skeleton even though no current route component selects this
+   archetype.
    (Chronicles previously exercised this archetype and had its own per-widget
    skeleton logic across its timeline, scrubber, and map sections; it has
    since moved to `archetype="editorial"` and is no longer a workspace

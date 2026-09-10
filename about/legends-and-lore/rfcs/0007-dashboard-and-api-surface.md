@@ -225,16 +225,18 @@ control as Owner Attention Policy.
 | `/audit-log` | Operation history |
 | `/approvals` | Approval queue with decision workflows |
 | `/approvals/rules` | Standing approval rules |
-| `/contacts` | Contact list |
-| `/contacts/:contactId` | Contact detail with tabs |
+| `/contacts` | Compatibility redirect to `/entities/index?has=contact` |
+| `/contacts/:contactId` | Compatibility redirect to `/entities/index?has=contact` |
 | `/groups` | Relationship groups |
 | `/health/*` | Health domain (measurements, medications, conditions, symptoms, meals, research) |
 | `/collections` | General collections |
-| `/entities` | Entity browser |
+| `/entities` | Entity plex |
+| `/entities/index` | Canonical searchable entity and contact index |
 | `/entities/:entityId` | Entity detail |
 | `/connectors` | Connector overview with volume chart and fanout matrix |
 | `/connectors/:type/:identity` | Connector detail with timeseries |
-| `/costs` | Cost and usage analysis |
+| `/spend` | Canonical cost and usage analysis |
+| `/costs`, `/settings/spend` | Compatibility redirects to `/spend` |
 | `/memory` | Memory system (tier cards, browser, activity timeline) |
 | `/qa` | QA overview (status, patrols, known issues, investigations, circuit breaker) |
 | `/qa/patrols/:patrolId` | QA patrol detail |

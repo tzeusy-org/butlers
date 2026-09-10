@@ -457,7 +457,8 @@ sole page body content inside `<Page archetype="status-board">`.
 
 ### Requirement: Tab Structures Reference (Non-Butler Pages)
 
-The following tab structures exist on pages outside the butler detail view and SHALL be documented here as a consolidated reference.
+The following tab structures and compatibility navigation behavior exist outside the butler
+detail view and SHALL be documented here as a consolidated reference.
 
 #### Scenario: Memory browser tabs
 - **WHEN** the `/memory` page or the butler detail Memory tab is active
@@ -466,8 +467,8 @@ The following tab structures exist on pages outside the butler detail view and S
 
 #### Scenario: Contact detail tabs
 - **WHEN** `/contacts/:contactId` is visited
-- **THEN** a tabbed view shows five tabs: Notes, Interactions, Gifts, Loans, Activity
-- **AND** each tab loads its data lazily on first selection
+- **THEN** the route MUST replace-navigate to `/entities/index?has=contact`
+- **AND** it MUST NOT render the retired contact-detail page or its former tabs
 
 #### Scenario: Approvals navigation integration
 - **WHEN** the approvals section is accessed from the sidebar

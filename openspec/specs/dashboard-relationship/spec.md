@@ -2,8 +2,10 @@
 
 ## Purpose
 
-Defines the dashboard surfaces for the Relationship butler: the contact detail API, contact detail page, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between the memory entity pages and the relationship-scoped entity activity page. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
+Defines the dashboard surfaces for the Relationship butler: the entity-keyed contact API and detail composition, contact compatibility aliases, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between memory entity pages and relationship-scoped entity activity. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
+
 ## Requirements
+
 ### Requirement: Contact detail API
 
 The retired `public.contacts` / `public.contact_info` tables were dropped (core_134 / core_115) and there is no `GET /api/relationship/contacts/:id` endpoint. The canonical single-record read MUST be `GET /api/relationship/entities/:id` (roster/relationship/api/router.py), which joins `public.entities` with contact-fact triples from `relationship.entity_facts` and generic Relationship-managed rows from `public.entity_info`. Connector-managed types excluded by a canonical provider authority contract MUST be omitted at the SQL boundary; see Requirement: Connector-managed Spotify Tier 2 exclusion from generic entity-info authority.
@@ -110,112 +112,6 @@ continues to live in the entity detail activity stream.
 - **THEN** notes, interactions, gifts, loans, and life events MUST remain in the
   entity ActivityTimeline and structured entity panels
 - **AND** the card MUST NOT render separate activity tabs
-
----
-
-### Requirement: Contact detail page canonical route is /contacts/:contactId
-
-The route `/contacts/:contactId` SHALL be a compatibility route, not a canonical
-page. It MUST resolve the contact by `contactId`, read the linked `entity_id`, and
-redirect to `/entities/:entityId`.
-
-If the contact does not exist, the route MUST render a not-found state. If the
-contact exists but has no linked entity, the route MUST render a recovery state
-that links back to `/entities?has=contact` and does not claim activity history is
-available.
-
-The route `/contacts` without a `contactId` continues to redirect to
-`/entities?has=contact`.
-
-#### Scenario: Contact detail URL redirects to entity detail
-
-- **WHEN** a user navigates to `/contacts/abc-123-uuid`
-- **AND** contact `abc-123-uuid` has `entity_id = ent-456-uuid`
-- **THEN** the client MUST redirect to `/entities/ent-456-uuid`
-- **AND** the entity detail page MUST render the contact-channel card
-
-#### Scenario: Contact detail URL handles missing entity link
-
-- **WHEN** a user navigates to `/contacts/abc-123-uuid`
-- **AND** the contact exists but has `entity_id IS NULL`
-- **THEN** the route MUST not redirect to a broken entity URL
-- **AND** it MUST render a compact recovery state linking to `/entities?has=contact`
-
-#### Scenario: Contact index still redirects to entity index filter
-
-- **WHEN** a user navigates to `/contacts`
-- **THEN** the client MUST redirect to `/entities?has=contact`
-
----
-
-### Requirement: Contact detail page conforms to the detail-page archetype
-
-The contact detail page at `/contacts/:contactId` SHALL conform to the detail-page archetype
-defined in the `detail-page-archetype` spec.
-
-**Changes from the existing requirement (§Requirement: Contact detail page):**
-
-1. **Shell adoption.** The page MUST use `<Page archetype="detail">` as its outer
-   shell. The existing breadcrumbs block MUST be passed via the `breadcrumbs` prop.
-   The inline three-skeleton loading block and the inline destructive-text error block
-   MUST be removed from the page body and delegated to the `loading` and `error` props
-   on `<Page>`.
-
-2. **Title.** The `title` prop on `<Page>` MUST be the contact's full name
-   (`first_name + " " + last_name`), consistent with the H1 already rendered inside
-   `ContactDetailView`. If the contact has a `nickname`, it MUST be appended in
-   parentheses: `"Alice Johnson (Allie)"`.
-
-3. **Actions.** The edit and delete buttons currently inside `ContactDetailView`'s
-   header (`ContactDetailView.tsx` lines 864–898) MUST be migrated to the `actions`
-   prop on `<Page>` so they appear in the page header row. The `ContactDetailView`
-   component body retains all other content.
-
-4. **Body layout.** The `<ContactDetailView>` component output (minus the header
-   card's edit/delete buttons) becomes the `primary` body slot inside the shell.
-
-5. **Token cleanup status.** The hex-literal color palettes previously at
-   `ContactDetailView.tsx` lines 53–62 and 69–77 have already been replaced with
-   CSS custom properties (`var(--categorical-*)` and `var(--role-*)`) as of the migration
-   in ce185209 (role badge hex → CSS tokens). No token-cleanup prerequisite remains
-   for this migration step. Implementers should verify no new hex literals were
-   introduced during the archetype migration.
-
-#### Scenario: Contact detail uses shell loading state
-
-- **WHEN** `GET /api/relationship/contacts/:id` is in flight
-- **THEN** the `<Page>` shell MUST show `DetailSkeleton`
-- **AND** no inline `<Skeleton>` blocks MUST be rendered by the page at the page layer
-
-#### Scenario: Contact detail uses shell error state
-
-- **WHEN** the contact fetch fails
-- **THEN** the `<Page>` shell MUST render the destructive error card
-- **AND** no inline destructive-text block MUST be rendered at the page layer
-
-#### Scenario: Contact detail title shows full name with nickname
-
-- **WHEN** a contact has `first_name = "Alice"`, `last_name = "Johnson"`, and
-  `nickname = "Allie"`
-- **THEN** the `<h1>` rendered by the shell MUST read "Alice Johnson (Allie)"
-
-#### Scenario: Contact detail title shows full name without nickname
-
-- **WHEN** a contact has `first_name = "Bob"`, `last_name = "Smith"`, and no nickname
-- **THEN** the `<h1>` rendered by the shell MUST read "Bob Smith"
-
-#### Scenario: Contact edit and delete actions in page header
-
-- **WHEN** a contact detail page renders a resolved contact
-- **THEN** the edit button and the delete button MUST appear in the page header row
-  (via the `actions` prop), visible without scrolling
-- **AND** they MUST NOT appear only inside the `<ContactDetailView>` card body
-
-#### Scenario: No hex literals for role badge colors
-
-- **WHEN** a contact has a role badge (e.g., "owner") rendered on the detail page
-- **THEN** the badge color MUST use a CSS custom property or Tailwind semantic token
-- **AND** the badge MUST NOT be styled with an inline `style={{ backgroundColor: "#..." }}`
 
 ---
 
@@ -421,50 +317,6 @@ credential management.
   it is entered only through the guided Telegram session setup
 - **AND** credential fields (API ID and Home Assistant token) MUST
   create secured `entity_info` entries
-
----
-
-### Requirement: Pending identities queue on contacts page
-
-The entity index page (`/entities?has=contact`) SHALL display a "Pending
-Identities" section listing all contacts with
-`metadata.needs_disambiguation = true`. This section MUST appear above the
-main entity table when pending contacts exist.
-
-#### Scenario: Pending identities displayed
-
-- **WHEN** a user navigates to `/entities?has=contact` and 2 temporary
-  contacts exist with `metadata.needs_disambiguation = true`
-- **THEN** a "Pending Identities" section MUST appear above the entity table
-- **AND** each pending contact MUST display the contact's name, source
-  channel, source value, and creation date
-
-#### Scenario: Merge action on pending identity
-
-- **WHEN** the user clicks "Merge" on a pending identity
-- **THEN** a dialog MUST open with a contact search/select input
-- **AND** the user MUST be able to search existing contacts by name
-- **AND** selecting a contact and confirming MUST call the merge API
-- **AND** the pending identity MUST disappear from the queue after successful
-  merge
-
-#### Scenario: Confirm as new action on pending identity
-
-- **WHEN** the user clicks "Confirm as new" on a pending identity
-- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's
-  metadata
-- **AND** the contact MUST move to the main entity table
-
-#### Scenario: Archive action on pending identity
-
-- **WHEN** the user clicks "Archive" on a pending identity
-- **THEN** the contact's `listed` MUST be set to `false`
-- **AND** the pending identity MUST disappear from the queue
-
-#### Scenario: No pending identities
-
-- **WHEN** no contacts have `metadata.needs_disambiguation = true`
-- **THEN** the "Pending Identities" section MUST NOT be displayed
 
 ---
 
@@ -821,11 +673,13 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
 
 #### Scenario: `/contacts` index redirects to `/entities/index?has=contact`
 - **WHEN** a request reaches the contacts INDEX path `/contacts` (no `:contactId` param)
-- **THEN** the response MUST be a 301 redirect to `/entities/index?has=contact`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
 - **AND** no functional regression MUST occur for any prior `/contacts` index workflow
-- **AND** the contact-detail path `/contacts/:contactId` MUST NOT be redirected; it
-  continues to serve the canonical contact detail page per Requirement: Contact detail
-  page canonical route in the shipped `dashboard-relationship` spec.
+- **AND** the contact-detail compatibility path `/contacts/:contactId` MUST also
+  replace-navigate to `/entities/index?has=contact`, as defined by Requirement: Contact
+  routes are compatibility aliases
+- **AND** canonical single-record navigation MUST start from the entity index and target
+  `/entities/:entityId`
 
 ### Requirement: Entity Plex view (`/entities`)
 
@@ -1295,3 +1149,64 @@ of `/api/relationship/entities/search`.
 - **THEN** the handler MUST NOT call any LLM provider
 - **AND** the handler MUST NOT call any embedding service
 - **AND** ranking MUST be computed purely from string-matching and `last_seen / tier` tie-breaks
+
+### Requirement: Contact routes are compatibility aliases
+
+The routes `/contacts` and `/contacts/:contactId` SHALL remain compatibility aliases, not
+canonical pages. Both MUST replace-navigate to `/entities/index?has=contact`. Because the retired
+`public.contacts` identity and its per-contact resolver no longer exist, the detail alias MUST NOT
+invent an entity ID, render a not-found claim about the legacy ID, or revive the retired contact
+detail page. Owners reach canonical `/entities/:entityId` details from the entity index.
+
+#### Scenario: Contact index URL redirects to the filtered entity index
+
+- **WHEN** a user navigates to `/contacts`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
+
+#### Scenario: Legacy contact detail URL falls back to the filtered entity index
+
+- **WHEN** a user navigates to `/contacts/abc-123-uuid`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
+- **AND** it MUST NOT claim that `abc-123-uuid` resolved to an entity
+
+### Requirement: Pending identities queue on the entity index
+
+The entity index page (`/entities/index?has=contact`) SHALL display a "Pending
+Identities" section listing all contacts with
+`metadata.needs_disambiguation = true`. This section MUST appear above the
+main entity table when pending contacts exist.
+
+#### Scenario: Pending identities displayed
+
+- **WHEN** a user navigates to `/entities/index?has=contact` and 2 temporary
+  contacts exist with `metadata.needs_disambiguation = true`
+- **THEN** a "Pending Identities" section MUST appear above the entity table
+- **AND** each pending contact MUST display the contact's name, source
+  channel, source value, and creation date
+
+#### Scenario: Merge action on pending identity
+
+- **WHEN** the user clicks "Merge" on a pending identity
+- **THEN** a dialog MUST open with a contact search/select input
+- **AND** the user MUST be able to search existing contacts by name
+- **AND** selecting a contact and confirming MUST call the merge API
+- **AND** the pending identity MUST disappear from the queue after successful
+  merge
+
+#### Scenario: Confirm as new action on pending identity
+
+- **WHEN** the user clicks "Confirm as new" on a pending identity
+- **THEN** the `needs_disambiguation` flag MUST be removed from the contact's
+  metadata
+- **AND** the contact MUST move to the main entity table
+
+#### Scenario: Archive action on pending identity
+
+- **WHEN** the user clicks "Archive" on a pending identity
+- **THEN** the contact's `listed` MUST be set to `false`
+- **AND** the pending identity MUST disappear from the queue
+
+#### Scenario: No pending identities
+
+- **WHEN** no contacts have `metadata.needs_disambiguation = true`
+- **THEN** the "Pending Identities" section MUST NOT be displayed
