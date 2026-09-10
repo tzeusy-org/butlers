@@ -86,6 +86,9 @@ connection is safe without minimum-connect evidence.
 - **AND** a negative available-minute gap remains represented as `broken` rather than being removed
 - **AND** mutable operational timestamps cannot reorder structurally indexed segments or remove their connection
 - **AND** legs without structural segment identity use chronological ordering as an explicit fallback
+- **AND** when a structurally indexed same-record segment pair coexists with a cross-record or
+  legacy leg, Travel preserves every leg and deterministically interleaves the combined itinerary
+  by persisted segment time without violating the record-local segment order
 
 #### Scenario: Minimum-connect evidence is unavailable
 - **WHEN** no minimum-connect record exists for the connecting airport
