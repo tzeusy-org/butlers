@@ -1,9 +1,13 @@
 # Ingestion redesign — Claude Code handoff
 
-> **Status: Active.** Cited as the preserved binding design language and handoff by
+> **Status: Active design provenance.** Cited as the preserved binding design language and handoff by
 > `openspec/specs/dashboard-ingestion-dispatch-console/spec.md` (a live, unarchived spec) and
 > `AGENTS.md` (ingestion closure evidence). The prototype this document describes has graduated
 > into shipped `frontend/` code; this file remains the porting-recipe provenance the spec cites.
+> The visual and interaction direction remains binding, but its original implementation checklist
+> is historical. For connector API work, the canonical routes in §3b and
+> `openspec/specs/connector-base-spec/spec.md` supersede the prototype sketches; do not restore
+> an alias, wrapper, or fallback from this handoff.
 
 > A working prototype of the new `/ingestion` page lives in this folder.
 > Open `Ingestion.html` directly in a browser (no server required) to
@@ -405,20 +409,14 @@ type ChannelDefault = {
 
 ---
 
-## 3. APIs — what exists vs. what to create
+## 3. APIs — current connector contract and historical prototype sketches
 
-The existing app already routes:
-- `/ingestion` → `IngestionPage.tsx`
-- `/ingestion/connectors/:connectorType/:endpointIdentity` → `ConnectorDetailPage.tsx`
-- Legacy `/connectors` → redirect to `/ingestion?tab=connectors`.
+The endpoint sketches in this handoff predate the shipped page. They remain
+design provenance, not an instruction to recreate old routes or response
+shapes. For connector work, the canonical surface in §3b and the current
+connector-base spec win over every older sketch in this document.
 
-**Add a route** for `/ingestion/connectors` (the roster — currently missing
-from the router; the legacy redirect points at a query string).
-
-Search the codebase for existing endpoints first; the names below are the
-*minimum* surface the redesign needs.
-
-### 3a. Endpoints required by Timeline
+### 3a. Historical Timeline endpoint sketch
 
 ```http
 GET /api/ingestion/events
@@ -456,25 +454,43 @@ GET /api/ingestion/events/stream  (text/event-stream)
 Frontend prepends new events to the ledger and increments the rollup
 totals.
 
-### 3b. Endpoints required by Connectors
+### 3b. Migration-relevant canonical connector endpoints
+
+This is the route subset that replaces the retired Switchboard connector
+family; it is not an exhaustive inventory of the router. Other canonical
+connector-scoped routes include lifecycle controls (`pause`, `run-now`,
+`archive`, `unarchive`, `rotate-token`, and the currently scope-surface-gated
+`reauth`) and detail subresources (`events`, `incidents`, and `routing-rules`).
+Consult the owning router and current OpenSpec for their separate semantics.
 
 ```http
-GET  /api/ingestion/connectors                              # roster + 24h aggregates
-GET  /api/ingestion/connectors/:type/:identity              # full detail
-POST /api/ingestion/connectors/:type/:identity/reauth       # starts OAuth dance
-POST /api/ingestion/connectors/:type/:identity/pause
-POST /api/ingestion/connectors/:type/:identity/run-now      # for poll connectors
-POST /api/ingestion/connectors/:type/:identity/rotate-token
-DELETE /api/ingestion/connectors/:type/:identity            # disconnect
+GET   /api/ingestion/connectors/summaries
+GET   /api/ingestion/connectors/cross-summary
+GET   /api/ingestion/connectors/{type}/{identity}
+GET   /api/ingestion/connectors/{type}/{identity}/stats?period=24h|7d|30d
+PATCH /api/ingestion/connectors/{type}/{identity}/settings  # body: {"settings": {...}}
+POST  /api/ingestion/connectors/{type}/{identity}/disconnect
+GET   /api/ingestion/connectors/available
 ```
 
-Plus a discovery endpoint for the "available · not connected" block:
+`/summaries` is the role-aware roster: it lists runtime instances, nests
+storage-only checkpoints under their parent, and separates unparented
+checkpoints rather than treating cursor rows as offline connectors.
+`/cross-summary` is the corresponding fleet-health rollup.
 
-```http
-GET /api/ingestion/connectors/available
-```
+The detail and settings routes return the flat
+`ApiResponse<ConnectorDetailEntry>` wire record; statistics returns flat hourly
+or daily rows. Settings are shallow-merged into the registry row.
 
-### 3c. Endpoints required by Filters
+Disconnect is approval-gated: the POST returns HTTP 202 with a
+`pending_approval` status and action ID, leaves the row intact while approval is
+pending, and soft-deletes it only after approval. The former generic roster GET
+and direct DELETE-disconnect sketch are retired; do not add aliases, redirects,
+or fallbacks for them. The `available` endpoint supplies the "available · not
+connected" discovery block. Reauthorization remains governed by the active
+OAuth scope-surface contract rather than this historical recipe.
+
+### 3c. Historical Filters endpoint sketch
 
 ```http
 GET  /api/ingestion/pipeline?window=24h          # PipelineStats
@@ -663,7 +679,11 @@ rules in normal SaaS porting:
 
 ---
 
-## 6. Behaviours that are not in the prototype yet
+## 6. Historical porting notes
+
+These are the original prototype's porting ideas. They are not a current
+connector API contract; use §3b and the live OpenSpec specifications for route
+or lifecycle work.
 
 Build these alongside the port:
 
@@ -681,9 +701,10 @@ Build these alongside the port:
   event; downstream butlers dedupe by `event_id`) — but for the few cases
   that aren't (`email` "send drafted reply" replays would re-send), the
   confirm is mandatory.
-- **OAuth callback** for `/connectors/:type/:identity/reauth` — return
-  the user to `/ingestion/connectors/:type/:identity` with a transient
-  toast.
+- **OAuth callback** — use the canonical connector recovery contract and
+  return the user to `/ingestion/connectors/:type/:identity` with a transient
+  toast. Do not create a `/connectors/:type/:identity/reauth` compatibility
+  route.
 - **Search persistence** — last search string lives in `localStorage`
   scoped per tab so coming back to Timeline restores it.
 
@@ -710,10 +731,12 @@ Drop in order. Each is scoped to a single concern.
 > compatible. Especially flag where per-step token/cost should be tracked
 > natively vs. derived proportionally from step duration server-side.
 
-### 2 · API surface
+### 2 · API surface (historical prompt)
 
-> Implement the endpoints listed in `INGESTION_HANDOFF.md` §3. Match the
-> existing FastAPI router style. The hottest path is
+> This prompt predates the shipped connector API. For connector work, use the
+> canonical routes in `INGESTION_HANDOFF.md` §3b and the current OpenSpec
+> contract; do not recreate generic roster or DELETE-disconnect aliases. The
+> hottest historical path was
 > `GET /api/ingestion/events` — implement pagination via opaque cursors
 > and SSE-streamed live updates over `GET /api/ingestion/events/stream`.
 > Audit-log access to `/api/ingestion/events/:id/payload`. Don't wire

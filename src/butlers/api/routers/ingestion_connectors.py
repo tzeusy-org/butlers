@@ -1120,7 +1120,7 @@ async def list_connector_summaries_with_aggregates(
                 # here so the dashboard can group them into a collapsed "archived"
                 # section (reachable for history), but the FE separates them out
                 # so they never count toward attention/KPIs, and the fleet-health
-                # rollups (cross-summary, /connectors/summary) exclude them
+                # rollups (/api/ingestion/connectors/cross-summary) exclude them
                 # entirely. `archived` is a convenience boolean mirroring whether
                 # `archived_at` is set.
                 "archived": r["archived_at"] is not None,

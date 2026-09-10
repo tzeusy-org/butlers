@@ -759,7 +759,7 @@ Runtime-configurable connector settings SHALL be stored in
   `/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`
 - **THEN** the body `{"settings": {...}}` is shallow-merged into the existing
   settings
-- **AND** the updated `ConnectorDetail` is returned
+- **AND** the updated `ConnectorDetailEntry` is returned
 - **AND** each setting takes effect at its documented connector reload boundary
 - **AND** `flush_interval_s` takes effect on the next flush scanner cycle
   without a connector restart

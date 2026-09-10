@@ -92,9 +92,10 @@ describe("connector API path prefixes", () => {
     mockResponse({ data: {} });
     await updateConnectorSettings("gmail", "user@example.com", { flush_interval_s: 60 });
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/api/ingestion/connectors/gmail/user%40example.com/settings");
+    expect(url).toBe("/api/ingestion/connectors/gmail/user%40example.com/settings");
     expect(url).not.toContain("/api/switchboard/connectors");
     expect(init.method).toBe("PATCH");
+    expect(init.body).toBe(JSON.stringify({ settings: { flush_interval_s: 60 } }));
   });
 });
 

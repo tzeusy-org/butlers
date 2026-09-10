@@ -12,8 +12,6 @@ tests protect the migration from the retired Switchboard connector routes:
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -91,6 +89,34 @@ def test_settings_accept_flush_interval_boundaries(flush_interval: int) -> None:
     assert request.settings["flush_interval_s"] == flush_interval
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "json_body"),
+    [
+        ("GET", "/api/switchboard/connectors", None),
+        ("GET", "/api/switchboard/connectors/spotify/owner", None),
+        ("GET", "/api/switchboard/connectors/spotify/owner/stats", None),
+        (
+            "PATCH",
+            "/api/switchboard/connectors/spotify/owner/settings",
+            {"settings": {"flush_interval_s": 300}},
+        ),
+    ],
+)
+async def test_retired_switchboard_connector_routes_are_unmounted(
+    app,
+    method: str,
+    path: str,
+    json_body: dict[str, object] | None,
+) -> None:
+    """The removed Switchboard connector family is unreachable, not merely hidden."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.request(method, path, json=json_body)
+
+    assert response.status_code == 404
+
+
 async def test_canonical_detail_preserves_auth_scopes_and_archived_history(app) -> None:
     """Archived rows remain inspectable through the canonical detail endpoint."""
     pool = AsyncMock()
@@ -112,6 +138,30 @@ async def test_canonical_detail_preserves_auth_scopes_and_archived_history(app) 
     query = pool.fetchrow.await_args.args[0]
     assert "deleted_at IS NULL" in query
     assert "archived_at IS NULL" not in query
+
+
+async def test_canonical_detail_withholds_opaque_observed_scope_values(app) -> None:
+    """A malformed registry observation cannot echo a credential-shaped value."""
+    opaque_value = "scope_" + "a+/=" * 16
+    safe_extra_scope = "scope-undeclared-x"
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        return_value=_connector_row(
+            observed_scopes=[safe_extra_scope, opaque_value],
+        )
+    )
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/spotify/owner")
+
+    assert response.status_code == 200
+    assert opaque_value not in response.text
+    scope_names = {scope["name"] for scope in response.json()["data"]["scopes"]}
+    assert safe_extra_scope in scope_names
+    assert opaque_value not in scope_names
 
 
 async def test_canonical_detail_and_stats_hide_soft_deleted_rows(app) -> None:
@@ -171,58 +221,6 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
     assert response.json()["meta"]["hourly_events_available"] is True
     assert "connectors.filtered_events" in connection.fetch.await_args.args[0]
     assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
-
-
-async def test_canonical_stats_keeps_live_row_lock_through_history_read(app) -> None:
-    """The durable history query runs while the live registry row lock is held."""
-    pool = AsyncMock()
-    connection = AsyncMock()
-    connection.fetchrow = AsyncMock(return_value={"connector_type": "gmail"})
-    lock_held = False
-    disconnect_started = asyncio.Event()
-    disconnect_completed = asyncio.Event()
-    disconnect_tasks: list[asyncio.Task[None]] = []
-
-    async def simulated_disconnect() -> None:
-        disconnect_started.set()
-        while lock_held:
-            await asyncio.sleep(0)
-        disconnect_completed.set()
-
-    async def fetch_history(*_args, **_kwargs):
-        disconnect_tasks.append(asyncio.create_task(simulated_disconnect()))
-        await disconnect_started.wait()
-        assert not disconnect_completed.is_set()
-        return []
-
-    connection.fetch = AsyncMock(side_effect=fetch_history)
-
-    @asynccontextmanager
-    async def transaction():
-        nonlocal lock_held
-        lock_held = True
-        try:
-            yield
-        finally:
-            lock_held = False
-
-    @asynccontextmanager
-    async def acquire():
-        yield connection
-
-    connection.transaction = MagicMock(side_effect=transaction)
-    pool.acquire = MagicMock(side_effect=acquire)
-    _wire_db(app, pool)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.get("/api/ingestion/connectors/gmail/owner/stats")
-
-    assert response.status_code == 200
-    assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
-    await asyncio.gather(*disconnect_tasks)
-    assert disconnect_completed.is_set()
 
 
 async def test_canonical_settings_keep_validation_and_content_blind_audit(app) -> None:

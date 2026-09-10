@@ -270,6 +270,25 @@ class TestBuildScopeRows:
         assert extra[0].category == "extra"
         assert "harmless" in extra[0].serif_note
 
+    def test_opaque_observed_values_are_withheld_but_safe_extras_remain(
+        self, simple_manifest: ScopeManifest
+    ) -> None:
+        """Registry corruption cannot reflect an opaque credential as an extra scope."""
+        opaque_value = "scope_" + "x" * 48
+        rows = build_scope_rows(
+            simple_manifest,
+            [
+                "scope-required-a",
+                "scope-required-b",
+                "scope-undeclared-x",
+                opaque_value,
+            ],
+        )
+
+        names = {row.name for row in rows}
+        assert "scope-undeclared-x" in names
+        assert opaque_value not in names
+
     def test_ordering_required_optional_sensitive_extra(
         self, simple_manifest: ScopeManifest
     ) -> None:

@@ -91,9 +91,10 @@ by the operator AFTER this change ratifies).
       Requirements` deltas) that adds the four columns
       (`observed_scopes`, `observed_scopes_fetched_at`,
       `required_scopes_version`, `auth_status`) to `connector_registry` and
-      extends `ConnectorDetail` Pydantic with the `auth` and `scopes` blocks.
+      extends the flat `ConnectorDetailEntry` Pydantic wire response with the
+      `auth` and `scopes` blocks.
 
-- [x] 2.2 Cite the existing `connector-base-spec/spec.md:319-348,381-419` as
+- [x] 2.2 Cite the existing `connector-base-spec/spec.md:425-451` as
       the extension target.
 
 ## 3. Spec authoring — durable delta against `dashboard-ingestion-dispatch-console`
