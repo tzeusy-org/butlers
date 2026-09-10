@@ -180,11 +180,11 @@ nested layouts.
 | Telemetry | `/audit-log` | `AuditLogPage` |
 | Approvals | `/approvals`, `/approvals/rules` | `ApprovalsPage`, `ApprovalRulesPage` |
 | Calendar | `/calendar` | `CalendarWorkspacePage` |
-| Relationships | `/contacts`, `/contacts/:contactId` | `ContactsPage`, `ContactDetailPage` |
+| Relationships | `/contacts`, `/contacts/:contactId` | compatibility redirects to `/entities/index?has=contact` |
 | Relationships | `/groups` | `GroupsPage` |
 | Relationships | `/butlers/relationship/entities/:entityId` | `RelationshipEntityDetailPage` |
-| Health | `/health/measurements\|medications\|conditions\|symptoms\|meals\|research` | five pages |
-| Costs | `/costs` | `CostsPage` |
+| Health | `/health`, `/health/measurements\|medications\|conditions\|symptoms\|meals\|research` | `HealthOverviewPage`, six child pages |
+| Spend | `/spend` | `SpendPage` (`/costs` and `/settings/spend` redirect here) |
 | Memory | `/memory`, `/memory/facts/:factId`, `/memory/rules/:ruleId`, `/memory/episodes/:episodeId` | `MemoryPage`, three detail pages |
 | Entities | `/entities`, `/entities/:entityId` | `EntitiesPage`, `EntityDetailPage` |
 | Settings | `/settings`, `/secrets` | `SettingsPage`, `SecretsPage` |
@@ -197,10 +197,6 @@ nested layouts.
 **Observed orphans:**
 - `/sessions/:id` (`SessionDetailPage`): not in `nav-config.ts`; only
   reachable from inline links and the SessionDetailDrawer.
-- `/butlers/relationship/entities/:entityId` (`RelationshipEntityDetailPage`):
-  under-namespaced; not in nav.
-- `/health/research` (`ResearchPage`): exists in router but no nav
-  entry; the Health group only links to `/health/measurements`.
 
 **Stability:** the routing surface is **Maturing**, paths are settling,
 but there is unresolved namespace drift between

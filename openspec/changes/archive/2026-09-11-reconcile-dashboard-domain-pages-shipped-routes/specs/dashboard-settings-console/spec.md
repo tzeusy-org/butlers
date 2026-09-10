@@ -1,10 +1,4 @@
-# dashboard-settings-console
-
-## Purpose
-
-`dashboard-settings-console` is the new top-level Settings console page: a Dispatch-language settings shell at `/settings`. It replaces the prior single-scroll preferences stack with a panel grid of summary cards (one per Settings sub-route) prefixed by an `AttentionStrip` of items demanding human attention, framing `/settings` as the operator control plane rather than a SaaS preferences screen. The capability owns the `/settings` Console grid, the attention strip, the breadcrumb-less editorial shell, and the `GET /api/settings/console` aggregator; live updates are delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Settings Console Page
 The dashboard SHALL have a top-level page at `/settings` rendered in the Dispatch design language. The page is a panel grid of summary cards, one per Settings sub-route, prefixed by an `AttentionStrip` of items demanding human attention.
@@ -70,28 +64,3 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
   - Spend within 10% of the monthly ceiling (kind `spend_ceiling`, route `/spend`).
   - Failed webhook deliveries in the last 24h (kind `webhook_failure`, route `/settings/permissions`).
 - **AND** items are ordered with `tone="red"` first, then `tone="amber"`; `attention[]` is the five-item prefix of that order.
-
-### Requirement: Settings Console Deltas On The Unified Fleet Event Bus
-The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`) so a client can receive live console updates via the single shared bus connection (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine; the earlier dedicated `WS /api/settings/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
-
-#### Scenario: Deltas are emitted via the shared bus
-- **WHEN** the console payload changes (a header count or an attention item)
-- **THEN** the backend emits the corresponding `header_delta` / `attention_add` / `attention_remove` event via `emit_event` onto `WS /api/events/stream`
-- **AND** `attention_add` is an identity-keyed upsert carrying a complete `AttentionItem`, and `attention_remove` carries its stable `id`; multiple items with the same `kind` remain distinct
-- **AND** this happens via a standalone background aggregation loop, independent of whether any client is connected.
-
-#### Scenario: Dashboard client subscribes via the shared bus, not a second socket
-- **WHEN** the dashboard's Settings Console page needs live header/attention updates
-- **THEN** it subscribes to `"header_delta"` / `"attention_add"` / `"attention_remove"` on the shared `EventBusProvider` connection
-- **AND** it does not open a dedicated settings-console socket.
-
-#### Scenario: A missed or replayed delta converges rather than drifts
-- **WHEN** a bus event is replayed from the shared bus's ring-buffer snapshot (on initial connect or reconnect), or a delta is missed entirely while disconnected
-- **THEN** the client ignores replayed console-delta events and instead relies on its periodic `GET /api/settings/console` reconciliation poll to reseed the full, authoritative state
-- **AND** live add/remove events update `attention_all[]` by stable identity before deriving its capped `attention[]` view and truncated count
-- **AND** state converges to the server's own aggregation on that fixed cadence rather than silently drifting from an unapplied or double-applied delta.
-
-## Source References
-- Non-Negotiable Rule 1 (Composure is the brand) and Rule 4 (every element earns its place against state) from `about/heart-and-soul/design-language.md`.
-- PLAN.md §4 routes contract and §5 Settings Console API surface.
-- Visual reference: the `SettingsConsole` redesign prototype (graduated; now shipped in `frontend/`).
