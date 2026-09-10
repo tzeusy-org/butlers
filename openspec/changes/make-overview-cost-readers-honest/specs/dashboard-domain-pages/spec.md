@@ -1,19 +1,20 @@
 ## MODIFIED Requirements
 
-### Requirement: Cost widget for dashboard overview
+### Requirement: Spend widget for dashboard overview
 
 The dashboard MUST provide a `CostWidget` component for embedding on the overview page. The widget MUST display:
-- Title "Cost Today" with a "View all" link to `/costs`.
+- Title "Cost Today" with a "View all" link to `/spend`.
 - Total cost for the day formatted as currency when its direct summary query succeeds with priced data.
 - Top butler name and cost (e.g., "Top: health ($3.50)") when its direct summary query succeeds with a top butler.
-- A 7-bar sparkline placeholder showing a mock 7-day trend (pending replacement with Recharts).
+- A sparkline showing the real trailing 7-day daily spend series.
 
 The widget MUST distinguish a direct Overview summary-query failure from a successful
 compatibility envelope with `source_error` and from a successful zero-cost summary.
 
 #### Scenario: Widget with no data
 
-- **WHEN** a successful summary has `totalCostUsd` 0 and `topButler` null
+- **WHEN** `totalCostUsd` is 0 and `topButler` is null
+- **AND** the direct summary query succeeded without `source_error`
 - **THEN** the widget MUST display "$0.00" and no top-butler line
 
 #### Scenario: Direct summary reader failure is unavailable
