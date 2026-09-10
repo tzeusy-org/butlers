@@ -27,7 +27,7 @@ The travel butler SHALL provide booking, itinerary, and document management tool
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the travel butler
-- **THEN** it has access to: `record_booking`, `update_itinerary`, `list_trips`, `trip_summary`, `upcoming_travel`, `add_document`, and calendar tools
+- **THEN** it has access to: `record_booking`, `update_itinerary`, `acknowledge_connection_risk`, `list_trips`, `trip_summary`, `upcoming_travel`, `add_document`, and calendar tools
 
 ### Requirement: Trip Container Model
 All travel data SHALL be organized under trip containers with strict status transitions.
@@ -37,6 +37,81 @@ All travel data SHALL be organized under trip containers with strict status tran
 - **THEN** every leg, accommodation, reservation, and document is linked to a `trip_id`
 - **AND** if no matching trip exists, one is created first before attaching the entity
 - **AND** status transitions follow `planned -> active -> completed` (direct cancellation allowed from `planned` or `active`, but never backward)
+
+### Requirement: Booking Identity and Traveller Party
+Flight booking ingestion SHALL converge a provider-scoped record locator into one trip and SHALL
+represent the people travelling separately from the shared transport legs.
+
+#### Scenario: Multi-passenger round trip converges
+- **WHEN** the legs for one provider and record locator arrive in any order or concurrently
+- **THEN** exactly one booking record and one trip container represent the booking
+- **AND** each distinct segment index produces exactly one leg even when the segments share a confirmation number
+- **AND** each traveller links to a canonical `public.entities` person when one is already resolved
+- **AND** an unresolved booking name remains a stable local party member without creating shared identity
+- **AND** each traveller-to-leg participation is represented once
+- **AND** the trip date range widens to cover every attached segment
+- **AND** the canonical record locator is projected through each leg's `pnr` field
+
+#### Scenario: Booking writes preserve atomic identity and enrichment
+- **WHEN** a provider-scoped leg contains a value that cannot be bound to the Travel schema
+- **THEN** no booking record, trip, leg, traveller participation, or booking event is persisted
+- **AND** re-ingesting a known segment with sparse data preserves its populated fields and operational timestamps
+- **AND** explicit itinerary or operational changes use the dedicated update paths
+
+#### Scenario: Existing fragmented bookings remain reviewable
+- **WHEN** the journey-identity migration finds one normalized operating carrier and record locator across multiple legacy trips
+- **THEN** its dry-run inventory reports the candidate trip and leg identifiers without merging or deleting data
+- **AND** later ingestion reuses an existing candidate trip rather than creating another fragment
+
+#### Scenario: Record locator identity is incomplete
+- **WHEN** a flight booking has no record locator or no nonblank provider scope
+- **THEN** Travel may use the existing date-and-destination heuristic
+- **AND** the resulting trip carries `metadata.identity_confidence = "weak"` rather than implying confirmed identity
+
+#### Scenario: Traveller identity becomes resolvable
+- **WHEN** a name-keyed local traveller later resolves to a live canonical `public.entities` person
+- **THEN** Travel promotes or merges the existing party member instead of creating a duplicate traveller or leg participation
+- **AND** caller-supplied entity IDs are accepted only when they identify a live, unmerged person
+- **AND** re-ingestion after a canonical entity merge repoints and deduplicates stale Travel traveller and leg-participation links
+
+### Requirement: Journey Connection Integrity
+Travel SHALL derive connection integrity from adjacent same-journey legs and SHALL never claim a
+connection is safe without minimum-connect evidence.
+
+#### Scenario: Connection verdict is exposed
+- **WHEN** adjacent legs share a connecting airport within 24 hours
+- **THEN** Travel stores and returns a connection verdict of `holds`, `tight`, `broken`, or `unknown`
+- **AND** the response states the available minutes and evidence used for the verdict
+- **AND** same-carrier and interline minimums are distinguished
+- **AND** a negative available-minute gap remains represented as `broken` rather than being removed
+- **AND** mutable operational timestamps cannot reorder structurally indexed segments or remove their connection
+- **AND** legs without structural segment identity use chronological ordering as an explicit fallback
+- **AND** when a structurally indexed same-record segment pair coexists with a cross-record or
+  legacy leg, Travel preserves every leg and deterministically interleaves the combined itinerary
+  by persisted segment time without violating the record-local segment order
+
+#### Scenario: Minimum-connect evidence is unavailable
+- **WHEN** no minimum-connect record exists for the connecting airport
+- **THEN** the verdict is `unknown`
+- **AND** Travel records an expected-signal gap
+- **AND** it emits no alert that claims the connection is safe or broken
+
+#### Scenario: Delay breaks and later restores a connection
+- **WHEN** a flight-status estimate moves a leg and changes a connection from holding to broken
+- **THEN** the leg's operational timestamps and `updated_at` move
+- **AND** Travel raises one deduplicated connection-risk alert and one approval door for that transition
+- **AND** a later recovery withdraws the still-pending door
+- **AND** concurrent recomputes serialize verdict persistence with approval-door creation or withdrawal
+- **AND** a non-accepted connection-risk insight candidate rolls back the verdict transition before
+  any prepared action can be orphaned, so a later recompute retries the linked alert and door
+- **AND** a failed required approval-door write rolls back the verdict transition so a later recompute retries it
+
+#### Scenario: Journey has no connection
+- **WHEN** a trip contains no adjacent connecting leg pair
+- **THEN** `GET /api/travel/trips/{trip_id}` returns `connections: []`
+- **AND** it returns `connection_reason: "no_connection_on_journey"`
+- **AND** an empty derived table without a successful derivation marker returns `connection_reason: null`
+- **AND** an unreadable stored connection is excluded and disclosed by ID instead of being reported as no connection
 
 ### Requirement: Travel Butler Schedules
 The travel butler SHALL run upcoming travel checks, document expiry scans, and insight scans.

@@ -227,6 +227,29 @@ def _document_row(
     }
 
 
+def _connection_row(
+    *,
+    id: Any = None,
+    trip_id: Any = None,
+    inbound_leg_id: Any = None,
+    outbound_leg_id: Any = None,
+    verdict: str = "holds",
+    available_minutes: int | None = 120,
+    evidence: dict | None = None,
+    computed_at: Any = None,
+) -> dict:
+    return {
+        "id": uuid.UUID(id) if id else uuid.uuid4(),
+        "trip_id": uuid.UUID(trip_id) if trip_id else uuid.uuid4(),
+        "inbound_leg_id": uuid.UUID(inbound_leg_id) if inbound_leg_id else uuid.uuid4(),
+        "outbound_leg_id": uuid.UUID(outbound_leg_id) if outbound_leg_id else uuid.uuid4(),
+        "verdict": verdict,
+        "available_minutes": available_minutes,
+        "evidence": evidence or {},
+        "computed_at": computed_at or _NOW,
+    }
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -458,8 +481,8 @@ async def test_get_trip_summary_found():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    # fetch is called: legs, accommodations, reservations, documents
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [doc]])
+    # fetch order: legs, accommodations, reservations, documents, party, connections
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [doc], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -501,7 +524,7 @@ async def test_get_trip_summary_trip_fields():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -538,7 +561,7 @@ async def test_get_trip_summary_survives_double_encoded_leg_metadata():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -572,7 +595,7 @@ async def test_get_trip_summary_excludes_and_discloses_unreadable_leg():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[good_leg, bad_leg], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[good_leg, bad_leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -594,6 +617,162 @@ async def test_get_trip_summary_excludes_and_discloses_unreadable_leg():
     assert body["unreadable_accommodation_ids"] == []
     assert body["unreadable_reservation_ids"] == []
     assert body["unreadable_document_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_connections_rendered():
+    """bu-2jtfw.8: connections[] is populated with the derived verdict, never omitted."""
+    trip = _trip_row(id=_TRIP_UUID)
+    leg1 = _leg_row(trip_id=_TRIP_UUID)
+    leg2 = _leg_row(trip_id=_TRIP_UUID)
+    connection = _connection_row(
+        trip_id=_TRIP_UUID,
+        inbound_leg_id=str(leg1["id"]),
+        outbound_leg_id=str(leg2["id"]),
+        verdict="broken",
+        available_minutes=45,
+        evidence={"reason": "insufficient_time", "minimum_minutes": 90},
+    )
+    traveller = {
+        "id": uuid.uuid4(),
+        "entity_id": uuid.uuid4(),
+        "display_name": "Alice Traveller",
+    }
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    # fetch order: legs, accommodations, reservations, documents, party, connections
+    mock_pool.fetch = AsyncMock(side_effect=[[leg1, leg2], [], [], [], [traveller], [connection]])
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(body["connections"]) == 1
+    rendered = body["connections"][0]
+    assert rendered["verdict"] == "broken"
+    assert rendered["available_minutes"] == 45
+    assert rendered["inbound_leg_id"] == str(leg1["id"])
+    assert rendered["outbound_leg_id"] == str(leg2["id"])
+    assert "id" not in rendered
+    assert "trip_id" not in rendered
+    assert body["party"] == [
+        {
+            "id": str(traveller["id"]),
+            "entity_id": str(traveller["entity_id"]),
+            "display_name": "Alice Traveller",
+        }
+    ]
+    assert body["connection_reason"] is None
+    assert body["unreadable_connection_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_discloses_unreadable_connection():
+    """A corrupt connection row is excluded and cannot impersonate an empty journey."""
+    trip = _trip_row(id=_TRIP_UUID)
+    leg1 = _leg_row(trip_id=_TRIP_UUID)
+    leg2 = _leg_row(trip_id=_TRIP_UUID)
+    bad_connection_id = str(uuid.uuid4())
+    connection = _connection_row(
+        id=bad_connection_id,
+        trip_id=_TRIP_UUID,
+        inbound_leg_id=str(leg1["id"]),
+        outbound_leg_id=str(leg2["id"]),
+        evidence="not-an-object",
+    )
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[leg1, leg2], [], [], [], [], [connection]])
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connections"] == []
+    assert body["connection_reason"] is None
+    assert body["unreadable_connection_ids"] == [bad_connection_id]
+
+
+@pytest.mark.asyncio
+async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
+    """A journey with no connecting legs renders connections: [], never an omitted key."""
+    trip = _trip_row(
+        id=_TRIP_UUID,
+        metadata={"connection_derivation_completed_at": "2026-10-16T00:00:00+00:00"},
+    )
+    leg = _leg_row(trip_id=_TRIP_UUID)
+
+    from fastapi import FastAPI
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
+
+    mock_db = MagicMock()
+    mock_db.pool.return_value = mock_pool
+
+    app = FastAPI()
+    app.include_router(_travel_router_mod.router)
+    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "connections" in body
+    assert body["connections"] == []
+    assert body["connection_reason"] == "no_connection_on_journey"
+
+    # A migration-era or failed-recompute trip has no completion marker. An
+    # empty derived table is therefore unavailable evidence, not proof that
+    # this journey has no connection.
+    uncomputed_trip = _trip_row(id=_TRIP_UUID, metadata={})
+    connecting_leg = _leg_row(
+        trip_id=_TRIP_UUID,
+        arrival_airport_station="PEK",
+        arrival_at=_NOW + timedelta(hours=3),
+    )
+    onward_leg = _leg_row(
+        trip_id=_TRIP_UUID,
+        departure_airport_station="PEK",
+        departure_at=_NOW + timedelta(hours=4),
+    )
+    mock_pool.fetchrow = AsyncMock(return_value=uncomputed_trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[connecting_leg, onward_leg], [], [], [], [], []])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+    assert response.status_code == 200
+    assert response.json()["connection_reason"] is None
 
 
 @pytest.mark.asyncio
@@ -637,7 +816,7 @@ async def test_get_trip_summary_missing_boarding_pass_alert():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -671,7 +850,7 @@ async def test_get_trip_summary_no_alert_when_boarding_pass_present():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [doc]])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [doc], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -704,7 +883,7 @@ async def test_get_trip_summary_timeline_built():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool

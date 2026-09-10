@@ -17,11 +17,13 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 
 from butlers.jobs.flight_status import (
     _fetch_upcoming_flight_legs,
+    _write_leg_status,
     parse_flight_status,
     run_flight_status_check,
 )
@@ -236,6 +238,46 @@ async def test_delay_past_threshold_notifies_and_writes_leg_metadata():
 
     await client.aclose()
 
+    naive_leg = _leg_row(metadata={"flight_number": "NAIVE1"})
+    valid_leg = _leg_row(metadata={"flight_number": "VALID2"})
+    mixed_pool = _make_pool(leg_rows=[naive_leg, valid_leg])
+    naive_payload = {
+        "data": [
+            {
+                "flight_status": "active",
+                "departure": {
+                    "scheduled": "2026-07-27T10:00:00",
+                    "estimated": "2026-07-27T10:45:00",
+                    "delay": 0,
+                },
+            }
+        ]
+    }
+
+    def mixed_handler(request: httpx.Request) -> httpx.Response:
+        payload = (
+            naive_payload
+            if request.url.params.get("flight_iata") == "NAIVE1"
+            else _FLIGHT_PAYLOAD_ON_TIME
+        )
+        return httpx.Response(200, json=payload)
+
+    mixed_client = httpx.AsyncClient(transport=httpx.MockTransport(mixed_handler))
+    with patch(
+        "butlers.jobs.flight_status.CredentialStore",
+        return_value=_mock_credential_store("fake-key"),
+    ):
+        mixed_result = await run_flight_status_check(mixed_pool, http_client=mixed_client)
+
+    assert mixed_result["legs_checked"] == 2
+    assert mixed_result["last_error"] is None
+    leg_updates = [
+        call for call in mixed_pool.execute.call_args_list if "UPDATE travel.legs" in call.args[0]
+    ]
+    assert len(leg_updates) == 2
+    assert leg_updates[0].args[3] is None
+    await mixed_client.aclose()
+
 
 # ---------------------------------------------------------------------------
 # run_flight_status_check — on-time flight stays quiet
@@ -449,3 +491,261 @@ class TestFetchUpcomingFlightLegsAgainstPostgres:
 
         flight_numbers = {leg["metadata"]["flight_number"] for leg in legs}
         assert flight_numbers == {"DD94XR", "DD94YR"}
+
+
+# ---------------------------------------------------------------------------
+# A reported delay repairs departure_at/arrival_at and flips a connection
+# verdict (bu-2jtfw.8 acceptance check 6) -- real Postgres, real connections
+# recompute, real approval-spine door.
+# ---------------------------------------------------------------------------
+
+_CONNECTIONS_SCHEMA_SQL = """
+ALTER TABLE travel.legs
+    ADD COLUMN IF NOT EXISTS departure_airport_station TEXT,
+    ADD COLUMN IF NOT EXISTS arrival_airport_station TEXT,
+    ADD COLUMN IF NOT EXISTS carrier TEXT,
+    ADD COLUMN IF NOT EXISTS booking_record_id UUID,
+    ADD COLUMN IF NOT EXISTS segment_index INT;
+
+CREATE TABLE IF NOT EXISTS public.flight_status_feed_status (
+    id                      SMALLINT PRIMARY KEY DEFAULT 1,
+    configured              BOOLEAN NOT NULL DEFAULT false,
+    last_attempt_at         TIMESTAMPTZ,
+    last_success_at         TIMESTAMPTZ,
+    last_error              TEXT,
+    consecutive_failures    INTEGER NOT NULL DEFAULT 0,
+    legs_checked            INTEGER NOT NULL DEFAULT 0,
+    delays_detected         INTEGER NOT NULL DEFAULT 0,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_flight_status_feed_status_singleton CHECK (id = 1)
+);
+
+CREATE TABLE IF NOT EXISTS travel.airport_minimum_connect (
+    airport_code               TEXT PRIMARY KEY,
+    minimum_connect_minutes    INT NOT NULL,
+    interline_buffer_minutes   INT NOT NULL DEFAULT 30,
+    source                     TEXT,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS travel.connections (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
+    available_minutes  INT,
+    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (inbound_leg_id, outbound_leg_id)
+);
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+class TestDelayRepairsConnectionAgainstPostgres:
+    async def test_inbound_delay_flips_holding_connection_to_broken_and_parks_a_door(
+        self, provisioned_postgres_pool
+    ) -> None:
+        from butlers.testing.schema_standins import PENDING_ACTIONS
+
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute(_TRAVEL_SCHEMA_SQL)
+            await pool.execute(_CONNECTIONS_SCHEMA_SQL)
+            await pool.execute(PENDING_ACTIONS.ddl())
+            await pool.execute(
+                "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
+                "VALUES ('PEK', 90)"
+            )
+
+            trip_id = await pool.fetchval(
+                """
+                INSERT INTO travel.trips (name, destination, start_date, end_date, status)
+                VALUES ('DD94XR journey', 'Test', $1, $2, 'planned')
+                RETURNING id
+                """,
+                date.today(),
+                date.today() + timedelta(days=3),
+            )
+
+            scheduled_departure = datetime.now(UTC) + timedelta(hours=6)
+            inbound_arrival = scheduled_departure + timedelta(hours=3)
+            # 120 minutes available -- exactly the comfortable 'holds'
+            # boundary against a 90-minute minimum before the delay lands.
+            outbound_departure = inbound_arrival + timedelta(minutes=120)
+            booking_record_id = uuid.uuid4()
+
+            inbound_id = await pool.fetchval(
+                """
+                INSERT INTO travel.legs (trip_id, type, departure_airport_station,
+                                          arrival_airport_station, departure_at, arrival_at, metadata,
+                                          booking_record_id, segment_index)
+                VALUES ($1::uuid, 'flight', 'SIN', 'PEK', $2, $3, $4, $5, 0)
+                RETURNING id
+                """,
+                trip_id,
+                scheduled_departure,
+                inbound_arrival,
+                {"flight_number": "DD94XR"},
+                booking_record_id,
+            )
+            outbound_id = await pool.fetchval(
+                """
+                INSERT INTO travel.legs (trip_id, type, departure_airport_station,
+                                          arrival_airport_station, departure_at, arrival_at,
+                                          booking_record_id, segment_index)
+                VALUES ($1::uuid, 'flight', 'PEK', 'NRT', $2, $3, $4, 1)
+                RETURNING id
+                """,
+                trip_id,
+                outbound_departure,
+                outbound_departure + timedelta(hours=3),
+                booking_record_id,
+            )
+            original_updated_at = await pool.fetchval(
+                "SELECT updated_at FROM travel.legs WHERE id = $1::uuid", inbound_id
+            )
+            await pool.execute(
+                "UPDATE travel.trips SET metadata = jsonb_build_object("
+                "'connection_derivation_completed_at', 'prior') WHERE id = $1::uuid",
+                trip_id,
+            )
+
+            # A 40-minute delay on the inbound leg leaves only 80 minutes for
+            # the connection -- below the 90-minute PEK minimum.
+            delayed_payload = {
+                "data": [
+                    {
+                        "flight_status": "active",
+                        "departure": {
+                            "scheduled": scheduled_departure.isoformat(),
+                            "estimated": (scheduled_departure + timedelta(minutes=40)).isoformat(),
+                            "delay": 40,
+                        },
+                    }
+                ]
+            }
+            client = _mock_client(delayed_payload)
+
+            await pool.execute(
+                """
+                CREATE FUNCTION travel.reject_status_derivation_invalidation() RETURNS trigger AS $$
+                BEGIN
+                    IF OLD.metadata ? 'connection_derivation_completed_at'
+                       AND NOT NEW.metadata ? 'connection_derivation_completed_at' THEN
+                        RAISE EXCEPTION 'injected status invalidation failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER reject_status_derivation_invalidation
+                BEFORE UPDATE ON travel.trips
+                FOR EACH ROW EXECUTE FUNCTION travel.reject_status_derivation_invalidation();
+                """
+            )
+
+            with pytest.raises(asyncpg.RaiseError, match="injected status invalidation failure"):
+                await _write_leg_status(
+                    pool,
+                    inbound_id,
+                    trip_id,
+                    scheduled_departure,
+                    parse_flight_status(delayed_payload),
+                )
+
+            unchanged = await pool.fetchrow(
+                "SELECT departure_at, arrival_at FROM travel.legs WHERE id = $1::uuid", inbound_id
+            )
+            assert unchanged["departure_at"] == scheduled_departure
+            assert unchanged["arrival_at"] == inbound_arrival
+            assert await pool.fetchval(
+                "SELECT metadata ? 'connection_derivation_completed_at' "
+                "FROM travel.trips WHERE id = $1::uuid",
+                trip_id,
+            )
+            await pool.execute("DROP TRIGGER reject_status_derivation_invalidation ON travel.trips")
+            await pool.execute("DROP FUNCTION travel.reject_status_derivation_invalidation()")
+
+            with (
+                patch(
+                    "butlers.jobs.flight_status.CredentialStore",
+                    return_value=_mock_credential_store("fake-key"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+                    AsyncMock(return_value={"status": "accepted"}),
+                ),
+            ):
+                result = await run_flight_status_check(pool, http_client=client)
+            await client.aclose()
+
+            assert result["skipped"] is False
+            assert result["delays_detected"] == 1
+
+            inbound_row = await pool.fetchrow(
+                "SELECT departure_at, arrival_at, updated_at FROM travel.legs WHERE id = $1::uuid",
+                inbound_id,
+            )
+            assert inbound_row["departure_at"] == scheduled_departure + timedelta(minutes=40)
+            assert inbound_row["arrival_at"] == inbound_arrival + timedelta(minutes=40)
+            assert inbound_row["updated_at"] > original_updated_at
+
+            connection = await pool.fetchrow(
+                "SELECT verdict, available_minutes FROM travel.connections "
+                "WHERE inbound_leg_id = $1::uuid AND outbound_leg_id = $2::uuid",
+                inbound_id,
+                outbound_id,
+            )
+            assert connection is not None
+            assert connection["verdict"] == "broken"
+            assert connection["available_minutes"] == 80
+
+            door = await pool.fetchrow(
+                "SELECT status FROM pending_actions WHERE tool_name = 'acknowledge_connection_risk'"
+            )
+            assert door is not None
+            assert door["status"] == "pending"
+
+            # Cross the mutable-time reorder threshold. Even with the inbound
+            # now departing after the outbound, segment identity preserves the
+            # original connection and its broken verdict.
+            severe_payload = {
+                "data": [
+                    {
+                        "flight_status": "active",
+                        "departure": {
+                            "scheduled": scheduled_departure.isoformat(),
+                            "estimated": (scheduled_departure + timedelta(hours=6)).isoformat(),
+                            "delay": 360,
+                        },
+                    }
+                ]
+            }
+            severe_client = _mock_client(severe_payload)
+            with (
+                patch(
+                    "butlers.jobs.flight_status.CredentialStore",
+                    return_value=_mock_credential_store("fake-key"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+                    AsyncMock(return_value={"status": "accepted"}),
+                ),
+            ):
+                await run_flight_status_check(pool, http_client=severe_client)
+            await severe_client.aclose()
+
+            severe_connection = await pool.fetchrow(
+                "SELECT inbound_leg_id, outbound_leg_id, verdict FROM travel.connections "
+                "WHERE trip_id = $1::uuid",
+                trip_id,
+            )
+            assert severe_connection["inbound_leg_id"] == inbound_id
+            assert severe_connection["outbound_leg_id"] == outbound_id
+            assert severe_connection["verdict"] == "broken"

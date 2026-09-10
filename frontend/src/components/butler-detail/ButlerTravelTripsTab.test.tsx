@@ -227,6 +227,23 @@ const TRIP_SUMMARY = {
       severity: "high",
     },
   ],
+  party: [
+    { id: "traveller-1", entity_id: "entity-1", display_name: "Alice Traveller" },
+    { id: "traveller-2", entity_id: "entity-2", display_name: "Bob Traveller" },
+  ],
+  connections: [
+    {
+      inbound_leg_id: "leg-1",
+      outbound_leg_id: "leg-2",
+      verdict: "tight",
+      available_minutes: 105,
+      evidence: { connecting_airport: "PEK", minimum_minutes: 90 },
+      computed_at: "2026-06-10T00:00:00Z",
+    },
+  ],
+  connection_reason: null,
+  unreadable_party_ids: [],
+  unreadable_connection_ids: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -600,6 +617,32 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     expect(entries.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("renders the traveller party and connection integrity rows", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+    expect(screen.getByTestId("drawer-party").textContent).toContain("Alice Traveller");
+    expect(screen.getByTestId("drawer-party").textContent).toContain("Bob Traveller");
+    const connection = screen.getByTestId("drawer-connection-row");
+    expect(connection.textContent).toContain("PEK");
+    expect(connection.textContent).toContain("105 min");
+    expect(connection.textContent).toContain("tight");
+  });
+
+  it("does not claim no connection while derivation is unavailable", () => {
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      {
+        data: { ...TRIP_SUMMARY, connections: [], connection_reason: null },
+        isLoading: false,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+    const connections = screen.getByTestId("drawer-connections");
+    expect(connections.textContent).toContain("Connection data unavailable");
+    expect(connections.textContent).not.toContain("No connection on this journey");
+  });
+
   it("closes the drawer on close button click", () => {
     renderTab();
     fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
@@ -625,6 +668,7 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
           unreadable_accommodation_ids: [],
           unreadable_reservation_ids: [],
           unreadable_document_ids: ["doc-corrupt-1", "doc-corrupt-2"],
+          unreadable_connection_ids: ["connection-corrupt"],
         },
         isLoading: false,
         refetch: vi.fn(),
@@ -637,6 +681,7 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     const note = screen.getByTestId("trip-drawer-partial-degraded");
     expect(note.textContent).toContain("1 leg");
     expect(note.textContent).toContain("2 documents");
+    expect(note.textContent).toContain("1 connection");
     expect(note.textContent).toContain("excluded");
     // The readable legs/accommodations still render normally alongside the disclosure.
     expect(screen.getAllByTestId("timeline-entry").length).toBeGreaterThanOrEqual(1);
