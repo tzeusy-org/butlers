@@ -23,6 +23,7 @@ from butlers.jobs.briefing import (
     run_finance_briefing_contribution,
     run_health_briefing_contribution,
     run_home_briefing_contribution,
+    run_lifestyle_briefing_contribution,
     run_relationship_briefing_contribution,
     today_sgt,
     validate_contribution,
@@ -39,6 +40,24 @@ pytestmark = pytest.mark.unit
 
 _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
+
+
+async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlights() -> None:
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[], []])
+    pool.fetchval = AsyncMock(side_effect=[27, 14])
+    write = AsyncMock()
+
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", write),
+    ):
+        await run_lifestyle_briefing_contribution(pool, None)
+
+    envelope = write.await_args.args[1]
+    assert envelope["summary"] == (
+        "27 new consumption note(s) today. 14 taste preference(s) captured today."
+    )
 
 
 # ---------------------------------------------------------------------------

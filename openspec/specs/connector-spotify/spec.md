@@ -105,6 +105,38 @@ The connector SHALL aggregate contiguous playback into logical listening session
   - `payload.normalized_text = "Listening session: <N> tracks over <duration> from <playlist_or_album>"`
   - All other fields follow the same pattern as track change events
 
+### Requirement: Full-Fidelity Track Play Evidence
+
+The connector SHALL persist deterministic per-play evidence independently of session-summary
+events so downstream taste projection can distinguish a work, an observed play, and an
+owner-asserted verdict without LLM interpretation.
+
+#### Scenario: Active track progress is persisted
+
+- **WHEN** the currently-playing endpoint returns a track URI, duration, progress, and playback timestamp
+- **THEN** the connector SHALL upsert one `connectors.spotify_track_plays` row keyed by `(endpoint_identity, track_uri, first_seen_ms)`
+- **AND** repeated observations SHALL advance `last_seen_ms` and `max_progress_ms` without moving either value backwards
+- **AND** replaying the same observations after restart SHALL NOT create another row
+
+#### Scenario: Track change resolves completion and skip evidence
+
+- **WHEN** a different track follows an open play with known positive duration and progress
+- **THEN** the connector SHALL close the previous row and derive `completion_ratio` from its maximum observed progress
+- **AND** it SHALL set `skipped=true` below the completion threshold and `skipped=false` at or above it
+- **AND** no LLM SHALL assert either value
+
+#### Scenario: Missing progress remains explicitly imprecise
+
+- **WHEN** a play is observed without progress, including a recently-played gap-fill item
+- **THEN** the stored row SHALL have `observation_precision='play_only'`
+- **AND** `max_progress_ms`, `completion_ratio`, and `skipped` SHALL remain null
+
+#### Scenario: Taste projector has read-only evidence access
+
+- **WHEN** the Lifestyle butler projects Spotify evidence into its taste ledger
+- **THEN** its database role SHALL be able to select from Spotify listening sessions and track plays
+- **AND** it SHALL NOT be able to insert, update, or delete connector evidence
+
 ### Requirement: Spotify API Client
 
 The connector SHALL use an async HTTP client to communicate with the Spotify Web API.

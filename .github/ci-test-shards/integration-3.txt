@@ -4,6 +4,7 @@ roster/finance/tests/test_feed_reconciliation.py
 roster/finance/tests/test_track_d_sweep.py
 roster/health/tests/test_measurement_sources.py
 roster/health/tests/test_tools.py
+roster/lifestyle/tests/test_taste_ledger_legacy_facts.py
 roster/relationship/tests/test_commitment_extraction_db.py
 roster/relationship/tests/test_conf_immutability_guardrail.py
 roster/relationship/tests/test_dunbar_tier_contactless_integration.py

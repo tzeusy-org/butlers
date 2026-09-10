@@ -96,6 +96,20 @@ async def custom_endpoint():
 
 Co-locate Pydantic models in `models.py` alongside `router.py`.
 
+### Lifestyle Taste Ledger
+
+The auto-discovered Lifestyle router exposes three read-only endpoints under
+`/api/lifestyle/taste`:
+
+- `GET /summary` returns ledger-wide work, signal, verdict, and recent-signal counts.
+- `GET /works` returns a bounded, offset-paginated work list and accepts an optional `kind` filter.
+- `GET /verdicts` returns owner assertions, including migrated legacy lifestyle facts.
+
+The list endpoints obtain `meta.total` with a separate `COUNT(*)`; it is the ledger total for the
+same filter, not the length of the returned page. A missing pre-migration ledger returns an empty
+page. Summary read failures remain distinguishable through `ledger_available=false` rather than
+being presented as a genuine empty taste history.
+
 ## SSE Streaming
 
 The `/api/events` endpoint streams Server-Sent Events for live dashboard updates. Events include butler status changes, session lifecycle events, and ingestion activity. Multiple concurrent subscribers are supported via `asyncio.Queue` instances.
