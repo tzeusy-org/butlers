@@ -543,15 +543,63 @@ describe("TimelinePage — density and historical seek", () => {
     );
   });
 
-  it("fails closed for malformed URL intervals and distinguishes aggregate availability", () => {
+  it("fails closed for malformed or timezone-naive URL intervals and distinguishes aggregate availability", () => {
+    setLedger({
+      events: [
+        {
+          id: "cached-live",
+          type: "session",
+          butler: "home",
+          timestamp: "2026-07-04T15:00:00Z",
+          summary: "cached live event",
+          is_heartbeat: false,
+          data: {},
+        },
+      ],
+    });
     const invalidRender = renderDom(
-      <MemoryRouter initialEntries={["/timeline?since=2026-07-04T14:00:00Z"]}>
+      <MemoryRouter
+        initialEntries={["/timeline", "/timeline?since=2026-07-04T14:00:00Z"]}
+        initialIndex={0}
+      >
         <TimelinePage />
+        <BrowserHistoryControls />
       </MemoryRouter>,
     );
+    expect(screen.getByText("cached live event")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
     expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
+    expect(screen.queryByText("cached live event")).toBeNull();
+    expect(screen.queryByText("No events found.")).toBeNull();
     expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
     expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    expect(screen.getByText("cached live event")).toBeTruthy();
+
+    invalidRender.unmount();
+    for (const naiveUrl of [
+      "/timeline?since=2026-07-04T14:00:00&until=2026-07-04T15:00:00",
+      "/timeline?since=2026-07-04T14:00:00Z&until=2026-07-04T15:00:00Z&bucket_since=2026-07-04T14:01:00&bucket_until=2026-07-04T14:02:00",
+    ]) {
+      const naiveRender = renderDom(
+        <MemoryRouter initialEntries={[naiveUrl]}>
+          <TimelinePage />
+        </MemoryRouter>,
+      );
+      expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
+      expect(screen.queryByText("cached live event")).toBeNull();
+      expect(screen.queryByText("No events found.")).toBeNull();
+      expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
+      expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear interval" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("cached live event")).toBeTruthy();
+      expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: true });
+      naiveRender.unmount();
+    }
 
     vi.mocked(useTimelineHistogram).mockReturnValue({
       data: {
@@ -571,7 +619,6 @@ describe("TimelinePage — density and historical seek", () => {
       isError: false,
       refetch: vi.fn(),
     } as unknown as ReturnType<typeof useTimelineHistogram>);
-    invalidRender.unmount();
     renderDom(
       <MemoryRouter initialEntries={["/timeline"]}>
         <TimelinePage />

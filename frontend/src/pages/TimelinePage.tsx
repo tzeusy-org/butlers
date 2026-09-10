@@ -107,6 +107,12 @@ function latestCompleteHour(now = Date.now()): { since: string; until: string } 
   return { since: iso(until - HOUR_MS), until: iso(until) };
 }
 
+function parseAwareTimestamp(value: string): number | null {
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 interface TimelineIntervalState {
   valid: boolean;
   explicit: boolean;
@@ -125,11 +131,11 @@ function parseTimelineInterval(sp: URLSearchParams): TimelineIntervalState {
   const explicit = sinceRaw !== null || untilRaw !== null;
   if ((sinceRaw === null) !== (untilRaw === null)) return { ...latest, valid: false, explicit };
 
-  const sinceMs = sinceRaw === null ? Date.parse(latest.since) : Date.parse(sinceRaw);
-  const untilMs = untilRaw === null ? Date.parse(latest.until) : Date.parse(untilRaw);
+  const sinceMs = sinceRaw === null ? Date.parse(latest.since) : parseAwareTimestamp(sinceRaw);
+  const untilMs = untilRaw === null ? Date.parse(latest.until) : parseAwareTimestamp(untilRaw);
   if (
-    !Number.isFinite(sinceMs) ||
-    !Number.isFinite(untilMs) ||
+    sinceMs === null ||
+    untilMs === null ||
     sinceMs % MINUTE_MS !== 0 ||
     untilMs % MINUTE_MS !== 0 ||
     untilMs - sinceMs !== HOUR_MS
@@ -143,11 +149,11 @@ function parseTimelineInterval(sp: URLSearchParams): TimelineIntervalState {
   }
   if (bucketSinceRaw === null) return { since, until, valid: true, explicit };
 
-  const bucketSinceMs = Date.parse(bucketSinceRaw);
-  const bucketUntilMs = Date.parse(bucketUntilRaw!);
+  const bucketSinceMs = parseAwareTimestamp(bucketSinceRaw);
+  const bucketUntilMs = parseAwareTimestamp(bucketUntilRaw!);
   if (
-    !Number.isFinite(bucketSinceMs) ||
-    !Number.isFinite(bucketUntilMs) ||
+    bucketSinceMs === null ||
+    bucketUntilMs === null ||
     bucketSinceMs % MINUTE_MS !== 0 ||
     bucketUntilMs - bucketSinceMs !== MINUTE_MS ||
     bucketSinceMs < sinceMs ||
@@ -664,23 +670,27 @@ export default function TimelinePage() {
           </div>
         </div>
 
-        <NewEventsPill count={newCount} onClick={showNewEvents} />
+        {interval.valid ? (
+          <>
+            <NewEventsPill count={newCount} onClick={showNewEvents} />
 
-        <FetchingDim isFetching={isLiveHeadRefreshing}>
-          <TimelineLedger
-            events={events}
-            isLoading={isLoading}
-            includeInternal={includeInternal}
-            isError={isError}
-            onRetry={refetch}
-            hasPartialData={hasDegradedSource}
-            hasMore={hasMore}
-            onLoadMore={loadMore}
-            loadMoreError={loadMoreError}
-            onRetryLoadMore={retryLoadMore}
-            isLoadingMore={isLoadingMore}
-          />
-        </FetchingDim>
+            <FetchingDim isFetching={isLiveHeadRefreshing}>
+              <TimelineLedger
+                events={events}
+                isLoading={isLoading}
+                includeInternal={includeInternal}
+                isError={isError}
+                onRetry={refetch}
+                hasPartialData={hasDegradedSource}
+                hasMore={hasMore}
+                onLoadMore={loadMore}
+                loadMoreError={loadMoreError}
+                onRetryLoadMore={retryLoadMore}
+                isLoadingMore={isLoadingMore}
+              />
+            </FetchingDim>
+          </>
+        ) : null}
       </DispatchSurface>
 
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
