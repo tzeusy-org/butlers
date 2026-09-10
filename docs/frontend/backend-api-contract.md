@@ -534,27 +534,42 @@ not add a cell or displace an observed core type.
 
 ## Connectors Contract
 
-- `GET /api/connectors` -> `ApiResponse<ConnectorSummary[]>`
-- `GET /api/connectors/{connectorType}/{endpointIdentity}` -> `ApiResponse<ConnectorDetail>`
-- `GET /api/connectors/{connectorType}/{endpointIdentity}/stats` -> `ApiResponse<ConnectorStats>`
-- `GET /api/connectors/summary` -> `ApiResponse<ConnectorCrossSummary>`
-- `GET /api/connectors/fanout` -> `ApiResponse<ConnectorFanout>`
+The dashboard fleet roster and detail API is the
+`/api/ingestion/connectors` namespace. It does not expose a generic fleet
+`/api/connectors` or `/api/switchboard/connectors` compatibility family;
+provider-owned connector APIs remain independently documented.
+
+- `GET /api/ingestion/connectors/summaries` ->
+  `ApiResponse<ConnectorSummariesResponse>`
+- `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}` ->
+  `ApiResponse<ConnectorDetailEntry>`
+- `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}/stats` ->
+  `ApiResponse<ConnectorStatsHourly[] | ConnectorStatsDaily[]>`
+- `PATCH /api/ingestion/connectors/{connectorType}/{endpointIdentity}/settings`
+  -> `ApiResponse<ConnectorDetailEntry>`
+- `GET /api/ingestion/connectors/cross-summary` ->
+  `ApiResponse<ConnectorCrossSummary>`
+- `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}/events`,
+  `/incidents`, and `/routing-rules` -> their respective connector detail
+  subresource responses
 
 Required query support:
 
-- `/api/connectors/{connectorType}/{endpointIdentity}/stats`:
+- `/api/ingestion/connectors/{connectorType}/{endpointIdentity}/stats`:
   - `period` (`24h` | `7d` | `30d`)
-- `/api/connectors/summary`:
-  - `period` (`24h` | `7d` | `30d`)
-- `/api/connectors/fanout`:
-  - `period` (`7d` | `30d`)
+
+`ApiResponse.data.connectors` is runtime-authoritative:
+storage-only checkpoints are nested under their parent, deleted identities are
+omitted, and archived identities are explicitly marked so callers can keep them
+out of active attention and fleet views. The `cross-summary` response is the
+canonical fleet aggregate; it is not a substitute for the per-connector roster.
 
 Response model shapes:
 
 - `ConnectorSummary`:
   - `connector_type`: string
   - `endpoint_identity`: string
-  - `liveness`: `"online"` | `"stale"` | `"offline"`
+  - `liveness`: `"online"` | `"stale"` | `"offline"` | `"unclassified"`
   - `state`: `"healthy"` | `"degraded"` | `"error"`
   - `error_message`: string | null
   - `version`: string | null
@@ -568,46 +583,39 @@ Response model shapes:
   - `messages_failed`: number
   - `uptime_pct`: number | null
 
-- `ConnectorDetail` (extends `ConnectorSummary`):
-  - `instance_id`: UUID | null
-  - `registered_via`: string
-  - `checkpoint`: `{ cursor: string | null, updated_at: ISO timestamp | null }` | null
-  - `counters`: `{ messages_ingested, messages_failed, source_api_calls, checkpoint_saves, dedupe_accepted }` | null
+- `ConnectorDetailEntry` (flat wire payload):
+  - registry identity and health fields: `connector_type`, `endpoint_identity`,
+    `instance_id`, `version`, `state`, `error_message`, `uptime_s`,
+    `last_heartbeat_at`, `first_seen_at`, and `registered_via`
+  - flat lifetime/today counters and checkpoint fields, plus
+    `operational_role` and `parent_endpoint_identity`
+  - `settings`: JSON object | null
+  - `auth`: content-blind connection and recovery state | null
+  - `scopes`: content-blind OAuth scope evidence | null
 
-- `ConnectorStats`:
-  - `connector_type`: string
-  - `endpoint_identity`: string
-  - `period`: string
-  - `summary`: `{ messages_ingested, messages_failed, error_rate_pct, uptime_pct, avg_messages_per_hour }`
-  - `timeseries`: `ConnectorStatsBucket[]`
-
-- `ConnectorStatsBucket`:
-  - `bucket`: ISO timestamp
+- `ConnectorStatsHourly` / `ConnectorStatsDaily` (flat wire rows):
+  - `connector_type`, `endpoint_identity`, and `hour` or `day`
   - `messages_ingested`: number
   - `messages_failed`: number
+  - `messages_filtered`: number
   - `healthy_count`: number
   - `degraded_count`: number
   - `error_count`: number
 
+The frontend client projects these flat detail and statistics payloads into its
+`ConnectorDetail` and `ConnectorStats` view models for rendering. Those client
+models are not additional backend response contracts.
+
 - `ConnectorCrossSummary`:
-  - `period`: string
   - `total_connectors`: number
   - `connectors_online`: number
   - `connectors_stale`: number
   - `connectors_offline`: number
+  - `connectors_unclassified`: number
   - `total_messages_ingested`: number
   - `total_messages_failed`: number
   - `overall_error_rate_pct`: number
-  - `by_connector`: `ConnectorSummary[]` (lightweight subset)
-
-- `ConnectorFanout`:
-  - `period`: string
-  - `matrix`: `ConnectorFanoutEntry[]`
-
-- `ConnectorFanoutEntry`:
-  - `connector_type`: string
-  - `endpoint_identity`: string
-  - `targets`: `Record<string, number>` (butler name -> message count)
+  - `aggregates_available`: boolean
 
 ## General and Switchboard Views Contract
 

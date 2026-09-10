@@ -578,14 +578,7 @@ export {
 } from "./client.ts";
 
 export type {
-  ConnectorEntry,
   ConnectorProfile,
-} from "./types.ts";
-
-export {
-} from "./client.ts";
-
-export type {
 } from "./types.ts";
 
 export {
@@ -596,9 +589,8 @@ export {
   getConnectorIncidents,
   getConnectorRoutingRules,
   getConnectorStats,
-  getConnectorSummariesWithAggregates,
+  getConnectorSummaries,
   getPipelineStats,
-  listConnectorSummaries,
   unarchiveConnector,
   updateConnectorSettings,
 } from "./client.ts";
@@ -615,8 +607,6 @@ export type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
