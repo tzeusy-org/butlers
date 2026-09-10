@@ -370,19 +370,19 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert severely_missed["connections"][0]["outbound_leg_id"] == outbound_id
         assert severely_missed["connections"][0]["verdict"] == "broken"
 
-        # A leg from another booking record chronologically interleaves between
-        # a structurally ordered same-record pair. Both connections prove that
-        # the combined itinerary preserves all three legs in deterministic
-        # chronological order rather than grouping the record-local pair.
+        # A leg from another booking record has a persisted departure between
+        # the reversed operational timestamps of a structurally ordered pair.
+        # Both connections prove that all three legs retain deterministic
+        # itinerary order without letting mutable times reverse segment 0/1.
         cross_record_trip = await _insert_trip(pool, start_date="2026-11-01", end_date="2026-11-01")
         structural_record_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
         structural_inbound = await _insert_leg(
             pool,
             cross_record_trip,
-            departure_at=datetime(2026, 11, 1, 8, tzinfo=UTC),
-            arrival_at=datetime(2026, 11, 1, 10, tzinfo=UTC),
-            departure_station="SIN",
-            arrival_station="HKG",
+            departure_at=datetime(2026, 11, 1, 14, tzinfo=UTC),
+            arrival_at=datetime(2026, 11, 1, 16, tzinfo=UTC),
+            departure_station="HKG",
+            arrival_station="ICN",
             booking_record_id=structural_record_id,
             segment_index=0,
         )
@@ -391,16 +391,16 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             cross_record_trip,
             departure_at=datetime(2026, 11, 1, 11, tzinfo=UTC),
             arrival_at=datetime(2026, 11, 1, 13, tzinfo=UTC),
-            departure_station="HKG",
-            arrival_station="ICN",
+            departure_station="SIN",
+            arrival_station="HKG",
             booking_record_id="00000000-0000-0000-0000-000000000001",
             segment_index=0,
         )
         structural_outbound = await _insert_leg(
             pool,
             cross_record_trip,
-            departure_at=datetime(2026, 11, 1, 14, tzinfo=UTC),
-            arrival_at=datetime(2026, 11, 1, 17, tzinfo=UTC),
+            departure_at=datetime(2026, 11, 1, 8, tzinfo=UTC),
+            arrival_at=datetime(2026, 11, 1, 10, tzinfo=UTC),
             departure_station="ICN",
             arrival_station="NRT",
             booking_record_id=structural_record_id,
@@ -410,16 +410,24 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
             "VALUES ('HKG', 60), ('ICN', 60)"
         )
-        cross_result = await recompute_trip_connections(pool, cross_record_trip)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            _propose_insight_mock(),
+        ):
+            cross_result = await recompute_trip_connections(pool, cross_record_trip)
         expected_pairs = [
-            (structural_inbound, interleaved_cross_record),
-            (interleaved_cross_record, structural_outbound),
+            (interleaved_cross_record, structural_inbound),
+            (structural_inbound, structural_outbound),
         ]
         assert [
             (row["inbound_leg_id"], row["outbound_leg_id"]) for row in cross_result["connections"]
         ] == expected_pairs
 
-        repeated_cross_result = await recompute_trip_connections(pool, cross_record_trip)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            _propose_insight_mock(),
+        ):
+            repeated_cross_result = await recompute_trip_connections(pool, cross_record_trip)
         assert [
             (row["inbound_leg_id"], row["outbound_leg_id"])
             for row in repeated_cross_result["connections"]
@@ -503,6 +511,26 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         )
         assert await pool.fetchval("SELECT count(*) FROM pending_actions") == 0
 
+        filtered_candidate = AsyncMock(
+            return_value={"status": "filtered", "reason": "verbosity is off"}
+        )
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            filtered_candidate,
+        ):
+            failed = await recompute_trip_connections(pool, trip_id)
+
+        assert failed["error"] == "recompute_failed"
+        filtered_candidate.assert_awaited_once()
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM travel.connections WHERE trip_id = $1::uuid", trip_id
+            )
+            == 0
+        )
+        assert await pool.fetchval("SELECT count(*) FROM insight_candidates") == 0
+        assert await pool.fetchval("SELECT count(*) FROM pending_actions") == 0
+
         propose_mock = _propose_insight_mock()
         with (
             patch(
@@ -577,6 +605,12 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             "SELECT prepared_action_id FROM insight_candidates WHERE category = 'connection-risk'"
         )
         assert candidate_action_id == door["id"]
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM insight_candidates WHERE category = 'connection-risk'"
+            )
+            == 1
+        )
 
         acknowledged = await acknowledge_connection_risk(
             pool,

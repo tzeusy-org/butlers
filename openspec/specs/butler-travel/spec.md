@@ -102,6 +102,8 @@ connection is safe without minimum-connect evidence.
 - **AND** Travel raises one deduplicated connection-risk alert and one approval door for that transition
 - **AND** a later recovery withdraws the still-pending door
 - **AND** concurrent recomputes serialize verdict persistence with approval-door creation or withdrawal
+- **AND** a non-accepted connection-risk insight candidate rolls back the verdict transition before
+  any prepared action can be orphaned, so a later recompute retries the linked alert and door
 - **AND** a failed required approval-door write rolls back the verdict transition so a later recompute retries it
 
 #### Scenario: Journey has no connection

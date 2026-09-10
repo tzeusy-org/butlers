@@ -290,7 +290,7 @@ async def _raise_connection_door(
         prepared_action_id=action_id,
         now=now,
     )
-    if result.get("status") == "error":
+    if result.get("status") != "accepted":
         raise RuntimeError(
             f"connection-risk insight candidate was rejected: {result.get('reason', 'unknown')}"
         )
