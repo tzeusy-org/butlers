@@ -204,6 +204,43 @@ class TestBackfillFromListeningSessions:
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
 
+    async def test_scheduled_projector_prefers_modern_play_over_overlapping_session(
+        self, lifestyle_pool
+    ) -> None:
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        observed_at = datetime(2026, 9, 1, tzinfo=UTC)
+        await _insert_session(
+            lifestyle_pool,
+            idempotency_key="spotify:ep1:session:modern",
+            started_at=observed_at,
+            track_names=["Modern Song"],
+        )
+        await _insert_closed_play(
+            lifestyle_pool,
+            track_uri="spotify:track:modern",
+            track_name="Modern Song",
+            first_seen_ms=int(observed_at.timestamp() * 1000),
+            duration_ms=200_000,
+            completion_ratio=0.95,
+            skipped=False,
+        )
+
+        handler = get_deterministic_schedule_job_registry()["lifestyle"]["taste_ledger_project"]
+        first_pass = await handler(lifestyle_pool, None)
+        second_pass = await handler(lifestyle_pool, None)
+
+        assert first_pass == {
+            "sessions": {"works_created": 0, "signals_created": 0},
+            "track_plays": {"works_created": 1, "signals_created": 1},
+        }
+        assert second_pass == {
+            "sessions": {"works_created": 0, "signals_created": 0},
+            "track_plays": {"works_created": 0, "signals_created": 0},
+        }
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+
 
 class TestBackfillFromTrackPlays:
     async def test_concurrent_passes_yield_one_signal_per_source_ref_kind(

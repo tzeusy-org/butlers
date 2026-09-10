@@ -126,7 +126,14 @@ The Lifestyle butler SHALL run the standard memory maintenance job set shared ac
 - **WHEN** Spotify session or closed-play evidence is waiting in the connector ledger
 - **THEN** a deterministic scheduled job SHALL project it into Lifestyle works and taste signals
 - **AND** repeated or concurrent job runs SHALL converge without duplicate signals or orphan works
+- **AND** when a same-endpoint per-play row covers a named track occurrence inside a listening session, the URI-bearing per-play evidence SHALL take precedence and the occurrence SHALL produce exactly one work and one play signal
 - **AND** the projection SHALL NOT depend on an LLM session or operator tool invocation
+
+#### Scenario: Ledger downgrade preserves owner verdicts
+
+- **WHEN** the Lifestyle ledger is downgraded while directly-created owner verdicts exist
+- **THEN** every such verdict SHALL be exported as a backward-readable lifestyle fact before the ledger tables are dropped
+- **AND** the exported fact SHALL preserve the verdict text, predicate, provenance, and linked work metadata
 
 ### Requirement: Cross-Butler Briefing Contribution
 

@@ -134,3 +134,78 @@ def test_reapplying_legacy_fact_migration_creates_no_duplicate_verdict(
             assert count == 1
     finally:
         engine.dispose()
+
+
+def test_downgrade_exports_direct_owner_verdict_as_legacy_fact(postgres_container) -> None:
+    """Rolling back the ledger keeps directly-created owner assertions durable."""
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine, text
+
+    module_path = Path(__file__).resolve().parents[1] / "migrations" / "002_taste_ledger.py"
+    spec = importlib.util.spec_from_file_location("lifestyle_002_downgrade", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory", "lifestyle"],
+        schemas={"memory": "lifestyle", "lifestyle": "lifestyle"},
+    )
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text('SET search_path TO "lifestyle", public'))
+            work_id = connection.execute(
+                text(
+                    "INSERT INTO works (kind, title, external_ids) "
+                    "VALUES ('track', 'Owner Song', '{\"primary\": \"spotify:track:owner\"}') "
+                    "RETURNING id"
+                )
+            ).scalar_one()
+            verdict_id = connection.execute(
+                text(
+                    "INSERT INTO verdicts (work_id, predicate, verdict_text, source) "
+                    "VALUES (:work_id, 'likes_artist', 'I love this', 'owner_assertion') "
+                    "RETURNING id"
+                ),
+                {"work_id": work_id},
+            ).scalar_one()
+
+            operations = Operations(MigrationContext.configure(connection))
+            with patch.object(module, "op", operations):
+                module.downgrade()
+
+            exported = (
+                connection.execute(
+                    text(
+                        "SELECT subject, predicate, content, scope, validity, permanence, "
+                        "idempotency_key, metadata ->> 'taste_ledger_verdict_id' AS verdict_id, "
+                        "metadata #>> '{taste_ledger_work,external_ids,primary}' AS track_uri "
+                        "FROM facts WHERE idempotency_key = :idempotency_key"
+                    ),
+                    {"idempotency_key": f"taste-ledger-verdict:{verdict_id}"},
+                )
+                .mappings()
+                .one()
+            )
+            assert dict(exported) == {
+                "subject": "user",
+                "predicate": "likes_artist",
+                "content": "I love this",
+                "scope": "lifestyle",
+                "validity": "active",
+                "permanence": "stable",
+                "idempotency_key": f"taste-ledger-verdict:{verdict_id}",
+                "verdict_id": str(verdict_id),
+                "track_uri": "spotify:track:owner",
+            }
+            assert connection.execute(text("SELECT to_regclass('verdicts')")).scalar_one() is None
+    finally:
+        engine.dispose()

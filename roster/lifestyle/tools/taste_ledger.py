@@ -8,9 +8,10 @@ state rather than growing it.
 Two evidence sources feed the ledger:
 
 - ``connectors.spotify_listening_sessions`` (core_079): session-level, no
-  stable per-track id — only ordered track *names*. Every mention becomes its
-  own ``works`` row (``external_ids = '{}'``) because the source genuinely has
-  no better identity to offer (see ``works.external_ids`` in
+  stable per-track id — only ordered track *names*. A mention not covered by
+  modern per-play evidence becomes its own ``works`` row
+  (``external_ids = '{}'``) because the source genuinely has no better
+  identity to offer (see ``works.external_ids`` in
   ``roster/lifestyle/migrations/002_taste_ledger.py``).
 - ``connectors.spotify_track_plays`` (core_230): per-play, keyed on the
   track's stable URI, carrying resolved ``completion_ratio``/``skipped``.
@@ -19,6 +20,7 @@ Two evidence sources feed the ledger:
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -163,15 +165,34 @@ async def backfill_from_listening_sessions(
 ) -> BackfillResult:
     """Project ``connectors.spotify_listening_sessions`` rows into the ledger.
 
-    Every ``track_names`` entry becomes one ``works`` row (unresolved: no
-    stable id survives session aggregation) and one ``taste_signals`` row.
-    Safe to call repeatedly: rows already projected are skipped via the
-    ``taste_signals.idempotency_key`` check, so a second pass over the same
-    evidence creates nothing new.
+    A track-name occurrence is treated as legacy evidence only when no
+    same-endpoint per-play row with that name falls inside the session. The
+    per-play source has the stable track URI and therefore takes precedence;
+    this prevents modern connector history from being projected once as an
+    unresolved session mention and again as a resolved play. Repeated names
+    are reconciled by count so one modern play suppresses only one session
+    occurrence.
+
+    Remaining ``track_names`` entries each become one unresolved ``works`` row
+    and one ``taste_signals`` row. Safe to call repeatedly: rows already
+    projected are skipped via the ``taste_signals.idempotency_key`` check.
     """
     query = """
-        SELECT idempotency_key, track_names, started_at
-        FROM connectors.spotify_listening_sessions
+        SELECT
+            s.idempotency_key,
+            s.track_names,
+            s.started_at,
+            ARRAY(
+                SELECT p.track_name
+                FROM connectors.spotify_track_plays p
+                WHERE p.endpoint_identity = s.endpoint_identity
+                  AND p.track_name IS NOT NULL
+                  AND p.first_seen_ms BETWEEN
+                      (extract(epoch FROM s.started_at) * 1000)::bigint
+                      AND (extract(epoch FROM s.ended_at) * 1000)::bigint
+                ORDER BY p.first_seen_ms
+            ) AS modern_track_names
+        FROM connectors.spotify_listening_sessions s
         ORDER BY started_at
     """
     if limit is not None:
@@ -184,9 +205,13 @@ async def backfill_from_listening_sessions(
     signals_created = 0
     for row in rows:
         track_names = row["track_names"] or []
+        modern_names = Counter(row["modern_track_names"] or [])
         session_key = row["idempotency_key"]
         for index, name in enumerate(track_names):
             if not name:
+                continue
+            if modern_names[name] > 0:
+                modern_names[name] -= 1
                 continue
             source_ref = f"{session_key}:{index}"
             created, inserted = await _project_unresolved_session_signal(

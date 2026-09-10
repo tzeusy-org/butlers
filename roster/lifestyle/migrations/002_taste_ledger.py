@@ -32,6 +32,11 @@ Tables
     are migrated here as ``source='legacy_fact'`` verdicts so the 61 existing
     prose facts survive the cutover as ``verdict_text``.
 
+Downgrade exports directly-created verdicts as temporal ``facts`` rows keyed
+by ``taste-ledger-verdict:<verdict id>`` before dropping the ledger. The fact
+metadata retains verdict provenance and a snapshot of the linked work, making
+the rollback path durable and backward-readable rather than lossy.
+
 Predicate registry
 -------------------
 Seeds every predicate the memory-taxonomy skill defines (16 total) so the
@@ -212,17 +217,68 @@ def downgrade() -> None:
     # since the cutover; write the current text back onto the originating
     # fact's metadata before the ledger tables are dropped, so a downgrade
     # never silently loses an owner edit made through the ledger.
-    # Verdicts with no originating fact (created directly in the ledger) have
-    # nowhere to go on downgrade and are dropped with the table — this is the
-    # expected, documented cost of rolling back past the ledger's introduction.
+    # Direct owner verdicts have no originating fact, so export each as a
+    # temporal lifestyle fact before dropping the ledger. Temporal identity
+    # preserves multiple owner verdicts with the same predicate, while the
+    # deterministic idempotency key makes a manually retried downgrade safe.
     op.execute("""
         DO $$
         BEGIN
             IF to_regclass('facts') IS NOT NULL AND to_regclass('verdicts') IS NOT NULL THEN
                 UPDATE facts f
-                SET metadata = f.metadata || jsonb_build_object('taste_ledger_verdict_text', v.verdict_text)
+                SET metadata = COALESCE(f.metadata, '{}'::jsonb)
+                    || jsonb_build_object('taste_ledger_verdict_text', v.verdict_text)
                 FROM verdicts v
                 WHERE v.legacy_fact_id = f.id;
+
+                INSERT INTO facts (
+                    subject,
+                    predicate,
+                    content,
+                    permanence,
+                    source_butler,
+                    validity,
+                    scope,
+                    created_at,
+                    last_confirmed_at,
+                    metadata,
+                    valid_at,
+                    idempotency_key,
+                    observed_at
+                )
+                SELECT
+                    COALESCE(NULLIF(v.metadata ->> 'subject', ''), 'user'),
+                    v.predicate,
+                    v.verdict_text,
+                    'stable',
+                    'lifestyle',
+                    'active',
+                    'lifestyle',
+                    v.created_at,
+                    v.created_at,
+                    COALESCE(v.metadata, '{}'::jsonb) || jsonb_build_object(
+                        'taste_ledger_verdict_id', v.id,
+                        'taste_ledger_source', v.source,
+                        'taste_ledger_work', CASE
+                            WHEN w.id IS NULL THEN NULL
+                            ELSE jsonb_build_object(
+                                'id', w.id,
+                                'kind', w.kind,
+                                'title', w.title,
+                                'external_ids', w.external_ids,
+                                'metadata', w.metadata
+                            )
+                        END
+                    ),
+                    v.created_at,
+                    'taste-ledger-verdict:' || v.id::text,
+                    v.created_at
+                FROM verdicts v
+                LEFT JOIN works w ON w.id = v.work_id
+                WHERE v.legacy_fact_id IS NULL
+                ON CONFLICT (tenant_id, idempotency_key)
+                    WHERE idempotency_key IS NOT NULL
+                    DO NOTHING;
             END IF;
         END;
         $$;
