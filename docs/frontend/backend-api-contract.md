@@ -542,11 +542,11 @@ provider-owned connector APIs remain independently documented.
 - `GET /api/ingestion/connectors/summaries` ->
   `ApiResponse<ConnectorSummariesResponse>`
 - `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}` ->
-  `ApiResponse<ConnectorDetail>`
+  `ApiResponse<ConnectorDetailEntry>`
 - `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}/stats` ->
-  `ApiResponse<ConnectorStats>`
+  `ApiResponse<ConnectorStatsHourly[] | ConnectorStatsDaily[]>`
 - `PATCH /api/ingestion/connectors/{connectorType}/{endpointIdentity}/settings`
-  -> `ApiResponse<ConnectorDetail>`
+  -> `ApiResponse<ConnectorDetailEntry>`
 - `GET /api/ingestion/connectors/cross-summary` ->
   `ApiResponse<ConnectorCrossSummary>`
 - `GET /api/ingestion/connectors/{connectorType}/{endpointIdentity}/events`,
@@ -583,30 +583,28 @@ Response model shapes:
   - `messages_failed`: number
   - `uptime_pct`: number | null
 
-- `ConnectorDetail` (extends `ConnectorSummary`):
-  - `instance_id`: UUID | null
-  - `registered_via`: string
-  - `checkpoint`: `{ cursor: string | null, updated_at: ISO timestamp | null }` | null
-  - `counters`: `{ messages_ingested, messages_failed, source_api_calls, checkpoint_saves, dedupe_accepted }` | null
+- `ConnectorDetailEntry` (flat wire payload):
+  - registry identity and health fields: `connector_type`, `endpoint_identity`,
+    `instance_id`, `version`, `state`, `error_message`, `uptime_s`,
+    `last_heartbeat_at`, `first_seen_at`, and `registered_via`
+  - flat lifetime/today counters and checkpoint fields, plus
+    `operational_role` and `parent_endpoint_identity`
   - `settings`: JSON object | null
   - `auth`: content-blind connection and recovery state | null
   - `scopes`: content-blind OAuth scope evidence | null
 
-- `ConnectorStats`:
-  - `connector_type`: string
-  - `endpoint_identity`: string
-  - `period`: string
-  - `summary`: `{ messages_ingested, messages_failed, error_rate_pct, uptime_pct, avg_messages_per_hour }`
-  - `timeseries`: `ConnectorStatsBucket[]`
-
-- `ConnectorStatsBucket`:
-  - `bucket`: ISO timestamp
+- `ConnectorStatsHourly` / `ConnectorStatsDaily` (flat wire rows):
+  - `connector_type`, `endpoint_identity`, and `hour` or `day`
   - `messages_ingested`: number
   - `messages_failed`: number
   - `messages_filtered`: number
   - `healthy_count`: number
   - `degraded_count`: number
   - `error_count`: number
+
+The frontend client projects these flat detail and statistics payloads into its
+`ConnectorDetail` and `ConnectorStats` view models for rendering. Those client
+models are not additional backend response contracts.
 
 - `ConnectorCrossSummary`:
   - `total_connectors`: number

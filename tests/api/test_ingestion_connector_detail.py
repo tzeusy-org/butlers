@@ -173,8 +173,8 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
     assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
 
 
-async def test_canonical_stats_holds_live_row_lock_through_history_read(app) -> None:
-    """A concurrent disconnect cannot pass the stats row lock mid-read."""
+async def test_canonical_stats_keeps_live_row_lock_through_history_read(app) -> None:
+    """The durable history query runs while the live registry row lock is held."""
     pool = AsyncMock()
     connection = AsyncMock()
     connection.fetchrow = AsyncMock(return_value={"connector_type": "gmail"})

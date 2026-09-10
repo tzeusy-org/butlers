@@ -1,10 +1,4 @@
-# Dashboard Connector Batch Settings
-
-## Purpose
-
-Dashboard UI surface for configuring connector batch parameters (initially `flush_interval_s`) on conversation-batching connectors such as `telegram_user_client` and `whatsapp_user_client`. Operators edit values inline on the connector detail page; changes propagate to the running connector on its next flush scanner cycle without requiring a restart.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Batch Settings Card on Connector Detail Page
 
@@ -44,15 +38,3 @@ settings when the connector type is `telegram_user_client` or
   var default)
 - **AND** a label indicates whether the value is "custom" (dashboard-set) or
   "default"
-
-### Requirement: Live Reload Without Connector Restart
-Changes to batch settings via the dashboard SHALL take effect on the connector's next flush scanner cycle without requiring a connector restart.
-
-#### Scenario: Setting change propagation
-- **WHEN** the user updates `flush_interval_s` via the dashboard
-- **THEN** the connector picks up the new value on its next flush scanner cycle (within 60 seconds)
-- **AND** no connector restart is required
-
-#### Scenario: Restart notice removed
-- **WHEN** batch settings are updated via the dashboard
-- **THEN** the "changes take effect on next restart" notice (shown for cursor/discretion changes) is NOT displayed for batch settings

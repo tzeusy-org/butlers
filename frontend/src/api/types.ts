@@ -3914,7 +3914,7 @@ export interface ConnectorAuthBlock {
   recovery_reason?: "expired" | "rotation-needed" | null;
 }
 
-/** Full connector detail (GET /api/ingestion/connectors/:type/:identity). */
+/** Client view model projected from the canonical flat connector-detail response. */
 export interface ConnectorDetail extends ConnectorSummary {
   instance_id: string | null;
   registered_via: string;
@@ -3965,7 +3965,7 @@ export interface ConnectorStatsSummary {
   avg_messages_per_hour: number;
 }
 
-/** Full stats response for a single connector (GET /api/ingestion/connectors/:type/:identity/stats). */
+/** Client view model projected from canonical connector stats rows. */
 export interface ConnectorStats {
   connector_type: string;
   endpoint_identity: string;

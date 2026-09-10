@@ -423,58 +423,32 @@ Connector statistics SHALL be exported via the OTel/Prometheus metrics pipeline.
 ---
 
 ### Requirement: Pydantic Response Models
-The system SHALL define core Pydantic response models for the connectors dashboard and API endpoints.
+The system SHALL define explicit Pydantic response models for the connector
+dashboard API. The wire contract SHALL be owned by the canonical
+`/api/ingestion/connectors` routes; frontend display models MAY project that
+wire data but SHALL NOT be presented as a second backend response contract.
 
 #### Scenario: ConnectorSummary model
 - **WHEN** a connector list response is serialized
 - **THEN** each entry includes: `connector_type`, `endpoint_identity`, `liveness`, `state`, `error_message`, `version`, `uptime_s`, `last_heartbeat_at`, `first_seen_at`, and optional `today` summary
 
-#### Scenario: ConnectorDetail model
-- **WHEN** a connector detail response is serialized
-- **THEN** it extends ConnectorSummary with: `instance_id`, `registered_via`, `checkpoint`, `counters`, `settings`
-- **AND** `settings` is an optional JSONB dict containing runtime-configurable connector settings (e.g. discretion thresholds)
+#### Scenario: Connector detail wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` serializes a
+  connector detail response
+- **THEN** it returns one flat detail record with registry identity/health
+  fields, registration metadata, lifetime/today counters, checkpoint fields,
+  settings, and the content-blind `auth` and `scopes` blocks
+- **AND** `settings` is an optional JSONB dict containing runtime-configurable
+  connector settings (e.g. discretion thresholds)
+- **AND** no token, refresh credential, or secret is present in the response
 
-#### Scenario: ConnectorStats model
-- **WHEN** a statistics response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `period`, `summary`, `timeseries`
-
-#### Scenario: ConnectorFanoutEntry model
-- **WHEN** a fanout response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `targets` (butler_name → message_count)
-
-### Requirement: Connector Settings API
-
-Runtime-configurable connector settings SHALL be stored in
-`connector_registry.settings` (JSONB) and managed through the canonical
-dashboard endpoint
-`PATCH /api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`.
-
-#### Scenario: Settings storage
-
-- **WHEN** a connector has runtime-configurable settings
-- **THEN** they are stored in the `settings` JSONB column of
-  `connector_registry`
-- **AND** NULL means no settings overrides; non-NULL holds a JSON object
-- **AND** settings are shallow-merged on update (top-level keys replaced, not
-  deep-merged)
-
-#### Scenario: Settings update API
-
-- **WHEN** a PATCH request is sent to
-  `/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`
-- **THEN** the body `{"settings": {...}}` is shallow-merged into the existing
-  settings
-- **AND** the updated `ConnectorDetail` is returned
-- **AND** settings take effect on next connector restart (same semantics as
-  cursor updates)
-
-#### Scenario: Discretion settings schema
-
-- **WHEN** a connector uses the shared discretion layer
-- **THEN** its `settings.discretion` object may contain: `weight_bypass` (float,
-  default 1.0), `weight_fail_open` (float, default 0.5)
-- **AND** these thresholds are editable from the connector detail page in the
-  dashboard
+#### Scenario: Connector statistics wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}/stats` serializes
+  a statistics response
+- **THEN** it returns flat hourly or daily rows with connector identity, bucket,
+  ingested/failed/filtered counts, and health counters
+- **AND** the response metadata reports whether the durable history query was
+  available instead of fabricating a quiet series
 
 ### Requirement: Shared Discretion Layer
 Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
@@ -763,3 +737,37 @@ Both facts can only be written by the heartbeat producer.
 
 This is connector-agnostic: it matches against identities the registry already
 holds instead of pattern-matching one connector's key shape.
+
+### Requirement: Canonical Connector Settings API
+
+Runtime-configurable connector settings SHALL be stored in
+`connector_registry.settings` (JSONB) and managed through
+`PATCH /api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`.
+
+#### Scenario: Settings storage
+
+- **WHEN** a connector has runtime-configurable settings
+- **THEN** they are stored in the `settings` JSONB column of
+  `connector_registry`
+- **AND** NULL means no settings overrides; non-NULL holds a JSON object
+- **AND** settings are shallow-merged on update (top-level keys replaced, not
+  deep-merged)
+
+#### Scenario: Settings update API
+
+- **WHEN** a PATCH request is sent to
+  `/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`
+- **THEN** the body `{"settings": {...}}` is shallow-merged into the existing
+  settings
+- **AND** the updated `ConnectorDetail` is returned
+- **AND** each setting takes effect at its documented connector reload boundary
+- **AND** `flush_interval_s` takes effect on the next flush scanner cycle
+  without a connector restart
+
+#### Scenario: Discretion settings schema
+
+- **WHEN** a connector uses the shared discretion layer
+- **THEN** its `settings.discretion` object may contain: `weight_bypass` (float,
+  default 1.0), `weight_fail_open` (float, default 0.5)
+- **AND** these thresholds are editable from the connector detail page in the
+  dashboard
