@@ -7,6 +7,13 @@ check its source envelope. Its additional assertion that the total registered
 count remains between 30 and 50 predates the accepted RFC 0027 layered surface
 model.
 
+The same obsolete ceiling remains in Concierge's manifesto and in the
+task-continuity scheduler requirement and module commentary. The
+`carry_forward` staffer exclusion has an independent role-fit basis: staffers
+run deterministic job-mode schedules, so they have no reachable caller for a
+PROMPT-mode narrative continuity tool. That registration decision does not
+depend on presentation-budget headroom.
+
 RFC 0002 Amendment 1 and RFC 0027 now distinguish the complete
 registered/callable set from the LLM-presentable, initially loaded, and later
 loaded sets. The 30-50 target constrains full definitions initially loaded per
@@ -23,6 +30,8 @@ group, and manifesto boundaries remain authoritative.
   registration and PostgreSQL seams.
 - Preserve exact dashboard-read surface, docstring, and source-envelope
   assertions.
+- Preserve `carry_forward`'s staffer exclusion and its independent role-fit and
+  reachability rationale.
 - State clearly that canonical handler counts and initial-schema-byte evidence
   answer different questions.
 
@@ -50,6 +59,10 @@ group, and manifesto boundaries remain authoritative.
 - Treat initial serialized schema bytes as separate RFC 0027 conformance
   evidence. This change neither manufactures that evidence from a handler
   count nor duplicates the `bu-ondtw` implementation lane.
+- Replace the obsolete Task Continuity Ledger requirement through an explicit
+  removed requirement plus an RFC-aligned successor, after confirming no other
+  active change targets either name. Reproduce all existing scenarios
+  unchanged so archive cannot delete unrelated scheduler guarantees.
 
 ## Risks / Trade-offs
 
@@ -63,9 +76,11 @@ group, and manifesto boundaries remain authoritative.
 
 ## Migration Plan
 
-No runtime or data migration is required. The delta explicitly removes the
-obsolete requirement and adds its RFC-aligned successor, avoiding a whole-body
-`MODIFIED` replacement or an overwrite-baseline refreeze. Syncing or archiving
-the delta later applies that replacement to the canonical Concierge spec.
-Reverting the test and change directory restores the previous documentation-only
-ceiling.
+No runtime or data migration is required. Both capability deltas explicitly
+remove an obsolete requirement and add an RFC-aligned successor after an
+active-change collision scan, retaining every existing scheduler scenario.
+Neither baseline spec is hand-edited, and no whole-body `MODIFIED` block or
+overwrite-baseline refreeze is used. Syncing or archiving the delta later
+applies both corrections to the canonical specs. Reverting the test,
+commentary, manifesto, and change directory restores the previous
+documentation-only ceiling.

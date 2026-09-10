@@ -73,7 +73,7 @@ its own schema (`concierge.sessions`); no domain retention policy applies.
 |---|---|
 | Tool call latency | Sub-second for keyset/aggregate reads (same query budget as the dashboard API routes they mirror) |
 | Availability | Best-effort; a degraded/unreachable source returns the documented degraded envelope, never a silent empty result |
-| Tool surface | 30-50 tools total (asserted by `roster/concierge/tests/test_dashboard_read.py`) |
+| Tool surface | Complete role-fit canonical registry; 30-50 full definitions initially loaded per session (RFC 0002 Amendment 1 / RFC 0027), with presentation discovery and evidence owned by `bu-ondtw` |
 
 ---
 
