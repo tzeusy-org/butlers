@@ -1,9 +1,13 @@
 # Detail Page Audit: Picking the Canonical Drilldown Layout
 
-> Status: **maintainability decision**. Inventories the seven (currently
-> shipping) detail pages in the dashboard, scores them against Butlers'
-> own engineering bar, names a winner, calls out its gaps, and proposes
-> the contract for a future `<DetailPage>` shell.
+> Status: **historical maintainability decision (May 2026 snapshot)**. This
+> document inventories the seven detail pages that shipped at the time, scores
+> them against Butlers' engineering bar, names a winner, calls out its gaps,
+> and records the reasoning that led toward a shared `<DetailPage>` shell. It
+> is retained as decision evidence, not as a current component inventory.
+> `ContactDetailPage` has since been retired; `/contacts/:contactId` now
+> redirects to `/entities/index?has=contact`. See [`frontend.md`](frontend.md)
+> for the current route and component topology.
 >
 > Source doctrine: [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
 > ("the `Page` is a primitive; one token system or none; time is a typed
@@ -11,13 +15,13 @@
 > [`frontend.md`](frontend.md) Page Archetype C, "Detail / drilldown".
 > Engineering bar: [`about/craft-and-care/engineering-bar.md`](../craft-and-care/engineering-bar.md).
 
-The seven pages do the same job (render one record) and they do it
-seven different ways. This document picks one, justifies it, and lists
-what the others have to absorb before they can be migrated to it.
+In this snapshot, the seven pages did the same job (render one record) and did
+it seven different ways. This document records the selected pattern, its
+justification, and the migration work identified at the time.
 
 ---
 
-## 1. The Seven Detail Pages
+## 1. The Seven Detail Pages in the Snapshot
 
 Each entry: which butler / domain it serves, its layout shape, what
 its body composes, what actions it offers, whether it uses tabs.
