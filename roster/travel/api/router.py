@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.tools.travel._helpers import _row_to_dict
+from butlers.tools.travel.connections import connection_reason
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -363,8 +364,10 @@ async def get_trip_summary(
         alerts=alerts,
         party=party,
         connections=connections,
-        connection_reason=(
-            None if connections or unreadable_connection_ids else "no_connection_on_journey"
+        connection_reason=connection_reason(
+            trip.metadata,
+            has_connections=bool(connections),
+            has_unreadable_connections=bool(unreadable_connection_ids),
         ),
         unreadable_leg_ids=unreadable_leg_ids,
         unreadable_accommodation_ids=unreadable_accommodation_ids,

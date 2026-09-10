@@ -75,6 +75,28 @@ def _normalize_date(value: str | date | None) -> date | None:
     return date.fromisoformat(str(value))
 
 
+def _nonblank_text(value: Any) -> str | None:
+    """Treat blank provider text as absent enrichment, not destructive data."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _drop_sparse_metadata_values(value: Any) -> Any:
+    """Remove null/blank object values before merging sparse provider metadata."""
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if item is None or (isinstance(item, str) and not item.strip()):
+                continue
+            normalized = _drop_sparse_metadata_values(item)
+            if isinstance(normalized, dict) and not normalized:
+                continue
+            cleaned[key] = normalized
+        return cleaned
+    if isinstance(value, list):
+        return [_drop_sparse_metadata_values(item) for item in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Trip auto-matching
 # ---------------------------------------------------------------------------
@@ -198,8 +220,8 @@ async def _insert_leg(
     source_message_id: str | None,
     *,
     booking_record_id: str | None = None,
-) -> tuple[str, bool, bool]:
-    """Insert or converge a leg entity. Returns (entity_id, created, deduped).
+) -> tuple[str, bool, bool, datetime, datetime]:
+    """Insert or converge a leg, including its effective persisted timestamps.
 
     When ``booking_record_id`` and ``payload["segment_index"]`` are both
     present, identity is keyed on ``(booking_record_id, segment_index)`` --
@@ -245,20 +267,22 @@ def _leg_insert_fields(
         raise ValueError("record_booking: leg requires 'arrival_at' in payload")
 
     leg_type = payload.get("type") if payload.get("type") in _VALID_LEG_TYPES else "flight"
-    meta: dict[str, Any] = dict(payload.get("metadata") or {})
+    meta: dict[str, Any] = _drop_sparse_metadata_values(dict(payload.get("metadata") or {}))
     if source_message_id:
         meta["source_message_id"] = source_message_id
 
     return (
         leg_type,
-        payload.get("carrier") or payload.get("provider"),
-        payload.get("departure_airport_station") or payload.get("departure"),
-        payload.get("departure_city"),
+        _nonblank_text(payload.get("carrier")) or _nonblank_text(payload.get("provider")),
+        _nonblank_text(payload.get("departure_airport_station"))
+        or _nonblank_text(payload.get("departure")),
+        _nonblank_text(payload.get("departure_city")),
         departure_at,
-        payload.get("arrival_airport_station") or payload.get("arrival"),
-        payload.get("arrival_city"),
+        _nonblank_text(payload.get("arrival_airport_station"))
+        or _nonblank_text(payload.get("arrival")),
+        _nonblank_text(payload.get("arrival_city")),
         arrival_at,
-        payload.get("confirmation_number"),
+        _nonblank_text(payload.get("confirmation_number")),
         meta,
     )
 
@@ -316,7 +340,7 @@ async def _insert_leg_by_segment(
     source_message_id: str | None,
     booking_record_id: str,
     segment_index: int,
-) -> tuple[str, bool, bool]:
+) -> tuple[str, bool, bool, datetime, datetime]:
     (
         leg_type,
         carrier,
@@ -364,7 +388,7 @@ async def _insert_leg_by_segment(
             seat = COALESCE(EXCLUDED.seat, travel.legs.seat),
             metadata = travel.legs.metadata || EXCLUDED.metadata,
             updated_at = now()
-        RETURNING id, (xmax = 0) AS inserted
+        RETURNING id, (xmax = 0) AS inserted, departure_at, arrival_at
         """,
         trip_id,
         leg_type,
@@ -376,16 +400,16 @@ async def _insert_leg_by_segment(
         arr_city,
         arrival_at,
         confirmation_number,
-        payload.get("pnr"),
-        payload.get("seat"),
+        _nonblank_text(payload.get("pnr")),
+        _nonblank_text(payload.get("seat")),
         meta,
         booking_record_id,
         segment_index,
-        payload.get("carrier"),
+        _nonblank_text(payload.get("carrier")),
     )
     entity_id = str(row["id"])
     created = bool(row["inserted"])
-    return entity_id, created, not created
+    return entity_id, created, not created, row["departure_at"], row["arrival_at"]
 
 
 async def _insert_leg_legacy(
@@ -393,19 +417,26 @@ async def _insert_leg_legacy(
     trip_id: str,
     payload: dict[str, Any],
     source_message_id: str | None,
-) -> tuple[str, bool, bool]:
+) -> tuple[str, bool, bool, datetime, datetime]:
     """Insert a leg entity without PNR-segment identity. Returns (entity_id, created, deduped)."""
     confirmation_number = payload.get("confirmation_number")
 
     # Dedup check: match on confirmation_number + trip_id
     if confirmation_number and source_message_id:
         existing = await pool.fetchrow(
-            "SELECT id FROM travel.legs WHERE confirmation_number = $1 AND trip_id = $2::uuid",
+            "SELECT id, departure_at, arrival_at FROM travel.legs "
+            "WHERE confirmation_number = $1 AND trip_id = $2::uuid",
             confirmation_number,
             trip_id,
         )
         if existing:
-            return str(existing["id"]), False, True
+            return (
+                str(existing["id"]),
+                False,
+                True,
+                existing["departure_at"],
+                existing["arrival_at"],
+            )
 
     (
         leg_type,
@@ -432,7 +463,7 @@ async def _insert_leg_legacy(
         ) VALUES (
             $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb
         )
-        RETURNING id
+        RETURNING id, departure_at, arrival_at
         """,
         trip_id,
         leg_type,
@@ -444,11 +475,11 @@ async def _insert_leg_legacy(
         arr_city,
         arrival_at,
         confirmation_number,
-        payload.get("pnr"),
-        payload.get("seat"),
+        _nonblank_text(payload.get("pnr")),
+        _nonblank_text(payload.get("seat")),
         meta,
     )
-    return str(row["id"]), True, False
+    return str(row["id"]), True, False, row["departure_at"], row["arrival_at"]
 
 
 # ---------------------------------------------------------------------------
@@ -1134,14 +1165,12 @@ async def _record_booking_transaction(
 
     try:
         if entity_type == "leg":
-            entity_id, created, deduped = await _insert_leg(
+            entity_id, created, deduped, departure_at, arrival_at = await _insert_leg(
                 pool, trip_id, payload, source_message_id, booking_record_id=booking_record_id
             )
             if entity_id is not None:
-                departure_at = _normalize_datetime(payload.get("departure_at"))
-                arrival_at = _normalize_datetime(payload.get("arrival_at"))
-                if departure_at is not None and arrival_at is not None:
-                    await _widen_trip_date_range(pool, trip_id, departure_at, arrival_at)
+                await _widen_trip_date_range(pool, trip_id, departure_at, arrival_at)
+                await _connections.mark_connection_derivation_pending(pool, trip_id)
                 passengers = payload.get("passengers") or []
                 if passengers:
                     await _attach_passengers(pool, trip_id, entity_id, passengers)
@@ -1553,6 +1582,7 @@ async def update_itinerary(
                     )
 
     if any(item["entity_type"] == "leg" for item in updated_entities):
+        await _connections.mark_connection_derivation_pending(pool, trip_id)
         await _safe_recompute_connections(pool, trip_id)
 
     return {

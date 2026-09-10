@@ -105,6 +105,7 @@ connection is safe without minimum-connect evidence.
 - **WHEN** a trip contains no adjacent connecting leg pair
 - **THEN** `GET /api/travel/trips/{trip_id}` returns `connections: []`
 - **AND** it returns `connection_reason: "no_connection_on_journey"`
+- **AND** an empty derived table without a successful derivation marker returns `connection_reason: null`
 - **AND** an unreadable stored connection is excluded and disclosed by ID instead of being reported as no connection
 
 ### Requirement: Travel Butler Schedules

@@ -628,6 +628,21 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     expect(connection.textContent).toContain("tight");
   });
 
+  it("does not claim no connection while derivation is unavailable", () => {
+    vi.mocked(useTravelTripSummary).mockReturnValue(
+      {
+        data: { ...TRIP_SUMMARY, connections: [], connection_reason: null },
+        isLoading: false,
+        refetch: vi.fn(),
+      } as unknown as ReturnType<typeof useTravelTripSummary>,
+    );
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+    const connections = screen.getByTestId("drawer-connections");
+    expect(connections.textContent).toContain("Connection data unavailable");
+    expect(connections.textContent).not.toContain("No connection on this journey");
+  });
+
   it("closes the drawer on close button click", () => {
     renderTab();
     fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);

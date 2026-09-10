@@ -236,6 +236,46 @@ async def test_delay_past_threshold_notifies_and_writes_leg_metadata():
 
     await client.aclose()
 
+    naive_leg = _leg_row(metadata={"flight_number": "NAIVE1"})
+    valid_leg = _leg_row(metadata={"flight_number": "VALID2"})
+    mixed_pool = _make_pool(leg_rows=[naive_leg, valid_leg])
+    naive_payload = {
+        "data": [
+            {
+                "flight_status": "active",
+                "departure": {
+                    "scheduled": "2026-07-27T10:00:00",
+                    "estimated": "2026-07-27T10:45:00",
+                    "delay": 0,
+                },
+            }
+        ]
+    }
+
+    def mixed_handler(request: httpx.Request) -> httpx.Response:
+        payload = (
+            naive_payload
+            if request.url.params.get("flight_iata") == "NAIVE1"
+            else _FLIGHT_PAYLOAD_ON_TIME
+        )
+        return httpx.Response(200, json=payload)
+
+    mixed_client = httpx.AsyncClient(transport=httpx.MockTransport(mixed_handler))
+    with patch(
+        "butlers.jobs.flight_status.CredentialStore",
+        return_value=_mock_credential_store("fake-key"),
+    ):
+        mixed_result = await run_flight_status_check(mixed_pool, http_client=mixed_client)
+
+    assert mixed_result["legs_checked"] == 2
+    assert mixed_result["last_error"] is None
+    leg_updates = [
+        call for call in mixed_pool.execute.call_args_list if "UPDATE travel.legs" in call.args[0]
+    ]
+    assert len(leg_updates) == 2
+    assert leg_updates[0].args[3] is None
+    await mixed_client.aclose()
+
 
 # ---------------------------------------------------------------------------
 # run_flight_status_check — on-time flight stays quiet

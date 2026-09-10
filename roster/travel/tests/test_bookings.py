@@ -589,6 +589,32 @@ class TestRecordBookingIdentity:
         assert legs_response.status_code == 200
         assert len(legs_response.json()) == 2
 
+        # Migration-era trips predate the durable derivation marker. Even when
+        # their leg topology plainly contains a connection, an empty derived
+        # table must remain unavailable rather than claim there is no connection.
+        migration_trip_id = await pool.fetchval(
+            "INSERT INTO travel.trips (name, destination, start_date, end_date, status) "
+            "VALUES ('Migration-era connection', 'Tokyo', '2026-11-01', '2026-11-01', "
+            "'planned') RETURNING id"
+        )
+        await pool.execute(
+            "INSERT INTO travel.legs (trip_id, type, departure_airport_station, "
+            "arrival_airport_station, departure_at, arrival_at) VALUES "
+            "($1, 'flight', 'SIN', 'HKG', '2026-11-01T08:00:00+00:00', "
+            "'2026-11-01T10:00:00+00:00'), "
+            "($1, 'flight', 'HKG', 'NRT', '2026-11-01T11:00:00+00:00', "
+            "'2026-11-01T15:00:00+00:00')",
+            migration_trip_id,
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            migration_response = await client.get(f"/api/travel/trips/{migration_trip_id}")
+        assert migration_response.status_code == 200
+        migration_summary = migration_response.json()
+        assert migration_summary["connections"] == []
+        assert migration_summary["connection_reason"] is None
+
     async def test_reingesting_same_segment_is_idempotent(self, pool):
         """Same-segment convergence is idempotent and never erases populated fields."""
         from butlers.tools.travel.bookings import record_booking
@@ -599,6 +625,11 @@ class TestRecordBookingIdentity:
             departure_city="Singapore",
             arrival_city="Beijing",
             seat="18A",
+            metadata={
+                "flight_number": "DD94XR",
+                "gate": "A12",
+                "flight_status": {"status": "active", "terminal": "1"},
+            },
         )
         first = await record_booking(pool=pool, payload=payload)
         sparse = {
@@ -614,6 +645,19 @@ class TestRecordBookingIdentity:
                 "metadata",
             }
         }
+        sparse.update(
+            departure_at="2030-01-01T08:00:00+00:00",
+            arrival_at="2030-01-01T14:00:00+00:00",
+            carrier="  ",
+            departure_city="",
+            arrival_city=" ",
+            seat="",
+            metadata={
+                "flight_number": None,
+                "gate": "",
+                "flight_status": {"status": None, "terminal": " "},
+            },
+        )
         second = await record_booking(pool=pool, payload=sparse)
 
         assert first["created"] is True
@@ -628,7 +672,7 @@ class TestRecordBookingIdentity:
 
         preserved = await pool.fetchrow(
             "SELECT carrier, departure_airport_station, departure_city, "
-            "arrival_airport_station, arrival_city, pnr, seat "
+            "arrival_airport_station, arrival_city, pnr, seat, metadata, departure_at, arrival_at "
             "FROM travel.legs WHERE id = $1::uuid",
             first["entity_id"],
         )
@@ -640,6 +684,21 @@ class TestRecordBookingIdentity:
             "Beijing",
             self._RECORD_LOCATOR,
             "18A",
+            {
+                "flight_number": "DD94XR",
+                "gate": "A12",
+                "flight_status": {"status": "active", "terminal": "1"},
+                "source_message_id": "dd94xr-seg0-Alice Traveller",
+            },
+            self._OUTBOUND_DEP,
+            self._OUTBOUND_ARR,
+        )
+        trip_dates = await pool.fetchrow(
+            "SELECT start_date, end_date FROM travel.trips WHERE id = $1::uuid", first["trip_id"]
+        )
+        assert (trip_dates["start_date"], trip_dates["end_date"]) == (
+            self._OUTBOUND_DEP.date(),
+            self._OUTBOUND_ARR.date(),
         )
 
         reverse_sparse = {**sparse, "record_locator": "SPARSE2", "source_message_id": "sparse2"}

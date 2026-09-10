@@ -674,8 +674,11 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                 <p className="text-xs font-medium text-muted-foreground mb-2">Connections</p>
                 {summary.connections.length === 0 && unreadableConnectionIds.length > 0 ? (
                   <EmptyStateLine>Connection data unavailable.</EmptyStateLine>
-                ) : summary.connections.length === 0 ? (
+                ) : summary.connections.length === 0 &&
+                  summary.connection_reason === "no_connection_on_journey" ? (
                   <EmptyStateLine>No connection on this journey.</EmptyStateLine>
+                ) : summary.connections.length === 0 ? (
+                  <EmptyStateLine>Connection data unavailable.</EmptyStateLine>
                 ) : (
                   <ul className="divide-y divide-border/60">
                     {summary.connections.map((connection) => {

@@ -370,6 +370,66 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert severely_missed["connections"][0]["outbound_leg_id"] == outbound_id
         assert severely_missed["connections"][0]["verdict"] == "broken"
 
+        # Other booking records and legacy legs interleave chronologically;
+        # only legs sharing one structural record are constrained by segment index.
+        cross_record_trip = await _insert_trip(pool, start_date="2026-11-01", end_date="2026-11-01")
+        cross_inbound = await _insert_leg(
+            pool,
+            cross_record_trip,
+            departure_at=datetime(2026, 11, 1, 8, tzinfo=UTC),
+            arrival_at=datetime(2026, 11, 1, 10, tzinfo=UTC),
+            departure_station="SIN",
+            arrival_station="HKG",
+            booking_record_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+            segment_index=0,
+        )
+        cross_outbound = await _insert_leg(
+            pool,
+            cross_record_trip,
+            departure_at=datetime(2026, 11, 1, 11, tzinfo=UTC),
+            arrival_at=datetime(2026, 11, 1, 14, tzinfo=UTC),
+            departure_station="HKG",
+            arrival_station="NRT",
+            booking_record_id="00000000-0000-0000-0000-000000000001",
+            segment_index=0,
+        )
+        await pool.execute(
+            "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
+            "VALUES ('HKG', 60)"
+        )
+        cross_result = await recompute_trip_connections(pool, cross_record_trip)
+        assert [
+            (row["inbound_leg_id"], row["outbound_leg_id"]) for row in cross_result["connections"]
+        ] == [(cross_inbound, cross_outbound)]
+
+        mixed_trip = await _insert_trip(pool, start_date="2026-12-01", end_date="2026-12-01")
+        legacy_inbound = await _insert_leg(
+            pool,
+            mixed_trip,
+            departure_at=datetime(2026, 12, 1, 8, tzinfo=UTC),
+            arrival_at=datetime(2026, 12, 1, 10, tzinfo=UTC),
+            departure_station="SIN",
+            arrival_station="BKK",
+        )
+        keyed_outbound = await _insert_leg(
+            pool,
+            mixed_trip,
+            departure_at=datetime(2026, 12, 1, 11, tzinfo=UTC),
+            arrival_at=datetime(2026, 12, 1, 14, tzinfo=UTC),
+            departure_station="BKK",
+            arrival_station="NRT",
+            booking_record_id=str(uuid.uuid4()),
+            segment_index=0,
+        )
+        await pool.execute(
+            "INSERT INTO travel.airport_minimum_connect (airport_code, minimum_connect_minutes) "
+            "VALUES ('BKK', 60)"
+        )
+        mixed_result = await recompute_trip_connections(pool, mixed_trip)
+        assert [
+            (row["inbound_leg_id"], row["outbound_leg_id"]) for row in mixed_result["connections"]
+        ] == [(legacy_inbound, keyed_outbound)]
+
     async def test_broken_connection_raises_one_door_and_one_alert(self, pool):
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
         inbound_arrival = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
@@ -404,6 +464,14 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             failed = await recompute_trip_connections(pool, trip_id)
 
         assert failed["error"] == "recompute_failed"
+        assert (
+            await pool.fetchval(
+                "SELECT metadata ? 'connection_derivation_completed_at' "
+                "FROM travel.trips WHERE id = $1::uuid",
+                trip_id,
+            )
+            is False
+        )
         assert (
             await pool.fetchval(
                 "SELECT count(*) FROM travel.connections WHERE trip_id = $1::uuid", trip_id

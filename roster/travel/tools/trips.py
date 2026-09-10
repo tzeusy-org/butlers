@@ -9,6 +9,7 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.travel._helpers import _build_timeline, _row_to_dict
+from butlers.tools.travel.connections import connection_reason
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,9 @@ async def trip_summary(
         "alerts": alerts,
         "party": party,
         "connections": connections,
-        "connection_reason": None if connections else "no_connection_on_journey",
+        "connection_reason": connection_reason(
+            trip.get("metadata"), has_connections=bool(connections)
+        ),
     }
 
 

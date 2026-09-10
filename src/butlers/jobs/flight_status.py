@@ -254,9 +254,13 @@ def _parse_estimated_departure(raw: str | None) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(raw)
+        parsed = datetime.fromisoformat(raw)
     except (TypeError, ValueError):
         return None
+    # AviationStack normally supplies an offset. An offset-less provider value
+    # has no safe relationship to PostgreSQL's UTC-aware departure_at, so keep
+    # the status evidence but do not mutate the operational timestamp.
+    return parsed if parsed.tzinfo is not None else None
 
 
 async def _write_leg_status(
@@ -311,6 +315,7 @@ async def _write_leg_status(
 
     from butlers.tools.travel import connections as _connections
 
+    await _connections.mark_connection_derivation_pending(pool, str(trip_id))
     try:
         await _connections.recompute_trip_connections(pool, str(trip_id))
     except Exception:

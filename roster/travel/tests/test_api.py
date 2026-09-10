@@ -721,7 +721,10 @@ async def test_get_trip_summary_discloses_unreadable_connection():
 @pytest.mark.asyncio
 async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
     """A journey with no connecting legs renders connections: [], never an omitted key."""
-    trip = _trip_row(id=_TRIP_UUID)
+    trip = _trip_row(
+        id=_TRIP_UUID,
+        metadata={"connection_derivation_completed_at": "2026-10-16T00:00:00+00:00"},
+    )
     leg = _leg_row(trip_id=_TRIP_UUID)
 
     from fastapi import FastAPI
@@ -747,6 +750,29 @@ async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
     assert "connections" in body
     assert body["connections"] == []
     assert body["connection_reason"] == "no_connection_on_journey"
+
+    # A migration-era or failed-recompute trip has no completion marker. An
+    # empty derived table is therefore unavailable evidence, not proof that
+    # this journey has no connection.
+    uncomputed_trip = _trip_row(id=_TRIP_UUID, metadata={})
+    connecting_leg = _leg_row(
+        trip_id=_TRIP_UUID,
+        arrival_airport_station="PEK",
+        arrival_at=_NOW + timedelta(hours=3),
+    )
+    onward_leg = _leg_row(
+        trip_id=_TRIP_UUID,
+        departure_airport_station="PEK",
+        departure_at=_NOW + timedelta(hours=4),
+    )
+    mock_pool.fetchrow = AsyncMock(return_value=uncomputed_trip)
+    mock_pool.fetch = AsyncMock(side_effect=[[connecting_leg, onward_leg], [], [], [], [], []])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/travel/trips/{_TRIP_UUID}")
+    assert response.status_code == 200
+    assert response.json()["connection_reason"] is None
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ leg mutation.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -43,6 +44,31 @@ _DOOR_EXPIRES_DAYS = 3
 
 _INSIGHT_ALERT_PRIORITY = 88
 _INSIGHT_ALERT_EXPIRES_DAYS = 3
+
+CONNECTION_DERIVATION_METADATA_KEY = "connection_derivation_completed_at"
+
+
+def connection_reason(
+    trip_metadata: dict[str, Any] | None,
+    *,
+    has_connections: bool,
+    has_unreadable_connections: bool = False,
+) -> str | None:
+    """Return a no-connection reason only after a successful derivation pass."""
+    if has_connections or has_unreadable_connections:
+        return None
+    if (trip_metadata or {}).get(CONNECTION_DERIVATION_METADATA_KEY):
+        return "no_connection_on_journey"
+    return None
+
+
+async def mark_connection_derivation_pending(pool: Any, trip_id: str) -> None:
+    """Invalidate a prior empty derivation before mutating a trip's legs."""
+    await pool.execute(
+        "UPDATE travel.trips SET metadata = metadata - $2 WHERE id = $1::uuid",
+        trip_id,
+        CONNECTION_DERIVATION_METADATA_KEY,
+    )
 
 
 def compute_connection_verdict(
@@ -131,6 +157,56 @@ def _find_connecting_pairs(
             continue
         pairs.append((inbound, outbound))
     return pairs
+
+
+def _order_legs_for_itinerary(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Chronologically interleave legs while preserving keyed segment order.
+
+    A provider's mutable operational timestamps cannot reverse its structural
+    segment sequence. Legs from other booking records and legacy unkeyed legs
+    remain free to interleave by departure time.
+    """
+    if len(legs) < 2:
+        return list(legs)
+
+    successors: dict[int, list[int]] = {index: [] for index in range(len(legs))}
+    indegree = [0] * len(legs)
+    keyed_groups: dict[Any, list[int]] = {}
+    for index, leg in enumerate(legs):
+        booking_record_id = leg.get("booking_record_id")
+        segment_index = leg.get("segment_index")
+        if booking_record_id is not None and segment_index is not None:
+            keyed_groups.setdefault(booking_record_id, []).append(index)
+
+    for indexes in keyed_groups.values():
+        indexes.sort(
+            key=lambda index: (
+                legs[index]["segment_index"],
+                legs[index]["departure_at"],
+                str(legs[index]["id"]),
+            )
+        )
+        for predecessor, successor in zip(indexes, indexes[1:]):
+            successors[predecessor].append(successor)
+            indegree[successor] += 1
+
+    ready = [
+        (leg["departure_at"], str(leg["id"]), index)
+        for index, leg in enumerate(legs)
+        if indegree[index] == 0
+    ]
+    heapq.heapify(ready)
+    ordered: list[dict[str, Any]] = []
+    while ready:
+        _, _, index = heapq.heappop(ready)
+        ordered.append(legs[index])
+        for successor in successors[index]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                leg = legs[successor]
+                heapq.heappush(ready, (leg["departure_at"], str(leg["id"]), successor))
+
+    return ordered
 
 
 async def _emit_unknown_minimum_signal(pool: Any, airport_code: str) -> None:
@@ -271,12 +347,10 @@ async def _recompute_trip_connections_locked(
         leg_rows = await pool.fetch(
             "SELECT id, departure_at, arrival_at, departure_airport_station, "
             "arrival_airport_station, carrier, metadata, booking_record_id, segment_index "
-            "FROM travel.legs WHERE trip_id = $1::uuid "
-            "ORDER BY (booking_record_id IS NULL OR segment_index IS NULL), "
-            "booking_record_id, segment_index, departure_at, id",
+            "FROM travel.legs WHERE trip_id = $1::uuid ORDER BY departure_at, id",
             trip_id,
         )
-        legs = [dict(row) for row in leg_rows]
+        legs = _order_legs_for_itinerary([dict(row) for row in leg_rows])
         pairs = _find_connecting_pairs(legs)
         valid_pair_ids = {(pair[0]["id"], pair[1]["id"]) for pair in pairs}
 
@@ -393,6 +467,13 @@ async def _recompute_trip_connections_locked(
                 }
             )
 
+        await pool.execute(
+            "UPDATE travel.trips SET metadata = metadata || jsonb_build_object($2::text, $3::text) "
+            "WHERE id = $1::uuid",
+            trip_id,
+            CONNECTION_DERIVATION_METADATA_KEY,
+            effective_now.isoformat(),
+        )
         return {"trip_id": trip_id, "connections": results}
     except Exception:
         logger.warning("recompute_trip_connections failed for trip_id=%s", trip_id, exc_info=True)

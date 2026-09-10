@@ -624,6 +624,16 @@ class TestTripSummary:
             "connections",
             "connection_reason",
         }
+        assert result["connection_reason"] is None
+
+        await pool.execute(
+            "UPDATE travel.trips SET metadata = jsonb_build_object("
+            "'connection_derivation_completed_at', '2026-10-16T00:00:00+00:00') "
+            "WHERE id = $1::uuid",
+            trip_id,
+        )
+        derived = await trip_summary(pool, trip_id)
+        assert derived["connection_reason"] == "no_connection_on_journey"
 
     async def test_empty_trip_no_alerts(self, pool):
         """A trip with no legs has no flight-related alerts."""
