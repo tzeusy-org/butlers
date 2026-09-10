@@ -62,3 +62,20 @@
 - [x] 5.3 Frontend: roster shape, isolation, unclassified rendering, orphaned
       checkpoints, older-response compatibility, and source failure —
       `frontend/src/components/ingestion/connectors/ConnectorsRosterRuntimeAuthority.test.tsx`.
+
+## 6. Awaiting-first-heartbeat presentation (owner-gated)
+
+- [x] 6.1 Specify the additive, content-blind
+      `awaiting_first_heartbeat` presentation, fixed evidence predicates,
+      compatibility behavior, degraded states, operator copy, optional
+      catalog-backed setup review, and verification seams (`bu-poven`).
+- [ ] 6.2 After independent state-machine and UX review plus fresh owner
+      approval of the exact spec artifact, implement the primary and legacy API
+      presentation fields and subset counts.
+- [ ] 6.3 After that same approval, implement the frontend type, verdict/copy,
+      optional **Review setup** action, and count presentation.
+- [ ] 6.4 After that same approval, add the named API, real-Postgres producer
+      ordering/non-demotion, and frontend verification coverage.
+
+Items 6.2-6.4 are deliberately unstarted. This specification bead authorizes
+no implementation, runtime, provider, credential, deployment, or merge action.
