@@ -2710,6 +2710,54 @@ export function retractFact(factId: string): Promise<ApiResponse<Fact>> {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+import type {
+  TasteSummary,
+  TasteVerdict,
+  TasteVerdictsParams,
+  TasteWork,
+  TasteWorksParams,
+} from "./types.ts";
+
+function tasteWorksSearchParams(params?: TasteWorksParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  if (params?.kind) sp.set("kind", params.kind);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  return sp;
+}
+
+/** Fetch ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export function getLifestyleTasteSummary(): Promise<ApiResponse<TasteSummary>> {
+  return apiFetch<ApiResponse<TasteSummary>>("/lifestyle/taste/summary");
+}
+
+/** Fetch a paginated list of taste-ledger works. */
+export function getLifestyleTasteWorks(
+  params?: TasteWorksParams,
+): Promise<PaginatedResponse<TasteWork>> {
+  const qs = tasteWorksSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<TasteWork>>(
+    qs ? `/lifestyle/taste/works?${qs}` : "/lifestyle/taste/works",
+  );
+}
+
+/** Fetch a paginated list of owner-asserted taste verdicts. */
+export function getLifestyleTasteVerdicts(
+  params?: TasteVerdictsParams,
+): Promise<PaginatedResponse<TasteVerdict>> {
+  const sp = new URLSearchParams();
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<TasteVerdict>>(
+    qs ? `/lifestyle/taste/verdicts?${qs}` : "/lifestyle/taste/verdicts",
+  );
+}
+
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,

@@ -105,6 +105,57 @@ The connector SHALL aggregate contiguous playback into logical listening session
   - `payload.normalized_text = "Listening session: <N> tracks over <duration> from <playlist_or_album>"`
   - All other fields follow the same pattern as track change events
 
+### Requirement: Full-Fidelity Track Play Evidence
+
+The connector SHALL persist deterministic per-play evidence independently of session-summary
+events so downstream taste projection can distinguish a work, an observed play, and an
+owner-asserted verdict without LLM interpretation.
+
+#### Scenario: Active track progress is persisted
+
+- **WHEN** the currently-playing endpoint returns a track URI, duration, progress, and playback timestamp
+- **THEN** the connector SHALL upsert one `connectors.spotify_track_plays` row keyed by `(endpoint_identity, track_uri, first_seen_ms)`
+- **AND** repeated observations SHALL advance `last_seen_ms` and `max_progress_ms` without moving either value backwards
+- **AND** after restart the connector SHALL hydrate and reconcile any persisted open play before applying the first new observation
+- **AND** replaying the same observations after restart SHALL NOT create another row or leave the prior play open
+
+#### Scenario: Pauses, seeks, and same-track repeats preserve true play boundaries
+
+- **WHEN** current playback briefly pauses and resumes the same track before the session idle timeout
+- **THEN** the connector SHALL retain one open play and SHALL NOT derive completion or skip evidence from the pause
+- **WHEN** progress seeks backward within a play
+- **THEN** the connector SHALL preserve the play identity and its nondecreasing maximum progress
+- **WHEN** the same track restarts after reaching the completion threshold and provider state-change evidence advances
+- **THEN** the connector SHALL close the completed play and open a distinct repeated play
+- **WHEN** playback remains inactive through the session idle timeout
+- **THEN** the connector SHALL close the open play exactly once
+
+#### Scenario: Track change resolves completion and skip evidence
+
+- **WHEN** a different track follows an open play with known positive duration and progress
+- **THEN** the connector SHALL close the previous row and derive `completion_ratio` from its maximum observed progress
+- **AND** it SHALL set `skipped=true` below the completion threshold and `skipped=false` at or above it
+- **AND** no LLM SHALL assert either value
+- **AND** closure SHALL upsert a missing opening row, merge persisted progress before deriving either value, and remain retryable after a transient write failure
+
+#### Scenario: Current and recently-played observations reconcile to one play
+
+- **WHEN** a play captured through currently-playing later appears in recently-played
+- **THEN** the connector SHALL durably reconcile the recently-played item to that play instead of inserting a second play-only row
+- **AND** the recently-played cursor SHALL advance only through items whose reconciliation or insertion succeeded
+
+#### Scenario: Missing progress remains explicitly imprecise
+
+- **WHEN** a play is observed without progress, including a recently-played gap-fill item
+- **THEN** the stored row SHALL have `observation_precision='play_only'`
+- **AND** `max_progress_ms`, `completion_ratio`, and `skipped` SHALL remain null
+
+#### Scenario: Taste projector has read-only evidence access
+
+- **WHEN** the Lifestyle butler projects Spotify evidence into its taste ledger
+- **THEN** its database role SHALL be able to select from Spotify listening sessions and track plays
+- **AND** it SHALL NOT be able to insert, update, or delete connector evidence
+
 ### Requirement: Spotify API Client
 
 The connector SHALL use an async HTTP client to communicate with the Spotify Web API.

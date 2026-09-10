@@ -31,6 +31,9 @@ import {
   updateMemoryRetentionPolicies,
   getDunbarRanking,
   forgetRelationshipEntity,
+  getLifestyleTasteSummary,
+  getLifestyleTasteWorks,
+  getLifestyleTasteVerdicts,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
@@ -44,6 +47,8 @@ import type {
   MemoryRule,
   PaginatedResponse,
   RuleParams,
+  TasteVerdictsParams,
+  TasteWorksParams,
   UpdateEntityRequest,
   UpdateRetentionPoliciesRequest,
 } from "@/api/types.ts";
@@ -496,44 +501,38 @@ export function useDunbarRanking(enabled: boolean = false) {
 }
 
 // ---------------------------------------------------------------------------
-// Lifestyle memory hooks
+// Lifestyle taste ledger hooks (bu-2jtfw.10)
+//
+// Replace the old useButlerFacts hook, which filtered facts to subject="user"
+// (missing 59 of 61 taste rows stored under spotify:* subjects) and dropped
+// meta.total in favour of the fetched page's .length. These hooks read the
+// ledger-backed /api/lifestyle/taste/* surface, which reports honest totals.
 // ---------------------------------------------------------------------------
 
-/**
- * Fetch up to `limit` active facts for a butler/subject pair with a single
- * stable cache key. Callers supply a `select` function to derive a
- * panel-specific slice from the shared cache entry — React Query caches the
- * full network response once and applies each subscriber's `select`
- * independently, so multiple calls with different `select` functions share the
- * same network request.
- *
- * Cache key: ["memory-butler-facts", butler, subject, limit]
- * Endpoint:  GET /memory/facts?subject=<subject>&scope=<butler>&validity=active&limit=<limit>
- *
- * @param butler  Butler name (e.g. "lifestyle"). Partitions the cache per butler.
- * @param subject Fact subject (e.g. "user").
- * @param select  Optional filter returning a subset of Fact[]. When omitted,
- *                returns all facts unchanged.
- * @param limit   Maximum facts to fetch (default 200).
- */
-export function useButlerFacts({
-  butler,
-  subject,
-  select,
-  limit = 200,
-}: {
-  butler: string;
-  subject: string;
-  select?: (facts: Fact[]) => Fact[];
-  limit?: number;
-}) {
+/** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export function useLifestyleTasteSummary() {
   return useQuery({
-    queryKey: ["memory-butler-facts", butler, subject, limit],
-    queryFn: async () => {
-      const res = await getFacts({ subject, scope: butler, validity: "active", limit });
-      return res.data ?? [];
-    },
-    select,
+    queryKey: ["lifestyle-taste-summary"],
+    queryFn: () => getLifestyleTasteSummary(),
+    select: (res) => res.data,
+    refetchInterval: MEMORY_POLL_SLOW_MS,
+  });
+}
+
+/** Paginated taste-ledger works list. */
+export function useLifestyleTasteWorks(params?: TasteWorksParams) {
+  return useQuery({
+    queryKey: ["lifestyle-taste-works", params],
+    queryFn: () => getLifestyleTasteWorks(params),
+    refetchInterval: MEMORY_POLL_SLOW_MS,
+  });
+}
+
+/** Paginated owner-asserted taste verdicts (includes migrated legacy facts). */
+export function useLifestyleTasteVerdicts(params?: TasteVerdictsParams) {
+  return useQuery({
+    queryKey: ["lifestyle-taste-verdicts", params],
+    queryFn: () => getLifestyleTasteVerdicts(params),
     refetchInterval: MEMORY_POLL_SLOW_MS,
   });
 }

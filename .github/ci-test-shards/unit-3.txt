@@ -95,6 +95,7 @@ tests/connectors/test_google_drive_connector.py
 tests/connectors/test_home_assistant_rest_fallback.py
 tests/connectors/test_home_assistant_transport_contract.py
 tests/connectors/test_spotify_client.py
+tests/connectors/test_spotify_track_plays.py
 tests/connectors/test_steam_account_registry.py
 tests/connectors/test_telegram_bot_gap_interview.py
 tests/contracts/test_approval_gates.py
