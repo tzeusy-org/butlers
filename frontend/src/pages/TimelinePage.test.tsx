@@ -572,6 +572,10 @@ describe("TimelinePage — density and historical seek", () => {
     expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
     expect(screen.queryByText("cached live event")).toBeNull();
     expect(screen.queryByText("No events found.")).toBeNull();
+    expect(screen.queryByTestId("live-status-badge-idle")).toBeNull();
+    expect(screen.queryByTestId("saved-view-all")).toBeNull();
+    expect(screen.queryByTestId("timeline-density")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
     expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
     expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
 
@@ -591,6 +595,10 @@ describe("TimelinePage — density and historical seek", () => {
       expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
       expect(screen.queryByText("cached live event")).toBeNull();
       expect(screen.queryByText("No events found.")).toBeNull();
+      expect(screen.queryByTestId("live-status-badge-idle")).toBeNull();
+      expect(screen.queryByTestId("saved-view-all")).toBeNull();
+      expect(screen.queryByTestId("timeline-density")).toBeNull();
+      expect(screen.queryByRole("status")).toBeNull();
       expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
       expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
 
@@ -600,18 +608,35 @@ describe("TimelinePage — density and historical seek", () => {
       expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: true });
       naiveRender.unmount();
     }
+  });
 
+  it.each([
+    ["healthy-zero", "complete", 0, 1, 1, [], "0 events · 1 of 1 sources available", true],
+    [
+      "partial", "partial", 3, 2, 1, ["notifications"],
+      "3 events · 1 of 2 sources available · partial", true,
+    ],
+    ["complete", "complete", 3, 2, 2, [], "3 events · 2 of 2 sources available", true],
+    [
+      "unavailable", "unavailable", 0, 1, 0, ["notifications"],
+      "Density unavailable · 0 of 1 sources available", false,
+    ],
+  ] as const)("renders the %s availability presentation", (
+    _, availability, count, expectedSources, healthySources, degradedSources, summary, rendersBuckets,
+  ) => {
     vi.mocked(useTimelineHistogram).mockReturnValue({
       data: {
-        data: [],
+        data: count > 0 || rendersBuckets
+          ? [{ start: "2026-07-04T14:00:00Z", end: "2026-07-04T14:01:00Z", count }]
+          : [],
         meta: {
           since: "2026-07-04T14:00:00Z",
           until: "2026-07-04T15:00:00Z",
           bucket_seconds: 60,
-          availability: "unavailable",
-          expected_sources: 1,
-          healthy_sources: 0,
-          degraded_sources: ["notifications"],
+          availability,
+          expected_sources: expectedSources,
+          healthy_sources: healthySources,
+          degraded_sources: [...degradedSources],
           degraded_butlers: [],
         },
       },
@@ -624,8 +649,14 @@ describe("TimelinePage — density and historical seek", () => {
         <TimelinePage />
       </MemoryRouter>,
     );
-    expect(screen.getByText(/Density unavailable/)).toBeTruthy();
-    expect(screen.getByText(/Counts are not shown/)).toBeTruthy();
+    expect(screen.getByText(summary)).toBeTruthy();
+    expect(screen.queryByTestId("timeline-density-bucket") !== null).toBe(rendersBuckets);
+    if (availability === "partial") {
+      expect(screen.getByText("Unavailable sources: notifications.")).toBeTruthy();
+    }
+    if (availability === "unavailable") {
+      expect(screen.getByText(/Counts are not shown/)).toBeTruthy();
+    }
   });
 });
 

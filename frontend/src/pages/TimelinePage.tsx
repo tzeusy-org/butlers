@@ -415,6 +415,7 @@ export default function TimelinePage() {
   // page's own retry affordance; "n" is only registered while there is
   // something to jump to, matching the NewEventsPill's own visibility.
   const pageActions = useMemo<PageAction[]>(() => {
+    if (!interval.valid) return [];
     const actions: PageAction[] = [
       {
         id: "timeline-refresh",
@@ -436,7 +437,7 @@ export default function TimelinePage() {
       });
     }
     return actions;
-  }, [refetch, newCount, interval.explicit, interval.bucketSince, jumpToLatest]);
+  }, [refetch, newCount, interval.valid, interval.explicit, interval.bucketSince, jumpToLatest]);
   usePageActions(pageActions);
 
   return (
@@ -445,7 +446,9 @@ export default function TimelinePage() {
         eyebrow="Fleet · timeline"
         headline="Every household event, newest first."
         description="Sessions, notifications, and errors across every butler: the fleet's single chronicle."
-        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
+        aside={interval.valid
+          ? <LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />
+          : null}
       />
 
       <DispatchSurface className="space-y-4">
@@ -486,7 +489,7 @@ export default function TimelinePage() {
           </section>
         )}
 
-        {trace && (
+        {interval.valid && trace && (
           <section
             className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-border rounded bg-muted/10 px-3 py-2"
             aria-label="Trace scope"
@@ -508,7 +511,7 @@ export default function TimelinePage() {
           </section>
         )}
 
-        {hasDegradedSource && (
+        {interval.valid && hasDegradedSource && (
           <SourceDegradedNote
             label="Timeline"
             detail={degradedSourceDetail}
@@ -517,7 +520,7 @@ export default function TimelinePage() {
           />
         )}
 
-        {heartbeatRollup.ticks > 0 && (
+        {interval.valid && heartbeatRollup.ticks > 0 && (
           <p
             className="font-mono text-[11px] text-muted-foreground"
             data-testid="timeline-heartbeat-rollup"
@@ -531,7 +534,7 @@ export default function TimelinePage() {
         )}
 
         {/* Toolbar */}
-        <div className="space-y-3">
+        {interval.valid && <div className="space-y-3">
           {/* Saved views */}
           <div className="flex flex-wrap items-center gap-1.5">
             {BUILT_IN_VIEWS.map((view) => (
@@ -668,7 +671,7 @@ export default function TimelinePage() {
               Internal
             </Button>
           </div>
-        </div>
+        </div>}
 
         {interval.valid ? (
           <>
@@ -693,7 +696,7 @@ export default function TimelinePage() {
         ) : null}
       </DispatchSurface>
 
-      <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
+      <Dialog open={interval.valid && saveDialogOpen} onOpenChange={setSaveDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Save current view</DialogTitle>
