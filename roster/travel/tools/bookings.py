@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
 import asyncpg
+
+from butlers.tools.travel import connections as _connections
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Valid entity type values
@@ -175,20 +180,46 @@ async def _insert_leg(
     trip_id: str,
     payload: dict[str, Any],
     source_message_id: str | None,
+    *,
+    booking_record_id: str | None = None,
 ) -> tuple[str, bool, bool]:
-    """Insert a leg entity. Returns (entity_id, created, deduped)."""
-    confirmation_number = payload.get("confirmation_number")
+    """Insert or converge a leg entity. Returns (entity_id, created, deduped).
 
-    # Dedup check: match on confirmation_number + trip_id
-    if confirmation_number and source_message_id:
-        existing = await pool.fetchrow(
-            "SELECT id FROM travel.legs WHERE confirmation_number = $1 AND trip_id = $2::uuid",
-            confirmation_number,
-            trip_id,
+    When ``booking_record_id`` and ``payload["segment_index"]`` are both
+    present, identity is keyed on ``(booking_record_id, segment_index)`` --
+    two payloads for the same PNR segment (two passengers, or a concurrent
+    re-ingest of the same email) converge on one leg row via
+    ``ON CONFLICT ... DO UPDATE`` instead of the legacy
+    confirmation_number-based dedup, which incorrectly deduped a round-trip's
+    return leg away when both segments shared one confirmation number.
+
+    Falls back to the legacy confirmation_number + trip_id dedup-or-insert
+    path when no ``booking_record_id``/``segment_index`` identity is
+    available (backward compatible with callers that predate bu-2jtfw.8).
+    """
+    segment_index = payload.get("segment_index")
+    if booking_record_id is not None and segment_index is not None:
+        return await _insert_leg_by_segment(
+            pool, trip_id, payload, source_message_id, booking_record_id, segment_index
         )
-        if existing:
-            return str(existing["id"]), False, True
+    return await _insert_leg_legacy(pool, trip_id, payload, source_message_id)
 
+
+def _leg_insert_fields(
+    payload: dict[str, Any], source_message_id: str | None
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str | None,
+    datetime,
+    str | None,
+    str | None,
+    datetime,
+    str | None,
+    dict[str, Any],
+]:
+    """Shared field extraction/validation for both leg insert paths."""
     departure_at = _normalize_datetime(payload.get("departure_at"))
     arrival_at = _normalize_datetime(payload.get("arrival_at"))
 
@@ -201,6 +232,125 @@ async def _insert_leg(
     meta: dict[str, Any] = dict(payload.get("metadata") or {})
     if source_message_id:
         meta["source_message_id"] = source_message_id
+
+    return (
+        leg_type,
+        payload.get("carrier") or payload.get("provider"),
+        payload.get("departure_airport_station") or payload.get("departure"),
+        payload.get("departure_city"),
+        departure_at,
+        payload.get("arrival_airport_station") or payload.get("arrival"),
+        payload.get("arrival_city"),
+        arrival_at,
+        payload.get("confirmation_number"),
+        meta,
+    )
+
+
+async def _insert_leg_by_segment(
+    pool: asyncpg.Pool,
+    trip_id: str,
+    payload: dict[str, Any],
+    source_message_id: str | None,
+    booking_record_id: str,
+    segment_index: int,
+) -> tuple[str, bool, bool]:
+    (
+        leg_type,
+        carrier,
+        dep_station,
+        dep_city,
+        departure_at,
+        arr_station,
+        arr_city,
+        arrival_at,
+        confirmation_number,
+        meta,
+    ) = _leg_insert_fields(payload, source_message_id)
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO travel.legs (
+            trip_id, type, carrier,
+            departure_airport_station, departure_city,
+            departure_at,
+            arrival_airport_station, arrival_city,
+            arrival_at,
+            confirmation_number, pnr, seat, metadata,
+            booking_record_id, segment_index
+        ) VALUES (
+            $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::uuid, $15
+        )
+        ON CONFLICT (booking_record_id, segment_index)
+            WHERE booking_record_id IS NOT NULL AND segment_index IS NOT NULL
+            DO UPDATE SET
+            carrier = EXCLUDED.carrier,
+            departure_airport_station = EXCLUDED.departure_airport_station,
+            departure_city = EXCLUDED.departure_city,
+            departure_at = EXCLUDED.departure_at,
+            arrival_airport_station = EXCLUDED.arrival_airport_station,
+            arrival_city = EXCLUDED.arrival_city,
+            arrival_at = EXCLUDED.arrival_at,
+            confirmation_number = COALESCE(
+                EXCLUDED.confirmation_number, travel.legs.confirmation_number
+            ),
+            pnr = COALESCE(EXCLUDED.pnr, travel.legs.pnr),
+            metadata = travel.legs.metadata || EXCLUDED.metadata,
+            updated_at = now()
+        RETURNING id, (xmax = 0) AS inserted
+        """,
+        trip_id,
+        leg_type,
+        carrier,
+        dep_station,
+        dep_city,
+        departure_at,
+        arr_station,
+        arr_city,
+        arrival_at,
+        confirmation_number,
+        payload.get("pnr"),
+        payload.get("seat"),
+        meta,
+        booking_record_id,
+        segment_index,
+    )
+    entity_id = str(row["id"])
+    created = bool(row["inserted"])
+    return entity_id, created, not created
+
+
+async def _insert_leg_legacy(
+    pool: asyncpg.Pool,
+    trip_id: str,
+    payload: dict[str, Any],
+    source_message_id: str | None,
+) -> tuple[str, bool, bool]:
+    """Insert a leg entity without PNR-segment identity. Returns (entity_id, created, deduped)."""
+    confirmation_number = payload.get("confirmation_number")
+
+    # Dedup check: match on confirmation_number + trip_id
+    if confirmation_number and source_message_id:
+        existing = await pool.fetchrow(
+            "SELECT id FROM travel.legs WHERE confirmation_number = $1 AND trip_id = $2::uuid",
+            confirmation_number,
+            trip_id,
+        )
+        if existing:
+            return str(existing["id"]), False, True
+
+    (
+        leg_type,
+        carrier,
+        dep_station,
+        dep_city,
+        departure_at,
+        arr_station,
+        arr_city,
+        arrival_at,
+        confirmation_number,
+        meta,
+    ) = _leg_insert_fields(payload, source_message_id)
 
     row = await pool.fetchrow(
         """
@@ -218,12 +368,12 @@ async def _insert_leg(
         """,
         trip_id,
         leg_type,
-        payload.get("carrier") or payload.get("provider"),
-        payload.get("departure_airport_station") or payload.get("departure"),
-        payload.get("departure_city"),
+        carrier,
+        dep_station,
+        dep_city,
         departure_at,
-        payload.get("arrival_airport_station") or payload.get("arrival"),
-        payload.get("arrival_city"),
+        arr_station,
+        arr_city,
         arrival_at,
         confirmation_number,
         payload.get("pnr"),
@@ -231,6 +381,206 @@ async def _insert_leg(
         meta,
     )
     return str(row["id"]), True, False
+
+
+# ---------------------------------------------------------------------------
+# PNR/booking-record identity (bu-2jtfw.8)
+# ---------------------------------------------------------------------------
+
+
+async def _stamp_identity_confidence(pool: asyncpg.Pool, trip_id: str, confidence: str) -> None:
+    """Merge ``trips.metadata.identity_confidence``, never downgrading 'strong'."""
+    await pool.execute(
+        """
+        UPDATE travel.trips
+        SET metadata = metadata || jsonb_build_object('identity_confidence', $2::text)
+        WHERE id = $1::uuid
+          AND (metadata ->> 'identity_confidence' IS DISTINCT FROM 'strong' OR $2 = 'strong')
+        """,
+        trip_id,
+        confidence,
+    )
+
+
+async def _widen_trip_date_range(
+    pool: asyncpg.Pool, trip_id: str, departure_at: datetime, arrival_at: datetime
+) -> None:
+    """Widen a trip's ``[start_date, end_date]`` to cover a newly attached leg.
+
+    A trip container is created from whichever leg happens to arrive first
+    (often just one segment's dates); every later segment attached to the
+    same trip (via PNR identity or the fuzzy heuristic) must still make the
+    trip span its full itinerary, e.g. a PNR's outbound (day 1) and return
+    (day 9) segment converge on one trip whose date range covers both.
+    """
+    await pool.execute(
+        """
+        UPDATE travel.trips
+        SET start_date = LEAST(start_date, $2::date),
+            end_date = GREATEST(end_date, $3::date),
+            updated_at = now()
+        WHERE id = $1::uuid
+        """,
+        trip_id,
+        departure_at.date(),
+        arrival_at.date(),
+    )
+
+
+async def _resolve_trip_via_booking_record(
+    pool: asyncpg.Pool,
+    payload: dict[str, Any],
+) -> tuple[str, bool, dict[str, Any] | None, str]:
+    """Resolve (or create) the trip for a PNR-identified leg payload.
+
+    Every leg sharing the same ``record_locator`` converges on the same trip
+    via ``travel.booking_records.trip_id`` -- never the destination/date
+    substring heuristic, which is what let a single round-trip PNR split into
+    two separate one-day trips (bu-2jtfw.8 evidence). The booking-record row
+    and its ``trip_id`` assignment are resolved inside one transaction with a
+    row lock so two sessions racing the same brand-new record_locator
+    converge on one trip instead of each minting their own.
+
+    Returns ``(trip_id, trip_created, trip_event_payload, booking_record_id)``.
+    """
+    record_locator = payload["record_locator"]
+    source_message_id = payload.get("source_message_id")
+    provider = payload.get("provider") or None
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            upserted = await conn.fetchrow(
+                """
+                INSERT INTO travel.booking_records (record_locator, source_message_id, provider)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (record_locator) WHERE record_locator IS NOT NULL
+                    DO UPDATE SET updated_at = now()
+                RETURNING id
+                """,
+                record_locator,
+                source_message_id,
+                provider,
+            )
+            booking_record_id = str(upserted["id"])
+
+            locked = await conn.fetchrow(
+                "SELECT trip_id FROM travel.booking_records WHERE id = $1::uuid FOR UPDATE",
+                booking_record_id,
+            )
+            trip_id = str(locked["trip_id"]) if locked["trip_id"] is not None else None
+            trip_created = False
+            trip_event_payload: dict[str, Any] | None = None
+
+            if trip_id is None:
+                created_trip = await _create_trip_from_payload(conn, payload)
+                trip_id = created_trip["trip_id"]
+                trip_created = True
+                trip_event_payload = created_trip
+                await conn.execute(
+                    "UPDATE travel.booking_records SET trip_id = $1::uuid WHERE id = $2::uuid",
+                    trip_id,
+                    booking_record_id,
+                )
+
+    await _stamp_identity_confidence(pool, trip_id, "strong")
+    return trip_id, trip_created, trip_event_payload, booking_record_id
+
+
+async def _resolve_or_create_traveller_entity(pool: asyncpg.Pool, name: str) -> str:
+    """Resolve a traveller name to a ``public.entities`` id, creating one if needed.
+
+    Scoped to entities this butler created (``metadata.source_butler =
+    'travel'``) so a name collision never silently attaches a booking to an
+    unrelated contact the relationship butler already tracks -- Travel stores
+    no relational facts and does not own person identity (bu-2jtfw.8 design:
+    "Travel stores no relational facts").
+    """
+    canonical = name.strip()
+    existing = await pool.fetchval(
+        """
+        SELECT id FROM public.entities
+        WHERE entity_type = 'person'
+          AND lower(canonical_name) = lower($1)
+          AND metadata ->> 'source_butler' = 'travel'
+          AND (metadata ->> 'merged_into') IS NULL
+        LIMIT 1
+        """,
+        canonical,
+    )
+    if existing is not None:
+        return str(existing)
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, metadata)
+        VALUES ($1, 'person', $2::jsonb)
+        RETURNING id
+        """,
+        canonical,
+        {"source_butler": "travel"},
+    )
+    return str(row["id"])
+
+
+async def _attach_passengers(
+    pool: asyncpg.Pool,
+    trip_id: str,
+    leg_id: str,
+    passengers: list[dict[str, Any]],
+) -> None:
+    """Link each passenger to the trip's traveller party and this leg.
+
+    Each ``passengers`` item may carry ``entity_id`` (already resolved),
+    ``name`` (resolved-or-created against ``public.entities``), and an
+    optional per-passenger ``seat``. A traveller is unique per
+    ``(trip_id, entity_id)``; a leg_passenger link is unique per
+    ``(leg_id, traveller_id)`` -- re-attaching the same passenger to the same
+    leg (a concurrent re-ingest) converges rather than duplicating.
+    """
+    for passenger in passengers:
+        entity_id = passenger.get("entity_id")
+        name = passenger.get("name")
+        seat = passenger.get("seat")
+        if not entity_id and not name:
+            continue
+        if not entity_id:
+            entity_id = await _resolve_or_create_traveller_entity(pool, name)
+
+        traveller_row = await pool.fetchrow(
+            """
+            INSERT INTO travel.travellers (trip_id, entity_id, display_name)
+            VALUES ($1::uuid, $2::uuid, $3)
+            ON CONFLICT (trip_id, entity_id) DO UPDATE SET
+                display_name = COALESCE(travel.travellers.display_name, EXCLUDED.display_name)
+            RETURNING id
+            """,
+            trip_id,
+            entity_id,
+            name,
+        )
+        traveller_id = str(traveller_row["id"])
+
+        await pool.execute(
+            """
+            INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat)
+            VALUES ($1::uuid, $2::uuid, $3)
+            ON CONFLICT (leg_id, traveller_id) DO UPDATE SET
+                seat = COALESCE(EXCLUDED.seat, travel.leg_passengers.seat)
+            """,
+            leg_id,
+            traveller_id,
+            seat,
+        )
+
+
+async def _safe_recompute_connections(pool: asyncpg.Pool, trip_id: str) -> None:
+    """Best-effort connection recompute after a leg mutation. Never raises."""
+    try:
+        await _connections.recompute_trip_connections(pool, trip_id)
+    except Exception:
+        logger.warning(
+            "record_booking: connection recompute failed for trip_id=%s", trip_id, exc_info=True
+        )
 
 
 async def _insert_accommodation(
@@ -387,14 +737,31 @@ async def record_booking(
       (e.g. ``departure_at``, ``arrival_at``, ``confirmation_number``,
       ``pnr``, ``seat`` for legs; ``check_in``, ``check_out`` for
       accommodations; ``datetime`` for reservations).
+    - ``record_locator`` (str | None, legs only): the PNR. When present, the
+      trip is resolved via ``travel.booking_records`` keyed on this value --
+      every leg sharing a record_locator converges on one trip regardless of
+      destination text (bu-2jtfw.8).
+    - ``segment_index`` (int | None, legs only): the leg's position within
+      its PNR itinerary (e.g. 0 outbound, 1 return). Combined with
+      ``record_locator``, gives the leg identity of
+      ``(booking_record_id, segment_index)`` instead of
+      ``confirmation_number`` -- a round-trip's return leg is no longer
+      deduped away just because both segments share one confirmation number.
+    - ``passengers`` (list[dict] | None, legs only): each item is
+      ``{"entity_id": str}`` or ``{"name": str}`` (optionally with a
+      per-passenger ``seat``), linking the leg to the trip's traveller party
+      (``travel.travellers`` / ``travel.leg_passengers``).
 
-    Trip auto-matching: if ``candidate_trip_hints`` are provided, the tool
-    tries to match an existing trip by date+destination overlap before
-    creating a new trip container.
+    Trip auto-matching: if no ``record_locator`` is supplied and
+    ``candidate_trip_hints`` are provided, the tool falls back to matching an
+    existing trip by date+destination overlap before creating a new trip
+    container, stamping ``trips.metadata.identity_confidence = "weak"`` so
+    the UI can distinguish a best-effort match from a PNR-confirmed one.
 
     Deduplication: when both ``confirmation_number`` and ``source_message_id``
     are present, the tool checks for an existing entity and returns it without
-    inserting a duplicate.
+    inserting a duplicate. Legs identified by ``(record_locator,
+    segment_index)`` instead converge via ``ON CONFLICT ... DO UPDATE``.
 
     Parameters
     ----------
@@ -425,44 +792,65 @@ async def record_booking(
         warnings.append(f"Unknown entity_type {entity_type!r}; defaulting to 'leg'.")
         entity_type = "leg"
 
-    # --- Trip auto-matching ---
-    hints = payload.get("candidate_trip_hints") or {}
-    candidate_dates: list[date] = []
-    candidate_destinations: list[str] = list(hints.get("destinations") or [])
+    # --- Trip identity ---
+    # A PNR-identified leg (bu-2jtfw.8) resolves its trip via
+    # travel.booking_records, never the destination/date substring heuristic
+    # below -- that heuristic is what split one round-trip PNR into two
+    # one-day trips (see module docstring / bu-2jtfw.8 design evidence).
+    record_locator: str | None = payload.get("record_locator") if entity_type == "leg" else None
+    booking_record_id: str | None = None
 
-    for ds in hints.get("dates") or []:
-        try:
-            d = _normalize_date(ds)
-            if d:
-                candidate_dates.append(d)
-        except (ValueError, TypeError):
-            warnings.append(f"Could not parse candidate date hint: {ds!r}")
+    if record_locator:
+        (
+            trip_id,
+            trip_created,
+            trip_event_payload,
+            booking_record_id,
+        ) = await _resolve_trip_via_booking_record(pool, payload)
+    else:
+        # --- Trip auto-matching (legacy heuristic: destination + date hints) ---
+        hints = payload.get("candidate_trip_hints") or {}
+        candidate_dates: list[date] = []
+        candidate_destinations: list[str] = list(hints.get("destinations") or [])
 
-    # Also infer dates from the payload itself
-    for field in ("departure_at", "arrival_at", "check_in", "check_out", "datetime"):
-        raw = payload.get(field)
-        if raw:
+        for ds in hints.get("dates") or []:
             try:
-                dt = _normalize_datetime(raw)
-                if dt:
-                    candidate_dates.append(dt.date())
+                d = _normalize_date(ds)
+                if d:
+                    candidate_dates.append(d)
             except (ValueError, TypeError):
-                pass
+                warnings.append(f"Could not parse candidate date hint: {ds!r}")
 
-    # Infer destinations from payload
-    for field in ("arrival_city", "arrival_airport_station", "arrival", "destination"):
-        val = payload.get(field)
-        if val and val not in candidate_destinations:
-            candidate_destinations.append(str(val))
+        # Also infer dates from the payload itself
+        for field in ("departure_at", "arrival_at", "check_in", "check_out", "datetime"):
+            raw = payload.get(field)
+            if raw:
+                try:
+                    dt = _normalize_datetime(raw)
+                    if dt:
+                        candidate_dates.append(dt.date())
+                except (ValueError, TypeError):
+                    pass
 
-    trip_id = await _find_matching_trip(pool, candidate_dates, candidate_destinations)
-    trip_created = False
-    trip_event_payload: dict[str, Any] | None = None
-    if trip_id is None:
-        created_trip = await _create_trip_from_payload(pool, payload)
-        trip_id = created_trip["trip_id"]
-        trip_created = True
-        trip_event_payload = created_trip
+        # Infer destinations from payload
+        for field in ("arrival_city", "arrival_airport_station", "arrival", "destination"):
+            val = payload.get(field)
+            if val and val not in candidate_destinations:
+                candidate_destinations.append(str(val))
+
+        trip_id = await _find_matching_trip(pool, candidate_dates, candidate_destinations)
+        trip_created = False
+        trip_event_payload = None
+        if trip_id is None:
+            created_trip = await _create_trip_from_payload(pool, payload)
+            trip_id = created_trip["trip_id"]
+            trip_created = True
+            trip_event_payload = created_trip
+
+        if entity_type == "leg":
+            # No record locator: identity is a best-effort match, never a
+            # silent merge the UI can't distinguish from a confirmed one.
+            await _stamp_identity_confidence(pool, trip_id, "weak")
 
     # --- Insert entity ---
     entity_id: str
@@ -472,8 +860,17 @@ async def record_booking(
     try:
         if entity_type == "leg":
             entity_id, created, deduped = await _insert_leg(
-                pool, trip_id, payload, source_message_id
+                pool, trip_id, payload, source_message_id, booking_record_id=booking_record_id
             )
+            if entity_id is not None:
+                departure_at = _normalize_datetime(payload.get("departure_at"))
+                arrival_at = _normalize_datetime(payload.get("arrival_at"))
+                if departure_at is not None and arrival_at is not None:
+                    await _widen_trip_date_range(pool, trip_id, departure_at, arrival_at)
+                passengers = payload.get("passengers") or []
+                if passengers:
+                    await _attach_passengers(pool, trip_id, entity_id, passengers)
+                await _safe_recompute_connections(pool, trip_id)
         elif entity_type == "accommodation":
             entity_id, created, deduped = await _insert_accommodation(
                 pool, trip_id, payload, source_message_id

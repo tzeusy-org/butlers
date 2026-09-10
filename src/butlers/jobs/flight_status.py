@@ -249,23 +249,76 @@ async def _fetch_upcoming_flight_legs(pool: asyncpg.Pool) -> list[dict[str, Any]
     return [dict(row) for row in rows]
 
 
-async def _write_leg_status(pool: asyncpg.Pool, leg_id: Any, status: dict[str, Any]) -> None:
+def _parse_estimated_departure(raw: str | None) -> datetime | None:
+    """Best-effort ISO-8601 parse of AviationStack's ``estimated_departure``."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _write_leg_status(
+    pool: asyncpg.Pool,
+    leg_id: Any,
+    trip_id: Any,
+    original_departure_at: datetime | None,
+    status: dict[str, Any],
+) -> None:
     """Merge the poll result onto ``travel.legs.metadata->'flight_status'``.
 
     Surfaces through the existing ``trip_summary`` tool without a new API
     surface -- mirrors the ``metadata.prior_values`` audit pattern already
     used by ``update_itinerary``.
+
+    bu-2jtfw.8 repair: also repairs ``departure_at`` from the reported
+    ``estimated_departure`` (previously parsed and stored in metadata but
+    never applied to the actual column, so a schedule slip never moved the
+    time the rest of the system reads) and shifts ``arrival_at`` by the same
+    delta (AviationStack reports only a departure estimate; preserving flight
+    duration is the honest default absent an independent arrival estimate),
+    then bumps ``updated_at`` and triggers a best-effort connection recompute
+    for the leg's trip so a delay that breaks a layover is reflected in
+    ``travel.connections`` without waiting for the next unrelated write.
     """
     payload = {**status, "checked_at": datetime.now(UTC).isoformat()}
+    estimated_departure = _parse_estimated_departure(status.get("estimated_departure"))
+
+    delta = None
+    if estimated_departure is not None and original_departure_at is not None:
+        if original_departure_at.tzinfo is None:
+            original_departure_at = original_departure_at.replace(tzinfo=UTC)
+        delta = estimated_departure - original_departure_at
+
     await pool.execute(
         """
         UPDATE travel.legs
-        SET metadata = metadata || jsonb_build_object('flight_status', $2::jsonb)
+        SET metadata = metadata || jsonb_build_object('flight_status', $2::jsonb),
+            departure_at = COALESCE($3::timestamptz, departure_at),
+            arrival_at = CASE
+                WHEN $4::interval IS NOT NULL THEN arrival_at + $4::interval
+                ELSE arrival_at
+            END,
+            updated_at = now()
         WHERE id = $1
         """,
         leg_id,
         payload,
+        estimated_departure,
+        delta,
     )
+
+    from butlers.tools.travel import connections as _connections
+
+    try:
+        await _connections.recompute_trip_connections(pool, str(trip_id))
+    except Exception:
+        logger.warning(
+            "flight_status_check: connection recompute failed for trip_id=%s",
+            trip_id,
+            exc_info=True,
+        )
 
 
 async def run_flight_status_check(
@@ -324,7 +377,9 @@ async def run_flight_status_check(
             if status is None:
                 continue
 
-            await _write_leg_status(pool, leg["id"], status)
+            await _write_leg_status(
+                pool, leg["id"], leg["trip_id"], leg.get("departure_at"), status
+            )
 
             if status["notify_worthy"]:
                 delays_detected += 1

@@ -29,6 +29,7 @@ if _spec is not None and _spec.loader is not None:
 
     AccommodationModel = _models.AccommodationModel
     AlertModel = _models.AlertModel
+    ConnectionModel = _models.ConnectionModel
     DocumentModel = _models.DocumentModel
     ExpiringDocumentModel = _models.ExpiringDocumentModel
     ExpiringDocumentsResponse = _models.ExpiringDocumentsResponse
@@ -90,6 +91,13 @@ def _row_to_reservation(r: dict) -> ReservationModel:
 
 def _row_to_document(r: dict) -> DocumentModel:
     return DocumentModel(**_row_to_dict(r))
+
+
+def _row_to_connection(r: dict) -> ConnectionModel:
+    d = _row_to_dict(r)
+    for extra in ("id", "trip_id", "created_at", "updated_at"):
+        d.pop(extra, None)
+    return ConnectionModel(**d)
 
 
 def _rows_to_models(rows: list, converter, entity_label: str) -> tuple[list, list[str]]:
@@ -323,6 +331,16 @@ async def get_trip_summary(
     # Compute alerts
     alerts = _compute_alerts(legs, documents)
 
+    connection_rows = await pool.fetch(
+        "SELECT id, inbound_leg_id, outbound_leg_id, verdict, available_minutes,"
+        " evidence, computed_at"
+        " FROM travel.connections WHERE trip_id = $1::uuid ORDER BY computed_at ASC",
+        trip_id,
+    )
+    connections, _unreadable_connection_ids = _rows_to_models(
+        connection_rows, _row_to_connection, "connection"
+    )
+
     return TripSummaryModel(
         trip=trip,
         legs=legs,
@@ -331,6 +349,7 @@ async def get_trip_summary(
         documents=documents,
         timeline=timeline,
         alerts=alerts,
+        connections=connections,
         unreadable_leg_ids=unreadable_leg_ids,
         unreadable_accommodation_ids=unreadable_accommodation_ids,
         unreadable_reservation_ids=unreadable_reservation_ids,

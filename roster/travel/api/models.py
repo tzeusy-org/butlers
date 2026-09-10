@@ -103,6 +103,17 @@ class AlertModel(BaseModel):
     severity: str
 
 
+class ConnectionModel(BaseModel):
+    """A derived verdict for the layover between two adjacent legs of a trip."""
+
+    inbound_leg_id: str
+    outbound_leg_id: str
+    verdict: str
+    available_minutes: int | None = None
+    evidence: dict = {}
+    computed_at: str
+
+
 class TripSummaryModel(BaseModel):
     """Full trip summary with all linked entities and timeline."""
 
@@ -113,6 +124,11 @@ class TripSummaryModel(BaseModel):
     documents: list[DocumentModel] = []
     timeline: list[TimelineEntryModel] = []
     alerts: list[AlertModel] = []
+    # Empty when the journey has no adjacent legs sharing a connecting
+    # airport (e.g. a round trip's two direct legs) -- always present, never
+    # an omitted key, so the dashboard can render "no connection on this
+    # journey" instead of guessing at a missing field.
+    connections: list[ConnectionModel] = []
     # Sub-collection rows excluded because they could not be normalized (e.g.
     # corrupt metadata) -- named-list degraded-mode envelope, mirroring
     # UpcomingTravelModel.unreadable_trip_ids, never silently dropped.
