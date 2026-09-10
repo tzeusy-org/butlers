@@ -17,7 +17,7 @@ inline in this router.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +26,9 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models.timeline import (
     TimelineEvent,
     TimelineHeartbeatRollup,
+    TimelineHistogramBucket,
+    TimelineHistogramMeta,
+    TimelineHistogramResponse,
     TimelineMeta,
     TimelineResponse,
 )
@@ -34,7 +37,9 @@ from butlers.api.read_models.timeline_v1 import (
     TimelineSessionRow,
     decode_cursor,
     encode_cursor,
+    query_timeline_notification_histogram_single,
     query_timeline_notifications_single,
+    query_timeline_session_histogram_fan_out,
     query_timeline_sessions_fan_out,
 )
 from butlers.api.session_presentation import derive_session_machine_class, derive_session_summary
@@ -42,6 +47,63 @@ from butlers.api.session_presentation import derive_session_machine_class, deriv
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
+
+_MAX_INTERVAL = timedelta(hours=24)
+
+
+def _validate_interval(
+    since: datetime | None, until: datetime | None, *, required: bool
+) -> tuple[datetime | None, datetime | None]:
+    if since is None or until is None:
+        if required or since is not None or until is not None:
+            raise HTTPException(
+                status_code=422, detail="'since' and 'until' must be supplied together"
+            )
+        return None, None
+    if (
+        since.tzinfo is None
+        or since.utcoffset() is None
+        or until.tzinfo is None
+        or until.utcoffset() is None
+    ):
+        raise HTTPException(
+            status_code=422, detail="Timeline interval bounds must be timezone-aware"
+        )
+    since_utc = since.astimezone(UTC)
+    until_utc = until.astimezone(UTC)
+    if since_utc.second or since_utc.microsecond or until_utc.second or until_utc.microsecond:
+        raise HTTPException(
+            status_code=422, detail="Timeline interval bounds must align to whole UTC minutes"
+        )
+    duration = until_utc - since_utc
+    if duration <= timedelta(0) or duration > _MAX_INTERVAL:
+        raise HTTPException(
+            status_code=422, detail="Timeline interval must be ordered and no longer than 24 hours"
+        )
+    return since_utc, until_utc
+
+
+def _source_selection(event_type: list[str] | None) -> tuple[bool, bool, bool | None, bool]:
+    want_session_type = event_type is None or "session" in event_type
+    want_error_type = event_type is None or "error" in event_type
+    want_sessions = want_session_type or want_error_type
+    want_notification_type = event_type is None or "notification" in event_type
+    want_notifications = want_notification_type or want_error_type
+    only_failed_notifications = want_error_type and not want_notification_type
+    only_errors: bool | None = None
+    if want_session_type and not want_error_type:
+        only_errors = False
+    elif want_error_type and not want_session_type:
+        only_errors = True
+    return want_sessions, want_notifications, only_errors, only_failed_notifications
+
+
+def _availability(expected: int, healthy: int) -> str:
+    if healthy == expected:
+        return "complete"
+    if healthy == 0:
+        return "unavailable"
+    return "partial"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -137,6 +199,8 @@ async def list_timeline(
             "that carry the trace."
         ),
     ),
+    since: datetime | None = Query(None, description="Inclusive UTC minute interval bound"),
+    until: datetime | None = Query(None, description="Exclusive UTC minute interval bound"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> TimelineResponse:
     """Return a cursor-paginated cross-butler event stream.
@@ -168,6 +232,7 @@ async def list_timeline(
     truthful empty or complete-fleet result (mirrors the
     ``aggregates_available`` degraded-mode convention, applied per source).
     """
+    since, until = _validate_interval(since, until, required=False)
     before_ts: datetime | None = None
     before_id: UUID | None = None
     if before is not None:
@@ -179,31 +244,20 @@ async def list_timeline(
     trace_id = trace.strip() if trace is not None and trace.strip() else None
 
     # Determine which event sources/types to query.
-    want_session_type = event_type is None or "session" in event_type
-    want_error_type = event_type is None or "error" in event_type
-    want_sessions = want_session_type or want_error_type
-    want_notification_type = event_type is None or "notification" in event_type
-
     # Errors lens widening: a failed delivery is an error the owner must see, so
     # ``event_type=error`` now selects failed notifications alongside failed
     # sessions (previously "error" mapped solely to sessions with success=False,
     # leaving a multi-hour bounced-alert outage invisible to the Errors view).
-    want_notifications = want_notification_type or want_error_type
+    want_sessions, want_notifications, only_errors, only_failed_notifications = _source_selection(
+        event_type
+    )
     # When notifications are pulled ONLY because of the error lens (not an
     # explicit notification request), restrict them to failed deliveries so the
     # Errors view stays errors-only.
-    only_failed_notifications = want_error_type and not want_notification_type
-
     # Push the session/error split into SQL (only_errors) instead of fetching
     # the newest sessions and filtering the derived type afterward — the old
     # post-query filter under-reported ("error" only ever saw failures among
     # the newest unfiltered page) and computed has_more over the wrong set.
-    only_errors: bool | None = None
-    if want_session_type and not want_error_type:
-        only_errors = False
-    elif want_error_type and not want_session_type:
-        only_errors = True
-
     target_butlers = butler if butler else None
     events: list[TimelineEvent] = []
     degraded_sources: list[str] = []
@@ -220,6 +274,8 @@ async def list_timeline(
             butler_names=target_butlers,
             only_errors=only_errors,
             trace_id=trace_id,
+            since=since,
+            until=until,
         )
         if degraded_butlers:
             logger.warning("Timeline session fan-out degraded for butlers: %s", degraded_butlers)
@@ -240,6 +296,8 @@ async def list_timeline(
                 source_butlers=target_butlers,
                 only_failed=only_failed_notifications,
                 trace_id=trace_id,
+                since=since,
+                until=until,
             )
             for dto in notif_dtos:
                 events.append(_notification_dto_to_event(dto))
@@ -284,6 +342,93 @@ async def list_timeline(
             has_more=has_more,
             heartbeat_rollup=heartbeat_rollup,
             degraded_sources=degraded_sources,
+            degraded_butlers=degraded_butlers,
+        ),
+    )
+
+
+@router.get("/histogram", response_model=TimelineHistogramResponse)
+async def timeline_histogram(
+    since: datetime = Query(..., description="Inclusive timezone-aware UTC minute"),
+    until: datetime = Query(..., description="Exclusive timezone-aware UTC minute"),
+    butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
+    event_type: list[str] | None = Query(None, description="Filter by event type(s)"),
+    trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> TimelineHistogramResponse:
+    """Return content-blind, server-counted minute density for a bounded interval."""
+    validated_since, validated_until = _validate_interval(since, until, required=True)
+    assert validated_since is not None and validated_until is not None
+    trace_id = trace.strip() if trace is not None and trace.strip() else None
+    want_sessions, want_notifications, only_errors, only_failed_notifications = _source_selection(
+        event_type
+    )
+    target_butlers = list(dict.fromkeys(butler)) if butler else list(db.butler_names)
+
+    expected_sources = (len(target_butlers) if want_sessions else 0) + (
+        1 if want_notifications else 0
+    )
+    healthy_sources = 0
+    degraded_sources: list[str] = []
+    degraded_butlers: list[str] = []
+    counts: dict[datetime, int] = {}
+
+    if want_sessions:
+        session_counts, degraded_butlers = await query_timeline_session_histogram_fan_out(
+            db,
+            since=validated_since,
+            until=validated_until,
+            butler_names=target_butlers,
+            only_errors=only_errors,
+            trace_id=trace_id,
+        )
+        healthy_sources += len(target_butlers) - len(degraded_butlers)
+        if degraded_butlers:
+            degraded_sources.append("sessions")
+        for item in session_counts:
+            counts[item.start.astimezone(UTC)] = (
+                counts.get(item.start.astimezone(UTC), 0) + item.count
+            )
+
+    if want_notifications:
+        try:
+            notification_counts = await query_timeline_notification_histogram_single(
+                db.pool("switchboard"),
+                since=validated_since,
+                until=validated_until,
+                source_butlers=list(dict.fromkeys(butler)) if butler else None,
+                only_failed=only_failed_notifications,
+                trace_id=trace_id,
+            )
+            healthy_sources += 1
+            for item in notification_counts:
+                counts[item.start.astimezone(UTC)] = (
+                    counts.get(item.start.astimezone(UTC), 0) + item.count
+                )
+        except Exception:
+            logger.warning("Timeline histogram notification source unavailable", exc_info=True)
+            degraded_sources.append("notifications")
+
+    buckets: list[TimelineHistogramBucket] = []
+    bucket_start = validated_since
+    while bucket_start < validated_until:
+        bucket_end = bucket_start + timedelta(minutes=1)
+        buckets.append(
+            TimelineHistogramBucket(
+                start=bucket_start, end=bucket_end, count=counts.get(bucket_start, 0)
+            )
+        )
+        bucket_start = bucket_end
+
+    return TimelineHistogramResponse(
+        data=buckets,
+        meta=TimelineHistogramMeta(
+            since=validated_since,
+            until=validated_until,
+            availability=_availability(expected_sources, healthy_sources),
+            expected_sources=expected_sources,
+            healthy_sources=healthy_sources,
+            degraded_sources=list(dict.fromkeys(degraded_sources)),
             degraded_butlers=degraded_butlers,
         ),
     )

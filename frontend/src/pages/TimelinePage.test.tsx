@@ -2,10 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render as renderDom, screen } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 
 import TimelinePage from "@/pages/TimelinePage";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
+import { useTimelineHistogram } from "@/hooks/use-timeline";
 import { useButlers } from "@/hooks/use-butlers";
 import {
   useTimelineSavedViews,
@@ -16,6 +18,7 @@ import {
 vi.mock("@/hooks/use-timeline-ledger", () => ({
   useTimelineLedger: vi.fn(),
 }));
+vi.mock("@/hooks/use-timeline", () => ({ useTimelineHistogram: vi.fn() }));
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
@@ -52,6 +55,27 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
   } as unknown as UseTimelineLedgerResult);
 }
 
+beforeEach(() => {
+  vi.mocked(useTimelineHistogram).mockReturnValue({
+    data: {
+      data: [],
+      meta: {
+        since: "2026-07-04T13:00:00Z",
+        until: "2026-07-04T14:00:00Z",
+        bucket_seconds: 60,
+        availability: "complete",
+        expected_sources: 0,
+        healthy_sources: 0,
+        degraded_sources: [],
+        degraded_butlers: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineHistogram>);
+});
+
 function render(initialEntry = "/timeline"): string {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -63,6 +87,16 @@ function render(initialEntry = "/timeline"): string {
 function LocationProbe() {
   const location = useLocation();
   return <output data-testid="timeline-location">{location.search}</output>;
+}
+
+function BrowserHistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(-1)}>Browser back</button>
+      <button type="button" onClick={() => navigate(1)}>Browser forward</button>
+    </>
+  );
 }
 
 describe("TimelinePage — error vs empty state", () => {
@@ -279,7 +313,9 @@ describe("TimelinePage — error vs empty state", () => {
       butler: undefined,
       event_type: undefined,
       trace: "trace-001",
-    });
+      since: undefined,
+      until: undefined,
+    }, { enabled: true });
   });
 
   it("does not present a whitespace trace query as an active scope", () => {
@@ -292,7 +328,9 @@ describe("TimelinePage — error vs empty state", () => {
       butler: undefined,
       event_type: undefined,
       trace: undefined,
-    });
+      since: undefined,
+      until: undefined,
+    }, { enabled: true });
   });
 
   it("names a trace scope, explains notification coverage, and lets the operator clear it", () => {
@@ -323,7 +361,9 @@ describe("TimelinePage — error vs empty state", () => {
       butler: ["home", "general"],
       event_type: ["session"],
       trace: undefined,
-    });
+      since: undefined,
+      until: undefined,
+    }, { enabled: true });
   });
 
   it("renders the new-events pill only when newCount is positive", () => {
@@ -388,6 +428,235 @@ describe("TimelinePage — error vs empty state", () => {
 
     expect(html).toContain('aria-busy="false"');
     expect(html).not.toContain("opacity-60");
+  });
+});
+
+describe("TimelinePage — density and historical seek", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  beforeEach(() => {
+    vi.mocked(useButlers).mockReturnValue({ data: { data: [] } } as unknown as ReturnType<
+      typeof useButlers
+    >);
+    vi.mocked(useTimelineSavedViews).mockReturnValue({ data: { data: [] } } as unknown as ReturnType<
+      typeof useTimelineSavedViews
+    >);
+    vi.mocked(useCreateTimelineSavedView).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useCreateTimelineSavedView>);
+    vi.mocked(useDeleteTimelineSavedView).mockReturnValue({
+      mutate: vi.fn(),
+    } as unknown as ReturnType<typeof useDeleteTimelineSavedView>);
+    setLedger({});
+  });
+
+  it("atomically materializes an implicit chart window when selecting a minute and reloads that scope", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-04T15:20:00Z"));
+    vi.mocked(useTimelineHistogram).mockReturnValue({
+      data: {
+        data: [
+          { start: "2026-07-04T14:00:00Z", end: "2026-07-04T14:01:00Z", count: 0 },
+          { start: "2026-07-04T14:01:00Z", end: "2026-07-04T14:02:00Z", count: 61 },
+        ],
+        meta: {
+          since: "2026-07-04T14:00:00Z",
+          until: "2026-07-04T15:00:00Z",
+          bucket_seconds: 60,
+          availability: "complete",
+          expected_sources: 1,
+          healthy_sources: 1,
+          degraded_sources: [],
+          degraded_butlers: [],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useTimelineHistogram>);
+
+    const mounted = renderDom(
+      <MemoryRouter initialEntries={["/timeline?type=session&trace=trace-001"]}>
+        <TimelinePage />
+        <LocationProbe />
+        <BrowserHistoryControls />
+      </MemoryRouter>,
+    );
+    const bars = screen.getAllByTestId("timeline-density-bucket");
+    expect(bars.map((bar) => bar.tabIndex)).toEqual([0, -1]);
+    fireEvent.keyDown(bars[0], { key: "ArrowRight" });
+    expect(document.activeElement).toBe(bars[1]);
+    await userEvent.keyboard("{Enter}");
+
+    const selected = new URLSearchParams(screen.getByTestId("timeline-location").textContent ?? "");
+    expect(selected.get("since")).toBe("2026-07-04T14:00:00.000Z");
+    expect(selected.get("until")).toBe("2026-07-04T15:00:00.000Z");
+    expect(selected.get("bucket_since")).toBe("2026-07-04T14:01:00Z");
+    expect(selected.get("bucket_until")).toBe("2026-07-04T14:02:00Z");
+    expect(selected.get("type")).toBe("session");
+    expect(selected.get("trace")).toBe("trace-001");
+    expect(useTimelineLedger).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        since: "2026-07-04T14:01:00.000Z",
+        until: "2026-07-04T14:02:00.000Z",
+        event_type: ["session"],
+        trace: "trace-001",
+      }),
+      { enabled: true },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    const restoredInitial = new URLSearchParams(
+      screen.getByTestId("timeline-location").textContent ?? "",
+    );
+    expect(restoredInitial.get("bucket_since")).toBeNull();
+    expect(restoredInitial.get("type")).toBe("session");
+    expect(restoredInitial.get("trace")).toBe("trace-001");
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
+    expect(screen.getByTestId("timeline-location").textContent).toBe(`?${selected.toString()}`);
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-04T16:20:00Z"));
+    const restoredUrl = `/timeline?${selected.toString()}`;
+    mounted.unmount();
+    renderDom(
+      <MemoryRouter initialEntries={[restoredUrl]}>
+        <TimelinePage />
+      </MemoryRouter>,
+    );
+    expect(useTimelineLedger).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        since: "2026-07-04T14:01:00.000Z",
+        until: "2026-07-04T14:02:00.000Z",
+      }),
+      { enabled: true },
+    );
+    expect(useTimelineHistogram).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        since: "2026-07-04T14:00:00.000Z",
+        until: "2026-07-04T15:00:00.000Z",
+      }),
+      true,
+    );
+  });
+
+  it("fails closed for malformed or timezone-naive URL intervals and distinguishes aggregate availability", () => {
+    setLedger({
+      events: [
+        {
+          id: "cached-live",
+          type: "session",
+          butler: "home",
+          timestamp: "2026-07-04T15:00:00Z",
+          summary: "cached live event",
+          is_heartbeat: false,
+          data: {},
+        },
+      ],
+    });
+    const invalidRender = renderDom(
+      <MemoryRouter
+        initialEntries={["/timeline", "/timeline?since=2026-07-04T14:00:00Z"]}
+        initialIndex={0}
+      >
+        <TimelinePage />
+        <BrowserHistoryControls />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("cached live event")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser forward" }));
+    expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
+    expect(screen.queryByText("cached live event")).toBeNull();
+    expect(screen.queryByText("No events found.")).toBeNull();
+    expect(screen.queryByTestId("live-status-badge-idle")).toBeNull();
+    expect(screen.queryByTestId("saved-view-all")).toBeNull();
+    expect(screen.queryByTestId("timeline-density")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
+    expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    expect(screen.getByText("cached live event")).toBeTruthy();
+
+    invalidRender.unmount();
+    for (const naiveUrl of [
+      "/timeline?since=2026-07-04T14:00:00&until=2026-07-04T15:00:00",
+      "/timeline?since=2026-07-04T14:00:00Z&until=2026-07-04T15:00:00Z&bucket_since=2026-07-04T14:01:00&bucket_until=2026-07-04T14:02:00",
+    ]) {
+      const naiveRender = renderDom(
+        <MemoryRouter initialEntries={[naiveUrl]}>
+          <TimelinePage />
+        </MemoryRouter>,
+      );
+      expect(screen.getByRole("alert").textContent).toContain("interval in this URL is invalid");
+      expect(screen.queryByText("cached live event")).toBeNull();
+      expect(screen.queryByText("No events found.")).toBeNull();
+      expect(screen.queryByTestId("live-status-badge-idle")).toBeNull();
+      expect(screen.queryByTestId("saved-view-all")).toBeNull();
+      expect(screen.queryByTestId("timeline-density")).toBeNull();
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: false });
+      expect(useTimelineHistogram).toHaveBeenLastCalledWith(expect.any(Object), false);
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear interval" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("cached live event")).toBeTruthy();
+      expect(useTimelineLedger).toHaveBeenLastCalledWith(expect.any(Object), { enabled: true });
+      naiveRender.unmount();
+    }
+  });
+
+  it.each([
+    ["healthy-zero", "complete", 0, 1, 1, [], "0 events · 1 of 1 sources available", true],
+    [
+      "partial", "partial", 3, 2, 1, ["notifications"],
+      "3 events · 1 of 2 sources available · partial", true,
+    ],
+    ["complete", "complete", 3, 2, 2, [], "3 events · 2 of 2 sources available", true],
+    [
+      "unavailable", "unavailable", 0, 1, 0, ["notifications"],
+      "Density unavailable · 0 of 1 sources available", false,
+    ],
+  ] as const)("renders the %s availability presentation", (
+    _, availability, count, expectedSources, healthySources, degradedSources, summary, rendersBuckets,
+  ) => {
+    vi.mocked(useTimelineHistogram).mockReturnValue({
+      data: {
+        data: count > 0 || rendersBuckets
+          ? [{ start: "2026-07-04T14:00:00Z", end: "2026-07-04T14:01:00Z", count }]
+          : [],
+        meta: {
+          since: "2026-07-04T14:00:00Z",
+          until: "2026-07-04T15:00:00Z",
+          bucket_seconds: 60,
+          availability,
+          expected_sources: expectedSources,
+          healthy_sources: healthySources,
+          degraded_sources: [...degradedSources],
+          degraded_butlers: [],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useTimelineHistogram>);
+    renderDom(
+      <MemoryRouter initialEntries={["/timeline"]}>
+        <TimelinePage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(summary)).toBeTruthy();
+    expect(screen.queryByTestId("timeline-density-bucket") !== null).toBe(rendersBuckets);
+    if (availability === "partial") {
+      expect(screen.getByText("Unavailable sources: notifications.")).toBeTruthy();
+    }
+    if (availability === "unavailable") {
+      expect(screen.getByText(/Counts are not shown/)).toBeTruthy();
+    }
   });
 });
 
