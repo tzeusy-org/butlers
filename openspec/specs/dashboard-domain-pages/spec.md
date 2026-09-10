@@ -15,7 +15,7 @@ not new implementation work:
 |---|---|---|
 | Health identity hue | [Observed] `frontend/src/components/ui/ButlerMark.tsx:56-68`; `dashboard-design-language` Requirement: Butler Category Hues | Health keeps its permanent `--category-5` identity slot. General keeps `--category-4`; no category token is globally replaced. |
 | Measurements route | [Observed] `frontend/src/router-config.tsx:121-127`; `frontend/src/lib/shell-capability.ts:148-165` | The shipped page is `/health/measurements`. The obsolete bare `/measurements` prose is superseded by Requirement: Health measurements page at the canonical route. |
-| Contacts routes | [Observed] `frontend/src/router-config.tsx:111-120`; `dashboard-relationship` Requirement: Entity index page (`/entities/index`) | `/contacts` and `/contacts/:contactId` remain compatibility aliases that replace-navigate to `/entities/index?has=contact`. The entity index and `/entities/:entityId` own the canonical workflows; reusable contact APIs, hooks, and embedded components remain live. |
+| Contacts routes | [Observed] `frontend/src/router-config.tsx:111-120`; `dashboard-relationship` Requirement: Entity index page (`/entities/index`) | `/contacts` and `/contacts/:contactId` remain compatibility aliases that replace-navigate to `/entities/index?has=contact`. The entity index and `/entities/:entityId` own the canonical workflows. Contact hook/component imports remain in embedded consumers, but `getContacts`, `getContact`, and `getContactInteractions` target backend-dead paths and are not adopted as supported APIs by this reconciliation. |
 | Costs route | [Observed] `frontend/src/router-config.tsx:128-132`; `frontend/src/lib/shell-capability.ts:156`; `dashboard-spend-dashboard` Requirement: Canonical Spend Dashboard Page | `/costs` remains a compatibility alias that replace-navigates to the canonical `/spend` page. Overview cost components and shared spend hooks remain live consumers. |
 | Memory maturity filter | [Observed] `frontend/src/components/memory/RulesRegister.tsx:284-317`; `frontend/src/components/memory/AttentionRail.tsx:252-264`; `frontend/src/hooks/use-memory-url-state.ts:141-186` | The URL-backed `maturity` query remains part of the rules register. The anti-pattern attention row remains live and opens the filtered rules register; it is not retired by the house-ledger redesign. |
 
@@ -278,29 +278,29 @@ The Groups page MUST NOT be surfaced in the primary sidebar navigation; it remai
 
 ### Requirement: Contact hooks with conditional fetching
 
-Contact-related hooks MUST be provided with the following behaviors:
+The contact hook inventory MUST distinguish exported/imported hooks from backend-supported paths:
 
-These hooks MUST remain available to live embedded relationship, ingestion-filter, and entity-detail
-consumers. Their presence does not imply a standalone `/contacts` page:
+The `use-contacts.ts` module remains imported by embedded relationship, ingestion-filter, and
+entity-detail consumers. Import presence MUST NOT be treated as proof of backend support. This
+documentation reconciliation neither removes nor repairs the imported dead-path readers:
 
-| Hook | Conditional | Behavior |
+| Hook | Backend path | Current contract status |
 |---|---|---|
-| `useContacts(params)` | No | Fetch paginated contacts |
-| `useContact(id)` | `enabled: !!contactId` | Fetch single contact detail |
-| `useContactNotes(id)` | `enabled: !!contactId` | Fetch notes for a contact |
-| `useContactInteractions(id)` | `enabled: !!contactId` | Fetch interactions |
-| `useContactGifts(id)` | `enabled: !!contactId` | Fetch gifts |
-| `useContactLoans(id)` | `enabled: !!contactId` | Fetch loans |
-| `useContactFeed(id)` | `enabled: !!contactId` | Fetch activity feed |
-| `useGroups(params)` | No | Fetch paginated groups |
-| `useLabels()` | No | Fetch all labels |
-| `useUpcomingDates(days)` | No | Fetch upcoming important dates |
+| `useContacts(params)` | `GET /api/relationship/contacts` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useContact(id)` | `GET /api/relationship/contacts/:id` | Imported, but backend-dead; no single-contact route exists |
+| `useContactInteractions(id)` | `GET /api/relationship/contacts/:id/interactions` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useOverdueContacts(days)` | `GET /api/relationship/contacts/overdue` | Backend-supported |
+| `useGroups(params)` | `GET /api/relationship/groups` | Backend-supported |
+| `useGroupMembers(id)` | `GET /api/relationship/groups/:id/members` | Backend-supported |
+| `useLabels()` | `GET /api/relationship/labels` | Backend-supported |
+| `useUpcomingDates(days)` | `GET /api/relationship/upcoming-dates` | Backend-supported |
 
 #### Scenario: Contact detail hook waits for an ID
 
 - **GIVEN** no contact ID is available
 - **WHEN** `useContact` renders
 - **THEN** its query MUST remain disabled
+- **AND** that conditional-fetch behavior MUST NOT be described as backend route support
 
 ### Requirement: Entity browser for general butler data
 
@@ -838,7 +838,7 @@ keeps the butler-scoped tab decoupled, so restyling or relocating
 The redesigned memory domain MUST use TanStack Query hooks for stats, the three
 registers, the unified search, recent activity, and the three detail records.
 Register and stats queries MUST be parameterised by the URL state
-(`register` / `q` / `kind` / `validity` / `status` / `offset`). The fact detail
+(`register` / `q` / `kind` / `validity` / `maturity` / `status` / `offset`). The fact detail
 mutations MUST be exposed as `useConfirmFact()` and `useRetractFact()` hooks
 that invalidate the affected fact and stats query keys on success, and these
 hooks MUST only render their corresponding commit pills when the backend
@@ -1504,8 +1504,10 @@ replace-navigate to `/entities/index?has=contact`. The entity index defined by
 compatibility route MUST NOT revive the retired standalone contacts page or its page-specific
 table and Google-sync composition.
 
-This route disposition does not retire the relationship contacts API, contact hooks, or reusable
-contact components. Those remain available to their live embedded consumers.
+This route disposition does not itself remove the contact hook module or reusable contact
+components imported by embedded consumers. It also does not make their backend-dead readers live:
+`getContacts`, `getContact`, and `getContactInteractions` still target absent relationship routes,
+as recorded by Requirement: Contact hooks with conditional fetching.
 
 #### Scenario: Contacts bookmark opens the canonical filtered index
 
@@ -1549,6 +1551,7 @@ Shared Spend consumers MUST use the following TanStack Query hooks:
 | `useSpendSummary(period)` | `cost-summary` | Fleet-event invalidation plus bus-aware polling |
 | `useDailySpend()` | `daily-costs` | Fleet-event invalidation plus bus-aware polling |
 | `useTopSessions(limit)` | `top-sessions` | Fleet-event invalidation plus bus-aware polling |
+| `useCostsBySchedule(from, to)` | `costs-by-schedule` | Fleet-event invalidation plus bus-aware polling |
 
 #### Scenario: Spend summary follows event-bus health
 
@@ -1557,6 +1560,13 @@ Shared Spend consumers MUST use the following TanStack Query hooks:
 - **THEN** it MUST refresh that period's cost summary
 - **AND** its polling interval MUST follow the shared bus-aware poll policy rather than a fixed
   60-second timer
+
+#### Scenario: Schedule costs follow event-bus health
+
+- **GIVEN** `useCostsBySchedule` has fetched a date range
+- **WHEN** a Spend event invalidates `costs-by-schedule`
+- **THEN** it MUST refresh that range's per-schedule costs
+- **AND** its polling interval MUST follow the shared bus-aware poll policy
 
 ### Requirement: Spend widget for dashboard overview
 

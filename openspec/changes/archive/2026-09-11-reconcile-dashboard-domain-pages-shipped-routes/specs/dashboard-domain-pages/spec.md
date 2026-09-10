@@ -134,8 +134,10 @@ replace-navigate to `/entities/index?has=contact`. The entity index defined by
 compatibility route MUST NOT revive the retired standalone contacts page or its page-specific
 table and Google-sync composition.
 
-This route disposition does not retire the relationship contacts API, contact hooks, or reusable
-contact components. Those remain available to their live embedded consumers.
+This route disposition does not itself remove the contact hook module or reusable contact
+components imported by embedded consumers. It also does not make their backend-dead readers live:
+`getContacts`, `getContact`, and `getContactInteractions` still target absent relationship routes,
+as recorded by Requirement: Contact hooks with conditional fetching.
 
 #### Scenario: Contacts bookmark opens the canonical filtered index
 
@@ -179,6 +181,7 @@ Shared Spend consumers MUST use the following TanStack Query hooks:
 | `useSpendSummary(period)` | `cost-summary` | Fleet-event invalidation plus bus-aware polling |
 | `useDailySpend()` | `daily-costs` | Fleet-event invalidation plus bus-aware polling |
 | `useTopSessions(limit)` | `top-sessions` | Fleet-event invalidation plus bus-aware polling |
+| `useCostsBySchedule(from, to)` | `costs-by-schedule` | Fleet-event invalidation plus bus-aware polling |
 
 #### Scenario: Spend summary follows event-bus health
 
@@ -187,6 +190,13 @@ Shared Spend consumers MUST use the following TanStack Query hooks:
 - **THEN** it MUST refresh that period's cost summary
 - **AND** its polling interval MUST follow the shared bus-aware poll policy rather than a fixed
   60-second timer
+
+#### Scenario: Schedule costs follow event-bus health
+
+- **GIVEN** `useCostsBySchedule` has fetched a date range
+- **WHEN** a Spend event invalidates `costs-by-schedule`
+- **THEN** it MUST refresh that range's per-schedule costs
+- **AND** its polling interval MUST follow the shared bus-aware poll policy
 
 ### Requirement: Health Overview landing page
 
@@ -337,29 +347,46 @@ The dashboard MUST provide a `CostWidget` component for embedding on the overvie
 
 ### Requirement: Contact hooks with conditional fetching
 
-Contact-related hooks MUST be provided with the following behaviors:
+The contact hook inventory MUST distinguish exported/imported hooks from backend-supported paths:
 
-These hooks MUST remain available to live embedded relationship, ingestion-filter, and entity-detail
-consumers. Their presence does not imply a standalone `/contacts` page:
+The `use-contacts.ts` module remains imported by embedded relationship, ingestion-filter, and
+entity-detail consumers. Import presence MUST NOT be treated as proof of backend support. This
+documentation reconciliation neither removes nor repairs the imported dead-path readers:
 
-| Hook | Conditional | Behavior |
+| Hook | Backend path | Current contract status |
 |---|---|---|
-| `useContacts(params)` | No | Fetch paginated contacts |
-| `useContact(id)` | `enabled: !!contactId` | Fetch single contact detail |
-| `useContactNotes(id)` | `enabled: !!contactId` | Fetch notes for a contact |
-| `useContactInteractions(id)` | `enabled: !!contactId` | Fetch interactions |
-| `useContactGifts(id)` | `enabled: !!contactId` | Fetch gifts |
-| `useContactLoans(id)` | `enabled: !!contactId` | Fetch loans |
-| `useContactFeed(id)` | `enabled: !!contactId` | Fetch activity feed |
-| `useGroups(params)` | No | Fetch paginated groups |
-| `useLabels()` | No | Fetch all labels |
-| `useUpcomingDates(days)` | No | Fetch upcoming important dates |
+| `useContacts(params)` | `GET /api/relationship/contacts` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useContact(id)` | `GET /api/relationship/contacts/:id` | Imported, but backend-dead; no single-contact route exists |
+| `useContactInteractions(id)` | `GET /api/relationship/contacts/:id/interactions` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useOverdueContacts(days)` | `GET /api/relationship/contacts/overdue` | Backend-supported |
+| `useGroups(params)` | `GET /api/relationship/groups` | Backend-supported |
+| `useGroupMembers(id)` | `GET /api/relationship/groups/:id/members` | Backend-supported |
+| `useLabels()` | `GET /api/relationship/labels` | Backend-supported |
+| `useUpcomingDates(days)` | `GET /api/relationship/upcoming-dates` | Backend-supported |
 
 #### Scenario: Contact detail hook waits for an ID
 
 - **GIVEN** no contact ID is available
 - **WHEN** `useContact` renders
 - **THEN** its query MUST remain disabled
+- **AND** that conditional-fetch behavior MUST NOT be described as backend route support
+
+### Requirement: Memory hooks (house-ledger)
+
+The redesigned memory domain MUST use TanStack Query hooks for stats, the three
+registers, the unified search, recent activity, and the three detail records.
+Register and stats queries MUST be parameterised by the URL state
+(`register` / `q` / `kind` / `validity` / `maturity` / `status` / `offset`). The fact detail
+mutations MUST be exposed as `useConfirmFact()` and `useRetractFact()` hooks
+that invalidate the affected fact and stats query keys on success, and these
+hooks MUST only render their corresponding commit pills when the backend
+confirm/retract endpoints are present (no dead buttons).
+
+#### Scenario: Confirm/Retract gated on backend
+
+- **WHEN** the confirm and retract endpoints are unavailable
+- **THEN** the fact detail page MUST NOT render the Confirm or Retract commit
+  pill (rather than rendering a non-functional button)
 
 ### Requirement: Memory registers — three shapes
 
@@ -523,7 +550,7 @@ summary), with no color, no type badges, and no card chrome. It MUST default to
 
 **Reason**: The standalone contacts list was superseded by the canonical entity index and its `has=contact` filter.
 
-**Migration**: Keep `/contacts` as a compatibility alias to `/entities/index?has=contact`; retain reusable contact APIs, hooks, and embedded components.
+**Migration**: Keep `/contacts` as a compatibility alias to `/entities/index?has=contact`; retain imported hook/component consumers without representing backend-dead contact readers as supported APIs.
 
 ### Requirement: Contact detail page with tabbed sub-resources
 

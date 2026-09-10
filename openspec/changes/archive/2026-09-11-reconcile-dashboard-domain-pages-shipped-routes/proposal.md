@@ -11,7 +11,8 @@ reconciliation into apparent implementation work.
 - Correct health identity and measurements routing to the shipped contracts.
 - Replace retired contacts and costs page requirements with compatibility aliases and canonical
   successor ownership.
-- Preserve reusable contacts and Spend consumers instead of treating a route move as wholesale
+- Record imported contact consumers without misrepresenting their backend-dead readers as
+  supported APIs, and preserve live Spend consumers instead of treating a route move as wholesale
   feature deletion.
 - Preserve the URL-backed memory maturity filter and anti-pattern attention row.
 - Reconcile the affected shell, relationship, Spend, settings, topology, RFC, and inventory

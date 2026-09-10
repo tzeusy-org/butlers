@@ -9,8 +9,8 @@ house-ledger retains URL-backed maturity filtering plus anti-pattern attention.
 
 1. Treat the five findings as stale documentation because the mature implementation and successor
    contracts agree.
-2. Keep compatibility aliases explicit. A moved page is not evidence that every supporting API,
-   hook, or reusable component is dead.
+2. Keep compatibility aliases explicit. A moved page is not evidence that every imported hook or
+   reusable component is dead, but import presence is not proof that its backend path remains live.
 3. Make `/entities/index?has=contact`, `/entities/:entityId`, `/health/measurements`, and
    `/spend` the canonical destinations in current documentation.
 4. Preserve Health at `--category-5` and General at `--category-4`.
@@ -21,8 +21,8 @@ house-ledger retains URL-backed maturity filtering plus anti-pattern attention.
 ## Non-goals
 
 - No implementation change or redesign.
-- No removal of compatibility routes, contacts APIs/components, overview cost components, or
-  shared Spend hooks.
+- No removal or remediation of imported contact hooks/components or their backend-dead readers;
+  no removal of compatibility routes, overview cost components, or shared Spend hooks.
 - No removal of the anti-pattern attention row.
 - No global category-token replacement.
 - No change to retry, concurrency, persistence, or schema behavior.

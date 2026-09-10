@@ -201,8 +201,11 @@ This inventory describes what is implemented today in `frontend/src/**`.
 ## Contacts compatibility (`/contacts`)
 
 - Replace-navigates to the canonical entity index at `/entities/index?has=contact`.
-- Contact APIs, hooks, and reusable components remain live for embedded relationship,
-  ingestion-filter, and entity-detail consumers.
+- Contact hooks and reusable components remain imported by embedded relationship,
+  ingestion-filter, and entity-detail consumers. The `getContacts`, `getContact`, and
+  `getContactInteractions` readers target absent backend paths and are not live API evidence;
+  `/api/relationship/contacts/overdue` and the groups, labels, and upcoming-dates routes remain
+  backend-supported.
 
 ## Contact Detail compatibility (`/contacts/:contactId`)
 

@@ -673,11 +673,13 @@ The Index page MUST render inside `<Page archetype="overview">` (per the in-flig
 
 #### Scenario: `/contacts` index redirects to `/entities/index?has=contact`
 - **WHEN** a request reaches the contacts INDEX path `/contacts` (no `:contactId` param)
-- **THEN** the response MUST be a 301 redirect to `/entities/index?has=contact`
+- **THEN** the client MUST replace-navigate to `/entities/index?has=contact`
 - **AND** no functional regression MUST occur for any prior `/contacts` index workflow
-- **AND** the contact-detail path `/contacts/:contactId` MUST NOT be redirected; it
-  continues to serve the canonical contact detail page per Requirement: Contact detail
-  page canonical route in the shipped `dashboard-relationship` spec.
+- **AND** the contact-detail compatibility path `/contacts/:contactId` MUST also
+  replace-navigate to `/entities/index?has=contact`, as defined by Requirement: Contact
+  routes are compatibility aliases
+- **AND** canonical single-record navigation MUST start from the entity index and target
+  `/entities/:entityId`
 
 ### Requirement: Entity Plex view (`/entities`)
 
