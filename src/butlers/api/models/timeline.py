@@ -116,3 +116,31 @@ class TimelineResponse(BaseModel):
 
     data: list[TimelineEvent]
     meta: TimelineMeta = Field(default_factory=TimelineMeta)
+
+
+class TimelineHistogramBucket(BaseModel):
+    """Content-blind count of matching events in one UTC minute."""
+
+    start: datetime
+    end: datetime
+    count: int = Field(ge=0)
+
+
+class TimelineHistogramMeta(BaseModel):
+    """Interval and source-availability evidence for a histogram read."""
+
+    since: datetime
+    until: datetime
+    bucket_seconds: Literal[60] = 60
+    availability: Literal["complete", "partial", "unavailable"]
+    expected_sources: int = Field(ge=0)
+    healthy_sources: int = Field(ge=0)
+    degraded_sources: list[str] = Field(default_factory=list)
+    degraded_butlers: list[str] = Field(default_factory=list)
+
+
+class TimelineHistogramResponse(BaseModel):
+    """Server-counted, zero-filled minute density for the Timeline."""
+
+    data: list[TimelineHistogramBucket]
+    meta: TimelineHistogramMeta

@@ -693,6 +693,40 @@ export interface TimelineParams {
   before?: string;
   /** Filter sessions and trace-attributed notifications by OpenTelemetry trace ID. */
   trace?: string;
+  /** Inclusive UTC minute bound; must be paired with until. */
+  since?: string;
+  /** Exclusive UTC minute bound; must be paired with since. */
+  until?: string;
+}
+
+export interface TimelineHistogramBucket {
+  start: string;
+  end: string;
+  count: number;
+}
+
+export interface TimelineHistogramMeta {
+  since: string;
+  until: string;
+  bucket_seconds: 60;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineHistogramResponse {
+  data: TimelineHistogramBucket[];
+  meta: TimelineHistogramMeta;
+}
+
+export interface TimelineHistogramParams {
+  since: string;
+  until: string;
+  butler?: string[];
+  event_type?: string[];
+  trace?: string;
 }
 
 // ---------------------------------------------------------------------------

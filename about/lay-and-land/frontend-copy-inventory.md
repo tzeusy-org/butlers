@@ -1099,6 +1099,12 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/TimelinePage.tsx`
 
+- The Timeline interval in this URL is invalid.
+- Clear interval
+- Previous hour
+- Next hour
+- Latest hour
+- Clear selection
 - Scoped to trace
 - Clear trace filter
 - + Save view
@@ -1115,6 +1121,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Cancel
 - Save
 - Sessions, notifications, and errors across every butler: the fleet's single chronicle.
+- Timeline hour density
 - Trace scope
 - Timeline
 - Delete saved view {}
@@ -4049,6 +4056,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Package version
 - Last deploy
 
+## `frontend/src/components/timeline/TimelineDensity.tsx`
+
+- Could not load timeline density.
+- Retry
+- All matching events
+- Counts are not shown because every selected event source is unavailable.
+- Loading timeline density
+- Timeline event density by minute
+
 ## `frontend/src/components/timeline/TimelineEventDrawer.tsx`
 
 - View session transcript
@@ -4223,4 +4239,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3307*
+*Total strings: 3320*

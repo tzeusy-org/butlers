@@ -20,6 +20,10 @@ Query functions (all async):
         -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
     query_timeline_notifications_single(pool, before, before_id, limit, butler_names, trace_id)
         -> list[TimelineNotificationRow]
+    query_timeline_session_histogram_fan_out(...)
+        -> tuple[list[TimelineMinuteCount], list[str]]
+    query_timeline_notification_histogram_single(...)
+        -> list[TimelineMinuteCount]
 
 Row DTOs:
     TimelineSessionRow
@@ -153,6 +157,14 @@ class TimelineNotificationRow:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class TimelineMinuteCount:
+    """Content-blind count returned by a source-local minute aggregation."""
+
+    start: datetime
+    count: int
+
+
 # ---------------------------------------------------------------------------
 # Row converters
 # ---------------------------------------------------------------------------
@@ -200,6 +212,8 @@ async def query_timeline_sessions_fan_out(
     butler_names: list[str] | None = None,
     only_errors: bool | None = None,
     trace_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> tuple[list[TimelineSessionRow], list[str]]:
     """Fan out a timeline session query across all (or a subset of) butlers.
 
@@ -233,6 +247,9 @@ async def query_timeline_sessions_fan_out(
         or null, the "session" event type). ``None`` → no filter (both types).
     trace_id:
         When set, return only sessions carrying this OpenTelemetry trace ID.
+    since / until:
+        Optional paired inclusive/exclusive interval bounds. Validation and
+        pairing are owned by the API route.
 
     Returns
     -------
@@ -246,6 +263,16 @@ async def query_timeline_sessions_fan_out(
     conditions: list[str] = []
     args: list[Any] = []
     idx = 1
+
+    if since is not None:
+        conditions.append(f"started_at >= ${idx}")
+        args.append(since)
+        idx += 1
+
+    if until is not None:
+        conditions.append(f"started_at < ${idx}")
+        args.append(until)
+        idx += 1
 
     if before is not None:
         if before_id is not None:
@@ -292,6 +319,8 @@ async def query_timeline_notifications_single(
     source_butlers: list[str] | None = None,
     only_failed: bool = False,
     trace_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[TimelineNotificationRow]:
     """Query the notifications table from a single pool (switchboard DB).
 
@@ -321,6 +350,9 @@ async def query_timeline_notifications_single(
     trace_id:
         When set, return only notification deliveries carrying this OpenTelemetry
         trace ID.
+    since / until:
+        Optional paired inclusive/exclusive interval bounds. Validation and
+        pairing are owned by the API route.
 
     Returns
     -------
@@ -330,6 +362,16 @@ async def query_timeline_notifications_single(
     conditions: list[str] = []
     args: list[Any] = []
     idx = 1
+
+    if since is not None:
+        conditions.append(f"created_at >= ${idx}")
+        args.append(since)
+        idx += 1
+
+    if until is not None:
+        conditions.append(f"created_at < ${idx}")
+        args.append(until)
+        idx += 1
 
     if before is not None:
         if before_id is not None:
@@ -364,3 +406,73 @@ async def query_timeline_notifications_single(
 
     db_rows = await pool.fetch(sql, *args)
     return [_row_to_notification(r) for r in db_rows]
+
+
+async def query_timeline_session_histogram_fan_out(
+    db: DatabaseManager,
+    *,
+    since: datetime,
+    until: datetime,
+    butler_names: list[str],
+    only_errors: bool | None = None,
+    trace_id: str | None = None,
+) -> tuple[list[TimelineMinuteCount], list[str]]:
+    """Count matching sessions per UTC minute inside each selected butler pool."""
+    conditions = ["started_at >= $1", "started_at < $2"]
+    args: list[Any] = [since, until]
+    idx = 3
+    if only_errors is True:
+        conditions.append("success = false")
+    elif only_errors is False:
+        conditions.append("success IS DISTINCT FROM false")
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT date_trunc('minute', started_at) AS bucket_start, COUNT(*)::bigint AS count "
+        f"FROM sessions WHERE {' AND '.join(conditions)} "
+        "GROUP BY bucket_start ORDER BY bucket_start ASC"
+    )
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
+    counts: list[TimelineMinuteCount] = []
+    for rows in results.values():
+        counts.extend(
+            TimelineMinuteCount(start=row["bucket_start"], count=row["count"]) for row in rows
+        )
+    return counts, degraded_butlers
+
+
+async def query_timeline_notification_histogram_single(
+    pool: asyncpg.Pool,
+    *,
+    since: datetime,
+    until: datetime,
+    source_butlers: list[str] | None = None,
+    only_failed: bool = False,
+    trace_id: str | None = None,
+) -> list[TimelineMinuteCount]:
+    """Count matching notifications per UTC minute in the Switchboard pool."""
+    conditions = ["created_at >= $1", "created_at < $2"]
+    args: list[Any] = [since, until]
+    idx = 3
+    if source_butlers is not None:
+        conditions.append(f"source_butler = ANY(${idx})")
+        args.append(source_butlers)
+        idx += 1
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+        idx += 1
+    if only_failed:
+        conditions.append("status = 'failed'")
+
+    sql = (
+        "SELECT date_trunc('minute', created_at) AS bucket_start, COUNT(*)::bigint AS count "
+        f"FROM notifications WHERE {' AND '.join(conditions)} "
+        "GROUP BY bucket_start ORDER BY bucket_start ASC"
+    )
+    rows = await pool.fetch(sql, *args)
+    return [TimelineMinuteCount(start=row["bucket_start"], count=row["count"]) for row in rows]

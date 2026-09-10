@@ -146,7 +146,8 @@ Required query filters for list endpoints:
 
 ## Timeline Contract
 
-- `GET /api/timeline` -> `TimelineResponse`
+- `GET /api/timeline` -> `TimelineResponse` (optional paired minute-aligned `since` / `until`)
+- `GET /api/timeline/histogram` -> `TimelineHistogramResponse` (server-counted minute buckets and source availability; no event content)
 
 Required query support:
 

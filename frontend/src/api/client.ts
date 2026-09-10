@@ -113,6 +113,8 @@ import type {
   StateSetRequest,
   TimelineParams,
   TimelineResponse,
+  TimelineHistogramParams,
+  TimelineHistogramResponse,
   ScheduleCostsResponse,
   TriggerResponse,
   TickResponse,
@@ -1435,6 +1437,8 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.before) sp.set("before", params.before);
   if (params?.trace) sp.set("trace", params.trace);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.until) sp.set("until", params.until);
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
@@ -1449,6 +1453,17 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
       degraded_butlers: response.meta.degraded_butlers ?? [],
     },
   };
+}
+
+/** Fetch server-counted minute density for one bounded Timeline interval. */
+export function getTimelineHistogram(
+  params: TimelineHistogramParams,
+): Promise<TimelineHistogramResponse> {
+  const sp = new URLSearchParams({ since: params.since, until: params.until });
+  if (params.trace) sp.set("trace", params.trace);
+  params.butler?.forEach((butler) => sp.append("butler", butler));
+  params.event_type?.forEach((type) => sp.append("event_type", type));
+  return apiFetch<TimelineHistogramResponse>(`/timeline/histogram?${sp.toString()}`);
 }
 
 // ---------------------------------------------------------------------------
