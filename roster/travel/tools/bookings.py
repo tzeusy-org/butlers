@@ -97,6 +97,18 @@ def _drop_sparse_metadata_values(value: Any) -> Any:
     return value
 
 
+def _deep_merge_metadata(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Recursively overlay provider metadata while preserving nested siblings."""
+    merged = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_metadata(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Trip auto-matching
 # ---------------------------------------------------------------------------
@@ -354,6 +366,21 @@ async def _insert_leg_by_segment(
         meta,
     ) = _leg_insert_fields(payload, source_message_id)
 
+    # Serialize the read/merge/upsert even when the segment does not exist yet.
+    # A row lock alone cannot protect two concurrent first inserts.
+    await pool.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        f"travel-leg:{booking_record_id}:{segment_index}",
+    )
+    existing_metadata = await pool.fetchval(
+        "SELECT metadata FROM travel.legs "
+        "WHERE booking_record_id = $1::uuid AND segment_index = $2",
+        booking_record_id,
+        segment_index,
+    )
+    if existing_metadata:
+        meta = _deep_merge_metadata(dict(existing_metadata), meta)
+
     row = await pool.fetchrow(
         """
         INSERT INTO travel.legs (
@@ -386,7 +413,7 @@ async def _insert_leg_by_segment(
             ),
             pnr = COALESCE(EXCLUDED.pnr, travel.legs.pnr),
             seat = COALESCE(EXCLUDED.seat, travel.legs.seat),
-            metadata = travel.legs.metadata || EXCLUDED.metadata,
+            metadata = EXCLUDED.metadata,
             updated_at = now()
         RETURNING id, (xmax = 0) AS inserted, departure_at, arrival_at
         """,
@@ -615,14 +642,12 @@ async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None
     party member rather than forging shared person identity or storing facts.
     """
     canonical = name.strip()
-    existing = await pool.fetchval(
+    matches = await pool.fetch(
         """
         WITH RECURSIVE lineage AS (
             SELECT source.id,
                    source.metadata,
-                   ARRAY[source.id] AS visited,
-                   (source.metadata ->> 'merged_into') IS NULL AS source_is_live,
-                   0 AS depth
+                   ARRAY[source.id] AS visited
             FROM public.entities AS source
             WHERE source.entity_type = 'person'
               AND lower(source.canonical_name) = lower($1)
@@ -632,9 +657,7 @@ async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None
 
             SELECT successor.id,
                    successor.metadata,
-                   lineage.visited || successor.id,
-                   lineage.source_is_live,
-                   lineage.depth + 1
+                   lineage.visited || successor.id
             FROM lineage
             JOIN public.entities AS successor
               ON successor.id::text = lineage.metadata ->> 'merged_into'
@@ -642,15 +665,14 @@ async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None
               AND (successor.metadata ->> 'deleted_at') IS NULL
               AND NOT successor.id = ANY(lineage.visited)
         )
-        SELECT id
+        SELECT DISTINCT id
         FROM lineage
         WHERE (metadata ->> 'merged_into') IS NULL
-        ORDER BY source_is_live DESC, depth ASC
-        LIMIT 1
+        LIMIT 2
         """,
         canonical,
     )
-    return str(existing) if existing is not None else None
+    return str(matches[0]["id"]) if len(matches) == 1 else None
 
 
 async def _validate_traveller_entity_id(pool: asyncpg.Pool, entity_id: object) -> str:
@@ -1568,11 +1590,23 @@ async def update_itinerary(
                     params_e.append(entity_id)
                     params_e.append(trip_id)
 
-                    await pool.execute(
-                        f"UPDATE {table} SET {', '.join(set_clauses_e)}"
-                        f" WHERE id = ${idx_e}::uuid AND trip_id = ${idx_e + 1}::uuid",
-                        *params_e,
-                    )
+                    if entity_type == "leg":
+                        params_e.append(_connections.CONNECTION_DERIVATION_METADATA_KEY)
+                        await pool.execute(
+                            f"WITH updated_leg AS ("
+                            f"UPDATE {table} SET {', '.join(set_clauses_e)}"
+                            f" WHERE id = ${idx_e}::uuid AND trip_id = ${idx_e + 1}::uuid"
+                            f" RETURNING trip_id) "
+                            f"UPDATE travel.trips SET metadata = metadata - ${idx_e + 2}::text "
+                            f"WHERE id IN (SELECT trip_id FROM updated_leg)",
+                            *params_e,
+                        )
+                    else:
+                        await pool.execute(
+                            f"UPDATE {table} SET {', '.join(set_clauses_e)}"
+                            f" WHERE id = ${idx_e}::uuid AND trip_id = ${idx_e + 1}::uuid",
+                            *params_e,
+                        )
                     updated_entities.append(
                         {
                             "entity_type": entity_type,
@@ -1582,7 +1616,6 @@ async def update_itinerary(
                     )
 
     if any(item["entity_type"] == "leg" for item in updated_entities):
-        await _connections.mark_connection_derivation_pending(pool, trip_id)
         await _safe_recompute_connections(pool, trip_id)
 
     return {

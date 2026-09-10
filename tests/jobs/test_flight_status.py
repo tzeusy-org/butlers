@@ -17,11 +17,13 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 
 from butlers.jobs.flight_status import (
     _fetch_upcoming_flight_legs,
+    _write_leg_status,
     parse_flight_status,
     run_flight_status_check,
 )
@@ -609,6 +611,11 @@ class TestDelayRepairsConnectionAgainstPostgres:
             original_updated_at = await pool.fetchval(
                 "SELECT updated_at FROM travel.legs WHERE id = $1::uuid", inbound_id
             )
+            await pool.execute(
+                "UPDATE travel.trips SET metadata = jsonb_build_object("
+                "'connection_derivation_completed_at', 'prior') WHERE id = $1::uuid",
+                trip_id,
+            )
 
             # A 40-minute delay on the inbound leg leaves only 80 minutes for
             # the connection -- below the 90-minute PEK minimum.
@@ -625,6 +632,45 @@ class TestDelayRepairsConnectionAgainstPostgres:
                 ]
             }
             client = _mock_client(delayed_payload)
+
+            await pool.execute(
+                """
+                CREATE FUNCTION travel.reject_status_derivation_invalidation() RETURNS trigger AS $$
+                BEGIN
+                    IF OLD.metadata ? 'connection_derivation_completed_at'
+                       AND NOT NEW.metadata ? 'connection_derivation_completed_at' THEN
+                        RAISE EXCEPTION 'injected status invalidation failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER reject_status_derivation_invalidation
+                BEFORE UPDATE ON travel.trips
+                FOR EACH ROW EXECUTE FUNCTION travel.reject_status_derivation_invalidation();
+                """
+            )
+
+            with pytest.raises(asyncpg.RaiseError, match="injected status invalidation failure"):
+                await _write_leg_status(
+                    pool,
+                    inbound_id,
+                    trip_id,
+                    scheduled_departure,
+                    parse_flight_status(delayed_payload),
+                )
+
+            unchanged = await pool.fetchrow(
+                "SELECT departure_at, arrival_at FROM travel.legs WHERE id = $1::uuid", inbound_id
+            )
+            assert unchanged["departure_at"] == scheduled_departure
+            assert unchanged["arrival_at"] == inbound_arrival
+            assert await pool.fetchval(
+                "SELECT metadata ? 'connection_derivation_completed_at' "
+                "FROM travel.trips WHERE id = $1::uuid",
+                trip_id,
+            )
+            await pool.execute("DROP TRIGGER reject_status_derivation_invalidation ON travel.trips")
+            await pool.execute("DROP FUNCTION travel.reject_status_derivation_invalidation()")
 
             with (
                 patch(

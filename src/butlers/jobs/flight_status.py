@@ -295,27 +295,33 @@ async def _write_leg_status(
             original_departure_at = original_departure_at.replace(tzinfo=UTC)
         delta = estimated_departure - original_departure_at
 
+    from butlers.tools.travel import connections as _connections
+
     await pool.execute(
         """
-        UPDATE travel.legs
-        SET metadata = metadata || jsonb_build_object('flight_status', $2::jsonb),
-            departure_at = COALESCE($3::timestamptz, departure_at),
-            arrival_at = CASE
-                WHEN $4::interval IS NOT NULL THEN arrival_at + $4::interval
-                ELSE arrival_at
-            END,
-            updated_at = now()
-        WHERE id = $1
+        WITH updated_leg AS (
+            UPDATE travel.legs
+            SET metadata = metadata || jsonb_build_object('flight_status', $2::jsonb),
+                departure_at = COALESCE($3::timestamptz, departure_at),
+                arrival_at = CASE
+                    WHEN $4::interval IS NOT NULL THEN arrival_at + $4::interval
+                    ELSE arrival_at
+                END,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING trip_id
+        )
+        UPDATE travel.trips
+        SET metadata = metadata - $5::text
+        WHERE id IN (SELECT trip_id FROM updated_leg)
         """,
         leg_id,
         payload,
         estimated_departure,
         delta,
+        _connections.CONNECTION_DERIVATION_METADATA_KEY,
     )
 
-    from butlers.tools.travel import connections as _connections
-
-    await _connections.mark_connection_derivation_pending(pool, str(trip_id))
     try:
         await _connections.recompute_trip_connections(pool, str(trip_id))
     except Exception:

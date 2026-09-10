@@ -319,18 +319,13 @@ async def _withdraw_connection_door(
 ) -> None:
     """Withdraw a still-open connection-risk door once the layover recovers."""
     dedup_prefix = f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}:broken:"
-    try:
-        await pool.execute(
-            "UPDATE pending_actions SET status = 'rejected', "
-            "decided_by = 'system:connection-recovery', decided_at = $2 "
-            "WHERE deduplication_key LIKE $1 AND status = 'pending'",
-            f"{dedup_prefix}%",
-            now,
-        )
-    except Exception:
-        logger.warning(
-            "recompute_trip_connections: failed to withdraw connection door", exc_info=True
-        )
+    await pool.execute(
+        "UPDATE pending_actions SET status = 'rejected', "
+        "decided_by = 'system:connection-recovery', decided_at = $2 "
+        "WHERE deduplication_key LIKE $1 AND status = 'pending'",
+        f"{dedup_prefix}%",
+        now,
+    )
 
 
 async def _recompute_trip_connections_locked(

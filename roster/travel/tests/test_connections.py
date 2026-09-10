@@ -577,6 +577,8 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert door_count == 1
 
     async def test_recovery_withdraws_the_door(self, pool):
+        import butlers.tools.travel.connections as connection_module
+
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")
         inbound_arrival = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
         await _insert_leg(
@@ -617,6 +619,36 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             outbound_id,
             inbound_arrival + timedelta(minutes=150),
             inbound_arrival + timedelta(hours=4),
+        )
+
+        class WithdrawFailureConnection:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            async def execute(self, query, *args):
+                if "UPDATE pending_actions SET status = 'rejected'" in query:
+                    raise RuntimeError("injected withdrawal persistence failure")
+                return await self._conn.execute(query, *args)
+
+        async with pool.acquire() as conn:
+            with pytest.raises(RuntimeError, match="injected withdrawal persistence failure"):
+                async with conn.transaction():
+                    await connection_module._recompute_trip_connections_locked(
+                        WithdrawFailureConnection(conn), trip_id
+                    )
+
+        still_broken = await pool.fetchval(
+            "SELECT verdict FROM travel.connections WHERE trip_id = $1::uuid", trip_id
+        )
+        assert still_broken == "broken"
+        assert (
+            await pool.fetchval(
+                "SELECT status FROM pending_actions WHERE tool_name = 'acknowledge_connection_risk'"
+            )
+            == "pending"
         )
 
         with patch(

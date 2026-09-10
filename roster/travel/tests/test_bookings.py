@@ -655,7 +655,7 @@ class TestRecordBookingIdentity:
             metadata={
                 "flight_number": None,
                 "gate": "",
-                "flight_status": {"status": None, "terminal": " "},
+                "flight_status": {"status": None, "terminal": "2"},
             },
         )
         second = await record_booking(pool=pool, payload=sparse)
@@ -687,7 +687,7 @@ class TestRecordBookingIdentity:
             {
                 "flight_number": "DD94XR",
                 "gate": "A12",
-                "flight_status": {"status": "active", "terminal": "1"},
+                "flight_status": {"status": "active", "terminal": "2"},
                 "source_message_id": "dd94xr-seg0-Alice Traveller",
             },
             self._OUTBOUND_DEP,
@@ -834,6 +834,24 @@ class TestRecordBookingIdentity:
             )
             == 1
         )
+
+        ambiguous_payload = self._segment_payload(
+            segment_index=0, passenger_name="Shared Traveller Name"
+        )
+        ambiguous_payload.update(record_locator="AMBIGUOUS", source_message_id="ambiguous-name")
+        await pool.executemany(
+            "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+            "VALUES ($1, 'person', '{}'::jsonb)",
+            [("Shared Traveller Name",), ("Shared Traveller Name",)],
+        )
+
+        ambiguous = await record_booking(pool=pool, payload=ambiguous_payload)
+
+        local_entity_id = await pool.fetchval(
+            "SELECT entity_id FROM travel.travellers WHERE trip_id = $1::uuid",
+            ambiguous["trip_id"],
+        )
+        assert local_entity_id is None
 
         intermediate_entity_id = await pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
@@ -1306,7 +1324,52 @@ class TestUpdateItineraryEntityLevel:
         trip_id = await _insert_trip(pool)
         leg_id = await self._create_leg(pool, trip_id)
 
+        original_departure = await pool.fetchval(
+            "SELECT departure_at FROM travel.legs WHERE id = $1::uuid", leg_id
+        )
+        await pool.execute(
+            "UPDATE travel.trips SET metadata = jsonb_build_object("
+            "'connection_derivation_completed_at', 'prior') WHERE id = $1::uuid",
+            trip_id,
+        )
+        await pool.execute(
+            """
+            CREATE FUNCTION travel.reject_derivation_invalidation() RETURNS trigger AS $$
+            BEGIN
+                IF OLD.metadata ? 'connection_derivation_completed_at'
+                   AND NOT NEW.metadata ? 'connection_derivation_completed_at' THEN
+                    RAISE EXCEPTION 'injected derivation invalidation failure';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            CREATE TRIGGER reject_derivation_invalidation
+            BEFORE UPDATE ON travel.trips
+            FOR EACH ROW EXECUTE FUNCTION travel.reject_derivation_invalidation();
+            """
+        )
+
         new_dep = (_utcnow() + timedelta(days=5, hours=3)).isoformat()
+        with pytest.raises(asyncpg.RaiseError, match="injected derivation invalidation failure"):
+            await update_itinerary(
+                pool=pool,
+                trip_id=trip_id,
+                patch={"leg_id": leg_id, "departure_at": new_dep},
+                reason="delay notification",
+            )
+
+        unchanged = await pool.fetchrow(
+            "SELECT departure_at FROM travel.legs WHERE id = $1::uuid", leg_id
+        )
+        assert unchanged["departure_at"] == original_departure
+        assert await pool.fetchval(
+            "SELECT metadata ? 'connection_derivation_completed_at' "
+            "FROM travel.trips WHERE id = $1::uuid",
+            trip_id,
+        )
+        await pool.execute("DROP TRIGGER reject_derivation_invalidation ON travel.trips")
+        await pool.execute("DROP FUNCTION travel.reject_derivation_invalidation()")
+
         result = await update_itinerary(
             pool=pool,
             trip_id=trip_id,
