@@ -192,10 +192,10 @@ class TestMigrationRunsAgainstPostgres:
             is True
         )
         candidate = await p.fetchrow(
-            "SELECT provider, record_locator, trip_ids, trip_count, leg_ids "
+            "SELECT operating_carrier, record_locator, trip_ids, trip_count, leg_ids "
             "FROM travel.booking_fragmentation_inventory"
         )
-        assert candidate["provider"] == "test air"
+        assert candidate["operating_carrier"] == "test air"
         assert candidate["record_locator"] == "DD94XR"
         assert candidate["trip_count"] == 2
         assert set(candidate["trip_ids"]) == {trip_id, second_trip_id}

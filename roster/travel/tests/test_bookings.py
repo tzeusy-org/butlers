@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -421,6 +422,20 @@ class TestRecordBookingLeg:
             assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 0
             assert await pool.fetchval("SELECT count(*) FROM travel.legs") == 0
 
+        # These values pass Python shape validation but PostgreSQL rejects
+        # them while binding the leg. The surrounding transaction must also
+        # remove the booking identity and trip created earlier in the call.
+        db_rejected_payloads = [
+            {**valid, "carrier": "Invalid\x00Carrier"},
+            {**valid, "metadata": {"invalid_number": float("nan")}},
+        ]
+        for payload in db_rejected_payloads:
+            with pytest.raises(asyncpg.PostgresError):
+                await record_booking(pool=pool, payload=payload)
+            assert await pool.fetchval("SELECT count(*) FROM travel.trips") == 0
+            assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 0
+            assert await pool.fetchval("SELECT count(*) FROM travel.legs") == 0
+
 
 # ---------------------------------------------------------------------------
 # record_booking — PNR-keyed identity, traveller party, connections (bu-2jtfw.8)
@@ -583,6 +598,7 @@ class TestRecordBookingIdentity:
             carrier="Operating Air",
             departure_city="Singapore",
             arrival_city="Beijing",
+            seat="18A",
         )
         first = await record_booking(pool=pool, payload=payload)
         sparse = {
@@ -612,7 +628,8 @@ class TestRecordBookingIdentity:
 
         preserved = await pool.fetchrow(
             "SELECT carrier, departure_airport_station, departure_city, "
-            "arrival_airport_station, arrival_city, pnr FROM travel.legs WHERE id = $1::uuid",
+            "arrival_airport_station, arrival_city, pnr, seat "
+            "FROM travel.legs WHERE id = $1::uuid",
             first["entity_id"],
         )
         assert tuple(preserved.values()) == (
@@ -622,6 +639,7 @@ class TestRecordBookingIdentity:
             "PEK",
             "Beijing",
             self._RECORD_LOCATOR,
+            "18A",
         )
 
         reverse_sparse = {**sparse, "record_locator": "SPARSE2", "source_message_id": "sparse2"}
@@ -630,7 +648,8 @@ class TestRecordBookingIdentity:
         await record_booking(pool=pool, payload=reverse_full)
         enriched = await pool.fetchrow(
             "SELECT carrier, departure_airport_station, departure_city, "
-            "arrival_airport_station, arrival_city FROM travel.legs WHERE id = $1::uuid",
+            "arrival_airport_station, arrival_city, seat "
+            "FROM travel.legs WHERE id = $1::uuid",
             sparse_first["entity_id"],
         )
         assert tuple(enriched.values()) == (
@@ -639,6 +658,7 @@ class TestRecordBookingIdentity:
             "Singapore",
             "PEK",
             "Beijing",
+            "18A",
         )
 
     async def test_concurrent_ingestion_converges_on_one_trip(self, pool):
@@ -775,7 +795,9 @@ class TestRecordBookingIdentity:
             source_traveller_id,
         )
 
-        payload["passengers"] = [{"entity_id": str(entity_id), "name": "Alice Traveller"}]
+        # Ordinary name-only re-ingest still uses the merged source's old
+        # canonical name. Resolution must follow its lineage to the survivor.
+        payload["passengers"] = [{"name": "Alice duplicate"}]
         await record_booking(pool=pool, payload=payload)
 
         party = await pool.fetch(
@@ -850,7 +872,11 @@ class TestRecordBookingIdentity:
             )
 
         legacy_payload = self._segment_payload(segment_index=1, passenger_name="Alice Traveller")
-        legacy_payload.update(provider="Legacy Air", record_locator="LEGACY1")
+        legacy_payload.update(
+            provider="Expedia",
+            carrier="Legacy Air",
+            record_locator="LEGACY1",
+        )
         trip_count_before = await pool.fetchval("SELECT count(*) FROM travel.trips")
         reconciled = await record_booking(pool=pool, payload=legacy_payload)
 

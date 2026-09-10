@@ -26,8 +26,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import asyncpg
-
 logger = logging.getLogger(__name__)
 
 # A gap longer than this is not a connection -- it's a separate segment of the
@@ -196,56 +194,48 @@ async def _raise_connection_door(
         f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}:"
         f"broken:{rounded_minutes}:{verdict_changed_at.isoformat()}"
     )
+    action_id = uuid.uuid4()
 
-    try:
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="travel",
-            priority=_INSIGHT_ALERT_PRIORITY,
-            category="connection-risk",
-            dedup_key=alert_dedup_key,
-            message=message,
-            expires_at=now + timedelta(days=_INSIGHT_ALERT_EXPIRES_DAYS),
-            metadata={
-                "trip_id": trip_id,
-                "inbound_leg_id": inbound_leg_id,
-                "outbound_leg_id": outbound_leg_id,
-            },
-            now=now,
-        )
-        if result.get("status") == "error":
-            logger.warning(
-                "recompute_trip_connections: propose_insight_candidate error: %s",
-                result.get("reason", "unknown"),
-            )
-    except Exception:
-        logger.warning(
-            "recompute_trip_connections: failed to raise connection alert", exc_info=True
+    result = await propose_insight_candidate(
+        pool,
+        origin_butler="travel",
+        priority=_INSIGHT_ALERT_PRIORITY,
+        category="connection-risk",
+        dedup_key=alert_dedup_key,
+        message=message,
+        expires_at=now + timedelta(days=_INSIGHT_ALERT_EXPIRES_DAYS),
+        metadata={
+            "trip_id": trip_id,
+            "inbound_leg_id": inbound_leg_id,
+            "outbound_leg_id": outbound_leg_id,
+        },
+        prepared_action_id=action_id,
+        now=now,
+    )
+    if result.get("status") == "error":
+        raise RuntimeError(
+            f"connection-risk insight candidate was rejected: {result.get('reason', 'unknown')}"
         )
 
-    try:
-        await park_prepared_action(
-            pool,
-            action_id=uuid.uuid4(),
-            tool_name="acknowledge_connection_risk",
-            tool_args={
-                "trip_id": trip_id,
-                "inbound_leg_id": inbound_leg_id,
-                "outbound_leg_id": outbound_leg_id,
-                "verdict": derivation["verdict"],
-                "available_minutes": available,
-            },
-            agent_summary=f"Connection at risk: {message}",
-            requested_at=now,
-            expires_at=now + timedelta(days=_DOOR_EXPIRES_DAYS),
-            why=message,
-            deduplication_key=dedup_key,
-        )
-    except asyncpg.UniqueViolationError:
-        # A concurrent recompute tick already parked the door for this pair.
-        pass
+    await park_prepared_action(
+        pool,
+        action_id=action_id,
+        tool_name="acknowledge_connection_risk",
+        tool_args={
+            "trip_id": trip_id,
+            "inbound_leg_id": inbound_leg_id,
+            "outbound_leg_id": outbound_leg_id,
+            "verdict": derivation["verdict"],
+            "available_minutes": available,
+        },
+        agent_summary=f"Connection at risk: {message}",
+        requested_at=now,
+        expires_at=now + timedelta(days=_DOOR_EXPIRES_DAYS),
+        why=message,
+        deduplication_key=dedup_key,
+    )
 
 
 async def _withdraw_connection_door(

@@ -230,6 +230,15 @@ CREATE TABLE IF NOT EXISTS public.expected_signals (
 )
 """
 
+CREATE_INSIGHT_CANDIDATES_SQL = """
+CREATE TABLE IF NOT EXISTS insight_candidates (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    category           TEXT NOT NULL,
+    dedup_key          TEXT NOT NULL UNIQUE,
+    prepared_action_id UUID
+)
+"""
+
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
@@ -241,6 +250,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_CONNECTIONS_SQL)
         await p.execute(CREATE_EXPECTED_SIGNALS_SQL)
         await p.execute(PENDING_ACTIONS.ddl())
+        await p.execute(CREATE_INSIGHT_CANDIDATES_SQL)
         yield p
 
 
@@ -384,6 +394,24 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             "VALUES ('PEK', 90)"
         )
 
+        rejected_candidate = AsyncMock(
+            return_value={"status": "error", "reason": "injected candidate persistence failure"}
+        )
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            rejected_candidate,
+        ):
+            failed = await recompute_trip_connections(pool, trip_id)
+
+        assert failed["error"] == "recompute_failed"
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM travel.connections WHERE trip_id = $1::uuid", trip_id
+            )
+            == 0
+        )
+        assert await pool.fetchval("SELECT count(*) FROM pending_actions") == 0
+
         propose_mock = _propose_insight_mock()
         with (
             patch(
@@ -412,6 +440,17 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         )
         propose_mock.reset_mock()
 
+        async def persist_candidate(db, **kwargs):
+            await db.execute(
+                "INSERT INTO insight_candidates (category, dedup_key, prepared_action_id) "
+                "VALUES ($1, $2, $3)",
+                kwargs["category"],
+                kwargs["dedup_key"],
+                kwargs["prepared_action_id"],
+            )
+            return {"status": "accepted"}
+
+        propose_mock.side_effect = persist_candidate
         with patch(
             "butlers.tools.switchboard.insight.broker.propose_insight_candidate", propose_mock
         ):
@@ -435,7 +474,7 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert propose_mock.call_args.kwargs["dedup_key"].count(":") == 3
 
         door = await pool.fetchrow(
-            "SELECT status, tool_name, deduplication_key FROM pending_actions "
+            "SELECT id, status, tool_name, deduplication_key FROM pending_actions "
             "WHERE tool_name = 'acknowledge_connection_risk'"
         )
         assert door is not None
@@ -443,6 +482,10 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         assert door["deduplication_key"].startswith(
             f"travel:connection-risk:{inbound_id}:{outbound_id}:broken:65:"
         )
+        candidate_action_id = await pool.fetchval(
+            "SELECT prepared_action_id FROM insight_candidates WHERE category = 'connection-risk'"
+        )
+        assert candidate_action_id == door["id"]
 
         acknowledged = await acknowledge_connection_risk(
             pool,

@@ -361,6 +361,7 @@ async def _insert_leg_by_segment(
                 EXCLUDED.confirmation_number, travel.legs.confirmation_number
             ),
             pnr = COALESCE(EXCLUDED.pnr, travel.legs.pnr),
+            seat = COALESCE(EXCLUDED.seat, travel.legs.seat),
             metadata = travel.legs.metadata || EXCLUDED.metadata,
             updated_at = now()
         RETURNING id, (xmax = 0) AS inserted
@@ -495,7 +496,7 @@ async def _widen_trip_date_range(
 
 
 async def _resolve_trip_via_booking_record(
-    pool: asyncpg.Pool,
+    db: Any,
     payload: dict[str, Any],
 ) -> tuple[str, bool, dict[str, Any] | None, str]:
     """Resolve (or create) the trip for a PNR-identified leg payload.
@@ -514,61 +515,63 @@ async def _resolve_trip_via_booking_record(
     source_message_id = payload.get("source_message_id")
     provider = str(payload.get("provider") or "").strip().casefold()
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            upserted = await conn.fetchrow(
+    upserted = await db.fetchrow(
+        """
+        INSERT INTO travel.booking_records (record_locator, source_message_id, provider)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (provider, record_locator) WHERE record_locator IS NOT NULL
+            DO UPDATE SET updated_at = now()
+        RETURNING id
+        """,
+        record_locator,
+        source_message_id,
+        provider,
+    )
+    booking_record_id = str(upserted["id"])
+
+    locked = await db.fetchrow(
+        "SELECT trip_id FROM travel.booking_records WHERE id = $1::uuid FOR UPDATE",
+        booking_record_id,
+    )
+    trip_id = str(locked["trip_id"]) if locked["trip_id"] is not None else None
+    trip_created = False
+    trip_event_payload: dict[str, Any] | None = None
+
+    if trip_id is None:
+        # Legacy rows have no booking-provider field. Match their actual
+        # operating-carrier projection. Explicit carrier wins; provider is
+        # only the historical fallback used when those legs were populated.
+        operating_carrier = (
+            str(payload.get("carrier") or payload.get("provider") or "").strip().casefold()
+        )
+        legacy_trip_id = None
+        if operating_carrier:
+            legacy_trip_id = await db.fetchval(
                 """
-                INSERT INTO travel.booking_records (record_locator, source_message_id, provider)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (provider, record_locator) WHERE record_locator IS NOT NULL
-                    DO UPDATE SET updated_at = now()
-                RETURNING id
+                SELECT trip_id
+                FROM travel.legs
+                WHERE lower(btrim(COALESCE(carrier, ''))) = $1
+                  AND upper(btrim(COALESCE(pnr, ''))) = $2
+                ORDER BY departure_at, trip_id
+                LIMIT 1
                 """,
+                operating_carrier,
                 record_locator,
-                source_message_id,
-                provider,
             )
-            booking_record_id = str(upserted["id"])
+        if legacy_trip_id is not None:
+            trip_id = str(legacy_trip_id)
+        else:
+            created_trip = await _create_trip_from_payload(db, payload)
+            trip_id = created_trip["trip_id"]
+            trip_created = True
+            trip_event_payload = created_trip
+        await db.execute(
+            "UPDATE travel.booking_records SET trip_id = $1::uuid WHERE id = $2::uuid",
+            trip_id,
+            booking_record_id,
+        )
 
-            locked = await conn.fetchrow(
-                "SELECT trip_id FROM travel.booking_records WHERE id = $1::uuid FOR UPDATE",
-                booking_record_id,
-            )
-            trip_id = str(locked["trip_id"]) if locked["trip_id"] is not None else None
-            trip_created = False
-            trip_event_payload: dict[str, Any] | None = None
-
-            if trip_id is None:
-                # A pre-migration PNR may already exist on one or more legacy
-                # trips. Reuse one existing container so re-ingest cannot
-                # create a third fragment; the read-only migration inventory
-                # exposes every multi-trip candidate for owner reconciliation.
-                legacy_trip_id = await conn.fetchval(
-                    """
-                    SELECT trip_id
-                    FROM travel.legs
-                    WHERE lower(btrim(COALESCE(carrier, ''))) = $1
-                      AND upper(btrim(COALESCE(pnr, ''))) = $2
-                    ORDER BY departure_at, trip_id
-                    LIMIT 1
-                    """,
-                    provider,
-                    record_locator,
-                )
-                if legacy_trip_id is not None:
-                    trip_id = str(legacy_trip_id)
-                else:
-                    created_trip = await _create_trip_from_payload(conn, payload)
-                    trip_id = created_trip["trip_id"]
-                    trip_created = True
-                    trip_event_payload = created_trip
-                await conn.execute(
-                    "UPDATE travel.booking_records SET trip_id = $1::uuid WHERE id = $2::uuid",
-                    trip_id,
-                    booking_record_id,
-                )
-
-    await _stamp_identity_confidence(pool, trip_id, "strong")
+    await _stamp_identity_confidence(db, trip_id, "strong")
     return trip_id, trip_created, trip_event_payload, booking_record_id
 
 
@@ -583,11 +586,21 @@ async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None
     canonical = name.strip()
     existing = await pool.fetchval(
         """
-        SELECT id FROM public.entities
-        WHERE entity_type = 'person'
-          AND lower(canonical_name) = lower($1)
-          AND (metadata ->> 'merged_into') IS NULL
-          AND (metadata ->> 'deleted_at') IS NULL
+        SELECT COALESCE(survivor.id, source.id)
+        FROM public.entities AS source
+        LEFT JOIN public.entities AS survivor
+          ON survivor.id::text = source.metadata ->> 'merged_into'
+         AND survivor.entity_type = 'person'
+         AND (survivor.metadata ->> 'merged_into') IS NULL
+         AND (survivor.metadata ->> 'deleted_at') IS NULL
+        WHERE source.entity_type = 'person'
+          AND lower(source.canonical_name) = lower($1)
+          AND (source.metadata ->> 'deleted_at') IS NULL
+          AND (
+              (source.metadata ->> 'merged_into') IS NULL
+              OR survivor.id IS NOT NULL
+          )
+        ORDER BY (source.metadata ->> 'merged_into') IS NULL DESC
         LIMIT 1
         """,
         canonical,
@@ -631,7 +644,7 @@ async def _validated_passengers(
 
 
 async def _attach_passengers(
-    pool: asyncpg.Pool,
+    db: Any,
     trip_id: str,
     leg_id: str,
     passengers: list[dict[str, Any]],
@@ -654,7 +667,7 @@ async def _attach_passengers(
         if not entity_id and not name:
             continue
         if not entity_id:
-            entity_id = await _resolve_traveller_entity(pool, name)
+            entity_id = await _resolve_traveller_entity(db, name)
 
         entity_key = f"entity:{entity_id}" if entity_id else None
         name_key = f"name:{str(name).strip().casefold()}" if name else None
@@ -667,16 +680,14 @@ async def _attach_passengers(
         # keys, then either promote the local row or merge it into an existing
         # entity-keyed row without duplicating leg participation.
         lock_keys = sorted({key for key in (entity_key, name_key) if key})
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for key in lock_keys:
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                        f"travel-traveller:{trip_id}:{key}",
-                    )
+        for key in lock_keys:
+            await db.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"travel-traveller:{trip_id}:{key}",
+            )
 
-                rows = await conn.fetch(
-                    """
+        rows = await db.fetch(
+            """
                     SELECT traveller.id, traveller.traveller_key, traveller.entity_id
                     FROM travel.travellers AS traveller
                     LEFT JOIN public.entities AS linked_entity
@@ -688,85 +699,83 @@ async def _attach_passengers(
                       )
                     FOR UPDATE OF traveller
                     """,
-                    trip_id,
-                    lock_keys,
-                    str(entity_id) if entity_id else None,
-                )
-                by_key = {row["traveller_key"]: row for row in rows}
-                entity_row = by_key.get(entity_key) if entity_key else None
-                name_row = by_key.get(name_key) if name_key else None
+            trip_id,
+            lock_keys,
+            str(entity_id) if entity_id else None,
+        )
+        by_key = {row["traveller_key"]: row for row in rows}
+        entity_row = by_key.get(entity_key) if entity_key else None
+        name_row = by_key.get(name_key) if name_key else None
 
-                stale_rows = [
-                    row
-                    for row in rows
-                    if entity_id is not None
-                    and row["entity_id"] is not None
-                    and str(row["entity_id"]) != str(entity_id)
-                ]
-                survivor = entity_row or name_row or (stale_rows[0] if stale_rows else None)
-                duplicate_rows = [
-                    row for row in rows if survivor is not None and row["id"] != survivor["id"]
-                ]
+        stale_rows = [
+            row
+            for row in rows
+            if entity_id is not None
+            and row["entity_id"] is not None
+            and str(row["entity_id"]) != str(entity_id)
+        ]
+        survivor = entity_row or name_row or (stale_rows[0] if stale_rows else None)
+        duplicate_rows = [
+            row for row in rows if survivor is not None and row["id"] != survivor["id"]
+        ]
 
-                for duplicate in duplicate_rows:
-                    await conn.execute(
-                        """
+        for duplicate in duplicate_rows:
+            await db.execute(
+                """
                         INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat)
                         SELECT leg_id, $1::uuid, seat FROM travel.leg_passengers
                         WHERE traveller_id = $2::uuid
                         ON CONFLICT (leg_id, traveller_id) DO UPDATE SET
                             seat = COALESCE(travel.leg_passengers.seat, EXCLUDED.seat)
                         """,
-                        survivor["id"],
-                        duplicate["id"],
-                    )
-                    await conn.execute(
-                        "DELETE FROM travel.travellers WHERE id = $1::uuid", duplicate["id"]
-                    )
+                survivor["id"],
+                duplicate["id"],
+            )
+            await db.execute("DELETE FROM travel.travellers WHERE id = $1::uuid", duplicate["id"])
 
-                if (
-                    survivor is not None
-                    and entity_key is not None
-                    and (entity_row is None or survivor["id"] != entity_row["id"])
-                ):
-                    traveller_row = await conn.fetchrow(
-                        "UPDATE travel.travellers SET entity_id = $1::uuid, "
-                        "traveller_key = $2, display_name = COALESCE(display_name, $3) "
-                        "WHERE id = $4::uuid RETURNING id",
-                        entity_id,
-                        entity_key,
-                        name,
-                        survivor["id"],
-                    )
-                    traveller_id = str(traveller_row["id"])
-                elif survivor is not None:
-                    traveller_id = str(survivor["id"])
-                else:
-                    traveller_row = await conn.fetchrow(
-                        """
+        if (
+            survivor is not None
+            and entity_key is not None
+            and (entity_row is None or survivor["id"] != entity_row["id"])
+        ):
+            traveller_row = await db.fetchrow(
+                "UPDATE travel.travellers SET entity_id = $1::uuid, "
+                "traveller_key = $2, display_name = COALESCE(display_name, $3) "
+                "WHERE id = $4::uuid RETURNING id",
+                entity_id,
+                entity_key,
+                name,
+                survivor["id"],
+            )
+            traveller_id = str(traveller_row["id"])
+        elif survivor is not None:
+            traveller_id = str(survivor["id"])
+        else:
+            traveller_row = await db.fetchrow(
+                """
                         INSERT INTO travel.travellers
                             (trip_id, entity_id, traveller_key, display_name)
                         VALUES ($1::uuid, $2::uuid, $3, $4)
                         RETURNING id
                         """,
-                        trip_id,
-                        entity_id,
-                        traveller_key,
-                        name,
-                    )
-                    traveller_id = str(traveller_row["id"])
+                trip_id,
+                entity_id,
+                traveller_key,
+                name,
+            )
+            traveller_id = str(traveller_row["id"])
 
-                await conn.execute(
-                    """
+        await db.execute(
+            """
                     INSERT INTO travel.leg_passengers (leg_id, traveller_id, seat)
                     VALUES ($1::uuid, $2::uuid, $3)
                     ON CONFLICT (leg_id, traveller_id) DO UPDATE SET
                         seat = COALESCE(EXCLUDED.seat, travel.leg_passengers.seat)
                     """,
-                    leg_id,
-                    traveller_id,
-                    seat,
-                )
+            leg_id,
+            traveller_id,
+            seat,
+        )
 
 
 async def _safe_recompute_connections(pool: asyncpg.Pool, trip_id: str) -> None:
@@ -914,8 +923,8 @@ async def _insert_document(
 # ---------------------------------------------------------------------------
 
 
-async def record_booking(
-    pool: asyncpg.Pool,
+async def _record_booking_transaction(
+    pool: Any,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Parse and persist a booking/update email payload into trip container tables.
@@ -1094,7 +1103,6 @@ async def record_booking(
                 passengers = payload.get("passengers") or []
                 if passengers:
                     await _attach_passengers(pool, trip_id, entity_id, passengers)
-                await _safe_recompute_connections(pool, trip_id)
         elif entity_type == "accommodation":
             entity_id, created, deduped = await _insert_accommodation(
                 pool, trip_id, payload, source_message_id
@@ -1130,6 +1138,25 @@ async def record_booking(
         "trip_created": trip_created,
         "trip_event_payload": trip_event_payload,
     }
+
+
+async def record_booking(
+    pool: asyncpg.Pool,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one booking atomically, then refresh derived connections.
+
+    The booking record, trip, entity, and traveller-party writes share one
+    transaction. PostgreSQL binding or constraint failures therefore cannot
+    strand a partial provider/locator identity for the tool wrapper to publish.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await _record_booking_transaction(conn, payload)
+
+    if result["entity_type"] == "leg" and result["entity_id"] is not None:
+        await _safe_recompute_connections(pool, result["trip_id"])
+    return result
 
 
 # ---------------------------------------------------------------------------

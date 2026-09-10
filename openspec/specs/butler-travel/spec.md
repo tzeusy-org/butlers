@@ -59,7 +59,7 @@ represent the people travelling separately from the shared transport legs.
 - **AND** explicit itinerary or operational changes use the dedicated update paths
 
 #### Scenario: Existing fragmented bookings remain reviewable
-- **WHEN** the journey-identity migration finds one normalized provider and record locator across multiple legacy trips
+- **WHEN** the journey-identity migration finds one normalized operating carrier and record locator across multiple legacy trips
 - **THEN** its dry-run inventory reports the candidate trip and leg identifiers without merging or deleting data
 - **AND** later ingestion reuses an existing candidate trip rather than creating another fragment
 

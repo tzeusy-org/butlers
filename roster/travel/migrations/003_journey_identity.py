@@ -31,7 +31,8 @@ connection data is discarded, but owner seat data survives rollback.
 
 The migration never merges existing trips automatically. Operators review the
 read-only ``travel.booking_fragmentation_inventory`` view first; it reports
-normalized provider/locator groups whose legacy legs span multiple trip IDs.
+normalized operating-carrier/locator groups whose legacy legs span multiple
+trip IDs. Legacy rows do not contain the newer booking-provider identity.
 """
 
 from __future__ import annotations
@@ -193,7 +194,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE OR REPLACE VIEW travel.booking_fragmentation_inventory AS
         SELECT
-            lower(btrim(carrier)) AS provider,
+            lower(btrim(carrier)) AS operating_carrier,
             upper(btrim(pnr)) AS record_locator,
             array_agg(DISTINCT trip_id ORDER BY trip_id) AS trip_ids,
             count(DISTINCT trip_id) AS trip_count,
