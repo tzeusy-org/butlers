@@ -10072,3 +10072,49 @@ export interface DeliveryEntry {
    */
   reaction: ReactionSummary | null;
 }
+
+// ---------------------------------------------------------------------------
+// Lifestyle taste ledger (bu-2jtfw.10)
+// ---------------------------------------------------------------------------
+
+/** Ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
+export interface TasteSummary {
+  total_works: number;
+  total_signals: number;
+  total_verdicts: number;
+  recent_signals_7d: number;
+  works_by_kind: Record<string, number>;
+  signals_by_kind: Record<string, number>;
+  /** False only for a genuine ledger-read failure, never a pre-migration empty ledger. */
+  ledger_available: boolean;
+}
+
+/** One work (track, artist, ...) in the taste ledger. */
+export interface TasteWork {
+  id: string;
+  kind: string;
+  title: string | null;
+  external_ids: Record<string, unknown>;
+  created_at: string;
+}
+
+/** One owner-asserted taste verdict, optionally tied to a work. */
+export interface TasteVerdict {
+  id: string;
+  work_id: string | null;
+  predicate: string;
+  verdict_text: string;
+  source: string;
+  created_at: string;
+}
+
+export interface TasteWorksParams {
+  kind?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface TasteVerdictsParams {
+  offset?: number;
+  limit?: number;
+}

@@ -128,7 +128,7 @@ The Home butler's `daily_briefing_contribution` job SHALL query its domain table
 - **THEN** the contribution has `has_updates=false`
 
 ### Requirement: Lifestyle Butler Contribution
-The Lifestyle butler's `daily_briefing_contribution` job SHALL query its memory tables to extract today's taste and consumption activity: volatile consumption facts recorded today under `watches`, `reads`, `plays`, and `listens_to` predicates, plus newly captured stable taste preferences under `likes_genre`, `likes_artist`, `likes_cuisine`, `favorite_restaurant`, `hobby`, `food_preference`, and `food_dislike`.
+The Lifestyle butler's `daily_briefing_contribution` job SHALL query its memory tables to extract today's taste and consumption activity: volatile consumption facts recorded today under `watches`, `reads`, `plays`, and `listens_to` predicates, plus newly captured stable taste preferences under `likes_genre`, `likes_artist`, `likes_cuisine`, `favorite_restaurant`, `favorite_recipe`, `hobby`, `food_preference`, `food_dislike`, `routine`, `listening_pattern`, `purpose`, and `context`.
 
 #### Scenario: Consumption activity today
 - **WHEN** the user has recorded new volatile consumption facts since midnight SGT
@@ -188,4 +188,3 @@ only permitted v1 cross-butler surfaces for this protocol.
   without direct sibling-schema access
 - **AND** the existence of a return task SHALL not authorize same-day composer,
   envelope, quiet-window, or owner-notification behavior
-

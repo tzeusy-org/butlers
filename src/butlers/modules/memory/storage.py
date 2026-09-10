@@ -1711,6 +1711,13 @@ async def store_fact(
             _fuzzy_suggestions: list[dict] = []
             if _predicate_is_novel:
                 _fuzzy_suggestions = await _fuzzy_match_predicates(conn, predicate)
+                if scope == "lifestyle":
+                    suggested = ", ".join(str(item["predicate"]) for item in _fuzzy_suggestions)
+                    hint = f" Closest registered predicates: {suggested}." if suggested else ""
+                    raise ValueError(
+                        f"Lifestyle predicate {predicate!r} is not registered.{hint} "
+                        "Use the Lifestyle memory taxonomy instead of creating a new predicate."
+                    )
 
             # Guard: reject facts that embed entity UUIDs in content without
             # using object_entity_id.  This catches the common mistake of

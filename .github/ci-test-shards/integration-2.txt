@@ -74,6 +74,7 @@ tests/migrations/test_resolve_owner_triple_migration.py
 tests/migrations/test_retitle_session_episodes_migration.py
 tests/migrations/test_spotify_spoken_policy_migration.py
 tests/migrations/test_spotify_spoken_sessions_migration.py
+tests/migrations/test_spotify_track_plays_migration.py
 tests/modules/memory/test_catalog_sensitivity.py
 tests/modules/memory/test_consolidation_lifecycle.py
 tests/modules/memory/test_episode_cleanup_consolidation_aware.py

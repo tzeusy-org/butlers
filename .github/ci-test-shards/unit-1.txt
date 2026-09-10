@@ -5,6 +5,7 @@ roster/finance/tests/test_budgets.py
 roster/finance/tests/test_data_import.py
 roster/finance/tests/test_expected_signals.py
 roster/finance/tests/test_import_transactions_blobstore.py
+roster/lifestyle/tests/test_lifestyle_module.py
 roster/lifestyle/tests/test_lifestyle_spotify_integration.py
 roster/relationship/tests/test_dunbar_ranking_api.py
 roster/relationship/tests/test_entity_facts_repoint_on_merge.py

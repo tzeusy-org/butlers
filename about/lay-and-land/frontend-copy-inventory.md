@@ -1521,24 +1521,17 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
 
-- Taste overview
 - Could not load taste overview.
-- Could not load taste preferences.
-- No taste preferences recorded yet.
-- Could not load consumption state.
-- No active consumption tracked.
-- Could not load recent additions.
-- No facts logged yet.
-- No weekly digests yet.
-- Lifestyle data failed to load. All panels are unavailable until the next successful fetch.
-- Taste summary
-- Consumption state
-- Recent additions
-- Weekly digest archive
-- Active preferences
-- Currently consuming
-- Recently logged
-- Weekly digest
+- Could not load taste verdicts.
+- No taste verdicts recorded yet.
+- Could not load recent works.
+- No works recorded yet.
+- Some lifestyle taste data failed to load. Unavailable panels will retry automatically.
+- Taste verdicts
+- Recently added
+- Works tracked
+- All signals
+- Signals (7d)
 
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
 
@@ -4225,4 +4218,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3309*
+*Total strings: 3302*

@@ -38,6 +38,7 @@ tests/api/test_health_measurements_trend.py
 tests/api/test_ingestion_bulk_retry.py
 tests/api/test_ingestion_events.py
 tests/api/test_latency_stats.py
+tests/api/test_lifestyle_taste.py
 tests/api/test_notifications.py
 tests/api/test_oauth_integration.py
 tests/api/test_pricing.py

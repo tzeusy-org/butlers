@@ -1287,6 +1287,28 @@ async def _run_lifestyle_briefing_contribution_job(
     return await run_lifestyle_briefing_contribution(pool=pool, job_args=job_args)
 
 
+async def _run_lifestyle_taste_projection_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project connector evidence into Lifestyle's taste ledger without an LLM."""
+    del job_args
+    from butlers.tools.lifestyle import taste_ledger
+
+    sessions = await taste_ledger.backfill_from_listening_sessions(pool)
+    plays = await taste_ledger.backfill_from_track_plays(pool)
+    return {
+        "sessions": {
+            "works_created": sessions.works_created,
+            "signals_created": sessions.signals_created,
+        },
+        "track_plays": {
+            "works_created": plays.works_created,
+            "signals_created": plays.signals_created,
+        },
+    }
+
+
 async def _run_collect_briefing_contributions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2028,6 +2050,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
+            "taste_ledger_project": _run_lifestyle_taste_projection_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "switchboard": {

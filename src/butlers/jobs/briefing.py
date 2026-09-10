@@ -1588,6 +1588,22 @@ async def collect_briefing_contributions(
 # Lifestyle butler contribution job
 # ---------------------------------------------------------------------------
 
+_LIFESTYLE_TRANSIENT_PREDICATES = ["watches", "reads", "plays", "listens_to"]
+_LIFESTYLE_DURABLE_PREDICATES = [
+    "likes_genre",
+    "likes_artist",
+    "likes_cuisine",
+    "favorite_restaurant",
+    "favorite_recipe",
+    "hobby",
+    "food_preference",
+    "food_dislike",
+    "routine",
+    "listening_pattern",
+    "purpose",
+    "context",
+]
+
 
 async def run_lifestyle_briefing_contribution(
     pool: asyncpg.Pool,
@@ -1622,8 +1638,23 @@ async def run_lifestyle_briefing_contribution(
         ORDER BY created_at DESC
         LIMIT 10
         """,
-        ["watches", "reads", "plays", "listens_to"],
+        _LIFESTYLE_TRANSIENT_PREDICATES,
         today_start,
+    )
+    transient_count = (
+        await pool.fetchval(
+            """
+            SELECT count(*)
+            FROM facts
+            WHERE validity = 'active'
+              AND permanence = 'volatile'
+              AND predicate = ANY($1::text[])
+              AND created_at >= $2
+            """,
+            _LIFESTYLE_TRANSIENT_PREDICATES,
+            today_start,
+        )
+        or 0
     )
 
     for row in transient_rows:
@@ -1656,16 +1687,23 @@ async def run_lifestyle_briefing_contribution(
         ORDER BY created_at DESC
         LIMIT 5
         """,
-        [
-            "likes_genre",
-            "likes_artist",
-            "likes_cuisine",
-            "favorite_restaurant",
-            "hobby",
-            "food_preference",
-            "food_dislike",
-        ],
+        _LIFESTYLE_DURABLE_PREDICATES,
         today_start,
+    )
+    durable_count = (
+        await pool.fetchval(
+            """
+            SELECT count(*)
+            FROM facts
+            WHERE validity = 'active'
+              AND permanence = 'stable'
+              AND predicate = ANY($1::text[])
+              AND created_at >= $2
+            """,
+            _LIFESTYLE_DURABLE_PREDICATES,
+            today_start,
+        )
+        or 0
     )
 
     for row in durable_rows:
@@ -1683,10 +1721,10 @@ async def run_lifestyle_briefing_contribution(
     has_updates = len(highlights) > 0
 
     parts: list[str] = []
-    if transient_rows:
-        parts.append(f"{len(transient_rows)} new consumption note(s) today.")
-    if durable_rows:
-        parts.append(f"{len(durable_rows)} taste preference(s) captured today.")
+    if transient_count:
+        parts.append(f"{transient_count} new consumption note(s) today.")
+    if durable_count:
+        parts.append(f"{durable_count} taste preference(s) captured today.")
     summary = " ".join(parts) if parts else "No lifestyle updates today."
 
     envelope: BriefingContribution = {
@@ -1702,8 +1740,8 @@ async def run_lifestyle_briefing_contribution(
         "butler": "lifestyle",
         "date": today_str,
         "has_updates": has_updates,
-        "consumption_notes": len(transient_rows),
-        "taste_updates": len(durable_rows),
+        "consumption_notes": transient_count,
+        "taste_updates": durable_count,
     }
 
 
