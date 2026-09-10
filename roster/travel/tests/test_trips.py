@@ -146,6 +146,23 @@ CREATE TABLE IF NOT EXISTS travel.documents (
 )
 """
 
+# bu-2jtfw.8: trip_summary() now also queries travel.connections.
+CREATE_CONNECTIONS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.connections (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
+    available_minutes  INT,
+    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at        TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (inbound_leg_id, outbound_leg_id)
+)
+"""
+
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
@@ -157,6 +174,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_ACCOMMODATIONS_SQL)
         await p.execute(CREATE_RESERVATIONS_SQL)
         await p.execute(CREATE_DOCUMENTS_SQL)
+        await p.execute(CREATE_CONNECTIONS_SQL)
         yield p
 
 
@@ -590,6 +608,7 @@ class TestTripSummary:
             "documents",
             "timeline",
             "alerts",
+            "connections",
         }
 
     async def test_empty_trip_no_alerts(self, pool):

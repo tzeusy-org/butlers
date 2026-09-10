@@ -116,6 +116,23 @@ CREATE TABLE IF NOT EXISTS travel.documents (
 )
 """
 
+# bu-2jtfw.8: trip_summary() now also queries travel.connections.
+_CREATE_CONNECTIONS = """
+CREATE TABLE IF NOT EXISTS travel.connections (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
+    available_minutes  INT,
+    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at        TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (inbound_leg_id, outbound_leg_id)
+)
+"""
+
 
 # ---------------------------------------------------------------------------
 # Pool fixture
@@ -132,6 +149,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(_CREATE_ACCOMMODATIONS)
         await p.execute(_CREATE_RESERVATIONS)
         await p.execute(_CREATE_DOCUMENTS)
+        await p.execute(_CREATE_CONNECTIONS)
         yield p
 
 

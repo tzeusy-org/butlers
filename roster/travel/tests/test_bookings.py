@@ -7,6 +7,7 @@ roster/finance/tests/test_tools.py.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -107,6 +108,100 @@ CREATE TABLE IF NOT EXISTS travel.documents (
 )
 """
 
+# bu-2jtfw.8: PNR-keyed booking identity, traveller party, and connections.
+CREATE_PUBLIC_ENTITIES_SQL = """
+CREATE TABLE IF NOT EXISTS public.entities (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    canonical_name  TEXT NOT NULL DEFAULT '',
+    entity_type     TEXT NOT NULL DEFAULT 'other',
+    aliases         TEXT[] NOT NULL DEFAULT '{}',
+    metadata        JSONB DEFAULT '{}'::jsonb,
+    roles           TEXT[] NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_BOOKING_RECORDS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.booking_records (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID REFERENCES travel.trips(id) ON DELETE CASCADE,
+    record_locator     TEXT,
+    source_message_id  TEXT,
+    provider           TEXT,
+    metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_BOOKING_RECORDS_UNIQUE_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_record_locator
+    ON travel.booking_records (record_locator) WHERE record_locator IS NOT NULL
+"""
+
+ALTER_LEGS_ADD_SEGMENT_IDENTITY_SQL = """
+ALTER TABLE travel.legs
+    ADD COLUMN IF NOT EXISTS segment_index INT,
+    ADD COLUMN IF NOT EXISTS booking_record_id UUID
+        REFERENCES travel.booking_records(id) ON DELETE SET NULL
+"""
+
+CREATE_LEGS_SEGMENT_UNIQUE_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS ux_legs_booking_record_segment
+    ON travel.legs (booking_record_id, segment_index)
+    WHERE booking_record_id IS NOT NULL AND segment_index IS NOT NULL
+"""
+
+CREATE_TRAVELLERS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.travellers (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id       UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    entity_id     UUID NOT NULL,
+    display_name  TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (trip_id, entity_id)
+)
+"""
+
+CREATE_LEG_PASSENGERS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.leg_passengers (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    leg_id         UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    traveller_id   UUID NOT NULL REFERENCES travel.travellers(id) ON DELETE CASCADE,
+    seat           TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (leg_id, traveller_id)
+)
+"""
+
+CREATE_AIRPORT_MINIMUM_CONNECT_SQL = """
+CREATE TABLE IF NOT EXISTS travel.airport_minimum_connect (
+    airport_code               TEXT PRIMARY KEY,
+    minimum_connect_minutes    INT NOT NULL,
+    interline_buffer_minutes   INT NOT NULL DEFAULT 30,
+    source                     TEXT,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_CONNECTIONS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.connections (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id            UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    inbound_leg_id     UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    outbound_leg_id    UUID NOT NULL REFERENCES travel.legs(id) ON DELETE CASCADE,
+    verdict            TEXT NOT NULL CHECK (verdict IN ('holds', 'tight', 'broken', 'unknown')),
+    available_minutes  INT,
+    evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    computed_at        TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (inbound_leg_id, outbound_leg_id)
+)
+"""
+
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
@@ -118,6 +213,15 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_ACCOMMODATIONS_SQL)
         await p.execute(CREATE_RESERVATIONS_SQL)
         await p.execute(CREATE_DOCUMENTS_SQL)
+        await p.execute(CREATE_PUBLIC_ENTITIES_SQL)
+        await p.execute(CREATE_BOOKING_RECORDS_SQL)
+        await p.execute(CREATE_BOOKING_RECORDS_UNIQUE_INDEX_SQL)
+        await p.execute(ALTER_LEGS_ADD_SEGMENT_IDENTITY_SQL)
+        await p.execute(CREATE_LEGS_SEGMENT_UNIQUE_INDEX_SQL)
+        await p.execute(CREATE_TRAVELLERS_SQL)
+        await p.execute(CREATE_LEG_PASSENGERS_SQL)
+        await p.execute(CREATE_AIRPORT_MINIMUM_CONNECT_SQL)
+        await p.execute(CREATE_CONNECTIONS_SQL)
         yield p
 
 
@@ -280,6 +384,222 @@ class TestRecordBookingLeg:
         assert result["entity_id"] is None
         assert result["created"] is False
         assert len(result["warnings"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# record_booking — PNR-keyed identity, traveller party, connections (bu-2jtfw.8)
+# ---------------------------------------------------------------------------
+
+
+class TestRecordBookingIdentity:
+    """The real DD94XR fixture: one PNR, two passengers, two segments.
+
+    Historically this split into two separate one-day trips (one per
+    destination substring) and the return leg deduped away against the
+    outbound because both shared one confirmation_number. This class proves
+    the PNR-keyed identity contract instead.
+    """
+
+    _RECORD_LOCATOR = "DD94XR"
+    _SHARED_CONFIRMATION = "SHARED-CONF-001"
+    _OUTBOUND_DEP = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
+    _OUTBOUND_ARR = datetime(2026, 10, 16, 14, 0, tzinfo=UTC)
+    _RETURN_DEP = datetime(2026, 10, 25, 14, 0, tzinfo=UTC)
+    _RETURN_ARR = datetime(2026, 10, 25, 20, 0, tzinfo=UTC)
+
+    def _segment_payload(self, *, segment_index: int, passenger_name: str) -> dict:
+        if segment_index == 0:
+            dep, arr, dep_station, arr_station, flight_number = (
+                self._OUTBOUND_DEP,
+                self._OUTBOUND_ARR,
+                "SIN",
+                "PEK",
+                "DD94XR",
+            )
+        else:
+            dep, arr, dep_station, arr_station, flight_number = (
+                self._RETURN_DEP,
+                self._RETURN_ARR,
+                "PEK",
+                "SIN",
+                "DD94YR",
+            )
+        return {
+            "entity_type": "leg",
+            "record_locator": self._RECORD_LOCATOR,
+            "segment_index": segment_index,
+            "confirmation_number": self._SHARED_CONFIRMATION,
+            "provider": "Test Air",
+            "departure_airport_station": dep_station,
+            "arrival_airport_station": arr_station,
+            "departure_at": dep.isoformat(),
+            "arrival_at": arr.isoformat(),
+            "metadata": {"flight_number": flight_number},
+            "passengers": [{"name": passenger_name}],
+            "source_message_id": f"dd94xr-seg{segment_index}-{passenger_name}",
+        }
+
+    def _fixture_payloads(self) -> list[dict]:
+        return [
+            self._segment_payload(segment_index=0, passenger_name="Alice Traveller"),
+            self._segment_payload(segment_index=0, passenger_name="Bob Traveller"),
+            self._segment_payload(segment_index=1, passenger_name="Alice Traveller"),
+            self._segment_payload(segment_index=1, passenger_name="Bob Traveller"),
+        ]
+
+    async def test_dd94xr_fixture_yields_one_trip_two_legs_four_leg_passengers(self, pool):
+        """Ingesting the four DD94XR payloads (any order) converges on one trip."""
+        from butlers.tools.travel.bookings import record_booking
+
+        results = [
+            await record_booking(pool=pool, payload=payload) for payload in self._fixture_payloads()
+        ]
+
+        trip_ids = {r["trip_id"] for r in results}
+        assert len(trip_ids) == 1, f"expected one converged trip, got {trip_ids}"
+        trip_id = trip_ids.pop()
+
+        trip_row = await pool.fetchrow(
+            "SELECT start_date, end_date FROM travel.trips WHERE id = $1::uuid", trip_id
+        )
+        assert trip_row["start_date"].isoformat() == "2026-10-16"
+        assert trip_row["end_date"].isoformat() == "2026-10-25"
+
+        leg_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", trip_id
+        )
+        assert leg_count == 2
+
+        leg_passenger_count = await pool.fetchval(
+            """
+            SELECT count(*) FROM travel.leg_passengers lp
+            JOIN travel.legs l ON l.id = lp.leg_id
+            WHERE l.trip_id = $1::uuid
+            """,
+            trip_id,
+        )
+        assert leg_passenger_count == 4
+
+        # Both segments converged one leg each, not one leg per passenger.
+        assert results[0]["entity_id"] == results[1]["entity_id"]
+        assert results[2]["entity_id"] == results[3]["entity_id"]
+        assert results[0]["entity_id"] != results[2]["entity_id"]
+
+    async def test_dd94xr_fixture_order_independent(self, pool):
+        """The same fixture ingested in a different order converges identically."""
+        from butlers.tools.travel.bookings import record_booking
+
+        payloads = list(reversed(self._fixture_payloads()))
+        results = [await record_booking(pool=pool, payload=payload) for payload in payloads]
+
+        trip_ids = {r["trip_id"] for r in results}
+        assert len(trip_ids) == 1
+        trip_id = trip_ids.pop()
+
+        leg_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", trip_id
+        )
+        assert leg_count == 2
+
+    async def test_return_leg_not_deduped_when_sharing_confirmation_number(self, pool):
+        """Regression: two segments sharing one confirmation_number must not merge."""
+        from butlers.tools.travel.bookings import record_booking
+
+        outbound_result = await record_booking(
+            pool=pool, payload=self._segment_payload(segment_index=0, passenger_name="Alice")
+        )
+        return_result = await record_booking(
+            pool=pool, payload=self._segment_payload(segment_index=1, passenger_name="Alice")
+        )
+
+        assert outbound_result["entity_id"] != return_result["entity_id"]
+        assert outbound_result["deduped"] is False
+        assert return_result["deduped"] is False
+
+        confirmation_leg_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.legs WHERE confirmation_number = $1",
+            self._SHARED_CONFIRMATION,
+        )
+        assert confirmation_leg_count == 2
+
+    async def test_reingesting_same_segment_is_idempotent(self, pool):
+        """Re-ingesting the same PNR segment returns created=False, same leg id."""
+        from butlers.tools.travel.bookings import record_booking
+
+        payload = self._segment_payload(segment_index=0, passenger_name="Alice Traveller")
+        first = await record_booking(pool=pool, payload=payload)
+        second = await record_booking(pool=pool, payload=payload)
+
+        assert first["created"] is True
+        assert second["created"] is False
+        assert second["entity_id"] == first["entity_id"]
+        assert second["trip_id"] == first["trip_id"]
+
+        leg_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", first["trip_id"]
+        )
+        assert leg_count == 1
+
+    async def test_concurrent_ingestion_converges_on_one_trip(self, pool):
+        """Two sessions racing the same PNR converge on one trip, one leg per segment."""
+        from butlers.tools.travel.bookings import record_booking
+
+        results = await asyncio.gather(
+            *[record_booking(pool=pool, payload=payload) for payload in self._fixture_payloads()]
+        )
+
+        trip_ids = {r["trip_id"] for r in results}
+        assert len(trip_ids) == 1, f"expected one converged trip under concurrency, got {trip_ids}"
+        trip_id = trip_ids.pop()
+
+        leg_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", trip_id
+        )
+        assert leg_count == 2
+
+        leg_passenger_count = await pool.fetchval(
+            """
+            SELECT count(*) FROM travel.leg_passengers lp
+            JOIN travel.legs l ON l.id = lp.leg_id
+            WHERE l.trip_id = $1::uuid
+            """,
+            trip_id,
+        )
+        assert leg_passenger_count == 4
+
+    async def test_no_record_locator_stamps_weak_identity_confidence(self, pool):
+        """Without a record_locator, the fuzzy-matched trip is stamped 'weak'."""
+        from butlers.tools.travel.bookings import record_booking
+
+        dep_at = (_utcnow() + timedelta(days=20)).isoformat()
+        arr_at = (_utcnow() + timedelta(days=20, hours=5)).isoformat()
+
+        result = await record_booking(
+            pool=pool,
+            payload={
+                "entity_type": "leg",
+                "arrival": "Berlin",
+                "departure_at": dep_at,
+                "arrival_at": arr_at,
+            },
+        )
+
+        metadata = await pool.fetchval(
+            "SELECT metadata FROM travel.trips WHERE id = $1::uuid", result["trip_id"]
+        )
+        assert metadata["identity_confidence"] == "weak"
+
+    async def test_record_locator_stamps_strong_identity_confidence(self, pool):
+        from butlers.tools.travel.bookings import record_booking
+
+        result = await record_booking(
+            pool=pool, payload=self._segment_payload(segment_index=0, passenger_name="Alice")
+        )
+
+        metadata = await pool.fetchval(
+            "SELECT metadata FROM travel.trips WHERE id = $1::uuid", result["trip_id"]
+        )
+        assert metadata["identity_confidence"] == "strong"
 
 
 # ---------------------------------------------------------------------------
