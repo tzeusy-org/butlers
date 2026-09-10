@@ -39,6 +39,7 @@ if _spec is not None and _spec.loader is not None:
     TimelineEntryModel = _models.TimelineEntryModel
     TripModel = _models.TripModel
     TripSummaryModel = _models.TripSummaryModel
+    TravellerModel = _models.TravellerModel
     UpcomingTravelModel = _models.UpcomingTravelModel
     UpcomingTripModel = _models.UpcomingTripModel
 
@@ -98,6 +99,10 @@ def _row_to_connection(r: dict) -> ConnectionModel:
     for extra in ("id", "trip_id", "created_at", "updated_at"):
         d.pop(extra, None)
     return ConnectionModel(**d)
+
+
+def _row_to_traveller(r: dict) -> TravellerModel:
+    return TravellerModel(**_row_to_dict(r))
 
 
 def _rows_to_models(rows: list, converter, entity_label: str) -> tuple[list, list[str]]:
@@ -331,6 +336,13 @@ async def get_trip_summary(
     # Compute alerts
     alerts = _compute_alerts(legs, documents)
 
+    party_rows = await pool.fetch(
+        "SELECT id, entity_id, display_name FROM travel.travellers "
+        "WHERE trip_id = $1::uuid ORDER BY display_name NULLS LAST, id",
+        trip_id,
+    )
+    party, unreadable_party_ids = _rows_to_models(party_rows, _row_to_traveller, "traveller")
+
     connection_rows = await pool.fetch(
         "SELECT id, inbound_leg_id, outbound_leg_id, verdict, available_minutes,"
         " evidence, computed_at"
@@ -349,11 +361,14 @@ async def get_trip_summary(
         documents=documents,
         timeline=timeline,
         alerts=alerts,
+        party=party,
         connections=connections,
+        connection_reason=None if connections else "no_connection_on_journey",
         unreadable_leg_ids=unreadable_leg_ids,
         unreadable_accommodation_ids=unreadable_accommodation_ids,
         unreadable_reservation_ids=unreadable_reservation_ids,
         unreadable_document_ids=unreadable_document_ids,
+        unreadable_party_ids=unreadable_party_ids,
     )
 
 

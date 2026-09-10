@@ -114,6 +114,14 @@ class ConnectionModel(BaseModel):
     computed_at: str
 
 
+class TravellerModel(BaseModel):
+    """A member of the traveller party linked through public entity identity."""
+
+    id: str
+    entity_id: str | None = None
+    display_name: str | None = None
+
+
 class TripSummaryModel(BaseModel):
     """Full trip summary with all linked entities and timeline."""
 
@@ -124,11 +132,13 @@ class TripSummaryModel(BaseModel):
     documents: list[DocumentModel] = []
     timeline: list[TimelineEntryModel] = []
     alerts: list[AlertModel] = []
+    party: list[TravellerModel] = []
     # Empty when the journey has no adjacent legs sharing a connecting
     # airport (e.g. a round trip's two direct legs) -- always present, never
     # an omitted key, so the dashboard can render "no connection on this
     # journey" instead of guessing at a missing field.
     connections: list[ConnectionModel] = []
+    connection_reason: str | None = None
     # Sub-collection rows excluded because they could not be normalized (e.g.
     # corrupt metadata) -- named-list degraded-mode envelope, mirroring
     # UpcomingTravelModel.unreadable_trip_ids, never silently dropped.
@@ -136,6 +146,7 @@ class TripSummaryModel(BaseModel):
     unreadable_accommodation_ids: list[str] = []
     unreadable_reservation_ids: list[str] = []
     unreadable_document_ids: list[str] = []
+    unreadable_party_ids: list[str] = []
 
 
 class UpcomingTripModel(BaseModel):

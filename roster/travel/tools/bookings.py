@@ -443,9 +443,9 @@ async def _resolve_trip_via_booking_record(
 
     Returns ``(trip_id, trip_created, trip_event_payload, booking_record_id)``.
     """
-    record_locator = payload["record_locator"]
+    record_locator = str(payload["record_locator"]).strip().upper()
     source_message_id = payload.get("source_message_id")
-    provider = payload.get("provider") or None
+    provider = str(payload.get("provider") or "").strip().casefold()
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -453,7 +453,7 @@ async def _resolve_trip_via_booking_record(
                 """
                 INSERT INTO travel.booking_records (record_locator, source_message_id, provider)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (record_locator) WHERE record_locator IS NOT NULL
+                ON CONFLICT (provider, record_locator) WHERE record_locator IS NOT NULL
                     DO UPDATE SET updated_at = now()
                 RETURNING id
                 """,
@@ -486,14 +486,13 @@ async def _resolve_trip_via_booking_record(
     return trip_id, trip_created, trip_event_payload, booking_record_id
 
 
-async def _resolve_or_create_traveller_entity(pool: asyncpg.Pool, name: str) -> str:
-    """Resolve a traveller name to a ``public.entities`` id, creating one if needed.
+async def _resolve_traveller_entity(pool: asyncpg.Pool, name: str) -> str | None:
+    """Resolve a traveller name to an existing canonical ``public.entities`` id.
 
-    Scoped to entities this butler created (``metadata.source_butler =
-    'travel'``) so a name collision never silently attaches a booking to an
-    unrelated contact the relationship butler already tracks -- Travel stores
-    no relational facts and does not own person identity (bu-2jtfw.8 design:
-    "Travel stores no relational facts").
+    ``public.entities`` is the canonical person identity spine. Travel links
+    to an existing exact-name person when one exists. Its runtime role is
+    read-only on the shared schema, so an unresolved name remains a local
+    party member rather than forging shared person identity or storing facts.
     """
     canonical = name.strip()
     existing = await pool.fetchval(
@@ -501,25 +500,13 @@ async def _resolve_or_create_traveller_entity(pool: asyncpg.Pool, name: str) -> 
         SELECT id FROM public.entities
         WHERE entity_type = 'person'
           AND lower(canonical_name) = lower($1)
-          AND metadata ->> 'source_butler' = 'travel'
           AND (metadata ->> 'merged_into') IS NULL
+          AND (metadata ->> 'deleted_at') IS NULL
         LIMIT 1
         """,
         canonical,
     )
-    if existing is not None:
-        return str(existing)
-
-    row = await pool.fetchrow(
-        """
-        INSERT INTO public.entities (canonical_name, entity_type, metadata)
-        VALUES ($1, 'person', $2::jsonb)
-        RETURNING id
-        """,
-        canonical,
-        {"source_butler": "travel"},
-    )
-    return str(row["id"])
+    return str(existing) if existing is not None else None
 
 
 async def _attach_passengers(
@@ -540,22 +527,30 @@ async def _attach_passengers(
     for passenger in passengers:
         entity_id = passenger.get("entity_id")
         name = passenger.get("name")
+        if name is not None:
+            name = str(name).strip() or None
         seat = passenger.get("seat")
         if not entity_id and not name:
             continue
         if not entity_id:
-            entity_id = await _resolve_or_create_traveller_entity(pool, name)
+            entity_id = await _resolve_traveller_entity(pool, name)
+
+        traveller_key = (
+            f"entity:{entity_id}" if entity_id else f"name:{str(name).strip().casefold()}"
+        )
 
         traveller_row = await pool.fetchrow(
             """
-            INSERT INTO travel.travellers (trip_id, entity_id, display_name)
-            VALUES ($1::uuid, $2::uuid, $3)
-            ON CONFLICT (trip_id, entity_id) DO UPDATE SET
+            INSERT INTO travel.travellers (trip_id, entity_id, traveller_key, display_name)
+            VALUES ($1::uuid, $2::uuid, $3, $4)
+            ON CONFLICT (trip_id, traveller_key) DO UPDATE SET
+                entity_id = COALESCE(travel.travellers.entity_id, EXCLUDED.entity_id),
                 display_name = COALESCE(travel.travellers.display_name, EXCLUDED.display_name)
             RETURNING id
             """,
             trip_id,
             entity_id,
+            traveller_key,
             name,
         )
         traveller_id = str(traveller_row["id"])
@@ -797,7 +792,8 @@ async def record_booking(
     # travel.booking_records, never the destination/date substring heuristic
     # below -- that heuristic is what split one round-trip PNR into two
     # one-day trips (see module docstring / bu-2jtfw.8 design evidence).
-    record_locator: str | None = payload.get("record_locator") if entity_type == "leg" else None
+    raw_record_locator = payload.get("record_locator") if entity_type == "leg" else None
+    record_locator = str(raw_record_locator or "").strip() or None
     booking_record_id: str | None = None
 
     if record_locator:
@@ -1258,6 +1254,9 @@ async def update_itinerary(
                             "fields": list(entity_updates.keys()),
                         }
                     )
+
+    if any(item["entity_type"] == "leg" for item in updated_entities):
+        await _safe_recompute_connections(pool, trip_id)
 
     return {
         "trip_id": trip_id,

@@ -20,6 +20,7 @@ leg mutation.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -165,6 +166,7 @@ async def _raise_connection_door(
     inbound_leg_id: str,
     outbound_leg_id: str,
     derivation: dict[str, Any],
+    verdict_changed_at: datetime,
     now: datetime,
 ) -> None:
     """Raise one alert and park one approval door for a newly-broken connection.
@@ -180,7 +182,16 @@ async def _raise_connection_door(
     message = (
         f"Your connection at {airport} now looks broken -- only {available} minute(s) available."
     )
-    dedup_key = f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}"
+    rounded_minutes = round(available / 5) * 5 if isinstance(available, int) else "unknown"
+    pair_digest = hashlib.sha256(f"{inbound_leg_id}:{outbound_leg_id}".encode()).hexdigest()[:16]
+    transition_digest = hashlib.sha256(verdict_changed_at.isoformat().encode()).hexdigest()[:12]
+    alert_dedup_key = (
+        f"travel:connection-risk:{pair_digest}:broken-{rounded_minutes}-{transition_digest}"
+    )
+    dedup_key = (
+        f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}:"
+        f"broken:{rounded_minutes}:{verdict_changed_at.isoformat()}"
+    )
 
     try:
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -190,7 +201,7 @@ async def _raise_connection_door(
             origin_butler="travel",
             priority=_INSIGHT_ALERT_PRIORITY,
             category="connection-risk",
-            dedup_key=f"{dedup_key}:alert",
+            dedup_key=alert_dedup_key,
             message=message,
             expires_at=now + timedelta(days=_INSIGHT_ALERT_EXPIRES_DAYS),
             metadata={
@@ -209,14 +220,6 @@ async def _raise_connection_door(
         logger.warning(
             "recompute_trip_connections: failed to raise connection alert", exc_info=True
         )
-
-    existing_door = await pool.fetchrow(
-        "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
-        "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
-        dedup_key,
-    )
-    if existing_door is not None:
-        return
 
     try:
         await park_prepared_action(
@@ -247,13 +250,13 @@ async def _withdraw_connection_door(
     pool: Any, *, inbound_leg_id: str, outbound_leg_id: str, now: datetime
 ) -> None:
     """Withdraw a still-open connection-risk door once the layover recovers."""
-    dedup_key = f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}"
+    dedup_prefix = f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}:broken:"
     try:
         await pool.execute(
             "UPDATE pending_actions SET status = 'rejected', "
             "decided_by = 'system:connection-recovery', decided_at = $2 "
-            "WHERE deduplication_key = $1 AND status = 'pending'",
-            dedup_key,
+            "WHERE deduplication_key LIKE $1 AND status = 'pending'",
+            f"{dedup_prefix}%",
             now,
         )
     except Exception:
@@ -292,6 +295,12 @@ async def recompute_trip_connections(
         )
         for row in existing_rows:
             if (row["inbound_leg_id"], row["outbound_leg_id"]) not in valid_pair_ids:
+                await _withdraw_connection_door(
+                    pool,
+                    inbound_leg_id=str(row["inbound_leg_id"]),
+                    outbound_leg_id=str(row["outbound_leg_id"]),
+                    now=effective_now,
+                )
                 await pool.execute("DELETE FROM travel.connections WHERE id = $1::uuid", row["id"])
 
         results: list[dict[str, Any]] = []
@@ -329,19 +338,25 @@ async def recompute_trip_connections(
             )
             previous_verdict = previous["verdict"] if previous is not None else None
 
-            await pool.execute(
+            applied = await pool.fetchrow(
                 """
                 INSERT INTO travel.connections
                     (trip_id, inbound_leg_id, outbound_leg_id, verdict,
-                     available_minutes, evidence, computed_at)
-                VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7)
+                     available_minutes, evidence, computed_at, verdict_changed_at)
+                VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7, $7)
                 ON CONFLICT (inbound_leg_id, outbound_leg_id) DO UPDATE SET
+                    verdict_changed_at = CASE
+                        WHEN travel.connections.verdict IS DISTINCT FROM EXCLUDED.verdict
+                        THEN EXCLUDED.computed_at
+                        ELSE travel.connections.verdict_changed_at
+                    END,
                     verdict = EXCLUDED.verdict,
                     available_minutes = EXCLUDED.available_minutes,
                     evidence = EXCLUDED.evidence,
                     computed_at = EXCLUDED.computed_at,
                     updated_at = now()
                 WHERE EXCLUDED.computed_at >= travel.connections.computed_at
+                RETURNING verdict, verdict_changed_at
                 """,
                 trip_id,
                 inbound["id"],
@@ -351,6 +366,11 @@ async def recompute_trip_connections(
                 derivation["evidence"],
                 effective_now,
             )
+
+            # A newer recompute already owns the row. Do not let this stale
+            # pass raise or withdraw a door from evidence it failed to store.
+            if applied is None:
+                continue
 
             if derivation["verdict"] == "unknown":
                 await _emit_unknown_minimum_signal(pool, connecting_airport)
@@ -362,6 +382,7 @@ async def recompute_trip_connections(
                     inbound_leg_id=str(inbound["id"]),
                     outbound_leg_id=str(outbound["id"]),
                     derivation=derivation,
+                    verdict_changed_at=applied["verdict_changed_at"],
                     now=effective_now,
                 )
             elif derivation["verdict"] != "broken" and previous_verdict == "broken":
@@ -386,4 +407,53 @@ async def recompute_trip_connections(
         return {"trip_id": trip_id, "connections": [], "error": "recompute_failed"}
 
 
-__all__ = ["compute_connection_verdict", "recompute_trip_connections"]
+async def acknowledge_connection_risk(
+    pool: Any,
+    *,
+    trip_id: str,
+    inbound_leg_id: str,
+    outbound_leg_id: str,
+    verdict: str,
+    available_minutes: int | None,
+) -> dict[str, Any]:
+    """Resolve a prepared connection-risk door without pretending to rebook.
+
+    Approval means the owner has acknowledged the risk. The handler performs
+    no external action; it returns the current derived state so execution is
+    honest even when the stored draft was approved after another recompute.
+    """
+    current = await pool.fetchrow(
+        "SELECT verdict, available_minutes, evidence, computed_at "
+        "FROM travel.connections WHERE trip_id = $1::uuid "
+        "AND inbound_leg_id = $2::uuid AND outbound_leg_id = $3::uuid",
+        trip_id,
+        inbound_leg_id,
+        outbound_leg_id,
+    )
+    current_connection = None
+    if current is not None:
+        computed_at = current["computed_at"]
+        current_connection = {
+            "verdict": current["verdict"],
+            "available_minutes": current["available_minutes"],
+            "evidence": current["evidence"] or {},
+            "computed_at": (
+                computed_at.isoformat() if isinstance(computed_at, datetime) else str(computed_at)
+            ),
+        }
+    return {
+        "status": "acknowledged",
+        "trip_id": trip_id,
+        "inbound_leg_id": inbound_leg_id,
+        "outbound_leg_id": outbound_leg_id,
+        "draft_verdict": verdict,
+        "draft_available_minutes": available_minutes,
+        "current_connection": current_connection,
+    }
+
+
+__all__ = [
+    "acknowledge_connection_risk",
+    "compute_connection_verdict",
+    "recompute_trip_connections",
+]

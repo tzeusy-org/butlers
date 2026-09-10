@@ -216,6 +216,12 @@ async def trip_summary(
         trip_id,
     )
     connections = [_row_to_dict(r) for r in connections_rows]
+    party_rows = await pool.fetch(
+        "SELECT id, entity_id, display_name FROM travel.travellers "
+        "WHERE trip_id = $1::uuid ORDER BY display_name NULLS LAST, id",
+        trip_id,
+    )
+    party = [_row_to_dict(r) for r in party_rows]
 
     return {
         "trip": trip,
@@ -225,7 +231,9 @@ async def trip_summary(
         "documents": documents,
         "timeline": timeline,
         "alerts": alerts,
+        "party": party,
         "connections": connections,
+        "connection_reason": None if connections else "no_connection_on_journey",
     }
 
 

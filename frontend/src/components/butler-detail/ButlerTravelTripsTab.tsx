@@ -577,11 +577,13 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
   const unreadableAccommodationIds = summary?.unreadable_accommodation_ids ?? [];
   const unreadableReservationIds = summary?.unreadable_reservation_ids ?? [];
   const unreadableDocumentIds = summary?.unreadable_document_ids ?? [];
+  const unreadablePartyIds = summary?.unreadable_party_ids ?? [];
   const unreadableCount =
     unreadableLegIds.length +
     unreadableAccommodationIds.length +
     unreadableReservationIds.length +
-    unreadableDocumentIds.length;
+    unreadableDocumentIds.length +
+    unreadablePartyIds.length;
 
   return (
     <Sheet open={tripId != null} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -596,7 +598,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
             {isLoading ? "Loading…" : (summary?.trip.name ?? "Trip")}
           </SheetTitle>
           <SheetDescription className="sr-only">
-            Trip detail, including timeline, alerts, and accommodations.
+            Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
           </SheetDescription>
         </SheetHeader>
 
@@ -629,6 +631,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                     { label: "accommodation", count: unreadableAccommodationIds.length },
                     { label: "reservation", count: unreadableReservationIds.length },
                     { label: "document", count: unreadableDocumentIds.length },
+                    { label: "traveller", count: unreadablePartyIds.length },
                   ])}
                   onRetry={() => void refetch()}
                   testId="trip-drawer-partial-degraded"
@@ -645,6 +648,53 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                 <div className="mt-2">
                   <StatusBadge status={summary.trip.status} />
                 </div>
+              </div>
+
+              {/* Traveller party */}
+              <div data-testid="drawer-party">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Traveller party</p>
+                {summary.party.length === 0 ? (
+                  <EmptyStateLine>No travellers recorded.</EmptyStateLine>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {summary.party.map((traveller) => (
+                      <Badge key={traveller.id} variant="outline" className="text-xs">
+                        {traveller.display_name ?? "Unnamed traveller"}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Connection integrity */}
+              <div data-testid="drawer-connections">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Connections</p>
+                {summary.connections.length === 0 ? (
+                  <EmptyStateLine>No connection on this journey.</EmptyStateLine>
+                ) : (
+                  <ul className="divide-y divide-border/60">
+                    {summary.connections.map((connection) => {
+                      const airport = connection.evidence.connecting_airport;
+                      return (
+                        <li
+                          key={`${connection.inbound_leg_id}-${connection.outbound_leg_id}`}
+                          className="py-2 flex items-baseline justify-between gap-3 text-sm"
+                          data-testid="drawer-connection-row"
+                        >
+                          <span>
+                            {typeof airport === "string" ? airport : "Transfer"}
+                            {connection.available_minutes != null && (
+                              <span className="text-muted-foreground ml-2 font-mono tnum">
+                                {connection.available_minutes} min
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-xs font-mono">{connection.verdict}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
 
               {/* Alerts */}

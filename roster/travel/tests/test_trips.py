@@ -157,9 +157,20 @@ CREATE TABLE IF NOT EXISTS travel.connections (
     available_minutes  INT,
     evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
     computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (inbound_leg_id, outbound_leg_id)
+)
+"""
+
+CREATE_TRAVELLERS_SQL = """
+CREATE TABLE IF NOT EXISTS travel.travellers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
+    entity_id UUID,
+    traveller_key TEXT NOT NULL,
+    display_name TEXT
 )
 """
 
@@ -175,6 +186,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_RESERVATIONS_SQL)
         await p.execute(CREATE_DOCUMENTS_SQL)
         await p.execute(CREATE_CONNECTIONS_SQL)
+        await p.execute(CREATE_TRAVELLERS_SQL)
         yield p
 
 
@@ -608,7 +620,9 @@ class TestTripSummary:
             "documents",
             "timeline",
             "alerts",
+            "party",
             "connections",
+            "connection_reason",
         }
 
     async def test_empty_trip_no_alerts(self, pool):

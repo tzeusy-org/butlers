@@ -227,6 +227,22 @@ const TRIP_SUMMARY = {
       severity: "high",
     },
   ],
+  party: [
+    { id: "traveller-1", entity_id: "entity-1", display_name: "Alice Traveller" },
+    { id: "traveller-2", entity_id: "entity-2", display_name: "Bob Traveller" },
+  ],
+  connections: [
+    {
+      inbound_leg_id: "leg-1",
+      outbound_leg_id: "leg-2",
+      verdict: "tight",
+      available_minutes: 105,
+      evidence: { connecting_airport: "PEK", minimum_minutes: 90 },
+      computed_at: "2026-06-10T00:00:00Z",
+    },
+  ],
+  connection_reason: null,
+  unreadable_party_ids: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -598,6 +614,17 @@ describe("ButlerTravelTripsTab — trip detail drawer", () => {
     fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
     const entries = screen.getAllByTestId("timeline-entry");
     expect(entries.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders the traveller party and connection integrity rows", () => {
+    renderTab();
+    fireEvent.click(screen.getAllByTestId("trip-roster-row")[0]);
+    expect(screen.getByTestId("drawer-party").textContent).toContain("Alice Traveller");
+    expect(screen.getByTestId("drawer-party").textContent).toContain("Bob Traveller");
+    const connection = screen.getByTestId("drawer-connection-row");
+    expect(connection.textContent).toContain("PEK");
+    expect(connection.textContent).toContain("105 min");
+    expect(connection.textContent).toContain("tight");
   });
 
   it("closes the drawer on close button click", () => {

@@ -1792,11 +1792,15 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - No trips found.
 - Previous
 - Next
-- Trip detail, including timeline, alerts, and accommodations.
+- Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
 - Close
 - Trip data unavailable.
 - Destination
 - Dates
+- Traveller party
+- No travellers recorded.
+- Connections
+- No connection on this journey.
 - Alerts
 - Timeline
 - No timeline entries yet.
@@ -4218,4 +4222,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3302*
+*Total strings: 3306*

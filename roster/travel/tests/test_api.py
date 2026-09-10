@@ -481,9 +481,8 @@ async def test_get_trip_summary_found():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    # fetch is called: legs, accommodations, reservations, documents
-    # fetch order: legs, accommodations, reservations, documents, connections
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [doc], []])
+    # fetch order: legs, accommodations, reservations, documents, party, connections
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [doc], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -525,7 +524,7 @@ async def test_get_trip_summary_trip_fields():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -562,7 +561,7 @@ async def test_get_trip_summary_survives_double_encoded_leg_metadata():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -596,7 +595,7 @@ async def test_get_trip_summary_excludes_and_discloses_unreadable_leg():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[good_leg, bad_leg], [], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[good_leg, bad_leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -634,13 +633,18 @@ async def test_get_trip_summary_connections_rendered():
         available_minutes=45,
         evidence={"reason": "insufficient_time", "minimum_minutes": 90},
     )
+    traveller = {
+        "id": uuid.uuid4(),
+        "entity_id": uuid.uuid4(),
+        "display_name": "Alice Traveller",
+    }
 
     from fastapi import FastAPI
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    # fetch order: legs, accommodations, reservations, documents, connections
-    mock_pool.fetch = AsyncMock(side_effect=[[leg1, leg2], [], [], [], [connection]])
+    # fetch order: legs, accommodations, reservations, documents, party, connections
+    mock_pool.fetch = AsyncMock(side_effect=[[leg1, leg2], [], [], [], [traveller], [connection]])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -665,6 +669,14 @@ async def test_get_trip_summary_connections_rendered():
     assert rendered["outbound_leg_id"] == str(leg2["id"])
     assert "id" not in rendered
     assert "trip_id" not in rendered
+    assert body["party"] == [
+        {
+            "id": str(traveller["id"]),
+            "entity_id": str(traveller["entity_id"]),
+            "display_name": "Alice Traveller",
+        }
+    ]
+    assert body["connection_reason"] is None
 
 
 @pytest.mark.asyncio
@@ -677,7 +689,7 @@ async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -695,6 +707,7 @@ async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
     body = response.json()
     assert "connections" in body
     assert body["connections"] == []
+    assert body["connection_reason"] == "no_connection_on_journey"
 
 
 @pytest.mark.asyncio
@@ -738,7 +751,7 @@ async def test_get_trip_summary_missing_boarding_pass_alert():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -772,7 +785,7 @@ async def test_get_trip_summary_no_alert_when_boarding_pass_present():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [doc], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [], [], [doc], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool
@@ -805,7 +818,7 @@ async def test_get_trip_summary_timeline_built():
 
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=trip)
-    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [], []])
+    mock_pool.fetch = AsyncMock(side_effect=[[leg], [acc], [res], [], [], []])
 
     mock_db = MagicMock()
     mock_db.pool.return_value = mock_pool

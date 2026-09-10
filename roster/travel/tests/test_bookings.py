@@ -8,11 +8,17 @@ roster/finance/tests/test_tools.py.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import shutil
+import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -20,6 +26,20 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not _docker_available, reason="Docker not available"),
 ]
+
+
+def _load_travel_router():
+    module_name = "travel_api_router_booking_integration"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    router_path = Path(__file__).parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location(module_name, router_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 # ---------------------------------------------------------------------------
 # Schema creation helpers
@@ -128,7 +148,7 @@ CREATE TABLE IF NOT EXISTS travel.booking_records (
     trip_id            UUID REFERENCES travel.trips(id) ON DELETE CASCADE,
     record_locator     TEXT,
     source_message_id  TEXT,
-    provider           TEXT,
+    provider           TEXT NOT NULL DEFAULT '',
     metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -136,8 +156,8 @@ CREATE TABLE IF NOT EXISTS travel.booking_records (
 """
 
 CREATE_BOOKING_RECORDS_UNIQUE_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_record_locator
-    ON travel.booking_records (record_locator) WHERE record_locator IS NOT NULL
+CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_provider_locator
+    ON travel.booking_records (provider, record_locator) WHERE record_locator IS NOT NULL
 """
 
 ALTER_LEGS_ADD_SEGMENT_IDENTITY_SQL = """
@@ -157,10 +177,11 @@ CREATE_TRAVELLERS_SQL = """
 CREATE TABLE IF NOT EXISTS travel.travellers (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     trip_id       UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    entity_id     UUID NOT NULL,
+    entity_id     UUID REFERENCES public.entities(id),
+    traveller_key TEXT NOT NULL,
     display_name  TEXT,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (trip_id, entity_id)
+    UNIQUE (trip_id, traveller_key)
 )
 """
 
@@ -196,6 +217,7 @@ CREATE TABLE IF NOT EXISTS travel.connections (
     available_minutes  INT,
     evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
     computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (inbound_leg_id, outbound_leg_id)
@@ -479,6 +501,12 @@ class TestRecordBookingIdentity:
             trip_id,
         )
         assert leg_passenger_count == 4
+        traveller_count = await pool.fetchval(
+            "SELECT count(*) FROM travel.travellers WHERE trip_id = $1::uuid",
+            trip_id,
+        )
+        assert traveller_count == 2
+        assert await pool.fetchval("SELECT count(*) FROM public.entities") == 0
 
         # Both segments converged one leg each, not one leg per passenger.
         assert results[0]["entity_id"] == results[1]["entity_id"]
@@ -500,6 +528,37 @@ class TestRecordBookingIdentity:
             "SELECT count(*) FROM travel.legs WHERE trip_id = $1::uuid", trip_id
         )
         assert leg_count == 2
+
+    async def test_dd94xr_live_api_seams_return_party_and_legs(self, pool):
+        """The real DB state survives both dashboard routes, not only direct SQL assertions."""
+        from butlers.tools.travel.bookings import record_booking
+
+        results = [
+            await record_booking(pool=pool, payload=payload) for payload in self._fixture_payloads()
+        ]
+        trip_id = results[0]["trip_id"]
+        router_module = _load_travel_router()
+        app = FastAPI()
+        app.include_router(router_module.router)
+        app.dependency_overrides[router_module._get_db_manager] = lambda: SimpleNamespace(
+            pool=lambda _name: pool
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            summary_response, legs_response = await asyncio.gather(
+                client.get(f"/api/travel/trips/{trip_id}"),
+                client.get(f"/api/travel/trips/{trip_id}/legs"),
+            )
+
+        assert summary_response.status_code == 200
+        summary = summary_response.json()
+        assert len(summary["party"]) == 2
+        assert summary["connections"] == []
+        assert summary["connection_reason"] == "no_connection_on_journey"
+        assert legs_response.status_code == 200
+        assert len(legs_response.json()) == 2
 
     async def test_return_leg_not_deduped_when_sharing_confirmation_number(self, pool):
         """Regression: two segments sharing one confirmation_number must not merge."""
@@ -600,6 +659,43 @@ class TestRecordBookingIdentity:
             "SELECT metadata FROM travel.trips WHERE id = $1::uuid", result["trip_id"]
         )
         assert metadata["identity_confidence"] == "strong"
+
+    async def test_party_reuses_an_existing_canonical_person_entity(self, pool):
+        """Travel links to the shared identity spine instead of minting a duplicate person."""
+        from butlers.tools.travel.bookings import record_booking
+
+        entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+            "VALUES ('Alice Traveller', 'person', '{}'::jsonb) RETURNING id"
+        )
+        result = await record_booking(
+            pool=pool,
+            payload=self._segment_payload(segment_index=0, passenger_name="Alice Traveller"),
+        )
+
+        linked_entity_id = await pool.fetchval(
+            "SELECT entity_id FROM travel.travellers WHERE trip_id = $1::uuid",
+            result["trip_id"],
+        )
+        assert linked_entity_id == entity_id
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.entities WHERE canonical_name = 'Alice Traveller'"
+            )
+            == 1
+        )
+
+    async def test_record_locator_is_scoped_by_provider(self, pool):
+        """Provider reuse of the same locator must not merge unrelated bookings."""
+        from butlers.tools.travel.bookings import record_booking
+
+        first_payload = self._segment_payload(segment_index=0, passenger_name="Alice Traveller")
+        second_payload = {**first_payload, "provider": "Other Air"}
+        first = await record_booking(pool=pool, payload=first_payload)
+        second = await record_booking(pool=pool, payload=second_payload)
+
+        assert first["trip_id"] != second["trip_id"]
+        assert await pool.fetchval("SELECT count(*) FROM travel.booking_records") == 2
 
 
 # ---------------------------------------------------------------------------

@@ -494,6 +494,7 @@ CREATE TABLE IF NOT EXISTS travel.connections (
     available_minutes  INT,
     evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
     computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (inbound_leg_id, outbound_leg_id)
@@ -531,9 +532,9 @@ class TestDelayRepairsConnectionAgainstPostgres:
 
             scheduled_departure = datetime.now(UTC) + timedelta(hours=6)
             inbound_arrival = scheduled_departure + timedelta(hours=3)
-            # 150 minutes available -- comfortably 'holds' against a 90-minute
-            # minimum before the delay lands.
-            outbound_departure = inbound_arrival + timedelta(minutes=150)
+            # 120 minutes available -- exactly the comfortable 'holds'
+            # boundary against a 90-minute minimum before the delay lands.
+            outbound_departure = inbound_arrival + timedelta(minutes=120)
 
             inbound_id = await pool.fetchval(
                 """
@@ -558,8 +559,11 @@ class TestDelayRepairsConnectionAgainstPostgres:
                 outbound_departure,
                 outbound_departure + timedelta(hours=3),
             )
+            original_updated_at = await pool.fetchval(
+                "SELECT updated_at FROM travel.legs WHERE id = $1::uuid", inbound_id
+            )
 
-            # A 100-minute delay on the inbound leg leaves only 50 minutes for
+            # A 40-minute delay on the inbound leg leaves only 80 minutes for
             # the connection -- below the 90-minute PEK minimum.
             delayed_payload = {
                 "data": [
@@ -567,8 +571,8 @@ class TestDelayRepairsConnectionAgainstPostgres:
                         "flight_status": "active",
                         "departure": {
                             "scheduled": scheduled_departure.isoformat(),
-                            "estimated": (scheduled_departure + timedelta(minutes=100)).isoformat(),
-                            "delay": 100,
+                            "estimated": (scheduled_departure + timedelta(minutes=40)).isoformat(),
+                            "delay": 40,
                         },
                     }
                 ]
@@ -592,10 +596,12 @@ class TestDelayRepairsConnectionAgainstPostgres:
             assert result["delays_detected"] == 1
 
             inbound_row = await pool.fetchrow(
-                "SELECT departure_at, arrival_at FROM travel.legs WHERE id = $1::uuid", inbound_id
+                "SELECT departure_at, arrival_at, updated_at FROM travel.legs WHERE id = $1::uuid",
+                inbound_id,
             )
-            assert inbound_row["departure_at"] == scheduled_departure + timedelta(minutes=100)
-            assert inbound_row["arrival_at"] == inbound_arrival + timedelta(minutes=100)
+            assert inbound_row["departure_at"] == scheduled_departure + timedelta(minutes=40)
+            assert inbound_row["arrival_at"] == inbound_arrival + timedelta(minutes=40)
+            assert inbound_row["updated_at"] > original_updated_at
 
             connection = await pool.fetchrow(
                 "SELECT verdict, available_minutes FROM travel.connections "
@@ -605,7 +611,7 @@ class TestDelayRepairsConnectionAgainstPostgres:
             )
             assert connection is not None
             assert connection["verdict"] == "broken"
-            assert connection["available_minutes"] == 50
+            assert connection["available_minutes"] == 80
 
             door = await pool.fetchrow(
                 "SELECT status FROM pending_actions WHERE tool_name = 'acknowledge_connection_risk'"

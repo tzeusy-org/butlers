@@ -64,6 +64,10 @@ def _downgrade_statements() -> list[str]:
 _PRE_MIGRATION_SCHEMA = """
 CREATE SCHEMA IF NOT EXISTS travel;
 
+CREATE TABLE IF NOT EXISTS public.entities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+);
+
 CREATE TABLE IF NOT EXISTS travel.trips (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL,
@@ -153,6 +157,17 @@ class TestMigrationRunsAgainstPostgres:
                 column,
             )
             assert has_column is True, f"travel.legs.{column} was not added"
+
+        booking_trip_column = await p.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'travel' AND table_name = 'booking_records'
+                  AND column_name = 'trip_id'
+            )
+            """
+        )
+        assert booking_trip_column is True
 
     async def test_upgrade_seeds_curated_and_backfilled_minimum_connect(self, pool) -> None:
         p, _trip_id = pool

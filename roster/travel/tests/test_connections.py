@@ -18,7 +18,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.testing.schema_standins import PENDING_ACTIONS
-from butlers.tools.travel.connections import compute_connection_verdict, recompute_trip_connections
+from butlers.tools.travel.connections import (
+    acknowledge_connection_risk,
+    compute_connection_verdict,
+    recompute_trip_connections,
+)
 
 _docker_available = shutil.which("docker") is not None
 
@@ -198,6 +202,7 @@ CREATE TABLE IF NOT EXISTS travel.connections (
     available_minutes  INT,
     evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
     computed_at        TIMESTAMPTZ NOT NULL,
+    verdict_changed_at TIMESTAMPTZ NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (inbound_leg_id, outbound_leg_id)
@@ -315,6 +320,7 @@ class TestRecomputeTripConnectionsAgainstPostgres:
 
         propose_mock.assert_awaited_once()
         assert propose_mock.call_args.kwargs["category"] == "connection-risk"
+        assert propose_mock.call_args.kwargs["dedup_key"].count(":") == 3
 
         door = await pool.fetchrow(
             "SELECT status, tool_name, deduplication_key FROM pending_actions "
@@ -322,7 +328,20 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         )
         assert door is not None
         assert door["status"] == "pending"
-        assert door["deduplication_key"] == f"travel:connection-risk:{inbound_id}:{outbound_id}"
+        assert door["deduplication_key"].startswith(
+            f"travel:connection-risk:{inbound_id}:{outbound_id}:broken:65:"
+        )
+
+        acknowledged = await acknowledge_connection_risk(
+            pool,
+            trip_id=trip_id,
+            inbound_leg_id=inbound_id,
+            outbound_leg_id=outbound_id,
+            verdict="broken",
+            available_minutes=65,
+        )
+        assert acknowledged["status"] == "acknowledged"
+        assert acknowledged["current_connection"]["verdict"] == "broken"
 
         # Recomputing again while still broken must not park a second door.
         with patch(
@@ -391,6 +410,26 @@ class TestRecomputeTripConnectionsAgainstPostgres:
         )
         assert door_after["status"] == "rejected"
         assert door_after["decided_by"] == "system:connection-recovery"
+
+        # A later regression is a new verdict transition and therefore gets
+        # a new active door; the rejected history row must not suppress it.
+        await pool.execute(
+            "UPDATE travel.legs SET departure_at = $2, arrival_at = $3 WHERE id = $1::uuid",
+            outbound_id,
+            inbound_arrival + timedelta(minutes=65),
+            inbound_arrival + timedelta(hours=3),
+        )
+        with patch(
+            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
+            _propose_insight_mock(),
+        ):
+            await recompute_trip_connections(pool, trip_id)
+
+        door_statuses = await pool.fetch(
+            "SELECT status FROM pending_actions "
+            "WHERE tool_name = 'acknowledge_connection_risk' ORDER BY requested_at"
+        )
+        assert [row["status"] for row in door_statuses] == ["rejected", "pending"]
 
     async def test_unknown_minimum_emits_expected_signal_never_an_alert(self, pool):
         trip_id = await _insert_trip(pool, start_date="2026-10-16", end_date="2026-10-16")

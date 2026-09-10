@@ -8099,6 +8099,23 @@ export interface TravelAlert {
   severity: "high" | "medium" | "low";
 }
 
+/** A traveller in the trip party, linked to the shared person identity spine. */
+export interface TravelTraveller {
+  id: string;
+  entity_id: string | null;
+  display_name: string | null;
+}
+
+/** Derived integrity verdict for one adjacent-leg connection. */
+export interface TravelConnection {
+  inbound_leg_id: string;
+  outbound_leg_id: string;
+  verdict: "holds" | "tight" | "broken" | "unknown";
+  available_minutes: number | null;
+  evidence: Record<string, unknown>;
+  computed_at: string;
+}
+
 /** Full trip summary with all linked entities and timeline. */
 export interface TravelTripSummary {
   trip: TravelTrip;
@@ -8108,6 +8125,9 @@ export interface TravelTripSummary {
   documents: TravelDocument[];
   timeline: TravelTimelineEntry[];
   alerts: TravelAlert[];
+  party: TravelTraveller[];
+  connections: TravelConnection[];
+  connection_reason: "no_connection_on_journey" | null;
   /** Leg ids excluded from `legs` because their row could not be normalized. */
   unreadable_leg_ids: string[];
   /** Accommodation ids excluded from `accommodations` because their row could not be normalized. */
@@ -8116,6 +8136,8 @@ export interface TravelTripSummary {
   unreadable_reservation_ids: string[];
   /** Document ids excluded from `documents` because their row could not be normalized. */
   unreadable_document_ids: string[];
+  /** Traveller ids excluded from `party` because their row could not be normalized. */
+  unreadable_party_ids: string[];
 }
 
 /** An upcoming trip with legs, accommodations, and days until departure. */

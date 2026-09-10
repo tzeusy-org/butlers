@@ -6,17 +6,18 @@ Create Date: 2026-09-10 00:00:00.000000
 
 bu-2jtfw.8: PNR-keyed booking identity and a journey connection graph.
 
-Adds ``travel.booking_records`` (one row per PNR/record locator, ON CONFLICT
-DO UPDATE keyed on ``record_locator``) and gives ``travel.legs`` a
+Adds ``travel.booking_records`` (one row per provider-scoped PNR/record locator,
+converged with ``ON CONFLICT DO UPDATE``) and gives ``travel.legs`` a
 ``(booking_record_id, segment_index)`` identity so two segments of the same
 PNR (e.g. an outbound and a return sharing one ``confirmation_number``) each
 get their own leg row instead of the second segment deduping away against
 the first (the historical bug: dedup keyed on ``confirmation_number`` alone).
 
-Adds the traveller party (``travel.travellers`` linked to ``public.entities``,
-``travel.leg_passengers`` joining travellers to legs) so a two-passenger
-itinerary stores one leg row shared by both passengers rather than one leg
-per passenger.
+Adds the traveller party (``travel.travellers`` optionally linked to an
+already-known ``public.entities`` person, ``travel.leg_passengers`` joining
+travellers to legs) so a two-passenger itinerary stores one leg row shared by
+both passengers rather than one leg per passenger. Unresolved booking names
+remain local because butler roles cannot write shared identity.
 
 Adds ``travel.airport_minimum_connect`` (seeded with the airports already
 present in ``travel.legs`` plus a curated set of major international hubs)
@@ -66,17 +67,18 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS travel.booking_records (
             id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            trip_id            UUID REFERENCES travel.trips(id) ON DELETE CASCADE,
             record_locator     TEXT,
             source_message_id  TEXT,
-            provider           TEXT,
+            provider           TEXT NOT NULL DEFAULT '',
             metadata           JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_record_locator
-            ON travel.booking_records (record_locator)
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_booking_records_provider_locator
+            ON travel.booking_records (provider, record_locator)
             WHERE record_locator IS NOT NULL
     """)
     op.execute("""
@@ -102,10 +104,11 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS travel.travellers (
             id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             trip_id       UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-            entity_id     UUID NOT NULL,
+            entity_id     UUID REFERENCES public.entities(id),
+            traveller_key TEXT NOT NULL,
             display_name  TEXT,
             created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (trip_id, entity_id)
+            UNIQUE (trip_id, traveller_key)
         )
     """)
     op.execute("""
@@ -173,6 +176,7 @@ def upgrade() -> None:
             available_minutes  INT,
             evidence           JSONB NOT NULL DEFAULT '{}'::jsonb,
             computed_at        TIMESTAMPTZ NOT NULL,
+            verdict_changed_at TIMESTAMPTZ NOT NULL,
             created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (inbound_leg_id, outbound_leg_id)
