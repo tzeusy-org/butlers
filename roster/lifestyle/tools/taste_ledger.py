@@ -130,6 +130,8 @@ async def _project_unresolved_session_signal(
     title: str,
     source_ref: str,
     occurred_at: Any,
+    session_key: str,
+    occurrence_number: int,
 ) -> tuple[bool, bool]:
     """Atomically create one unresolved work and its source-owned signal.
 
@@ -145,6 +147,23 @@ async def _project_unresolved_session_signal(
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", idempotency_key
         )
         if await _already_projected(connection, idempotency_key):
+            return False, False
+        modern_count = await connection.fetchval(
+            """
+            SELECT count(*)
+            FROM connectors.spotify_listening_sessions session
+            JOIN connectors.spotify_track_plays play
+              ON play.endpoint_identity = session.endpoint_identity
+             AND play.track_name = $2
+             AND play.first_seen_ms BETWEEN
+                 (extract(epoch FROM session.started_at) * 1000)::bigint
+                 AND (extract(epoch FROM session.ended_at) * 1000)::bigint
+            WHERE session.idempotency_key = $1
+            """,
+            session_key,
+            title,
+        )
+        if modern_count >= occurrence_number:
             return False, False
         work_id, work_created = await _get_or_create_work(
             connection, kind="track", title=title, external_ids={}
@@ -215,7 +234,12 @@ async def backfill_from_listening_sessions(
                 continue
             source_ref = f"{session_key}:{index}"
             created, inserted = await _project_unresolved_session_signal(
-                pool, title=name, source_ref=source_ref, occurred_at=row["started_at"]
+                pool,
+                title=name,
+                source_ref=source_ref,
+                occurred_at=row["started_at"],
+                session_key=session_key,
+                occurrence_number=sum(candidate == name for candidate in track_names[: index + 1]),
             )
             if created:
                 works_created += 1
@@ -263,29 +287,119 @@ async def backfill_from_track_plays(
             observation_precision=row["observation_precision"], skipped=row["skipped"]
         )
         idempotency_key = f"{_PLAYS_SOURCE_TABLE}:{source_ref}:{signal_kind}"
-        if await _already_projected(pool, idempotency_key):
-            continue
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", idempotency_key
+            )
+            session_source_refs = await connection.fetch(
+                """
+                SELECT session.idempotency_key || ':' || (entry.ordinality - 1) AS source_ref
+                FROM connectors.spotify_listening_sessions session
+                CROSS JOIN LATERAL (
+                    SELECT track.ordinality,
+                           row_number() OVER (ORDER BY track.ordinality) AS occurrence_number
+                    FROM jsonb_array_elements_text(session.track_names)
+                         WITH ORDINALITY AS track(track_name, ordinality)
+                    WHERE track.track_name = $3
+                ) entry
+                WHERE session.endpoint_identity = $1
+                  AND $2::bigint BETWEEN
+                      (extract(epoch FROM session.started_at) * 1000)::bigint
+                      AND (extract(epoch FROM session.ended_at) * 1000)::bigint
+                  AND entry.occurrence_number = (
+                      SELECT count(*)
+                      FROM connectors.spotify_track_plays candidate
+                      WHERE candidate.endpoint_identity = session.endpoint_identity
+                        AND candidate.track_name = $3
+                        AND candidate.first_seen_ms BETWEEN
+                            (extract(epoch FROM session.started_at) * 1000)::bigint
+                            AND (extract(epoch FROM session.ended_at) * 1000)::bigint
+                        AND (candidate.first_seen_ms, candidate.track_uri)
+                            <= ($2::bigint, $4::text)
+                  )
+                ORDER BY source_ref
+                """,
+                row["endpoint_identity"],
+                row["first_seen_ms"],
+                row["track_name"],
+                row["track_uri"],
+            )
+            for session_source_ref in session_source_refs:
+                session_idempotency_key = (
+                    f"{_SESSIONS_SOURCE_TABLE}:{session_source_ref['source_ref']}:session_track"
+                )
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                    session_idempotency_key,
+                )
 
-        work_id, created = await _get_or_create_work(
-            pool,
-            kind="track",
-            title=row["track_name"],
-            external_ids={"primary": row["track_uri"]},
-        )
-        if created:
-            works_created += 1
+            modern_signal = await connection.fetchrow(
+                "SELECT work_id FROM taste_signals WHERE idempotency_key = $1",
+                idempotency_key,
+            )
+            if modern_signal is None:
+                work_id, created = await _get_or_create_work(
+                    connection,
+                    kind="track",
+                    title=row["track_name"],
+                    external_ids={"primary": row["track_uri"]},
+                )
+                inserted = await _insert_signal(
+                    connection,
+                    work_id=work_id,
+                    signal_kind=signal_kind,
+                    source_table=_PLAYS_SOURCE_TABLE,
+                    source_ref=source_ref,
+                    occurred_at=row["recorded_at"],
+                    strength=row["completion_ratio"],
+                    metadata={"observation_precision": row["observation_precision"]},
+                )
+            else:
+                work_id = modern_signal["work_id"]
+                created = False
+                inserted = False
 
-        inserted = await _insert_signal(
-            pool,
-            work_id=work_id,
-            signal_kind=signal_kind,
-            source_table=_PLAYS_SOURCE_TABLE,
-            source_ref=source_ref,
-            occurred_at=row["recorded_at"],
-            strength=row["completion_ratio"],
-            metadata={"observation_precision": row["observation_precision"]},
-        )
-        if inserted:
-            signals_created += 1
+            # A prior projection may have seen only the session summary and
+            # created an unresolved work for this occurrence. Once the
+            # URI-backed play arrives, replace that weaker evidence in the
+            # same transaction as the modern signal. Repeated titles consume
+            # at most one legacy occurrence per distinct play.
+            legacy_rows = await connection.fetch(
+                """
+                SELECT signal.id, signal.work_id
+                FROM taste_signals signal
+                JOIN works work ON work.id = signal.work_id
+                WHERE signal.source_table = $1
+                  AND signal.source_ref = ANY($2::text[])
+                  AND work.title IS NOT DISTINCT FROM $3
+                ORDER BY signal.source_ref
+                FOR UPDATE OF signal
+                """,
+                _SESSIONS_SOURCE_TABLE,
+                [session_source_ref["source_ref"] for session_source_ref in session_source_refs],
+                row["track_name"],
+            )
+            for legacy in legacy_rows:
+                await connection.execute("DELETE FROM taste_signals WHERE id = $1", legacy["id"])
+                await connection.execute(
+                    "UPDATE verdicts SET work_id = $1 WHERE work_id = $2",
+                    work_id,
+                    legacy["work_id"],
+                )
+                await connection.execute(
+                    """
+                    DELETE FROM works work
+                    WHERE work.id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM taste_signals signal WHERE signal.work_id = work.id
+                      )
+                    """,
+                    legacy["work_id"],
+                )
+
+            if created:
+                works_created += 1
+            if inserted:
+                signals_created += 1
 
     return BackfillResult(works_created=works_created, signals_created=signals_created)

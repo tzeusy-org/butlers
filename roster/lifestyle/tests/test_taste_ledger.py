@@ -117,7 +117,7 @@ class TestBackfillFromListeningSessions:
             lifestyle_pool,
             idempotency_key="spotify:ep1:session:2",
             started_at=now,
-            track_names=["Song C"],
+            track_names=["Song A"],
         )
         await _insert_session(
             lifestyle_pool,
@@ -134,34 +134,15 @@ class TestBackfillFromListeningSessions:
         signals_count = await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals")
         assert works_count == 3
         assert signals_count == 3
+        assert (
+            await lifestyle_pool.fetchval("SELECT count(*) FROM works WHERE title = 'Song A'") == 2
+        )
 
         second_pass = await backfill_from_listening_sessions(lifestyle_pool)
         assert second_pass.works_created == 0
         assert second_pass.signals_created == 0
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 3
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 3
-
-    async def test_repeated_track_name_across_sessions_is_not_deduped(self, lifestyle_pool) -> None:
-        """Unresolved evidence (no stable id) never collapses same-name mentions."""
-        from butlers.tools.lifestyle.taste_ledger import backfill_from_listening_sessions
-
-        now = datetime(2026, 9, 1, tzinfo=UTC)
-        await _insert_session(
-            lifestyle_pool,
-            idempotency_key="spotify:ep1:session:10",
-            started_at=now,
-            track_names=["Same Song"],
-        )
-        await _insert_session(
-            lifestyle_pool,
-            idempotency_key="spotify:ep1:session:11",
-            started_at=now,
-            track_names=["Same Song"],
-        )
-
-        result = await backfill_from_listening_sessions(lifestyle_pool)
-        assert result.works_created == 2
-        assert result.signals_created == 2
 
     async def test_concurrent_unresolved_session_projection_leaves_no_orphan_work(
         self, lifestyle_pool
@@ -185,26 +166,7 @@ class TestBackfillFromListeningSessions:
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
 
-    async def test_scheduled_projector_materializes_connector_evidence(
-        self, lifestyle_pool
-    ) -> None:
-        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
-
-        await _insert_session(
-            lifestyle_pool,
-            idempotency_key="spotify:ep1:session:scheduled",
-            started_at=datetime(2026, 9, 1, tzinfo=UTC),
-            track_names=["Scheduled Song"],
-        )
-
-        handler = get_deterministic_schedule_job_registry()["lifestyle"]["taste_ledger_project"]
-        result = await handler(lifestyle_pool, None)
-
-        assert result["sessions"] == {"works_created": 1, "signals_created": 1}
-        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
-        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
-
-    async def test_scheduled_projector_prefers_modern_play_over_overlapping_session(
+    async def test_scheduled_projector_converges_when_modern_play_arrives_after_session(
         self, lifestyle_pool
     ) -> None:
         from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
@@ -216,6 +178,22 @@ class TestBackfillFromListeningSessions:
             started_at=observed_at,
             track_names=["Modern Song"],
         )
+
+        handler = get_deterministic_schedule_job_registry()["lifestyle"]["taste_ledger_project"]
+        session_pass = await handler(lifestyle_pool, None)
+
+        assert session_pass["sessions"] == {"works_created": 1, "signals_created": 1}
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+        unresolved_work_id = await lifestyle_pool.fetchval("SELECT id FROM works")
+        await lifestyle_pool.execute(
+            """
+            INSERT INTO verdicts (work_id, predicate, verdict_text, source)
+            VALUES ($1, 'likes_track', 'A lasting favourite', 'owner_assertion')
+            """,
+            unresolved_work_id,
+        )
+
         await _insert_closed_play(
             lifestyle_pool,
             track_uri="spotify:track:modern",
@@ -226,20 +204,97 @@ class TestBackfillFromListeningSessions:
             skipped=False,
         )
 
-        handler = get_deterministic_schedule_job_registry()["lifestyle"]["taste_ledger_project"]
         first_pass = await handler(lifestyle_pool, None)
-        second_pass = await handler(lifestyle_pool, None)
 
         assert first_pass == {
             "sessions": {"works_created": 0, "signals_created": 0},
             "track_plays": {"works_created": 1, "signals_created": 1},
         }
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+        assert (
+            await lifestyle_pool.fetchval(
+                """
+                SELECT work.external_ids ->> 'primary'
+                FROM verdicts verdict
+                JOIN works work ON work.id = verdict.work_id
+                """
+            )
+            == "spotify:track:modern"
+        )
+
+        # Simulate a stale legacy pair committed by an older/racing projector.
+        stale_work_id = await lifestyle_pool.fetchval(
+            "INSERT INTO works (kind, title) VALUES ('track', 'Modern Song') RETURNING id"
+        )
+        await lifestyle_pool.execute(
+            """
+            INSERT INTO taste_signals (
+                work_id, signal_kind, source_table, source_ref, idempotency_key, occurred_at
+            ) VALUES ($1, 'session_track', 'spotify_listening_sessions',
+                      'spotify:ep1:session:modern:0',
+                      'spotify_listening_sessions:spotify:ep1:session:modern:0:session_track', $2)
+            """,
+            stale_work_id,
+            observed_at,
+        )
+
+        second_pass = await handler(lifestyle_pool, None)
         assert second_pass == {
             "sessions": {"works_created": 0, "signals_created": 0},
             "track_plays": {"works_created": 0, "signals_created": 0},
         }
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
         assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+
+        repeated_at = datetime(2026, 9, 2, tzinfo=UTC)
+        await _insert_session(
+            lifestyle_pool,
+            idempotency_key="spotify:ep1:session:repeated-after",
+            started_at=repeated_at,
+            track_names=["Repeated Song", "Repeated Song"],
+        )
+        await handler(lifestyle_pool, None)
+        await _insert_closed_play(
+            lifestyle_pool,
+            track_uri="spotify:track:repeated-after",
+            track_name="Repeated Song",
+            first_seen_ms=int(repeated_at.timestamp() * 1000),
+            duration_ms=200_000,
+            completion_ratio=0.95,
+            skipped=False,
+        )
+        await handler(lifestyle_pool, None)
+        await handler(lifestyle_pool, None)
+        assert (
+            await lifestyle_pool.fetchval(
+                "SELECT count(*) FROM works WHERE title = 'Repeated Song'"
+            )
+            == 2
+        )
+
+        modern_first_at = datetime(2026, 9, 3, tzinfo=UTC)
+        await _insert_session(
+            lifestyle_pool,
+            idempotency_key="spotify:ep1:session:repeated-before",
+            started_at=modern_first_at,
+            track_names=["Modern First", "Modern First"],
+        )
+        await _insert_closed_play(
+            lifestyle_pool,
+            track_uri="spotify:track:repeated-before",
+            track_name="Modern First",
+            first_seen_ms=int(modern_first_at.timestamp() * 1000),
+            duration_ms=200_000,
+            completion_ratio=0.95,
+            skipped=False,
+        )
+        await handler(lifestyle_pool, None)
+        await handler(lifestyle_pool, None)
+        assert (
+            await lifestyle_pool.fetchval("SELECT count(*) FROM works WHERE title = 'Modern First'")
+            == 2
+        )
 
 
 class TestBackfillFromTrackPlays:
