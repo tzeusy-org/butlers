@@ -4,9 +4,9 @@ The owner cannot see recent failures above the fleet chronology, select a busy m
 
 ## What Changes
 
-Propose three additions to `/timeline`: a bounded recent-records-marked-failed strip with real aggregate counts; a server-counted minute-density control that loads the selected historical interval; and row navigation plus existing-view palette actions. `/` continues to focus the shell's global search, as the existing shell contract requires.
+Approve three additions to `/timeline`: a bounded recent-records-marked-failed strip with real aggregate counts; a server-counted minute-density control that loads the selected historical interval; and row navigation plus existing-view palette actions. `/` continues to focus the shell's global search, as the existing shell contract requires.
 
-**Status: proposed, not adopted.** Approval of this artifact is required before implementation. Shaping authorization does not approve the proposed behavior. In particular, the strip says **Recent records marked failed**, not **Unresolved**: failed sessions have no resolution state, and `public.attention_ledger` records terminal egress decisions rather than an unresolved work queue. The bounded current-status interpretation is the concrete recommended scope clarification; a new unresolved-work lifecycle would require a different design.
+**Status: approved by the owner on 2026-09-10.** The owner signed off the full Timeline proposal ("Signed off on the timeline") at reviewed commit `c64a0275cc357d4f13c7d60fbd9c8ad68899693b` in PR #4130. This approval admits all three implementation slices and the current-status attention interpretation. In particular, the strip says **Recent records marked failed**, not **Unresolved**: failed sessions have no resolution state, and `public.attention_ledger` records terminal egress decisions rather than an unresolved work queue. The bounded current-status interpretation is the concrete recommended scope clarification; a new unresolved-work lifecycle would require a different design.
 
 ## Capabilities
 
@@ -33,17 +33,17 @@ Size: medium, with shared read-model and URL contracts requiring independent rev
 - G5: three added requirements, with deterministic source, interval, degradation and navigation scenarios. No active delta with these three titles found; recheck at materialization.
 - G6: real-Postgres aggregate/page evidence, DOM keyboard/navigation checks, right-sized tests and hosted merge queue evidence.
 
-Sign-off: pending. Independent semantic review: PASS on 2026-09-10 after correcting mutable failure-status semantics, aggregate availability, palette registration and atomic chart/bucket URL persistence. Scope approval is still pending. Default if unanswered: leave existing implementation unchanged and children blocked.
+Sign-off: owner approved all three slices on 2026-09-10, exact reviewed commit `c64a0275cc357d4f13c7d60fbd9c8ad68899693b`. Independent semantic review: PASS on 2026-09-10 after correcting mutable failure-status semantics, aggregate availability, palette registration and atomic chart/bucket URL persistence. Approval is now recorded; implementation completion remains governed by the child packets and final reconciliation.
 
-## Narrow owner decision: what the attention strip means
+## Recorded owner decision: what the attention strip means
 
-The original structured acceptance called its items unresolved. That objective is preserved here as an explicit unresolved decision, not silently dropped.
+The owner approved option 1 below. This explicitly replaces the original unresolved-work wording with the bounded current-status inspection contract. Option 2 remains a recorded alternative, not an outstanding gate or an admitted producer lifecycle.
 
 1. **Recommended: recent records currently marked failed.** Approve the concrete read-only strip specified here. It gives useful inspection of recent records still marked failed, not historical occurrence or recovery evidence; acknowledgment and retry claim can remove a notification record before delivery recovery. It does not promise a resolution lifecycle. Choosing it explicitly replaces the original unresolved wording for this bead.
 2. **Canonical unresolved conditions.** Keep the original unresolved objective. Defer this strip while a separately reviewed design defines which producers open, recur and resolve each session/delivery condition, the durable identity, late-success/retry behavior, and whether owner acknowledgement differs from resolution. The terminal attention ledger cannot supply this contract. Density and keyboard can be approved independently; this strip child stays blocked.
 
-Default without approval: retain current product; no attention implementation. Approving density/keyboard alone does not implicitly approve option 1 or create new unresolved-condition producers.
+The sign-off covers density, keyboard and option 1 together. It does not add the unresolved-condition lifecycle described in option 2.
 
-## Proposed handoff graph
+## Approved handoff graph
 
-[Implementation packets](implementation-plan.md) define the three vertical outcomes and their terminal reconciliation. They remain proposed until the exact artifact is approved.
+[Implementation packets](implementation-plan.md) define the three vertical outcomes and their terminal reconciliation. The materialized Beads and serialized dependencies are recorded there; no implementation is marked complete.
