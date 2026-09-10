@@ -6,8 +6,9 @@ cross-butler medication-preparation tools.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the travel butler
-- **THEN** it has access to: `record_booking`, `update_itinerary`, `list_trips`, `trip_summary`,
-  `upcoming_travel`, `add_document`, `health_medication_snapshot`, and calendar tools
+- **THEN** it has access to: `record_booking`, `update_itinerary`,
+  `acknowledge_connection_risk`, `list_trips`, `trip_summary`, `upcoming_travel`,
+  `add_document`, `health_medication_snapshot`, and calendar tools
 
 ### Requirement: Travel Insight Scan Job
 The travel butler's `insight-scan` job SHALL evaluate travel domain data and produce insight candidates covering pre-trip preparation, document expiry warnings, and cross-domain coordination hints. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool; the butler does not write to `public.insight_candidates` directly.
