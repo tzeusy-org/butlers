@@ -537,13 +537,15 @@ async def _connector_stats_from_db(
     endpoint_identity: str,
     period: PeriodLiteral,
     db: DatabaseManager,
+    *,
+    connection: Any | None = None,
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
     """Build a skip-aware connector histogram from durable event tables."""
-    pool = _pool(db)
+    executor = connection if connection is not None else _pool(db)
     trunc = _DB_TRUNC[period]
     interval = _DB_INTERVAL[period]
     try:
-        rows = await pool.fetch(
+        rows = await executor.fetch(
             f"""
             SELECT bucket,
                    SUM(ingested)::bigint  AS messages_ingested,
@@ -1420,13 +1422,26 @@ async def get_connector_stats(
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
     """Return a durable, filtered-aware time series for a live registry identity."""
     pool = _pool(db)
+    existing = None
+    stats = None
     try:
-        existing = await pool.fetchrow(
-            "SELECT connector_type FROM connector_registry"
-            " WHERE connector_type = $1 AND endpoint_identity = $2 AND deleted_at IS NULL",
-            connector_type,
-            endpoint_identity,
-        )
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                existing = await connection.fetchrow(
+                    "SELECT connector_type FROM connector_registry"
+                    " WHERE connector_type = $1 AND endpoint_identity = $2"
+                    "   AND deleted_at IS NULL FOR UPDATE",
+                    connector_type,
+                    endpoint_identity,
+                )
+                if existing is not None:
+                    stats = await _connector_stats_from_db(
+                        connector_type,
+                        endpoint_identity,
+                        period,
+                        db,
+                        connection=connection,
+                    )
     except Exception:
         logger.warning(
             "connector stats registry lookup failed for %s/%s",
@@ -1442,7 +1457,8 @@ async def get_connector_stats(
             detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
         )
 
-    return await _connector_stats_from_db(connector_type, endpoint_identity, period, db)
+    assert stats is not None
+    return stats
 
 
 @router.patch(

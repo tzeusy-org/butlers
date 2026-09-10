@@ -83,8 +83,10 @@ live at `/{type}/{identity}`, `/{type}/{identity}/stats`, and
 The roster, detail, and statistics routes are database-sourced. The aggregate
 route reports `aggregates_available: false` when its Prometheus-backed metrics
 cannot be read; callers must render that as unavailable rather than zero. The
-retired Switchboard connector namespace and fanout matrix are not dashboard API
-surfaces.
+retired Switchboard connector namespace and its per-connector fanout endpoint
+are not dashboard API surfaces. The separate cross-connector
+`GET /api/switchboard/ingestion/fanout` overview matrix remains outside this
+connector-namespace migration.
 
 ## Verification
 

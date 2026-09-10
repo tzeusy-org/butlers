@@ -12,6 +12,8 @@ tests protect the migration from the retired Switchboard connector routes:
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -64,6 +66,24 @@ def _wire_db(app, pool: AsyncMock) -> MagicMock:
     return db
 
 
+def _wire_stats_connection(pool: AsyncMock) -> AsyncMock:
+    """Make the stats route exercise one row lock and one query connection."""
+    connection = AsyncMock()
+    connection.fetchrow = pool.fetchrow
+    connection.fetch = pool.fetch
+
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    connection.transaction = MagicMock(return_value=transaction)
+
+    acquired = MagicMock()
+    acquired.__aenter__ = AsyncMock(return_value=connection)
+    acquired.__aexit__ = AsyncMock(return_value=None)
+    pool.acquire = MagicMock(return_value=acquired)
+    return connection
+
+
 @pytest.mark.parametrize("flush_interval", [60, 7200])
 def test_settings_accept_flush_interval_boundaries(flush_interval: int) -> None:
     """The batch-settings bounds remain inclusive after the namespace move."""
@@ -99,6 +119,7 @@ async def test_canonical_detail_and_stats_hide_soft_deleted_rows(app) -> None:
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(return_value=[])
+    _wire_stats_connection(pool)
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -133,6 +154,7 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
             }
         ]
     )
+    connection = _wire_stats_connection(pool)
     _wire_db(app, pool)
 
     async with httpx.AsyncClient(
@@ -147,7 +169,60 @@ async def test_canonical_stats_preserve_distinct_filtered_series(app) -> None:
     assert bucket["heartbeat_count"] == 0
     assert bucket["healthy_count"] == 0
     assert response.json()["meta"]["hourly_events_available"] is True
-    assert "connectors.filtered_events" in pool.fetch.await_args.args[0]
+    assert "connectors.filtered_events" in connection.fetch.await_args.args[0]
+    assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
+
+
+async def test_canonical_stats_holds_live_row_lock_through_history_read(app) -> None:
+    """A concurrent disconnect cannot pass the stats row lock mid-read."""
+    pool = AsyncMock()
+    connection = AsyncMock()
+    connection.fetchrow = AsyncMock(return_value={"connector_type": "gmail"})
+    lock_held = False
+    disconnect_started = asyncio.Event()
+    disconnect_completed = asyncio.Event()
+    disconnect_tasks: list[asyncio.Task[None]] = []
+
+    async def simulated_disconnect() -> None:
+        disconnect_started.set()
+        while lock_held:
+            await asyncio.sleep(0)
+        disconnect_completed.set()
+
+    async def fetch_history(*_args, **_kwargs):
+        disconnect_tasks.append(asyncio.create_task(simulated_disconnect()))
+        await disconnect_started.wait()
+        assert not disconnect_completed.is_set()
+        return []
+
+    connection.fetch = AsyncMock(side_effect=fetch_history)
+
+    @asynccontextmanager
+    async def transaction():
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    connection.transaction = MagicMock(side_effect=transaction)
+    pool.acquire = MagicMock(side_effect=acquire)
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/ingestion/connectors/gmail/owner/stats")
+
+    assert response.status_code == 200
+    assert "FOR UPDATE" in connection.fetchrow.await_args.args[0]
+    await asyncio.gather(*disconnect_tasks)
+    assert disconnect_completed.is_set()
 
 
 async def test_canonical_settings_keep_validation_and_content_blind_audit(app) -> None:

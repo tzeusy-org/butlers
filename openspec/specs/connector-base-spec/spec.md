@@ -464,7 +464,7 @@ dashboard endpoint
   `/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`
 - **THEN** the body `{"settings": {...}}` is shallow-merged into the existing
   settings
-- **AND** the updated `ConnectorEntry` is returned
+- **AND** the updated `ConnectorDetail` is returned
 - **AND** settings take effect on next connector restart (same semantics as
   cursor updates)
 
