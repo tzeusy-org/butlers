@@ -179,8 +179,9 @@ grep "heartbeat.*server_time\|clock_drift" /var/log/butlers/gmail-connector.log 
 # Expected: server_time field present in acknowledgment; drift logged if > threshold
 
 # 5. Dashboard shows connector liveness derived from heartbeat recency
-curl -s http://localhost:41200/api/connectors | python3 -m json.tool | grep -E "state|last_heartbeat"
-# Expected: each connector shows state=online and a recent last_heartbeat_at timestamp
+curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m json.tool | grep -E "liveness|last_heartbeat"
+# Expected: each runtime connector shows online/stale/offline liveness from its
+# heartbeat; storage-only checkpoints are nested under their parent
 ```
 
 ## Related Pages

@@ -852,7 +852,9 @@ function BulkActionBar({
 
 function ConnectorAttentionStrip({ isActive }: { isActive: boolean }) {
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
-  const connectors = connectorsResp?.data ?? [];
+  const connectors = (connectorsResp?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return <AttentionStrip connectors={connectors} />;
 }
@@ -2101,13 +2103,16 @@ export function TimelineTab({
     setActiveViewId("all");
   }, []);
 
-  // Connector summaries — already fetched for the attention strip; reused
-  // (same query key, no extra request) to build the "+ channel" adder's
-  // option list so it stays cheap (no per-chip requests).
+  // Canonical role-aware connector summaries are already fetched for the
+  // attention strip and reused (same query key, no extra request) to build
+  // the "+ channel" adder's option list. Archived identities are historical,
+  // not live channels, so they must not become picker choices.
   const { data: connectorsResp } = useConnectorSummaries({ enabled: isActive });
 
   const channelOptions = useMemo((): ChannelOption[] => {
-    const connectors: ConnectorSummary[] = connectorsResp?.data ?? [];
+    const connectors: ConnectorSummary[] = (connectorsResp?.data?.connectors ?? []).filter(
+      (connector) => !connector.archived,
+    );
     const counts = new Map<string, number | null>();
     for (const c of connectors) {
       const today = c.today?.messages_ingested ?? null;
@@ -2123,7 +2128,7 @@ export function TimelineTab({
     return Array.from(counts.entries())
       .map(([channel, count]) => ({ channel, count }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
-  }, [connectorsResp?.data]);
+  }, [connectorsResp?.data?.connectors]);
 
   // Compute ISO-8601 bounds from the range picker selection.
   // The rollup band uses these to scope its aggregate; the events list is

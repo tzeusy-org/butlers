@@ -254,7 +254,7 @@ function setupDefaultMocks() {
 
   // Default: no connector issues (strip hidden)
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1405,7 +1405,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   let root: Root;
   let queryClient: QueryClient;
 
-  function makeConnector(overrides: Partial<{ connector_type: string; endpoint_identity: string; state: string; liveness: string; error_message: string | null }> = {}) {
+  function makeConnector(overrides: Partial<{ connector_type: string; endpoint_identity: string; state: string; liveness: string; error_message: string | null; archived: boolean }> = {}) {
     return {
       connector_type: "gmail",
       endpoint_identity: "inbox@example.com",
@@ -1454,7 +1454,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
 
   it("strip is hidden when all connectors are healthy", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [makeConnector()] },
+      data: { data: { connectors: [makeConnector()] } },
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1474,7 +1474,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
 
   it("strip is hidden when connector list is empty", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [] },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useConnectorSummaries>);
@@ -1495,10 +1495,12 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("strip renders for connectors with state=error", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ state: "healthy", liveness: "online" }),
-          makeConnector({ connector_type: "telegram", endpoint_identity: "bot@t.me", state: "error", liveness: "online", error_message: "auth expired" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ state: "healthy", liveness: "online" }),
+            makeConnector({ connector_type: "telegram", endpoint_identity: "bot@t.me", state: "error", liveness: "online", error_message: "auth expired" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1523,9 +1525,11 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("strip renders for connectors with liveness=offline", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ liveness: "offline", state: "healthy" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ liveness: "offline", state: "healthy" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1547,14 +1551,48 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
     expect(items.length).toBe(1);
   });
 
+  it("keeps an archived offline identity out of the attention strip", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: {
+          connectors: [
+            makeConnector(),
+            makeConnector({
+              connector_type: "google_health",
+              endpoint_identity: "retired-account",
+              liveness: "offline",
+              archived: true,
+            }),
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useConnectorSummaries>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='attention-strip']")).toBeNull();
+  });
+
   it("shows multiple attention items when multiple connectors are unhealthy", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({ connector_type: "gmail", endpoint_identity: "a@example.com", state: "error" }),
-          makeConnector({ connector_type: "gmail", endpoint_identity: "b@example.com", liveness: "offline" }),
-          makeConnector({ connector_type: "telegram", endpoint_identity: "bot", state: "healthy", liveness: "online" }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({ connector_type: "gmail", endpoint_identity: "a@example.com", state: "error" }),
+            makeConnector({ connector_type: "gmail", endpoint_identity: "b@example.com", liveness: "offline" }),
+            makeConnector({ connector_type: "telegram", endpoint_identity: "bot", state: "healthy", liveness: "online" }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -1577,13 +1615,15 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
   it("navigates an attention item to the connector detail route", () => {
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          makeConnector({
-            connector_type: "google_health",
-            endpoint_identity: "owner@example.com",
-            state: "error",
-          }),
-        ],
+        data: {
+          connectors: [
+            makeConnector({
+              connector_type: "google_health",
+              endpoint_identity: "owner@example.com",
+              state: "error",
+            }),
+          ],
+        },
       },
       isLoading: false,
       isError: false,

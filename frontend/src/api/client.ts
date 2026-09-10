@@ -4272,7 +4272,7 @@ export function getEducationMindMapAnalyticsTrend(
 }
 
 // ---------------------------------------------------------------------------
-// Connector statistics API (docs/connectors/statistics.md §6)
+// Ingestion connectors API (docs/connectors/statistics.md §6)
 // ---------------------------------------------------------------------------
 
 import type {
@@ -4289,8 +4289,6 @@ import type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4312,8 +4310,6 @@ export type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
-  ConnectorSummariesListResponse,
-  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4324,8 +4320,8 @@ export type {
 // Internal helpers — backend response shapes
 // ---------------------------------------------------------------------------
 
-/** Raw connector entry from GET /api/switchboard/connectors. */
-interface _BackendConnectorEntry {
+/** Flat connector detail payload returned by the canonical detail routes. */
+interface _ConnectorDetailPayload {
   connector_type: string;
   endpoint_identity: string;
   instance_id: string | null;
@@ -4354,7 +4350,7 @@ interface _BackendConnectorEntry {
   hourly_events?: number[];
 }
 
-/** Raw timeseries row from GET /api/switchboard/connectors/:type/:id/stats. */
+/** Raw timeseries row returned by the canonical connector stats route. */
 interface _BackendStatsRow {
   connector_type: string;
   endpoint_identity: string;
@@ -4377,8 +4373,8 @@ interface _BackendStatsRow {
  * Derive liveness string from last heartbeat timestamp.
  *
  * Mirrors butlers.core.liveness.derive_liveness (Python) exactly so
- * the same connector never disagrees between this switchboard-routed card
- * and any other reader (bu-27dxl.6.6) -- this was previously a 30-minute
+ * the same connector never disagrees between its detail card and any other
+ * reader (bu-27dxl.6.6) -- this was previously a 30-minute
  * stale cutoff, a full 15 minutes later than the backend's, which could
  * show "stale" here for a connector every other surface already reports
  * "offline":
@@ -4397,8 +4393,8 @@ function _deriveLiveness(lastHeartbeatAt: string | null): string {
   return "offline";
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorSummary shape. */
-function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
+/** Map a canonical flat detail payload to the frontend ConnectorSummary shape. */
+function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
   return {
     connector_type: entry.connector_type,
     endpoint_identity: entry.endpoint_identity,
@@ -4418,8 +4414,8 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
   };
 }
 
-/** Map a backend ConnectorEntry to the frontend ConnectorDetail shape. */
-function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
+/** Map a canonical flat detail payload to the frontend ConnectorDetail shape. */
+function _toConnectorDetail(entry: _ConnectorDetailPayload): ConnectorDetail {
   return {
     ..._toConnectorSummary(entry),
     instance_id: entry.instance_id,
@@ -4496,25 +4492,13 @@ function _toConnectorStats(
 // Public API functions
 // ---------------------------------------------------------------------------
 
-/** List all connectors with liveness and today's stats. */
-export async function listConnectorSummaries(): Promise<ConnectorSummariesListResponse> {
-  const resp = await apiFetch<{
-    data: _BackendConnectorEntry[];
-    meta: ConnectorSummariesMeta;
-  }>("/switchboard/connectors");
-  return {
-    ...resp,
-    data: (resp.data ?? []).map(_toConnectorSummary),
-  };
-}
-
 /** Get full detail for a single connector. */
 export async function getConnectorDetail(
   connectorType: string,
   endpointIdentity: string,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
   );
   return {
     ...resp,
@@ -4529,7 +4513,7 @@ export async function getConnectorStats(
   period: IngestionPeriod = "24h",
 ): Promise<ApiResponse<ConnectorStats>> {
   const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
   );
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
@@ -4551,7 +4535,7 @@ export async function getConnectorStats(
  * Returns the connector list. Every field is DB-sourced — no Prometheus
  * dependency, so no `aggregates_available` flag on this response.
  */
-export async function getConnectorSummariesWithAggregates(): Promise<
+export async function getConnectorSummaries(): Promise<
   ApiResponse<ConnectorSummariesResponse>
 > {
   const resp = await apiFetch<ApiResponse<ConnectorSummariesResponse>>(
@@ -4636,8 +4620,8 @@ export async function updateConnectorSettings(
   endpointIdentity: string,
   settings: Record<string, unknown>,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
+  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

@@ -47,8 +47,9 @@ interface AttentionStripProps {
 export function AttentionStrip({ connectors }: AttentionStripProps) {
   const issues = connectors.filter(
     (c) =>
-      deriveConnectorDispatchInfo(c).needsAttention ||
-      Boolean(c.operational_warnings?.length),
+      !c.archived &&
+      (deriveConnectorDispatchInfo(c).needsAttention ||
+        Boolean(c.operational_warnings?.length)),
   )
 
   if (issues.length === 0) return null

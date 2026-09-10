@@ -1,5 +1,5 @@
 """Real-Postgres integration tests for the skip-aware connector STATS endpoint
-(GET /api/switchboard/connectors/{type}/{identity}/stats, bu-c48im).
+(GET /api/ingestion/connectors/{type}/{identity}/stats, bu-c48im).
 
 The mocked-pool unit tests in
 roster/switchboard/tests/test_connector_stats_prometheus.py prove the
@@ -18,24 +18,21 @@ This repo has been burned before by SQL that passed mocked-pool tests and broke
 main for ~8h (PR #2598 class). See test_connector_summaries_filtered_events_db.py
 for the sibling overview precedent (same UNION ALL shape, different endpoint).
 
-The switchboard router loads its models dynamically, so rather than wire the
-whole app + auto-discovery, these tests call ``get_connector_stats`` directly
-with a fake DatabaseManager whose ``.pool()`` returns a real asyncpg pool — the
-same direct-call style the mocked-pool tests use.
+Rather than wire the whole app, these tests call the canonical stats SQL helper
+directly with a fake DatabaseManager whose ``.pool()`` returns a real asyncpg
+pool. The API-level tests cover the registry-existence gate separately.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
-import sys
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 import asyncpg
 import pytest
 
+from butlers.api.routers import ingestion_connectors
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -45,17 +42,6 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
     pytest.mark.asyncio(loop_scope="session"),
 ]
-
-_ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "switchboard" / "api" / "router.py"
-
-
-def _load_switchboard_router():
-    """Load a fresh switchboard router module (mirrors the mocked-pool tests)."""
-    sys.modules.pop("switchboard_api_models", None)
-    spec = importlib.util.spec_from_file_location("_sw_router_stats_integration", _ROUTER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 class _RealPoolDB:
@@ -169,7 +155,6 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
 ) -> None:
     """A 100%-skip-routed connector (zero ingestion_events rows) still surfaces
     its filtered volume via the real UNION ALL query, distinct from ingested."""
-    mod = _load_switchboard_router()
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     for _ in range(4):
@@ -180,7 +165,7 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
             endpoint_identity="default",
         )
 
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="default",
         period="24h",
@@ -198,7 +183,6 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     pool: asyncpg.Pool,
 ) -> None:
     """Ingested and filtered counts in the SAME hour never bleed into each other."""
-    mod = _load_switchboard_router()
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     await _seed_ingestion_event(
@@ -212,7 +196,7 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
             pool, received_at=now, connector_type="gmail", endpoint_identity="user@example.com"
         )
 
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="gmail",
         endpoint_identity="user@example.com",
         period="24h",
@@ -231,7 +215,6 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
 ) -> None:
     """A websocket connector whose type lives in source_provider (not
     source_channel) is matched via COALESCE(source_provider, source_channel)."""
-    mod = _load_switchboard_router()
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
     # _seed_ingestion_event writes both source_channel and source_provider to the
@@ -240,7 +223,7 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
         pool, received_at=now, connector_type="home_assistant", endpoint_identity="ws://ha:8123"
     )
 
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="ws://ha:8123",
         period="24h",

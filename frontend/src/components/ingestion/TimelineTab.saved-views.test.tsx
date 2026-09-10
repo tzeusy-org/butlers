@@ -174,7 +174,7 @@ function setupDefaultMocks() {
     rollup: { data: undefined, isLoading: false, isError: false } as never,
   });
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] }, isLoading: false, isError: false,
+    data: { data: { connectors: [] } }, isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
   vi.mocked(useIngestionWindowRollup).mockReturnValue({
     data: { events: 0, sessions: 0, cost: null, window: { from: null, to: null } },
@@ -666,21 +666,37 @@ describe("TimelineTab — bu-4utdw.5 channel adder", () => {
     setupDefaultMocks();
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: {
-        data: [
-          {
-            connector_type: "telegram",
-            endpoint_identity: "bot",
-            liveness: "online",
-            state: "healthy",
-            error_message: null,
-            version: null,
-            uptime_s: null,
-            last_heartbeat_at: null,
-            first_seen_at: "2026-01-01T00:00:00Z",
-            today: { messages_ingested: 4, messages_failed: 0, uptime_pct: 100 },
-            hourly_events: [],
-          },
-        ],
+        data: {
+          connectors: [
+            {
+              connector_type: "telegram",
+              endpoint_identity: "bot",
+              liveness: "online",
+              state: "healthy",
+              error_message: null,
+              version: null,
+              uptime_s: null,
+              last_heartbeat_at: null,
+              first_seen_at: "2026-01-01T00:00:00Z",
+              today: { messages_ingested: 4, messages_failed: 0, uptime_pct: 100 },
+              hourly_events: [],
+            },
+            {
+              connector_type: "google_health",
+              endpoint_identity: "retired-account",
+              liveness: "offline",
+              state: "degraded",
+              error_message: null,
+              version: null,
+              uptime_s: null,
+              last_heartbeat_at: null,
+              first_seen_at: "2026-01-01T00:00:00Z",
+              today: { messages_ingested: 0, messages_failed: 0, uptime_pct: 0 },
+              hourly_events: [],
+              archived: true,
+            },
+          ],
+        },
       },
       isLoading: false,
       isError: false,
@@ -716,6 +732,24 @@ describe("TimelineTab — bu-4utdw.5 channel adder", () => {
     act(() => { fireEvent.pointerDown(option); fireEvent.pointerUp(option); option.click(); });
 
     expect(container.querySelector("[data-testid='channel-chip-telegram']")).not.toBeNull();
+  });
+
+  it("does not offer archived identities as channel filters", () => {
+    act(() => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const adderBtn = container.querySelector("[data-testid='channel-adder-button']") as HTMLButtonElement;
+    act(() => { fireEvent.pointerDown(adderBtn); adderBtn.click(); });
+
+    expect(document.querySelector("[data-testid='channel-option-google_health']")).toBeNull();
   });
 
   it("row channel cell click-to-filter adds that channel (idempotent, never removes)", () => {

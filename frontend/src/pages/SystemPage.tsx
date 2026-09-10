@@ -108,7 +108,9 @@ function TopologyTile() {
     status: row.status,
     tone: row.cellTone,
   }));
-  const connectors = connectorsResponse?.data ?? [];
+  const connectors = (connectorsResponse?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return (
     <TopologyGraph
