@@ -14,10 +14,11 @@ schedules -- deterministic Python handlers, not narrative prompts -- so
 ``carry_forward`` has no reachable caller there. Gating it out matches the
 existing non-STAFFER convention already drawn for the same reason around
 other narrative/dispatch-adjacent tools (see ``_notifications.py``'s
-``notify``, ``_temporal.py``'s deadline/event_chain/seasonal tools), and
-keeps it off the tightest-margin staffer's tool surface (Concierge sits at
-its RFC 0002 30-50 budget ceiling; see
-``openspec/specs/butler-concierge/spec.md``).
+``notify``, ``_temporal.py``'s deadline/event_chain/seasonal tools). This is
+a registration-time role-fit and reachability decision, independent of RFC
+0002 Amendment 1 / RFC 0027's 30-50 target for full definitions initially
+loaded into model context; presentation discovery and evidence remain owned
+by ``bu-ondtw``.
 """
 
 from __future__ import annotations

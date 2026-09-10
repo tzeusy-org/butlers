@@ -2,11 +2,11 @@
 
 ``carry_forward`` backs the task-continuity ledger for PROMPT-mode recurring
 tasks. Every staffer butler (concierge, messenger, switchboard, qa) declares
-only job-mode schedules, so the tool has no reachable caller there -- and
-Concierge sits at its RFC 0002 30-50 tool-budget ceiling, so registering it
-unconditionally would push a staffer over budget for no operational benefit.
-This mirrors the existing non-STAFFER scoping already drawn around other
-narrative/dispatch-adjacent core tools (``notify``, the ``temporal`` group).
+only job-mode schedules, so the tool has no reachable caller there. This
+role-fit and reachability constraint mirrors the existing non-STAFFER scoping
+already drawn around other narrative/dispatch-adjacent core tools (``notify``,
+the ``temporal`` group); it is independent of RFC 0002 Amendment 1 / RFC 0027's
+initial model-context working-set target.
 """
 
 from __future__ import annotations
