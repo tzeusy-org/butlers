@@ -15,6 +15,7 @@ import pytest
 
 from butlers.config import ButlerConfig, ButlerType
 from butlers.jobs.briefing import (
+    _LIFESTYLE_DURABLE_PREDICATES,
     SPECIALIST_BUTLERS,
     _get_butler_typed_specialist_butlers,
     collect_briefing_contributions,
@@ -42,6 +43,23 @@ _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
 
 
+def test_lifestyle_briefing_uses_the_complete_stable_taste_taxonomy() -> None:
+    assert set(_LIFESTYLE_DURABLE_PREDICATES) == {
+        "likes_genre",
+        "likes_artist",
+        "likes_cuisine",
+        "favorite_restaurant",
+        "favorite_recipe",
+        "hobby",
+        "food_preference",
+        "food_dislike",
+        "routine",
+        "listening_pattern",
+        "purpose",
+        "context",
+    }
+
+
 async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlights() -> None:
     pool = MagicMock()
     pool.fetch = AsyncMock(side_effect=[[], []])
@@ -52,12 +70,14 @@ async def test_lifestyle_briefing_summary_uses_full_counts_not_limited_highlight
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing._write_contribution", write),
     ):
-        await run_lifestyle_briefing_contribution(pool, None)
+        result = await run_lifestyle_briefing_contribution(pool, None)
 
     envelope = write.await_args.args[1]
     assert envelope["summary"] == (
         "27 new consumption note(s) today. 14 taste preference(s) captured today."
     )
+    assert result["consumption_notes"] == 27
+    assert result["taste_updates"] == 14
 
 
 # ---------------------------------------------------------------------------

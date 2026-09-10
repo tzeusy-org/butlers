@@ -116,7 +116,19 @@ owner-asserted verdict without LLM interpretation.
 - **WHEN** the currently-playing endpoint returns a track URI, duration, progress, and playback timestamp
 - **THEN** the connector SHALL upsert one `connectors.spotify_track_plays` row keyed by `(endpoint_identity, track_uri, first_seen_ms)`
 - **AND** repeated observations SHALL advance `last_seen_ms` and `max_progress_ms` without moving either value backwards
-- **AND** replaying the same observations after restart SHALL NOT create another row
+- **AND** after restart the connector SHALL hydrate and reconcile any persisted open play before applying the first new observation
+- **AND** replaying the same observations after restart SHALL NOT create another row or leave the prior play open
+
+#### Scenario: Pauses, seeks, and same-track repeats preserve true play boundaries
+
+- **WHEN** current playback briefly pauses and resumes the same track before the session idle timeout
+- **THEN** the connector SHALL retain one open play and SHALL NOT derive completion or skip evidence from the pause
+- **WHEN** progress seeks backward within a play
+- **THEN** the connector SHALL preserve the play identity and its nondecreasing maximum progress
+- **WHEN** the same track restarts after reaching the completion threshold and provider state-change evidence advances
+- **THEN** the connector SHALL close the completed play and open a distinct repeated play
+- **WHEN** playback remains inactive through the session idle timeout
+- **THEN** the connector SHALL close the open play exactly once
 
 #### Scenario: Track change resolves completion and skip evidence
 
@@ -124,6 +136,13 @@ owner-asserted verdict without LLM interpretation.
 - **THEN** the connector SHALL close the previous row and derive `completion_ratio` from its maximum observed progress
 - **AND** it SHALL set `skipped=true` below the completion threshold and `skipped=false` at or above it
 - **AND** no LLM SHALL assert either value
+- **AND** closure SHALL upsert a missing opening row, merge persisted progress before deriving either value, and remain retryable after a transient write failure
+
+#### Scenario: Current and recently-played observations reconcile to one play
+
+- **WHEN** a play captured through currently-playing later appears in recently-played
+- **THEN** the connector SHALL durably reconcile the recently-played item to that play instead of inserting a second play-only row
+- **AND** the recently-played cursor SHALL advance only through items whose reconciliation or insertion succeeded
 
 #### Scenario: Missing progress remains explicitly imprecise
 

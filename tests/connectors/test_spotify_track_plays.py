@@ -9,9 +9,8 @@ Covers the acceptance behavior matrix's "Play evidence" section:
 - replaying the same poll sequence through a fresh tracker is idempotent
   (deterministic first_seen_ms/max_progress_ms, no duplicate identity)
 
-All persistence functions are tested against a mocked asyncpg pool (same
-convention as ``test_spotify_connector.py``'s ``persist_session_summary``
-tests) — the real SQL/grants are covered by
+This file pins the pure state machine. Persistence, restart hydration,
+cross-source reconciliation, and grants are exercised against PostgreSQL in
 ``tests/migrations/test_spotify_track_plays_migration.py``.
 
 Issue: bu-2jtfw.10
@@ -19,20 +18,10 @@ Issue: bu-2jtfw.10
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
-import pytest
-
 from butlers.connectors.spotify import (
     TrackObservation,
     TrackPlayTracker,
-    close_track_play,
-    record_gap_fill_track_play,
-    upsert_open_track_play,
 )
-
-_ENDPOINT = "spotify_user_client:spotify:user123"
-_SPOTIFY_USER_ID = "user123"
 
 
 def _obs(
@@ -77,6 +66,61 @@ def test_same_track_extends_max_progress_via_running_max() -> None:
     snapshot = tracker.snapshot_open()
     assert snapshot is not None
     assert snapshot.max_progress_ms == 5000
+
+
+def test_seek_back_keeps_the_same_play_and_preserves_max_progress() -> None:
+    tracker = TrackPlayTracker()
+    tracker.observe(_obs(track_uri="spotify:track:a", progress_ms=80_000, timestamp_ms=1_000))
+    closed = tracker.observe(
+        _obs(track_uri="spotify:track:a", progress_ms=30_000, timestamp_ms=2_000)
+    )
+    assert closed is None
+    snapshot = tracker.snapshot_open()
+    assert snapshot is not None
+    assert snapshot.first_seen_ms == 1_000
+    assert snapshot.max_progress_ms == 80_000
+
+
+def test_same_track_repeat_after_near_completion_opens_a_new_play() -> None:
+    tracker = TrackPlayTracker()
+    tracker.observe(
+        _obs(
+            track_uri="spotify:track:a", duration_ms=100_000, progress_ms=95_000, timestamp_ms=1_000
+        )
+    )
+    closed = tracker.observe(
+        _obs(
+            track_uri="spotify:track:a", duration_ms=100_000, progress_ms=2_000, timestamp_ms=2_000
+        )
+    )
+    assert closed is not None
+    assert closed.first_seen_ms == 1_000
+    snapshot = tracker.snapshot_open()
+    assert snapshot is not None
+    assert snapshot.first_seen_ms == 2_000
+    assert snapshot.max_progress_ms == 2_000
+
+
+def test_brief_pause_and_resume_does_not_close_the_play() -> None:
+    tracker = TrackPlayTracker()
+    tracker.observe(_obs(track_uri="spotify:track:a", progress_ms=5_000, timestamp_ms=1_000))
+    assert tracker.observe_no_playback(timestamp_ms=2_000, idle_timeout_ms=5_000) is None
+    assert tracker.observe_no_playback(timestamp_ms=4_000, idle_timeout_ms=5_000) is None
+    assert (
+        tracker.observe(_obs(track_uri="spotify:track:a", progress_ms=6_000, timestamp_ms=5_000))
+        is None
+    )
+    assert tracker.snapshot_open() is not None
+
+
+def test_prolonged_stop_closes_the_play_at_the_idle_boundary() -> None:
+    tracker = TrackPlayTracker()
+    tracker.observe(_obs(track_uri="spotify:track:a", progress_ms=5_000, timestamp_ms=1_000))
+    assert tracker.observe_no_playback(timestamp_ms=2_000, idle_timeout_ms=5_000) is None
+    closed = tracker.observe_no_playback(timestamp_ms=7_000, idle_timeout_ms=5_000)
+    assert closed is not None
+    assert closed.track_uri == "spotify:track:a"
+    assert tracker.snapshot_open() is None
 
 
 def test_track_change_closes_previous_play_and_opens_new_one() -> None:
@@ -134,122 +178,3 @@ def test_replaying_the_same_poll_sequence_through_a_fresh_tracker_is_determinist
     second_run = _run(sequence)  # simulates a fresh tracker after a restart
     assert first_run == second_run
     assert first_run == [("spotify:track:a", 0, 5000)]
-
-
-# ---------------------------------------------------------------------------
-# close_track_play: completion_ratio / skipped derivation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_short_play_closes_with_low_completion_and_skipped_true() -> None:
-    """A ~5s play of a 250s track closes with completion_ratio ~= 0.02, skipped=True."""
-    tracker = TrackPlayTracker()
-    tracker.observe(
-        _obs(track_uri="spotify:track:a", duration_ms=250_000, progress_ms=5_000, timestamp_ms=0)
-    )
-    closed = tracker.observe(
-        _obs(track_uri="spotify:track:b", duration_ms=200_000, progress_ms=0, timestamp_ms=5_000)
-    )
-    assert closed is not None
-
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="UPDATE 1")
-    await close_track_play(pool, endpoint_identity=_ENDPOINT, evidence=closed)
-
-    pool.execute.assert_awaited_once()
-    params = pool.execute.call_args.args[1:]
-    completion_ratio = params[5]
-    skipped = params[6]
-    assert completion_ratio == pytest.approx(0.02, abs=0.001)
-    assert skipped is True
-
-
-@pytest.mark.asyncio
-async def test_full_duration_play_closes_with_skipped_false() -> None:
-    tracker = TrackPlayTracker()
-    tracker.observe(
-        _obs(track_uri="spotify:track:a", duration_ms=200_000, progress_ms=198_000, timestamp_ms=0)
-    )
-    closed = tracker.observe(
-        _obs(track_uri="spotify:track:b", duration_ms=200_000, progress_ms=0, timestamp_ms=200_000)
-    )
-    assert closed is not None
-
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="UPDATE 1")
-    await close_track_play(pool, endpoint_identity=_ENDPOINT, evidence=closed)
-
-    params = pool.execute.call_args.args[1:]
-    completion_ratio = params[5]
-    skipped = params[6]
-    assert completion_ratio == pytest.approx(0.99, abs=0.001)
-    assert skipped is False
-
-
-@pytest.mark.asyncio
-async def test_play_only_evidence_closes_with_null_completion_and_skipped() -> None:
-    """Absent progress (gap-fill / 204 / omission) is honest, not fabricated."""
-    tracker = TrackPlayTracker()
-    tracker.observe(
-        _obs(track_uri="spotify:track:a", duration_ms=200_000, progress_ms=None, timestamp_ms=0)
-    )
-    closed = tracker.observe(
-        _obs(track_uri="spotify:track:b", duration_ms=200_000, progress_ms=0, timestamp_ms=1000)
-    )
-    assert closed is not None
-    assert closed.observation_precision == "play_only"
-
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="UPDATE 1")
-    await close_track_play(pool, endpoint_identity=_ENDPOINT, evidence=closed)
-
-    params = pool.execute.call_args.args[1:]
-    completion_ratio = params[5]
-    skipped = params[6]
-    assert completion_ratio is None
-    assert skipped is None
-
-
-# ---------------------------------------------------------------------------
-# upsert_open_track_play / record_gap_fill_track_play — SQL shape
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upsert_open_track_play_is_conflict_safe_and_keyed_on_identity() -> None:
-    tracker = TrackPlayTracker()
-    tracker.observe(_obs(track_uri="spotify:track:a", progress_ms=1000, timestamp_ms=0))
-    evidence = tracker.snapshot_open()
-    assert evidence is not None
-
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
-    await upsert_open_track_play(
-        pool, endpoint_identity=_ENDPOINT, spotify_user_id=_SPOTIFY_USER_ID, evidence=evidence
-    )
-
-    query = pool.execute.call_args.args[0]
-    assert "ON CONFLICT (endpoint_identity, track_uri, first_seen_ms)" in query
-    assert "GREATEST" in query
-
-
-@pytest.mark.asyncio
-async def test_gap_fill_track_play_is_recorded_already_closed_as_play_only() -> None:
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
-    await record_gap_fill_track_play(
-        pool,
-        endpoint_identity=_ENDPOINT,
-        spotify_user_id=_SPOTIFY_USER_ID,
-        track_uri="spotify:track:gap",
-        track_name="Gap Track",
-        duration_ms=180_000,
-        played_at_ms=123456,
-    )
-
-    query, *params = pool.execute.call_args.args
-    assert "'play_only'" in query
-    assert "closed_at" in query
-    # played_at_ms is used for both first_seen_ms and last_seen_ms.
-    assert params[4] == 123456

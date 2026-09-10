@@ -121,6 +121,13 @@ The Lifestyle butler SHALL run the standard memory maintenance job set shared ac
 - **AND** it SHALL schedule at least one domain-specific recurring task whose current shape is a weekly taste digest
 - **AND** the exact cron expressions and dispatch modes live in `roster/lifestyle/butler.toml`
 
+#### Scenario: Connector evidence is projected without an LLM
+
+- **WHEN** Spotify session or closed-play evidence is waiting in the connector ledger
+- **THEN** a deterministic scheduled job SHALL project it into Lifestyle works and taste signals
+- **AND** repeated or concurrent job runs SHALL converge without duplicate signals or orphan works
+- **AND** the projection SHALL NOT depend on an LLM session or operator tool invocation
+
 ### Requirement: Cross-Butler Briefing Contribution
 
 The Lifestyle butler SHALL participate in the canonical daily briefing as a specialist butler.

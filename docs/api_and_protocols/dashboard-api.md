@@ -106,9 +106,9 @@ The auto-discovered Lifestyle router exposes three read-only endpoints under
 - `GET /verdicts` returns owner assertions, including migrated legacy lifestyle facts.
 
 The list endpoints obtain `meta.total` with a separate `COUNT(*)`; it is the ledger total for the
-same filter, not the length of the returned page. A missing pre-migration ledger returns an empty
-page. Summary read failures remain distinguishable through `ledger_available=false` rather than
-being presented as a genuine empty taste history.
+same filter, not the length of the returned page. A missing pre-migration ledger returns HTTP 503
+on every taste endpoint rather than being presented as a genuine empty taste history. Other summary
+read failures remain distinguishable through `ledger_available=false`.
 
 ## SSE Streaming
 

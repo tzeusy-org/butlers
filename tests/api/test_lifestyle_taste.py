@@ -79,8 +79,7 @@ class TestTasteSummary:
         assert data["signals_by_kind"] == {"listen_completed": 200, "listen_skipped": 140}
         assert data["ledger_available"] is True
 
-    async def test_pre_migration_missing_table_reports_honest_zeros(self, app):
-        """A genuinely absent ledger (pre-migration) is not a failure."""
+    async def test_pre_migration_missing_table_reports_unavailable(self, app):
         pool = AsyncMock()
         pool.fetchval = AsyncMock(
             side_effect=asyncpg.UndefinedTableError("relation does not exist")
@@ -90,10 +89,8 @@ class TestTasteSummary:
         async with await _client(app) as client:
             resp = await client.get("/api/lifestyle/taste/summary")
 
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["total_works"] == 0
-        assert data["ledger_available"] is True
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Taste ledger is not available"
 
     async def test_genuine_query_failure_sets_ledger_unavailable(self, app):
         pool = AsyncMock()
@@ -162,7 +159,7 @@ class TestTasteWorks:
         assert pool.fetchval.await_args.args[-1] == "track"
         assert pool.fetch.await_args.args[1] == "track"
 
-    async def test_pre_migration_missing_table_returns_empty_page(self, app):
+    async def test_pre_migration_missing_table_reports_unavailable(self, app):
         pool = AsyncMock()
         pool.fetchval = AsyncMock(
             side_effect=asyncpg.UndefinedTableError("relation does not exist")
@@ -172,10 +169,8 @@ class TestTasteWorks:
         async with await _client(app) as client:
             resp = await client.get("/api/lifestyle/taste/works")
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Taste ledger is not available"
 
 
 class TestTasteVerdicts:
@@ -206,3 +201,16 @@ class TestTasteVerdicts:
         assert body["meta"]["total"] == 61
         assert body["data"][0]["verdict_text"] == "loves jazz"
         assert body["data"][0]["work_id"] is None
+
+    async def test_pre_migration_missing_table_reports_unavailable(self, app):
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(
+            side_effect=asyncpg.UndefinedTableError("relation does not exist")
+        )
+        _wire_pool(app, pool)
+
+        async with await _client(app) as client:
+            resp = await client.get("/api/lifestyle/taste/verdicts")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Taste ledger is not available"

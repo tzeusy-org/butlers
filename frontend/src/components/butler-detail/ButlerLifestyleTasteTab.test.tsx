@@ -209,26 +209,32 @@ describe("ButlerLifestyleTasteTab — KPI totals render from meta.total", () => 
     renderTab();
     const kpiItems = screen.getAllByTestId("kpi-item");
     // Fetched page has 1 verdict; the real total (61) must render, not 1.
-    expect(kpiItems[1].textContent).toContain("61");
+    expect(kpiItems[2].textContent).toContain("61");
+  });
+
+  it("renders the binding four-cell KPI strip including all signals", () => {
+    setupWithData();
+    renderTab();
+    const strip = screen.getByTestId("kpi-strip");
+    const kpiItems = screen.getAllByTestId("kpi-item");
+    expect(kpiItems).toHaveLength(4);
+    expect(kpiItems[1].textContent).toContain("340");
+    expect(strip.querySelector(".sm\\:grid-cols-4")).not.toBeNull();
+    expect(strip.querySelector("[class*='bg-card']")).toBeNull();
   });
 
   it("shows recent_signals_7d from the summary", () => {
     setupWithData();
     renderTab();
     const kpiItems = screen.getAllByTestId("kpi-item");
-    expect(kpiItems[2].textContent).toContain("12");
+    expect(kpiItems[3].textContent).toContain("12");
   });
 
-  it("shows a degraded note when ledger_available is false", () => {
+  it("renders unavailable ledger state as an error instead of confirmed zeros", () => {
     setupWithData({ summary: { ...SUMMARY_FIXTURE, ledger_available: false } });
     renderTab();
-    expect(screen.getByTestId("ledger-degraded-note")).toBeDefined();
-  });
-
-  it("does not show a degraded note when the ledger is healthy", () => {
-    setupWithData();
-    renderTab();
-    expect(screen.queryByTestId("ledger-degraded-note")).toBeNull();
+    expect(screen.getByText("Could not load taste overview.")).toBeDefined();
+    expect(screen.queryByText("Works tracked")).toBeNull();
   });
 });
 

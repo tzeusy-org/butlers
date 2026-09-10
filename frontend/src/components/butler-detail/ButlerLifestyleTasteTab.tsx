@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { KpiCell, ErrorLine } from "./atoms";
+import { KpiCell, ErrorLine, Panel } from "./atoms";
 import {
   useLifestyleTasteSummary,
   useLifestyleTasteVerdicts,
@@ -52,80 +52,55 @@ function LoadingRows({ count = 4 }: { count?: number }) {
 
 interface LifestyleKpiStripProps {
   totalWorks: number;
+  totalSignals: number;
   totalVerdicts: number;
   recentSignals7d: number;
-  ledgerAvailable: boolean;
   isLoading: boolean;
   isError: boolean;
 }
 
 function LifestyleKpiStrip({
   totalWorks,
+  totalSignals,
   totalVerdicts,
   recentSignals7d,
-  ledgerAvailable,
   isLoading,
   isError,
 }: LifestyleKpiStripProps) {
   const kpiSkeleton = (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 px-4 py-3">
-      {Array.from({ length: 3 }, (_, i) => (
-        <div key={i} className="space-y-1" data-testid="loading-line">
-          <Skeleton className="h-2.5 w-20 rounded" />
-          <Skeleton className="h-7 w-12 rounded" />
-        </div>
+    <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-l border-border/60">
+      {Array.from({ length: 4 }, (_, i) => (
+        <Panel key={i} testId="loading-line">
+          <div className="space-y-1">
+            <Skeleton className="h-2.5 w-20 rounded" />
+            <Skeleton className="h-7 w-12 rounded" />
+          </div>
+        </Panel>
       ))}
     </div>
   );
 
   if (isLoading) {
-    return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Taste overview</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0 pb-4">{kpiSkeleton}</CardContent>
-      </Card>
-    );
+    return <div data-testid="kpi-strip">{kpiSkeleton}</div>;
   }
 
   if (isError) {
     return (
-      <Card data-testid="kpi-strip">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Taste overview</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ErrorLine>Could not load taste overview.</ErrorLine>
-        </CardContent>
-      </Card>
+      <div className="border border-border/60 p-4" data-testid="kpi-strip">
+        <ErrorLine>Could not load taste overview.</ErrorLine>
+      </div>
     );
   }
 
   return (
-    <Card data-testid="kpi-strip">
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Taste overview</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {!ledgerAvailable && (
-          <p className="text-xs text-muted-foreground mb-2" data-testid="ledger-degraded-note">
-            Ledger totals are temporarily unavailable.
-          </p>
-        )}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-          <div data-testid="kpi-item">
-            <KpiCell label="Works tracked" value={String(totalWorks)} />
-          </div>
-          <div data-testid="kpi-item">
-            <KpiCell label="Taste verdicts" value={String(totalVerdicts)} />
-          </div>
-          <div data-testid="kpi-item">
-            <KpiCell label="Signals (7d)" value={String(recentSignals7d)} />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <div data-testid="kpi-strip">
+      <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-l border-border/60">
+        <Panel testId="kpi-item"><KpiCell label="Works tracked" value={String(totalWorks)} big /></Panel>
+        <Panel testId="kpi-item"><KpiCell label="All signals" value={String(totalSignals)} big /></Panel>
+        <Panel testId="kpi-item"><KpiCell label="Taste verdicts" value={String(totalVerdicts)} big /></Panel>
+        <Panel testId="kpi-item"><KpiCell label="Signals (7d)" value={String(recentSignals7d)} big /></Panel>
+      </div>
+    </div>
   );
 }
 
@@ -242,10 +217,14 @@ export default function ButlerLifestyleTasteTab() {
     isError: worksError,
   } = useLifestyleTasteWorks({ limit: 10 });
 
-  const verdicts = verdictsResponse?.data ?? [];
-  const works = worksResponse?.data ?? [];
+  const verdictsUnavailable = verdictsError || (!verdictsLoading && verdictsResponse === undefined);
+  const worksUnavailable = worksError || (!worksLoading && worksResponse === undefined);
+  const summaryUnavailable =
+    summaryError || (!summaryLoading && (summary === undefined || !summary.ledger_available));
+  const verdicts = verdictsResponse ? verdictsResponse.data : [];
+  const works = worksResponse ? worksResponse.data : [];
 
-  const hasError = summaryError || verdictsError || worksError;
+  const hasError = summaryUnavailable || verdictsUnavailable || worksUnavailable;
 
   return (
     <div className="space-y-4 pt-4" data-testid="lifestyle-taste-tab">
@@ -259,11 +238,11 @@ export default function ButlerLifestyleTasteTab() {
       {/* Row 1: KPI strip */}
       <LifestyleKpiStrip
         totalWorks={summary?.total_works ?? 0}
-        totalVerdicts={verdictsResponse?.meta.total ?? summary?.total_verdicts ?? 0}
+        totalSignals={summary?.total_signals ?? 0}
+        totalVerdicts={summary?.total_verdicts ?? 0}
         recentSignals7d={summary?.recent_signals_7d ?? 0}
-        ledgerAvailable={summary?.ledger_available ?? true}
         isLoading={summaryLoading}
-        isError={summaryError}
+        isError={summaryUnavailable}
       />
 
       {/* Row 2: Taste verdicts + recently added works */}
@@ -276,7 +255,7 @@ export default function ButlerLifestyleTasteTab() {
             <TasteVerdictsPanel
               verdicts={verdicts}
               isLoading={verdictsLoading}
-              isError={verdictsError}
+              isError={verdictsUnavailable}
             />
           </CardContent>
         </Card>
@@ -286,7 +265,7 @@ export default function ButlerLifestyleTasteTab() {
             <CardTitle className="text-sm font-medium">Recently added</CardTitle>
           </CardHeader>
           <CardContent>
-            <RecentWorksPanel works={works} isLoading={worksLoading} isError={worksError} />
+            <RecentWorksPanel works={works} isLoading={worksLoading} isError={worksUnavailable} />
           </CardContent>
         </Card>
       </div>

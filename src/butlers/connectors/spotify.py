@@ -513,8 +513,9 @@ class TrackPlayTracker:
     """Tracks the currently-open Spotify track play for progress/skip evidence.
 
     Independent of :class:`ListeningSessionTracker`: a "play" is one
-    contiguous run of the same ``track_uri``, closed as soon as a different
-    track is observed or playback stops. ``completion_ratio``/``skipped`` are
+    contiguous run of the same ``track_uri``, closed when a different track,
+    a same-track replay, or a prolonged stop is observed. Brief pauses and
+    seeks remain part of the same play. ``completion_ratio``/``skipped`` are
     derived by the persistence layer only once a play closes — an in-progress
     play never asserts either.
     """
@@ -522,7 +523,9 @@ class TrackPlayTracker:
     def __init__(self) -> None:
         self._open: _OpenTrackPlay | None = None
         self._open_max_progress_ms: int | None = None
+        self._open_last_progress_ms: int | None = None
         self._open_last_seen_ms: int = 0
+        self._no_playback_since_ms: int | None = None
 
     @property
     def is_open(self) -> bool:
@@ -535,7 +538,23 @@ class TrackPlayTracker:
         observation belongs to a different track, else ``None``.
         """
         closed_evidence: TrackPlayEvidence | None = None
-        if self._open is not None and self._open.track_uri != observation.track_uri:
+        same_track_replay = False
+        if (
+            self._open is not None
+            and self._open.track_uri == observation.track_uri
+            and observation.progress_ms is not None
+            and self._open_last_progress_ms is not None
+            and observation.progress_ms < self._open_last_progress_ms
+            and self._open.duration_ms is not None
+            and self._open_last_progress_ms / self._open.duration_ms >= _SKIP_COMPLETION_THRESHOLD
+            and observation.progress_ms / self._open.duration_ms < 0.2
+            and observation.timestamp_ms > self._open_last_seen_ms
+        ):
+            same_track_replay = True
+
+        if self._open is not None and (
+            self._open.track_uri != observation.track_uri or same_track_replay
+        ):
             closed_evidence = self._open.evidence(
                 last_seen_ms=self._open_last_seen_ms,
                 max_progress_ms=self._open_max_progress_ms,
@@ -551,6 +570,7 @@ class TrackPlayTracker:
                 duration_ms=observation.duration_ms,
             )
             self._open_max_progress_ms = observation.progress_ms
+            self._open_last_progress_ms = observation.progress_ms
             self._open_last_seen_ms = observation.timestamp_ms
         else:
             self._open.duration_ms = self._open.duration_ms or observation.duration_ms
@@ -558,9 +578,38 @@ class TrackPlayTracker:
                 self._open_max_progress_ms = max(
                     self._open_max_progress_ms or 0, observation.progress_ms
                 )
+                self._open_last_progress_ms = observation.progress_ms
             self._open_last_seen_ms = max(self._open_last_seen_ms, observation.timestamp_ms)
 
+        self._no_playback_since_ms = None
+
         return closed_evidence
+
+    def restore(self, evidence: TrackPlayEvidence) -> None:
+        """Restore one persisted open play before the first post-restart poll."""
+        self._open = _OpenTrackPlay(
+            track_uri=evidence.track_uri,
+            track_name=evidence.track_name,
+            first_seen_ms=evidence.first_seen_ms,
+            duration_ms=evidence.duration_ms,
+        )
+        self._open_max_progress_ms = evidence.max_progress_ms
+        self._open_last_progress_ms = evidence.max_progress_ms
+        self._open_last_seen_ms = evidence.last_seen_ms
+        self._no_playback_since_ms = None
+
+    def observe_no_playback(
+        self, *, timestamp_ms: int, idle_timeout_ms: int
+    ) -> TrackPlayEvidence | None:
+        """Close only after a sustained inactive interval, never on one pause poll."""
+        if self._open is None:
+            return None
+        if self._no_playback_since_ms is None:
+            self._no_playback_since_ms = timestamp_ms
+            return None
+        if timestamp_ms - self._no_playback_since_ms < idle_timeout_ms:
+            return None
+        return self.close_current()
 
     def snapshot_open(self) -> TrackPlayEvidence | None:
         """Return the in-progress evidence for the open play, if any."""
@@ -583,7 +632,9 @@ class TrackPlayTracker:
         )
         self._open = None
         self._open_max_progress_ms = None
+        self._open_last_progress_ms = None
         self._open_last_seen_ms = 0
+        self._no_playback_since_ms = None
         return evidence
 
 
@@ -1286,8 +1337,12 @@ async def upsert_open_track_play(
     ``max_progress_ms``/``last_seen_ms`` only ever move forward and no
     duplicate rows are created.
     """
-    await pool.execute(
-        f"""
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", endpoint_identity
+        )
+        await connection.execute(
+            f"""
         INSERT INTO {_TRACK_PLAYS_TABLE} (
             endpoint_identity, spotify_user_id, track_uri, track_name,
             first_seen_ms, last_seen_ms, duration_ms, max_progress_ms,
@@ -1313,6 +1368,93 @@ async def upsert_open_track_play(
             END
         WHERE {_TRACK_PLAYS_TABLE}.closed_at IS NULL
         """,
+            endpoint_identity,
+            spotify_user_id,
+            evidence.track_uri,
+            evidence.track_name,
+            evidence.first_seen_ms,
+            evidence.last_seen_ms,
+            evidence.duration_ms,
+            evidence.max_progress_ms,
+            "progress_tracked" if evidence.max_progress_ms is not None else "play_only",
+        )
+
+
+async def close_track_play(
+    pool: asyncpg.Pool,
+    *,
+    endpoint_identity: str,
+    spotify_user_id: str,
+    evidence: TrackPlayEvidence,
+) -> None:
+    """Atomically upsert and close a play from its final persisted progress.
+
+    Absent duration or progress (``observation_precision='play_only'``) closes
+    with ``completion_ratio``/``skipped`` left NULL — an honest "we know it
+    played, not how much" rather than a fabricated zero.
+    """
+    row = await pool.fetchrow(
+        f"""
+        INSERT INTO {_TRACK_PLAYS_TABLE} (
+            endpoint_identity, spotify_user_id, track_uri, track_name,
+            first_seen_ms, last_seen_ms, duration_ms, max_progress_ms,
+            observation_precision, completion_ratio, skipped, closed_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            CASE WHEN $8::integer IS NULL THEN 'play_only' ELSE 'progress_tracked' END,
+            CASE WHEN $7::integer > 0 AND $8::integer IS NOT NULL
+                THEN LEAST(1.0, $8::double precision / $7) ELSE NULL END,
+            CASE WHEN $7::integer > 0 AND $8::integer IS NOT NULL
+                THEN LEAST(1.0, $8::double precision / $7) < $9 ELSE NULL END,
+            now()
+        )
+        ON CONFLICT (endpoint_identity, track_uri, first_seen_ms) DO UPDATE SET
+            last_seen_ms = GREATEST({_TRACK_PLAYS_TABLE}.last_seen_ms, EXCLUDED.last_seen_ms),
+            duration_ms = COALESCE({_TRACK_PLAYS_TABLE}.duration_ms, EXCLUDED.duration_ms),
+            max_progress_ms = CASE
+                WHEN {_TRACK_PLAYS_TABLE}.max_progress_ms IS NULL THEN EXCLUDED.max_progress_ms
+                WHEN EXCLUDED.max_progress_ms IS NULL THEN {_TRACK_PLAYS_TABLE}.max_progress_ms
+                ELSE GREATEST({_TRACK_PLAYS_TABLE}.max_progress_ms, EXCLUDED.max_progress_ms)
+            END,
+            observation_precision = CASE
+                WHEN {_TRACK_PLAYS_TABLE}.max_progress_ms IS NOT NULL
+                  OR EXCLUDED.max_progress_ms IS NOT NULL
+                THEN 'progress_tracked' ELSE 'play_only' END,
+            completion_ratio = CASE
+                WHEN COALESCE({_TRACK_PLAYS_TABLE}.duration_ms, EXCLUDED.duration_ms) > 0
+                  AND COALESCE(
+                    GREATEST({_TRACK_PLAYS_TABLE}.max_progress_ms, EXCLUDED.max_progress_ms),
+                    {_TRACK_PLAYS_TABLE}.max_progress_ms,
+                    EXCLUDED.max_progress_ms
+                  ) IS NOT NULL
+                THEN LEAST(
+                    1.0,
+                    COALESCE(
+                      GREATEST({_TRACK_PLAYS_TABLE}.max_progress_ms, EXCLUDED.max_progress_ms),
+                      {_TRACK_PLAYS_TABLE}.max_progress_ms,
+                      EXCLUDED.max_progress_ms
+                    )::double precision
+                    / COALESCE({_TRACK_PLAYS_TABLE}.duration_ms, EXCLUDED.duration_ms)
+                ) ELSE NULL END,
+            skipped = CASE
+                WHEN COALESCE({_TRACK_PLAYS_TABLE}.duration_ms, EXCLUDED.duration_ms) > 0
+                  AND COALESCE(
+                    GREATEST({_TRACK_PLAYS_TABLE}.max_progress_ms, EXCLUDED.max_progress_ms),
+                    {_TRACK_PLAYS_TABLE}.max_progress_ms,
+                    EXCLUDED.max_progress_ms
+                  ) IS NOT NULL
+                THEN LEAST(
+                    1.0,
+                    COALESCE(
+                      GREATEST({_TRACK_PLAYS_TABLE}.max_progress_ms, EXCLUDED.max_progress_ms),
+                      {_TRACK_PLAYS_TABLE}.max_progress_ms,
+                      EXCLUDED.max_progress_ms
+                    )::double precision
+                    / COALESCE({_TRACK_PLAYS_TABLE}.duration_ms, EXCLUDED.duration_ms)
+                ) < $9 ELSE NULL END,
+            closed_at = COALESCE({_TRACK_PLAYS_TABLE}.closed_at, now())
+        RETURNING first_seen_ms
+        """,
         endpoint_identity,
         spotify_user_id,
         evidence.track_uri,
@@ -1321,57 +1463,90 @@ async def upsert_open_track_play(
         evidence.last_seen_ms,
         evidence.duration_ms,
         evidence.max_progress_ms,
-        "progress_tracked" if evidence.max_progress_ms is not None else "play_only",
+        _SKIP_COMPLETION_THRESHOLD,
     )
+    if row is None:
+        raise RuntimeError("Spotify track-play close did not persist a row")
 
 
-async def close_track_play(
+async def load_open_track_plays(
+    pool: asyncpg.Pool, *, endpoint_identity: str
+) -> list[TrackPlayEvidence]:
+    """Load persisted open plays for restart reconciliation, oldest first."""
+    rows = await pool.fetch(
+        f"""
+        SELECT track_uri, track_name, first_seen_ms, last_seen_ms,
+               duration_ms, max_progress_ms, observation_precision
+        FROM {_TRACK_PLAYS_TABLE}
+        WHERE endpoint_identity = $1 AND closed_at IS NULL
+        ORDER BY first_seen_ms
+        """,
+        endpoint_identity,
+    )
+    return [
+        TrackPlayEvidence(
+            track_uri=row["track_uri"],
+            track_name=row["track_name"],
+            first_seen_ms=row["first_seen_ms"],
+            last_seen_ms=row["last_seen_ms"],
+            duration_ms=row["duration_ms"],
+            max_progress_ms=row["max_progress_ms"],
+            observation_precision=row["observation_precision"],
+            closed=False,
+        )
+        for row in rows
+    ]
+
+
+async def gap_fill_play_already_observed(
     pool: asyncpg.Pool,
     *,
     endpoint_identity: str,
-    evidence: TrackPlayEvidence,
-) -> None:
-    """Close a play row, deriving ``completion_ratio``/``skipped`` once.
-
-    Absent duration or progress (``observation_precision='play_only'``) closes
-    with ``completion_ratio``/``skipped`` left NULL — an honest "we know it
-    played, not how much" rather than a fabricated zero.
-    """
-    can_resolve = (
-        evidence.duration_ms is not None
-        and evidence.duration_ms > 0
-        and (evidence.max_progress_ms is not None)
-    )
-    completion_ratio: float | None = None
-    skipped: bool | None = None
-    if can_resolve:
-        assert evidence.duration_ms is not None and evidence.max_progress_ms is not None
-        completion_ratio = min(1.0, evidence.max_progress_ms / evidence.duration_ms)
-        skipped = completion_ratio < _SKIP_COMPLETION_THRESHOLD
-
-    await pool.execute(
-        f"""
-        UPDATE {_TRACK_PLAYS_TABLE}
-        SET last_seen_ms = GREATEST(last_seen_ms, $4),
-            max_progress_ms = CASE
-                WHEN max_progress_ms IS NULL THEN $5
-                WHEN $5::integer IS NULL THEN max_progress_ms
-                ELSE GREATEST(max_progress_ms, $5)
-            END,
-            completion_ratio = $6,
-            skipped = $7,
-            closed_at = now()
-        WHERE endpoint_identity = $1 AND track_uri = $2 AND first_seen_ms = $3
-          AND closed_at IS NULL
-        """,
-        endpoint_identity,
-        evidence.track_uri,
-        evidence.first_seen_ms,
-        evidence.last_seen_ms,
-        evidence.max_progress_ms,
-        completion_ratio,
-        skipped,
-    )
+    track_uri: str,
+    played_at_ms: int,
+) -> bool:
+    """Return whether current-playback evidence already owns this recent item."""
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", endpoint_identity
+        )
+        already_reconciled = await connection.fetchval(
+            f"""SELECT EXISTS (
+                SELECT 1 FROM {_TRACK_PLAYS_TABLE}
+                WHERE endpoint_identity = $1
+                  AND track_uri = $2
+                  AND recently_played_at_ms = $3
+            )""",
+            endpoint_identity,
+            track_uri,
+            played_at_ms,
+        )
+        if already_reconciled:
+            return True
+        matched = await connection.fetchval(
+            f"""
+            WITH candidate AS (
+                SELECT id FROM {_TRACK_PLAYS_TABLE}
+                WHERE endpoint_identity = $1
+                  AND track_uri = $2
+                  AND observation_precision = 'progress_tracked'
+                  AND first_seen_ms BETWEEN $3 - 60000 AND $3 + 60000
+                  AND recently_played_at_ms IS NULL
+                ORDER BY abs(first_seen_ms - $3)
+                LIMIT 1
+                FOR UPDATE
+            )
+            UPDATE {_TRACK_PLAYS_TABLE} AS play
+            SET recently_played_at_ms = $3
+            FROM candidate
+            WHERE play.id = candidate.id
+            RETURNING play.id
+            """,
+            endpoint_identity,
+            track_uri,
+            played_at_ms,
+        )
+        return matched is not None
 
 
 async def record_gap_fill_track_play(
@@ -1395,9 +1570,10 @@ async def record_gap_fill_track_play(
         INSERT INTO {_TRACK_PLAYS_TABLE} (
             endpoint_identity, spotify_user_id, track_uri, track_name,
             first_seen_ms, last_seen_ms, duration_ms, max_progress_ms,
-            observation_precision, completion_ratio, skipped, closed_at
-        ) VALUES ($1, $2, $3, $4, $5, $5, $6, NULL, 'play_only', NULL, NULL, now())
-        ON CONFLICT (endpoint_identity, track_uri, first_seen_ms) DO NOTHING
+            observation_precision, completion_ratio, skipped, closed_at,
+            recently_played_at_ms
+        ) VALUES ($1, $2, $3, $4, $5, $5, $6, NULL, 'play_only', NULL, NULL, now(), $5)
+        ON CONFLICT DO NOTHING
         """,
         endpoint_identity,
         spotify_user_id,
@@ -1462,6 +1638,8 @@ class SpotifyConnector:
         # Per-track play evidence for the taste ledger (bu-2jtfw.10),
         # independent of session boundaries.
         self._track_play_tracker = TrackPlayTracker()
+        self._track_play_reconciled = False
+        self._pending_closed_track_plays: dict[tuple[str, int], TrackPlayEvidence] = {}
         self._spoken_session_tracker = SpokenSessionTracker(
             idle_timeout_s=config.session_idle_timeout_s,
         )
@@ -2318,6 +2496,7 @@ class SpotifyConnector:
                     is_playing = True
                     await self._handle_spoken_playback(currently_playing, item, now, observed_at)
                     await self._advance_music_for_no_playback(now, observed_at)
+                    await self._close_track_play_for_item_switch()
 
         if not is_playing:
             await self._handle_no_playback(now, observed_at)
@@ -2394,12 +2573,15 @@ class SpotifyConnector:
                 progress_ms=progress_ms,
                 timestamp_ms=timestamp_ms,
             )
-            closed_play = self._track_play_tracker.observe(observation)
-            if closed_play is not None:
-                await self._persist_closed_track_play(closed_play)
-            open_play = self._track_play_tracker.snapshot_open()
-            if open_play is not None:
-                await self._persist_open_track_play(open_play)
+            if await self._reconcile_open_track_plays():
+                await self._retry_pending_closed_track_plays()
+                closed_play = self._track_play_tracker.observe(observation)
+                if closed_play is not None:
+                    self._queue_closed_track_play(closed_play)
+                    await self._retry_pending_closed_track_plays()
+                open_play = self._track_play_tracker.snapshot_open()
+                if open_play is not None:
+                    await self._persist_open_track_play(open_play)
 
         # Emit context_start if a new context began
         if "context_start" in events:
@@ -2447,9 +2629,6 @@ class SpotifyConnector:
         # close. Survives container restart on the next active poll.
         await self._persist_in_progress_session()
 
-        # Update recently-played cursor to current timestamp
-        self._last_recently_played_cursor = str(timestamp_ms)
-
     async def _handle_no_playback(self, now: datetime, observed_at: str) -> None:
         """Handle no active playback: advance session tracker, emit summaries if closed."""
         # Exponential backoff toward idle interval
@@ -2472,9 +2651,21 @@ class SpotifyConnector:
         for closed in closed_sessions:
             await self._emit_session_summary(closed, observed_at)
 
+        await self._reconcile_open_track_plays()
+        closed_play = self._track_play_tracker.observe_no_playback(
+            timestamp_ms=int(now.timestamp() * 1000),
+            idle_timeout_ms=int(self._config.session_idle_timeout_s * 1000),
+        )
+        if closed_play is not None:
+            self._queue_closed_track_play(closed_play)
+        await self._retry_pending_closed_track_plays()
+
+    async def _close_track_play_for_item_switch(self) -> None:
+        """Close music evidence immediately at an explicit track-to-episode boundary."""
         closed_play = self._track_play_tracker.close_current()
         if closed_play is not None:
-            await self._persist_closed_track_play(closed_play)
+            self._queue_closed_track_play(closed_play)
+        await self._retry_pending_closed_track_plays()
 
     async def _close_spoken_for_no_playback(self, now: datetime) -> None:
         """Advance spoken state only while Spotify reports no active playback."""
@@ -2584,16 +2775,26 @@ class SpotifyConnector:
             if not track_id:
                 continue
 
-            gap_tracks.append({"name": track_name, "played_at_ms": played_at_ms})
-            last_cursor_ms = max(last_cursor_ms, played_at_ms)
-
             if track_uri:
-                await self._persist_gap_fill_track_play(
+                already_observed = await self._gap_fill_play_already_observed(
+                    track_uri=track_uri, played_at_ms=played_at_ms
+                )
+                if already_observed is None:
+                    break
+                if already_observed:
+                    last_cursor_ms = max(last_cursor_ms, played_at_ms)
+                    continue
+                persisted = await self._persist_gap_fill_track_play(
                     track_uri=track_uri,
                     track_name=track_name,
                     duration_ms=gap_duration_ms,
                     played_at_ms=played_at_ms,
                 )
+                if not persisted:
+                    break
+
+            gap_tracks.append({"name": track_name, "played_at_ms": played_at_ms})
+            last_cursor_ms = max(last_cursor_ms, played_at_ms)
 
         # Emit a single batched gap-fill digest if we found any tracks
         if gap_tracks:
@@ -2641,7 +2842,8 @@ class SpotifyConnector:
             }
             await self._submit_envelope(envelope)
 
-            # Advance cursor to the latest gap-fill track
+        if last_cursor_ms:
+            # Advance only through recent items whose durable reconciliation succeeded.
             self._last_recently_played_cursor = str(last_cursor_ms)
 
     async def _persist_in_progress_session(self) -> None:
@@ -2691,18 +2893,66 @@ class SpotifyConnector:
         except Exception as exc:
             logger.debug("SpotifyConnector: open track-play persist failed (non-fatal): %s", exc)
 
-    async def _persist_closed_track_play(self, evidence: TrackPlayEvidence) -> None:
-        """Close a track play, resolving completion/skip. Best-effort; never blocks ingest."""
+    def _queue_closed_track_play(self, evidence: TrackPlayEvidence) -> None:
+        self._pending_closed_track_plays[(evidence.track_uri, evidence.first_seen_ms)] = evidence
+
+    async def _retry_pending_closed_track_plays(self) -> None:
+        """Retry lossless closes; discard evidence only after PostgreSQL confirms it."""
+        for key, evidence in list(self._pending_closed_track_plays.items()):
+            if await self._persist_closed_track_play(evidence):
+                self._pending_closed_track_plays.pop(key, None)
+
+    async def _reconcile_open_track_plays(self) -> bool:
+        """Hydrate persisted open state once before processing post-restart playback."""
+        if self._track_play_reconciled:
+            return True
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
-            return
+            return False
+        try:
+            open_plays = await load_open_track_plays(
+                self._cursor_pool, endpoint_identity=self._endpoint_identity
+            )
+        except Exception as exc:
+            logger.debug("SpotifyConnector: open track-play recovery failed (non-fatal): %s", exc)
+            return False
+        if open_plays:
+            self._track_play_tracker.restore(open_plays[-1])
+            for stale in open_plays[:-1]:
+                self._queue_closed_track_play(stale)
+        self._track_play_reconciled = True
+        return True
+
+    async def _persist_closed_track_play(self, evidence: TrackPlayEvidence) -> bool:
+        """Close a track play and report whether durable persistence succeeded."""
+        if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
+            return False
         try:
             await close_track_play(
                 self._cursor_pool,
                 endpoint_identity=self._endpoint_identity,
+                spotify_user_id=self._spotify_user_id,
                 evidence=evidence,
             )
+            return True
         except Exception as exc:
             logger.debug("SpotifyConnector: closed track-play persist failed (non-fatal): %s", exc)
+            return False
+
+    async def _gap_fill_play_already_observed(
+        self, *, track_uri: str, played_at_ms: int
+    ) -> bool | None:
+        if self._cursor_pool is None or not self._endpoint_identity:
+            return None
+        try:
+            return await gap_fill_play_already_observed(
+                self._cursor_pool,
+                endpoint_identity=self._endpoint_identity,
+                track_uri=track_uri,
+                played_at_ms=played_at_ms,
+            )
+        except Exception as exc:
+            logger.debug("SpotifyConnector: gap-fill reconciliation failed (non-fatal): %s", exc)
+            return None
 
     async def _persist_gap_fill_track_play(
         self,
@@ -2711,10 +2961,10 @@ class SpotifyConnector:
         track_name: str,
         duration_ms: int | None,
         played_at_ms: int,
-    ) -> None:
+    ) -> bool:
         """Record one recently-played (gap-fill) track. Best-effort; never blocks ingest."""
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
-            return
+            return False
         try:
             await record_gap_fill_track_play(
                 self._cursor_pool,
@@ -2725,10 +2975,12 @@ class SpotifyConnector:
                 duration_ms=duration_ms,
                 played_at_ms=played_at_ms,
             )
+            return True
         except Exception as exc:
             logger.debug(
                 "SpotifyConnector: gap-fill track-play persist failed (non-fatal): %s", exc
             )
+            return False
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
         """Emit a session summary ingest envelope and persist to evidence table.

@@ -10,7 +10,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
-from butlers.connectors.spotify import TrackPlayEvidence, close_track_play, upsert_open_track_play
+from butlers.connectors.spotify import (
+    TrackObservation,
+    TrackPlayEvidence,
+    TrackPlayTracker,
+    close_track_play,
+    gap_fill_play_already_observed,
+    load_open_track_plays,
+    record_gap_fill_track_play,
+    upsert_open_track_play,
+)
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
     create_migration_db,
@@ -194,6 +203,7 @@ def test_play_only_upserts_and_close_preserve_null_progress(postgres_container) 
             await close_track_play(
                 pool,
                 endpoint_identity="spotify:user1",
+                spotify_user_id="user1",
                 evidence=TrackPlayEvidence(**{**evidence.__dict__, "closed": True}),
             )
             row = await pool.fetchrow(
@@ -211,6 +221,210 @@ def test_play_only_upserts_and_close_preserve_null_progress(postgres_container) 
             await pool.close()
 
     assert asyncio.run(_exercise()) == (None, None, None, "play_only")
+
+
+def test_track_play_persistence_is_idempotent_monotonic_and_lossless(postgres_container) -> None:
+    """Exercise open replay, close-without-open, and final persisted progress in PostgreSQL."""
+    db_url = _migrate_core(postgres_container, migration_db_name())
+
+    async def _exercise() -> None:
+        pool = await asyncpg.create_pool(db_url)
+        try:
+            low = TrackPlayEvidence(
+                track_uri="spotify:track:monotonic",
+                track_name="Monotonic",
+                first_seen_ms=1_000,
+                last_seen_ms=2_000,
+                duration_ms=200_000,
+                max_progress_ms=5_000,
+                observation_precision="progress_tracked",
+                closed=False,
+            )
+            high = TrackPlayEvidence(
+                **{
+                    **low.__dict__,
+                    "last_seen_ms": 5_000,
+                    "max_progress_ms": 190_000,
+                }
+            )
+            await asyncio.gather(
+                upsert_open_track_play(
+                    pool,
+                    endpoint_identity="spotify:user1",
+                    spotify_user_id="user1",
+                    evidence=low,
+                ),
+                upsert_open_track_play(
+                    pool,
+                    endpoint_identity="spotify:user1",
+                    spotify_user_id="user1",
+                    evidence=high,
+                ),
+            )
+            await close_track_play(
+                pool,
+                endpoint_identity="spotify:user1",
+                spotify_user_id="user1",
+                evidence=TrackPlayEvidence(**{**low.__dict__, "closed": True}),
+            )
+            row = await pool.fetchrow(
+                "SELECT count(*) OVER () AS row_count, max_progress_ms, completion_ratio, skipped "
+                "FROM connectors.spotify_track_plays"
+            )
+            assert row is not None
+            assert row["row_count"] == 1
+            assert row["max_progress_ms"] == 190_000
+            assert row["completion_ratio"] == pytest.approx(0.95)
+            assert row["skipped"] is False
+
+            missing = TrackPlayEvidence(
+                track_uri="spotify:track:missing-open",
+                track_name="Missing open",
+                first_seen_ms=10_000,
+                last_seen_ms=15_000,
+                duration_ms=250_000,
+                max_progress_ms=5_000,
+                observation_precision="progress_tracked",
+                closed=True,
+            )
+            await close_track_play(
+                pool,
+                endpoint_identity="spotify:user2",
+                spotify_user_id="user2",
+                evidence=missing,
+            )
+            closed = await pool.fetchrow(
+                "SELECT completion_ratio, skipped, closed_at FROM connectors.spotify_track_plays "
+                "WHERE endpoint_identity = 'spotify:user2'"
+            )
+            assert closed is not None
+            assert closed["completion_ratio"] == pytest.approx(0.02)
+            assert closed["skipped"] is True
+            assert closed["closed_at"] is not None
+
+            retry_evidence = TrackPlayEvidence(
+                **{
+                    **missing.__dict__,
+                    "track_uri": "spotify:track:retry",
+                    "first_seen_ms": 20_000,
+                    "last_seen_ms": 25_000,
+                }
+            )
+
+            class _FailOncePool:
+                failed = False
+
+                async def fetchrow(self, query, *args):
+                    if not self.failed:
+                        self.failed = True
+                        raise ConnectionError("transient close failure")
+                    return await pool.fetchrow(query, *args)
+
+            retry_pool = _FailOncePool()
+            with pytest.raises(ConnectionError, match="transient close failure"):
+                await close_track_play(
+                    retry_pool,
+                    endpoint_identity="spotify:user3",
+                    spotify_user_id="user3",
+                    evidence=retry_evidence,
+                )
+            await close_track_play(
+                retry_pool,
+                endpoint_identity="spotify:user3",
+                spotify_user_id="user3",
+                evidence=retry_evidence,
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM connectors.spotify_track_plays "
+                    "WHERE endpoint_identity = 'spotify:user3'"
+                )
+                == 1
+            )
+        finally:
+            await pool.close()
+
+    asyncio.run(_exercise())
+
+
+def test_restart_recovery_and_recently_played_reconciliation(postgres_container) -> None:
+    """A fresh tracker closes persisted A and a later recent item does not duplicate it."""
+    db_url = _migrate_core(postgres_container, migration_db_name())
+
+    async def _exercise() -> None:
+        pool = await asyncpg.create_pool(db_url)
+        try:
+            persisted = TrackPlayEvidence(
+                track_uri="spotify:track:a",
+                track_name="A",
+                first_seen_ms=100_000,
+                last_seen_ms=105_000,
+                duration_ms=250_000,
+                max_progress_ms=5_000,
+                observation_precision="progress_tracked",
+                closed=False,
+            )
+            await upsert_open_track_play(
+                pool,
+                endpoint_identity="spotify:user1",
+                spotify_user_id="user1",
+                evidence=persisted,
+            )
+
+            fresh_tracker = TrackPlayTracker()
+            recovered = await load_open_track_plays(pool, endpoint_identity="spotify:user1")
+            assert len(recovered) == 1
+            fresh_tracker.restore(recovered[0])
+            closed = fresh_tracker.observe(
+                TrackObservation(
+                    track_uri="spotify:track:b",
+                    track_name="B",
+                    duration_ms=200_000,
+                    progress_ms=0,
+                    timestamp_ms=130_000,
+                )
+            )
+            assert closed is not None
+            await close_track_play(
+                pool,
+                endpoint_identity="spotify:user1",
+                spotify_user_id="user1",
+                evidence=closed,
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM connectors.spotify_track_plays "
+                    "WHERE endpoint_identity = 'spotify:user1' AND closed_at IS NOT NULL"
+                )
+                == 1
+            )
+
+            assert await gap_fill_play_already_observed(
+                pool,
+                endpoint_identity="spotify:user1",
+                track_uri="spotify:track:a",
+                played_at_ms=130_000,
+            )
+            await record_gap_fill_track_play(
+                pool,
+                endpoint_identity="spotify:user1",
+                spotify_user_id="user1",
+                track_uri="spotify:track:a",
+                track_name="A",
+                duration_ms=250_000,
+                played_at_ms=130_000,
+            )
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM connectors.spotify_track_plays "
+                    "WHERE endpoint_identity = 'spotify:user1' AND track_uri = 'spotify:track:a'"
+                )
+                == 1
+            )
+        finally:
+            await pool.close()
+
+    asyncio.run(_exercise())
 
 
 def test_downgrade_drops_table_and_revokes_sessions_grant(postgres_container) -> None:

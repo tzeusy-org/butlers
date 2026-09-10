@@ -84,6 +84,7 @@ def upgrade() -> None:
             completion_ratio        DOUBLE PRECISION,
             skipped                 BOOLEAN,
             observation_precision   TEXT NOT NULL DEFAULT 'progress_tracked',
+            recently_played_at_ms   BIGINT,
             closed_at               TIMESTAMPTZ,
             recorded_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT chk_spotify_track_plays_precision
@@ -104,8 +105,13 @@ def upgrade() -> None:
             ON {_TABLE} (endpoint_identity, recorded_at DESC)
     """)
     op.execute(f"""
-        CREATE INDEX IF NOT EXISTS ix_spotify_track_plays_open
-            ON {_TABLE} (endpoint_identity, track_uri) WHERE closed_at IS NULL
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_spotify_track_plays_open_endpoint
+            ON {_TABLE} (endpoint_identity) WHERE closed_at IS NULL
+    """)
+    op.execute(f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_spotify_track_plays_recent_item
+            ON {_TABLE} (endpoint_identity, track_uri, recently_played_at_ms)
+            WHERE recently_played_at_ms IS NOT NULL
     """)
 
     _grant_if_role_exists(

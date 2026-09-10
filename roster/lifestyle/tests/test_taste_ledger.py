@@ -163,6 +163,47 @@ class TestBackfillFromListeningSessions:
         assert result.works_created == 2
         assert result.signals_created == 2
 
+    async def test_concurrent_unresolved_session_projection_leaves_no_orphan_work(
+        self, lifestyle_pool
+    ) -> None:
+        from butlers.tools.lifestyle.taste_ledger import backfill_from_listening_sessions
+
+        await _insert_session(
+            lifestyle_pool,
+            idempotency_key="spotify:ep1:session:concurrent",
+            started_at=datetime(2026, 9, 1, tzinfo=UTC),
+            track_names=["Unresolved Song"],
+        )
+
+        results = await asyncio.gather(
+            backfill_from_listening_sessions(lifestyle_pool),
+            backfill_from_listening_sessions(lifestyle_pool),
+        )
+
+        assert sum(result.works_created for result in results) == 1
+        assert sum(result.signals_created for result in results) == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+
+    async def test_scheduled_projector_materializes_connector_evidence(
+        self, lifestyle_pool
+    ) -> None:
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        await _insert_session(
+            lifestyle_pool,
+            idempotency_key="spotify:ep1:session:scheduled",
+            started_at=datetime(2026, 9, 1, tzinfo=UTC),
+            track_names=["Scheduled Song"],
+        )
+
+        handler = get_deterministic_schedule_job_registry()["lifestyle"]["taste_ledger_project"]
+        result = await handler(lifestyle_pool, None)
+
+        assert result["sessions"] == {"works_created": 1, "signals_created": 1}
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM works") == 1
+        assert await lifestyle_pool.fetchval("SELECT count(*) FROM taste_signals") == 1
+
 
 class TestBackfillFromTrackPlays:
     async def test_concurrent_passes_yield_one_signal_per_source_ref_kind(

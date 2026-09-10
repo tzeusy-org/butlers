@@ -1521,9 +1521,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/components/butler-detail/ButlerLifestyleTasteTab.tsx`
 
-- Taste overview
 - Could not load taste overview.
-- Ledger totals are temporarily unavailable.
 - Could not load taste verdicts.
 - No taste verdicts recorded yet.
 - Could not load recent works.
@@ -1532,6 +1530,7 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Taste verdicts
 - Recently added
 - Works tracked
+- All signals
 - Signals (7d)
 
 ## `frontend/src/components/butler-detail/ButlerLogsTab.tsx`
@@ -4219,4 +4218,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3303*
+*Total strings: 3302*

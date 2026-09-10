@@ -71,10 +71,9 @@ async def get_taste_summary(
     """Return ledger-wide counts: works/signals/verdicts totals, works and
     signals grouped by kind, and a 7-day recent-signal count.
 
-    Returns real zeros (``ledger_available=True``) when the ledger tables
-    simply don't exist yet (pre-migration) — that is not a failure. A genuine
-    query failure sets ``ledger_available=False`` and zeroed fields instead of
-    raising, per the degraded-envelope convention.
+    A missing ledger table is an unavailable read model, not an empty ledger,
+    and therefore returns 503. Other query failures retain the degraded
+    response envelope.
     """
     pool = _pool(db)
     try:
@@ -95,18 +94,8 @@ async def get_taste_summary(
             "SELECT signal_kind, count(*) AS n FROM taste_signals"
             " GROUP BY signal_kind ORDER BY n DESC"
         )
-    except asyncpg.UndefinedTableError:
-        return ApiResponse[TasteSummary](
-            data=TasteSummary(
-                total_works=0,
-                total_signals=0,
-                total_verdicts=0,
-                recent_signals_7d=0,
-                works_by_kind={},
-                signals_by_kind={},
-                ledger_available=True,
-            )
-        )
+    except asyncpg.UndefinedTableError as exc:
+        raise HTTPException(status_code=503, detail="Taste ledger is not available") from exc
     except Exception:
         logger.warning("Taste summary query failed", exc_info=True)
         return ApiResponse[TasteSummary](
@@ -166,10 +155,8 @@ async def list_taste_works(
             offset,
             limit,
         )
-    except asyncpg.UndefinedTableError:
-        return PaginatedResponse[TasteWork](
-            data=[], meta=PaginationMeta(total=0, offset=offset, limit=limit)
-        )
+    except asyncpg.UndefinedTableError as exc:
+        raise HTTPException(status_code=503, detail="Taste ledger is not available") from exc
 
     data = [
         TasteWork(
@@ -212,10 +199,8 @@ async def list_taste_verdicts(
             offset,
             limit,
         )
-    except asyncpg.UndefinedTableError:
-        return PaginatedResponse[TasteVerdict](
-            data=[], meta=PaginationMeta(total=0, offset=offset, limit=limit)
-        )
+    except asyncpg.UndefinedTableError as exc:
+        raise HTTPException(status_code=503, detail="Taste ledger is not available") from exc
 
     data = [
         TasteVerdict(

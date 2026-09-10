@@ -1740,8 +1740,8 @@ async def run_lifestyle_briefing_contribution(
         "butler": "lifestyle",
         "date": today_str,
         "has_updates": has_updates,
-        "consumption_notes": len(transient_rows),
-        "taste_updates": len(durable_rows),
+        "consumption_notes": transient_count,
+        "taste_updates": durable_count,
     }
 
 

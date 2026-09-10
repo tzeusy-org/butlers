@@ -122,6 +122,42 @@ async def _already_projected(pool: asyncpg.Pool, idempotency_key: str) -> bool:
     )
 
 
+async def _project_unresolved_session_signal(
+    pool: asyncpg.Pool,
+    *,
+    title: str,
+    source_ref: str,
+    occurred_at: Any,
+) -> tuple[bool, bool]:
+    """Atomically create one unresolved work and its source-owned signal.
+
+    Unresolved works intentionally have no global identity, so their source
+    signal key is the only stable identity available. A transaction-scoped
+    advisory lock serializes concurrent projectors for that key and prevents
+    the loser from leaving an orphan work behind.
+    """
+    signal_kind = "session_track"
+    idempotency_key = f"{_SESSIONS_SOURCE_TABLE}:{source_ref}:{signal_kind}"
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", idempotency_key
+        )
+        if await _already_projected(connection, idempotency_key):
+            return False, False
+        work_id, work_created = await _get_or_create_work(
+            connection, kind="track", title=title, external_ids={}
+        )
+        signal_created = await _insert_signal(
+            connection,
+            work_id=work_id,
+            signal_kind=signal_kind,
+            source_table=_SESSIONS_SOURCE_TABLE,
+            source_ref=source_ref,
+            occurred_at=occurred_at,
+        )
+        return work_created, signal_created
+
+
 async def backfill_from_listening_sessions(
     pool: asyncpg.Pool, *, limit: int | None = None
 ) -> BackfillResult:
@@ -153,25 +189,11 @@ async def backfill_from_listening_sessions(
             if not name:
                 continue
             source_ref = f"{session_key}:{index}"
-            signal_kind = "session_track"
-            idempotency_key = f"{_SESSIONS_SOURCE_TABLE}:{source_ref}:{signal_kind}"
-            if await _already_projected(pool, idempotency_key):
-                continue
-
-            work_id, created = await _get_or_create_work(
-                pool, kind="track", title=name, external_ids={}
+            created, inserted = await _project_unresolved_session_signal(
+                pool, title=name, source_ref=source_ref, occurred_at=row["started_at"]
             )
             if created:
                 works_created += 1
-
-            inserted = await _insert_signal(
-                pool,
-                work_id=work_id,
-                signal_kind=signal_kind,
-                source_table=_SESSIONS_SOURCE_TABLE,
-                source_ref=source_ref,
-                occurred_at=row["started_at"],
-            )
             if inserted:
                 signals_created += 1
 
