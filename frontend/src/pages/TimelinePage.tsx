@@ -15,7 +15,7 @@
  * §"7. One Timeline").
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,9 +35,11 @@ import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/ingestion/dispatch";
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
 import { TimelineLedger } from "@/components/timeline/TimelineLedger";
+import { TimelineDensity } from "@/components/timeline/TimelineDensity";
 import { useButlers } from "@/hooks/use-butlers.ts";
 import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
+import { useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
@@ -93,6 +95,76 @@ function writeCsvList(sp: URLSearchParams, key: string, values: string[]): void 
   else sp.delete(key);
 }
 
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+function iso(value: number): string {
+  return new Date(value).toISOString();
+}
+
+function latestCompleteHour(now = Date.now()): { since: string; until: string } {
+  const until = Math.floor(now / HOUR_MS) * HOUR_MS;
+  return { since: iso(until - HOUR_MS), until: iso(until) };
+}
+
+interface TimelineIntervalState {
+  valid: boolean;
+  explicit: boolean;
+  since: string;
+  until: string;
+  bucketSince?: string;
+  bucketUntil?: string;
+}
+
+function parseTimelineInterval(sp: URLSearchParams): TimelineIntervalState {
+  const latest = latestCompleteHour();
+  const sinceRaw = sp.get("since");
+  const untilRaw = sp.get("until");
+  const bucketSinceRaw = sp.get("bucket_since");
+  const bucketUntilRaw = sp.get("bucket_until");
+  const explicit = sinceRaw !== null || untilRaw !== null;
+  if ((sinceRaw === null) !== (untilRaw === null)) return { ...latest, valid: false, explicit };
+
+  const sinceMs = sinceRaw === null ? Date.parse(latest.since) : Date.parse(sinceRaw);
+  const untilMs = untilRaw === null ? Date.parse(latest.until) : Date.parse(untilRaw);
+  if (
+    !Number.isFinite(sinceMs) ||
+    !Number.isFinite(untilMs) ||
+    sinceMs % MINUTE_MS !== 0 ||
+    untilMs % MINUTE_MS !== 0 ||
+    untilMs - sinceMs !== HOUR_MS
+  ) {
+    return { ...latest, valid: false, explicit };
+  }
+  const since = iso(sinceMs);
+  const until = iso(untilMs);
+  if ((bucketSinceRaw === null) !== (bucketUntilRaw === null)) {
+    return { since, until, valid: false, explicit };
+  }
+  if (bucketSinceRaw === null) return { since, until, valid: true, explicit };
+
+  const bucketSinceMs = Date.parse(bucketSinceRaw);
+  const bucketUntilMs = Date.parse(bucketUntilRaw!);
+  if (
+    !Number.isFinite(bucketSinceMs) ||
+    !Number.isFinite(bucketUntilMs) ||
+    bucketSinceMs % MINUTE_MS !== 0 ||
+    bucketUntilMs - bucketSinceMs !== MINUTE_MS ||
+    bucketSinceMs < sinceMs ||
+    bucketUntilMs > untilMs
+  ) {
+    return { since, until, valid: false, explicit };
+  }
+  return {
+    since,
+    until,
+    bucketSince: iso(bucketSinceMs),
+    bucketUntil: iso(bucketUntilMs),
+    valid: true,
+    explicit,
+  };
+}
+
 export default function TimelinePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedButlers = useMemo(() => parseCsvList(searchParams, "butler"), [searchParams]);
@@ -100,6 +172,7 @@ export default function TimelinePage() {
   const trace = searchParams.get("trace")?.trim() || undefined;
   const activeViewId = searchParams.get("view") ?? "all";
   const includeInternal = searchParams.get("internal") === "1";
+  const interval = useMemo(() => parseTimelineInterval(searchParams), [searchParams]);
 
   const {
     data: butlersResponse,
@@ -113,8 +186,10 @@ export default function TimelinePage() {
       butler: selectedButlers.length > 0 ? selectedButlers : undefined,
       event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
       trace,
+      since: interval.bucketSince,
+      until: interval.bucketUntil,
     }),
-    [selectedButlers, selectedTypes, trace],
+    [selectedButlers, selectedTypes, trace, interval.bucketSince, interval.bucketUntil],
   );
 
   const {
@@ -135,7 +210,19 @@ export default function TimelinePage() {
     degradedButlers,
     heartbeatRollup,
     isLiveFeedDown,
-  } = useTimelineLedger(filters);
+  } = useTimelineLedger(filters, { enabled: interval.valid });
+
+  const histogramParams = useMemo(
+    () => ({
+      since: interval.since,
+      until: interval.until,
+      butler: selectedButlers.length > 0 ? selectedButlers : undefined,
+      event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
+      trace,
+    }),
+    [interval.since, interval.until, selectedButlers, selectedTypes, trace],
+  );
+  const histogram = useTimelineHistogram(histogramParams, interval.valid);
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
   // already generic (consumed by the ingestion ledger before this page).
@@ -238,6 +325,69 @@ export default function TimelinePage() {
     });
   }
 
+  function writeChartWindow(since: string, until: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("since", since);
+      next.set("until", until);
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      next.delete("event");
+      return next;
+    });
+  }
+
+  function shiftChart(hours: number) {
+    writeChartWindow(
+      iso(Date.parse(interval.since) + hours * HOUR_MS),
+      iso(Date.parse(interval.until) + hours * HOUR_MS),
+    );
+  }
+
+  function selectBucket(since: string, until: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("since", interval.since);
+      next.set("until", interval.until);
+      next.set("bucket_since", since);
+      next.set("bucket_until", until);
+      next.delete("event");
+      return next;
+    });
+  }
+
+  function clearInterval() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("since");
+      next.delete("until");
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+  }
+
+  function clearBucketSelection() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+  }
+
+  const jumpToLatest = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("since");
+      next.delete("until");
+      next.delete("bucket_since");
+      next.delete("bucket_until");
+      return next;
+    });
+    showNewEvents();
+  }, [showNewEvents, setSearchParams]);
+
   // Live status: driven by the newest loaded event when pinned to now — the
   // same freshness convention as the ingestion ledger's LiveStatusBadge.
   const latestReceivedAt = isLoading ? undefined : (events[0]?.timestamp ?? null);
@@ -269,18 +419,18 @@ export default function TimelinePage() {
         handler: () => void refetch(),
       },
     ];
-    if (newCount > 0) {
+    if (newCount > 0 || interval.explicit || interval.bucketSince) {
       actions.push({
         id: "timeline-jump-latest",
         label: "Jump to latest events",
         key: "n",
         display: ["n"],
         description: "Jump to latest events",
-        handler: showNewEvents,
+        handler: jumpToLatest,
       });
     }
     return actions;
-  }, [refetch, newCount, showNewEvents]);
+  }, [refetch, newCount, interval.explicit, interval.bucketSince, jumpToLatest]);
   usePageActions(pageActions);
 
   return (
@@ -293,6 +443,43 @@ export default function TimelinePage() {
       />
 
       <DispatchSurface className="space-y-4">
+        {!interval.valid ? (
+          <section className="flex items-center justify-between gap-3 rounded border border-destructive/40 px-3 py-2" role="alert">
+            <span className="text-sm">The Timeline interval in this URL is invalid.</span>
+            <Button type="button" variant="outline" size="xs" onClick={clearInterval}>Clear interval</Button>
+          </section>
+        ) : (
+          <section className="space-y-3" aria-label="Timeline hour density">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <Button type="button" variant="outline" size="xs" onClick={() => shiftChart(-1)}>Previous hour</Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => shiftChart(1)}
+                  disabled={Date.parse(interval.until) >= Date.parse(latestCompleteHour().until)}
+                >
+                  Next hour
+                </Button>
+                <Button type="button" variant="ghost" size="xs" onClick={clearInterval}>Latest hour</Button>
+              </div>
+              {interval.bucketSince ? (
+                <Button type="button" variant="ghost" size="xs" onClick={clearBucketSelection}>Clear selection</Button>
+              ) : null}
+            </div>
+            <TimelineDensity
+              key={`${interval.since}:${interval.bucketSince ?? "live"}`}
+              histogram={histogram.data}
+              isLoading={histogram.isLoading}
+              isError={histogram.isError}
+              selectedSince={interval.bucketSince}
+              onSelect={selectBucket}
+              onRetry={() => void histogram.refetch()}
+            />
+          </section>
+        )}
+
         {trace && (
           <section
             className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-border rounded bg-muted/10 px-3 py-2"

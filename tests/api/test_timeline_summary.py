@@ -559,6 +559,8 @@ async def test_query_timeline_sessions_fan_out_pushes_event_type_filter_into_sql
 async def test_query_timeline_sessions_fan_out_filters_and_projects_trace_id():
     """The fan-out read model keeps the selected trace predicate and projection together."""
     trace_id = "trace-001"
+    since = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    until = datetime(2026, 1, 1, 12, 1, tzinfo=UTC)
     db = _FakeTimelineDB(
         results={"atlas": [_make_session_row(prompt="Trace this session", trace_id=trace_id)]}
     )
@@ -567,11 +569,17 @@ async def test_query_timeline_sessions_fan_out_filters_and_projects_trace_id():
         db,
         limit=10,
         trace_id=trace_id,
+        since=since,
+        until=until,
+        only_errors=True,
     )
 
     sql, args, _ = db.calls[0]
-    assert "trace_id = $1" in sql
-    assert args == (trace_id,)
+    assert "started_at >= $1" in sql
+    assert "started_at < $2" in sql
+    assert "success = false" in sql
+    assert "trace_id = $3" in sql
+    assert args == (since, until, trace_id)
     assert rows[0].trace_id == trace_id
 
 
@@ -931,3 +939,71 @@ async def test_timeline_notification_lens_unaffected_by_error_widening(app):
     assert "status = 'failed'" not in notif_sql
     # And sessions are not queried at all for a notification-only lens.
     mock_db.fan_out_with_status.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_status"),
+    [
+        ({"since": "2026-01-01T12:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:01Z", "until": "2026-01-01T13:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:00", "until": "2026-01-01T13:00:00"}, 422),
+        ({"since": "2026-01-02T12:00:00Z", "until": "2026-01-01T13:00:00Z"}, 422),
+        ({"since": "2026-01-01T12:00:00Z", "until": "2026-01-02T12:01:00Z"}, 422),
+    ],
+)
+async def test_timeline_intervals_reject_invalid_bounds(app, params, expected_status):
+    _app_with_mock_db(app, fan_out_results=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        list_response = await client.get("/api/timeline", params=params)
+        histogram_response = await client.get("/api/timeline/histogram", params=params)
+
+    assert list_response.status_code == expected_status
+    assert histogram_response.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("event_types", "butlers", "failed_butlers", "pool_error", "expected"),
+    [
+        (["session"], ["atlas", "home"], ["home"], None, (2, 1, "partial")),
+        (["session"], ["atlas", "home"], ["atlas", "home"], None, (2, 0, "unavailable")),
+        (["notification"], None, [], KeyError("missing"), (1, 0, "unavailable")),
+        (["unknown"], None, [], None, (0, 0, "complete")),
+    ],
+)
+async def test_histogram_reports_exact_source_availability(
+    app, event_types, butlers, failed_butlers, pool_error, expected
+):
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "home"]
+    target_names = butlers or mock_db.butler_names
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({name: [] for name in target_names}, failed_butlers)
+    )
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = (
+        MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    params = [
+        ("since", "2026-01-01T12:00:00Z"),
+        ("until", "2026-01-01T13:00:00Z"),
+        *[("event_type", value) for value in event_types],
+        *[("butler", value) for value in (butlers or [])],
+    ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/timeline/histogram", params=params)
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert (meta["expected_sources"], meta["healthy_sources"], meta["availability"]) == expected
+    assert len(response.json()["data"]) == 60
+    assert all(bucket["count"] == 0 for bucket in response.json()["data"])
+    assert not (
+        {"summary", "data", "prompt", "message", "recipient"} & response.json()["data"][0].keys()
+    )

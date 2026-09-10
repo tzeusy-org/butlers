@@ -32,6 +32,8 @@ export interface TimelineLedgerFilters {
   butler?: string[];
   event_type?: string[];
   trace?: string;
+  since?: string;
+  until?: string;
 }
 
 export interface UseTimelineLedgerResult {
@@ -77,11 +79,17 @@ function mergeDistinct(left: string[], right: string[] | undefined): string[] {
   return [...new Set([...left, ...(right ?? [])])];
 }
 
-export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLedgerResult {
+export function useTimelineLedger(
+  filters: TimelineLedgerFilters,
+  options: { enabled?: boolean } = {},
+): UseTimelineLedgerResult {
   const qc = useQueryClient();
   const filtersKey = JSON.stringify(filters);
 
-  const head = useTimeline({ ...filters, limit: PAGE_SIZE }, { refetchInterval: HEAD_POLL_MS });
+  const head = useTimeline(
+    { ...filters, limit: PAGE_SIZE },
+    { refetchInterval: HEAD_POLL_MS, enabled: options.enabled },
+  );
 
   const [pinned, setPinned] = useState(true);
   const [committed, setCommitted] = useState<TimelineEvent[] | null>(null);

@@ -101,8 +101,12 @@ describe("useTimelineLedger", () => {
     mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
     mockGetTimeline.mockResolvedValueOnce(olderPage);
 
+    const interval = {
+      since: "2026-07-04T13:00:00Z",
+      until: "2026-07-04T14:00:00Z",
+    };
     const { Wrapper } = makeWrapper();
-    const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
+    const { result } = renderHook(() => useTimelineLedger(interval), { wrapper: Wrapper });
 
     await waitFor(() => expect(result.current.events).toHaveLength(1));
 
@@ -114,6 +118,11 @@ describe("useTimelineLedger", () => {
     expect(result.current.pinned).toBe(false);
     expect(result.current.events.map((e) => e.id)).toEqual(["e2", "e1"]);
     expect(result.current.hasMore).toBe(false);
+    expect(mockGetTimeline).toHaveBeenLastCalledWith({
+      ...interval,
+      limit: 50,
+      before: "cur-1",
+    });
   });
 
   it("retains the committed snapshot and retries the same cursor after Load older fails", async () => {

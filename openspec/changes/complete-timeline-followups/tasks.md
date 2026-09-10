@@ -7,9 +7,9 @@
 
 Owner bead: `bu-ddo0n.1`.
 
-- [ ] 2.1 Add bounded interval arguments and SQL aggregation through timeline_v1; implement aggregate API/DTO without source-content fields.
-- [ ] 2.2 Wire hour controls, bucket selection, URL ownership, cache normalization and interval list fetching end to end.
-- [ ] 2.3 Extend tests/api/test_timeline_summary.py and add tests/integration/test_timeline_intervals.py with existing real-Postgres fixtures and canonical schema stand-ins: >50 events, boundaries, same-time pagination, source/type/trace parity, invalid bounds and partial/all-source failure and absent Switchboard pool with explicit availability arithmetic. Extend TimelinePage/Ledger tests for unloaded history, URL restoration after hour rollover with atomically materialized bounds and stale-result exclusion. Target net Tests: +6 ~3 -0; consolidate parameterized cases per invariant.
+- [x] 2.1 Add bounded interval arguments and SQL aggregation through timeline_v1; implement aggregate API/DTO without source-content fields.
+- [x] 2.2 Wire hour controls, bucket selection, URL ownership, cache normalization and interval list fetching end to end.
+- [x] 2.3 Extend tests/api/test_timeline_summary.py and add tests/integration/test_timeline_intervals.py with existing real-Postgres fixtures and canonical schema stand-ins: >50 events, boundaries, same-time pagination, source/type/trace parity, invalid bounds and partial/all-source failure and absent Switchboard pool with explicit availability arithmetic. Extend TimelinePage/Ledger tests for unloaded history, URL restoration after hour rollover with atomically materialized bounds and stale-result exclusion. Target net Tests: +6 ~3 -0; consolidate parameterized cases per invariant.
 
 ## 3. Recent failures vertical slice
 
