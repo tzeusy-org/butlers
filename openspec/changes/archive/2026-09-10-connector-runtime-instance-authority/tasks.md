@@ -37,8 +37,9 @@
       of dropping them.
 - [x] 3.3 Report `liveness: "unclassified"` for `unknown` rows and count them
       separately from the fleet rollups.
-- [x] 3.4 Apply the same authority to `/cross-summary`, the legacy switchboard
-      roster, and the archive-candidate sibling test.
+- [x] 3.4 Apply the same authority to `/cross-summary` and the
+      archive-candidate sibling test. The legacy Switchboard roster and summary
+      namespace are retired by `retire-legacy-switchboard-connector-api`.
 
 ## 4. Dashboard
 

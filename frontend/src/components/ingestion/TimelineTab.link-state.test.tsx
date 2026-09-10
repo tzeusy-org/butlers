@@ -183,7 +183,7 @@ function setupDefaultMocks() {
     rollup: { data: undefined, isLoading: false, isError: false } as never,
   });
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] }, isLoading: false, isError: false,
+    data: { data: { connectors: [] } }, isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);
   vi.mocked(useIngestionWindowRollup).mockReturnValue({
     data: { events: 0, sessions: 0, cost: null, window: { from: null, to: null } },

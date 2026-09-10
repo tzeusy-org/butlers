@@ -674,7 +674,6 @@ def create_app(
     app.include_router(priority_contacts_router)
     app.include_router(contacts_router)
     app.include_router(channel_defaults_router)
-    app.include_router(ingestion_connectors_router)
     app.include_router(timeline_router)
     app.include_router(timeline_saved_views_router)
     app.include_router(calendar_workspace_router)

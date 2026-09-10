@@ -106,8 +106,9 @@ shape was still wearing runtime-health authority everywhere else.
     `unclassified` value.
   - `GET /api/ingestion/connectors/cross-summary` — gains
     `connectors_unclassified`; `total_connectors` now counts runtime instances.
-  - `GET /api/switchboard/connectors` and `/connectors/summary` — the same
-    role fields and the same runtime-instance-only totals.
+  - The former `/api/switchboard/connectors` and `/connectors/summary`
+    projections are retired by `retire-legacy-switchboard-connector-api`; their
+    runtime-authority behavior survives only in the canonical ingestion routes.
 
 - **Database**: `operational_role TEXT NOT NULL DEFAULT 'unknown'` +
   `parent_endpoint_identity TEXT NULL` on `connector_registry`, with a backfill.

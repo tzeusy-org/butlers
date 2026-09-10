@@ -575,10 +575,9 @@ read-only `archive_candidate` boolean per connector, `true` only for an active
 
 The queue is a SUGGESTION and SHALL NOT change the fleet signal:
 
-- `archive_candidate` SHALL NOT contribute to the fleet-health rollups
-  (`GET /api/ingestion/connectors/cross-summary`,
-  `GET /api/switchboard/connectors/summary`) or to alerting — those exclude only
-  `archived` identities.
+- `archive_candidate` SHALL NOT contribute to the fleet-health rollup
+  `GET /api/ingestion/connectors/cross-summary` or to alerting — those exclude
+  only `archived` identities.
 - A candidate SHALL remain in the active roster with its true (offline) liveness
   and SHALL NOT be filed as merely an archive candidate; a genuinely-failing
   live connector (not offline for 30+ days) SHALL never be flagged.
@@ -611,7 +610,7 @@ human action.
 
 #### Scenario: Review queue does not affect fleet health
 
-- **WHEN** the fleet-health rollup endpoints aggregate connector liveness
+- **WHEN** the fleet-health rollup endpoint aggregates connector liveness
 - **THEN** `archive_candidate` has no effect on the online/stale/offline counts
 - **AND** the degraded-mode envelope flags are unchanged by the candidate
   computation
@@ -635,10 +634,9 @@ ingestion history still references it) but is separated from the active fleet:
   its history stays reachable.
 - Archived identities SHALL NOT contribute to the active roster's attention
   strip or KPI band.
-- The fleet-health rollups (`GET /api/ingestion/connectors/cross-summary` and
-  `GET /api/switchboard/connectors/summary`) SHALL exclude archived identities
-  from their online/stale/offline counts, so a permanently-offline superseded
-  identity stops dragging fleet health down.
+- The fleet-health rollup `GET /api/ingestion/connectors/cross-summary` SHALL
+  exclude archived identities from its online/stale/offline counts, so a
+  permanently-offline superseded identity stops dragging fleet health down.
 - Archiving SHALL be reversible (an unarchive path restores the identity to the
   active roster) and SHALL be a distinct state from `degraded`/`offline`:
   archiving SHALL NOT be applied to, and SHALL NOT mask, a genuinely-failing
@@ -657,7 +655,7 @@ ingestion history still references it) but is separated from the active fleet:
 
 #### Scenario: Archived identities do not drag fleet health down
 
-- **WHEN** the fleet-health rollup endpoints aggregate connector liveness
+- **WHEN** the fleet-health rollup endpoint aggregates connector liveness
 - **THEN** archived identities are excluded from the online/stale/offline counts
 - **AND** a genuinely-failing live connector is NOT archived and still counts
   toward (and surfaces in) the fleet-health signal
@@ -670,6 +668,132 @@ ingestion history still references it) but is separated from the active fleet:
   genuine-failure-only semantics
 - **AND** archiving never causes a genuinely-unreachable source to render as an
   honest empty/all-clear result
+
+### Requirement: Fleet health counts executable runtime instances only
+
+The connectors roster, its attention strip, its fleet-liveness KPIs, and the
+cross-connector rollups SHALL count rows whose persisted `operational_role` is
+`runtime_instance`, and no others.
+
+#### Scenario: Checkpoint rows are not connectors
+
+- **WHEN** the registry holds one online runtime instance and several
+  `checkpoint` rows belonging to it
+- **THEN** the roster SHALL list one connector
+- **AND** the fleet total, online, stale, and offline counts SHALL each reflect
+  that single runtime instance
+- **AND** no checkpoint SHALL appear as an offline connector, contribute message
+  counters to the fleet error rate, or occupy a slot in the attention strip
+
+#### Scenario: A dead runtime instance is still reported
+
+- **WHEN** a `runtime_instance` row has not heartbeated within the offline
+  threshold
+- **THEN** it SHALL be counted offline
+
+Excluding storage rows SHALL NOT suppress a genuinely dead process.
+
+### Requirement: Checkpoint history is inspectable under its parent
+
+Checkpoint records SHALL be returned nested under the runtime instance that owns
+them, labelled by the stream they track, and SHALL carry no liveness, state, or
+health of their own.
+
+#### Scenario: Cursors are nested and labelled
+
+- **WHEN** a connector's checkpoints are returned
+- **THEN** each record SHALL appear under its parent connector
+- **AND** its label SHALL be the part of the cursor key its parent identity does
+  not already account for
+- **AND** the record SHALL carry no liveness or state field
+
+#### Scenario: Two accounts never collect each other's cursors
+
+- **WHEN** two identities of the same `connector_type` each own checkpoints
+- **THEN** grouping SHALL be keyed on
+  `(connector_type, parent_endpoint_identity)`
+- **AND** each account SHALL show only its own records
+
+#### Scenario: A checkpoint with no resolvable parent stays visible
+
+- **WHEN** a checkpoint records no parent, or names a parent with no registry
+  row
+- **THEN** it SHALL be returned in a distinct unparented collection
+- **AND** the dashboard SHALL surface that collection
+
+An orphaned cursor is a real condition. Dropping it would trade one
+invisibility for another.
+
+### Requirement: Unknown classification is a named unavailable state
+
+A row whose `operational_role` is `unknown` SHALL report a distinct
+`unclassified` liveness. It SHALL NOT be reported as active or healthy, and
+SHALL NOT be inferred into `offline`.
+
+#### Scenario: An unclassified record reports its own state
+
+- **WHEN** a registry row's role has not been established
+- **THEN** its `liveness` SHALL be `unclassified`
+- **AND** the roster SHALL render that verdict rather than an online, offline,
+  or healthy one
+
+Nothing has claimed the row as a process, so there is no heartbeat contract to
+measure it against; naming the gap is the only honest verdict.
+
+#### Scenario: Unclassified records are counted apart from the fleet
+
+- **WHEN** unclassified records are present
+- **THEN** they SHALL be reported in their own count
+- **AND** they SHALL NOT be included in the fleet total, online, stale, or
+  offline counts
+- **AND** the roster SHALL still list them, so an unclassified record is
+  investigated rather than silently dropped
+
+#### Scenario: A degraded source never fabricates a classification
+
+- **WHEN** the registry query itself fails
+- **THEN** the response SHALL set `connector_registry_available` to `false`,
+  return an empty connector list, and report zero — including a zero
+  unclassified count — rather than a fabricated roster
+
+### Requirement: Canonical Connector Dashboard API Namespace
+
+Every dashboard connector read or settings update SHALL use the
+`/api/ingestion/connectors` namespace. The role-aware `summaries` response is
+the sole connector-list source for the Timeline, roster, and System topology;
+detail, statistics, and settings use the corresponding canonical connector
+resource routes. The dashboard SHALL NOT fall back to or request
+`/api/switchboard/connectors`.
+
+#### Scenario: Timeline attention uses runtime-authoritative summaries
+
+- **WHEN** the Timeline, its channel picker, or its verdict needs connector
+  state
+- **THEN** it reads `GET /api/ingestion/connectors/summaries`
+- **AND** checkpoint rows and archived identities do not contribute to its
+  attention list or channel choices
+- **AND** an unavailable summaries source is rendered as unavailable rather
+  than replaced by a raw-registry fallback
+
+#### Scenario: Connector detail uses canonical subresources
+
+- **WHEN** the owner opens a connector detail route
+- **THEN** its detail reads use
+  `GET /api/ingestion/connectors/{type}/{identity}`
+- **AND** its histogram reads
+  `GET /api/ingestion/connectors/{type}/{identity}/stats`
+- **AND** a settings update uses
+  `PATCH /api/ingestion/connectors/{type}/{identity}/settings`
+- **AND** the detail, statistics, and settings responses retain their existing
+  envelope, credential-masking, and archived-history semantics
+
+#### Scenario: Legacy connector namespace is absent
+
+- **WHEN** a client requests any `/api/switchboard/connectors` path after the
+  migration
+- **THEN** the dashboard API does not expose a route, redirect, alias, or
+  compatibility wrapper at that path
+- **AND** clients use the canonical ingestion connector routes instead
 
 ## Source References
 

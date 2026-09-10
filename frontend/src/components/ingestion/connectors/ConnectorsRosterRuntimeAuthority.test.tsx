@@ -34,7 +34,7 @@ import { MemoryRouter } from 'react-router'
 // ---------------------------------------------------------------------------
 
 vi.mock('@/hooks/use-ingestion', () => ({
-  useConnectorSummariesWithAggregates: vi.fn(),
+  useConnectorSummaries: vi.fn(),
   useAvailableConnectors: vi.fn(),
   useArchiveConnector: vi.fn(() => ({
     mutate: vi.fn(),
@@ -51,7 +51,7 @@ vi.mock('@/hooks/use-ingestion', () => ({
 }))
 
 import {
-  useConnectorSummariesWithAggregates,
+  useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorCheckpointRecord, ConnectorSummary } from '@/api/types'
@@ -162,10 +162,10 @@ function mockHooks(
     unclassified_count?: number
   } = {},
 ) {
-  vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
+  vi.mocked(useConnectorSummaries).mockReturnValue(
     makeResult({
       data: { connectors, ...responseOverrides },
-    }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
+    }) as ReturnType<typeof useConnectorSummaries>,
   )
   vi.mocked(useAvailableConnectors).mockReturnValue(
     makeResult({ data: [] }) as unknown as ReturnType<typeof useAvailableConnectors>,
@@ -431,12 +431,12 @@ describe('older responses and source failure', () => {
   })
 
   it('degrades explicitly when the roster source failed', () => {
-    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+    vi.mocked(useConnectorSummaries).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
       refetch: vi.fn(),
-    } as unknown as ReturnType<typeof useConnectorSummariesWithAggregates>)
+    } as unknown as ReturnType<typeof useConnectorSummaries>)
     vi.mocked(useAvailableConnectors).mockReturnValue(
       makeResult({ data: [] }) as unknown as ReturnType<typeof useAvailableConnectors>,
     )

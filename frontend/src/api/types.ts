@@ -3732,32 +3732,6 @@ export interface SecretTemplate {
 }
 
 // ---------------------------------------------------------------------------
-// Backfill job types (switchboard ingestion history)
-// ---------------------------------------------------------------------------
-
-/** A connector entry from the connector_registry table. */
-/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
-export interface ConnectorEntry {
-  connector_type: string;
-  endpoint_identity: string;
-  instance_id: string | null;
-  version: string | null;
-  state: string;
-  error_message: string | null;
-  uptime_s: number | null;
-  last_heartbeat_at: string | null;
-  first_seen_at: string;
-  registered_via: string;
-  counter_messages_ingested: number;
-  counter_messages_failed: number;
-  counter_source_api_calls: number;
-  counter_checkpoint_saves: number;
-  counter_dedupe_accepted: number;
-  checkpoint_cursor: string | null;
-  checkpoint_updated_at: string | null;
-}
-
-// ---------------------------------------------------------------------------
 // Thread affinity types
 // ---------------------------------------------------------------------------
 
@@ -3815,7 +3789,7 @@ export interface ConnectorCheckpointRecord {
   archived: boolean;
 }
 
-/** A connector with current liveness and today's stats (GET /api/connectors). */
+/** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -3905,18 +3879,6 @@ export interface ConnectorSummary {
   checkpoints?: ConnectorCheckpointRecord[];
 }
 
-/** Metadata for the legacy GET /api/switchboard/connectors roster endpoint. */
-export interface ConnectorSummariesMeta extends ApiMeta {
-  /** False only when the connector registry query failed; absent means available. */
-  connector_registry_available?: boolean;
-}
-
-/** Legacy connector roster response with explicit registry availability. */
-export interface ConnectorSummariesListResponse {
-  data: ConnectorSummary[];
-  meta: ConnectorSummariesMeta;
-}
-
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
 export interface ConnectorScopeEntry {
   name: string;
@@ -3952,7 +3914,7 @@ export interface ConnectorAuthBlock {
   recovery_reason?: "expired" | "rotation-needed" | null;
 }
 
-/** Full connector detail (GET /api/connectors/:type/:identity). */
+/** Client view model projected from the canonical flat connector-detail response. */
 export interface ConnectorDetail extends ConnectorSummary {
   instance_id: string | null;
   registered_via: string;
@@ -4003,7 +3965,7 @@ export interface ConnectorStatsSummary {
   avg_messages_per_hour: number;
 }
 
-/** Full stats response for a single connector (GET /api/connectors/:type/:identity/stats). */
+/** Client view model projected from canonical connector stats rows. */
 export interface ConnectorStats {
   connector_type: string;
   endpoint_identity: string;

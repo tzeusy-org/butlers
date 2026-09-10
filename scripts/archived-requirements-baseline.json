@@ -3717,50 +3717,6 @@
       "excerpt": "Connector Lifecycle Ceremony — Per-Action Gate Matrix"
     }
   ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-base-spec/Dashboard Connector Page": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "8316a6e4f419",
-      "excerpt": "Dashboard frontend exposes connector fleet monitoring at `/ingestion/connectors` (the first-class sub-route introduce..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "12087f110a7f",
-      "excerpt": "Breadcrumb `href` values and back-link targets across the connector detail page header, breadcrumbs, and back-link co..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Connector overview cards",
-      "digest": "0497a8e2d8d8",
-      "excerpt": "- **WHEN** the `/ingestion/connectors` page is loaded"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Legacy URL redirects",
-      "digest": "838d5e781c39",
-      "excerpt": "\"Legacy URL redirects\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Connector detail breadcrumb target",
-      "digest": "2f44ba3f2b49",
-      "excerpt": "\"Connector detail breadcrumb target\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Volume time series chart",
-      "digest": "191858634170",
-      "excerpt": "- **AND** the underlying data is served from the Prometheus + 60s TTL aggregates path defined in `connector-state-agg..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Fanout distribution matrix",
-      "digest": "fb69093db61c",
-      "excerpt": "- **AND** the underlying data is served from the Prometheus + 60s TTL aggregates path"
-    }
-  ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-base-spec/Statistics Pipeline (OTel/Prometheus)": [
     {
       "kind": "prose",

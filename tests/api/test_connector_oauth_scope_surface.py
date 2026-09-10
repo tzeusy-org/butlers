@@ -14,7 +14,6 @@ Covers:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,30 +31,20 @@ from butlers.api.oauth_scope_registry import (
 
 
 def test_spotify_rotation_needed_is_normalized_to_interactive_reauth() -> None:
-    from butlers.api.router_discovery import _load_router_module
+    from butlers.api.routers import ingestion_connectors
 
-    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
-
-    with patch(
-        "switchboard_api_router.compute_auth_status",
-        return_value="rotation-needed",
-    ):
-        auth, _ = module._build_connector_auth_blocks("spotify", [], 1)
+    with patch.object(ingestion_connectors, "compute_auth_status", return_value="rotation-needed"):
+        auth, _ = ingestion_connectors._build_connector_auth_blocks("spotify", [], 1)
 
     assert auth.status == "needs_reauth"
     assert auth.recovery_reason == "rotation-needed"
 
 
 def test_generic_oauth_rotation_needed_is_unchanged() -> None:
-    from butlers.api.router_discovery import _load_router_module
+    from butlers.api.routers import ingestion_connectors
 
-    module = _load_router_module(Path("roster/switchboard/api/router.py"), "switchboard_api_router")
-
-    with patch(
-        "switchboard_api_router.compute_auth_status",
-        return_value="rotation-needed",
-    ):
-        auth, _ = module._build_connector_auth_blocks("gmail", [], 1)
+    with patch.object(ingestion_connectors, "compute_auth_status", return_value="rotation-needed"):
+        auth, _ = ingestion_connectors._build_connector_auth_blocks("gmail", [], 1)
 
     assert auth.status == "rotation-needed"
     assert auth.recovery_reason is None
@@ -280,6 +269,25 @@ class TestBuildScopeRows:
         assert extra[0].name == "scope-undeclared-x"
         assert extra[0].category == "extra"
         assert "harmless" in extra[0].serif_note
+
+    def test_opaque_observed_values_are_withheld_but_safe_extras_remain(
+        self, simple_manifest: ScopeManifest
+    ) -> None:
+        """Registry corruption cannot reflect an opaque credential as an extra scope."""
+        opaque_value = "scope_" + "x" * 48
+        rows = build_scope_rows(
+            simple_manifest,
+            [
+                "scope-required-a",
+                "scope-required-b",
+                "scope-undeclared-x",
+                opaque_value,
+            ],
+        )
+
+        names = {row.name for row in rows}
+        assert "scope-undeclared-x" in names
+        assert opaque_value not in names
 
     def test_ordering_required_optional_sensitive_extra(
         self, simple_manifest: ScopeManifest

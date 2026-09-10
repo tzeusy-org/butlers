@@ -45,10 +45,13 @@ source-health evidence and SHALL NOT override heartbeat-derived liveness.
 
 ### Requirement: Pydantic Response Models
 
-The system SHALL define core Pydantic response models for the connectors
-dashboard and API endpoints. Their liveness fields SHALL be derived from
-`last_heartbeat_at` and their state fields SHALL retain independent operational
-health meaning.
+The system SHALL define explicit Pydantic response models for the connector
+dashboard API. The wire contract SHALL be owned by the canonical
+`/api/ingestion/connectors` routes; frontend display models MAY project that
+wire data but SHALL NOT be presented as a second backend response contract.
+Liveness fields in connector summaries SHALL be derived from
+`last_heartbeat_at`, while stored state retains independent operational-health
+meaning.
 
 #### Scenario: ConnectorSummary model
 - **WHEN** a connector list response is serialized
@@ -58,22 +61,23 @@ health meaning.
 - **AND** `liveness` is the result of `derive_liveness(last_heartbeat_at)`
   rather than a projection of `state`
 
-#### Scenario: ConnectorDetail model
-- **WHEN** a connector detail response is serialized
-- **THEN** it extends ConnectorSummary with: `instance_id`, `registered_via`,
-  `checkpoint`, `counters`, `settings`
+#### Scenario: Connector detail wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` serializes a
+  connector detail response
+- **THEN** it returns one flat detail record with registry identity/health
+  fields, registration metadata, lifetime/today counters, checkpoint fields,
+  settings, and the content-blind `auth` and `scopes` blocks
 - **AND** `settings` is an optional JSONB dict containing runtime-configurable
   connector settings (e.g. discretion thresholds)
+- **AND** no token, refresh credential, or secret is present in the response
 
-#### Scenario: ConnectorStats model
-- **WHEN** a statistics response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `period`,
-  `summary`, `timeseries`
-
-#### Scenario: ConnectorFanoutEntry model
-- **WHEN** a fanout response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `targets`
-  (butler_name → message_count)
+#### Scenario: Connector statistics wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}/stats` serializes
+  a statistics response
+- **THEN** it returns flat hourly or daily rows with connector identity, bucket,
+  ingested/failed/filtered counts, and health counters
+- **AND** the response metadata reports whether the durable history query was
+  available instead of fabricating a quiet series
 
 ## Source References
 - Non-Negotiable Rule 7 (connector transport responsibility)

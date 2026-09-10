@@ -32,6 +32,7 @@ tests/api/test_decision_memory_writeback.py
 tests/api/test_general_stats.py
 tests/api/test_google_health_router.py
 tests/api/test_health_measurement_types.py
+tests/api/test_ingestion_connector_detail.py
 tests/api/test_ingestion_connectors_available.py
 tests/api/test_insecure_defaults_indicator.py
 tests/api/test_last_session_started_at.py

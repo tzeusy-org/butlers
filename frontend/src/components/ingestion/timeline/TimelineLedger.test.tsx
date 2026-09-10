@@ -220,7 +220,7 @@ function setupDefaultMocks() {
   } as unknown as ReturnType<typeof useIngestionEventDetail>);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [] },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);

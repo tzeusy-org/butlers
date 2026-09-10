@@ -22,7 +22,7 @@
  * verdict — visible, but outside the fleet-liveness KPIs, since nothing has
  * claimed it as a process.
  *
- * Data: uses useConnectorSummariesWithAggregates and useAvailableConnectors
+ * Data: uses useConnectorSummaries and useAvailableConnectors
  * hooks. Per-connector `hourly_events` (ingested) and `hourly_filtered_events`
  * (skip-routed, bu-scyro) both come from GET /api/ingestion/connectors/summaries
  * — sourced from the DB, not Prometheus, so sparklines are always populated.
@@ -50,7 +50,7 @@
 
 import { Link } from 'react-router'
 import {
-  useConnectorSummariesWithAggregates,
+  useConnectorSummaries,
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary } from '@/api/types'
@@ -136,7 +136,7 @@ export function ConnectorsRoster() {
     isLoading: connectorsLoading,
     isError: connectorsError,
     refetch: refetchConnectors,
-  } = useConnectorSummariesWithAggregates()
+  } = useConnectorSummaries()
   const {
     data: availableResp,
     isLoading: availableLoading,

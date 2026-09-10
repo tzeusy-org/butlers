@@ -38,13 +38,23 @@ import { ApiError } from "@/api/index";
 vi.mock("@/components/topology/TopologyGraph", () => ({
   default: ({
     butlers,
+    connectors = [],
     connectorsError,
   }: {
     butlers: { name: string }[];
+    connectors?: { connector_type: string; endpoint_identity: string }[];
     connectorsError?: boolean;
   }) => (
     <div data-testid="topology-graph">
       {butlers.map((b) => <span key={b.name}>{b.name}</span>)}
+      {connectors.map((connector) => (
+        <span
+          key={`${connector.connector_type}:${connector.endpoint_identity}`}
+          data-testid={`topology-connector-${connector.connector_type}-${connector.endpoint_identity}`}
+        >
+          {connector.connector_type} · {connector.endpoint_identity}
+        </span>
+      ))}
       {connectorsError && <span data-testid="topology-connectors-error" />}
     </div>
   ),
@@ -248,7 +258,7 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   setBoardSuccess(boardOverrides);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
-    data: { data: [], meta: {} },
+    data: { data: { connectors: [] } },
     isLoading: false,
     isError: false,
     error: null,
@@ -591,7 +601,7 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     // Connectors resolved, board still loading -- topology should still pass isLoading=true
     setBoardLoading();
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: {} },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
       error: null,
@@ -619,6 +629,29 @@ describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
     const html = renderPage();
     expect(html).toContain('data-testid="topology-graph"');
     expect(html).toContain('data-testid="topology-connectors-error"');
+  });
+
+  it("passes only active role-aware connector summaries to topology", () => {
+    setAllSuccess();
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: {
+        data: {
+          connectors: [
+            { connector_type: "gmail", endpoint_identity: "active", archived: false },
+            { connector_type: "google_health", endpoint_identity: "retired", archived: true },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+
+    expect(html).toContain('data-testid="topology-connector-gmail-active"');
+    expect(html).not.toContain('topology-connector-google_health-retired');
   });
 });
 
@@ -1162,7 +1195,7 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     } as AnyMock);
     const connectorsRefetch = vi.fn();
     vi.mocked(useConnectorSummaries).mockReturnValue({
-      data: { data: [], meta: {} },
+      data: { data: { connectors: [] } },
       isLoading: false,
       isError: false,
       error: null,

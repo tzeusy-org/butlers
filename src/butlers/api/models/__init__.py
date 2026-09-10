@@ -613,17 +613,6 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry, AuditLogEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
-from butlers.api.models.connector import (  # noqa: E402
-    ConnectorCheckpoint,
-    ConnectorCounters,
-    ConnectorDaySummary,
-    ConnectorDetail,
-    ConnectorFanoutEntry,
-    ConnectorStats,
-    ConnectorStatsBucket,
-    ConnectorStatsSummary,
-    ConnectorSummary,
-)
 from butlers.api.models.conversation import (  # noqa: E402
     ConversationCreateRequest,
     ConversationMessage,
@@ -694,15 +683,6 @@ __all__ = [
     "ConversationStats",
     "ConversationSummary",
     "ConversationUpdateRequest",
-    "ConnectorCheckpoint",
-    "ConnectorCounters",
-    "ConnectorDaySummary",
-    "ConnectorDetail",
-    "ConnectorFanoutEntry",
-    "ConnectorStats",
-    "ConnectorStatsBucket",
-    "ConnectorStatsSummary",
-    "ConnectorSummary",
     "CursorPaginatedResponse",
     "CursorPaginationMeta",
     "DailyActivity",
