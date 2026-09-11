@@ -52,6 +52,7 @@ from butlers.api.routers.oauth import _clear_state_store, _generate_state, _stor
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
 _OAUTH_LOGGER = "butlers.api.routers.oauth"
+_SYNTHETIC_PROVIDER = "test-provider"
 
 # --- Synthetic material.  None of this is, or resembles, a real credential. ---
 _ACCESS_TOKEN = "synthetic-generic-access-token"
@@ -67,7 +68,7 @@ _LEAK_MARKER = "profile-leak-marker-7c31"
 _TOKEN_PAYLOAD: dict[str, Any] = {
     "access_token": _ACCESS_TOKEN,
     "refresh_token": _REFRESH_TOKEN,
-    "scope": "user-read-email user-read-private",
+    "scope": "identity.read activity.read",
     "token_type": "Bearer",
     "expires_in": 3600,
 }
@@ -154,6 +155,14 @@ def stub_off(monkeypatch):
     """The OAuth stub short-circuits the profile fetch before it parses anything."""
     monkeypatch.delenv("TEST_MODE_OAUTH_STUB", raising=False)
     monkeypatch.delenv("ENV", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def synthetic_provider(synthetic_oauth_provider, monkeypatch):
+    """Keep this profile-resolution suite on the test-only provider."""
+    assert synthetic_oauth_provider == _SYNTHETIC_PROVIDER
+    config = oauth_module._PROVIDER_REGISTRY[synthetic_oauth_provider]
+    monkeypatch.setattr(config, "profile_url", "https://oauth.test.invalid/userinfo")
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +299,7 @@ async def _drive(harness: _Harness) -> httpx.Response:
     app = create_app()
     app.dependency_overrides[oauth_module._get_db_manager] = lambda: MagicMock()
     state = _generate_state()
-    _store_state(state, provider="spotify")
+    _store_state(state, provider=_SYNTHETIC_PROVIDER)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
@@ -299,7 +308,7 @@ async def _drive(harness: _Harness) -> httpx.Response:
             for patcher in harness.patches():
                 stack.enter_context(patcher)
             return await client.get(
-                "/api/oauth/spotify/callback",
+                f"/api/oauth/{_SYNTHETIC_PROVIDER}/callback",
                 params={"code": "synthetic-auth-code", "state": state},
             )
 
@@ -398,8 +407,7 @@ async def test_malformed_profile_body_stays_non_fatal(case: str) -> None:
     response = await _drive(harness)
 
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
-    assert "SPOTIFY_REFRESH_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +515,7 @@ async def test_transport_and_parse_failures_stay_non_fatal(responder_factory) ->
     response = await _drive(harness)
 
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +547,7 @@ async def test_identity_absent_profile_stays_non_fatal(case: str) -> None:
     response = await _drive(harness)
 
     assert response.status_code in (302, 307), response.text
-    assert "SPOTIFY_ACCESS_TOKEN" in harness.stored_keys()
+    assert "oauth_test-provider_refresh_token" in harness.stored_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +579,7 @@ async def test_no_profile_endpoint_keeps_the_bare_note() -> None:
     cleared instead of inventing a provider.
     """
     harness = _Harness(_ok({"email": _EMAIL}))
-    cfg = oauth_module._PROVIDER_REGISTRY["spotify"]
+    cfg = oauth_module._PROVIDER_REGISTRY[_SYNTHETIC_PROVIDER]
 
     with patch.object(cfg, "profile_url", None):
         response = await _drive(harness)

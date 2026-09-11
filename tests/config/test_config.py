@@ -539,14 +539,14 @@ def test_oauth_section_valid_parsing(tmp_path: Path):
 
     # Multiple providers each parsed into the oauth dict.
     multiple = (
-        '[butler]\nname = "music"\nport = 41101\n\n'
-        "[oauth.spotify]\n"
-        'scopes = ["user-read-recently-played", "user-top-read"]\n\n'
+        '[butler]\nname = "general"\nport = 41101\n\n'
+        "[oauth.example_provider]\n"
+        'scopes = ["profile.read", "activity.read"]\n\n'
         "[oauth.google]\n"
         'scopes = ["https://www.googleapis.com/auth/calendar"]\n'
     )
     cfg = load_config(_write_toml(tmp_path, multiple))
-    assert set(cfg.oauth["spotify"]) == {"user-read-recently-played", "user-top-read"}
+    assert set(cfg.oauth["example_provider"]) == {"profile.read", "activity.read"}
     assert cfg.oauth["google"] == ["https://www.googleapis.com/auth/calendar"]
 
     # scopes = [] is valid and yields an empty list.

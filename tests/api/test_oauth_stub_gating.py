@@ -64,8 +64,8 @@ def _make_stub_app(app, *, client_id: str = "stub-client-id", client_secret: str
     secrets = {
         "GOOGLE_OAUTH_CLIENT_ID": client_id,
         "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
-        "SPOTIFY_OAUTH_CLIENT_ID": client_id,
-        "SPOTIFY_OAUTH_CLIENT_SECRET": client_secret,
+        "TEST_PROVIDER_OAUTH_CLIENT_ID": client_id,
+        "TEST_PROVIDER_OAUTH_CLIENT_SECRET": client_secret,
     }
     conn = AsyncMock()
 
@@ -348,14 +348,16 @@ async def test_provider_callback_stub_active_redirects_to_toast(app, monkeypatch
     assert "toast=connected" in resp.headers.get("location", "")
 
 
-async def test_provider_callback_stub_active_spotify_redirects(app, monkeypatch):
-    """Stub active: Spotify callback redirects to /secrets?focus=u:spotify&toast=connected."""
+async def test_provider_callback_stub_active_synthetic_redirects(
+    app, monkeypatch, synthetic_oauth_provider
+):
+    """Stub active: a synthetic provider completes without network calls."""
     monkeypatch.setenv(_OAUTH_STUB_ENV, "1")
     monkeypatch.delenv("ENV", raising=False)
 
     app, _pool = _make_stub_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify", page_of_origin="secrets")
+    _store_state(state, provider=synthetic_oauth_provider, page_of_origin="secrets")
 
     with (
         patch(_EMIT_AUDIT_PATCH, AsyncMock()),
@@ -377,8 +379,8 @@ async def test_provider_callback_stub_active_spotify_redirects(app, monkeypatch)
                 follow_redirects=False,
             ) as client:
                 resp = await client.get(
-                    "/api/oauth/spotify/callback",
-                    params={"code": "stub-spotify-code", "state": state},
+                    f"/api/oauth/{synthetic_oauth_provider}/callback",
+                    params={"code": "stub-provider-code", "state": state},
                 )
 
     assert resp.status_code in (302, 307)
