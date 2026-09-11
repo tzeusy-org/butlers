@@ -129,16 +129,18 @@ export function TimelineAttentionStrip({
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            aria-expanded={expanded}
-            aria-controls={DETAILS_ID}
-            onClick={() => setExpanded((value) => !value)}
-          >
-            {expanded ? "Hide details" : "Show details"}
-          </Button>
+          {attention && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-expanded={expanded}
+              aria-controls={DETAILS_ID}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "Hide details" : "Show details"}
+            </Button>
+          )}
         </div>
       </div>
 
