@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
@@ -76,8 +76,9 @@ async def _seed_session(
     started_at: datetime,
     success: bool | None = True,
     trace_id: str | None = None,
+    event_id: UUID | None = None,
 ):
-    event_id = uuid4()
+    event_id = event_id if event_id is not None else uuid4()
     await pool.execute(
         """
         INSERT INTO sessions (id, prompt, trigger_source, success, trace_id, request_id, started_at)
@@ -98,8 +99,9 @@ async def _seed_notification(
     created_at: datetime,
     status: str,
     trace_id: str | None = None,
+    notification_id: UUID | None = None,
 ):
-    notification_id = uuid4()
+    notification_id = notification_id if notification_id is not None else uuid4()
     await pool.execute(
         """
         INSERT INTO notifications (
@@ -276,3 +278,46 @@ async def test_attention_counts_current_failures_caps_rows_and_excludes_incomple
     after_claim = await _request(manager, "/api/timeline/attention", {"butler": "switchboard"})
     assert after_claim.json()["meta"]["failed_notifications"] == 0
     assert str(failed_notifications[1]) not in {item["id"] for item in after_claim.json()["data"]}
+
+
+async def test_attention_equal_timestamps_have_stable_cross_kind_and_id_order(timeline_db):
+    manager, pool = timeline_db
+    shared_timestamp = datetime.now(tz=UTC) - timedelta(minutes=1)
+    session_ids = [
+        UUID("00000000-0000-0000-0000-000000000011"),
+        UUID("00000000-0000-0000-0000-000000000012"),
+    ]
+    notification_ids = [
+        UUID("00000000-0000-0000-0000-000000000021"),
+        UUID("00000000-0000-0000-0000-000000000022"),
+    ]
+    for event_id in session_ids:
+        await _seed_session(
+            pool,
+            started_at=shared_timestamp,
+            success=False,
+            event_id=event_id,
+        )
+    for notification_id in notification_ids:
+        await _seed_notification(
+            pool,
+            created_at=shared_timestamp,
+            status="failed",
+            notification_id=notification_id,
+        )
+
+    responses = [
+        await _request(manager, "/api/timeline/attention", {"butler": "switchboard"})
+        for _ in range(2)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    ordered_rows = responses[0].json()["data"]
+    assert ordered_rows == responses[1].json()["data"]
+    assert [(row["kind"], row["id"]) for row in ordered_rows] == [
+        ("session", str(session_ids[1])),
+        ("session", str(session_ids[0])),
+        ("notification", str(notification_ids[1])),
+        ("notification", str(notification_ids[0])),
+    ]
+    assert all(set(row) == {"id", "kind", "butler", "timestamp"} for row in ordered_rows)
