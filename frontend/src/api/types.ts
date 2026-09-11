@@ -729,6 +729,38 @@ export interface TimelineHistogramParams {
   trace?: string;
 }
 
+/** A content-blind recent record currently marked failed. */
+export interface TimelineAttentionItem {
+  id: string;
+  kind: "session" | "notification";
+  butler: string;
+  timestamp: string;
+}
+
+export interface TimelineAttentionMeta {
+  since: string;
+  until: string;
+  failed_sessions: number;
+  failed_notifications: number;
+  total: number;
+  has_more: boolean;
+  availability: "complete" | "partial" | "unavailable";
+  expected_sources: number;
+  healthy_sources: number;
+  degraded_sources: string[];
+  degraded_butlers: string[];
+}
+
+export interface TimelineAttentionResponse {
+  data: TimelineAttentionItem[];
+  meta: TimelineAttentionMeta;
+}
+
+export interface TimelineAttentionParams {
+  butler?: string[];
+  trace?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Spend
 // ---------------------------------------------------------------------------

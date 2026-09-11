@@ -4,8 +4,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getTimeline, getTimelineHistogram } from "@/api/index.ts";
-import type { TimelineHistogramParams, TimelineParams } from "@/api/types.ts";
+import { getTimeline, getTimelineAttention, getTimelineHistogram } from "@/api/index.ts";
+import type {
+  TimelineAttentionParams,
+  TimelineHistogramParams,
+  TimelineParams,
+} from "@/api/types.ts";
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 interface TimelineQueryOptions {
@@ -40,6 +44,16 @@ export function useTimelineHistogram(params: TimelineHistogramParams, enabled = 
   return useQuery({
     queryKey: ["timeline", "histogram", params],
     queryFn: () => getTimelineHistogram(params),
+    refetchInterval: busAwareInterval,
+    enabled,
+  });
+}
+
+export function useTimelineAttention(params?: TimelineAttentionParams, enabled = true) {
+  const busAwareInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["timeline", "attention", params],
+    queryFn: () => getTimelineAttention(params),
     refetchInterval: busAwareInterval,
     enabled,
   });

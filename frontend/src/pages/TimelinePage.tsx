@@ -34,12 +34,13 @@ import { LiveStatusBadge } from "@/components/ui/live-status-badge";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/ingestion/dispatch";
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
+import { TimelineAttentionStrip } from "@/components/timeline/TimelineAttentionStrip";
 import { TimelineLedger } from "@/components/timeline/TimelineLedger";
 import { TimelineDensity } from "@/components/timeline/TimelineDensity";
 import { useButlers } from "@/hooks/use-butlers.ts";
 import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
-import { useTimelineHistogram } from "@/hooks/use-timeline";
+import { useTimelineAttention, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
@@ -229,6 +230,14 @@ export default function TimelinePage() {
     [interval.since, interval.until, selectedButlers, selectedTypes, trace],
   );
   const histogram = useTimelineHistogram(histogramParams, interval.valid);
+  const attentionParams = useMemo(
+    () => ({
+      butler: selectedButlers.length > 0 ? selectedButlers : undefined,
+      trace,
+    }),
+    [selectedButlers, trace],
+  );
+  const attention = useTimelineAttention(attentionParams);
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
   // already generic (consumed by the ingestion ledger before this page).
@@ -488,6 +497,15 @@ export default function TimelinePage() {
             />
           </section>
         )}
+
+        <TimelineAttentionStrip
+          attention={attention.data}
+          isLoading={attention.isLoading}
+          isError={attention.isError}
+          onRetry={() => void attention.refetch()}
+          selectedButlers={selectedButlers}
+          trace={trace}
+        />
 
         {interval.valid && trace && (
           <section
