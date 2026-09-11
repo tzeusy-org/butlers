@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render as renderDom, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render as renderDom, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation, useNavigate } from "react-router";
 
@@ -698,6 +698,7 @@ describe("TimelinePage — density and historical seek", () => {
   });
 
   it.each([
+    ["zero-source", "complete", 0, 0, 0, [], "No matching event sources", true],
     ["healthy-zero", "complete", 0, 1, 1, [], "0 events · 1 of 1 sources available", true],
     [
       "partial", "partial", 3, 2, 1, ["notifications"],
@@ -738,6 +739,15 @@ describe("TimelinePage — density and historical seek", () => {
     );
     expect(screen.getByText(summary)).toBeTruthy();
     expect(screen.queryByTestId("timeline-density-bucket") !== null).toBe(rendersBuckets);
+    if (expectedSources === 0) {
+      const density = screen.getByTestId("timeline-density");
+      const densityCopy = density.textContent ?? "";
+      expect(densityCopy).not.toMatch(/\d+ events/);
+      expect(densityCopy).not.toContain("sources available");
+      expect(densityCopy).not.toMatch(/partial/i);
+      expect(densityCopy).not.toMatch(/all[- ]clear/i);
+      expect(within(density).queryByRole("button", { name: "Retry" })).toBeNull();
+    }
     if (availability === "partial") {
       expect(screen.getByText("Unavailable sources: notifications.")).toBeTruthy();
     }
