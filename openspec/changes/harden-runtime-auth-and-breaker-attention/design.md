@@ -262,8 +262,9 @@ manifest is consumed.
 current `O_NOFOLLOW`, same-descriptor bounded read, owner/mode/link/size checks,
 and root-owned non-writable source validation, then validates the exact version-3
 shim record and configured shim path. It returns explicit validated shim
-bindings. `build_bubblewrap_launch_plan` receives those bindings as a mandatory
-argument; it does not read the manifest or run a subprocess. It combines
+bindings before the launcher allocates an identity, creates or writes a staged
+HOME, or enters `_launch_invocation`. `build_bubblewrap_launch_plan` receives
+those bindings as a mandatory argument; it does not read the manifest or run a subprocess. It combines
 payload/provider inputs with shim inputs by logical destination, collapses only
 identical source/destination pairs, rejects differing sources for one
 destination, and sorts the unique result by destination before deriving parent

@@ -39,7 +39,7 @@ the one-concrete-sandbox-spawn-boundary policy.
 | `scripts/generate_runtime_cli_sandbox_manifest.py::build_manifest` | Emits version 2 with `providers` only. | Emit the exact version-3 top-level shape and a separate shim record. |
 | `scripts/generate_runtime_cli_sandbox_manifest.py::_runtime_closure` / `_ldd_dependencies` | Computes recursive provider closures; generic non-zero `ldd` is treated as no dependencies. | Reuse the traversal for the shim with strict unresolved/error handling. A positively identified static executable may have only its executable binding; an unexplained failure or `not found` fails the build. |
 | `Dockerfile.base` | Installs/chmods the shim before npm providers, then runs the manifest generator. | Keep generation after provider installation and prove it occurs after the final shim copy/chmod; do not replace the shim later in the image. |
-| `RuntimeCLIInputManifest._read_document` | Safely reads and caches version 2; validates the manifest file before JSON parsing. | Preserve all file checks and require exact version 3/top-level shim shape. |
+| `RuntimeCLIInputManifest._read_document` | Safely reads and caches version 2; validates the manifest file before JSON parsing. | Preserve all file checks and require exact version 3/top-level shim shape before identity allocation, stage creation/write, or `_launch_invocation`. |
 | `RuntimeCLIInputManifest._immutable_input*` | Validates root-owned, non-symlink, non-writable sources and exact binding keys. | Apply the same checks to every shim binding; require the shim source to be a regular executable and its identity/path to match the configured shim. |
 | `RuntimeCLIInputManifest._resolve` | Validates and deduplicates one provider entry. | Keep provider resolution and expose a separate validated shim resolver; no provider entry may stand in for the shim record. |
 | `build_bubblewrap_launch_plan` | Purely builds one plan but appends only `shim_path`, so dependencies depend on caller inputs. | Require validated shim bindings, combine by destination, collapse identical pairs, reject conflicts, sort, and then build parents/`--ro-bind` arguments. Perform no manifest read or subprocess discovery here. |
@@ -84,10 +84,12 @@ receive the validated shim closure; do not leave a compatibility default.
    configured path identity, executable safety, non-empty mappings, identical
    duplicate collapse, and conflict rejection before returning it.
 4. Add an injectable shim-input resolver to
-   `BubblewrapDashboardCLIAuthSandbox`. Resolve it before `_spawn`; thread its
-   immutable result into `_launch_invocation` and the mandatory planner
-   argument. Test-only injected resolvers must return explicit bindings rather
-   than enabling a missing-manifest fallback.
+   `BubblewrapDashboardCLIAuthSandbox`. Call it at each public launch entry
+   immediately after exact-image preflight and before identity acquisition,
+   stage creation/write, or `_launch_invocation`; thread its immutable result
+   into `_launch_invocation` and the mandatory planner argument. Test-only
+   injected resolvers must return explicit bindings rather than enabling a
+   missing-manifest fallback.
 5. Make the planner merge caller and shim bindings by destination and sort the
    unique bindings. Keep the existing empty-root, forbidden-prefix, typed-FD,
    stage, PID1, and command validations unchanged.
@@ -101,7 +103,7 @@ receive the validated shim closure; do not leave a compatibility default.
 
 ## Fail-closed matrix
 
-| Condition | Required result before `_spawn` |
+| Condition | Required result before identity allocation, stage write, or `_spawn` |
 |---|---|
 | Manifest missing, symlinked, wrong owner/mode/link count, empty, oversized, changing during the same-descriptor read, invalid UTF-8/JSON | Existing typed manifest validation failure; no child. |
 | Version 1, 2, or unknown future version | Reject; no dual reader, compatibility alias, or inferred upgrade. |
@@ -111,7 +113,7 @@ receive the validated shim closure; do not leave a compatibility default.
 | Identical provider/payload/shim binding | Mount once. |
 | Same destination with different sources, within or across closures | Reject deterministically before spawn. |
 | Build-time unresolved library, unexpected `ldd` failure, or ambiguous dependency output | Fail image generation; never emit a partial manifest. |
-| Any runtime closure failure | No runtime `ldd`, broad mount, provider call, credential operation, direct child, or retry fallback. Unrelated Dashboard health stays available. |
+| Any runtime closure failure | No runtime `ldd`, broad mount, staged-authority write, provider execution, credential mutation/persistence, direct child, or retry fallback. Unrelated Dashboard health stays available. |
 
 ## Test handoff
 

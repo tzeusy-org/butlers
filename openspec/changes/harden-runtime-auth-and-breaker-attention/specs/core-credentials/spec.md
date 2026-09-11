@@ -296,8 +296,9 @@ provider inputs SHALL NOT be treated as evidence that the shim closure is
 complete. Build-time closure discovery SHALL fail on an unresolved dependency,
 conflicting logical destination, or any other inability to establish the
 closure. It SHALL NOT defer discovery to runtime.
-Before any Bubblewrap spawn, the trusted parent SHALL read the manifest through
-the existing bounded no-follow file-descriptor path and require a root-owned,
+Before allocating an invocation identity, creating or writing a staged HOME, or
+spawning Bubblewrap, the trusted parent SHALL read the manifest through the
+existing bounded no-follow file-descriptor path and require a root-owned,
 single-link, mode-`0444` regular file no larger than 64 KiB. It SHALL reject a
 missing manifest, any version other than `3`, a missing or malformed shim
 record, an empty shim input list, a shim name or executable that does not match
@@ -604,7 +605,8 @@ Scope: v1-mandatory
 - **THEN** CLI-auth launch and signer activation are unavailable before any
   child process is spawned
 - **AND** the runtime performs no `ldd` discovery, provider-closure inference,
-  direct-subprocess fallback, provider call, or credential operation
+  direct-subprocess fallback, provider execution, staged-authority write, or
+  credential mutation or persistence
 - **AND** unrelated Dashboard health remains available
 
 #### Scenario: Image build emits one complete shim closure
