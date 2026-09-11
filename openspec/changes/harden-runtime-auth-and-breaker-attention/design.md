@@ -270,7 +270,11 @@ identical source/destination pairs, rejects differing sources for one
 destination, and sorts the unique result by destination before deriving parent
 directories and `--ro-bind` arguments. This makes planner behavior independent
 of caller order and removes the provider-glibc coincidence without creating a
-second spawn path.
+second spawn path. Every exact-image harness uses the same validated shim
+resolver: implementation removes the descendant-survival and signer-isolation
+hard-coded glibc/loader tuples and the peer-isolation caller-side `ldd` helper
+and synchronous `subprocess` import. Planner deduplication is not evidence that
+one of those forbidden parallel closure mechanisms may remain.
 
 Version 3 is an intentional image/application compatibility boundary, not a
 dual-reader migration. A new reader rejects version 2; an old reader already

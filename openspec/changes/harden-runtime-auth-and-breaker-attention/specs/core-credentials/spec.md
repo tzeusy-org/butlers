@@ -596,6 +596,9 @@ Scope: v1-mandatory
   separate required input to the existing Bubblewrap launch planner
 - **AND** identical provider/shim bindings are mounted once in deterministic
   destination order without changing the one concrete sandbox spawn boundary
+- **AND** every production or exact-image-harness caller obtains that closure
+  only from the validated image manifest, never from an architecture-specific
+  library list or caller-side `ldd`
 
 #### Scenario: Invalid image-owned shim closure fails before spawn
 

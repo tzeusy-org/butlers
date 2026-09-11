@@ -56,12 +56,16 @@ Every current call must move in the same implementation change:
    though the Codex closure currently overlaps.
 3. `tests/cli/runtime_cli_sandbox_exact_image_descendant_survival_harness.py::_run`
    — provider-independent static payload; delete its architecture-specific
-   `_SHIM_RUNTIME_LIBRARIES` workaround only when the version-3 resolver replaces
-   it in this same implementation change.
+   `_SHIM_RUNTIME_LIBRARIES` workaround when the version-3 resolver replaces it
+   in this same implementation change.
 4. `tests/cli/runtime_cli_sandbox_exact_image_signer_isolation_harness.py::_run`
-   — provider-independent adversarial payload.
-5. `tests/cli/runtime_cli_sandbox_peer_isolation_harness.py::_launch_peer` —
-   provider-independent peer payload.
+   — provider-independent adversarial payload; delete its separate
+   architecture-specific `_SHIM_RUNTIME_LIBRARIES` workaround in the same
+   change.
+5. `tests/cli/runtime_cli_sandbox_peer_isolation_harness.py::_launch` —
+   provider-independent peer payload; delete `_shim_ldd_closure` and the
+   synchronous `subprocess` import, and resolve the manifest once before
+   launching either peer.
 6. The two direct unit-test calls in
    `tests/cli/test_runtime_cli_sandbox.py` — pass explicit fixture shim bindings
    and assert deterministic deduplication/conflict rejection.
@@ -94,9 +98,11 @@ receive the validated shim closure; do not leave a compatibility default.
    unique bindings. Keep the existing empty-root, forbidden-prefix, typed-FD,
    stage, PID1, and command validations unchanged.
 6. Update all six caller groups above, including all provider-independent
-   harnesses. Remove only the descendant harness's temporary hard-coded shim
-   library workaround once it consumes the manifest; do not touch the foreign
-   prototype.
+   harnesses. Remove both temporary `_SHIM_RUNTIME_LIBRARIES` tuples and the
+   peer harness's `_shim_ldd_closure`/synchronous `subprocess` path once all
+   three consume the validated manifest. Re-run a focused search proving no
+   hard-coded or caller-discovered shim closure remains. Do not touch the
+   foreign prototype.
 7. Update `Dockerfile.base` comments/order assertions and the operator/runtime
    documentation that describes the manifest version or shim provenance. Build
    and deployment remain outside this packet.
@@ -142,7 +148,10 @@ failure matrices and extensions of existing seam tests, not a new test file.
   destination, and conflict rejection without planner I/O.
 - Update the existing Dockerfile order assertion in
   `tests/scripts/test_dockerfile_base_runtime_tools.py` and all four exact-image
-  harnesses. The credential-free exact-image entry remains
+  harnesses. Assert each harness obtains the shim bindings only from the
+  validated version-3 manifest; a passing deduplicated plan must not mask a
+  surviving hard-coded tuple or caller-side `ldd`. The credential-free
+  exact-image entry remains
   `tests/cli/runtime_cli_sandbox_exact_image_harness.py`; it proves the emitted
   image closure only when separately authorized, and this packet does not
   authorize an image build or deployment.
