@@ -163,41 +163,14 @@ contained two conversations on offset 0 and one on offset 2.
 - 50 selective `benchmarkneedle` messages for finance and 50 for home.
 - Thirteen hand-seeded messages across eleven conversations exercised the
   semantic matrix. All ids, timestamps, butler names, and text were synthetic.
-- Tables were analyzed before measurement. Both indexes were warmed once before
-  recording `EXPLAIN (ANALYZE, BUFFERS)`.
+- The final mutation was followed by `VACUUM (ANALYZE)` so statistics and GIN
+  pending-list state did not depend on autovacuum timing. Both indexes were
+  then warmed once before recording `EXPLAIN (ANALYZE, BUFFERS)`.
 
-The bulk seed was generated with:
-
-```sql
-INSERT INTO public.dashboard_conversations
-  (id, butler_name, title, status, created_at, updated_at,
-   message_count, source_channel)
-SELECT md5('filler-conv-' || gs)::uuid,
-       CASE WHEN gs % 10 = 0 THEN 'home' ELSE 'finance' END,
-       'filler-' || gs,
-       'active',
-       '2025-01-01'::timestamptz + gs * interval '1 second',
-       '2025-01-01'::timestamptz + gs * interval '1 second',
-       1,
-       'dashboard'
-FROM generate_series(1, 50000) gs;
-
-INSERT INTO public.dashboard_messages
-  (id, conversation_id, role, content, created_at)
-SELECT md5('filler-msg-' || gs)::uuid,
-       md5('filler-conv-' || gs)::uuid,
-       'user',
-       CASE
-         WHEN gs % 1000 IN (0, 1)
-           THEN 'routine benchmarkneedle record ' || gs
-         ELSE 'routine filler record ' || gs
-       END,
-       '2025-01-01'::timestamptz + gs * interval '1 second'
-FROM generate_series(1, 50000) gs;
-
-ANALYZE public.dashboard_conversations;
-ANALYZE public.dashboard_messages;
-```
+The complete executable reproduction below is authoritative. It includes the
+container lifecycle, DDL, every hand seed, the exact bulk/update sequence,
+planner settings, warm-up, semantic result queries, and every measured
+`EXPLAIN` statement. The table here is only a compact guide to the hand cases.
 
 The hand-seeded content was:
 
@@ -332,20 +305,20 @@ All timings are one warm-cache observation, not a benchmark claim.
 
 | Query | Relevant plan evidence | Actual output | Buffers | Planning / execution |
 | --- | --- | ---: | --- | --- |
-| Current grouped ILIKE, selective token | `Bitmap Index Scan on idx_dashboard_messages_content_trgm`; bitmap heap scan; group with `Unique`; top-N sort | 100 index hits, 50 finance conversations, 20 page rows | 281 index buffers; 778 hits plus 1 read for full query | 0.782 ms / 5.750 ms |
-| Same grouping, FTS predicate | `Bitmap Index Scan on idx_dashboard_messages_search_vector`; bitmap heap scan; same `Unique` and top-N sort | 100 index hits, 50 finance conversations, 20 page rows | 4 index buffers; 456 hits | 0.385 ms / 0.544 ms |
-| Current distinct-count ILIKE | Trigram bitmap index and heap scan, then distinct aggregate | 50 finance messages/conversations | 281 index buffers; 635 hits | 1.203 ms / 5.403 ms |
-| Hypothetical distinct-count FTS | Search-vector bitmap index and heap scan, then distinct aggregate | 50 finance messages/conversations | 4 index buffers; 355 hits | 0.761 ms / 0.297 ms |
-| Production-shaped owner-wide message FTS | Search-vector bitmap index, rank sort, limit 21 | 100 matches, 21 rows | 4 index buffers; 362 hits | 0.301 ms / 0.702 ms |
-| Current grouped ILIKE for input `%` | Sequential scans, hash join, external merge for grouping, top-N sort | 50,013 scanned messages, 45,010 finance conversations, 20 page rows | 1,775 hits; 3,552 kB temp sort | 0.203 ms / 131.856 ms |
+| Current grouped ILIKE, selective token | `Bitmap Index Scan on idx_dashboard_messages_content_trgm`; bitmap heap scan; group with `Unique`; top-N sort | 100 index hits, 50 finance conversations, 20 page rows | 27 index buffers; 478 hits plus 1 read for full query | 0.283 ms / 0.580 ms |
+| Same grouping, FTS predicate | `Bitmap Index Scan on idx_dashboard_messages_search_vector`; bitmap heap scan; same `Unique` and top-N sort | 100 index hits, 50 finance conversations, 20 page rows | 3 index buffers; 455 hits | 0.185 ms / 0.319 ms |
+| Current distinct-count ILIKE | Trigram bitmap index and heap scan, then distinct aggregate | 50 finance messages/conversations | 27 index buffers; 378 hits | 0.172 ms / 0.333 ms |
+| Hypothetical distinct-count FTS | Search-vector bitmap index and heap scan, then distinct aggregate | 50 finance messages/conversations | 3 index buffers; 354 hits | 0.135 ms / 0.279 ms |
+| Production-shaped owner-wide message FTS | Search-vector bitmap index, rank sort, limit 21 | 100 matches, 21 rows | 3 index buffers; 354 hits | 0.176 ms / 0.395 ms |
+| Current grouped ILIKE for input `%` | Sequential scans, hash join, external merge for grouping, top-N sort | 50,013 scanned messages, 45,010 finance conversations, 20 page rows | 1,772 hits; 3,552 kB temp sort | 0.172 ms / 101.047 ms |
 
 The selective ILIKE plan proves the existing trigram index is usable by the
 current predicate. It does not prove every query will use it. PostgreSQL chose
 a sequential scan for the unselective wildcard input because no useful trigram
 could be extracted and nearly every row matched. Conversely, the FTS speedup
 for `benchmarkneedle` does not establish universal superiority: that generated
-token is highly selective, the English FTS index had only four matching index
-pages, and the trigram index touched 281 index pages. Different text length,
+token is highly selective, the English FTS index had only three matching index
+pages, and the trigram index touched 27 index pages. Different text length,
 term distribution, locale, selectivity, cache state, table size, statistics,
 hardware, concurrent write load, and query mix can change the plan and cost.
 
@@ -356,11 +329,571 @@ Further limitations:
 - Only one PostgreSQL major/version and one statistics state were observed.
 - The experiment did not measure generated-column write amplification, index
   build time, production latency percentiles, or operational lock behavior.
-- The ILIKE plan estimated five hits but found 100, while FTS estimated 100 and
+- The ILIKE plan estimated five hits but found 100, while FTS estimated 105 and
   found 100. That estimator difference contributed to this plan result and may
   differ on real statistics.
 - A tiny dataset might choose a sequential scan even when the index is valid;
   an index scan is a planner choice, not an API guarantee.
+
+### Complete executable reproduction
+
+The block below is the exact correction-run fixture and measurement program.
+It needs Docker access and the postgres:16 image. It removes only its
+explicitly named disposable container, both before and after the run. To
+execute the bytes directly from this Markdown file:
+
+~~~bash
+sed -n \
+  '/^# BEGIN BU-U22SS EXECUTABLE REPRODUCTION$/,/^# END BU-U22SS EXECUTABLE REPRODUCTION$/p' \
+  docs/plans/bu-u22ss-conversation-search-evaluation.md | bash
+~~~
+
+The SET statements pin every planner/session setting that differed from or
+could materially affect the stock postgres:16 defaults used for this
+measurement. No scan type is disabled. VACUUM (ANALYZE) runs after the final
+data mutation, and each search index is warmed once before EXPLAIN.
+
+~~~bash
+# BEGIN BU-U22SS EXECUTABLE REPRODUCTION
+set -euo pipefail
+
+REPRO_CONTAINER=bu-u22ss-pg-reproduction
+
+cleanup_bu_u22ss_reproduction() {
+  docker rm -f "$REPRO_CONTAINER" >/dev/null 2>&1 || true
+}
+
+cleanup_bu_u22ss_reproduction
+trap cleanup_bu_u22ss_reproduction EXIT
+
+docker run -d --rm \
+  --name "$REPRO_CONTAINER" \
+  -e POSTGRES_PASSWORD=synthetic-only \
+  -e POSTGRES_DB=evaluation \
+  -p 127.0.0.1::5432 \
+  postgres:16 >/dev/null
+
+for attempt in $(seq 1 40); do
+  if docker exec "$REPRO_CONTAINER" \
+      pg_isready -U postgres -d evaluation >/dev/null 2>&1; then
+    break
+  fi
+  if [ "$attempt" -eq 40 ]; then
+    printf '%s\n' 'PostgreSQL did not become ready' >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+
+docker exec -i "$REPRO_CONTAINER" \
+  psql -v ON_ERROR_STOP=1 -P pager=off -U postgres -d evaluation <<'SQL'
+SET client_min_messages = warning;
+SET track_io_timing = on;
+SET work_mem = '4MB';
+SET random_page_cost = 4;
+SET seq_page_cost = 1;
+SET effective_cache_size = '4GB';
+SET default_statistics_target = 100;
+SET enable_seqscan = on;
+SET enable_bitmapscan = on;
+SET enable_indexscan = on;
+SET enable_indexonlyscan = on;
+SET max_parallel_workers_per_gather = 2;
+SET jit = on;
+
+CREATE EXTENSION pg_trgm;
+
+CREATE TABLE public.dashboard_conversations (
+  id uuid PRIMARY KEY,
+  butler_name text NOT NULL,
+  title text,
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  message_count integer NOT NULL DEFAULT 0,
+  routed_butler text,
+  source_channel text NOT NULL DEFAULT 'dashboard'
+);
+
+CREATE TABLE public.dashboard_messages (
+  id uuid PRIMARY KEY,
+  conversation_id uuid NOT NULL
+    REFERENCES public.dashboard_conversations(id),
+  role text NOT NULL,
+  content text NOT NULL,
+  created_at timestamptz NOT NULL,
+  session_id uuid,
+  search_vector tsvector
+    GENERATED ALWAYS AS (
+      to_tsvector('english', coalesce(content, ''))
+    ) STORED
+);
+
+CREATE INDEX idx_dashboard_messages_search_vector
+  ON public.dashboard_messages USING gin (search_vector);
+
+CREATE INDEX idx_dashboard_messages_content_trgm
+  ON public.dashboard_messages USING gin (content gin_trgm_ops);
+
+INSERT INTO public.dashboard_conversations
+  (id, butler_name, title, status, created_at, updated_at,
+   message_count, source_channel)
+VALUES
+  ('00000000-0000-0000-0000-000000000001',
+   'finance', 'multiple-match', 'active',
+   '2026-01-01', '2026-01-10', 2, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000002',
+   'finance', 'second-conversation', 'active',
+   '2026-01-01', '2026-01-09', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000003',
+   'finance', 'third-conversation', 'active',
+   '2026-01-01', '2026-01-08', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000004',
+   'home', 'cross-butler', 'active',
+   '2026-01-01', '2026-01-11', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000005',
+   'finance', 'partial-word', 'active',
+   '2026-01-01', '2026-01-07', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000006',
+   'finance', 'inflection', 'active',
+   '2026-01-01', '2026-01-06', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000007',
+   'finance', 'multi-word', 'active',
+   '2026-01-01', '2026-01-05', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000008',
+   'finance', 'stop-word', 'active',
+   '2026-01-01', '2026-01-04', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000009',
+   'finance', 'non-english', 'active',
+   '2026-01-01', '2026-01-03', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000010',
+   'finance', 'wildcard', 'active',
+   '2026-01-01', '2026-01-02', 1, 'dashboard'),
+  ('00000000-0000-0000-0000-000000000011',
+   'finance', 'equal-timestamp', 'active',
+   '2026-01-01', '2026-01-12', 2, 'dashboard');
+
+INSERT INTO public.dashboard_messages
+  (id, conversation_id, role, content, created_at)
+VALUES
+  ('10000000-0000-0000-0000-000000000001',
+   '00000000-0000-0000-0000-000000000001',
+   'user', 'raresearchtoken old match', '2026-01-08T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000002',
+   '00000000-0000-0000-0000-000000000001',
+   'assistant', 'raresearchtoken newest match', '2026-01-10T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000003',
+   '00000000-0000-0000-0000-000000000002',
+   'user', 'raresearchtoken second conversation', '2026-01-09T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000004',
+   '00000000-0000-0000-0000-000000000003',
+   'user', 'raresearchtoken third conversation', '2026-01-08T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000005',
+   '00000000-0000-0000-0000-000000000004',
+   'user', 'raresearchtoken home-only conversation', '2026-01-11T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000006',
+   '00000000-0000-0000-0000-000000000005',
+   'user', 'Ask the landlord about the lease', '2026-01-07T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000007',
+   '00000000-0000-0000-0000-000000000006',
+   'user', 'Those stories were vivid', '2026-01-06T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000008',
+   '00000000-0000-0000-0000-000000000007',
+   'user', 'alpha appears, then much later beta', '2026-01-05T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000009',
+   '00000000-0000-0000-0000-000000000008',
+   'user', 'the quick brown fox', '2026-01-04T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000010',
+   '00000000-0000-0000-0000-000000000009',
+   'user', 'mañana café rendezvous', '2026-01-03T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000011',
+   '00000000-0000-0000-0000-000000000010',
+   'user', 'alphaXbeta and 50 percent', '2026-01-02T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000012',
+   '00000000-0000-0000-0000-000000000011',
+   'user', 'tieword representative A', '2026-01-12T00:00:00Z'),
+  ('10000000-0000-0000-0000-000000000013',
+   '00000000-0000-0000-0000-000000000011',
+   'assistant', 'tieword representative B', '2026-01-12T00:00:00Z');
+
+INSERT INTO public.dashboard_conversations
+  (id, butler_name, title, status, created_at, updated_at,
+   message_count, source_channel)
+SELECT
+  md5('filler-conv-' || gs)::uuid,
+  CASE WHEN gs % 10 = 0 THEN 'home' ELSE 'finance' END,
+  'filler-' || gs,
+  'active',
+  '2025-01-01'::timestamptz + gs * interval '1 second',
+  '2025-01-01'::timestamptz + gs * interval '1 second',
+  1,
+  'dashboard'
+FROM generate_series(1, 50000) gs;
+
+INSERT INTO public.dashboard_messages
+  (id, conversation_id, role, content, created_at)
+SELECT
+  md5('filler-msg-' || gs)::uuid,
+  md5('filler-conv-' || gs)::uuid,
+  'user',
+  CASE
+    WHEN gs % 1000 = 0
+      THEN 'routine benchmarkneedle record ' || gs
+    ELSE 'routine filler record ' || gs
+  END,
+  '2025-01-01'::timestamptz + gs * interval '1 second'
+FROM generate_series(1, 50000) gs;
+
+ANALYZE public.dashboard_conversations;
+ANALYZE public.dashboard_messages;
+
+CREATE INDEX idx_dashboard_messages_conversation_created
+  ON public.dashboard_messages (conversation_id, created_at ASC);
+
+UPDATE public.dashboard_messages
+SET content =
+  'routine benchmarkneedle record '
+  || extract(epoch FROM created_at)::bigint
+WHERE conversation_id IN (
+  SELECT id
+  FROM public.dashboard_conversations
+  WHERE title LIKE 'filler-%'
+    AND split_part(title, '-', 2)::int % 1000 = 1
+);
+
+VACUUM (ANALYZE) public.dashboard_messages;
+VACUUM (ANALYZE) public.dashboard_conversations;
+
+\echo 'FIXTURE AND SESSION RECEIPT'
+SELECT
+  current_setting('server_version') AS server_version,
+  (SELECT count(*) FROM public.dashboard_conversations) AS conversations,
+  (SELECT count(*) FROM public.dashboard_messages) AS messages,
+  (
+    SELECT count(*)
+    FROM public.dashboard_messages
+    WHERE content ILIKE '%benchmarkneedle%'
+  ) AS benchmark_hits;
+
+SELECT c.butler_name, count(*) AS benchmark_hits
+FROM public.dashboard_messages m
+JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+WHERE m.content ILIKE '%benchmarkneedle%'
+GROUP BY c.butler_name
+ORDER BY c.butler_name;
+
+SELECT name, setting, unit
+FROM pg_settings
+WHERE name IN (
+  'track_io_timing',
+  'work_mem',
+  'random_page_cost',
+  'seq_page_cost',
+  'effective_cache_size',
+  'default_statistics_target',
+  'enable_seqscan',
+  'enable_bitmapscan',
+  'enable_indexscan',
+  'enable_indexonlyscan',
+  'max_parallel_workers_per_gather',
+  'jit'
+)
+ORDER BY name;
+
+\echo 'SEMANTIC MATRIX'
+WITH queries(name, q) AS (
+  VALUES
+    ('exact token', 'raresearchtoken'),
+    ('partial word', 'land'),
+    ('inflection', 'story'),
+    ('multi-word reordered', 'beta alpha'),
+    ('stop word', 'the'),
+    ('non-English exact', 'mañana'),
+    ('non-English partial', 'mañ'),
+    ('percent wildcard', '%'),
+    ('underscore wildcard', '_'),
+    ('empty result', 'zzz-no-such-term')
+)
+SELECT
+  name,
+  q,
+  (
+    SELECT count(*)
+    FROM public.dashboard_messages m
+    JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+    WHERE c.butler_name = 'finance'
+      AND m.content ILIKE '%' || queries.q || '%'
+  ) AS ilike_messages_finance,
+  (
+    SELECT count(DISTINCT c.id)
+    FROM public.dashboard_messages m
+    JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+    WHERE c.butler_name = 'finance'
+      AND m.content ILIKE '%' || queries.q || '%'
+  ) AS ilike_conversations_finance,
+  (
+    SELECT count(*)
+    FROM public.dashboard_messages m
+    JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+    WHERE c.butler_name = 'finance'
+      AND m.search_vector @@ plainto_tsquery('english', queries.q)
+  ) AS fts_messages_finance,
+  (
+    SELECT count(DISTINCT c.id)
+    FROM public.dashboard_messages m
+    JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+    WHERE c.butler_name = 'finance'
+      AND m.search_vector @@ plainto_tsquery('english', queries.q)
+  ) AS fts_conversations_finance,
+  (
+    SELECT count(*)
+    FROM public.dashboard_messages m
+    WHERE m.search_vector @@ plainto_tsquery('english', queries.q)
+  ) AS fts_messages_owner_wide
+FROM queries
+ORDER BY name;
+
+\echo 'CONVERSATION PAGE 1'
+WITH grouped AS (
+  SELECT DISTINCT ON (c.id)
+    c.id,
+    c.title,
+    substring(m.content, 1, 200) AS snippet,
+    m.created_at AS msg_created_at
+  FROM public.dashboard_conversations c
+  JOIN public.dashboard_messages m ON m.conversation_id = c.id
+  WHERE c.butler_name = 'finance'
+    AND m.content ILIKE '%raresearchtoken%'
+  ORDER BY c.id, m.created_at DESC
+)
+SELECT title, snippet, msg_created_at
+FROM grouped
+ORDER BY msg_created_at DESC
+LIMIT 2 OFFSET 0;
+
+\echo 'CONVERSATION PAGE 2'
+WITH grouped AS (
+  SELECT DISTINCT ON (c.id)
+    c.id,
+    c.title,
+    substring(m.content, 1, 200) AS snippet,
+    m.created_at AS msg_created_at
+  FROM public.dashboard_conversations c
+  JOIN public.dashboard_messages m ON m.conversation_id = c.id
+  WHERE c.butler_name = 'finance'
+    AND m.content ILIKE '%raresearchtoken%'
+  ORDER BY c.id, m.created_at DESC
+)
+SELECT title, snippet, msg_created_at
+FROM grouped
+ORDER BY msg_created_at DESC
+LIMIT 2 OFFSET 2;
+
+\echo 'OWNER-WIDE MESSAGE ROWS'
+WITH q AS (
+  SELECT plainto_tsquery('english', 'raresearchtoken') AS tsq
+)
+SELECT
+  c.butler_name,
+  c.title,
+  m.id,
+  m.content,
+  m.created_at,
+  ts_rank(m.search_vector, q.tsq)::float8 AS rank
+FROM public.dashboard_messages m
+JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+CROSS JOIN q
+WHERE m.search_vector @@ q.tsq
+ORDER BY rank DESC, m.created_at DESC, m.id DESC;
+
+\echo 'EQUAL-TIMESTAMP INPUT ROWS'
+SELECT c.title, m.id, m.content, m.created_at
+FROM public.dashboard_messages m
+JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+WHERE c.title = 'equal-timestamp'
+  AND m.content ILIKE '%tieword%'
+ORDER BY m.created_at DESC;
+
+\echo 'WARM BOTH SEARCH INDEXES'
+\o /dev/null
+SELECT count(*)
+FROM public.dashboard_messages
+WHERE content ILIKE '%benchmarkneedle%';
+
+SELECT count(*)
+FROM public.dashboard_messages
+WHERE search_vector @@ plainto_tsquery('english', 'benchmarkneedle');
+\o
+
+\echo 'CURRENT GROUPED ILIKE'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+SELECT
+  sub.id,
+  sub.butler_name,
+  sub.title,
+  sub.status,
+  sub.created_at,
+  sub.updated_at,
+  sub.message_count,
+  sub.routed_butler,
+  (
+    SELECT MAX(reply.created_at)
+    FROM public.dashboard_messages reply
+    WHERE reply.conversation_id = sub.id
+      AND reply.role = 'assistant'
+  ) AS latest_assistant_reply_at,
+  sub.snippet,
+  sub.msg_created_at
+FROM (
+  SELECT DISTINCT ON (c.id)
+    c.id,
+    c.butler_name,
+    c.title,
+    c.status,
+    c.created_at,
+    c.updated_at,
+    c.message_count,
+    c.routed_butler,
+    substring(m.content, 1, 200) AS snippet,
+    m.created_at AS msg_created_at
+  FROM public.dashboard_conversations c
+  JOIN public.dashboard_messages m ON m.conversation_id = c.id
+  WHERE c.butler_name = 'finance'
+    AND m.content ILIKE '%benchmarkneedle%'
+  ORDER BY c.id, m.created_at DESC
+) AS sub
+ORDER BY sub.msg_created_at DESC
+LIMIT 20 OFFSET 0;
+
+\echo 'SAME GROUPING WITH FTS PREDICATE'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+SELECT
+  sub.id,
+  sub.butler_name,
+  sub.title,
+  sub.status,
+  sub.created_at,
+  sub.updated_at,
+  sub.message_count,
+  sub.routed_butler,
+  (
+    SELECT MAX(reply.created_at)
+    FROM public.dashboard_messages reply
+    WHERE reply.conversation_id = sub.id
+      AND reply.role = 'assistant'
+  ) AS latest_assistant_reply_at,
+  sub.snippet,
+  sub.msg_created_at
+FROM (
+  SELECT DISTINCT ON (c.id)
+    c.id,
+    c.butler_name,
+    c.title,
+    c.status,
+    c.created_at,
+    c.updated_at,
+    c.message_count,
+    c.routed_butler,
+    substring(m.content, 1, 200) AS snippet,
+    m.created_at AS msg_created_at
+  FROM public.dashboard_conversations c
+  JOIN public.dashboard_messages m ON m.conversation_id = c.id
+  WHERE c.butler_name = 'finance'
+    AND m.search_vector
+      @@ plainto_tsquery('english', 'benchmarkneedle')
+  ORDER BY c.id, m.created_at DESC
+) AS sub
+ORDER BY sub.msg_created_at DESC
+LIMIT 20 OFFSET 0;
+
+\echo 'PRODUCTION MESSAGE-LEVEL FTS SHAPE'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+WITH q AS (
+  SELECT plainto_tsquery('english', 'benchmarkneedle') AS tsq
+),
+matches AS (
+  SELECT
+    m.id AS message_id,
+    m.conversation_id,
+    m.role,
+    m.created_at,
+    m.session_id,
+    c.butler_name,
+    c.source_channel,
+    ts_rank(m.search_vector, q.tsq)::float8 AS rank,
+    ts_headline(
+      'english',
+      m.content,
+      q.tsq,
+      'StartSel=' || chr(1)
+        || ',StopSel=' || chr(2)
+        || ',MaxFragments=1,MaxWords=35,MinWords=15'
+    ) AS headline
+  FROM public.dashboard_messages m
+  JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+  CROSS JOIN q
+  WHERE m.search_vector @@ q.tsq
+    AND (NULL::timestamptz IS NULL OR m.created_at >= NULL::timestamptz)
+    AND (NULL::timestamptz IS NULL OR m.created_at < NULL::timestamptz)
+    AND (NULL::text IS NULL OR c.source_channel = NULL::text)
+    AND (NULL::text IS NULL OR c.butler_name = NULL::text)
+)
+SELECT *
+FROM matches
+WHERE NULL::float8 IS NULL
+  OR (
+    rank,
+    created_at,
+    message_id
+  ) < (
+    NULL::float8,
+    NULL::timestamptz,
+    NULL::uuid
+  )
+ORDER BY rank DESC, created_at DESC, message_id DESC
+LIMIT 21;
+
+\echo 'CURRENT DISTINCT COUNT ILIKE'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+SELECT COUNT(DISTINCT c.id)
+FROM public.dashboard_conversations c
+JOIN public.dashboard_messages m ON m.conversation_id = c.id
+WHERE c.butler_name = 'finance'
+  AND m.content ILIKE '%benchmarkneedle%';
+
+\echo 'HYPOTHETICAL DISTINCT COUNT FTS'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+SELECT COUNT(DISTINCT c.id)
+FROM public.dashboard_conversations c
+JOIN public.dashboard_messages m ON m.conversation_id = c.id
+WHERE c.butler_name = 'finance'
+  AND m.search_vector @@ plainto_tsquery('english', 'benchmarkneedle');
+
+\echo 'UNSELECTIVE WILDCARD CURRENT GROUPED ILIKE'
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS, SUMMARY)
+SELECT
+  sub.id,
+  sub.title,
+  sub.snippet,
+  sub.msg_created_at
+FROM (
+  SELECT DISTINCT ON (c.id)
+    c.id,
+    c.title,
+    substring(m.content, 1, 200) AS snippet,
+    m.created_at AS msg_created_at
+  FROM public.dashboard_conversations c
+  JOIN public.dashboard_messages m ON m.conversation_id = c.id
+  WHERE c.butler_name = 'finance'
+    AND m.content ILIKE '%%%'
+  ORDER BY c.id, m.created_at DESC
+) AS sub
+ORDER BY sub.msg_created_at DESC
+LIMIT 20 OFFSET 0;
+SQL
+
+# END BU-U22SS EXECUTABLE REPRODUCTION
+~~~
 
 ## Options evaluated
 
