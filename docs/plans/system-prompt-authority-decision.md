@@ -4,7 +4,7 @@
 does not authorize specification, roster, source, schema, runtime, deployment, archive, ratchet,
 or Beads lifecycle changes.
 
-**Source:** `e74841f8a4592825921e61939b9d2b416af631bf` (`origin/main` and this
+**Source:** `36e683197ab0ab548ddd67a12badbaaba940da04` (`origin/main` and this
 branch matched when the evidence was refreshed on 2026-09-12).
 
 **Predecessor research:** `docs/plans/spec-debt-provenance-next-tranche.md`, produced by
