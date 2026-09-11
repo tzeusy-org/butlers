@@ -24,6 +24,7 @@ expect.extend(toHaveNoViolations);
 vi.mock("@/hooks/use-timeline-ledger", () => ({ useTimelineLedger: vi.fn() }));
 vi.mock("@/hooks/use-timeline", () => ({
   useTimelineAttention: vi.fn(),
+  useTimelineEvent: vi.fn(),
   useTimelineHistogram: vi.fn(),
 }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
@@ -36,7 +37,7 @@ vi.mock("@/hooks/use-timeline-saved-views", () => ({
 import TimelinePage from "./TimelinePage";
 import { useButlers } from "@/hooks/use-butlers";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
-import { useTimelineAttention, useTimelineHistogram } from "@/hooks/use-timeline";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useCreateTimelineSavedView,
   useDeleteTimelineSavedView,
@@ -83,6 +84,12 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
 }
 
 function setSupportingHookMocks(): void {
+  vi.mocked(useTimelineEvent).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineEvent>);
   vi.mocked(useTimelineHistogram).mockReturnValue({
     data: {
       data: [],

@@ -186,6 +186,13 @@ def _session_to_event(row, *, butler: str) -> TimelineEvent:  # noqa: ANN001
 
 @router.get("", response_model=TimelineResponse)
 async def list_timeline(
+    event: UUID | None = Query(
+        None,
+        description=(
+            "Resolve one persisted event identifier independently of the ordinary head page. "
+            "The active butler, type, and trace filters still apply."
+        ),
+    ),
     before: str | None = Query(
         None,
         description=(
@@ -275,6 +282,7 @@ async def list_timeline(
         # Fetch more than limit per butler to account for merging; trim after merge
         session_dtos, degraded_butlers = await query_timeline_sessions_fan_out(
             db,
+            event_id=event,
             before=before_ts,
             before_id=before_id,
             limit=limit + 1,
@@ -297,6 +305,7 @@ async def list_timeline(
             pool = db.pool("switchboard")
             notif_dtos = await query_timeline_notifications_single(
                 pool,
+                event_id=event,
                 before=before_ts,
                 before_id=before_id,
                 limit=limit + 1,
@@ -310,8 +319,13 @@ async def list_timeline(
                 events.append(_notification_dto_to_event(dto))
         except KeyError:
             # Switchboard DB is not configured in this deployment; benign — skip
-            # notifications and return the rest of the timeline.
-            logger.debug("Switchboard pool not available; skipping notifications")
+            # notifications for the legacy head list. An exact persisted-ID
+            # lookup cannot honestly turn that missing source into not-found.
+            if event is not None:
+                degraded_sources.append("notifications")
+                logger.warning("Switchboard pool not available for exact Timeline lookup")
+            else:
+                logger.debug("Switchboard pool not available; skipping notifications")
         except Exception:
             # A real notification-query failure: the timeline still returns its
             # other event sources (partial, non-breaking), but the failure must

@@ -15,10 +15,12 @@ Column constants:
 
 Query functions (all async):
     query_timeline_sessions_fan_out(
-        db, before, before_id, limit, butler_names, only_errors, trace_id
+        db, event_id, before, before_id, limit, butler_names, only_errors, trace_id
     )
         -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
-    query_timeline_notifications_single(pool, before, before_id, limit, butler_names, trace_id)
+    query_timeline_notifications_single(
+        pool, event_id, before, before_id, limit, butler_names, trace_id
+    )
         -> list[TimelineNotificationRow]
     query_timeline_session_histogram_fan_out(...)
         -> tuple[list[TimelineMinuteCount], list[str]]
@@ -225,6 +227,7 @@ def _row_to_notification(row: asyncpg.Record) -> TimelineNotificationRow:
 async def query_timeline_sessions_fan_out(
     db: DatabaseManager,
     *,
+    event_id: UUID | None = None,
     before: datetime | None = None,
     before_id: UUID | None = None,
     limit: int,
@@ -240,6 +243,8 @@ async def query_timeline_sessions_fan_out(
     ----------
     db:
         The DatabaseManager that manages per-butler pools.
+    event_id:
+        When set, resolve this persisted identifier independently of cursor pagination.
     before:
         Cursor timestamp — only sessions strictly before this position are
         returned.  Pass ``None`` for no cursor filter (first page).
@@ -282,6 +287,11 @@ async def query_timeline_sessions_fan_out(
     conditions: list[str] = []
     args: list[Any] = []
     idx = 1
+
+    if event_id is not None:
+        conditions.append(f"id = ${idx}")
+        args.append(event_id)
+        idx += 1
 
     if since is not None:
         conditions.append(f"started_at >= ${idx}")
@@ -332,6 +342,7 @@ async def query_timeline_sessions_fan_out(
 async def query_timeline_notifications_single(
     pool: asyncpg.Pool,
     *,
+    event_id: UUID | None = None,
     before: datetime | None = None,
     before_id: UUID | None = None,
     limit: int,
@@ -350,6 +361,8 @@ async def query_timeline_notifications_single(
     ----------
     pool:
         The asyncpg pool to query (typically the switchboard pool).
+    event_id:
+        When set, resolve this persisted identifier independently of cursor pagination.
     before:
         Cursor timestamp — only notifications strictly before this position
         are returned.  Pass ``None`` for no cursor filter.
@@ -381,6 +394,11 @@ async def query_timeline_notifications_single(
     conditions: list[str] = []
     args: list[Any] = []
     idx = 1
+
+    if event_id is not None:
+        conditions.append(f"id = ${idx}")
+        args.append(event_id)
+        idx += 1
 
     if since is not None:
         conditions.append(f"created_at >= ${idx}")

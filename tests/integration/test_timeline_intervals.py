@@ -144,6 +144,40 @@ async def test_histogram_counts_beyond_head_page_and_interval_cursor_is_lossless
     assert returned_ids == {str(event_id) for event_id in inserted_ids}
 
 
+async def test_exact_event_lookup_resolves_notification_beyond_timeline_head(timeline_db):
+    manager, pool = timeline_db
+    now = datetime.now(tz=UTC)
+    notification_id = await _seed_notification(
+        pool,
+        created_at=now - timedelta(hours=2),
+        status="failed",
+        trace_id="off-page-notification",
+    )
+    for index in range(51):
+        await _seed_session(
+            pool,
+            started_at=now - timedelta(minutes=index),
+            trace_id="different-trace",
+        )
+
+    head = await _request(manager, "/api/timeline", {"limit": 50})
+    exact = await _request(
+        manager,
+        "/api/timeline",
+        {
+            "event": str(notification_id),
+            "butler": "switchboard",
+            "trace": "off-page-notification",
+            "limit": 1,
+        },
+    )
+
+    assert str(notification_id) not in {row["id"] for row in head.json()["data"]}
+    assert exact.status_code == 200
+    assert [row["id"] for row in exact.json()["data"]] == [str(notification_id)]
+    assert exact.json()["data"][0]["data"]["status"] == "failed"
+
+
 async def test_histogram_and_list_share_error_butler_trace_and_boundary_predicates(timeline_db):
     manager, pool = timeline_db
     matching_session = await _seed_session(

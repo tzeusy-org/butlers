@@ -68,7 +68,7 @@ function degradedCopy(attention: TimelineAttentionResponse): string | null {
   return names.length > 0 ? `Unavailable sources: ${names.join(", ")}.` : null;
 }
 
-function RefreshWarning({ onRetry }: { onRetry: () => void }) {
+function RefreshWarning() {
   return (
     <div
       className="flex flex-wrap items-center gap-2 border-t border-[var(--amber)]/30 px-3 py-2 text-xs text-[var(--amber-text)]"
@@ -76,9 +76,6 @@ function RefreshWarning({ onRetry }: { onRetry: () => void }) {
       data-testid="timeline-attention-refresh-error"
     >
       <span>Recent failure records could not be refreshed. Showing the last successful read.</span>
-      <Button type="button" variant="link" size="sm" className="ml-auto h-auto p-0" onClick={onRetry}>
-        Retry
-      </Button>
     </div>
   );
 }
@@ -95,6 +92,8 @@ export function TimelineAttentionStrip({
   const meta = attention?.meta;
   const rows = attention ? attention.data : [];
   const isUnavailable = meta?.availability === "unavailable";
+  const isPartial = meta?.availability === "partial";
+  const canRetryFromHeader = Boolean(attention && (isError || isPartial || isUnavailable));
   const hasTruncation = Boolean(meta && (meta.has_more || meta.total > rows.length));
 
   return (
@@ -129,6 +128,11 @@ export function TimelineAttentionStrip({
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {canRetryFromHeader && (
+            <Button type="button" variant="outline" size="xs" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
           {attention && (
             <Button
               type="button"
@@ -160,16 +164,13 @@ export function TimelineAttentionStrip({
         </div>
       ) : attention ? (
         <>
-          {isError && <RefreshWarning onRetry={onRetry} />}
+          {isError && <RefreshWarning />}
           <div id={DETAILS_ID} hidden={!expanded}>
             {isUnavailable ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-3 py-2 text-xs text-destructive">
                 <span data-testid="timeline-attention-unavailable">
                   Recent failed records are unavailable. Retry to inspect this 24-hour window.
                 </span>
-                <Button type="button" variant="link" size="sm" className="ml-auto h-auto p-0" onClick={onRetry}>
-                  Retry
-                </Button>
               </div>
             ) : rows.length > 0 ? (
               <>

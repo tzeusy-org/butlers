@@ -4059,8 +4059,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 ## `frontend/src/components/timeline/TimelineAttentionStrip.tsx`
 
 - Recent failure records could not be refreshed. Showing the last successful read.
-- Retry
 - Recent records marked failed (created in last 24h)
+- Retry
 - Loading recent failed records...
 - Recent failure records are unavailable.
 - Recent failed records are unavailable. Retry to inspect this 24-hour window.
@@ -4091,6 +4091,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Event
 - Clear link
+- Loading selected event...
+- The selected event could not be loaded.
+- Retry selected event
 - Retry
 - Older timeline events are temporarily unavailable.
 - Retry older events
@@ -4254,4 +4257,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3332*
+*Total strings: 3335*

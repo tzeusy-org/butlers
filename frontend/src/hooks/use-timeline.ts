@@ -58,3 +58,17 @@ export function useTimelineAttention(params?: TimelineAttentionParams, enabled =
     enabled,
   });
 }
+
+/** Resolve a selected event independently of the ordinary 50-row Timeline head. */
+export function useTimelineEvent(
+  event: string | null,
+  params?: Pick<TimelineParams, "butler" | "trace">,
+  enabled = true,
+) {
+  const lookupParams = { ...params, event: event ?? undefined, limit: 1 };
+  return useQuery({
+    queryKey: ["timeline", "event", lookupParams],
+    queryFn: () => getTimeline(lookupParams),
+    enabled: enabled && event !== null,
+  });
+}

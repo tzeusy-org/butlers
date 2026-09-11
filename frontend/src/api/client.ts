@@ -1437,6 +1437,7 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.event) sp.set("event", params.event);
   if (params?.before) sp.set("before", params.before);
   if (params?.trace) sp.set("trace", params.trace);
   if (params?.since) sp.set("since", params.since);

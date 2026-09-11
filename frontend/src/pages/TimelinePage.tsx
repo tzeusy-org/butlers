@@ -40,7 +40,7 @@ import { TimelineDensity } from "@/components/timeline/TimelineDensity";
 import { useButlers } from "@/hooks/use-butlers.ts";
 import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
-import { useTimelineAttention, useTimelineHistogram } from "@/hooks/use-timeline";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useTimelineSavedViews,
   useCreateTimelineSavedView,
@@ -238,6 +238,22 @@ export default function TimelinePage() {
     [selectedButlers, trace],
   );
   const attention = useTimelineAttention(attentionParams);
+  const selectedEventId = searchParams.get("event");
+  const selectedEventInLedger = Boolean(
+    selectedEventId && events.some((event) => event.id === selectedEventId),
+  );
+  const selectedEvent = useTimelineEvent(
+    selectedEventId,
+    attentionParams,
+    interval.valid && !selectedEventInLedger,
+  );
+  const resolvedEvent = selectedEvent.data?.data[0];
+  const eventResolutionFailed = Boolean(
+    selectedEventId &&
+      !selectedEventInLedger &&
+      (selectedEvent.isError ||
+        (!resolvedEvent && Boolean(selectedEvent.data?.meta.degraded_sources.length))),
+  );
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
   // already generic (consumed by the ingestion ledger before this page).
@@ -698,6 +714,12 @@ export default function TimelinePage() {
             <FetchingDim isFetching={isLiveHeadRefreshing}>
               <TimelineLedger
                 events={events}
+                resolvedEvent={resolvedEvent}
+                isResolvingEvent={Boolean(
+                  selectedEventId && !selectedEventInLedger && selectedEvent.isLoading,
+                )}
+                eventResolutionFailed={eventResolutionFailed}
+                onRetryEventResolution={() => void selectedEvent.refetch()}
                 isLoading={isLoading}
                 includeInternal={includeInternal}
                 isError={isError}

@@ -688,6 +688,8 @@ export interface TimelineResponse {
 /** Query parameters for the timeline endpoint. */
 export interface TimelineParams {
   limit?: number;
+  /** Resolve this persisted identifier independently of head-page pagination. */
+  event?: string;
   butler?: string[];
   event_type?: string[];
   before?: string;

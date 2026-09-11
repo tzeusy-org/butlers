@@ -461,6 +461,44 @@ async def test_timeline_trace_scope_filters_sessions_and_notifications_by_trace(
     assert tuple(notification_args) == (trace_id,)
 
 
+async def test_timeline_event_lookup_forwards_exact_id_and_scope(app):
+    """A deep-link lookup is independent of the ordinary Timeline head limit."""
+    event_id = uuid4()
+    notification_row = {
+        "id": event_id,
+        "source_butler": "atlas",
+        "channel": "telegram",
+        "recipient": "owner",
+        "message": "Persisted notification",
+        "status": "failed",
+        "created_at": _NOW - timedelta(hours=3),
+    }
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[notification_row])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/timeline",
+            params={"event": str(event_id), "butler": "atlas", "trace": "trace-lookup"},
+        )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["data"]] == [str(event_id)]
+    session_sql, session_args = mock_db.fan_out_with_status.call_args.args
+    assert "id = $1" in session_sql
+    assert session_args == (event_id, "trace-lookup")
+    notification_sql, *notification_args = mock_pool.fetch.call_args.args
+    assert "id = $1" in notification_sql
+    assert tuple(notification_args) == (event_id, ["atlas"], "trace-lookup")
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 + 2 + 5 (read-model layer): SQL-level event_type/composite-cursor
 # pushdown and per-source failure reporting.
@@ -807,6 +845,16 @@ async def test_timeline_endpoint_reports_degraded_notifications_source(app):
 
     assert resp.status_code == 200
     assert resp.json()["meta"]["degraded_sources"] == ["notifications"]
+
+    mock_db.pool = MagicMock(side_effect=KeyError("switchboard"))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        exact = await client.get("/api/timeline", params={"event": str(uuid4())})
+
+    assert exact.status_code == 200
+    assert exact.json()["data"] == []
+    assert exact.json()["meta"]["degraded_sources"] == ["notifications"]
 
 
 async def test_timeline_endpoint_no_degraded_sources_on_success(app):

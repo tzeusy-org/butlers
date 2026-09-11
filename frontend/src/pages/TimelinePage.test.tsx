@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router";
 
 import TimelinePage from "@/pages/TimelinePage";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
-import { useTimelineAttention, useTimelineHistogram } from "@/hooks/use-timeline";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import { useButlers } from "@/hooks/use-butlers";
 import {
   useTimelineSavedViews,
@@ -21,6 +21,7 @@ vi.mock("@/hooks/use-timeline-ledger", () => ({
 }));
 vi.mock("@/hooks/use-timeline", () => ({
   useTimelineAttention: vi.fn(),
+  useTimelineEvent: vi.fn(),
   useTimelineHistogram: vi.fn(),
 }));
 
@@ -37,6 +38,7 @@ vi.mock("@/hooks/use-timeline-saved-views", () => ({
 
 type UseTimelineLedgerResult = ReturnType<typeof useTimelineLedger>;
 type UseTimelineAttentionResult = ReturnType<typeof useTimelineAttention>;
+type UseTimelineEventResult = ReturnType<typeof useTimelineEvent>;
 
 function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
   vi.mocked(useTimelineLedger).mockReturnValue({
@@ -73,7 +75,18 @@ function setAttention(
   } as unknown as UseTimelineAttentionResult);
 }
 
+function setTimelineEvent(partial: Partial<UseTimelineEventResult> = {}): void {
+  vi.mocked(useTimelineEvent).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+    ...partial,
+  } as unknown as UseTimelineEventResult);
+}
+
 beforeEach(() => {
+  setTimelineEvent();
   vi.mocked(useTimelineHistogram).mockReturnValue({
     data: {
       data: [],
@@ -783,7 +796,63 @@ describe("TimelinePage — current failed records", () => {
     expect(screen.getByTestId("timeline-attention-item-notification").textContent).not.toContain("message");
   });
 
+  it("resolves an attention notification outside the 50-row head and opens its drawer", () => {
+    const notificationId = "00000000-0000-4000-8000-000000000099";
+    const headEvents = Array.from({ length: 50 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      type: "session",
+      butler: "atlas",
+      timestamp: `2026-07-04T13:${String(59 - index).padStart(2, "0")}:00Z`,
+      summary: `Head event ${index}`,
+      is_heartbeat: false,
+      data: {},
+    }));
+    setLedger({ events: headEvents });
+    setTimelineEvent({
+      data: {
+        data: [
+          {
+            id: notificationId,
+            type: "notification",
+            butler: "atlas",
+            timestamp: "2026-07-04T10:00:00Z",
+            summary: "Persisted notification",
+            is_heartbeat: false,
+            data: { status: "failed", channel: "telegram" },
+          },
+        ],
+        meta: {
+          cursor: null,
+          has_more: false,
+          heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
+          degraded_sources: [],
+          degraded_butlers: [],
+        },
+      },
+    });
+
+    renderDom(
+      <MemoryRouter
+        initialEntries={[
+          `/timeline?event=${notificationId}&butler=atlas&trace=trace-off-page`,
+        ]}
+      >
+        <TimelinePage />
+      </MemoryRouter>,
+    );
+
+    expect(headEvents.some((event) => event.id === notificationId)).toBe(false);
+    expect(useTimelineEvent).toHaveBeenCalledWith(
+      notificationId,
+      { butler: ["atlas"], trace: "trace-off-page" },
+      true,
+    );
+    expect(screen.getByTestId("timeline-event-drawer")).toBeTruthy();
+    expect(screen.queryByTestId("timeline-event-not-found")).toBeNull();
+  });
+
   it("keeps counts and degradation visible when collapsed, shows truncation, and resets expanded on remount", () => {
+    const retry = vi.fn();
     const items = Array.from({ length: 5 }, (_, index) => ({
       id: `failed-${index}`,
       kind: "session" as const,
@@ -798,7 +867,7 @@ describe("TimelinePage — current failed records", () => {
       expected_sources: 2,
       healthy_sources: 1,
       degraded_sources: ["notifications"],
-    }));
+    }), { refetch: retry });
 
     const view = renderDom(
       <MemoryRouter initialEntries={["/timeline"]}>
@@ -813,6 +882,8 @@ describe("TimelinePage — current failed records", () => {
     expect(screen.getByTestId("timeline-attention-total").textContent).toBe("Total: 7");
     expect(screen.getByTestId("timeline-attention-degraded").textContent).toContain("notifications");
     expect(screen.getAllByTestId("timeline-attention-item-session")[0].closest("[hidden]")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledOnce();
 
     view.unmount();
     renderDom(

@@ -69,6 +69,19 @@ describe("getTimeline", () => {
     expect(histogramUrl).toContain("event_type=error");
   });
 
+  it("forwards an exact event identifier independently of pagination", async () => {
+    mockTimelineResponse();
+
+    await getTimeline({ event: "notification-off-page", limit: 1, butler: ["atlas"] });
+
+    const url: string = mockFetch.mock.calls[0][0];
+    const parsed = new URL(url, "http://test");
+    expect(parsed.pathname).toBe("/api/timeline");
+    expect(parsed.searchParams.get("event")).toBe("notification-off-page");
+    expect(parsed.searchParams.get("limit")).toBe("1");
+    expect(parsed.searchParams.getAll("butler")).toEqual(["atlas"]);
+  });
+
   it("forwards attention butler and trace scope without caller-selected bounds", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
