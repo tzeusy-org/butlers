@@ -22,7 +22,11 @@ expect.extend(toHaveNoViolations);
   true;
 
 vi.mock("@/hooks/use-timeline-ledger", () => ({ useTimelineLedger: vi.fn() }));
-vi.mock("@/hooks/use-timeline", () => ({ useTimelineHistogram: vi.fn() }));
+vi.mock("@/hooks/use-timeline", () => ({
+  useTimelineAttention: vi.fn(),
+  useTimelineEvent: vi.fn(),
+  useTimelineHistogram: vi.fn(),
+}));
 vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
 vi.mock("@/hooks/use-timeline-saved-views", () => ({
   useTimelineSavedViews: vi.fn(),
@@ -33,7 +37,7 @@ vi.mock("@/hooks/use-timeline-saved-views", () => ({
 import TimelinePage from "./TimelinePage";
 import { useButlers } from "@/hooks/use-butlers";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
-import { useTimelineHistogram } from "@/hooks/use-timeline";
+import { useTimelineAttention, useTimelineEvent, useTimelineHistogram } from "@/hooks/use-timeline";
 import {
   useCreateTimelineSavedView,
   useDeleteTimelineSavedView,
@@ -80,6 +84,12 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
 }
 
 function setSupportingHookMocks(): void {
+  vi.mocked(useTimelineEvent).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineEvent>);
   vi.mocked(useTimelineHistogram).mockReturnValue({
     data: {
       data: [],
@@ -98,6 +108,27 @@ function setSupportingHookMocks(): void {
     isError: false,
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useTimelineHistogram>);
+  vi.mocked(useTimelineAttention).mockReturnValue({
+    data: {
+      data: [],
+      meta: {
+        since: "2026-07-03T14:00:00Z",
+        until: "2026-07-04T14:00:00Z",
+        failed_sessions: 0,
+        failed_notifications: 0,
+        total: 0,
+        has_more: false,
+        availability: "complete",
+        expected_sources: 0,
+        healthy_sources: 0,
+        degraded_sources: [],
+        degraded_butlers: [],
+      },
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useTimelineAttention>);
   vi.mocked(useButlers).mockReturnValue({
     data: { data: [] },
   } as unknown as ReturnType<typeof useButlers>);

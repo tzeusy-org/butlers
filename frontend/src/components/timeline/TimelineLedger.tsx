@@ -44,6 +44,11 @@ import { TimelineEventDrawer } from "./TimelineEventDrawer";
 
 export interface TimelineLedgerProps {
   events: TimelineEvent[];
+  /** Exact API-resolved selected event when it falls outside the loaded page. */
+  resolvedEvent?: TimelineEvent;
+  isResolvingEvent?: boolean;
+  eventResolutionFailed?: boolean;
+  onRetryEventResolution?: () => void;
   isLoading: boolean;
   /** Reveal reviewed internal maintenance runs instead of the owner lens. */
   includeInternal?: boolean;
@@ -564,6 +569,45 @@ function EventNotFoundNotice({ eventId, onClose }: { eventId: string; onClose: (
   );
 }
 
+function EventResolutionStatus({
+  isLoading,
+  isError,
+  onRetry,
+}: {
+  isLoading: boolean;
+  isError: boolean;
+  onRetry?: () => void;
+}) {
+  if (isLoading) {
+    return (
+      <p className="mb-2 px-3 py-2 font-mono text-[11px] text-muted-foreground" role="status">
+        Loading selected event...
+      </p>
+    );
+  }
+  if (!isError) return null;
+  return (
+    <div
+      className="mb-2 flex items-center gap-2 rounded border border-destructive/30 px-3 py-2 text-xs text-destructive"
+      role="alert"
+      data-testid="timeline-event-resolution-error"
+    >
+      <span>The selected event could not be loaded.</span>
+      {onRetry && (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className="ml-auto"
+          onClick={onRetry}
+        >
+          Retry selected event
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function ErrorState({ onRetry }: { onRetry?: () => void }) {
   return (
     <div data-testid="timeline-error">
@@ -588,6 +632,10 @@ function ErrorState({ onRetry }: { onRetry?: () => void }) {
 
 export function TimelineLedger({
   events,
+  resolvedEvent,
+  isResolvingEvent = false,
+  eventResolutionFailed = false,
+  onRetryEventResolution,
   isLoading,
   includeInternal = false,
   isError,
@@ -601,6 +649,14 @@ export function TimelineLedger({
 }: TimelineLedgerProps) {
   const { eventId: drawerEventId, openDrawer, closeDrawer } = useEventDrawerState();
 
+  const renderedEvents =
+    resolvedEvent && !events.some((event) => event.id === resolvedEvent.id)
+      ? [...events, resolvedEvent].sort((left, right) => {
+          const timestampOrder = right.timestamp.localeCompare(left.timestamp);
+          return timestampOrder || right.id.localeCompare(left.id);
+        })
+      : events;
+
   if (isLoading) {
     return <LedgerSkeleton />;
   }
@@ -612,12 +668,23 @@ export function TimelineLedger({
   // A ?event= deep link whose id isn't in the currently-loaded window (e.g.
   // it scrolled out after "Load older", or the id is simply stale/wrong) —
   // resolve it honestly instead of a drawer that silently never opens.
-  const drawerEventMissing = drawerEventId !== null && !events.some((e) => e.id === drawerEventId);
+  const drawerEventMissing =
+    drawerEventId !== null && !renderedEvents.some((event) => event.id === drawerEventId);
+  const drawerEventUnavailable = drawerEventMissing && eventResolutionFailed;
+  const drawerEventNotFound =
+    drawerEventMissing && !isResolvingEvent && !eventResolutionFailed;
 
-  if (events.length === 0) {
+  if (renderedEvents.length === 0) {
     return (
       <>
-        {drawerEventMissing && drawerEventId && (
+        {drawerEventMissing && (
+          <EventResolutionStatus
+            isLoading={isResolvingEvent}
+            isError={drawerEventUnavailable}
+            onRetry={onRetryEventResolution}
+          />
+        )}
+        {drawerEventNotFound && drawerEventId && (
           <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
         )}
         {hasPartialData ? <PartialEmptyState /> : <EmptyState />}
@@ -625,11 +692,18 @@ export function TimelineLedger({
     );
   }
 
-  const hourGroups = groupByHour(events, includeInternal);
+  const hourGroups = groupByHour(renderedEvents, includeInternal);
 
   return (
     <div>
-      {drawerEventMissing && drawerEventId && (
+      {drawerEventMissing && (
+        <EventResolutionStatus
+          isLoading={isResolvingEvent}
+          isError={drawerEventUnavailable}
+          onRetry={onRetryEventResolution}
+        />
+      )}
+      {drawerEventNotFound && drawerEventId && (
         <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
       )}
       {hourGroups.length === 0 ? (

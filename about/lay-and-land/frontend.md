@@ -374,7 +374,7 @@ butlers add entries here regularly).
 | Costs | `costs/` | breakdown, chart |
 | Issues | `issues/` | issues panel |
 | Sessions | `sessions/` | detail drawer |
-| Timeline | `timeline/` | unified timeline |
+| Timeline | `timeline/` | unified timeline, recent-failure inspection strip |
 | Schedules | `schedules/` | schedule table, form |
 | Topology | `topology/` | topology graph (xyflow) |
 | Skeletons | `skeletons/` | per-domain loading skeletons |

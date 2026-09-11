@@ -115,6 +115,8 @@ import type {
   TimelineResponse,
   TimelineHistogramParams,
   TimelineHistogramResponse,
+  TimelineAttentionParams,
+  TimelineAttentionResponse,
   ScheduleCostsResponse,
   TriggerResponse,
   TickResponse,
@@ -1435,6 +1437,7 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.event) sp.set("event", params.event);
   if (params?.before) sp.set("before", params.before);
   if (params?.trace) sp.set("trace", params.trace);
   if (params?.since) sp.set("since", params.since);
@@ -1464,6 +1467,17 @@ export function getTimelineHistogram(
   params.butler?.forEach((butler) => sp.append("butler", butler));
   params.event_type?.forEach((type) => sp.append("event_type", type));
   return apiFetch<TimelineHistogramResponse>(`/timeline/histogram?${sp.toString()}`);
+}
+
+/** Fetch recent records created in the last 24 hours that are currently failed. */
+export function getTimelineAttention(
+  params?: TimelineAttentionParams,
+): Promise<TimelineAttentionResponse> {
+  const sp = new URLSearchParams();
+  if (params?.trace) sp.set("trace", params.trace);
+  params?.butler?.forEach((butler) => sp.append("butler", butler));
+  const qs = sp.toString();
+  return apiFetch<TimelineAttentionResponse>(qs ? `/timeline/attention?${qs}` : "/timeline/attention");
 }
 
 // ---------------------------------------------------------------------------

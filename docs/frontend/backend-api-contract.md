@@ -146,8 +146,9 @@ Required query filters for list endpoints:
 
 ## Timeline Contract
 
-- `GET /api/timeline` -> `TimelineResponse` (optional paired minute-aligned `since` / `until`)
+- `GET /api/timeline` -> `TimelineResponse` (optional exact persisted `event` lookup and paired minute-aligned `since` / `until`)
 - `GET /api/timeline/histogram` -> `TimelineHistogramResponse` (server-counted minute buckets and source availability; no event content)
+- `GET /api/timeline/attention` -> `TimelineAttentionResponse` (server-captured last-24-hour records currently marked failed; identifier-only rows and source availability)
 
 Required query support:
 
@@ -157,6 +158,12 @@ Required query support:
 - `before` (cursor token)
 - `trace` (OpenTelemetry trace scope; matching sessions and trace-attributed
   notifications only)
+
+The attention projection accepts repeated `butler` and optional `trace` filters.
+Its creation window is chosen once by the server for each read; chart interval
+and event-type filters do not change it. Rows contain only `id`, `kind`,
+`butler`, and `timestamp`, while `meta` carries exact healthy-source counts,
+failure category counts, a five-row truncation flag, and degradation metadata.
 
 ## Chronicles Editorial Briefing Contract
 

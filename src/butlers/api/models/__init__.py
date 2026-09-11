@@ -655,7 +655,13 @@ from butlers.api.models.session import (  # noqa: E402
     SessionKindItem,
 )
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
-from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
+from butlers.api.models.timeline import (  # noqa: E402
+    TimelineAttentionItem,
+    TimelineAttentionMeta,
+    TimelineAttentionResponse,
+    TimelineEvent,
+    TimelineResponse,
+)
 
 __all__ = [
     "ApprovalAction",
@@ -738,6 +744,9 @@ __all__ = [
     "TickResponse",
     "TimelineEvent",
     "TimelineResponse",
+    "TimelineAttentionItem",
+    "TimelineAttentionMeta",
+    "TimelineAttentionResponse",
     "TopSession",
     "TriggerRequest",
     "TriggerResponse",

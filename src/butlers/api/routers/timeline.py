@@ -3,6 +3,7 @@
 Provides:
 
 - ``router`` — timeline endpoint at ``GET /api/timeline``
+- ``GET /api/timeline/attention`` — recent current-status failures
 
 Merges sessions and notifications from all butler databases into a single
 time-ordered event stream using ``DatabaseManager.fan_out_with_status()``. Supports
@@ -24,6 +25,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models.timeline import (
+    TimelineAttentionItem,
+    TimelineAttentionMeta,
+    TimelineAttentionResponse,
     TimelineEvent,
     TimelineHeartbeatRollup,
     TimelineHistogramBucket,
@@ -33,10 +37,13 @@ from butlers.api.models.timeline import (
     TimelineResponse,
 )
 from butlers.api.read_models.timeline_v1 import (
+    TIMELINE_ATTENTION_LIMIT,
     TimelineNotificationRow,
     TimelineSessionRow,
     decode_cursor,
     encode_cursor,
+    query_timeline_attention_notifications_single,
+    query_timeline_attention_sessions_fan_out,
     query_timeline_notification_histogram_single,
     query_timeline_notifications_single,
     query_timeline_session_histogram_fan_out,
@@ -179,6 +186,13 @@ def _session_to_event(row, *, butler: str) -> TimelineEvent:  # noqa: ANN001
 
 @router.get("", response_model=TimelineResponse)
 async def list_timeline(
+    event: UUID | None = Query(
+        None,
+        description=(
+            "Resolve one persisted event identifier independently of the ordinary head page. "
+            "The active butler, type, and trace filters still apply."
+        ),
+    ),
     before: str | None = Query(
         None,
         description=(
@@ -268,6 +282,7 @@ async def list_timeline(
         # Fetch more than limit per butler to account for merging; trim after merge
         session_dtos, degraded_butlers = await query_timeline_sessions_fan_out(
             db,
+            event_id=event,
             before=before_ts,
             before_id=before_id,
             limit=limit + 1,
@@ -290,6 +305,7 @@ async def list_timeline(
             pool = db.pool("switchboard")
             notif_dtos = await query_timeline_notifications_single(
                 pool,
+                event_id=event,
                 before=before_ts,
                 before_id=before_id,
                 limit=limit + 1,
@@ -303,8 +319,13 @@ async def list_timeline(
                 events.append(_notification_dto_to_event(dto))
         except KeyError:
             # Switchboard DB is not configured in this deployment; benign — skip
-            # notifications and return the rest of the timeline.
-            logger.debug("Switchboard pool not available; skipping notifications")
+            # notifications for the legacy head list. An exact persisted-ID
+            # lookup cannot honestly turn that missing source into not-found.
+            if event is not None:
+                degraded_sources.append("notifications")
+                logger.warning("Switchboard pool not available for exact Timeline lookup")
+            else:
+                logger.debug("Switchboard pool not available; skipping notifications")
         except Exception:
             # A real notification-query failure: the timeline still returns its
             # other event sources (partial, non-breaking), but the failure must
@@ -425,6 +446,89 @@ async def timeline_histogram(
         meta=TimelineHistogramMeta(
             since=validated_since,
             until=validated_until,
+            availability=_availability(expected_sources, healthy_sources),
+            expected_sources=expected_sources,
+            healthy_sources=healthy_sources,
+            degraded_sources=list(dict.fromkeys(degraded_sources)),
+            degraded_butlers=degraded_butlers,
+        ),
+    )
+
+
+@router.get("/attention", response_model=TimelineAttentionResponse)
+async def timeline_attention(
+    butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
+    trace: str | None = Query(None, description="Filter by OpenTelemetry trace ID"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> TimelineAttentionResponse:
+    """Return recent records that are currently marked failed.
+
+    The server chooses one 24-hour creation window for the complete response.
+    Counts are source-local and independent of the five identifier rows kept
+    for inspection, so truncation never changes the aggregate signal.
+    """
+    until = datetime.now(tz=UTC)
+    since = until - timedelta(hours=24)
+    trace_id = trace.strip() if trace is not None and trace.strip() else None
+    target_butlers = list(dict.fromkeys(butler)) if butler is not None else list(db.butler_names)
+    notification_butlers = target_butlers if butler is not None else None
+
+    (
+        session_rows,
+        session_counts,
+        degraded_butlers,
+    ) = await query_timeline_attention_sessions_fan_out(
+        db,
+        since=since,
+        until=until,
+        butler_names=target_butlers,
+        trace_id=trace_id,
+    )
+    failed_sessions = sum(session_counts.get(name, 0) for name in target_butlers)
+    healthy_sources = len(target_butlers) - len(degraded_butlers)
+    degraded_sources: list[str] = ["sessions"] if degraded_butlers else []
+
+    attention_rows = session_rows
+    failed_notifications = 0
+    try:
+        (
+            notification_rows,
+            failed_notifications,
+        ) = await query_timeline_attention_notifications_single(
+            db.pool("switchboard"),
+            since=since,
+            until=until,
+            source_butlers=notification_butlers,
+            trace_id=trace_id,
+        )
+        attention_rows = [*attention_rows, *notification_rows]
+        healthy_sources += 1
+    except Exception:
+        degraded_sources.append("notifications")
+        logger.warning("Timeline attention notification source unavailable", exc_info=True)
+
+    total = failed_sessions + failed_notifications
+    attention_rows.sort(key=lambda item: (item.timestamp, item.kind, str(item.id)), reverse=True)
+    limited_rows = attention_rows[:TIMELINE_ATTENTION_LIMIT]
+    expected_sources = len(target_butlers) + 1
+
+    return TimelineAttentionResponse(
+        data=[
+            TimelineAttentionItem(
+                id=item.id,
+                kind=item.kind,
+                butler=item.butler,
+                timestamp=item.timestamp,
+            )
+            for item in limited_rows
+        ],
+        meta=TimelineAttentionMeta(
+            since=since,
+            until=until,
+            failed_sessions=failed_sessions,
+            failed_notifications=failed_notifications,
+            total=total,
+            has_more=total > len(limited_rows),
             availability=_availability(expected_sources, healthy_sources),
             expected_sources=expected_sources,
             healthy_sources=healthy_sources,
