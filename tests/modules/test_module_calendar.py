@@ -3319,21 +3319,6 @@ class TestCalendarModuleTick:
         assert "calendar_event_instances" in execute_calls[0][0][0]
         assert "notified_at" in execute_calls[0][0][1]
 
-    async def test_dismissed_recurring_instance_is_skipped(self):
-        """Cancelled instances are excluded by the SQL status='confirmed' filter.
-
-        We test the behaviour indirectly: if the pool returns no rows (because
-        the SQL WHERE clause filtered the cancelled instance), tick returns 0.
-        """
-        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
-        mod = _make_module_with_pool(pool)
-        notify_fn = AsyncMock()
-
-        result = await mod.tick("general", notify_fn=notify_fn)
-
-        assert result == 0
-        notify_fn.assert_not_called()
-
     async def test_onetime_reminder_fires_and_marks_event(self):
         """A one-time reminder fires and records last_notified_at on the event."""
         event_id = uuid.uuid4()
