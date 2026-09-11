@@ -13,6 +13,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.routers.notifications import _claim_failed_notification
 from butlers.api.routers.timeline import _get_db_manager
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -73,7 +74,7 @@ async def _seed_session(
     pool: asyncpg.Pool,
     *,
     started_at: datetime,
-    success: bool = True,
+    success: bool | None = True,
     trace_id: str | None = None,
 ):
     event_id = uuid4()
@@ -89,6 +90,28 @@ async def _seed_session(
         started_at,
     )
     return event_id
+
+
+async def _seed_notification(
+    pool: asyncpg.Pool,
+    *,
+    created_at: datetime,
+    status: str,
+    trace_id: str | None = None,
+):
+    notification_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO notifications (
+            id, source_butler, channel, recipient, message, status, trace_id, created_at
+        ) VALUES ($1, 'switchboard', 'telegram', 'owner', 'fixture notification', $2, $3, $4)
+        """,
+        notification_id,
+        status,
+        trace_id,
+        created_at,
+    )
+    return notification_id
 
 
 async def test_histogram_counts_beyond_head_page_and_interval_cursor_is_lossless(timeline_db):
@@ -119,6 +142,40 @@ async def test_histogram_counts_beyond_head_page_and_interval_cursor_is_lossless
     )
     returned_ids = {event["id"] for event in first.json()["data"] + second.json()["data"]}
     assert returned_ids == {str(event_id) for event_id in inserted_ids}
+
+
+async def test_exact_event_lookup_resolves_notification_beyond_timeline_head(timeline_db):
+    manager, pool = timeline_db
+    now = datetime.now(tz=UTC)
+    notification_id = await _seed_notification(
+        pool,
+        created_at=now - timedelta(hours=2),
+        status="failed",
+        trace_id="off-page-notification",
+    )
+    for index in range(51):
+        await _seed_session(
+            pool,
+            started_at=now - timedelta(minutes=index),
+            trace_id="different-trace",
+        )
+
+    head = await _request(manager, "/api/timeline", {"limit": 50})
+    exact = await _request(
+        manager,
+        "/api/timeline",
+        {
+            "event": str(notification_id),
+            "butler": "switchboard",
+            "trace": "off-page-notification",
+            "limit": 1,
+        },
+    )
+
+    assert str(notification_id) not in {row["id"] for row in head.json()["data"]}
+    assert exact.status_code == 200
+    assert [row["id"] for row in exact.json()["data"]] == [str(notification_id)]
+    assert exact.json()["data"][0]["data"]["status"] == "failed"
 
 
 async def test_histogram_and_list_share_error_butler_trace_and_boundary_predicates(timeline_db):
@@ -165,3 +222,57 @@ async def test_histogram_and_list_share_error_butler_trace_and_boundary_predicat
     }
     assert histogram.json()["meta"]["availability"] == "complete"
     assert histogram.json()["meta"]["expected_sources"] == 2
+
+
+async def test_attention_counts_current_failures_caps_rows_and_excludes_incomplete_statuses(
+    timeline_db,
+):
+    manager, pool = timeline_db
+    now = datetime.now(tz=UTC)
+    failed_sessions = [
+        await _seed_session(pool, started_at=now - timedelta(minutes=index), success=False)
+        for index in range(6)
+    ]
+    pending_session = await _seed_session(pool, started_at=now, success=None)
+    successful_session = await _seed_session(pool, started_at=now, success=True)
+    failed_notifications = [
+        await _seed_notification(pool, created_at=now - timedelta(minutes=index), status="failed")
+        for index in range(2)
+    ]
+    sent_notification = await _seed_notification(pool, created_at=now, status="sent")
+    old_failure = await _seed_notification(
+        pool, created_at=now - timedelta(hours=25), status="failed"
+    )
+
+    response = await _request(manager, "/api/timeline/attention", {"butler": "switchboard"})
+
+    assert response.status_code == 200
+    body = response.json()
+    meta = body["meta"]
+    assert (meta["failed_sessions"], meta["failed_notifications"], meta["total"]) == (6, 2, 8)
+    assert meta["has_more"] is True
+    assert (meta["expected_sources"], meta["healthy_sources"], meta["availability"]) == (
+        2,
+        2,
+        "complete",
+    )
+    assert len(body["data"]) == 5
+    returned_ids = {item["id"] for item in body["data"]}
+    assert returned_ids <= {str(value) for value in [*failed_sessions, *failed_notifications]}
+    assert str(pending_session) not in returned_ids
+    assert str(successful_session) not in returned_ids
+    assert str(sent_notification) not in returned_ids
+    assert str(old_failure) not in returned_ids
+    assert all(set(item) == {"id", "kind", "butler", "timestamp"} for item in body["data"])
+
+    acknowledged = failed_notifications[0]
+    await pool.execute("UPDATE notifications SET status = 'read' WHERE id = $1", acknowledged)
+    after_ack = await _request(manager, "/api/timeline/attention", {"butler": "switchboard"})
+    assert after_ack.json()["meta"]["failed_notifications"] == 1
+    assert str(acknowledged) not in {item["id"] for item in after_ack.json()["data"]}
+
+    claimed = await _claim_failed_notification(pool, failed_notifications[1])
+    assert claimed is not None
+    after_claim = await _request(manager, "/api/timeline/attention", {"butler": "switchboard"})
+    assert after_claim.json()["meta"]["failed_notifications"] == 0
+    assert str(failed_notifications[1]) not in {item["id"] for item in after_claim.json()["data"]}

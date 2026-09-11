@@ -4056,6 +4056,21 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Package version
 - Last deploy
 
+## `frontend/src/components/timeline/TimelineAttentionStrip.tsx`
+
+- Recent failure records could not be refreshed. Showing the last successful read.
+- Recent records marked failed (created in last 24h)
+- Retry
+- Loading recent failed records...
+- Recent failure records are unavailable.
+- Recent failed records are unavailable. Retry to inspect this 24-hour window.
+- The last successful read had no matching records; refresh to confirm the current status.
+- No matching records currently marked failed
+- No complete failure count is available while a source is unavailable.
+- Recent failure records are not available yet.
+- Recent failed records
+- Inspect failed {} {}
+
 ## `frontend/src/components/timeline/TimelineDensity.tsx`
 
 - Could not load timeline density.
@@ -4076,6 +4091,9 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 - Event
 - Clear link
+- Loading selected event...
+- The selected event could not be loaded.
+- Retry selected event
 - Retry
 - Older timeline events are temporarily unavailable.
 - Retry older events
@@ -4239,4 +4257,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3320*
+*Total strings: 3335*

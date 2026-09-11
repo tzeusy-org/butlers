@@ -156,8 +156,9 @@ refetch, and never displays optimistic messages from another conversation.
 
 | Endpoint | Response | Description |
 |----------|----------|-------------|
-| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, butler, event_type, trace, before cursor, paired since/until) |
+| `GET /api/timeline` | `TimelineResponse` | Cross-butler event stream (filters: limit, event persisted-ID lookup, butler, event_type, trace, before cursor, paired since/until) |
 | `GET /api/timeline/histogram` | `TimelineHistogramResponse` | Content-blind server-counted minute density (required paired since/until; butler, event_type, trace) |
+| `GET /api/timeline/attention` | `TimelineAttentionResponse` | Content-blind recent records currently marked failed (captured last 24h; butler, trace) |
 | `GET /api/notifications` | `PaginatedResponse<NotificationSummary>` | Notification feed |
 | `GET /api/notifications/stats` | `ApiResponse<NotificationStats>` | Delivery statistics |
 | `GET /api/issues` | `ApiResponse<Issue[]>` | Grouped error issues |
