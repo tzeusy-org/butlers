@@ -115,6 +115,12 @@ test("first j survives composed Timeline URL and drawer focus transitions", asyn
   });
   await page.goto(`/timeline?${initial.toString()}`, { waitUntil: "networkidle" });
 
+  const density = page.getByTestId("timeline-density");
+  await expect(density).toContainText("2 events · 1 of 2 sources available · partial");
+  await expect(density).toContainText("Unavailable sources: notifications.");
+  await expect(page.getByTestId("timeline-attention-degraded")).toContainText(
+    "Unavailable sources: notifications.",
+  );
   await expect(page.getByTestId("timeline-degraded-banner")).toBeVisible();
   await page.getByTestId("timeline-attention-item-notification").click();
   await expect(page).not.toHaveURL(/bucket_since=/);

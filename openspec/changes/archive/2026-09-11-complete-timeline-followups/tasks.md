@@ -38,7 +38,8 @@ Owner bead: `bu-ddo0n.4`.
 ## 6. Terminal reconciliation evidence
 
 Reconciled on 2026-09-11 against merged main `fb88594d0d230cb57c633ab6bf005cecc6575dc6`.
-This archive delivery adds no tests (`Tests: +0 ~0 -0`); it reuses the behavior evidence below.
+This archive delivery extends the existing composed browser flow (`Tests: +0 ~1 -0`) and reuses
+the remaining behavior evidence below.
 
 ### 6.1 Mandatory scenario map
 
@@ -54,8 +55,10 @@ This archive delivery adds no tests (`Tests: +0 ~0 -0`); it reuses the behavior 
 - REQ-dashboard-visibility-002: the real-Postgres
   `test_attention_counts_current_failures_caps_rows_and_excludes_incomplete_statuses` covers exact
   counts, the five-row cap, the 24-hour/current-status predicates, and acknowledgement plus retry
-  claim before success. `test_attention_equal_timestamps_have_stable_cross_kind_and_id_order`
-  repeats the read and proves the full timestamp/kind/id order and content-blind projection.
+  claim before success. `test_timeline_attention_is_capped_content_blind_and_current_status_scoped`
+  proves descending timestamp order and the content-blind projection;
+  `test_attention_equal_timestamps_have_stable_cross_kind_and_id_order` repeats an equal-timestamp
+  read and proves the stable kind/id tie-break.
   `test_exact_event_lookup_resolves_notification_beyond_timeline_head` plus TimelinePage's exact
   destination/off-page drawer cases cover inspection links without mutation. TimelinePage's
   collapse/truncation and availability cases cover accessible disclosure, healthy empty, partial,
@@ -67,8 +70,9 @@ This archive delivery adds no tests (`Tests: +0 ~0 -0`); it reuses the behavior 
   palette-only All/Errors/Notifications commands through the existing view path. The shell
   `use-keyboard-shortcuts` suite preserves slash and Ctrl/Cmd+K ownership and shortcut help.
 - Cross-requirement seam: Playwright
-  `first j survives composed Timeline URL and drawer focus transitions` runs under reduced motion
-  and executes partial-source presentation, failed-notification navigation with interval clearing,
+  `first j survives composed Timeline URL and drawer focus transitions` runs under reduced motion;
+  independently asserts the histogram partial source count, attention degradation, and list
+  degradation presentations; and executes failed-notification navigation with interval clearing,
   density selection, first-`j` focus, native drawer entry/exit, focus restoration, and browser Back.
 
 ### 6.2 Pre-existing reader and negative-invariant audit
@@ -120,3 +124,7 @@ not silently erase the rejected unresolved-work interpretation or turn it into d
 - `openspec validate complete-timeline-followups --strict` passed.
 - `make check-spec-overwrites` reported no unfrozen baseline losses. Its unrelated notice that an
   existing ratchet entry can be tightened was intentionally not applied in this archive.
+- Review correction re-ran the two named attention-ordering nodes (`2 passed`), then ran
+  `npm run build` followed by the corrected composed
+  `tests/e2e/timeline-focus-lifecycle.spec.ts` flow (`1 passed`). The browser assertions observe
+  the histogram partial source count, attention degradation, and list degradation separately.
