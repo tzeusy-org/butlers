@@ -16,8 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
+import userEvent from "@testing-library/user-event";
 
 import type { TimelineEvent } from "@/api/types.ts";
+import {
+  ShortcutRegistryProvider,
+  useShortcutHintEntries,
+  type ShortcutBinding,
+} from "@/hooks/use-register-shortcut";
 import { TimelineLedger } from "./TimelineLedger";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,7 +57,16 @@ function makeMaintenanceEvent(
 let container: HTMLDivElement;
 let root: Root;
 
-function renderLedger(props: Partial<React.ComponentProps<typeof TimelineLedger>>, initialEntries = ["/timeline"]) {
+function ShortcutHintReader({ onRead }: { onRead: (bindings: ShortcutBinding[]) => void }) {
+  onRead(useShortcutHintEntries());
+  return null;
+}
+
+function renderLedger(
+  props: Partial<React.ComponentProps<typeof TimelineLedger>>,
+  initialEntries = ["/timeline"],
+  onShortcutHints: (bindings: ShortcutBinding[]) => void = () => {},
+) {
   const defaultProps: React.ComponentProps<typeof TimelineLedger> = {
     events: [],
     isLoading: false,
@@ -60,7 +75,10 @@ function renderLedger(props: Partial<React.ComponentProps<typeof TimelineLedger>
   act(() => {
     root.render(
       <MemoryRouter initialEntries={initialEntries}>
-        <TimelineLedger {...defaultProps} />
+        <ShortcutRegistryProvider>
+          <TimelineLedger {...defaultProps} />
+          <ShortcutHintReader onRead={onShortcutHints} />
+        </ShortcutRegistryProvider>
       </MemoryRouter>,
     );
   });
@@ -319,6 +337,135 @@ describe("TimelineLedger — failed delivery honesty", () => {
     const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
     expect(row.querySelector(".bg-\\[var\\(--categorical-2\\)\\]")).not.toBeNull();
     expect(row.querySelector(".bg-destructive")).toBeNull();
+  });
+});
+
+describe("TimelineLedger — keyboard traversal", () => {
+  function disclosure(id: string): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>(
+      `[data-timeline-disclosure-id="${id}"]`,
+    );
+  }
+
+  function press(target: EventTarget, key: string, init: KeyboardEventInit = {}) {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }),
+    );
+  }
+
+  it("focuses rendered disclosures in visual order, treats groups as one row, clamps, and never paginates", () => {
+    const onLoadMore = vi.fn();
+    const events = [
+      makeEvent("e1", "2026-07-04T15:06:00Z", { type: "notification" }),
+      makeEvent("hb1", "2026-07-04T15:05:00Z", { is_heartbeat: true }),
+      makeEvent("hb2", "2026-07-04T15:04:00Z", { is_heartbeat: true }),
+      makeMaintenanceEvent("m1", "2026-07-04T15:03:00Z", { butler: "memory" }),
+      makeMaintenanceEvent("m2", "2026-07-04T15:02:00Z", { butler: "memory" }),
+      makeEvent("e2", "2026-07-04T15:01:00Z", { type: "notification" }),
+    ];
+    let shortcutHints: ShortcutBinding[] = [];
+    renderLedger(
+      { events, includeInternal: true, hasMore: true, onLoadMore },
+      ["/timeline"],
+      (bindings) => (shortcutHints = bindings),
+    );
+    expect(shortcutHints.map(({ display, description }) => ({ display, description }))).toEqual([
+      { display: ["j"], description: "Next item" },
+      { display: ["k"], description: "Previous item" },
+    ]);
+
+    act(() => press(window, "k"));
+    expect(document.activeElement).toBe(disclosure("event:e2"));
+    act(() => press(document.activeElement!, "j"));
+    expect(document.activeElement).toBe(disclosure("event:e2"));
+
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    act(() => press(outside, "j"));
+    expect(document.activeElement).toBe(disclosure("event:e1"));
+
+    act(() => press(document.activeElement!, "j"));
+    expect(document.activeElement).toBe(disclosure("heartbeat:2026-07-04T15:hb2"));
+    act(() => press(document.activeElement!, "j"));
+    expect(document.activeElement).toBe(disclosure("maintenance:2026-07-04T15:memory"));
+    act(() => press(document.activeElement!, "j"));
+    expect(document.activeElement).toBe(disclosure("event:e2"));
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    renderLedger({ events: [], hasMore: true, onLoadMore });
+    act(() => press(window, "j"));
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    renderLedger({ events, includeInternal: true });
+    act(() => press(window, "j"));
+    expect(document.activeElement).toBe(disclosure("event:e1"));
+    outside.remove();
+  });
+
+  it("retains focused identity across refresh, chooses the nearest survivor, and does not steal focus", () => {
+    const initial = [
+      makeEvent("e1", "2026-07-04T15:03:00Z", { type: "notification" }),
+      makeEvent("e2", "2026-07-04T15:02:00Z", { type: "notification" }),
+      makeEvent("e3", "2026-07-04T15:01:00Z", { type: "notification" }),
+    ];
+    renderLedger({ events: initial });
+    act(() => disclosure("event:e2")?.focus());
+
+    renderLedger({ events: initial.map((event) => ({ ...event, summary: `${event.summary} refreshed` })) });
+    expect(document.activeElement).toBe(disclosure("event:e2"));
+
+    renderLedger({ events: [initial[0], initial[2]] });
+    expect(document.activeElement).toBe(disclosure("event:e3"));
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    act(() => input.focus());
+    renderLedger({ events: initial });
+    expect(document.activeElement).toBe(input);
+    input.remove();
+  });
+
+  it("uses native Enter once, restores focus on Escape, and suppresses typing, IME, modal, and modifier contexts", async () => {
+    renderLedger({
+      events: [makeEvent("n1", "2026-07-04T15:03:00Z", { type: "notification" })],
+    });
+    const rowDisclosure = disclosure("event:n1");
+    expect(rowDisclosure).not.toBeNull();
+    act(() => rowDisclosure!.focus());
+
+    const user = userEvent.setup();
+    await act(async () => user.type(rowDisclosure!, "{Enter}"));
+    expect(container.querySelectorAll('[data-testid="timeline-event-drawer"]')).toHaveLength(1);
+    expect(document.activeElement?.textContent).toContain("Event detail:");
+
+    act(() => press(document.activeElement!, "Escape"));
+    expect(container.querySelector('[data-testid="timeline-event-drawer"]')).toBeNull();
+    expect(document.activeElement).toBe(rowDisclosure);
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    act(() => input.focus());
+    act(() => press(input, "j"));
+    expect(document.activeElement).toBe(input);
+
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    act(() => press(outside, "j", { isComposing: true }));
+    act(() => press(outside, "j", { ctrlKey: true }));
+    expect(document.activeElement).toBe(outside);
+
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
+    act(() => press(outside, "j"));
+    expect(document.activeElement).toBe(outside);
+
+    modal.remove();
+    outside.remove();
+    input.remove();
   });
 });
 

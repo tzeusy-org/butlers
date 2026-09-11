@@ -23,8 +23,8 @@ Owner bead: `bu-ddo0n.2`.
 
 Owner bead: `bu-ddo0n.3`.
 
-- [ ] 4.1 Register j/k through the existing list-triage shortcut machinery and register existing presets as palette-only useRegisterCommands entries, reuse native Enter and shell search, preserve r/n.
-- [ ] 4.2 Extend TimelinePage.a11y/TimelineLedger tests for real focus, clamp, group traversal, refresh identity, inputs/IME/modal suppression and one activation; reuse existing shell shortcut tests. Target net Tests: +3 ~2 -0.
+- [x] 4.1 Register j/k through the existing list-triage shortcut machinery and register existing presets as palette-only useRegisterCommands entries, reuse native Enter and shell search, preserve r/n.
+- [x] 4.2 Extend TimelinePage.a11y/TimelineLedger tests for real focus, clamp, group traversal, refresh identity, inputs/IME/modal suppression and one activation; reuse existing shell shortcut tests. Target net Tests: +3 ~2 -0. Actual Tests: +3 ~4 -0.
 
 ## 5. Combined reconciliation and landing
 

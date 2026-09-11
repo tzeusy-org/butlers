@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { cleanup, fireEvent, render as renderDom, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,6 +16,11 @@ import {
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
 import type { TimelineAttentionResponse } from "@/api/types.ts";
+import {
+  CommandRegistryProvider,
+  useCommandMenuActions,
+  type PaletteCommand,
+} from "@/lib/command-registry";
 
 vi.mock("@/hooks/use-timeline-ledger", () => ({
   useTimelineLedger: vi.fn(),
@@ -139,6 +145,11 @@ function render(initialEntry = "/timeline"): string {
 function LocationProbe() {
   const location = useLocation();
   return <output data-testid="timeline-location">{location.search}</output>;
+}
+
+function CommandReader({ onRead }: { onRead: (commands: PaletteCommand[]) => void }) {
+  onRead(useCommandMenuActions());
+  return null;
 }
 
 function BrowserHistoryControls() {
@@ -315,10 +326,15 @@ describe("TimelinePage — error vs empty state", () => {
     } as unknown as ReturnType<typeof useTimelineSavedViews>);
     setLedger({});
 
+    let commands: PaletteCommand[] = [];
     renderDom(
-      <MemoryRouter initialEntries={["/timeline"]}>
-        <TimelinePage />
-      </MemoryRouter>,
+      <CommandRegistryProvider>
+        <MemoryRouter initialEntries={["/timeline"]}>
+          <TimelinePage />
+          <LocationProbe />
+          <CommandReader onRead={(next) => (commands = next)} />
+        </MemoryRouter>
+      </CommandRegistryProvider>,
     );
 
     expect(screen.getByText("Saved views are temporarily unavailable.")).toBeTruthy();
@@ -326,6 +342,25 @@ describe("TimelinePage — error vs empty state", () => {
     expect(screen.getByText("House events")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry saved views" }));
     expect(retrySavedViews).toHaveBeenCalledOnce();
+
+    const presetCommands = commands.filter((command) => command.id.startsWith("timeline-view-"));
+    expect(presetCommands.map((command) => command.label)).toEqual([
+      "All",
+      "Errors only",
+      "Notifications",
+    ]);
+    expect(presetCommands.every((command) => command.binding === undefined)).toBe(true);
+
+    fireEvent.click(screen.getByTestId("saved-view-errors"));
+    expect(screen.getByTestId("timeline-location").textContent).toBe("?view=errors&type=error");
+    act(() =>
+      presetCommands.find((command) => command.id === "timeline-view-notifications")?.perform(),
+    );
+    expect(screen.getByTestId("timeline-location").textContent).toBe(
+      "?view=notifications&type=notification",
+    );
+    act(() => presetCommands.find((command) => command.id === "timeline-view-all")?.perform());
+    expect(screen.getByTestId("timeline-location").textContent).toBe("");
   });
 
   it("uses an accessible URL-backed Internal lens without replacing existing filters", () => {

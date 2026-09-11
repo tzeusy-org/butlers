@@ -47,6 +47,7 @@ import {
   useDeleteTimelineSavedView,
 } from "@/hooks/use-timeline-saved-views";
 import type { TimelineSavedViewFilterSpec } from "@/api/types.ts";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -276,7 +277,7 @@ export default function TimelinePage() {
     writeCsvList(sp, "butler", butlers);
   }
 
-  function selectBuiltInView(view: BuiltInView) {
+  const selectBuiltInView = useCallback((view: BuiltInView) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       if (view.id === "all") next.delete("view");
@@ -285,7 +286,19 @@ export default function TimelinePage() {
       writeCsvList(next, "butler", []);
       return next;
     });
-  }
+  }, [setSearchParams]);
+
+  const builtInViewCommands = useMemo<PaletteCommand[]>(
+    () =>
+      BUILT_IN_VIEWS.map((view) => ({
+        id: `timeline-view-${view.id}`,
+        label: view.label,
+        keywords: ["timeline", "view", "preset", view.label],
+        perform: () => selectBuiltInView(view),
+      })),
+    [selectBuiltInView],
+  );
+  useRegisterCommands(builtInViewCommands);
 
   function selectCustomView(id: string, spec: TimelineSavedViewFilterSpec) {
     setSearchParams((prev) => {
