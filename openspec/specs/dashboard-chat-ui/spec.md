@@ -369,7 +369,8 @@ TanStack Query hooks SHALL manage conversation data fetching and caching.
 
 ### Requirement: Session Linkage Navigation
 
-Assistant messages SHALL link to their corresponding butler sessions for drill-down.
+Assistant messages SHALL link to their corresponding butler sessions for drill-down, and a
+session detail with a linked dashboard message SHALL link back to that exact chat message.
 
 #### Scenario: Session link on assistant message
 
@@ -381,6 +382,18 @@ Assistant messages SHALL link to their corresponding butler sessions for drill-d
 
 - **WHEN** an assistant message has a non-null `request_id`
 - **THEN** a "View lineage" link navigates to the ingestion event detail view at `/ingestion?event={request_id}`
+
+#### Scenario: Session detail links back to the originating chat message
+
+- **WHEN** a session detail has a non-null `linked_message` containing a
+  `conversation_id` and `message_id`
+- **THEN** an "Asked in chat" link navigates to the canonical full-page chat
+  route at `/chat/{conversation_id}#m-{message_id}` using both persisted IDs
+- **AND** the link does not require the session's owning butler because the
+  destination resolves the conversation cross-butler
+- **WHEN** `linked_message` is absent or null, or either persisted identifier
+  is absent
+- **THEN** no "Asked in chat" link is rendered
 
 #### Scenario: A cancelled session's detail renders a first-class "Cancelled" state
 
