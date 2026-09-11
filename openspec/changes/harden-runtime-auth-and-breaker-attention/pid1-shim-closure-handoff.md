@@ -25,6 +25,9 @@ the one-concrete-sandbox-spawn-boundary policy.
 - Preserve source-to-logical-destination mappings. Deduplicate only identical
   pairs, sort the result by destination, and reject two sources for one
   destination.
+- Require every shim-closure source to be a regular file; reject directory
+  bindings, including broad root-owned trees such as `/usr/lib`. Existing
+  provider package-root directory bindings are unchanged.
 - Load and validate the shim record at the existing trusted manifest I/O
   boundary before any spawn. Pass the validated closure explicitly to the pure
   launch planner.
@@ -40,7 +43,7 @@ the one-concrete-sandbox-spawn-boundary policy.
 | `scripts/generate_runtime_cli_sandbox_manifest.py::_runtime_closure` / `_ldd_dependencies` | Computes recursive provider closures; generic non-zero `ldd` is treated as no dependencies. | Reuse the traversal for the shim with strict unresolved/error handling. A positively identified static executable may have only its executable binding; an unexplained failure or `not found` fails the build. |
 | `Dockerfile.base` | Installs/chmods the shim before npm providers, then runs the manifest generator. | Keep generation after provider installation and prove it occurs after the final shim copy/chmod; do not replace the shim later in the image. |
 | `RuntimeCLIInputManifest._read_document` | Safely reads and caches version 2; validates the manifest file before JSON parsing. | Preserve all file checks and require exact version 3/top-level shim shape before identity allocation, stage creation/write, or `_launch_invocation`. |
-| `RuntimeCLIInputManifest._immutable_input*` | Validates root-owned, non-symlink, non-writable sources and exact binding keys. | Apply the same checks to every shim binding; require the shim source to be a regular executable and its identity/path to match the configured shim. |
+| `RuntimeCLIInputManifest._immutable_input*` | Validates root-owned, non-symlink, non-writable file-or-directory provider sources and exact binding keys. | Add shim-specific validation requiring every shim source to be a regular file, with the executable binding additionally executable and identity/path-matched. Reject directory-valued shim sources before any launch boundary; do not weaken the provider package-root allowance. |
 | `RuntimeCLIInputManifest._resolve` | Validates and deduplicates one provider entry. | Keep provider resolution and expose a separate validated shim resolver; no provider entry may stand in for the shim record. |
 | `build_bubblewrap_launch_plan` | Purely builds one plan but appends only `shim_path`, so dependencies depend on caller inputs. | Require validated shim bindings, combine by destination, collapse identical pairs, reject conflicts, sort, and then build parents/`--ro-bind` arguments. Perform no manifest read or subprocess discovery here. |
 | `BubblewrapDashboardCLIAuthSandbox.launch_device_auth` / `run_readonly_command` | Public launch entries run exact-image preflight and resolve provider inputs before entering `_launch_invocation`. | Invoke the injectable production shim resolver immediately after preflight and fail before identity acquisition or stage creation/write; pass its validated result into `_launch_invocation`. |
@@ -79,15 +82,18 @@ receive the validated shim closure; do not leave a compatibility default.
 
 1. Refactor the generator closure walk so it can start from the fixed installed
    shim without adding CA/resolver/provider-package roots. Keep the shim binary
-   itself in the resulting non-empty binding list. Reject unresolved libraries,
+   itself in the resulting non-empty binding list. Require every emitted shim
+   source to be a regular file; reject directories, unresolved libraries,
    ambiguous output, unsafe paths, and conflicting destinations. Emit stable
    destination order.
 2. Emit manifest version 3 with the exact fixed shim identity and provider
    shapes. Keep atomic mode-`0444` output behavior and the 64 KiB reader bound.
 3. Extend `RuntimeCLIInputManifest` with a shim-resolution result that is
    separate from provider resolution. Validate exact field sets, canonical
-   configured path identity, executable safety, non-empty mappings, identical
-   duplicate collapse, and conflict rejection before returning it.
+   configured path identity, regular-file-only shim sources, executable safety,
+   non-empty mappings, identical duplicate collapse, and conflict rejection
+   before returning it. A root-owned non-writable directory is still invalid
+   for a shim binding; keep provider package-root directory handling unchanged.
 4. Add an injectable shim-input resolver to
    `BubblewrapDashboardCLIAuthSandbox`. Call it at each public launch entry
    immediately after exact-image preflight and before identity acquisition,
@@ -116,7 +122,8 @@ receive the validated shim closure; do not leave a compatibility default.
 | Version 1, 2, or unknown future version | Reject; no dual reader, compatibility alias, or inferred upgrade. |
 | Missing/extra/mistyped shim fields, wrong fixed name, or configured path mismatch | Reject as image/application mismatch. |
 | Empty shim bindings or missing executable binding | Reject; provider inputs cannot satisfy it implicitly. |
-| Unsafe/unavailable/non-executable shim source; unsafe dependency source/destination | Reject under existing immutable-source and forbidden-child-view rules. |
+| Unsafe/unavailable/non-executable shim source; unsafe dependency source/destination | Reject under immutable-source and forbidden-child-view rules. |
+| Any directory-valued shim source, including root-owned non-writable `/usr/lib` | Reject before identity acquisition, stage creation/write, `_launch_invocation`, or `_spawn`; provider directory semantics do not apply to shim closure entries. |
 | Identical provider/payload/shim binding | Mount once. |
 | Same destination with different sources, within or across closures | Reject deterministically before spawn. |
 | Build-time unresolved library, unexpected `ldd` failure, or ambiguous dependency output | Fail image generation; never emit a partial manifest. |
@@ -144,12 +151,16 @@ file.
   shim libraries.
 - Add one parametrized manifest rejection family in that file covering missing
   shim, version 2/future version, wrong identity/path, empty mappings, malformed
-  binding, unsafe source, and cross-closure destination conflict.
+  binding, unsafe source, a directory-valued shim source, and cross-closure
+  destination conflict. Exercise a root-owned/non-writable-equivalent directory
+  fixture so rejection proves file type rather than only owner or mode checks.
 - Add one parametrized public-entry ordering test covering both
   `launch_device_auth` and `run_readonly_command`: a shim-resolver failure must
   call neither identity-pool acquisition, stage factory/write,
   `_launch_invocation`, nor `_spawn`. This is the behavioral proof that
-  “before spawn” has not been implemented after authority staging.
+  “before spawn” has not been implemented after authority staging. Include the
+  directory-valued shim-binding rejection in this ordering matrix so a broad
+  root-owned tree cannot reach planner deduplication or a bind mount.
 - Extend the existing logical-loader and minimal-plan tests to assert stable
   destination order, identical-pair deduplication, one `--ro-bind` per
   destination, and conflict rejection without planner I/O.

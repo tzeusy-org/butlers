@@ -247,10 +247,14 @@ Manifest schema version 3 adds one top-level `shim` object beside the existing
 
 The illustrative loader binding above is not an architecture-specific fixed
 library inventory; the generator records the closure present in the exact
-image. The field sets and shim identity are fixed. Each binding preserves a
-terminal root-owned immutable source and the logical destination named by the
-ELF interpreter or loader. The shim list includes its executable, is non-empty,
-and is independent of every provider list. The generator reuses the current
+image. The field sets and shim identity are fixed. Each shim binding preserves a
+terminal root-owned immutable regular-file source and the logical destination
+named by the ELF interpreter or loader. Directory sources are invalid for the
+shim closure even when root-owned and non-writable; in particular the generator
+and reader cannot replace the exact file list with a broad bind such as
+`/usr/lib`. Provider package-root bindings retain their existing directory
+allowance. The shim list includes its executable, is non-empty, and is
+independent of every provider list. The generator reuses the current
 recursive shebang/ELF dependency walk in a strict shim mode: an explicit static
 executable may have no library bindings beyond itself, but an unexplained
 `ldd` failure, unresolved `not found` entry, or destination collision fails the
@@ -261,10 +265,13 @@ manifest is consumed.
 `RuntimeCLIInputManifest` remains the sole runtime I/O boundary. It retains the
 current `O_NOFOLLOW`, same-descriptor bounded read, owner/mode/link/size checks,
 and root-owned non-writable source validation, then validates the exact version-3
-shim record and configured shim path. It returns explicit validated shim
-bindings before the launcher allocates an identity, creates or writes a staged
-HOME, or enters `_launch_invocation`. `build_bubblewrap_launch_plan` receives
-those bindings as a mandatory argument; it does not read the manifest or run a subprocess. It combines
+shim record and configured shim path. Its shim-specific validation tightens the
+shared source helper by requiring every shim binding to be a regular file and
+the executable binding to be executable; it rejects a directory before the
+launcher allocates an identity, creates or writes a staged HOME, or enters
+`_launch_invocation`. It returns explicit validated shim bindings.
+`build_bubblewrap_launch_plan` receives those bindings as a mandatory argument;
+it does not read the manifest or run a subprocess. It combines
 payload/provider inputs with shim inputs by logical destination, collapses only
 identical source/destination pairs, rejects differing sources for one
 destination, and sorts the unique result by destination before deriving parent

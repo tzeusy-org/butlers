@@ -303,16 +303,21 @@ single-link, mode-`0444` regular file no larger than 64 KiB. It SHALL reject a
 missing manifest, any version other than `3`, a missing or malformed shim
 record, an empty shim input list, a shim name or executable that does not match
 the configured image shim, unsafe or unavailable input sources, non-normalized
-or forbidden destinations, and conflicting bindings. Every manifest source
-SHALL remain a root-owned, non-symlink regular file or directory with no group
-or world write permission; the shim source SHALL additionally be a regular
-executable. Identical source/destination bindings shared by the provider,
-payload, and shim SHALL be deduplicated, bindings SHALL be ordered
-deterministically by destination, and two sources for one destination SHALL be
-rejected before spawn. The validated shim mappings SHALL be an explicit required
-input to every launch-plan caller, including provider-independent exact-image
-harnesses. The launch planner SHALL remain synchronous and deterministic over
-its validated arguments: it SHALL perform no manifest I/O, `ldd` execution,
+or forbidden destinations, and conflicting bindings. Provider-entry sources
+SHALL retain their existing rule: each is a root-owned, non-symlink regular file
+or directory with no group or world write permission. Every shim
+`readonly_inputs` source SHALL instead be a root-owned, non-symlink regular file
+with no group or world write permission; the shim executable binding SHALL also
+be executable. A directory-valued shim binding, including a broad root-owned
+tree such as `/usr/lib`, SHALL be rejected before identity allocation, stage
+creation or write, `_launch_invocation`, or spawn. Identical
+source/destination bindings shared by the provider, payload, and shim SHALL be
+deduplicated, bindings SHALL be ordered deterministically by destination, and
+two sources for one destination SHALL be rejected before spawn. The validated
+shim mappings SHALL be an explicit required input to every launch-plan caller,
+including provider-independent exact-image harnesses. The launch planner SHALL
+remain synchronous and deterministic over its validated arguments: it SHALL
+perform no manifest I/O, `ldd` execution,
 subprocess discovery, or runtime fallback, and this amendment SHALL add no new
 runtime spawn kind. A version-2/new-reader, version-3/old-reader, missing-closure,
 or otherwise mixed image/application combination SHALL make CLI-auth launch and
@@ -604,7 +609,8 @@ Scope: v1-mandatory
 
 - **WHEN** the runtime-input manifest is missing, unsafe, malformed, version 2
   or otherwise unsupported, names a different shim executable, has an empty or
-  unsafe shim closure, or maps two different sources to one logical destination
+  unsafe shim closure, contains any directory-valued shim source, or maps two
+  different sources to one logical destination
 - **THEN** CLI-auth launch and signer activation are unavailable before any
   child process is spawned
 - **AND** the runtime performs no `ldd` discovery, provider-closure inference,
