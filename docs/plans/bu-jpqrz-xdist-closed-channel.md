@@ -112,16 +112,44 @@ git clone --filter=blob:none https://github.com/pytest-dev/pytest-xdist.git "$sc
 git -C "$scratch_dir/upstream" checkout v3.8.0
 git -C "$scratch_dir/upstream" rev-parse HEAD
 cd "$scratch_dir/upstream"
-uv venv .venv --python 3.12
-uv pip install --python .venv/bin/python -e . \
-  'pytest==9.1.0' 'execnet==2.1.2' 'pluggy==1.6.0' 'filelock==3.20.3'
-.venv/bin/python -c \
-  'import importlib.metadata as m; print({n: m.version(n) for n in ("pytest-xdist", "pytest", "execnet", "pluggy")})'
+uv venv .venv --python 3.12.4
+uv pip install --python .venv/bin/python --no-deps -e .
+uv pip install --python .venv/bin/python \
+  'pytest==9.1.0' \
+  'execnet==2.1.2' \
+  'pluggy==1.6.0' \
+  'filelock==3.20.3' \
+  'iniconfig==2.3.0' \
+  'packaging==26.3' \
+  'pygments==2.21.0'
+.venv/bin/python - <<'PY'
+import importlib.metadata
+import platform
+
+expected = {
+    "pytest-xdist": "3.8.0",
+    "pytest": "9.1.0",
+    "execnet": "2.1.2",
+    "pluggy": "1.6.0",
+    "filelock": "3.20.3",
+    "iniconfig": "2.3.0",
+    "packaging": "26.3",
+    "pygments": "2.21.0",
+}
+actual = {name: importlib.metadata.version(name) for name in expected}
+assert platform.python_version() == "3.12.4", platform.python_version()
+assert actual == expected, actual
+print(f"python=={platform.python_version()}")
+for name, version in actual.items():
+    print(f"{name}=={version}")
+PY
 ```
 
 The checkout must print
-`1e3e4dc16523c8a8f6c67d95a950166420718c99`. The final command must report
-`pytest-xdist=3.8.0`, `pytest=9.1.0`, `execnet=2.1.2`, and `pluggy=1.6.0`.
+`1e3e4dc16523c8a8f6c67d95a950166420718c99`. The verification block fails unless
+Python is exactly 3.12.4 and every package in the pinned evidence table has the exact recorded
+version. The editable pytest-xdist install is sourced from the exact checked-out tag and uses
+`--no-deps`; every dependency used by this reproduction is then installed explicitly.
 
 ### 2. Establish normal completion
 
@@ -145,9 +173,10 @@ hook code. The outgoing transport close is a synthetic test seam, not a proposed
 
 ```python
 def test_sessionfinish_ignores_closed_workerfinished_transport(
-    self, worker: WorkerSetup
+    self,
+    worker: WorkerSetup,
+    unserialize_report: UnserializerReport,
 ) -> None:
-    from pathlib import Path
     import time
 
     record = worker.pytester.path / "sessionfinish-record.txt"
@@ -201,16 +230,26 @@ def test_sessionfinish_ignores_closed_workerfinished_transport(
     ev = worker.popevent("collectionfinish")
     worker.sendcommand("runtests", indices=list(range(len(ev.kwargs["ids"]))))
     worker.sendcommand("shutdown")
-    assert worker.popevent("close_now").name == "close_now"
+
+    call_report = None
+    while True:
+        ev = worker.popevent()
+        if ev.name == "testreport":
+            report = unserialize_report(ev.kwargs["data"])
+            if report.when == "call":
+                call_report = report
+        if ev.name == "close_now":
+            break
+    assert call_report is not None
+    assert call_report.failed
+    assert "primary failure remains in testreport" in str(call_report.longrepr)
 
     deadline = time.monotonic() + 5
     while not record.exists():
         if time.monotonic() >= deadline:
             raise TimeoutError("remote sessionfinish record was not written")
         time.sleep(0.01)
-    assert record.read_text(encoding="utf-8") == (
-        "exitstatus=1\nexception=none\n"
-    )
+    assert record.read_text(encoding="utf-8") == ("exitstatus=1\nexception=none\n")
     worker.slp.channel.close()
 ```
 
@@ -272,24 +311,43 @@ warning appeared.
 
 ### 5. Check an unrelated exception
 
-A separate disposable diagnostic, not a proposed second upstream regression, installed this real
-remote hook while the channel remained connected:
+A separate disposable diagnostic, not a proposed second upstream regression, completes the normal
+collection, run, and shutdown lifecycle while the channel remains connected:
 
 ```python
-@pytest.hookimpl(trylast=True)
-def pytest_sessionfinish(session, exitstatus):
-    if hasattr(session.config, "workerinput"):
-        raise RuntimeError("unrelated sessionfinish failure")
+def test_unrelated_sessionfinish_exception_is_not_suppressed(
+    self, worker: WorkerSetup
+) -> None:
+    worker.pytester.makeconftest(
+        """
+        import pytest
+
+        @pytest.hookimpl(trylast=True)
+        def pytest_sessionfinish(session, exitstatus):
+            if hasattr(session.config, "workerinput"):
+                raise RuntimeError("unrelated sessionfinish failure")
+        """
+    )
+    worker.pytester.makepyfile("def test_func(): pass")
+    worker.setup()
+    ev = worker.popevent("collectionfinish")
+    worker.sendcommand("runtests", indices=list(range(len(ev.kwargs["ids"]))))
+    worker.sendcommand("shutdown")
+
+    with pytest.raises(
+        worker.slp.channel.RemoteError,
+        match="unrelated sessionfinish failure",
+    ):
+        list(worker.slp.channel)
 ```
 
-The controller-side harness consumed the real remote channel under:
+Run the control with the same bounded lifecycle:
 
-```python
-with pytest.raises(
-    worker.slp.channel.RemoteError,
-    match="unrelated sessionfinish failure",
-):
-    list(worker.slp.channel)
+```bash
+timeout --signal=TERM --kill-after=5s 30s \
+  .venv/bin/python -m pytest \
+  testing/test_remote.py::TestWorkerInteractor::test_unrelated_sessionfinish_exception_is_not_suppressed \
+  -vv -s --tb=short
 ```
 
 Observed result with the candidate policy: the diagnostic passed because the unrelated
