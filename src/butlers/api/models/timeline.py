@@ -1,8 +1,8 @@
 """Timeline-specific Pydantic models.
 
-Provides ``TimelineEvent`` and ``TimelineResponse`` for the cross-butler
-timeline endpoint that merges sessions and notifications into a unified
-event stream with cursor-based pagination.
+Provides the unified Timeline event, histogram, and recent-failure response
+models. The attention projection is intentionally content-blind and exposes
+only persisted identifiers plus aggregate metadata.
 """
 
 from __future__ import annotations
@@ -144,3 +144,35 @@ class TimelineHistogramResponse(BaseModel):
 
     data: list[TimelineHistogramBucket]
     meta: TimelineHistogramMeta
+
+
+class TimelineAttentionItem(BaseModel):
+    """Content-blind identifier for a recent record currently marked failed."""
+
+    id: UUID
+    kind: Literal["session", "notification"]
+    butler: str
+    timestamp: datetime
+
+
+class TimelineAttentionMeta(BaseModel):
+    """Captured-window counts and source availability for the attention strip."""
+
+    since: datetime
+    until: datetime
+    failed_sessions: int = Field(ge=0)
+    failed_notifications: int = Field(ge=0)
+    total: int = Field(ge=0)
+    has_more: bool
+    availability: Literal["complete", "partial", "unavailable"]
+    expected_sources: int = Field(ge=0)
+    healthy_sources: int = Field(ge=0)
+    degraded_sources: list[str] = Field(default_factory=list)
+    degraded_butlers: list[str] = Field(default_factory=list)
+
+
+class TimelineAttentionResponse(BaseModel):
+    """Read-only recent-failure identifiers and aggregate metadata."""
+
+    data: list[TimelineAttentionItem]
+    meta: TimelineAttentionMeta

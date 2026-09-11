@@ -16,7 +16,7 @@ Dashboard Now list that consumes it. (bu-orefs)
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -1015,3 +1015,108 @@ async def test_histogram_reports_exact_source_availability(
     assert not (
         {"summary", "data", "prompt", "message", "recipient"} & response.json()["data"][0].keys()
     )
+
+
+def _attention_session_row(*, started_at: datetime, total_count: int):
+    return {"id": uuid4(), "started_at": started_at, "total_count": total_count}
+
+
+def _attention_notification_row(
+    *, created_at: datetime, total_count: int, source_butler: str = "atlas"
+):
+    return {
+        "id": uuid4(),
+        "source_butler": source_butler,
+        "created_at": created_at,
+        "total_count": total_count,
+    }
+
+
+async def test_timeline_attention_is_capped_content_blind_and_current_status_scoped(app):
+    """Attention counts remain exact while rows expose only navigable identifiers."""
+    session_rows = [
+        _attention_session_row(started_at=_NOW - timedelta(minutes=10 + index), total_count=7)
+        for index in range(5)
+    ]
+    notification_rows = [
+        _attention_notification_row(created_at=_NOW - timedelta(minutes=index), total_count=3)
+        for index in range(3)
+    ]
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": session_rows}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=notification_rows)
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/timeline/attention", params=[("butler", "atlas"), ("trace", "trace-1")]
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["data"]) == 5
+    assert body["meta"]["failed_sessions"] == 7
+    assert body["meta"]["failed_notifications"] == 3
+    assert body["meta"]["total"] == 10
+    assert body["meta"]["has_more"] is True
+    assert body["meta"]["availability"] == "complete"
+    assert {"summary", "data", "prompt", "message", "recipient", "error"}.isdisjoint(
+        body["data"][0]
+    )
+    assert set(body["data"][0]) == {"id", "kind", "butler", "timestamp"}
+    assert [item["timestamp"] for item in body["data"]] == sorted(
+        (item["timestamp"] for item in body["data"]), reverse=True
+    )
+    session_sql, session_args = mock_db.fan_out_with_status.call_args.args
+    assert "success = false" in session_sql
+    assert "trace_id = $3" in session_sql
+    assert session_args[2] == "trace-1"
+    notification_sql, *notification_args = mock_pool.fetch.call_args.args
+    assert "status = 'failed'" in notification_sql
+    assert "trace_id = $4" in notification_sql
+    assert tuple(notification_args[2:]) == (["atlas"], "trace-1")
+
+
+@pytest.mark.parametrize(
+    ("failed_butlers", "pool_error", "expected"),
+    [
+        pytest.param([], None, (3, 3, "complete"), id="all-sources-healthy"),
+        pytest.param(["home"], None, (3, 2, "partial"), id="partial-session-fanout"),
+        pytest.param(
+            ["atlas", "home"],
+            KeyError("switchboard"),
+            (3, 0, "unavailable"),
+            id="all-sources-failed",
+        ),
+    ],
+)
+async def test_timeline_attention_reports_explicit_source_availability(
+    app, failed_butlers, pool_error, expected
+):
+    """Missing and failed source units never become a calm empty result."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "home"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({name: [] for name in mock_db.butler_names}, failed_butlers)
+    )
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = (
+        MagicMock(side_effect=pool_error) if pool_error else MagicMock(return_value=mock_pool)
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/timeline/attention")
+
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert (meta["expected_sources"], meta["healthy_sources"], meta["availability"]) == expected
+    assert response.json()["data"] == []

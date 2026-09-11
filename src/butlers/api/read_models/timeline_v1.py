@@ -24,10 +24,15 @@ Query functions (all async):
         -> tuple[list[TimelineMinuteCount], list[str]]
     query_timeline_notification_histogram_single(...)
         -> list[TimelineMinuteCount]
+    query_timeline_attention_sessions_fan_out(...)
+        -> tuple[list[TimelineAttentionRow], dict[str, int], list[str]]
+    query_timeline_attention_notifications_single(...)
+        -> tuple[list[TimelineAttentionRow], int]
 
 Row DTOs:
     TimelineSessionRow
     TimelineNotificationRow
+    TimelineAttentionRow
 
 Cursor helpers:
     encode_cursor(timestamp, event_id) -> opaque composite ``(timestamp, id)`` cursor
@@ -43,7 +48,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import asyncpg
@@ -58,6 +63,10 @@ logger = logging.getLogger(__name__)
 
 #: Stability contract — bump to ``timeline_v2`` for breaking changes.
 READ_MODEL_VERSION = "timeline_v1"
+
+# The attention endpoint deliberately caps returned identifiers while keeping
+# its aggregate counts independent of the cap.
+TIMELINE_ATTENTION_LIMIT = 5
 
 # ---------------------------------------------------------------------------
 # Cursor helpers — composite (timestamp, id) keyset cursor
@@ -163,6 +172,16 @@ class TimelineMinuteCount:
 
     start: datetime
     count: int
+
+
+@dataclass(frozen=True)
+class TimelineAttentionRow:
+    """Content-blind identifier for a currently failed recent record."""
+
+    id: UUID
+    kind: Literal["session", "notification"]
+    butler: str
+    timestamp: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -476,3 +495,107 @@ async def query_timeline_notification_histogram_single(
     )
     rows = await pool.fetch(sql, *args)
     return [TimelineMinuteCount(start=row["bucket_start"], count=row["count"]) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Recent-failure attention projection
+# ---------------------------------------------------------------------------
+
+
+def _attention_count(row: asyncpg.Record, *, fallback: int = 0) -> int:
+    """Read the window count attached to a capped attention row."""
+    try:
+        return int(row["total_count"])
+    except (KeyError, TypeError, ValueError):
+        # Keep the read-model helper usable with older test doubles while the
+        # server query remains authoritative for the real endpoint. A capped
+        # result cannot prove a larger count without the window column, but it
+        # can still report its visible row count honestly.
+        return fallback
+
+
+async def query_timeline_attention_sessions_fan_out(
+    db: DatabaseManager,
+    *,
+    since: datetime,
+    until: datetime,
+    butler_names: list[str],
+    trace_id: str | None = None,
+) -> tuple[list[TimelineAttentionRow], dict[str, int], list[str]]:
+    """Read up to five currently-failed sessions from each selected pool.
+
+    ``COUNT(*) OVER ()`` keeps the exact per-pool count available on the same
+    source-local query as the bounded rows. A pool that answers with no rows is
+    a healthy zero; ``fan_out_with_status`` separately identifies query and
+    missing-pool failures so the API can report honest availability.
+    """
+    conditions = ["started_at >= $1", "started_at < $2", "success = false"]
+    args: list[Any] = [since, until]
+    if trace_id is not None:
+        conditions.append("trace_id = $3")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT id, started_at, COUNT(*) OVER ()::bigint AS total_count "
+        f"FROM sessions WHERE {' AND '.join(conditions)} "
+        "ORDER BY started_at DESC, id DESC "
+        f"LIMIT {TIMELINE_ATTENTION_LIMIT}"
+    )
+    results, degraded_butlers = await db.fan_out_with_status(
+        sql, tuple(args), butler_names=butler_names
+    )
+
+    rows: list[TimelineAttentionRow] = []
+    counts: dict[str, int] = {}
+    for butler_name, db_rows in results.items():
+        counts[butler_name] = _attention_count(db_rows[0], fallback=len(db_rows)) if db_rows else 0
+        rows.extend(
+            TimelineAttentionRow(
+                id=db_row["id"],
+                kind="session",
+                butler=butler_name,
+                timestamp=db_row["started_at"],
+            )
+            for db_row in db_rows
+        )
+    return rows, counts, degraded_butlers
+
+
+async def query_timeline_attention_notifications_single(
+    pool: asyncpg.Pool,
+    *,
+    since: datetime,
+    until: datetime,
+    source_butlers: list[str] | None = None,
+    trace_id: str | None = None,
+) -> tuple[list[TimelineAttentionRow], int]:
+    """Read up to five currently-failed notifications from Switchboard."""
+    conditions = ["created_at >= $1", "created_at < $2", "status = 'failed'"]
+    args: list[Any] = [since, until]
+    idx = 3
+    if source_butlers is not None:
+        conditions.append(f"source_butler = ANY(${idx})")
+        args.append(source_butlers)
+        idx += 1
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
+
+    sql = (
+        "SELECT id, source_butler, created_at, COUNT(*) OVER ()::bigint AS total_count "
+        f"FROM notifications WHERE {' AND '.join(conditions)} "
+        "ORDER BY created_at DESC, id DESC "
+        f"LIMIT {TIMELINE_ATTENTION_LIMIT}"
+    )
+    db_rows = await pool.fetch(sql, *args)
+    count = _attention_count(db_rows[0], fallback=len(db_rows)) if db_rows else 0
+    rows = [
+        TimelineAttentionRow(
+            id=db_row["id"],
+            kind="notification",
+            butler=db_row["source_butler"],
+            timestamp=db_row["created_at"],
+        )
+        for db_row in db_rows
+    ]
+    return rows, count
