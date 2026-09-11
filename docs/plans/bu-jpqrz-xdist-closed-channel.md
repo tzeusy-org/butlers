@@ -273,10 +273,12 @@ The remote process also emits the `PluggyTeardownRaisedWarning`. The controller 
 the failing call-phase `testreport` containing `primary failure remains in testreport` before the
 transport is severed.
 
-For the passing-worker comparison, change only the generated `test_func` body to `pass` and expect
-`exitstatus=0`; unmodified 3.8.0 produces the same secondary `OSError`. This comparison was run, but
-it does not need to become a second upstream regression because the existing normal-completion test
-already protects the connected `workerfinished` payload.
+For the passing-worker comparison, change the generated `test_func` body to `pass`, replace
+`assert call_report.failed` with `assert call_report.passed`, remove the failure-message assertion,
+and expect exit status 0. Unmodified 3.8.0 then records `exitstatus=0` plus the same secondary
+`OSError`; the candidate records `exitstatus=0` plus `exception=none`. Both variants were run. This
+comparison does not need to become a second upstream regression because the existing
+normal-completion test already protects the connected `workerfinished` payload.
 
 ### 4. Exercise the candidate policy
 
