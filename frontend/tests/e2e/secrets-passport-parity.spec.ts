@@ -426,8 +426,8 @@ test.describe("PageUser (C10–C15)", () => {
   test("C11: Spotify recovery action starts the connector OAuth flow", async ({ page }) => {
     // Spotify authorizes through the connector PKCE flow, so the deterministic
     // assertion is the POST to /api/connectors/spotify/oauth/start (not the
-    // generalized /api/secrets/user/spotify/reauthorize, whose app credentials
-    // were never provisioned). We assert on the network request rather than
+    // generic /api/secrets/user/spotify/reauthorize route). We assert on the
+    // network request rather than
     // transient "redirecting" text; the success handler sets
     // window.location.href to the provider URL, so abort that target to keep
     // the test page put.

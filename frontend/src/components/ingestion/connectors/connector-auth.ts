@@ -346,11 +346,9 @@ export function resolveConnectorRecovery(
   // Spotify authorizes through the connector PKCE flow
   // (POST /api/connectors/spotify/oauth/start — client_id only, no client
   // secret), which is what the registered Spotify app's redirect URIs point at.
-  // The generalized router does carry a `spotify` registry entry, but it is a
-  // confidential-client flow whose SPOTIFY_OAUTH_CLIENT_ID/SECRET were never
-  // provisioned, so linking there produced a recovery button that could only
-  // fail. /secrets?focus=u:spotify lands on the card whose drawer drives the
-  // real flow — same shape as the WhatsApp recovery below.
+  // Spotify is deliberately absent from the generalized OAuth registry.
+  // /secrets?focus=u:spotify lands on the card whose drawer drives the
+  // connector-owned flow — same shape as the WhatsApp recovery below.
   if (connectorType === 'spotify') {
     return { kind: 'passport', to: '/secrets?focus=u:spotify', action: 'reauthorize' }
   }

@@ -607,8 +607,7 @@ describe('reauth pill is the reauth action', () => {
 
   it('links the auth pill to the Spotify Passport card when needs_reauth', () => {
     // Spotify recovers through its Passport card (the connector PKCE drawer),
-    // not the generalized /oauth/spotify/start dance — that entry is a
-    // confidential-client flow whose app credentials were never provisioned.
+    // not a generalized OAuth route; Spotify authorization is connector-owned.
     // The pill keeps the "reauth" wording of the attention strip; only
     // WhatsApp's Passport recovery reads "pair".
     mockHooks([REAUTH_CONNECTOR])
