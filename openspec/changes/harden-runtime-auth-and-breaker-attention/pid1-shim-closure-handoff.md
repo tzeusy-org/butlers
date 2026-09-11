@@ -43,7 +43,8 @@ the one-concrete-sandbox-spawn-boundary policy.
 | `RuntimeCLIInputManifest._immutable_input*` | Validates root-owned, non-symlink, non-writable sources and exact binding keys. | Apply the same checks to every shim binding; require the shim source to be a regular executable and its identity/path to match the configured shim. |
 | `RuntimeCLIInputManifest._resolve` | Validates and deduplicates one provider entry. | Keep provider resolution and expose a separate validated shim resolver; no provider entry may stand in for the shim record. |
 | `build_bubblewrap_launch_plan` | Purely builds one plan but appends only `shim_path`, so dependencies depend on caller inputs. | Require validated shim bindings, combine by destination, collapse identical pairs, reject conflicts, sort, and then build parents/`--ro-bind` arguments. Perform no manifest read or subprocess discovery here. |
-| `BubblewrapDashboardCLIAuthSandbox._launch_invocation` | Sole production caller and sole concrete spawn site. | Resolve shim inputs before spawn through an injectable production resolver and pass them to the existing planner. Add no spawn kind or call site. |
+| `BubblewrapDashboardCLIAuthSandbox.launch_device_auth` / `run_readonly_command` | Public launch entries run exact-image preflight and resolve provider inputs before entering `_launch_invocation`. | Invoke the injectable production shim resolver immediately after preflight and fail before identity acquisition or stage creation/write; pass its validated result into `_launch_invocation`. |
+| `BubblewrapDashboardCLIAuthSandbox._launch_invocation` | Sole production planner caller and concrete spawn site; currently acquires identity and writes staged authority before planning/spawn. | Accept mandatory already-validated shim inputs and pass them to the planner. Do not resolve here, add a spawn kind, or add a production call site. |
 
 ## Complete planner-caller inventory
 
@@ -125,9 +126,10 @@ receive the validated shim closure; do not leave a compatibility default.
 
 Draft-only delta: `Tests: +0 ~0 -0`.
 
-Proposed implementation delta after inventory: `Tests: +2 ~5 -0`. Recalculate
-the exact line after the implementation diff; the intent is two parametrized
-failure matrices and extensions of existing seam tests, not a new test file.
+Proposed implementation delta after inventory: `Tests: +3 ~5 -0`. Recalculate
+the exact line after the implementation diff; the intent is three parametrized
+failure/ordering matrices and extensions of existing seam tests, not a new test
+file.
 
 - Extend
   `tests/scripts/test_generate_runtime_cli_sandbox_manifest.py::test_generator_declares_only_the_registered_dashboard_runtime_closures`
@@ -143,6 +145,11 @@ failure matrices and extensions of existing seam tests, not a new test file.
 - Add one parametrized manifest rejection family in that file covering missing
   shim, version 2/future version, wrong identity/path, empty mappings, malformed
   binding, unsafe source, and cross-closure destination conflict.
+- Add one parametrized public-entry ordering test covering both
+  `launch_device_auth` and `run_readonly_command`: a shim-resolver failure must
+  call neither identity-pool acquisition, stage factory/write,
+  `_launch_invocation`, nor `_spawn`. This is the behavioral proof that
+  “before spawn” has not been implemented after authority staging.
 - Extend the existing logical-loader and minimal-plan tests to assert stable
   destination order, identical-pair deduplication, one `--ro-bind` per
   destination, and conflict rejection without planner I/O.
