@@ -1,47 +1,50 @@
-## 1. Spec artifact (this change)
+## 1. Correct the draft artifact (this change)
 
-- [x] 1.1 Amend the `dashboard-api` requirement `Secrets Inventory and Per-Credential Read
-      Endpoints`, scenario `Inventory rows are content-blind`, to withhold `system[]` / `cli[]`
-      `description` and `category` while retaining `key`, and to name the boundary as partial
-      metadata minimization rather than content-blind identity.
-- [x] 1.2 Restate the full requirement (all scenarios) in the `MODIFIED Requirements` block per
-      this repo's overwrite-guard convention (`AGENTS.md` § "Two unarchived OpenSpec changes can
-      silently overwrite each other"), changing only the targeted scenario text.
-- [x] 1.3 Record the coexistence of `openspec/changes/project-secret-read-endpoints-content-blind`
-      as an unarchived sibling change touching the same requirement, in `proposal.md`.
-- [x] 1.4 Add the target-contract test ahead of implementation:
-      `tests/api/test_secrets_v2_inventory.py::test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key`,
-      marked `xfail(strict=True)`, planting distinct `description` / `category` sentinels for both
-      the system and CLI families and asserting their absence (not nullness) from the parsed
-      response while `key` survives.
-- [x] 1.5 Confirm the new test currently `xfail`s (not errors, not unexpectedly passes) against
-      today's handler, and that the full existing inventory test file remains green.
+- [x] 1.1 Rebuild the whole `Secrets Inventory and Per-Credential Read Endpoints` requirement from
+      the current baseline, preserving all six scenario headings and every unrelated clause.
+- [x] 1.2 Collision-preserve the merged, implemented, but unarchived
+      `project-secret-read-endpoints-content-blind` detail DTO clauses with per-family precision:
+      system `SystemCredentialDetail` publishes `key` / `category` / `description`; CLI
+      `CliCredentialDetail` publishes `id` / `label` and fixed capability categories, not fields
+      named `key` / `category` / `description` or raw scopes. Its baseline adoption remains owned
+      by the sibling change and pending; obsolete baseline sentences survive only as explicitly
+      superseded archive provenance, not as competing payload requirements.
+- [x] 1.3 Apply only the inventory proposal: `SystemSecretSummary` and `CliRuntimeSummary` retain
+      raw `key` while omitting `category` and `description` as absent fields, including in degraded
+      responses. Name this partial metadata minimization rather than anonymity.
+- [x] 1.4 Align proposal, design, tasks, and delta spec on the drafting-only authority boundary;
+      leave runtime, frontend, tests, adoption, and archive state unchanged.
 
-## 2. Validation (this change)
+## 2. Validate the corrected draft
 
-- [ ] 2.1 `openspec validate amend-secrets-inventory-label-minimization --strict`.
-- [ ] 2.2 `python3 scripts/check_spec_overwrites.py` — no unfrozen baseline losses.
-- [ ] 2.3 `python3 scripts/check_countable_tasks.py`.
-- [ ] 2.4 `make check-guards`.
-- [ ] 2.5 `uv run --no-sync pytest tests/api/test_secrets_v2_inventory.py -q --tb=short` — full
-      file green with the new test `xfail`ed.
-- [ ] 2.6 Independent privacy/API review with zero unresolved threads (`bu-y5uq4` acceptance
-      criterion 6).
+- [x] 2.1 `openspec validate amend-secrets-inventory-label-minimization --strict`.
+- [x] 2.2 Same-requirement scan and body comparison against the baseline and
+      `project-secret-read-endpoints-content-blind`, confirming collateral preservation and the
+      inventory-only proposal.
+- [x] 2.3 `make check-spec-overwrites` without a ratchet rebaseline.
+- [x] 2.4 `make check-guards`.
+- [x] 2.5 `git diff --check`.
+- [ ] 2.6 Open a PR for independent privacy/API exact-head review, recording the corrected commit
+      and artifact digest; resolve every finding before exact owner adoption.
 
-## 3. Owner gate (blocks all future work)
+Existing API tests are evidence only and remain unchanged: detail coverage lives in
+`tests/api/test_secrets_v2_per_credential.py`; the strict-xfail inventory target and the current
+positive content-blind inventory test remain in `tests/api/test_secrets_v2_inventory.py`.
 
-- [ ] 3.1 Obtain exact owner approval of this spec artifact (`bu-y5uq4` acceptance criterion 7).
-      No handler, runtime, or frontend change may land before this step.
+## 3. Owner gate (blocks implementation)
 
-## 4. Future bounded implementation (blocked on Task 3, out of this bead)
+- [ ] 3.1 Obtain owner approval of the exact corrected artifact recorded by the independent review.
+      Draft completion, PR merge, or sibling-detail adoption does not satisfy this gate.
 
-- [ ] 4.1 Remove `category` / `description` construction from `_content_blind_system` /
-      `_content_blind_cli` and the corresponding fields from `SystemSecretSummary` /
-      `CliRuntimeSummary` in `src/butlers/api/routers/secrets_v2.py`.
+## 4. Future bounded implementation (`bu-qj0ekp`, out of this bead)
+
+- [ ] 4.1 After exact owner adoption, remove `category` / `description` from
+      `SystemSecretSummary`, `CliRuntimeSummary`, `_content_blind_system`, and
+      `_content_blind_cli` only; preserve raw `key` and every unrelated inventory field.
 - [ ] 4.2 Remove `xfail(strict=True)` from
       `test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key` and update
-      the superseded positive assertions in
-      `test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel`.
-- [ ] 4.3 Update `frontend/src/api/types.ts` / `frontend/src/api/client.ts` and any passport
-      system/CLI row rendering that reads `description` or `category` off the inventory response.
-- [ ] 4.4 File a new bead for this implementation step; do not fold it into `bu-y5uq4`.
+      the superseded positive field assertions in
+      `test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel` in the same change.
+- [ ] 4.3 Update frontend types and rendering only where they consume the omitted inventory fields.
+- [ ] 4.4 Archive/adopt through the required same-requirement ordering and rebuild procedure; do not
+      use `--update-baseline` to conceal a clause loss.
