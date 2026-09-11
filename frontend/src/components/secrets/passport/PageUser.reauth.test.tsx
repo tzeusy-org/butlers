@@ -47,10 +47,8 @@ import { MOCK_USER_CREDENTIALS, MOCK_PROVIDERS } from "./mock-data.ts"
 // Helpers
 // ---------------------------------------------------------------------------
 
-// The generalized dance is exercised through Google. Spotify used to stand in
-// here, but its connect control is now the connector-PKCE drawer rather than
-// /oauth/<provider>/start (see DRAWER_CONNECT_PROVIDERS in pages.tsx), so it no
-// longer renders a re-authorize pill at all — see the guard test at the bottom.
+// The generalized dance is exercised through Google. Spotify's connect control
+// uses the connector-PKCE drawer and therefore has separate regression coverage.
 const GOOGLE = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google")!
 const EXPIRED_GOOGLE = { ...GOOGLE, state: "expired" as const }
 const GOOGLE_PROVIDER = MOCK_PROVIDERS.google

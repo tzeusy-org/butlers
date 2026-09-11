@@ -280,8 +280,8 @@ class ButlerConfig:
     #       "https://www.googleapis.com/auth/gmail.modify",
     #   ]
     #
-    #   [oauth.spotify]
-    #   scopes = ["user-read-recently-played", "user-top-read"]
+    #   [oauth.example_provider]
+    #   scopes = ["profile.read", "activity.read"]
     #
     # These declarations are read by the dashboard OAuth router to resolve the
     # scope-set for each provider as the union of all butler declarations.
