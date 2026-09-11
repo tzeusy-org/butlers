@@ -93,7 +93,7 @@ export function TimelineAttentionStrip({
 }: TimelineAttentionStripProps) {
   const [expanded, setExpanded] = useState(true);
   const meta = attention?.meta;
-  const rows = attention?.data ?? [];
+  const rows = attention ? attention.data : [];
   const isUnavailable = meta?.availability === "unavailable";
   const hasTruncation = Boolean(meta && (meta.has_more || meta.total > rows.length));
 
