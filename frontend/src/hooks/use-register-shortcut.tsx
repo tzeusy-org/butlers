@@ -239,7 +239,7 @@ export function useRegisterShortcut(bindings: ShortcutBinding[]): void {
       // DisclosureRow's Enter/Space contract or RowLink's activation). The
       // native event reaches this window listener after React's target/root
       // handlers, so honoring defaultPrevented prevents a second page action.
-      if (e.defaultPrevented || window.__pendingGNav) return;
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || window.__pendingGNav) return;
       // Native controls own activation, but not the rest of a page's hot loop:
       // after roving focus moves to a button or link, j/k/arrows must still
       // reach their declared page shortcut. Only Enter/Space stay native.
