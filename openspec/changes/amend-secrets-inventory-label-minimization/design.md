@@ -15,6 +15,15 @@ contract." `bu-yk2hb` is the deferred decision on that exact carve-out; this cha
 `category` and `description`, leaving `key` where Option C and `bu-yk2hb` both already left it —
 published.
 
+The merged, unarchived `project-secret-read-endpoints-content-blind` change has already established
+and implemented the current detail projections: `SystemCredentialDetail` for the system family and
+`CliCredentialDetail` for the CLI family. Its baseline adoption is still pending. This draft carries
+those clauses in its whole-requirement replacement only to prevent a later archive from restoring
+the baseline's obsolete `SystemSecret` / `CliRuntime` payloads; the inventory omission below is the
+only new behavior proposed here. The delta retains those two obsolete baseline sentences solely as
+explicitly superseded archive provenance for the body-level overwrite guard, never as alternative
+payload contracts.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -23,7 +32,7 @@ published.
   drop `category` and `description` as absent fields (not `null`).
 - Name the boundary as partial metadata minimization, distinct from the `user[]` family's
   content-blind identity contract, so a future reader cannot mistake one guarantee for the other.
-- Leave the per-credential detail endpoints and every other field on these two summaries
+- Leave the per-credential detail endpoints and every other field on the two inventory summaries
   (`state`, `fingerprint`, `last_verified`, `test`, `audit[]`, `read_only`, `used_by[]`, `butler`
   for system; `state`, `fingerprint`, `issued`, `expires`, `last_verified`, `test` for CLI) exactly
   as already specified.
@@ -36,11 +45,13 @@ published.
   endpoints that still serialize them directly (`POST /api/secrets/system/<key>` — bu-m9s61,
   tracked separately).
 - Touching `GET /api/secrets/system/<key>` or `GET /api/secrets/cli/<id>` (the per-credential
-  detail endpoints) — their `category` / `description` publication is governed by the existing
-  operator-authored-naming grounds this same requirement already states for them, unchanged by
-  this draft.
-- Any handler, runtime, frontend, migration, or deployment change. `bu-y5uq4` acceptance criterion
-  7 requires separate owner approval of this exact artifact first.
+  detail endpoints). The system detail remains `SystemCredentialDetail` with `key`, `category`,
+  and `description`; the CLI detail remains `CliCredentialDetail` with `id` and `label` (projected
+  from the stored description), fixed capability categories, and no fields named `key`,
+  `category`, or `description` and no raw scopes.
+- Any handler, runtime, frontend, migration, or deployment change. The original `bu-y5uq4`
+  acceptance criterion 7 requires separate owner approval of the exact artifact, now tracked by
+  `bu-qj0ekp`, first.
 - Redesigning `key` into an opaque identifier, renaming any credential key, or otherwise reaching
   raw credential values.
 
@@ -76,19 +87,25 @@ which is exactly the failure mode `bu-yk2hb`'s framing warned against.
 
 ### Detail endpoints stay on their existing contract
 
-`GET /api/secrets/system/<key>` and `GET /api/secrets/cli/<id>` continue to publish `key`,
-`category`, and `description`, unchanged by this delta. The asymmetry — the inventory array
-withholds two fields the detail read still publishes — is deliberate, not an oversight to
-reconcile: a detail read is reached only by a caller who already selected one identified row
-(typically because the inventory told them which `key` exists), while the inventory response is
-the broader-reach, listable surface. `bu-y5uq4`'s non-goals name this exactly ("no ... detail-
-endpoint change"), and `project-secret-read-endpoints-content-blind` independently confirms the
-detail endpoints' existing field list is out of this change's scope.
+`GET /api/secrets/system/<key>` continues to publish `SystemCredentialDetail`, including system
+`key`, `category`, and `description`. `GET /api/secrets/cli/<id>` continues to publish
+`CliCredentialDetail`, whose identity fields are `id` and `label`; the fetch layer projects the
+stored description column as `label`, and the response has no fields named `key`, `category`, or
+`description`. Its capability fields use the fixed vocabulary rather than raw scope identifiers.
+These are the implemented clauses from `project-secret-read-endpoints-content-blind`, carried here
+as collision preservation while that sibling's baseline adoption remains pending.
 
-Alternative considered: withhold `category` / `description` from the detail endpoints too, for
-contract symmetry. Rejected — out of scope for this bead, and the detail endpoint is reached only
-after the caller already has the `key` (from the inventory or from having configured the
-credential themselves), so the disclosure surface is materially different.
+The asymmetry — the inventory array withholds two fields that remain available under family-specific
+names on a detail read — is deliberate, not an oversight to reconcile. A caller commonly reaches a
+detail read after selecting one identified row, while the inventory is the broader listable surface.
+That navigation pattern explains the product trade-off; it does not authenticate the caller or add
+an authorization boundary. The original `bu-y5uq4` non-goals name the detail endpoints as
+unchanged, and the sibling change owns their current field contract.
+
+Alternative considered: withhold the system `category` / `description` or the CLI `label` from the
+detail endpoints too, for contract symmetry. Rejected — out of scope for this bead. The selected-row
+navigation pattern makes the disclosure surface materially different, but supplies no independent
+authentication or authorization guarantee.
 
 ### Degraded-source and compatibility behavior
 
@@ -120,7 +137,7 @@ endpoint — no version negotiation, no dual-shape response.
 
 ## Migration Plan
 
-1. Obtain exact owner adoption of this draft (`bu-y5uq4` acceptance criterion 7) before any
+1. Obtain exact owner adoption of this corrected draft (`bu-qj0ekp`) before any
    handler change.
 2. Remove `xfail(strict=True)` from
    `test_inventory_system_and_cli_rows_omit_description_and_category_but_retain_key` only as part
@@ -134,7 +151,10 @@ endpoint — no version negotiation, no dual-shape response.
    inventory response.
 4. Deploy through the normal merge queue after exact-head review. No data migration, backfill, or
    runtime config change is needed — this is a response-projection change only.
-5. Rollback is a code revert of the additive-removal change; no persisted data is touched.
+5. Before archiving, apply the sibling-ordering rule: archive one same-requirement change, then
+   rebuild the other against the refreshed baseline. Do not use this draft to adopt the sibling's
+   still-pending detail clauses by implication.
+6. Rollback is a code revert of the additive-removal change; no persisted data is touched.
 
 ## Open Questions
 
