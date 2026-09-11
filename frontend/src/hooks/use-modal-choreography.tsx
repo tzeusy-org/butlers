@@ -84,6 +84,13 @@ export interface UseModalChoreographyOptions {
    * `false`.
    */
   obscureGuard?: boolean;
+  /**
+   * Optional final guard for restoring the trigger when the surface unmounts.
+   * Keep the default for true modal closes. URL-backed inline disclosures can
+   * use this to distinguish an explicit close from unrelated navigation that
+   * removed the surface and already established a newer focus target.
+   */
+  shouldRestoreFocus?: () => boolean;
 }
 
 export interface UseModalChoreographyResult<TFocus extends HTMLElement> {
@@ -120,6 +127,7 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
   active = true,
   focusRoot = false,
   obscureGuard = false,
+  shouldRestoreFocus,
 }: UseModalChoreographyOptions): UseModalChoreographyResult<TFocus> {
   const rootRef = useRef<HTMLDivElement>(null);
   // Only ever read/written by this hook — never returned directly when
@@ -129,7 +137,12 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
   // is not allowed").
   const ownFocusRef = useRef<TFocus>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const shouldRestoreFocusRef = useRef(shouldRestoreFocus);
   const prefersReducedMotion = usePrefersReducedMotion();
+
+  useEffect(() => {
+    shouldRestoreFocusRef.current = shouldRestoreFocus;
+  }, [shouldRestoreFocus]);
 
   useEffect(() => {
     if (!active || !obscureGuard || trapFocus) return;
@@ -168,6 +181,7 @@ export function useModalChoreography<TFocus extends HTMLElement = HTMLElement>({
       ownFocusRef.current?.focus();
     }
     return () => {
+      if (shouldRestoreFocusRef.current && !shouldRestoreFocusRef.current()) return;
       const prev = previouslyFocusedRef.current;
       if (prev && document.contains(prev)) prev.focus();
     };
