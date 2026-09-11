@@ -192,7 +192,21 @@ describe("a11y (real page): Timeline empty state", () => {
 
 describe("a11y (real page): Timeline populated state", () => {
   it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
-    await checkA11y({ events: [makeEvent()] });
+    await checkA11y({
+      events: [
+        makeEvent(),
+        makeEvent({
+          id: "timeline-heartbeat-1",
+          timestamp: "2026-07-16T14:31:00Z",
+          is_heartbeat: true,
+        }),
+        makeEvent({
+          id: "timeline-heartbeat-2",
+          timestamp: "2026-07-16T14:30:00Z",
+          is_heartbeat: true,
+        }),
+      ],
+    });
   });
 });
 

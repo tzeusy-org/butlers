@@ -20,7 +20,14 @@
  * Spec: docs/redesigns/2026-07-03-jarvis-audit.md §"7. One Timeline"
  */
 
-import { useState } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+} from "react";
 import { Link } from "react-router";
 
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
@@ -29,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { useEventDrawerState } from "@/components/ingestion/timeline/useEventDrawerState";
+import { useListTriage } from "@/hooks/use-list-triage";
 import type { TimelineEvent } from "@/api/types.ts";
 import {
   isFailedMaintenanceEvent,
@@ -140,6 +148,14 @@ interface MaintenanceEntry {
 
 type LedgerEntry = SingleEntry | HeartbeatEntry | MaintenanceEntry;
 
+function disclosureId(group: HourGroup, entry: LedgerEntry): string {
+  if (entry.kind === "single") return `event:${entry.event.id}`;
+  if (entry.kind === "maintenance") return `maintenance:${group.hourKey}:${entry.butler}`;
+  // The oldest member remains stable when a live refresh prepends another
+  // heartbeat to the same collapsed run.
+  return `heartbeat:${group.hourKey}:${entry.events.at(-1)?.id ?? "empty"}`;
+}
+
 function groupLedgerEntries(events: TimelineEvent[], includeInternal: boolean): LedgerEntry[] {
   const entries: LedgerEntry[] = [];
   const maintenanceByButler = new Map<string, MaintenanceEntry>();
@@ -229,10 +245,16 @@ function EventRow({
   event,
   isOpen,
   onToggle,
+  disclosureId,
+  onDisclosureFocus,
+  onDisclosureBlur,
 }: {
   event: TimelineEvent;
   isOpen: boolean;
   onToggle: () => void;
+  disclosureId: string;
+  onDisclosureFocus: (id: string) => void;
+  onDisclosureBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
 }) {
   const sessionLink = isSessionEvent(event) ? sessionDetailHref(event) : null;
 
@@ -251,7 +273,10 @@ function EventRow({
         className={`${sessionLink ? "col-span-4" : "col-span-5"} grid min-h-6 min-w-0 items-center gap-x-3 bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset`}
         style={{ gridTemplateColumns: sessionLink ? ROW_DISCLOSURE_GRID : ROW_GRID }}
         onClick={onToggle}
+        onFocus={() => onDisclosureFocus(disclosureId)}
+        onBlur={onDisclosureBlur}
         aria-expanded={isOpen}
+        data-timeline-disclosure-id={disclosureId}
       >
         <Time
           value={event.timestamp}
@@ -289,7 +314,17 @@ function EventRow({
 // not the event-count-mislabeled-as-butler-count bug UnifiedTimeline had.
 // ---------------------------------------------------------------------------
 
-function HeartbeatGroupRow({ events }: { events: TimelineEvent[] }) {
+function HeartbeatGroupRow({
+  events,
+  disclosureId,
+  onDisclosureFocus,
+  onDisclosureBlur,
+}: {
+  events: TimelineEvent[];
+  disclosureId: string;
+  onDisclosureFocus: (id: string) => void;
+  onDisclosureBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const ticks = events.length;
   const butlers = new Set(events.map((e) => e.butler));
@@ -303,6 +338,9 @@ function HeartbeatGroupRow({ events }: { events: TimelineEvent[] }) {
         className="flex w-full items-center gap-3 px-3 py-1.5 text-left transition-colors hover:bg-muted/10"
         data-testid="heartbeat-group-row"
         aria-expanded={expanded}
+        data-timeline-disclosure-id={disclosureId}
+        onFocus={() => onDisclosureFocus(disclosureId)}
+        onBlur={onDisclosureBlur}
       >
         <span className="font-mono text-[11px] text-muted-foreground w-[96px] shrink-0">
           <Time value={events[0].timestamp} mode="absolute" precision="time-seconds" />
@@ -337,7 +375,19 @@ function HeartbeatGroupRow({ events }: { events: TimelineEvent[] }) {
 // count is intentionally limited to the currently loaded Timeline page.
 // ---------------------------------------------------------------------------
 
-function MaintenanceGroupRow({ butler, events }: { butler: string; events: TimelineEvent[] }) {
+function MaintenanceGroupRow({
+  butler,
+  events,
+  disclosureId,
+  onDisclosureFocus,
+  onDisclosureBlur,
+}: {
+  butler: string;
+  events: TimelineEvent[];
+  disclosureId: string;
+  onDisclosureFocus: (id: string) => void;
+  onDisclosureBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const runs = events.length;
   const failed = events.filter(isFailedMaintenanceEvent).length;
@@ -352,6 +402,9 @@ function MaintenanceGroupRow({ butler, events }: { butler: string; events: Timel
         className="flex w-full items-center gap-3 px-3 py-1.5 text-left transition-colors hover:bg-muted/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
         data-testid="maintenance-group-row"
         aria-expanded={expanded}
+        data-timeline-disclosure-id={disclosureId}
+        onFocus={() => onDisclosureFocus(disclosureId)}
+        onBlur={onDisclosureBlur}
         aria-label={`${summary}${failed > 0 ? `, ${failed} failed` : ""}. ${expanded ? "Hide" : "Show"} details`}
       >
         <span className="font-mono text-[11px] text-muted-foreground w-[96px] shrink-0">
@@ -399,11 +452,17 @@ function SingleEventEntry({
   drawerEventId,
   onOpenDrawer,
   onCloseDrawer,
+  disclosureId,
+  onDisclosureFocus,
+  onDisclosureBlur,
 }: {
   event: TimelineEvent;
   drawerEventId: string | null;
   onOpenDrawer: (id: string) => void;
   onCloseDrawer: () => void;
+  disclosureId: string;
+  onDisclosureFocus: (id: string) => void;
+  onDisclosureBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
 }) {
   const isOpen = drawerEventId === event.id;
   return (
@@ -412,6 +471,9 @@ function SingleEventEntry({
         event={event}
         isOpen={isOpen}
         onToggle={() => (isOpen ? onCloseDrawer() : onOpenDrawer(event.id))}
+        disclosureId={disclosureId}
+        onDisclosureFocus={onDisclosureFocus}
+        onDisclosureBlur={onDisclosureBlur}
       />
       {isOpen && <TimelineEventDrawer event={event} onClose={onCloseDrawer} />}
     </div>
@@ -427,11 +489,15 @@ function HourGroupSection({
   drawerEventId,
   onOpenDrawer,
   onCloseDrawer,
+  onDisclosureFocus,
+  onDisclosureBlur,
 }: {
   group: HourGroup;
   drawerEventId: string | null;
   onOpenDrawer: (id: string) => void;
   onCloseDrawer: () => void;
+  onDisclosureFocus: (id: string) => void;
+  onDisclosureBlur: (event: ReactFocusEvent<HTMLButtonElement>) => void;
 }) {
   const hourStart = group.hourKey !== "unknown" ? `${group.hourKey}:00:00Z` : "";
 
@@ -444,9 +510,18 @@ function HourGroupSection({
       </div>
 
       {group.entries.map((entry) => {
+        const entryDisclosureId = disclosureId(group, entry);
         if (entry.kind === "heartbeat") {
           if (entry.events.length > 1) {
-            return <HeartbeatGroupRow key={`hb-${entry.events[0].id}`} events={entry.events} />;
+            return (
+              <HeartbeatGroupRow
+                key={entryDisclosureId}
+                events={entry.events}
+                disclosureId={entryDisclosureId}
+                onDisclosureFocus={onDisclosureFocus}
+                onDisclosureBlur={onDisclosureBlur}
+              />
+            );
           }
           return (
             <SingleEventEntry
@@ -455,6 +530,9 @@ function HourGroupSection({
               drawerEventId={drawerEventId}
               onOpenDrawer={onOpenDrawer}
               onCloseDrawer={onCloseDrawer}
+              disclosureId={entryDisclosureId}
+              onDisclosureFocus={onDisclosureFocus}
+              onDisclosureBlur={onDisclosureBlur}
             />
           );
         }
@@ -464,6 +542,9 @@ function HourGroupSection({
               key={`maintenance-${entry.butler}`}
               butler={entry.butler}
               events={entry.events}
+              disclosureId={entryDisclosureId}
+              onDisclosureFocus={onDisclosureFocus}
+              onDisclosureBlur={onDisclosureBlur}
             />
           );
         }
@@ -474,6 +555,9 @@ function HourGroupSection({
             drawerEventId={drawerEventId}
             onOpenDrawer={onOpenDrawer}
             onCloseDrawer={onCloseDrawer}
+            disclosureId={entryDisclosureId}
+            onDisclosureFocus={onDisclosureFocus}
+            onDisclosureBlur={onDisclosureBlur}
           />
         );
       })}
@@ -648,14 +732,84 @@ export function TimelineLedger({
   isLoadingMore,
 }: TimelineLedgerProps) {
   const { eventId: drawerEventId, openDrawer, closeDrawer } = useEventDrawerState();
+  const ledgerRef = useRef<HTMLDivElement>(null);
+  const focusOwnedRef = useRef(false);
+  const previousDisclosureIdsRef = useRef<string[]>([]);
+  const [focusedDisclosureId, setFocusedDisclosureId] = useState<string | null>(null);
 
-  const renderedEvents =
-    resolvedEvent && !events.some((event) => event.id === resolvedEvent.id)
-      ? [...events, resolvedEvent].sort((left, right) => {
-          const timestampOrder = right.timestamp.localeCompare(left.timestamp);
-          return timestampOrder || right.id.localeCompare(left.id);
-        })
-      : events;
+  const renderedEvents = useMemo(
+    () =>
+      resolvedEvent && !events.some((event) => event.id === resolvedEvent.id)
+        ? [...events, resolvedEvent].sort((left, right) => {
+            const timestampOrder = right.timestamp.localeCompare(left.timestamp);
+            return timestampOrder || right.id.localeCompare(left.id);
+          })
+        : events,
+    [events, resolvedEvent],
+  );
+  const hourGroups = useMemo(
+    () => (isLoading || isError ? [] : groupByHour(renderedEvents, includeInternal)),
+    [includeInternal, isError, isLoading, renderedEvents],
+  );
+  const disclosureIds = useMemo(
+    () => hourGroups.flatMap((group) => group.entries.map((entry) => disclosureId(group, entry))),
+    [hourGroups],
+  );
+
+  const findDisclosure = useCallback((id: string): HTMLButtonElement | undefined => {
+    return Array.from(
+      ledgerRef.current?.querySelectorAll<HTMLButtonElement>("[data-timeline-disclosure-id]") ?? [],
+    ).find((element) => element.dataset.timelineDisclosureId === id);
+  }, []);
+
+  const focusDisclosure = useCallback(
+    (id: string) => {
+      findDisclosure(id)?.focus();
+    },
+    [findDisclosure],
+  );
+
+  const resolveFocusedDisclosure = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null;
+    const id = active?.dataset.timelineDisclosureId;
+    return id && ledgerRef.current?.contains(active) ? id : null;
+  }, []);
+
+  useListTriage({
+    ids: disclosureIds,
+    selectedId: focusedDisclosureId,
+    resolveSelectedId: resolveFocusedDisclosure,
+    onSelect: focusDisclosure,
+    unselectedEntry: "directional",
+  });
+
+  const handleDisclosureFocus = useCallback((id: string) => {
+    focusOwnedRef.current = true;
+    setFocusedDisclosureId(id);
+  }, []);
+
+  const handleDisclosureBlur = useCallback((event: ReactFocusEvent<HTMLButtonElement>) => {
+    const next = event.relatedTarget as HTMLElement | null;
+    if (next?.closest("[data-timeline-disclosure-id]")) return;
+    focusOwnedRef.current = false;
+    setFocusedDisclosureId(null);
+  }, []);
+
+  useLayoutEffect(() => {
+    const previousIds = previousDisclosureIdsRef.current;
+    previousDisclosureIdsRef.current = disclosureIds;
+    if (disclosureIds.length === 0) {
+      focusOwnedRef.current = false;
+      return;
+    }
+    if (!focusOwnedRef.current || !focusedDisclosureId) return;
+
+    const exact = disclosureIds.includes(focusedDisclosureId) ? focusedDisclosureId : undefined;
+    const previousIndex = Math.max(previousIds.indexOf(focusedDisclosureId), 0);
+    const nearest = disclosureIds[Math.min(previousIndex, disclosureIds.length - 1)];
+    const targetId = exact ?? nearest;
+    if (targetId && document.activeElement !== findDisclosure(targetId)) focusDisclosure(targetId);
+  }, [disclosureIds, findDisclosure, focusDisclosure, focusedDisclosureId]);
 
   if (isLoading) {
     return <LedgerSkeleton />;
@@ -692,10 +846,8 @@ export function TimelineLedger({
     );
   }
 
-  const hourGroups = groupByHour(renderedEvents, includeInternal);
-
   return (
-    <div>
+    <div ref={ledgerRef}>
       {drawerEventMissing && (
         <EventResolutionStatus
           isLoading={isResolvingEvent}
@@ -723,6 +875,8 @@ export function TimelineLedger({
             drawerEventId={drawerEventId}
             onOpenDrawer={openDrawer}
             onCloseDrawer={closeDrawer}
+            onDisclosureFocus={handleDisclosureFocus}
+            onDisclosureBlur={handleDisclosureBlur}
           />
         ))
       )}
