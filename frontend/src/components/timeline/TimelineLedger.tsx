@@ -797,11 +797,17 @@ export function TimelineLedger({
 
   useLayoutEffect(() => {
     const previousIds = previousDisclosureIdsRef.current;
-    previousDisclosureIdsRef.current = disclosureIds;
     if (disclosureIds.length === 0) {
-      focusOwnedRef.current = false;
+      // A changed URL/query briefly replaces the ledger with its loading
+      // state. If a j/k request had just focused a row, keep both its identity
+      // and the prior visual index so the rendered replacement can fulfill
+      // that focus intent. A real move to another control cancels ownership.
+      if (!isLoading || document.activeElement !== document.body) {
+        focusOwnedRef.current = false;
+      }
       return;
     }
+    previousDisclosureIdsRef.current = disclosureIds;
     if (!focusOwnedRef.current || !focusedDisclosureId) return;
 
     const exact = disclosureIds.includes(focusedDisclosureId) ? focusedDisclosureId : undefined;
@@ -809,7 +815,7 @@ export function TimelineLedger({
     const nearest = disclosureIds[Math.min(previousIndex, disclosureIds.length - 1)];
     const targetId = exact ?? nearest;
     if (targetId && document.activeElement !== findDisclosure(targetId)) focusDisclosure(targetId);
-  }, [disclosureIds, findDisclosure, focusDisclosure, focusedDisclosureId]);
+  }, [disclosureIds, findDisclosure, focusDisclosure, focusedDisclosureId, isLoading]);
 
   if (isLoading) {
     return <LedgerSkeleton />;
