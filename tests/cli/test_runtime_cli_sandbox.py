@@ -52,6 +52,13 @@ _BASE_IMAGE_BUILD_INPUTS = (
 )
 
 
+def _test_shim_input_resolver(shim_path: Path):
+    """Return the explicit minimal shim binding used by isolated launcher tests."""
+    from butlers.cli_auth.sandbox_platform import ReadonlySandboxInput
+
+    return (ReadonlySandboxInput(source=shim_path, destination=shim_path),)
+
+
 def _make_stage_output(stage_home: Path) -> tuple[Path, Path]:
     """Create the ordinary private staged output layout without credential content."""
     stage_home.mkdir()
@@ -1483,6 +1490,7 @@ def test_default_dashboard_sandbox_binds_exact_image_runtime_input_resolvers(
     from butlers.cli_auth.sandbox_platform import (
         resolve_device_auth_runtime_inputs,
         resolve_readonly_runtime_inputs,
+        resolve_shim_runtime_inputs,
     )
 
     monkeypatch.setattr(sandbox_module, "_DASHBOARD_SANDBOX", None)
@@ -1490,6 +1498,7 @@ def test_default_dashboard_sandbox_binds_exact_image_runtime_input_resolvers(
 
     assert sandbox._invocation_resolver is resolve_device_auth_runtime_inputs
     assert sandbox._readonly_invocation_resolver is resolve_readonly_runtime_inputs
+    assert sandbox._shim_input_resolver is resolve_shim_runtime_inputs
 
 
 def test_runtime_input_manifest_resolves_only_declared_provider_inputs(tmp_path: Path) -> None:
@@ -1505,11 +1514,28 @@ def test_runtime_input_manifest_resolves_only_declared_provider_inputs(tmp_path:
     executable = runtime_root / "codex"
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(executable, 0o555)
+    shim = runtime_root / "runtime-cli-sandbox-init"
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(shim, 0o555)
+    shim_library = runtime_root / "shim-libc.so"
+    shim_library.write_bytes(b"shim-only-library")
+    os.chmod(shim_library, 0o444)
     manifest_path = tmp_path / "runtime-cli-sandbox-inputs.json"
     manifest_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
+                "shim": {
+                    "name": "runtime-cli-sandbox-init",
+                    "executable": str(shim),
+                    "readonly_inputs": [
+                        {"source": str(shim), "destination": str(shim)},
+                        {
+                            "source": str(shim_library),
+                            "destination": "/lib/shim-libc.so",
+                        },
+                    ],
+                },
                 "providers": {
                     "codex": {
                         "binary": "codex",
@@ -1529,6 +1555,7 @@ def test_runtime_input_manifest_resolves_only_declared_provider_inputs(tmp_path:
     os.chmod(manifest_path, 0o444)
     resolver = RuntimeCLIInputManifest(manifest_path, expected_uid=os.geteuid())
 
+    shim_inputs = resolver.resolve_shim(shim)
     device_auth = resolver.resolve_device_auth(PROVIDERS["codex"])
     readonly = resolver.resolve_readonly(
         PROVIDERS["codex"],
@@ -1536,6 +1563,10 @@ def test_runtime_input_manifest_resolves_only_declared_provider_inputs(tmp_path:
     )
 
     assert device_auth.command[0] == str(executable)
+    assert shim_inputs == (
+        ReadonlySandboxInput(source=shim_library, destination=Path("/lib/shim-libc.so")),
+        ReadonlySandboxInput(source=shim, destination=shim),
+    )
     assert device_auth.relative_output_path == Path(".codex") / "auth.json"
     assert readonly.command == (str(executable), "auth", "list")
     assert readonly.readonly_inputs == (
@@ -1562,6 +1593,9 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
     executable = runtime_root / "codex"
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(executable, 0o555)
+    shim = runtime_root / "runtime-cli-sandbox-init"
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(shim, 0o555)
     terminal_loader = runtime_root / "ld-linux-terminal.so"
     terminal_loader.write_bytes(b"immutable test loader")
     os.chmod(terminal_loader, 0o444)
@@ -1570,7 +1604,12 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
     manifest_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
+                "shim": {
+                    "name": "runtime-cli-sandbox-init",
+                    "executable": str(shim),
+                    "readonly_inputs": [{"source": str(shim), "destination": str(shim)}],
+                },
                 "providers": {
                     "codex": {
                         "binary": "codex",
@@ -1592,6 +1631,10 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
         manifest_path,
         expected_uid=os.geteuid(),
     ).resolve_readonly(PROVIDERS["codex"], ("codex", "auth", "list"))
+    shim_inputs = RuntimeCLIInputManifest(
+        manifest_path,
+        expected_uid=os.geteuid(),
+    ).resolve_shim(shim)
 
     assert (
         ReadonlySandboxInput(
@@ -1612,6 +1655,7 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
             stage_home=tmp_path / "stage",
             command=readonly.command,
             readonly_inputs=readonly.readonly_inputs,
+            shim_readonly_inputs=shim_inputs,
             info_fd=info_write,
             block_fd=block_read,
             shim_gate_fd=shim_gate_read,
@@ -1633,6 +1677,98 @@ def test_runtime_input_manifest_binds_terminal_source_at_logical_loader_path(
         str(terminal_loader),
         str(logical_loader),
     ) in tuple(rendered[index : index + 3] for index in range(len(rendered) - 2))
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-shim",
+        "extra-top-level",
+        "version-2",
+        "future-version",
+        "wrong-name",
+        "extra-shim-field",
+        "wrong-path",
+        "empty-inputs",
+        "malformed-binding",
+        "writable-source",
+        "directory-source",
+        "missing-executable-binding",
+        "conflicting-destination",
+    ],
+)
+def test_runtime_input_manifest_rejects_invalid_shim_closures(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    """REQ-core-credentials-002: malformed image-owned shim inputs fail closed."""
+    from butlers.cli_auth.sandbox_platform import (
+        RuntimeCLIInputManifest,
+        SandboxLaunchValidationError,
+    )
+
+    shim = tmp_path / "runtime-cli-sandbox-init"
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(shim, 0o555)
+    library = tmp_path / "libshim.so"
+    library.write_bytes(b"library")
+    os.chmod(library, 0o444)
+    document: dict[str, object] = {
+        "version": 3,
+        "shim": {
+            "name": "runtime-cli-sandbox-init",
+            "executable": str(shim),
+            "readonly_inputs": [
+                {"source": str(shim), "destination": str(shim)},
+                {"source": str(library), "destination": "/lib/libshim.so"},
+            ],
+        },
+        "providers": {},
+    }
+    shim_entry = document["shim"]
+    assert isinstance(shim_entry, dict)
+    if case == "missing-shim":
+        del document["shim"]
+    elif case == "extra-top-level":
+        document["unexpected"] = True
+    elif case == "version-2":
+        document["version"] = 2
+    elif case == "future-version":
+        document["version"] = 4
+    elif case == "wrong-name":
+        shim_entry["name"] = "another-shim"
+    elif case == "extra-shim-field":
+        shim_entry["unexpected"] = True
+    elif case == "wrong-path":
+        shim_entry["executable"] = str(library)
+    elif case == "empty-inputs":
+        shim_entry["readonly_inputs"] = []
+    elif case == "malformed-binding":
+        shim_entry["readonly_inputs"] = [{"source": str(shim)}]
+    elif case == "writable-source":
+        os.chmod(library, 0o666)
+    elif case == "directory-source":
+        shim_entry["readonly_inputs"] = [
+            {"source": str(shim), "destination": str(shim)},
+            {"source": str(tmp_path), "destination": "/usr/lib"},
+        ]
+    elif case == "missing-executable-binding":
+        shim_entry["readonly_inputs"] = [{"source": str(library), "destination": "/lib/libshim.so"}]
+    elif case == "conflicting-destination":
+        shim_entry["readonly_inputs"] = [
+            {"source": str(shim), "destination": str(shim)},
+            {"source": str(library), "destination": str(shim)},
+        ]
+
+    manifest_path = tmp_path / "runtime-cli-sandbox-inputs.json"
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+    os.chmod(manifest_path, 0o444)
+
+    with pytest.raises(SandboxLaunchValidationError):
+        RuntimeCLIInputManifest(
+            manifest_path,
+            expected_uid=os.geteuid(),
+        ).resolve_shim(shim)
 
 
 async def test_invocation_identity_pool_never_reuses_a_live_identity() -> None:
@@ -1659,22 +1795,137 @@ def test_stage_parent_is_traversable_but_not_listable_by_child_identities() -> N
     assert _STAGE_DIRECTORY_MODE == 0o700
 
 
+@pytest.mark.parametrize("entrypoint", ["device-auth", "readonly"])
+@pytest.mark.parametrize("failure", ["resolver", "directory-binding", "cross-closure-conflict"])
+async def test_public_launch_rejects_shim_inputs_before_identity_or_staging(
+    tmp_path: Path,
+    entrypoint: str,
+    failure: str,
+) -> None:
+    """REQ-core-credentials-002: shim failure precedes every authority boundary."""
+    from butlers.cli_auth.sandbox import SandboxUnavailableError
+    from butlers.cli_auth.sandbox_platform import (
+        BubblewrapDashboardCLIAuthSandbox,
+        DeviceAuthSandboxInvocation,
+        ReadonlySandboxInput,
+        ReadonlySandboxInvocation,
+        RuntimeCLIInputManifest,
+        SandboxIdentity,
+        SandboxLaunchValidationError,
+    )
+
+    shim = tmp_path / "runtime-cli-sandbox-init"
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    os.chmod(shim, 0o555)
+
+    def _resolve_shim(_shim_path: Path):
+        if failure == "resolver":
+            raise SandboxUnavailableError("synthetic shim resolver failure")
+        if failure == "cross-closure-conflict":
+            return (
+                ReadonlySandboxInput(shim, shim),
+                ReadonlySandboxInput(shim, Path("/usr/bin/true")),
+            )
+        manifest = tmp_path / "runtime-cli-sandbox-inputs.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "shim": {
+                        "name": "runtime-cli-sandbox-init",
+                        "executable": str(shim),
+                        "readonly_inputs": [
+                            {"source": str(shim), "destination": str(shim)},
+                            {"source": str(tmp_path), "destination": "/usr/lib"},
+                        ],
+                    },
+                    "providers": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(manifest, 0o444)
+        return RuntimeCLIInputManifest(
+            manifest,
+            expected_uid=os.geteuid(),
+        ).resolve_shim(shim)
+
+    identity_pool = MagicMock()
+    identity_pool.acquire = AsyncMock(return_value=SandboxIdentity(uid=61000, gid=61000))
+    stage_factory = MagicMock()
+    spawn = AsyncMock()
+    device_resolver = MagicMock(
+        return_value=DeviceAuthSandboxInvocation(
+            command=("/usr/bin/true",),
+            readonly_inputs=(Path("/usr/bin/true"),),
+            relative_output_path=Path(".codex/auth.json"),
+        )
+    )
+    readonly_resolver = MagicMock(
+        return_value=ReadonlySandboxInvocation(
+            command=("/usr/bin/true",),
+            readonly_inputs=(Path("/usr/bin/true"),),
+        )
+    )
+    sandbox = BubblewrapDashboardCLIAuthSandbox(
+        shim_path=shim,
+        identity_pool=identity_pool,
+        exact_image_preflight=lambda: None,
+        shim_input_resolver=_resolve_shim,
+        invocation_resolver=device_resolver,
+        readonly_invocation_resolver=readonly_resolver,
+        stage_factory=stage_factory,
+        spawn=spawn,
+    )
+    launch_invocation = AsyncMock()
+    sandbox._launch_invocation = launch_invocation
+
+    with pytest.raises((SandboxUnavailableError, SandboxLaunchValidationError)):
+        if entrypoint == "device-auth":
+            await sandbox.launch_device_auth(PROVIDERS["codex"])
+        else:
+            await sandbox.run_readonly_command(
+                PROVIDERS["codex"],
+                command=("codex", "auth", "list"),
+                authority=MagicMock(),
+                timeout_s=1,
+            )
+
+    identity_pool.acquire.assert_not_awaited()
+    stage_factory.assert_not_called()
+    spawn.assert_not_awaited()
+    launch_invocation.assert_not_awaited()
+    if failure == "cross-closure-conflict":
+        if entrypoint == "device-auth":
+            device_resolver.assert_called_once()
+            readonly_resolver.assert_not_called()
+        else:
+            readonly_resolver.assert_called_once()
+            device_resolver.assert_not_called()
+    else:
+        device_resolver.assert_not_called()
+        readonly_resolver.assert_not_called()
+
+
 def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
     tmp_path: Path,
 ) -> None:
     """REQ-core-credentials-002: the child view excludes broad host mounts and secrets."""
     from butlers.cli_auth.sandbox_platform import (
+        ReadonlySandboxInput,
         SandboxIdentity,
+        SandboxLaunchValidationError,
         build_bubblewrap_launch_plan,
     )
 
     info_read, info_write = os.pipe2(os.O_CLOEXEC)
     block_read, block_write = os.pipe2(os.O_CLOEXEC)
     shim_gate_read, shim_gate_write = os.pipe2(os.O_CLOEXEC)
+    shim_path = Path("/usr/local/libexec/butlers/runtime-cli-sandbox-init")
     try:
         plan = build_bubblewrap_launch_plan(
             bwrap_path=Path("/usr/bin/bwrap"),
-            shim_path=Path("/usr/local/libexec/butlers/runtime-cli-sandbox-init"),
+            shim_path=shim_path,
             identity=SandboxIdentity(uid=61000, gid=61000),
             stage_home=tmp_path / "stage-home",
             command=("/usr/local/bin/codex", "login", "--device-auth"),
@@ -1684,13 +1935,28 @@ def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
                 Path("/lib/x86_64-linux-gnu/libc.so.6"),
                 Path("/etc/ssl/certs/ca-certificates.crt"),
                 Path("/etc/resolv.conf"),
+                shim_path,
             ),
+            shim_readonly_inputs=(_test_shim_input_resolver(shim_path)[0],),
             info_fd=info_write,
             block_fd=block_read,
             shim_gate_fd=shim_gate_read,
         )
 
         assert plan.pass_fds == (info_write, block_read, shim_gate_read)
+        with pytest.raises(SandboxLaunchValidationError, match="conflicting"):
+            build_bubblewrap_launch_plan(
+                bwrap_path=Path("/usr/bin/bwrap"),
+                shim_path=shim_path,
+                identity=SandboxIdentity(uid=61000, gid=61000),
+                stage_home=tmp_path / "stage-home",
+                command=("/usr/local/bin/codex", "login", "--device-auth"),
+                readonly_inputs=(ReadonlySandboxInput(Path("/other/shim"), shim_path),),
+                shim_readonly_inputs=_test_shim_input_resolver(shim_path),
+                info_fd=info_write,
+                block_fd=block_read,
+                shim_gate_fd=shim_gate_read,
+            )
     finally:
         for fd in (
             info_read,
@@ -1711,6 +1977,15 @@ def test_bubblewrap_launch_plan_is_minimal_and_uses_only_typed_handshake_fds(
         "XDG_CONFIG_HOME": "/home/runtime/.config",
         "XDG_DATA_HOME": "/home/runtime/.local/share",
     }
+    bind_triplets = [
+        tuple(plan.argv[index : index + 3])
+        for index, argument in enumerate(plan.argv)
+        if argument == "--ro-bind"
+    ]
+    assert [triplet[2] for triplet in bind_triplets] == sorted(
+        triplet[2] for triplet in bind_triplets
+    )
+    assert sum(triplet[2] == str(shim_path) for triplet in bind_triplets) == 1
     for required in (
         "--unshare-user",
         "--unshare-pid",
@@ -1919,6 +2194,7 @@ async def test_bubblewrap_launcher_opens_pidfd_before_releasing_payload_or_readi
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: invocation,
         stage_factory=_stage_factory,
         spawn=_spawn,
@@ -1977,6 +2253,7 @@ async def test_pidfd_open_failure_after_pid1_receipt_retains_stage_and_identity(
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2051,6 +2328,7 @@ async def test_pid1_receipt_eof_quarantines_the_bwrap_gate_before_provider_execu
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2140,6 +2418,7 @@ async def test_bubblewrap_launcher_oversized_shim_ready_line_aborts_the_started_
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2224,6 +2503,7 @@ async def test_readonly_command_stages_authority_before_launch_and_discards_chil
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2278,6 +2558,7 @@ async def test_readonly_command_rejects_an_unsafe_authority_target_before_spawn(
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2344,6 +2625,7 @@ async def test_readonly_command_rejects_oversized_stdout_before_materializing_it
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2416,6 +2698,7 @@ async def test_readonly_command_waits_for_eof_after_a_partial_first_stdout_chunk
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2490,6 +2773,7 @@ async def test_readonly_command_times_out_after_partial_stdout_and_cleans_the_do
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2572,6 +2856,7 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=InvocationIdentityPool(first_id=61000, last_id=61000),
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2668,6 +2953,7 @@ async def test_readonly_command_cancellation_waiting_for_next_chunk_cleans_the_d
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         readonly_invocation_resolver=lambda _provider, command: ReadonlySandboxInvocation(
             command=command,
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -2753,6 +3039,7 @@ async def test_bubblewrap_startup_cancellation_after_release_terminates_pid1_and
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -3163,6 +3450,7 @@ async def test_bubblewrap_handle_retains_the_identity_when_pid1_death_is_not_pro
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),
@@ -3244,6 +3532,7 @@ async def test_pidfd_signal_error_kills_the_direct_child_and_retains_stage_until
         shim_path=tmp_path / "runtime-cli-sandbox-init",
         identity_pool=pool,
         exact_image_preflight=lambda: None,
+        shim_input_resolver=_test_shim_input_resolver,
         invocation_resolver=lambda _provider: DeviceAuthSandboxInvocation(
             command=("/usr/bin/true",),
             readonly_inputs=(Path("/usr/bin/true"),),

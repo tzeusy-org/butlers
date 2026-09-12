@@ -28,6 +28,7 @@ from butlers.cli_auth.sandbox_platform import (
     _outer_identity_preexec,
     _read_bubblewrap_info,
     build_bubblewrap_launch_plan,
+    resolve_shim_runtime_inputs,
 )
 
 # Importing butlers.core.runtime_probe_control here would pull in the
@@ -40,15 +41,6 @@ SIGNER_PATH = Path("/run/secrets/runtime_probe_control_signing_key")
 
 _PAYLOAD_HOST_PATH = "/tmp/bu-xj2gi-signer-isolation-payload"
 _PAYLOAD_SANDBOX_PATH = "/usr/local/bin/bu-xj2gi-signer-isolation-payload"
-# The statically-linked payload itself needs no shared libraries, but the
-# image-owned PID1 shim it execs from is dynamically linked against glibc.
-# The provider manifest resolver normally supplies this closure as a side
-# effect of the provider's own ldd dependencies; this harness bypasses that
-# resolver, so it must mount the shim's runtime closure explicitly.
-_SHIM_RUNTIME_LIBRARIES = (
-    "/lib/x86_64-linux-gnu/libc.so.6",
-    "/lib64/ld-linux-x86-64.so.2",
-)
 _MARKER_ENV_NAME = "BU_XJ2GI_PROTECTED_MARKER"
 _MARKER_ENV_VALUE = "bu-xj2gi-parent-only-secret-should-never-leak"
 
@@ -64,6 +56,7 @@ async def _run() -> None:
 
     sandbox = BubblewrapDashboardCLIAuthSandbox()
     sandbox._exact_image_preflight()
+    shim_readonly_inputs = resolve_shim_runtime_inputs(sandbox._shim_path)
     identity = await sandbox._identity_pool.acquire()
     # Simulate the real Dashboard process: a live secret sits in the
     # orchestrator's own environment right up until spawn.
@@ -89,11 +82,8 @@ async def _run() -> None:
                     source=Path(_PAYLOAD_HOST_PATH),
                     destination=Path(_PAYLOAD_SANDBOX_PATH),
                 ),
-                *(
-                    ReadonlySandboxInput(source=Path(library), destination=Path(library))
-                    for library in _SHIM_RUNTIME_LIBRARIES
-                ),
             ),
+            shim_readonly_inputs=shim_readonly_inputs,
             info_fd=info_write,
             block_fd=block_read,
             shim_gate_fd=shim_gate_read,

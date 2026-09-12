@@ -72,9 +72,9 @@ RUN --mount=type=cache,target=/root/.npm \
     @openai/codex@0.144.1 \
     opencode-ai@1.17.7
 
-# Resolve the pinned npm launchers and their exact immutable runtime closure
-# while the image is built.  Dashboard code reads this asset rather than
-# discovering a host path or mounting a broad runtime tree into Bubblewrap.
+# Resolve the pinned npm launchers and the separately computed PID1 shim
+# closure after the final shim install. The version-3 image asset is the sole
+# runtime authority for those exact inputs; no later layer replaces the shim.
 COPY scripts/generate_runtime_cli_sandbox_manifest.py /tmp/generate_runtime_cli_sandbox_manifest.py
 RUN python /tmp/generate_runtime_cli_sandbox_manifest.py \
         --output /usr/local/share/butlers/runtime-cli-sandbox-inputs.json \

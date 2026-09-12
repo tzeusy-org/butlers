@@ -202,16 +202,15 @@ UID range makes CLI-auth launch and signer activation unavailable while the
 ordinary Dashboard remains healthy. No legacy direct subprocess fallback is
 allowed.
 
-#### Owner-selected Option B: image-owned PID1 shim closure (proposed amendment)
+#### Owner-adopted Option B: image-owned PID1 shim closure
 
 On 2026-09-11 the owner selected Option B: compute the namespace-PID1 shim's
 runtime closure during the image build and consume it from the validated
-image-owned manifest. This selects the design direction only. The exact
-contract in this amendment remains proposed until security/engineering review
-and adoption, and it does not authorize source implementation, image build or
-deployment, provider/credential operations, or reassignment of the existing
-implementation owner. The prior runtime-`ldd` Option A prototype is neither an
-implementation input nor a deletion target for this change.
+image-owned manifest. On 2026-09-12 the owner adopted the exact reviewed
+contract and authorized its bounded source implementation. This grants no
+image build or deployment, provider/credential operation, reassignment, or
+disposition of the prior runtime-`ldd` Option A prototype; that prototype is
+neither an implementation input nor a deletion target for this change.
 
 Manifest schema version 3 adds one top-level `shim` object beside the existing
 `providers` object:

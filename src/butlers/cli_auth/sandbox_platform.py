@@ -195,6 +195,22 @@ def _mount_parent_directories(paths: tuple[SandboxReadonlyInput, ...]) -> tuple[
     return tuple(args)
 
 
+def _merge_readonly_inputs(
+    *groups: tuple[SandboxReadonlyInput, ...],
+) -> tuple[ReadonlySandboxInput, ...]:
+    """Combine exact bindings by destination, rejecting ambiguous child views."""
+    by_destination: dict[Path, ReadonlySandboxInput] = {}
+    for raw_input in (raw for group in groups for raw in group):
+        binding = _readonly_input_binding(raw_input)
+        previous = by_destination.get(binding.destination)
+        if previous is not None and previous.source != binding.source:
+            raise SandboxLaunchValidationError(
+                "sandbox readonly inputs have conflicting logical destinations"
+            )
+        by_destination[binding.destination] = binding
+    return tuple(by_destination[path] for path in sorted(by_destination, key=str))
+
+
 def validate_handshake_fds(
     *, info_fd: int, block_fd: int, shim_gate_fd: int
 ) -> tuple[int, int, int]:
@@ -230,6 +246,7 @@ def build_bubblewrap_launch_plan(
     stage_home: Path,
     command: tuple[str, ...],
     readonly_inputs: tuple[SandboxReadonlyInput, ...],
+    shim_readonly_inputs: tuple[ReadonlySandboxInput, ...],
     info_fd: int,
     block_fd: int,
     shim_gate_fd: int,
@@ -249,8 +266,9 @@ def build_bubblewrap_launch_plan(
     if not stage_home.is_absolute():
         raise SandboxLaunchValidationError("staged HOME must be absolute")
 
-    child_inputs = tuple(_readonly_input_binding(raw) for raw in readonly_inputs) + (
-        ReadonlySandboxInput(source=shim_path, destination=shim_path),
+    child_inputs = _merge_readonly_inputs(
+        readonly_inputs,
+        shim_readonly_inputs,
     )
     for child_input in child_inputs:
         _validate_child_path(child_input.source)
@@ -344,14 +362,22 @@ class RuntimeCLIInputManifest:
             raise SandboxLaunchValidationError("runtime-input manifest is invalid") from exc
         if (
             not isinstance(document, dict)
-            or document.get("version") != 2
+            or set(document) != {"version", "shim", "providers"}
+            or document.get("version") != 3
+            or not isinstance(document.get("shim"), dict)
             or not isinstance(document.get("providers"), dict)
         ):
             raise SandboxLaunchValidationError("runtime-input manifest has an unsafe schema")
         self._document = document
         return document
 
-    def _immutable_input(self, raw_path: object, *, executable: bool = False) -> Path:
+    def _immutable_input(
+        self,
+        raw_path: object,
+        *,
+        executable: bool = False,
+        regular_file_only: bool = False,
+    ) -> Path:
         if not isinstance(raw_path, str):
             raise SandboxLaunchValidationError("runtime-input manifest path is invalid")
         path = Path(raw_path)
@@ -367,6 +393,7 @@ class RuntimeCLIInputManifest:
             or metadata.st_mode & 0o022
             or stat.S_ISLNK(metadata.st_mode)
             or not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode))
+            or (regular_file_only and not stat.S_ISREG(metadata.st_mode))
             or (
                 executable
                 and (not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & stat.S_IXUSR)
@@ -375,17 +402,51 @@ class RuntimeCLIInputManifest:
             raise SandboxLaunchValidationError("runtime-input manifest source is unsafe")
         return path
 
-    def _immutable_input_binding(self, raw_input: object) -> ReadonlySandboxInput:
+    def _immutable_input_binding(
+        self,
+        raw_input: object,
+        *,
+        regular_file_only: bool = False,
+    ) -> ReadonlySandboxInput:
         """Read one source-to-logical-path mount from the image manifest."""
         if not isinstance(raw_input, dict) or set(raw_input) != {"source", "destination"}:
             raise SandboxLaunchValidationError("runtime-input manifest binding is invalid")
-        source = self._immutable_input(raw_input.get("source"))
+        source = self._immutable_input(raw_input.get("source"), regular_file_only=regular_file_only)
         destination_raw = raw_input.get("destination")
         if not isinstance(destination_raw, str):
             raise SandboxLaunchValidationError("runtime-input manifest path is invalid")
         destination = Path(destination_raw)
         _validate_child_path(destination)
         return ReadonlySandboxInput(source=source, destination=destination)
+
+    def resolve_shim(self, shim_path: Path) -> tuple[ReadonlySandboxInput, ...]:
+        """Resolve the fixed PID1 shim closure independently of provider inputs."""
+        document = self._read_document()
+        raw_entry = document["shim"]
+        if (
+            not isinstance(raw_entry, dict)
+            or set(raw_entry) != {"name", "executable", "readonly_inputs"}
+            or raw_entry.get("name") != "runtime-cli-sandbox-init"
+            or raw_entry.get("executable") != str(shim_path)
+        ):
+            raise SandboxLaunchValidationError("runtime-input manifest has an unsafe shim entry")
+        executable = self._immutable_input(
+            raw_entry.get("executable"), executable=True, regular_file_only=True
+        )
+        raw_inputs = raw_entry.get("readonly_inputs")
+        if not isinstance(raw_inputs, list) or not raw_inputs:
+            raise SandboxLaunchValidationError("runtime-input manifest has no shim inputs")
+        inputs = tuple(
+            self._immutable_input_binding(raw_input, regular_file_only=True)
+            for raw_input in raw_inputs
+        )
+        merged = _merge_readonly_inputs(inputs)
+        executable_binding = ReadonlySandboxInput(source=executable, destination=shim_path)
+        if executable_binding not in merged:
+            raise SandboxLaunchValidationError(
+                "runtime-input manifest omits the shim executable binding"
+            )
+        return merged
 
     def _resolve(
         self,
@@ -402,7 +463,11 @@ class RuntimeCLIInputManifest:
         providers = document["providers"]
         assert isinstance(providers, dict)
         raw_entry = providers.get(provider.name)
-        if not isinstance(raw_entry, dict) or raw_entry.get("binary") != provider.binary():
+        if (
+            not isinstance(raw_entry, dict)
+            or set(raw_entry) != {"binary", "executable", "readonly_inputs"}
+            or raw_entry.get("binary") != provider.binary()
+        ):
             raise SandboxLaunchValidationError("runtime-input manifest has no provider entry")
         executable = self._immutable_input(raw_entry.get("executable"), executable=True)
         raw_inputs = raw_entry.get("readonly_inputs")
@@ -471,6 +536,11 @@ def resolve_readonly_runtime_inputs(
 ) -> ReadonlySandboxInvocation:
     """Production health/API resolver with no direct-child fallback."""
     return _runtime_input_manifest().resolve_readonly(provider, command)
+
+
+def resolve_shim_runtime_inputs(shim_path: Path) -> tuple[ReadonlySandboxInput, ...]:
+    """Production PID1 resolver with no provider-derived or runtime fallback."""
+    return _runtime_input_manifest().resolve_shim(shim_path)
 
 
 def _close_fd(fd: int | None) -> None:
@@ -881,6 +951,7 @@ class BubblewrapDashboardCLIAuthSandbox:
         readonly_invocation_resolver: (
             Callable[[CLIAuthProviderDef, tuple[str, ...]], ReadonlySandboxInvocation] | None
         ) = None,
+        shim_input_resolver: (Callable[[Path], tuple[ReadonlySandboxInput, ...]] | None) = None,
         stage_factory: Callable[[SandboxIdentity], SandboxStage] | None = None,
         spawn: Callable[..., Awaitable[SandboxedChildProcess]] = asyncio.create_subprocess_exec,
         pidfd_open: Callable[[int, int], int] | None = None,
@@ -897,6 +968,7 @@ class BubblewrapDashboardCLIAuthSandbox:
         self._readonly_invocation_resolver = (
             readonly_invocation_resolver or resolve_readonly_runtime_inputs
         )
+        self._shim_input_resolver = shim_input_resolver or resolve_shim_runtime_inputs
         self._stage_factory = stage_factory or self._create_stage
         self._spawn = spawn
         self._pidfd_open = pidfd_open or getattr(os, "pidfd_open", self._missing_pidfd_open)
@@ -1057,6 +1129,7 @@ class BubblewrapDashboardCLIAuthSandbox:
         *,
         command: tuple[str, ...],
         readonly_inputs: tuple[SandboxReadonlyInput, ...],
+        shim_readonly_inputs: tuple[ReadonlySandboxInput, ...],
         relative_output_path: Path | None,
         authority: ReadonlySandboxAuthority | None,
     ) -> _BubblewrapDeviceAuthHandle:
@@ -1089,6 +1162,7 @@ class BubblewrapDashboardCLIAuthSandbox:
                 stage_home=stage.path,
                 command=command,
                 readonly_inputs=readonly_inputs,
+                shim_readonly_inputs=shim_readonly_inputs,
                 info_fd=info_write,
                 block_fd=block_read,
                 shim_gate_fd=shim_gate_read,
@@ -1192,10 +1266,13 @@ class BubblewrapDashboardCLIAuthSandbox:
     async def launch_device_auth(self, provider: CLIAuthProviderDef) -> DeviceAuthSandboxHandle:
         """Launch one device-auth payload only after a PID1 containment receipt."""
         self._exact_image_preflight()
+        shim_readonly_inputs = self._shim_input_resolver(self._shim_path)
         invocation = self._invocation_resolver(provider)
+        _merge_readonly_inputs(invocation.readonly_inputs, shim_readonly_inputs)
         return await self._launch_invocation(
             command=invocation.command,
             readonly_inputs=invocation.readonly_inputs,
+            shim_readonly_inputs=shim_readonly_inputs,
             relative_output_path=invocation.relative_output_path,
             authority=None,
         )
@@ -1210,12 +1287,15 @@ class BubblewrapDashboardCLIAuthSandbox:
     ) -> SandboxedCommandResult:
         """Run a health/API command with a disposable staged authority copy."""
         self._exact_image_preflight()
+        shim_readonly_inputs = self._shim_input_resolver(self._shim_path)
         if timeout_s <= 0:
             raise SandboxUnavailableError("Dashboard CLI-auth sandbox timeout is invalid")
         invocation = self._readonly_invocation_resolver(provider, command)
+        _merge_readonly_inputs(invocation.readonly_inputs, shim_readonly_inputs)
         handle = await self._launch_invocation(
             command=invocation.command,
             readonly_inputs=invocation.readonly_inputs,
+            shim_readonly_inputs=shim_readonly_inputs,
             relative_output_path=None,
             authority=authority,
         )

@@ -120,6 +120,20 @@ def test_base_image_generates_the_exact_runtime_input_manifest() -> None:
     assert "runtime-cli-sandbox-inputs.json" in text
     assert "--output /usr/local/share/butlers/runtime-cli-sandbox-inputs.json" in text
     assert "chmod 0444 /usr/local/share/butlers/runtime-cli-sandbox-inputs.json" in text
+    shim_copy = (
+        "COPY --from=runtime-cli-sandbox-init-builder /out/runtime-cli-sandbox-init "
+        "/usr/local/libexec/butlers/runtime-cli-sandbox-init"
+    )
+    generator_copy = (
+        "COPY scripts/generate_runtime_cli_sandbox_manifest.py "
+        "/tmp/generate_runtime_cli_sandbox_manifest.py"
+    )
+    assert text.count(shim_copy) == 1
+    assert (
+        text.index(shim_copy)
+        < text.index("chmod 0755 /usr/local/libexec/butlers/runtime-cli-sandbox-init")
+        < text.index(generator_copy)
+    )
 
 
 def test_base_image_freshness_fingerprints_each_local_copy_input_without_dotenv(
