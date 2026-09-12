@@ -16,14 +16,11 @@ criterion 7 requires separate owner approval of the exact artifact, now tracked 
 corrected draft by `bu-qj0ekp`, before `_content_blind_system` / `_content_blind_cli` in
 `src/butlers/api/routers/secrets_v2.py` are touched.
 
-Because an OpenSpec `MODIFIED Requirements` block replaces the whole requirement, the draft also
-collision-preserves the detail DTO clauses already implemented under the merged but unarchived
-`project-secret-read-endpoints-content-blind` change. Those clauses remain that sibling change's
-pending baseline-adoption responsibility; carrying them here prevents this inventory proposal from
-silently restoring the older baseline DTOs and is not a second proposal to change either detail
-endpoint. The two obsolete baseline DTO sentences are repeated in the delta only as explicitly
-superseded archive provenance so the overwrite guard can prove they were considered; the sentences
-are not response-shape requirements and do not compete with the implemented detail DTO clauses.
+Because an OpenSpec `MODIFIED Requirements` block replaces the whole requirement, the draft carries
+the canonical detail DTO clauses adopted when `project-secret-read-endpoints-content-blind` was
+archived on 2026-09-12. This delta was rebuilt against that refreshed baseline during the synthesis
+that archived the sibling, so it preserves the canonical `SystemCredentialDetail` and
+`CliCredentialDetail` contracts without proposing a second change to either detail endpoint.
 
 ## What Changes
 
@@ -84,11 +81,9 @@ None.
   `description`.
 - Out of scope: changing `GET /api/secrets/system/<key>` or `GET /api/secrets/cli/<id>`, raw
   credential value access, key renaming, opaque-ID redesign, and deployment.
-- Coexistence note: `openspec/changes/project-secret-read-endpoints-content-blind` also carries an
-  unarchived `MODIFIED Requirements` block for this same `dashboard-api` requirement (it restates
-  the whole requirement to change only the per-credential detail-endpoint field lists, per
-  `AGENTS.md`'s two-unarchived-changes-same-requirement hazard). Whichever of the two changes
-  archives second must rebuild its block against the refreshed baseline rather than archive its
-  stale copy. The sibling's implemented detail DTO clauses are pending until that sibling is
-  archived; this draft carries them solely as whole-requirement collision preservation. Before
-  either change is archived, the second block MUST be rebuilt against the refreshed baseline.
+- Baseline disposition: `project-secret-read-endpoints-content-blind` is archived at
+  `openspec/changes/archive/2026-09-12-project-secret-read-endpoints-content-blind`, and its
+  per-credential detail DTO clauses are canonical in `openspec/specs/dashboard-api/spec.md`. This
+  draft's whole-requirement delta was rebuilt against that refreshed baseline. Before this change
+  is eventually archived, it MUST be rebuilt again against the then-current baseline and pass the
+  body-loss guard; that future archive remains gated on owner approval and implementation.
