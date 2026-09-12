@@ -2,13 +2,13 @@
 
 ## Authority and status
 
-The owner selected Option B on 2026-09-11: compute the namespace-PID1 shim
-closure at image-build time and consume it from the validated image-owned
-runtime-input manifest. This records the selected direction and the exact
-proposed contract. It is not contract adoption, implementation authorization,
-deployment authority, or reassignment. `bu-9hkm5` remains the implementation
-owner. Its runtime-`ldd` Option A prototype is not an input to this design and
-must be neither reused nor deleted by this packet.
+The owner selected Option B on 2026-09-11 and adopted the exact reviewed
+contract plus authorized its bounded implementation on 2026-09-12: compute the
+namespace-PID1 shim closure at image-build time and consume it from the
+validated image-owned runtime-input manifest. This grants no deployment, live
+credential/provider operation, prototype disposition, or reassignment.
+`bu-9hkm5` remains the implementation owner. Its runtime-`ldd` Option A
+prototype is not an input to this design and must be neither reused nor deleted.
 
 The amendment is intentionally bounded to the image-owned shim dependency
 closure. It does not change authentication policy, credential/provider
@@ -131,12 +131,9 @@ receive the validated shim closure; do not leave a compatibility default.
 
 ## Test handoff
 
-Draft-only delta: `Tests: +0 ~0 -0`.
-
-Proposed implementation delta after inventory: `Tests: +3 ~5 -0`. Recalculate
-the exact line after the implementation diff; the intent is three parametrized
-failure/ordering matrices and extensions of existing seam tests, not a new test
-file.
+Implementation delta: `Tests: +3 ~5 -0`. The three additions are parametrized
+failure/ordering matrices and the remaining changes extend existing seam tests;
+no new test file is introduced.
 
 - Extend
   `tests/scripts/test_generate_runtime_cli_sandbox_manifest.py::test_generator_declares_only_the_registered_dashboard_runtime_closures`

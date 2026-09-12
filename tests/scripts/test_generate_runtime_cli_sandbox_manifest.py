@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 _SCRIPT = Path("scripts/generate_runtime_cli_sandbox_manifest.py")
 
 
@@ -22,6 +24,7 @@ def _manifest_module() -> ModuleType:
 
 def test_generator_declares_only_the_registered_dashboard_runtime_closures(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     """REQ-core-credentials-002: no provider can fall back to a host runtime tree."""
     module = _manifest_module()
@@ -47,9 +50,29 @@ def test_generator_declares_only_the_registered_dashboard_runtime_closures(
         npm_root=lambda: Path("/image/node_modules"),
         resolve_command=_resolve,
         runtime_closure=_closure,
+        shim_path=Path("/image/runtime-cli-sandbox-init"),
+        resolve_shim=lambda path: path,
+        shim_runtime_closure=lambda executable: (
+            module.RuntimeInputBinding(source=executable, destination=executable),
+            module.RuntimeInputBinding(
+                source=Path("/image/ld-linux.so"),
+                destination=Path("/lib64/ld-linux.so"),
+            ),
+        ),
     )
 
-    assert document["version"] == 2
+    assert document["version"] == 3
+    assert document["shim"] == {
+        "name": "runtime-cli-sandbox-init",
+        "executable": "/image/runtime-cli-sandbox-init",
+        "readonly_inputs": [
+            {
+                "destination": "/image/runtime-cli-sandbox-init",
+                "source": "/image/runtime-cli-sandbox-init",
+            },
+            {"destination": "/lib64/ld-linux.so", "source": "/image/ld-linux.so"},
+        ],
+    }
     providers = document["providers"]
     assert set(providers) == {"codex", "opencode-openai", "opencode-go"}
     assert providers["codex"] == {
@@ -73,6 +96,22 @@ def test_generator_declares_only_the_registered_dashboard_runtime_closures(
         },
         {"destination": "/etc/resolv.conf", "source": "/image/resolv.conf"},
     ]
+
+    shim = tmp_path / "runtime-cli-sandbox-init"
+    shim.write_bytes(b"shim")
+    conflict = tmp_path / "conflicting-source"
+    conflict.write_bytes(b"conflict")
+    monkeypatch.setattr(
+        module, "_runtime_input_binding", lambda path: module.RuntimeInputBinding(path, path)
+    )
+    monkeypatch.setattr(module, "_shebang_interpreters", lambda _path: ())
+    monkeypatch.setattr(
+        module,
+        "_ldd_dependencies",
+        lambda _path, strict: (module.RuntimeInputBinding(conflict, shim),),
+    )
+    with pytest.raises(module.ManifestGenerationError, match="conflicting"):
+        module._shim_runtime_closure(shim)
 
 
 def test_generator_writes_a_non_group_or_world_writable_manifest(tmp_path: Path) -> None:
@@ -105,9 +144,41 @@ def test_generator_preserves_logical_elf_loader_paths_for_the_empty_root(
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout=f"\t{logical_loader} (0x00000000)\n",
+            stderr="",
         ),
     )
 
     assert module._ldd_dependencies(Path("/image/bin/runtime-cli")) == (
         module.RuntimeInputBinding(source=real_loader, destination=logical_loader),
     )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    [
+        (0, "libc.so.6 => not found\n", ""),
+        (1, "", "unexpected loader failure"),
+        (0, "/lib64/ld-linux.so (0x0)\n", "unexpected warning"),
+        (0, "ambiguous-loader-entry (0x0)\n", ""),
+    ],
+)
+def test_strict_shim_dependency_discovery_fails_closed(
+    monkeypatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """REQ-core-credentials-002: image generation never emits a partial shim closure."""
+    module = _manifest_module()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(module.ManifestGenerationError):
+        module._ldd_dependencies(Path("/image/runtime-cli-sandbox-init"), strict=True)

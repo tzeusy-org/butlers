@@ -43,6 +43,7 @@ _RUNTIME_PROVIDERS = (
     RuntimeProvider("opencode-go", "opencode", "opencode-ai"),
 )
 _NETWORK_RUNTIME_FILES = (Path("/etc/resolv.conf"), Path("/etc/ssl/certs/ca-certificates.crt"))
+_SHIM_PATH = Path("/usr/local/libexec/butlers/runtime-cli-sandbox-init")
 
 
 class ManifestGenerationError(RuntimeError):
@@ -99,6 +100,15 @@ def _resolve_command(binary: str) -> Path:
     return path
 
 
+def _resolve_shim(path: Path) -> Path:
+    """Validate the fixed installed shim without accepting another identity."""
+    safe_path = _safe_regular_or_directory(path)
+    metadata = safe_path.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & stat.S_IXUSR:
+        raise ManifestGenerationError(f"runtime shim is not executable: {path}")
+    return safe_path
+
+
 def _global_npm_root() -> Path:
     """Return npm's immutable global package root during image construction."""
     result = subprocess.run(
@@ -113,7 +123,11 @@ def _global_npm_root() -> Path:
     return _safe_regular_or_directory(Path(rendered))
 
 
-def _ldd_dependencies(path: Path) -> tuple[RuntimeInputBinding, ...]:
+def _ldd_dependencies(
+    path: Path,
+    *,
+    strict: bool = False,
+) -> tuple[RuntimeInputBinding, ...]:
     """List direct shared-library sources for an executable when it is dynamic."""
     result = subprocess.run(
         ["ldd", str(path)],
@@ -121,9 +135,20 @@ def _ldd_dependencies(path: Path) -> tuple[RuntimeInputBinding, ...]:
         capture_output=True,
         text=True,
     )
+    output = "\n".join((result.stdout, result.stderr))
+    if strict and "not found" in output:
+        raise ManifestGenerationError(f"runtime input dependency is unresolved: {path}")
+    static_markers = ("not a dynamic executable", "statically linked")
     if result.returncode != 0:
-        # Scripts and static binaries legitimately have no ldd closure.
+        # Provider launchers may be scripts, while the fixed compiled shim must
+        # be either positively identified as static or have a complete closure.
+        if strict and not any(marker in output.lower() for marker in static_markers):
+            raise ManifestGenerationError(f"runtime dependency discovery failed: {path}")
         return ()
+    if strict and any(marker in output.lower() for marker in static_markers):
+        return ()
+    if strict and result.stderr.strip():
+        raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
 
     dependencies: list[RuntimeInputBinding] = []
     for line in result.stdout.splitlines():
@@ -137,6 +162,8 @@ def _ldd_dependencies(path: Path) -> tuple[RuntimeInputBinding, ...]:
             candidate = rendered.split(" ", 1)[0]
         if candidate.startswith("/"):
             dependencies.append(_runtime_input_binding(Path(candidate)))
+        elif strict and not candidate.startswith("linux-vdso.so"):
+            raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
     return tuple(dependencies)
 
 
@@ -202,11 +229,37 @@ def _runtime_closure(
     return tuple(sorted(closure, key=lambda binding: str(binding.destination)))
 
 
+def _shim_runtime_closure(executable: Path) -> tuple[RuntimeInputBinding, ...]:
+    """Build the strict regular-file-only closure for the fixed PID1 shim."""
+    pending = [_runtime_input_binding(executable)]
+    closure: list[RuntimeInputBinding] = []
+    seen: dict[Path, Path] = {}
+    while pending:
+        candidate = pending.pop()
+        previous_source = seen.get(candidate.destination)
+        if previous_source is not None:
+            if previous_source != candidate.source:
+                raise ManifestGenerationError(
+                    "runtime input closure has conflicting logical destinations"
+                )
+            continue
+        if not candidate.source.is_file():
+            raise ManifestGenerationError("shim runtime input must be a regular file")
+        seen[candidate.destination] = candidate.source
+        closure.append(candidate)
+        pending.extend(_shebang_interpreters(candidate.source))
+        pending.extend(_ldd_dependencies(candidate.source, strict=True))
+    return tuple(sorted(closure, key=lambda binding: str(binding.destination)))
+
+
 def build_manifest(
     *,
     npm_root: Callable[[], Path] = _global_npm_root,
     resolve_command: Callable[[str], Path] = _resolve_command,
     runtime_closure: Callable[[Path, Path], tuple[RuntimeInputBinding, ...]] = _runtime_closure,
+    shim_path: Path = _SHIM_PATH,
+    resolve_shim: Callable[[Path], Path] = _resolve_shim,
+    shim_runtime_closure: Callable[[Path], tuple[RuntimeInputBinding, ...]] = _shim_runtime_closure,
 ) -> dict[str, object]:
     """Build a deterministic provider-to-image-input map without credential data."""
     package_root = npm_root()
@@ -225,7 +278,25 @@ def build_manifest(
                 for binding in runtime_closure(executable, package)
             ],
         }
-    return {"version": 2, "providers": providers}
+    shim_executable = resolve_shim(shim_path)
+    shim_inputs = shim_runtime_closure(shim_executable)
+    if not shim_inputs:
+        raise ManifestGenerationError("shim runtime input closure is empty")
+    return {
+        "version": 3,
+        "shim": {
+            "name": "runtime-cli-sandbox-init",
+            "executable": str(shim_path),
+            "readonly_inputs": [
+                {
+                    "destination": str(binding.destination),
+                    "source": str(binding.source),
+                }
+                for binding in shim_inputs
+            ],
+        },
+        "providers": providers,
+    }
 
 
 def write_manifest(output: Path, document: dict[str, object]) -> None:
