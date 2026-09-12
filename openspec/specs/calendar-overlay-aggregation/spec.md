@@ -7,7 +7,9 @@ Cross-domain overlay aggregation for the calendar workspace. Specialist butlers
 a shared read-only SQL view that the calendar workspace projects without LLM cost
 or on-demand cross-schema queries. The meeting-prep rail builds on the same
 cached-view discipline for per-event attendee context.
+
 ## Requirements
+
 ### Requirement: Cross-Schema Overlay View
 
 A SQL view `calendar.v_overlay_contributions` SHALL provide read-only access to overlay contribution state entries across the four contributing specialist schemas. The view SHALL union `butler`, `key`, and `value` columns from the `state` table of each contributing schema (`finance`, `travel`, `relationship`, `health`) filtered to keys matching `calendar/overlay/%`. Each UNION term SHALL include an explicit `butler` column as a string literal identifying the source schema (e.g. `SELECT 'finance' AS butler, key, value FROM finance.state WHERE key LIKE 'calendar/overlay/%'`), mirroring `general.v_briefing_contributions` (migration `core_063`). The view SHALL be empty (zero rows) when no specialist has written a contribution.
@@ -142,7 +144,11 @@ Each contributing specialist butler SHALL have a `calendar_overlay_contribution`
 
 ### Requirement: Meeting-Prep Contribution Schema and State Key Convention
 
-Each contributing specialist butler SHALL write a structured per-event meeting-prep envelope into its own `state` store under the key `calendar/prep/<event_id>`. The envelope MUST be deterministic and contain no generated prose. It MUST carry a hardcoded `butler` source field, the `event_id`, the event title and start time, a `has_context` boolean, and an `attendees` array. Each attendee entry MUST carry `entity_id`, `name`, an optional `dunbar_tier` (the relationship letter-mark source), a `notes` list, `last_met` / `last_met_event` (from the most recent prior co-attended event), and a `message_context` list reserved for email/message-owning butlers.
+Each contributing specialist butler SHALL write a structured per-event meeting-prep envelope into its own `state` store under the key `calendar/prep/<event_id>`. The envelope MUST be deterministic and contain no generated prose. It MUST carry a hardcoded `butler` source field, the `event_id`, the event title and start time, a `has_context` boolean, and an `attendees` array. Each attendee entry MUST carry `entity_id`, `name`, an optional `dunbar_tier` (the relationship letter-mark source), a `notes` list, `last_met` / `last_met_event` (from the most recent prior co-attended event), and a `message_context` list reserved for email/message-owning butlers. Each attendee entry MUST also carry a `commitments` list containing active commitment-class `owner_conditions` rows where the attendee's `entity_id` matches `metadata->>'counterparty_entity_id'`. Each commitment entry MUST carry `kind`, `direction`, `summary` (the condition's `label`), `deadline` (from metadata, nullable), `escalation_level` as one of the established `L0`, `L1`, `L2`, or `L3` labels, and `fingerprint`. The list MUST be capped at a configurable maximum per attendee (default 10), ordered `L3` through `L0`, and MUST be empty -- not absent -- when no active commitments exist for the attendee.
+
+ID: REQ-calendar-overlay-aggregation-005
+Source: RFC 0026 §Out of Scope ("Moment Prep integration — consumes commitment query surface")
+Scope: v1-mandatory
 
 #### Scenario: Relationship writes per-event prep envelopes
 - **WHEN** the relationship `calendar_prep_contribution` job runs for an entity-linked event in its lookahead window
@@ -153,6 +159,37 @@ Each contributing specialist butler SHALL write a structured per-event meeting-p
 #### Scenario: Stale per-event envelopes are pruned
 - **WHEN** the prep contribution job runs and a previously-written `calendar/prep/<event_id>` key references an event no longer in the lookahead window
 - **THEN** that stale key is deleted, while keys for events still in the window are upserted (idempotent re-runs)
+
+#### Scenario: Prep envelope includes active commitments per attendee
+
+- **WHEN** the relationship `calendar_prep_contribution` job runs for an
+  entity-linked event whose attendee has active commitment-class
+  `owner_conditions` rows
+- **THEN** the prep envelope's attendee entry carries a `commitments` list with
+  each commitment's `kind`, `direction`, `summary`, `deadline`,
+  `escalation_level`, and `fingerprint`
+- **AND** commitments are ordered `L3`, `L2`, `L1`, then `L0` (highest urgency
+  first), capped at `MAX_COMMITMENTS_PER_ATTENDEE`
+- **AND** no LLM session is spawned
+
+#### Scenario: Attendee with no commitments gets an empty list
+
+- **WHEN** the prep job runs for an attendee who has no active commitment-class
+  `owner_conditions` rows
+- **THEN** the attendee's `commitments` field is an empty list `[]`, not absent
+  from the envelope
+- **BECAUSE** downstream consumers distinguish "no commitments" from "commitments
+  not yet populated" by field presence
+
+#### Scenario: Commitment query failure degrades gracefully
+
+- **WHEN** the query against `public.owner_conditions` fails during the prep job
+- **THEN** the prep envelope is still written with an empty `commitments` list
+  per attendee and the failure is logged at WARNING level
+- **AND** existing prep context (notes, Dunbar tier, last-met, message context)
+  is unaffected
+- **BECAUSE** the prep rail's honest empty-state contract requires fail-open
+  behavior per RFC-0020
 
 ### Requirement: Cross-Schema Prep View and Migration
 

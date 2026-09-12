@@ -3,7 +3,9 @@
 ## Purpose
 
 Defines the schema by which each butler contributes content to the cross-butler briefing.
+
 ## Requirements
+
 ### Requirement: Briefing Contribution Schema
 Each specialist butler's briefing contribution SHALL be a JSON object conforming to a standard envelope with fields: `butler` (string, butler name), `date` (string, ISO date YYYY-MM-DD), `has_updates` (boolean), `highlights` (array of highlight objects), and `summary` (string, pre-rendered human-readable text). Each highlight object SHALL have `category` (string), `text` (string), and `priority` (string, one of "high", "medium", "low").
 
@@ -188,3 +190,26 @@ only permitted v1 cross-butler surfaces for this protocol.
   without direct sibling-schema access
 - **AND** the existence of a return task SHALL not authorize same-day composer,
   envelope, quiet-window, or owner-notification behavior
+
+### Requirement: Home Briefing Source Health Gate
+
+The Home butler's `daily_briefing_contribution` job SHALL check Home
+Assistant source health before treating snapshot-backed device and environment
+inputs as measurable.
+
+#### Scenario: Home Assistant source is unmeasurable
+
+- **WHEN** `ha_source_health` is not `healthy` for `home_assistant`, or no
+  recent successful-contact timestamp exists
+- **THEN** the contribution SHALL skip the device and environment snapshot
+  queries
+- **AND** it SHALL include a high-priority highlight stating that Home
+  Assistant is unmeasurable instead of reporting a nominal all-clear
+- **AND** the job result SHALL set `ha_source_unmeasurable=true`
+
+#### Scenario: Healthy source preserves contribution behavior
+
+- **WHEN** `ha_source_health` records a recent `status='healthy'` contact for
+  `home_assistant`
+- **THEN** the contribution SHALL continue to query its snapshot-backed device
+  and environment inputs according to the Home contribution contract

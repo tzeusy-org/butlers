@@ -9,10 +9,9 @@ evaluates staleness, SHALL detect staleness against the canonical
 `chronicler.episodes`, `chronicler.point_events`, and `chronicler.overrides`
 rows in the cached window, and SHALL expose an explicit invalid-without-prose
 state. The re-invocation endpoint SHALL be rate-limited and SHALL NOT introduce
-a new LLM call path beyond the one already declared in RFC 0014 §D5. A manual
-refresh SHALL target only a settled historical local day in its supplied IANA
-timezone, and a successful executed empty bundle SHALL remain distinct from a
-persisted cache response.
+a new LLM call path beyond the one already declared in RFC 0014 §D5. Its
+successful response SHALL expose a deterministic invalid generated-candidate
+outcome without exposing candidate prose or provenance.
 
 The endpoints SHALL be:
 
@@ -42,34 +41,6 @@ validation envelope below.
   `provenance_refs` (the source-ref tuples cited by the prose) and
   `cache_built_at`
 - **AND** no LLM SHALL be invoked
-
-#### Scenario: Missing or invalid timezone fails before cache work
-
-- **WHEN** a day-close GET omits `tz`, or either day-close endpoint receives an
-  empty or unresolvable IANA timezone
-- **THEN** the API SHALL reject the request with a structured `400` error whose
-  code is `missing_parameter` or `invalid_timezone`
-- **AND** it SHALL not query `tier2_cache`, acquire a cache lock, apply a rate
-  limit, or dispatch a Tier-2 invocation
-
-#### Scenario: Same date is isolated by exact timezone
-
-- **WHEN** two valid cache entries address the same ISO date with different
-  IANA timezone strings
-- **THEN** each entry SHALL have a distinct tuple key and local-day window
-- **AND** a GET, refresh rate limit, writer lock, staleness provenance lookup,
-  or refresh response for one tuple SHALL not select or block the other
-- **AND** the writer lock SHALL retain the exact date and timezone values rather
-  than relying on a collision-prone fixed-width hash
-
-#### Scenario: Legacy date-only cache is a miss
-
-- **WHEN** only a legacy `day_close:{YYYY-MM-DD}` row exists for a requested
-  date and timezone
-- **THEN** the tuple-keyed GET SHALL return the existing `404` cache-miss
-  behavior
-- **AND** the endpoint SHALL not rewrite, delete, relabel, or return the
-  legacy row
 
 #### Scenario: Invalid cache has an explicit no-prose response
 
@@ -125,6 +96,37 @@ validation envelope below.
   go through the same Tier-2 token-bound input path the cron-driven schedule
   uses
 
+#### Scenario: Contained invalid refresh candidate remains distinguishable
+
+- **WHEN** a refresh generates an invalid candidate while an admissible active
+  cache row exists for the requested `(date, tz)`
+- **THEN** the API SHALL return `200` with `{cache_key, cache_built_at,
+  invalid: true, invalid_reason}` where `cache_built_at` belongs to the
+  preserved admissible row
+- **AND** `invalid_reason` SHALL be the writer's deterministic
+  `inadmissible_prose` or `date_mismatch` result
+- **AND** the response SHALL NOT contain `prose` or `provenance_refs`
+
+#### Scenario: Audit-only invalid refresh candidate has no prose response
+
+- **WHEN** a refresh generates an invalid candidate and no admissible active
+  cache row exists for the requested `(date, tz)`
+- **THEN** the API SHALL retain the invalid candidate only for audit/recovery
+  and return `200` with `{cache_key, cache_built_at, invalid: true,
+  invalid_reason}`
+- **AND** the response SHALL NOT contain `prose` or `provenance_refs`
+
+#### Scenario: Refresh rate limit enforced
+
+- **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that has
+  already been refreshed within the last 24 hours by any caller
+- **THEN** the API SHALL respond `429 Too Many Requests` with `code:
+  day_close_rate_limited`
+- **AND** the response SHALL match the existing `ErrorResponse` envelope
+  (`{ error: { code, message, butler, details } }`) with
+  `retry_after_seconds` carried inside `details`
+- **AND** no Tier-2 invocation SHALL occur
+
 #### Scenario: Unsettled refresh target is rejected before rate-limit or dispatch
 
 - **WHEN** a client POSTs the refresh endpoint for today or a future date in
@@ -156,13 +158,30 @@ validation envelope below.
   cache_write_failed`
 - **AND** it SHALL not reuse an older cache row as the refresh result
 
-#### Scenario: Refresh rate limit enforced
+#### Scenario: Missing or invalid timezone fails before cache work
 
-- **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that has
-  already been refreshed within the last 24 hours by any caller
-- **THEN** the API SHALL respond `429 Too Many Requests` with `code:
-  day_close_rate_limited`
-- **AND** the response SHALL match the existing `ErrorResponse` envelope
-  (`{ error: { code, message, butler, details } }`) with
-  `retry_after_seconds` carried inside `details`
-- **AND** no Tier-2 invocation SHALL occur
+- **WHEN** a day-close GET omits `tz`, or either day-close endpoint receives an
+  empty or unresolvable IANA timezone
+- **THEN** the API SHALL reject the request with a structured `400` error whose
+  code is `missing_parameter` or `invalid_timezone`
+- **AND** it SHALL not query `tier2_cache`, acquire a cache lock, apply a rate
+  limit, or dispatch a Tier-2 invocation
+
+#### Scenario: Same date is isolated by exact timezone
+
+- **WHEN** two valid cache entries address the same ISO date with different
+  IANA timezone strings
+- **THEN** each entry SHALL have a distinct tuple key and local-day window
+- **AND** a GET, refresh rate limit, writer lock, staleness provenance lookup,
+  or refresh response for one tuple SHALL not select or block the other
+- **AND** the writer lock SHALL retain the exact date and timezone values rather
+  than relying on a collision-prone fixed-width hash
+
+#### Scenario: Legacy date-only cache is a miss
+
+- **WHEN** only a legacy `day_close:{YYYY-MM-DD}` row exists for a requested
+  date and timezone
+- **THEN** the tuple-keyed GET SHALL return the existing `404` cache-miss
+  behavior
+- **AND** the endpoint SHALL not rewrite, delete, relabel, or return the
+  legacy row

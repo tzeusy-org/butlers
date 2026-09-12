@@ -207,3 +207,197 @@ not add a producer, schema field, or cross-butler write.
 - **WHEN** no active DND or sleeping entry exists
 - **THEN** the suppressing-context result is absent and the notify caller can
   continue its normal policy evaluation
+
+### Requirement: Deterministic Context Producers
+The system SHALL populate `public.user_context` with deterministic, zero-LLM
+producers that run as scheduled `dispatch_mode="job"` handlers. Each producer
+SHALL run on the butler that RFC 0009's write-permission matrix authorizes as
+the single writer for the signal it produces. Producers SHALL be idempotent —
+upserting the current signal via `set_context()` and clearing it via
+`clear_context()` on the reverse transition — and every signal SHALL carry a
+bounded TTL so a crashed producer never leaves a signal permanently pinned.
+
+The following producers SHALL exist:
+- **calendar → meeting/focused** (writer `general`): derived from the
+  currently-active event in the general butler's `calendar_events`.
+- **home → at_home / in_space** (writer `home`): derived from fresh Home
+  Assistant `person.*`/`device_tracker.*` presence in `ha_entity_snapshot`,
+  scoped to the owner's configured entities; `in_space` additionally resolves
+  which room/area the owner is currently in from those same entities.
+- **travel → traveling** (writer `travel`): derived from a currently-underway
+  trip in `travel.trips`.
+- **health → sleeping** (writer `health`): derived from the owner-declared
+  end-exclusive Owner Attention Policy window in `public.approvals_policy`.
+
+#### Scenario: Calendar producer publishes meeting for a live event
+- **WHEN** the general butler's `calendar_events` contains a confirmed,
+  non-all-day event whose `[starts_at, ends_at)` window contains now
+- **THEN** the calendar producer sets a `meeting` signal (or `focused` when the
+  event title marks a focus block) with `set_by_butler = "general"` and the
+  event's `ends_at` as `expires_at`
+
+#### Scenario: Calendar producer clears when no event is live
+- **WHEN** no confirmed, non-all-day event is currently active
+- **THEN** the calendar producer clears both the `meeting` and `focused` signals
+  it set
+
+#### Scenario: Home producer publishes at_home from fresh presence
+- **WHEN** a fresh `person.*` or `device_tracker.*` snapshot reads `home`
+- **THEN** the home producer sets an `at_home` signal with
+  `set_by_butler = "home"`
+
+#### Scenario: Home producer ignores a stale presence feed
+- **WHEN** the only presence snapshots are older than the freshness window
+- **THEN** the home producer neither asserts nor clears `at_home` (the existing
+  signal expires on its own TTL)
+
+#### Scenario: Home producer resolves in_space when a room is available
+- **WHEN** the owner is at_home and a fresh owner-linked entity exposes a
+  room/area (via its state or Home Assistant area attributes)
+- **THEN** the home producer sets an `in_space` signal with
+  `set_by_butler = "home"` and the resolved room as its value
+
+#### Scenario: Home producer clears in_space when the owner leaves
+- **WHEN** the owner transitions from at_home to away
+- **THEN** the home producer clears both `at_home` and `in_space`
+
+#### Scenario: Home producer never guesses a stale room
+- **WHEN** Home Assistant source health is unmeasurable, or no fresh
+  owner-linked entity exposes a room
+- **THEN** the home producer leaves any existing `in_space` signal untouched
+  so it self-heals via its bounded TTL rather than reporting a stale room as
+  current
+
+#### Scenario: Travel producer publishes traveling for an underway trip
+- **WHEN** a `travel.trips` row is `active`, or today falls within a
+  `planned`/`active` trip's `[start_date, end_date]` window
+- **THEN** the travel producer sets a `traveling` signal with
+  `set_by_butler = "travel"` and the trip destination as its value
+
+#### Scenario: Sleep producer publishes sleeping inside the quiet window
+- **WHEN** the current time in `public.approvals_policy.timezone` falls within
+  the owner-declared end-exclusive quiet-hours window
+- **THEN** the health producer sets a `sleeping` signal with
+  `set_by_butler = "health"` and the exact configured window end as
+  `expires_at`
+
+#### Scenario: Sleep producer activates the notify deferred-delivery gate
+- **WHEN** the sleep producer has set an active `sleeping` signal
+- **THEN** the notify owner-page gate's context consult observes a suppressing
+  signal and durably defers a routine notification with status `deferred`
+- **AND** the stored envelope's `deliver_at` is the latest active suppressing
+  signal expiry
+
+### Requirement: Explicit Context MCP Tools
+The system SHALL expose `check_context`, `set_context`, and `clear_context` MCP
+tools on the general module so that explicit, user-initiated context signals
+(primarily `dnd` and `sick`) that no deterministic producer can infer may be
+read and written. Writes SHALL go through the general butler at confidence 1.0
+and SHALL be subject to the same vocabulary and write-permission validation as
+`set_context()`.
+
+#### Scenario: Explicit dnd set via MCP tool
+- **WHEN** the `set_context` MCP tool is called with `signal_type="dnd"`
+- **THEN** a `dnd` signal is written with `set_by_butler = "general"` and
+  confidence 1.0
+
+#### Scenario: check_context returns active signals
+- **WHEN** the `check_context` MCP tool is called
+- **THEN** it returns the currently-active context signals as a list (empty when
+  none are active)
+
+#### Scenario: Invalid signal type rejected by the tool
+- **WHEN** the `set_context` MCP tool is called with an out-of-vocabulary
+  `signal_type`
+- **THEN** the underlying `set_context()` raises `ValueError` and no signal is
+  written
+
+### Requirement: Sleep Context Uses the Owner Attention Policy Anchor
+The deterministic health sleep producer SHALL derive both its quiet-window
+membership and `sleeping` signal expiry from the shared Owner Attention Policy
+predicate and exact-end UTC anchor. It SHALL not duplicate timezone conversion
+or add an hour to the configured end. Missing, incomplete, invalid, or
+unreadable policy data SHALL cause the producer to clear/avoid its owned sleep
+signal rather than infer a replacement timezone or wake time.
+
+#### Scenario: Sleep expires at the exact end-exclusive boundary
+- **WHEN** the current local time falls inside the Owner Attention Policy
+  `[quiet_start_hour, quiet_end_hour)` interval
+- **THEN** the health producer sets `sleeping` with the shared exact
+  `quiet_end_hour` UTC anchor as `expires_at`
+- **AND** the signal is not active at the exact local end
+
+#### Scenario: Invalid persisted zone fails open for sleep context
+- **WHEN** the Owner Attention Policy contains an unrecognized persisted IANA
+  timezone
+- **THEN** the health producer does not publish a derived sleeping signal
+- **AND** it does not silently substitute UTC or another timezone
+
+### Requirement: Calendar Producer Provenance Candidate Selection
+
+The calendar `meeting`/`focused` producer SHALL remain the deterministic
+general-butler producer added by `context-bus-producers`, but it SHALL derive a
+signal only from an active confirmed human meeting candidate. It SHALL exclude
+an all-day event, a legacy locally-midnight-aligned event spanning at least 24
+hours, and an event with explicit
+`metadata.butler_generated=true`. The producer SHALL clear its own meeting and
+focused signals when no eligible event is active.
+
+`metadata.butler_generated` is the only generated-event exclusion authority;
+source names, title prefixes, and inferred ownership SHALL NOT substitute for
+it. A timed event without that explicit marker SHALL retain normal
+meeting/focused behavior. Malformed metadata SHALL be treated as no explicit
+generated assertion, and an invalid or missing timezone SHALL make only the
+legacy-midnight inference unavailable; neither condition may raise or invent a
+new context signal.
+
+#### Scenario: Butler-generated event does not assert context
+
+- **WHEN** the active projected event has `metadata.butler_generated=true`
+- **THEN** the calendar producer does not set `meeting` or `focused` from it
+- **AND** it clears any prior signal it owns when no other eligible event is
+  active
+
+#### Scenario: Equivalent human timed event remains a meeting candidate
+
+- **WHEN** an active confirmed timed event has no explicit
+  `metadata.butler_generated=true` marker
+- **THEN** the producer continues to publish `meeting` or `focused` according
+  to its title classifier and uses the event end as its expiry
+
+#### Scenario: Legacy midnight event is not a meeting
+
+- **WHEN** an active legacy event has `all_day=false`, lasts at least 24 hours,
+  and starts and ends at local midnight in its valid IANA timezone
+- **THEN** the producer treats it as a non-meeting and does not assert context
+
+#### Scenario: Malformed provenance degrades without an invented exclusion
+
+- **WHEN** an otherwise valid timed event has malformed metadata or an invalid
+  timezone
+- **THEN** the producer does not raise
+- **AND** malformed metadata alone does not exclude the event as generated
+- **AND** an invalid timezone alone does not make the event a legacy all-day
+  event
+
+### Requirement: Home Presence Source Health Gate
+
+The deterministic Home presence producer SHALL confirm the Home Assistant
+source is healthy before deriving `at_home` from `ha_entity_snapshot`.
+
+#### Scenario: HA outage leaves owner presence unmeasurable
+
+- **WHEN** `run_home_presence_context_producer` runs while
+  `ha_source_health` is not `healthy` for `home_assistant`, or no recent
+  successful-contact timestamp exists
+- **THEN** it SHALL return `presence="unmeasurable"` without querying
+  `ha_entity_snapshot`
+- **AND** it SHALL neither assert nor clear `at_home`, so any prior signal is
+  left to expire through its bounded TTL
+
+#### Scenario: Healthy HA source preserves presence derivation
+
+- **WHEN** `ha_source_health` records a recent `status='healthy'` contact for
+  `home_assistant`
+- **THEN** the producer SHALL continue to apply its configured-owner,
+  freshness, and home-versus-away rules to `ha_entity_snapshot`

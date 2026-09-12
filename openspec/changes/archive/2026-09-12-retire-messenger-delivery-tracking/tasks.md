@@ -13,4 +13,4 @@
 
 - [x] 3.1 Add real-PostgreSQL migration race/schema tests plus constructed-app, actual-FastMCP, route, and frontend absence tests.
 - [x] 3.2 Run targeted local migration and schema-matrix, route, MCP/API, frontend, diagram-render, and strict OpenSpec quality gates on the delivered head.
-- [ ] 3.3 Obtain terminal hosted CI for the delivered PR head.
+- [x] 3.3 Obtain terminal hosted CI for the delivered PR head.

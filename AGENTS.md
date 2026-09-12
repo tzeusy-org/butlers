@@ -413,6 +413,8 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+- After mechanically rebuilding an active `MODIFIED` block, scan for a scenario body joined directly to the next `##` or `###` heading before tightening `spec-overwrite-baseline.json`. OpenSpec strict validation can still pass when the joined heading is parsed as scenario prose, which can hide later requirements from the body-loss guard and make valid ratchet entries look obsolete.
+
 - Catalog read authority is server-held in each schema's `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`; `internal` maps to stored `normal` + `pii`). The MCP search/fetch surfaces expose no caller ceiling. Cross-butler canonical fetches must route through Switchboard to the owning butler's local `memory_get`; never add general cross-schema SELECT or a caller-parameterized SECURITY DEFINER shortcut.
 
 - Test-condensation counts: anchor the grep as `^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_`. Not for async/indented tests — plain `grep -rc 'def test_'` already matches those (both give 12,322 in `tests/`, per-file diff empty). The anchor's real value is excluding commented-out and in-string matches (it changes `roster/` from 3,957 to 3,956). **Scope is what actually moves the number** — `tests/` alone is 12,322, `tests/ roster/` is 16,278 — so always state the scope beside a count, and keep historical phase figures separate from the current measurement.

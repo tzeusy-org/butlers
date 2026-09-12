@@ -15,14 +15,11 @@ contract." `bu-yk2hb` is the deferred decision on that exact carve-out; this cha
 `category` and `description`, leaving `key` where Option C and `bu-yk2hb` both already left it —
 published.
 
-The merged, unarchived `project-secret-read-endpoints-content-blind` change has already established
-and implemented the current detail projections: `SystemCredentialDetail` for the system family and
-`CliCredentialDetail` for the CLI family. Its baseline adoption is still pending. This draft carries
-those clauses in its whole-requirement replacement only to prevent a later archive from restoring
-the baseline's obsolete `SystemSecret` / `CliRuntime` payloads; the inventory omission below is the
-only new behavior proposed here. The delta retains those two obsolete baseline sentences solely as
-explicitly superseded archive provenance for the body-level overwrite guard, never as alternative
-payload contracts.
+The archived `project-secret-read-endpoints-content-blind` change established and implemented the
+current detail projections: `SystemCredentialDetail` for the system family and
+`CliCredentialDetail` for the CLI family. Those clauses are now canonical in the `dashboard-api`
+baseline. During the 2026-09-12 synthesis, this draft's whole-requirement delta was rebuilt against
+that refreshed baseline; the inventory omission below remains the only new behavior proposed here.
 
 ## Goals / Non-Goals
 
@@ -92,15 +89,15 @@ which is exactly the failure mode `bu-yk2hb`'s framing warned against.
 `CliCredentialDetail`, whose identity fields are `id` and `label`; the fetch layer projects the
 stored description column as `label`, and the response has no fields named `key`, `category`, or
 `description`. Its capability fields use the fixed vocabulary rather than raw scope identifiers.
-These are the implemented clauses from `project-secret-read-endpoints-content-blind`, carried here
-as collision preservation while that sibling's baseline adoption remains pending.
+These are the canonical clauses adopted from the archived
+`project-secret-read-endpoints-content-blind` change and preserved in this whole-requirement delta.
 
 The asymmetry — the inventory array withholds two fields that remain available under family-specific
 names on a detail read — is deliberate, not an oversight to reconcile. A caller commonly reaches a
 detail read after selecting one identified row, while the inventory is the broader listable surface.
 That navigation pattern explains the product trade-off; it does not authenticate the caller or add
 an authorization boundary. The original `bu-y5uq4` non-goals name the detail endpoints as
-unchanged, and the sibling change owns their current field contract.
+unchanged, and the canonical `dashboard-api` baseline owns their current field contract.
 
 Alternative considered: withhold the system `category` / `description` or the CLI `label` from the
 detail endpoints too, for contract symmetry. Rejected — out of scope for this bead. The selected-row
@@ -151,9 +148,10 @@ endpoint — no version negotiation, no dual-shape response.
    inventory response.
 4. Deploy through the normal merge queue after exact-head review. No data migration, backfill, or
    runtime config change is needed — this is a response-projection change only.
-5. Before archiving, apply the sibling-ordering rule: archive one same-requirement change, then
-   rebuild the other against the refreshed baseline. Do not use this draft to adopt the sibling's
-   still-pending detail clauses by implication.
+5. Before archiving this change, rebuild its whole-requirement delta against the then-current
+   baseline and rerun the body-loss guard. The sibling-ordering step is complete; its detail DTO
+   clauses are already canonical, while this change's archive remains gated on owner approval and
+   implementation.
 6. Rollback is a code revert of the additive-removal change; no persisted data is touched.
 
 ## Open Questions
