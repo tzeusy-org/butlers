@@ -413,6 +413,8 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+- In partitioned-index migrations, a blocking `pg_advisory_lock()` waiter can retain a snapshot that `CREATE INDEX CONCURRENTLY` waits for. Use bounded `pg_try_advisory_lock()` polling in autocommit with waits outside PostgreSQL; `core_231` and its concurrent migration regression cover this failure mode.
+- A disconnect watcher inside the dashboard's nested `BaseHTTPMiddleware` stack needs AnyIO level cancellation. A one-shot `asyncio.Task.cancel()` followed by awaiting the watcher can deadlock response delivery; `IngestionReadBudgetRoute` uses a watcher-owned `CancelScope`, and full-app API tests protect the middleware interaction.
 - After mechanically rebuilding an active `MODIFIED` block, scan for a scenario body joined directly to the next `##` or `###` heading before tightening `spec-overwrite-baseline.json`. OpenSpec strict validation can still pass when the joined heading is parsed as scenario prose, which can hide later requirements from the body-loss guard and make valid ratchet entries look obsolete.
 
 - Catalog read authority is server-held in each schema's `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`; `internal` maps to stored `normal` + `pii`). The MCP search/fetch surfaces expose no caller ceiling. Cross-butler canonical fetches must route through Switchboard to the owning butler's local `memory_get`; never add general cross-schema SELECT or a caller-parameterized SECURITY DEFINER shortcut.

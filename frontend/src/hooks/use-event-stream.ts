@@ -147,9 +147,28 @@ export function useEventStream({
   const onEventRef = useRef(onEvent);
   const connectRef = useRef<() => void>(() => undefined);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ingestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const patchEvent = useCallback((event: FleetEvent) => {
+    if (event.type !== "ingestion") {
+      applyFleetEvent(qc, event);
+      return;
+    }
+    // Fixed window rather than trailing debounce: continuous ingestion must
+    // not indefinitely postpone list freshness. Snapshot replay shares it.
+    if (ingestionTimerRef.current !== null) return;
+    ingestionTimerRef.current = setTimeout(() => {
+      ingestionTimerRef.current = null;
+      if (mountedRef.current) applyFleetEvent(qc, event);
+    }, 250);
+  }, [qc]);
 
   const disconnect = useCallback(() => {
     mountedRef.current = false;
+    if (ingestionTimerRef.current !== null) {
+      clearTimeout(ingestionTimerRef.current);
+      ingestionTimerRef.current = null;
+    }
     if (retryTimerRef.current !== null) {
       clearTimeout(retryTimerRef.current);
       retryTimerRef.current = null;
@@ -231,13 +250,13 @@ export function useEventStream({
         // Replay each buffered event through the registry too — a reconnect's
         // snapshot may carry state changes missed while the socket was down.
         for (const replayed of payload.events) {
-          applyFleetEvent(qc, replayed);
+          patchEvent(replayed);
           onEventRef.current?.(replayed, { replayed: true });
         }
         return;
       }
 
-      applyFleetEvent(qc, payload);
+      patchEvent(payload);
       onEventRef.current?.(payload, { replayed: false });
     };
 
@@ -258,7 +277,7 @@ export function useEventStream({
       }, retryDelayRef.current);
       retryDelayRef.current = Math.min(retryDelayRef.current * 2, 30_000);
     };
-  }, [enabled, apiKey, qc]);
+  }, [enabled, apiKey, patchEvent]);
 
   // Keep connectRef and onEventRef pointing at the latest callbacks.
   useEffect(() => {

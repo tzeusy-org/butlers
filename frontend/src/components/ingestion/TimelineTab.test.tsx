@@ -52,8 +52,7 @@ vi.mock("sonner", () => ({
 // Mock the ingestion-events hooks so we don't need a real API
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
-  useIngestionEventLineage: vi.fn(),
-  useIngestionEventRollup: vi.fn(),
+  useIngestionEventSessions: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
@@ -71,8 +70,6 @@ import { ApiError, bulkRetryEvents, replayIngestionEvent } from "@/api/index.ts"
 import { toast } from "sonner";
 import {
   useIngestionEvents,
-  useIngestionEventLineage,
-  useIngestionEventRollup,
   useIngestionEventSenderContact,
   useIngestionEventSessions,
   useIngestionEventReplays,
@@ -215,11 +212,7 @@ describe("TimelineTab — passive background refresh", () => {
 // ---------------------------------------------------------------------------
 
 function setupDefaultMocks() {
-  vi.mocked(useIngestionEventRollup).mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isError: false,
-  } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
 
   vi.mocked(useIngestionEventSenderContact).mockReturnValue({
     data: undefined,
@@ -247,10 +240,7 @@ function setupDefaultMocks() {
   } as unknown as ReturnType<typeof useIngestionEventDetail>);
 
   // Default: no sessions (drawer stubs)
-  vi.mocked(useIngestionEventLineage).mockReturnValue({
-    sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
-    rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-  });
+  vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
   // Default: no connector issues (strip hidden)
   vi.mocked(useConnectorSummaries).mockReturnValue({
@@ -1014,14 +1004,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session table rows have id='session-<uuid>' anchors", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1044,14 +1031,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session index right rail renders when more than one session exists", () => {
     const sessions = makeSessions(2);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1073,14 +1057,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("session index renders even when only one session exists (drawer shows all sessions)", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1103,14 +1084,11 @@ describe("TimelineTab — §2.5 Drawer: session index and copy button", () => {
 
   it("copy-session-id button is present for each session row", () => {
     const sessions = makeSessions(1);
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: {
+    vi.mocked(useIngestionEventSessions).mockReturnValue({
         data: { data: sessions },
         isLoading: false,
         isError: false,
-      } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+      } as unknown as ReturnType<typeof useIngestionEventSessions>);
 
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([makeEvent({ id: SESSION_ID, status: "ingested", source_sender_identity: null })]) as unknown as ReturnType<typeof useIngestionEvents>,
@@ -1150,16 +1128,9 @@ describe("TimelineTab — §2.6 Drawer: sender identity resolution", () => {
     queryClient = makeQueryClient();
     setupDefaultMocks();
 
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventRollup>);
 
-    vi.mocked(useIngestionEventLineage).mockReturnValue({
-      sessions: { data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>,
-      rollup: { data: undefined, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventRollup>,
-    });
+
+    vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as unknown as ReturnType<typeof useIngestionEventSessions>);
   });
 
   afterEach(() => {
@@ -1428,11 +1399,7 @@ describe("TimelineTab — §2.9 Connector Attention Strip", () => {
     queryClient = makeQueryClient();
     setupDefaultMocks();
 
-    vi.mocked(useIngestionEventRollup).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
 
     vi.mocked(useIngestionEventSenderContact).mockReturnValue({
       data: undefined,

@@ -4,7 +4,6 @@
  * Query key strategy:
  * - ingestionEventKeys.list(filters)          → cursor-paginated IngestionEventSummary list
  * - ingestionEventKeys.sessions(requestId)     → sessions for a given request_id
- * - ingestionEventKeys.rollup(requestId)       → cost/token rollup for a request_id
  * - ingestionEventKeys.replays(requestId)      → replay history from public.audit_log
  * - ingestionEventKeys.senderContact(requestId) → resolved contact name for sender_identity
  * - ingestionEventKeys.detail(requestId)        → full event detail with lifecycle_state/decomposition_output
@@ -12,18 +11,17 @@
  *
  * Stale time of 30s matches the spec for Timeline tab data freshness.
  *
- * BREAKING (bu-1f91v.3): useIngestionEvents now uses useInfiniteQuery.
- * Contract: { pages, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isError }
- * The old { data: { data, meta: { total, offset, limit } } } shape is removed.
+ * The list preserves the cursor-page result shape while polling only its live
+ * head. Loaded history stays fixed until the owner returns to the live head.
  */
 
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   listIngestionEvents,
   getIngestionEvent,
   getIngestionEventSessions,
-  getIngestionEventRollup,
   getIngestionWindowRollup,
   getIngestionEventsHistogram,
   getIngestionEventReplays,
@@ -54,8 +52,6 @@ export const ingestionEventKeys = {
     [...ingestionEventKeys.all, "list", filters] as const,
   sessions: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "sessions"] as const,
-  rollup: (requestId: string) =>
-    [...ingestionEventKeys.all, requestId, "rollup"] as const,
   replays: (requestId: string) =>
     [...ingestionEventKeys.all, requestId, "replays"] as const,
   senderContact: (requestId: string) =>
@@ -71,13 +67,10 @@ export const ingestionEventKeys = {
 };
 
 /**
- * Default reconciliation-poll fallback for the events list (bu-ep4ks.15).
- * ingestionEventKeys.list's ["ingestion", "events", ...] prefix IS invalidated
- * by ingestionPatch (event-cache-registry.ts) on every "ingestion" bus event,
- * so this is a safety-net sweep, not the primary path -- kept at its
- * existing 30s value rather than reclassified onto the blessed 5-minute
- * POLL_BUS_RECONCILE_MS pattern, which would be a cadence behavior change
- * outside this coverage pass's scope.
+ * Reconciliation fallback for active ingestion reads. Bus events provide
+ * earlier invalidation, while this also covers a disconnected bus or an
+ * event coalesced into an in-flight read whose snapshot predates that event.
+ * Historical pages and audit-gated payloads never poll.
  */
 const INGESTION_EVENTS_POLL_DEFAULT_MS = 30_000;
 
@@ -106,31 +99,124 @@ export function useIngestionEvents(
   filters: IngestionEventsFilters = {},
   options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
-  return useInfiniteQuery<
-    CursorPaginatedResponse<IngestionEventSummary>,
-    Error,
-    { pages: CursorPaginatedResponse<IngestionEventSummary>[]; pageParams: (string | null)[] },
-    ReturnType<typeof ingestionEventKeys.list>,
-    string | null
-  >({
+  type Page = CursorPaginatedResponse<IngestionEventSummary>;
+  const enabled = options?.enabled !== false;
+  const scope = JSON.stringify(filters);
+  const [history, setHistory] = useState<{
+    scope: string;
+    pages: Page[];
+    pageParams: (string | null)[];
+  } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [olderError, setOlderError] = useState(false);
+  const olderRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setHistory(null);
+  }, [scope]);
+  useEffect(() => {
+    setLoadingMore(false);
+    setOlderError(false);
+    return () => {
+      olderRequest.current?.abort();
+      olderRequest.current = null;
+    };
+  }, [scope, enabled]);
+
+  const head = useQuery({
     queryKey: ingestionEventKeys.list(filters),
-    queryFn: ({ pageParam }) =>
-      listIngestionEvents({ ...filters, cursor: pageParam ?? undefined }),
-    initialPageParam: null,
-    getNextPageParam: (lastPage) =>
-      lastPage.meta.has_more ? (lastPage.meta.next_cursor ?? null) : null,
+    queryFn: ({ signal }) => listIngestionEvents(filters, signal),
     staleTime: 30_000,
-    // Refetch only the first page at the interval; infinite queries refetch all
-    // loaded pages but we only need freshness from the newest (first) page.
     refetchInterval:
       options?.refetchInterval !== undefined
         ? options.refetchInterval
         : INGESTION_EVENTS_POLL_DEFAULT_MS,
-    enabled: options?.enabled !== false,
+    enabled,
     // Never-blank list (JARVIS audit move 10): keep the previous filter's
     // pages visible while a filter change re-keys the query and refetches.
     placeholderData: (prev) => prev,
   });
+  useEffect(() => {
+    if (head.isPlaceholderData || !head.data) return;
+    const refreshed = new Map(head.data.data.map(event => [event.id, event]));
+    // Persist observed updates so an event cannot revert to its original
+    // snapshot state when newer arrivals push it out of the live head.
+    setHistory(previous => {
+      if (!previous || previous.scope !== scope) return previous;
+      let changed = false;
+      const pages = previous.pages.map(page => {
+        const data = page.data.map(event => {
+          const latest = refreshed.get(event.id);
+          if (!latest || latest === event) return event;
+          changed = true;
+          return latest;
+        });
+        return { ...page, data };
+      });
+      return changed ? { ...previous, pages } : previous;
+    });
+  }, [head.data, head.isPlaceholderData, scope]);
+  const snapshot = history?.scope === scope ? history : null;
+  const pages = useMemo(
+    () => snapshot?.pages ?? (head.data ? [head.data] : []),
+    [snapshot, head.data],
+  );
+  const pageParams = snapshot?.pageParams ?? [null];
+  const lastPage = pages.at(-1);
+  const cursor = lastPage?.meta.has_more ? lastPage.meta.next_cursor : null;
+
+  async function fetchNextPage() {
+    if (!enabled || head.isPlaceholderData || !cursor || olderRequest.current) return;
+    const controller = new AbortController();
+    olderRequest.current = controller;
+    // Commit before the fetch: refreshes cannot move the reader or change
+    // the retained cursor if this older-page request fails.
+    setHistory({ scope, pages, pageParams });
+    setLoadingMore(true);
+    setOlderError(false);
+    try {
+      const page = await listIngestionEvents({ ...filters, cursor }, controller.signal);
+      if (controller.signal.aborted) return;
+      // A head refresh may have reconciled the retained pages while this
+      // request was in flight. Append to that state, not the captured pages.
+      setHistory(previous => previous?.scope === scope ? {
+        ...previous,
+        pages: [...previous.pages, page],
+        pageParams: [...previous.pageParams, cursor],
+      } : previous);
+    } catch {
+      if (!controller.signal.aborted) setOlderError(true);
+    } finally {
+      if (olderRequest.current === controller) {
+        olderRequest.current = null;
+        setLoadingMore(false);
+      }
+    }
+  }
+
+  const committedIds = snapshot && new Set(snapshot.pages.flatMap(page => page.data.map(event => event.id)));
+  const newCount = enabled && committedIds
+    ? (head.data?.data.filter(event => !committedIds.has(event.id)).length ?? 0)
+    : 0;
+  function showNewEvents() {
+    olderRequest.current?.abort();
+    olderRequest.current = null;
+    setHistory(null);
+    setLoadingMore(false);
+    setOlderError(false);
+  }
+
+  return {
+    ...head,
+    data: pages.length ? { pages, pageParams } : undefined,
+    hasNextPage: enabled && !!cursor && !head.isPlaceholderData,
+    isFetchingNextPage: enabled && loadingMore,
+    isFetchNextPageError: enabled && olderError,
+    fetchNextPage,
+    newCount,
+    isFollowingLive: snapshot === null,
+    latestReceivedAt: head.data?.data[0]?.received_at ?? null,
+    showNewEvents,
+  };
 }
 
 /**
@@ -145,44 +231,11 @@ export function useIngestionEventSessions(
 ) {
   return useQuery({
     queryKey: ingestionEventKeys.sessions(requestId),
-    queryFn: () => getIngestionEventSessions(requestId),
+    queryFn: ({ signal }) => getIngestionEventSessions(requestId, signal),
     staleTime: 30_000,
+    refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: !!requestId && options?.enabled !== false,
   });
-}
-
-/**
- * Cost/token rollup for a single ingestion event request_id.
- *
- * Fetches from GET /api/ingestion/events/{requestId}/rollup.
- * Only enabled when a non-empty requestId is provided.
- */
-export function useIngestionEventRollup(
-  requestId: string,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ingestionEventKeys.rollup(requestId),
-    queryFn: () => getIngestionEventRollup(requestId),
-    staleTime: 30_000,
-    enabled: !!requestId && options?.enabled !== false,
-  });
-}
-
-/**
- * Parallel fetch of sessions + rollup for a single ingestion event.
- *
- * Both queries share the same requestId and run concurrently.
- * Only fires when requestId is non-empty.
- */
-export function useIngestionEventLineage(
-  requestId: string,
-  options?: { enabled?: boolean },
-) {
-  const enabled = !!requestId && options?.enabled !== false;
-  const sessions = useIngestionEventSessions(requestId, { enabled });
-  const rollup = useIngestionEventRollup(requestId, { enabled });
-  return { sessions, rollup };
 }
 
 /**
@@ -197,7 +250,7 @@ export function useIngestionEventReplays(
 ) {
   return useQuery({
     queryKey: ingestionEventKeys.replays(requestId),
-    queryFn: () => getIngestionEventReplays(requestId),
+    queryFn: ({ signal }) => getIngestionEventReplays(requestId, signal),
     staleTime: 30_000,
     enabled: !!requestId && options?.enabled !== false,
   });
@@ -216,7 +269,7 @@ export function useIngestionEventSenderContact(
 ) {
   return useQuery({
     queryKey: ingestionEventKeys.senderContact(requestId),
-    queryFn: () => getIngestionEventSenderContact(requestId),
+    queryFn: ({ signal }) => getIngestionEventSenderContact(requestId, signal),
     staleTime: 60_000,
     enabled: !!requestId && options?.enabled !== false,
   });
@@ -239,7 +292,7 @@ export function useIngestionEventPayload(
 ) {
   return useQuery({
     queryKey: ingestionEventKeys.payload(requestId),
-    queryFn: () => getIngestionEventPayload(requestId),
+    queryFn: ({ signal }) => getIngestionEventPayload(requestId, signal),
     staleTime: 120_000, // payload rarely changes; longer stale time acceptable
     retry: false,       // don't retry 403 — the gated state is expected
     enabled: !!requestId && options?.enabled !== false,
@@ -260,8 +313,9 @@ export function useIngestionEventDetail(
 ) {
   return useQuery({
     queryKey: ingestionEventKeys.detail(requestId),
-    queryFn: () => getIngestionEvent(requestId),
+    queryFn: ({ signal }) => getIngestionEvent(requestId, signal),
     staleTime: 30_000,
+    refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: !!requestId && options?.enabled !== false,
   });
 }
@@ -282,8 +336,9 @@ export function useIngestionWindowRollup(
 ) {
   return useQuery<IngestionWindowRollup>({
     queryKey: ingestionEventKeys.windowRollup(params),
-    queryFn: () => getIngestionWindowRollup(params),
+    queryFn: ({ signal }) => getIngestionWindowRollup(params, signal),
     staleTime: 30_000,
+    refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled: options?.enabled !== false,
   });
 }
@@ -335,23 +390,24 @@ export function useIngestionEventsHistogram(
 ) {
   return useQuery<IngestionHistogramResponse>({
     queryKey: ingestionEventKeys.histogram(params),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await getIngestionEventsHistogram(params);
+        return await getIngestionEventsHistogram(params, signal);
       } catch (error) {
         const fallbackParams = isHistogramRangeError(error)
           ? coarserHistogramParams(params)
           : null;
-        if (!fallbackParams) throw error;
+        if (signal.aborted || !fallbackParams) throw error;
 
         // Intentionally one request only: a second 422 must remain an
         // unavailable histogram, not fan out through progressively coarser
         // guesses or React Query's generic retry loop.
-        return getIngestionEventsHistogram(fallbackParams);
+        return getIngestionEventsHistogram(fallbackParams, signal);
       }
     },
     staleTime: 30_000,
     retry: false,
+    refetchInterval: INGESTION_EVENTS_POLL_DEFAULT_MS,
     enabled:
       (!!params.trace_id || (!!params.from && !!params.to)) && options?.enabled !== false,
   });
