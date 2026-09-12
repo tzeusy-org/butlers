@@ -39,6 +39,20 @@ SKIP_TAILSCALE=false
 OBSERVABILITY=false
 BUTLERS_MODE=dev
 RESTORE_DRILL_ENABLED=false
+# A data-plane probe must run from an independent tailnet client.  An on-host
+# request to this machine's own tailnet name can be intercepted by another
+# listener (for example Docker/Traefik) before it reaches Tailscale Serve.
+# Keep the executor opt-in so a launcher never presents an on-host result as
+# off-host evidence.  The context value is a policy gate, not evidence: the
+# executed probe must derive and attest its own Tailscale identity.  The command
+# is split into argv without eval when used.
+TAILSCALE_SERVE_PROBE_CONTEXT="${TAILSCALE_SERVE_PROBE_CONTEXT:-}"
+TAILSCALE_SERVE_PROBE_COMMAND="${TAILSCALE_SERVE_PROBE_COMMAND:-}"
+TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-10}"
+TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
+TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
+TAILSCALE_SERVE_HEALTH_URL=""
+TAILSCALE_SERVE_PROBE_ARGV=()
 # Hotreload defaults to on for dev, off for prod; resolved after arg parsing.
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
@@ -127,6 +141,23 @@ set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 set +a
+
+# ``.env`` can override or unset process-supplied probe settings. Normalize
+# every external input after sourcing and before any Serve or Compose lifecycle
+# work, rather than letting a later policy check or argv splitter fail after
+# the stack has started. The health URL is internal launcher output, never an
+# environment input.
+TAILSCALE_SERVE_PROBE_CONTEXT="${TAILSCALE_SERVE_PROBE_CONTEXT:-}"
+TAILSCALE_SERVE_PROBE_COMMAND="${TAILSCALE_SERVE_PROBE_COMMAND:-}"
+TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS="${TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS:-10}"
+TAILSCALE_SERVE_PROBE_RETRIES="${TAILSCALE_SERVE_PROBE_RETRIES:-2}"
+TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS="${TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS:-1}"
+TAILSCALE_SERVE_HEALTH_URL=""
+TAILSCALE_SERVE_PROBE_ARGV=()
+if [[ -n "$TAILSCALE_SERVE_PROBE_COMMAND" && -z "${TAILSCALE_SERVE_PROBE_COMMAND//[[:space:]]/}" ]]; then
+  echo "ERROR: TAILSCALE_SERVE_PROBE_COMMAND is whitespace-only; configure a nonempty approved off-host executor or unset it; no Serve or Compose lifecycle mutation was attempted." >&2
+  exit 1
+fi
 
 # Restore-drill executor password-file preflight: when the protected fragment
 # is selected, Compose interpolates this secret even for lifecycle commands, so
@@ -364,9 +395,177 @@ raise SystemExit(1)
 PY
   }
 
+  _ts_validate_serve_status_json() {
+    SERVE_STATUS_JSON="$1" python3 - <<'PY'
+import json, os
+
+data = json.loads(os.environ["SERVE_STATUS_JSON"])
+if not isinstance(data, dict):
+    raise SystemExit(1)
+web = data.get("Web")
+if web is not None and not isinstance(web, dict):
+    raise SystemExit(1)
+for host_config in (web or {}).values():
+    if not isinstance(host_config, dict):
+        raise SystemExit(1)
+    handlers = host_config.get("Handlers")
+    if handlers is not None and not isinstance(handlers, dict):
+        raise SystemExit(1)
+PY
+  }
+
+  _ts_read_serve_status() {
+    local status_json=""
+    if ! status_json=$(tailscale serve status --json 2>/dev/null); then
+      return 40
+    fi
+    if ! _ts_validate_serve_status_json "$status_json" 2>/dev/null; then
+      return 41
+    fi
+    printf '%s' "$status_json"
+  }
+
+  _ts_require_readable_serve_status() {
+    local status_rc="$1"
+    local stop_detail="$2"
+    case "$status_rc" in
+      40)
+        echo "ERROR: Tailscale Serve control-plane status-unreadable: 'tailscale serve status --json' failed; ${stop_detail}." >&2
+        ;;
+      41)
+        echo "ERROR: Tailscale Serve control-plane status-malformed: 'tailscale serve status --json' did not return a valid status object; ${stop_detail}." >&2
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    return 0
+  }
+
+  _ts_read_usable_hostname() {
+    tailscale status --json 2>/dev/null | python3 -c '
+import json
+import re
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+
+if not isinstance(data, dict) or not isinstance(data.get("Self"), dict):
+    raise SystemExit(1)
+hostname = data["Self"].get("DNSName")
+if not isinstance(hostname, str):
+    raise SystemExit(1)
+if hostname.endswith("."):
+    hostname = hostname[:-1]
+hostname = hostname.lower()
+labels = hostname.split(".")
+label_pattern = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+if (
+    not hostname
+    or len(hostname) > 253
+    or len(labels) < 3
+    or labels[-2:] != ["ts", "net"]
+    or any(not label_pattern.fullmatch(label) for label in labels)
+):
+    raise SystemExit(1)
+
+print(hostname)
+'
+  }
+
+  # ── Validate data-plane probe context before any lifecycle mutation ────
+  # The command is normally an SSH wrapper (or another operator-supplied
+  # executor) that runs scripts/tailscale_serve_probe.py from a different
+  # tailnet client.  Refuse an explicitly on-host context: a local self-
+  # request is not evidence of the public Serve route.
+  if [ -n "$TAILSCALE_SERVE_PROBE_COMMAND" ] \
+    && [ "$TAILSCALE_SERVE_PROBE_CONTEXT" != "off-host" ]; then
+    echo "ERROR: Tailscale Serve data-plane probe requires TAILSCALE_SERVE_PROBE_CONTEXT=off-host; refusing an on-host or unspecified probe context." >&2
+    echo "  Set TAILSCALE_SERVE_PROBE_COMMAND to an approved off-host, read-only probe executor." >&2
+    exit 1
+  fi
+
+  TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS=""
+  if [ -n "$TAILSCALE_SERVE_PROBE_COMMAND" ]; then
+    # Split only once, before lifecycle work, so a missing local executable
+    # cannot surface as a post-start probe failure.  This intentionally does
+    # not validate remote argv: an SSH wrapper may be locally resolvable while
+    # its remote command can only fail after the service is running.
+    IFS=$' \t\n' read -r -a TAILSCALE_SERVE_PROBE_ARGV <<< "$TAILSCALE_SERVE_PROBE_COMMAND"
+    probe_executor_path=""
+    if [ "${#TAILSCALE_SERVE_PROBE_ARGV[@]}" -eq 0 ] \
+      || ! probe_executor_path=$(type -P "${TAILSCALE_SERVE_PROBE_ARGV[0]}" 2>/dev/null) \
+      || [ -z "$probe_executor_path" ] \
+      || [ ! -x "$probe_executor_path" ]; then
+      echo "ERROR: Tailscale Serve data-plane executor-unavailable: the configured off-host executor is not locally resolvable; no Serve or Compose lifecycle mutation was attempted." >&2
+      exit 1
+    fi
+    TAILSCALE_SERVE_PROBE_ARGV[0]="$probe_executor_path"
+    if ! command -v timeout &>/dev/null; then
+      echo "ERROR: Tailscale Serve probe requires the 'timeout' command to bound the executor; no mapping or lifecycle mutation was attempted." >&2
+      exit 1
+    fi
+    probe_settings_rc=0
+    normalized_probe_settings=$(python3 - \
+      "$TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS" \
+      "$TAILSCALE_SERVE_PROBE_RETRIES" \
+      "$TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS" <<'PY'
+import math, sys
+
+try:
+    timeout = float(sys.argv[1])
+    retries = int(sys.argv[2])
+    retry_delay = float(sys.argv[3])
+except (TypeError, ValueError):
+    raise SystemExit(1)
+if (
+    not math.isfinite(timeout)
+    or not math.isfinite(retry_delay)
+    or not 0 < timeout <= 30
+    or not 0 <= retries <= 3
+    or not 0 <= retry_delay <= 5
+    or str(retries) != sys.argv[2]
+):
+    raise SystemExit(1)
+# Include the probe's five-second local identity check plus a bounded executor
+# establishment allowance (for example SSH DNS/authentication setup).
+outer_timeout = timeout * (retries + 1) + retry_delay * retries + 10
+print(format(timeout, ".15g"), retries, format(retry_delay, ".15g"), format(outer_timeout, ".15g"))
+PY
+    ) || probe_settings_rc=$?
+    if [ "$probe_settings_rc" -ne 0 ]; then
+      echo "ERROR: invalid Tailscale Serve probe settings: timeout must be finite in (0,30], retries an integer in [0,3], and retry delay finite in [0,5]; no mapping or lifecycle mutation was attempted." >&2
+      exit 1
+    fi
+    read -r TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS \
+      TAILSCALE_SERVE_PROBE_RETRIES \
+      TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS \
+      TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS <<< "$normalized_probe_settings"
+
+    # An explicit executor promises data-plane evidence.  Derive and validate
+    # its target before any Serve or Compose lifecycle mutation so a missing or
+    # malformed Self.DNSName cannot silently turn that promise into a no-op.
+    TS_HOSTNAME=""
+    if ! TS_HOSTNAME=$(_ts_read_usable_hostname); then
+      echo "ERROR: Tailscale Serve data-plane target-unavailable: an explicit off-host probe is configured but 'tailscale status --json' did not provide a usable Self.DNSName; no Serve or Compose lifecycle mutation was attempted." >&2
+      echo "  Restore a valid Tailscale DNS name or unset TAILSCALE_SERVE_PROBE_COMMAND to retain control-plane-only mapping validation." >&2
+      exit 1
+    fi
+  fi
+
   # ── Apply mappings ─────────────────────────────────────────────────
   echo "Tailscale serve: configuring HTTPS mappings (port ${TAILSCALE_HTTPS_PORT})..."
-  serve_status=$(tailscale serve status --json 2>/dev/null || echo "{}")
+  serve_status_rc=0
+  serve_status=$(_ts_read_serve_status) || serve_status_rc=$?
+  if [ "$serve_status_rc" -ne 0 ]; then
+    _ts_require_readable_serve_status \
+      "$serve_status_rc" \
+      "no mapping or lifecycle mutation was attempted" || true
+    exit 1
+  fi
   ts_serve_ok=true
   for mapping in "${SERVE_MAPPINGS[@]}"; do
     IFS='|' read -r path_prefix target <<< "$mapping"
@@ -389,10 +588,35 @@ PY
     exit 1
   fi
 
+  # A successful `tailscale serve` invocation is not proof that the requested
+  # handler was retained.  Re-read the control-plane state and fail with a
+  # route-specific class before the data-plane probe or Compose lifecycle.
+  serve_status_rc=0
+  serve_status=$(_ts_read_serve_status) || serve_status_rc=$?
+  if [ "$serve_status_rc" -ne 0 ]; then
+    _ts_require_readable_serve_status \
+      "$serve_status_rc" \
+      "no further Serve mutation or lifecycle startup was attempted" || true
+    exit 1
+  fi
+  ts_mapping_missing=false
+  for mapping in "${SERVE_MAPPINGS[@]}"; do
+    IFS='|' read -r path_prefix target <<< "$mapping"
+    if ! _ts_check_mapping "$target" "$path_prefix" "$serve_status" 2>/dev/null; then
+      echo "  ERROR: Tailscale Serve mapping-missing after configuration: ${path_prefix} -> ${target} (HTTPS port ${TAILSCALE_HTTPS_PORT})." >&2
+      echo "    Recheck the read-only 'tailscale serve status --json' result and the exact path/target; no further Serve mutation was attempted." >&2
+      ts_mapping_missing=true
+    fi
+  done
+  if [ "$ts_mapping_missing" = "true" ]; then
+    echo "ERROR: Tailscale Serve control-plane validation failed (mapping-missing)." >&2
+    exit 1
+  fi
+
   # ── Export computed URLs for docker-compose interpolation ───────────
-  TS_HOSTNAME=$(tailscale status --json 2>/dev/null \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" \
-    2>/dev/null || echo "")
+  if [ -z "${TS_HOSTNAME:-}" ]; then
+    TS_HOSTNAME=$(_ts_read_usable_hostname 2>/dev/null || true)
+  fi
 
   if [ -n "$TS_HOSTNAME" ]; then
     if [ "$TAILSCALE_HTTPS_PORT" = "443" ]; then
@@ -404,9 +628,10 @@ PY
     export SPOTIFY_OAUTH_REDIRECT_URI="${TS_BASE}/${API_PREFIX}/api/connectors/spotify/oauth/callback"
     export OWNTRACKS_CONNECTOR_HOST="${TS_HOSTNAME}"
     export OWNTRACKS_CONNECTOR_PORT="${TAILSCALE_HTTPS_PORT}"
+    TAILSCALE_SERVE_HEALTH_URL="${TS_BASE}/${API_PREFIX}/api/health"
 
     echo ""
-    echo "Tailscale serve: ready (${TS_HOSTNAME})"
+    echo "Tailscale serve: mappings ready (${TS_HOSTNAME})"
     echo "  Dashboard:      ${TS_BASE}/${URL_PREFIX}/"
     echo "  API:            ${TS_BASE}/${API_PREFIX}/api"
     echo "  OwnTracks:      ${TS_BASE}/${OWNTRACKS_PREFIX}/webhook"
@@ -415,6 +640,71 @@ PY
   else
     echo "Tailscale serve: mappings applied (could not resolve hostname)"
   fi
+
+  _ts_run_data_plane_probe() {
+    local health_url="$1"
+    if [ -z "$TAILSCALE_SERVE_PROBE_COMMAND" ]; then
+      echo "Tailscale serve: data-plane probe deferred for ${health_url} (set TAILSCALE_SERVE_PROBE_COMMAND to an approved off-host executor; control-plane mappings only)"
+      return 0
+    fi
+
+    if [ "${#TAILSCALE_SERVE_PROBE_ARGV[@]}" -eq 0 ]; then
+      echo "ERROR: Tailscale Serve data-plane executor-unavailable: no locally resolved executor is available." >&2
+      return 2
+    fi
+
+    local probe_rc=0
+    local probe_attestation_rc=0
+    local -a probe_status=()
+    # The executor is operator-configured but untrusted for diagnostics. Keep
+    # its stdout streaming through the exact attestation matcher and discard
+    # stderr, so command arguments or remote error text cannot escape through
+    # launcher output.  Stable exit classes below remain actionable.
+    if timeout --kill-after=1 \
+      "${TAILSCALE_SERVE_PROBE_OUTER_TIMEOUT_SECONDS}s" \
+      "${TAILSCALE_SERVE_PROBE_ARGV[@]}" \
+      --url "$health_url" \
+      --timeout "$TAILSCALE_SERVE_PROBE_TIMEOUT_SECONDS" \
+      --retries "$TAILSCALE_SERVE_PROBE_RETRIES" \
+      --retry-delay "$TAILSCALE_SERVE_PROBE_RETRY_DELAY_SECONDS" 2>/dev/null \
+      | grep -Fx 'TAILSCALE_SERVE_PROBE_IDENTITY=verified-distinct' >/dev/null; then
+      probe_status=("${PIPESTATUS[@]}")
+    else
+      probe_status=("${PIPESTATUS[@]}")
+    fi
+    probe_rc="${probe_status[0]}"
+    probe_attestation_rc="${probe_status[1]}"
+    if [ "$probe_rc" -eq 0 ]; then
+      if [ "$probe_attestation_rc" -ne 0 ]; then
+        echo "ERROR: Tailscale Serve probe identity-unverified: the executor returned success without attesting an actual Tailscale identity distinct from the target." >&2
+        return 27
+      fi
+      echo "Tailscale Serve data-plane: ready (off-host executor identity attested)."
+      return 0
+    fi
+
+    # scripts/tailscale_serve_probe.py uses stable exit classes.  Keep a
+    # shell-side summary too so custom approved executors remain actionable.
+    case "$probe_rc" in
+      124|137)
+        echo "ERROR: Tailscale Serve data-plane executor-timeout for ${health_url}; the approved executor exceeded its validated outer deadline. Check executor DNS, SSH, and authentication reachability; no further Serve mutation was attempted." >&2
+        return 28
+        ;;
+      20)
+        echo "ERROR: Tailscale Serve mapping-ok-but-cert-invalid for ${health_url}; strict TLS rejected the public certificate (hostname, trust chain, or expiry). Verify from an off-host tailnet client; no further Serve mutation was attempted." >&2
+        ;;
+      21)
+        echo "ERROR: Tailscale Serve mapping-ok-but-route-404 for ${health_url}; the HTTPS listener returned 404. Recheck the exact path mapping and proxy target; no further Serve mutation was attempted." >&2
+        ;;
+      22)
+        echo "ERROR: Tailscale Serve mapping-ok-but-timeout for ${health_url}; the off-host probe exhausted its bounded retries. Check tailnet reachability and API startup; no further Serve mutation was attempted." >&2
+        ;;
+      *)
+        echo "ERROR: Tailscale Serve data-plane probe failed for ${health_url} (exit ${probe_rc}); inspect the off-host probe result. No further Serve mutation was attempted." >&2
+        ;;
+    esac
+    return "$probe_rc"
+  }
   echo ""
 fi
 
@@ -677,4 +967,17 @@ else
   echo "NOTE: Run 'sudo ALLOWED_TAILNET_HOSTS=\"${ALLOWED_TAILNET_HOSTS:-}\" ./scripts/egress-firewall.sh'"
   echo "  to block container access to LAN/Tailscale (sudo requires a password)."
   echo ""
+fi
+
+# Mapping validation runs before lifecycle startup; the HTTPS health probe runs
+# after the API containers are started so it checks the actual data plane.  The
+# probe derives its actual Tailscale identity and rejects this target host;
+# the caller-provided context label alone is never accepted as evidence.
+# Keep the probe after the firewall step so a failed readiness check cannot
+# bypass that guard.
+if [ -n "${TAILSCALE_SERVE_HEALTH_URL:-}" ]; then
+  if ! _ts_run_data_plane_probe "$TAILSCALE_SERVE_HEALTH_URL"; then
+    echo "ERROR: Tailscale Serve readiness is not proven; Compose is running but the public HTTPS data plane is degraded." >&2
+    exit 1
+  fi
 fi
