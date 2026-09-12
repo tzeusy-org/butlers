@@ -2,13 +2,13 @@
 
 ## Authority and status
 
-The owner selected Option B on 2026-09-11: compute the namespace-PID1 shim
-closure at image-build time and consume it from the validated image-owned
-runtime-input manifest. This records the selected direction and the exact
-proposed contract. It is not contract adoption, implementation authorization,
-deployment authority, or reassignment. `bu-9hkm5` remains the implementation
-owner. Its runtime-`ldd` Option A prototype is not an input to this design and
-must be neither reused nor deleted by this packet.
+The owner selected Option B on 2026-09-11 and adopted the exact reviewed
+contract plus authorized its bounded implementation on 2026-09-12: compute the
+namespace-PID1 shim closure at image-build time and consume it from the
+validated image-owned runtime-input manifest. This grants no deployment, live
+credential/provider operation, prototype disposition, or reassignment.
+`bu-9hkm5` remains the implementation owner. Its runtime-`ldd` Option A
+prototype is not an input to this design and must be neither reused nor deleted.
 
 The amendment is intentionally bounded to the image-owned shim dependency
 closure. It does not change authentication policy, credential/provider
@@ -35,9 +35,13 @@ the one-concrete-sandbox-spawn-boundary policy.
   shim data before spawn. Do not run `ldd` at runtime and do not fall back to a
   provider closure or direct child.
 
-## Current source map
+## Pre-implementation source map
 
-| Surface | Current fact | Required implementation |
+This table records the reviewed version-2 baseline and the implementation work
+that this handoff authorized. It is retained as delivery provenance, not as a
+description of the version-3 implementation now present in this change.
+
+| Surface | Pre-implementation fact | Required implementation |
 |---|---|---|
 | `scripts/generate_runtime_cli_sandbox_manifest.py::build_manifest` | Emits version 2 with `providers` only. | Emit the exact version-3 top-level shape and a separate shim record. |
 | `scripts/generate_runtime_cli_sandbox_manifest.py::_runtime_closure` / `_ldd_dependencies` | Computes recursive provider closures; generic non-zero `ldd` is treated as no dependencies. | Reuse the traversal for the shim with strict unresolved/error handling. A positively identified static executable may have only its executable binding; an unexplained failure or `not found` fails the build. |
@@ -131,12 +135,9 @@ receive the validated shim closure; do not leave a compatibility default.
 
 ## Test handoff
 
-Draft-only delta: `Tests: +0 ~0 -0`.
-
-Proposed implementation delta after inventory: `Tests: +3 ~5 -0`. Recalculate
-the exact line after the implementation diff; the intent is three parametrized
-failure/ordering matrices and extensions of existing seam tests, not a new test
-file.
+Implementation delta: `Tests: +3 ~5 -0`. The three additions are parametrized
+failure/ordering matrices and the remaining changes extend existing seam tests;
+no new test file is introduced.
 
 - Extend
   `tests/scripts/test_generate_runtime_cli_sandbox_manifest.py::test_generator_declares_only_the_registered_dashboard_runtime_closures`
