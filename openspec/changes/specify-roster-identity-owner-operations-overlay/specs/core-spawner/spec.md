@@ -24,6 +24,11 @@ not yet cut over and owner-selected `legacy_full_replacement` during the approve
 window after cutover. Both SHALL use the preserved pre-cutover base selector plus its then-authorized
 dynamic suffixes, SHALL omit the new owner-operations overlay, and SHALL be reported as
 identity-replacing rather than as satisfying roster-plus-overlay composition.
+If `legacy_full_replacement` remains selected when the deployment-owned rollback deadline is absent,
+malformed, or expired, the spawner SHALL fail with fixed category `legacy_rollback_expired` before
+adapter invocation. It SHALL neither continue the identity replacement nor automatically select
+`roster_overlay`. The authenticated owner SHALL still be permitted to transition the stored mode to
+`roster_overlay`. The migration-seeded `precutover_legacy_hold` SHALL NOT use the rollback deadline.
 
 ID: REQ-core-spawner-004
 Source: specify-roster-identity-owner-operations-overlay design D1-D2 and D7; heart-and-soul/vision.md Rule 5
@@ -88,3 +93,9 @@ Scope: v1-mandatory
 - **THEN** the spawner uses the preserved pre-cutover selector and authorized dynamic suffixes
 - **AND** it does not report that the owner selected rollback or that roster identity is structurally present
 - **AND** leaving the hold is one-way
+
+#### Scenario: Selected legacy rollback expires closed
+- **WHEN** mode history selects `legacy_full_replacement` but the server rollback deadline is absent, malformed, or expired
+- **THEN** the spawner fails with `legacy_rollback_expired` before invoking a runtime adapter
+- **AND** it does not continue legacy replacement or automatically select `roster_overlay`
+- **AND** the failure contains no roster, overlay, or legacy prompt text

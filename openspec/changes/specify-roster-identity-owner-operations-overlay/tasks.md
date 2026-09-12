@@ -35,7 +35,7 @@
 - [ ] 5.4 Implement bounded literal overlay validation, reserved-delimiter rejection, per-agent compare-and-swap serialization, identical-update no-op behavior, and atomic `butler.prompt_overlay_set` persistence with the exact metadata allowlist.
 - [ ] 5.5 Update the dashboard editor to distinguish roster identity from the mutable overlay and require explicit confirmation of the natural-language semantic-limit warning.
 - [ ] 5.6 Add the owner-only composition-mode route over append-only mode history with compare-and-swap, identity-replacement acknowledgement, approved-window enforcement, and atomic `butler.prompt_mode_changed` evidence.
-- [ ] 5.7 Read the rollback deadline only from fail-closed `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL`; reject request/DB/MCP/runtime authority to open it and reject `precutover_legacy_hold` as an API target.
+- [ ] 5.7 Read the rollback deadline only from fail-closed `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL`; reject request/DB/MCP/runtime authority to open it, reject `precutover_legacy_hold` as an API target, and keep the target-mode exit available after expiry.
 
 ## 6. Future roster governance after adoption
 
@@ -47,7 +47,7 @@
 ## 7. Future verification after adoption
 
 - [ ] 7.1 Extend `tests/features/test_skills.py` for recursive bare references, invalid identity graphs, literal overlay include-like text, shared snippets, and generated-fallback retirement.
-- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for target-mode layer order including currency and measurement system, exact separators, unavailable-overlay behavior, both bounded legacy modes, closed-source rejection, and byte-identical adapter handoff.
+- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for target-mode layer order including currency and measurement system, exact separators, unavailable-overlay behavior, both bounded legacy modes, expired-rollback pre-adapter denial, closed-source rejection, and byte-identical adapter handoff.
 - [ ] 7.3 Extend `tests/api/test_butler_management.py` for 503/401 pre-access denial, unknown-agent pre-pool rejection, bounded validation, owner-only projections, overlay/mode compare-and-swap races, fail-closed rollback-window parsing, one-way pre-cutover hold, no-op retries, exact audit actions, and content-blind evidence.
 - [ ] 7.4 Extend `tests/config/test_roster_claude_md_include.py` and `tests/config/test_delegation_guidance_reachability.py` to classify domain butlers and staffers from roster configuration, positively pin Travel conformance, and pin QA's explicit governance opt-out without asserting changed QA prompt bytes.
 - [ ] 7.5 Add `tests/migrations/test_core_prompt_overlay_authority.py` using direct-login writer, actual no-`SET ROLE` generic API, connector, mapped runtime, unmapped runtime, table-owner, sequence, both history tables, and bootstrap-rerun contexts.

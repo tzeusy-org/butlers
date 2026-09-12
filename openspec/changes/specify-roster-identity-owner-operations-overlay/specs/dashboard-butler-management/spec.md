@@ -127,6 +127,12 @@ Scope: v1-mandatory
 - **THEN** a request for `legacy_full_replacement` returns the fixed content-blind conflict without a write
 - **AND** no request or stored row can override that closed result
 
+#### Scenario: Owner can leave expired rollback mode
+- **WHEN** rollback configuration is closed while mode history still selects `legacy_full_replacement`
+- **THEN** the owner projection reports the expired blocked state without prompt text in error metadata
+- **AND** an authenticated compare-and-swap transition to `roster_overlay` remains available
+- **AND** selecting or re-entering `legacy_full_replacement` remains denied
+
 #### Scenario: Pre-cutover hold is not an owner rollback target
 - **WHEN** an existing agent is still in migration-seeded `precutover_legacy_hold`
 - **THEN** the owner projection labels it as unreviewed pre-cutover compatibility state

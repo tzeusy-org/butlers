@@ -104,16 +104,18 @@ putting the overlay before shared snippets lets later generic text accidentally 
 operational instruction in ordinary model interpretation. The selected order keeps authority
 visible, not mechanically enforced.
 
-### D2: Roster identity is an admission invariant, not a mutable fallback
+### D2: Roster identity is a target-mode admission invariant, not a mutable fallback
 
-A configured roster agent must have a non-blank `CLAUDE.md` whose required bare-reference graph
-resolves completely inside the roster root. A missing file, blank root, missing target, roster
-escape, or cycle fails composition before the adapter starts. A database row cannot rescue that
-failure. Unknown agent names fail before prompt-store access.
+In `roster_overlay` mode, a configured roster agent must have a non-blank `CLAUDE.md` whose required
+bare-reference graph resolves completely inside the roster root. A missing file, blank root, missing
+target, roster escape, or cycle fails composition before the adapter starts. A database row cannot
+rescue that target-mode failure. Unknown agent names fail before prompt-store access in every mode.
 
-Domain butlers continue to require `CLAUDE.md` to contain only `@AGENTS.md` and `AGENTS.md` to begin
-with `@../shared/AGENTS.md`. The current generic `You are the {name} butler.` fallback is retired for
-admitted roster agents because it cannot preserve their roster identity or distinguish staffers.
+In `roster_overlay` mode, domain butlers continue to require `CLAUDE.md` to contain only
+`@AGENTS.md` and `AGENTS.md` to begin with `@../shared/AGENTS.md`. The current generic
+`You are the {name} butler.` fallback is retired for target-mode roster agents because it cannot
+preserve their roster identity or distinguish staffers. The two explicitly bounded legacy modes
+retain the compatibility selector instead of claiming to satisfy this target-mode invariant.
 
 Alternative rejected: retain the generated fallback. It improves availability but silently starts
 an agent without its governing identity, which conflicts with Vision Rules 5 and 6 and the selected
@@ -188,6 +190,13 @@ generic API mutation paths cannot create or extend it. The mode route reads it s
 malformed, or expired configuration means closed and returns the same fixed content-blind conflict
 as any other unavailable rollback. The timestamp itself may appear in owner-only status but not in
 runtime prompt text, audit notes, error details, logs, metrics, or traces.
+
+If the deadline expires while mode history still selects post-cutover `legacy_full_replacement`, the
+next spawn fails before adapter invocation with fixed category `legacy_rollback_expired`. The
+runtime does not silently continue legacy replacement and does not automatically choose target mode.
+The authenticated owner can still transition the mode to `roster_overlay` after expiry; selecting or
+re-entering legacy remains closed. Migration-seeded `precutover_legacy_hold` is a distinct state and
+does not consult this rollback deadline.
 
 Alternative rejected: `MAX(version)+1` alone. It detects collisions only through a database error
 and does not give callers a usable lost-update contract.
