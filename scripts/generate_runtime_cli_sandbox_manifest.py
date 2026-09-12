@@ -135,20 +135,25 @@ def _ldd_dependencies(
         capture_output=True,
         text=True,
     )
-    output = "\n".join((result.stdout, result.stderr))
-    if strict and "not found" in output:
-        raise ManifestGenerationError(f"runtime input dependency is unresolved: {path}")
     static_markers = ("not a dynamic executable", "statically linked")
+    stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if strict and result.stderr.strip():
+        raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
+    if strict and "not found" in result.stdout.lower():
+        raise ManifestGenerationError(f"runtime input dependency is unresolved: {path}")
+    static_lines = [
+        line for line in stdout_lines if any(marker in line.lower() for marker in static_markers)
+    ]
+    if strict and static_lines:
+        if len(stdout_lines) != 1:
+            raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
+        return ()
     if result.returncode != 0:
         # Provider launchers may be scripts, while the fixed compiled shim must
         # be either positively identified as static or have a complete closure.
-        if strict and not any(marker in output.lower() for marker in static_markers):
+        if strict:
             raise ManifestGenerationError(f"runtime dependency discovery failed: {path}")
         return ()
-    if strict and any(marker in output.lower() for marker in static_markers):
-        return ()
-    if strict and result.stderr.strip():
-        raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
 
     dependencies: list[RuntimeInputBinding] = []
     for line in result.stdout.splitlines():
@@ -164,6 +169,8 @@ def _ldd_dependencies(
             dependencies.append(_runtime_input_binding(Path(candidate)))
         elif strict and not candidate.startswith("linux-vdso.so"):
             raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
+    if strict and not dependencies:
+        raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
     return tuple(dependencies)
 
 

@@ -35,9 +35,13 @@ the one-concrete-sandbox-spawn-boundary policy.
   shim data before spawn. Do not run `ldd` at runtime and do not fall back to a
   provider closure or direct child.
 
-## Current source map
+## Pre-implementation source map
 
-| Surface | Current fact | Required implementation |
+This table records the reviewed version-2 baseline and the implementation work
+that this handoff authorized. It is retained as delivery provenance, not as a
+description of the version-3 implementation now present in this change.
+
+| Surface | Pre-implementation fact | Required implementation |
 |---|---|---|
 | `scripts/generate_runtime_cli_sandbox_manifest.py::build_manifest` | Emits version 2 with `providers` only. | Emit the exact version-3 top-level shape and a separate shim record. |
 | `scripts/generate_runtime_cli_sandbox_manifest.py::_runtime_closure` / `_ldd_dependencies` | Computes recursive provider closures; generic non-zero `ldd` is treated as no dependencies. | Reuse the traversal for the shim with strict unresolved/error handling. A positively identified static executable may have only its executable binding; an unexplained failure or `not found` fails the build. |

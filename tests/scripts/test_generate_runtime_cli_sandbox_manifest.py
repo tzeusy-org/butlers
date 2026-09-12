@@ -154,21 +154,25 @@ def test_generator_preserves_logical_elf_loader_paths_for_the_empty_root(
 
 
 @pytest.mark.parametrize(
-    ("returncode", "stdout", "stderr"),
+    ("returncode", "stdout", "stderr", "is_valid_static"),
     [
-        (0, "libc.so.6 => not found\n", ""),
-        (1, "", "unexpected loader failure"),
-        (0, "/lib64/ld-linux.so (0x0)\n", "unexpected warning"),
-        (0, "ambiguous-loader-entry (0x0)\n", ""),
+        (0, "libc.so.6 => not found\n", "", False),
+        (1, "", "unexpected loader failure", False),
+        (0, "", "", False),
+        (0, "statically linked\n", "unexpected warning", False),
+        (0, "/lib64/ld-linux.so (0x0)\n", "unexpected warning", False),
+        (0, "ambiguous-loader-entry (0x0)\n", "", False),
+        (1, "not a dynamic executable\n", "", True),
     ],
 )
-def test_strict_shim_dependency_discovery_fails_closed(
+def test_strict_shim_dependency_discovery_requires_unambiguous_output(
     monkeypatch,
     returncode: int,
     stdout: str,
     stderr: str,
+    is_valid_static: bool,
 ) -> None:
-    """REQ-core-credentials-002: image generation never emits a partial shim closure."""
+    """REQ-core-credentials-002: only a proven static shim may omit dependencies."""
     module = _manifest_module()
     monkeypatch.setattr(
         module.subprocess,
@@ -180,5 +184,9 @@ def test_strict_shim_dependency_discovery_fails_closed(
         ),
     )
 
-    with pytest.raises(module.ManifestGenerationError):
-        module._ldd_dependencies(Path("/image/runtime-cli-sandbox-init"), strict=True)
+    shim = Path("/image/runtime-cli-sandbox-init")
+    if is_valid_static:
+        assert module._ldd_dependencies(shim, strict=True) == ()
+    else:
+        with pytest.raises(module.ManifestGenerationError):
+            module._ldd_dependencies(shim, strict=True)
