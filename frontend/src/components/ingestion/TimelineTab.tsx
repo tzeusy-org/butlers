@@ -1068,9 +1068,6 @@ function LedgerRow({
         data-event-id={event.id}
         aria-keyshortcuts="ArrowUp ArrowDown"
         onKeyDown={onRowNavigationKeyDown}
-        // The drawer is URL-backed as /ingestion?event=<id>; this maps to
-        // useIngestionEventDetail's exact cache key via the shared registry.
-        prefetchTo={`/ingestion?event=${encodeURIComponent(event.id)}`}
       >
         <span
           className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
@@ -2202,6 +2199,11 @@ export function TimelineTab({
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
+    isFetchNextPageError,
+    newCount,
+    isFollowingLive,
+    latestReceivedAt: headLatestReceivedAt,
+    showNewEvents,
     refetch,
   } = useIngestionEvents(eventsFilters, { enabled: isActive });
 
@@ -2294,7 +2296,9 @@ export function TimelineTab({
   // Report the most-recent event's received_at to the parent for live-status.
   // We use the first page's first event (newest-first ordering) so the badge
   // reflects true pipeline freshness rather than the client-side filter view.
-  const latestReceivedAt = infiniteData?.pages[0]?.data[0]?.received_at ?? null;
+  const latestReceivedAt = headLatestReceivedAt === undefined
+    ? (infiniteData?.pages[0]?.data[0]?.received_at ?? null)
+    : headLatestReceivedAt;
   useEffect(() => {
     if (!isLoading && onFreshnessChange) {
       // `isError` stays true while React Query retains the last successful
@@ -2580,6 +2584,11 @@ export function TimelineTab({
       )}
 
       {/* Ledger */}
+      {isFollowingLive === false && (
+        <Button variant="outline" size="sm" onClick={showNewEvents}>
+          {newCount > 0 ? `Show ${newCount} new events` : "Return to latest events"}
+        </Button>
+      )}
       <FetchingDim
         isFetching={
           isFetching && isPlaceholderData && !isLoading && !isError && !isFetchingNextPage
@@ -2672,7 +2681,7 @@ export function TimelineTab({
               className="font-mono text-[11px]"
             >
               {isFetchingNextPage ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-              Load more
+              {isFetchNextPageError ? "Retry loading older events" : "Load more"}
             </Button>
           )}
         </div>

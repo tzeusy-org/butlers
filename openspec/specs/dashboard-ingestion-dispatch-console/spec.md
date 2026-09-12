@@ -795,6 +795,57 @@ resource routes. The dashboard SHALL NOT fall back to or request
   compatibility wrapper at that path
 - **AND** clients use the canonical ingestion connector routes instead
 
+### Requirement: Bounded Timeline Read Work
+
+Timeline reads SHALL share a bounded admission limit per API application,
+with finite admission and execution deadlines. Exhausted admission or an
+execution deadline SHALL return HTTP 503 with a retry hint. Disconnected
+readers SHALL release their in-flight read work. Replay and other mutations
+SHALL retain their existing transaction and audit lifecycle.
+
+#### Scenario: Timeline readers saturate their admission limit
+
+- **WHEN** concurrent Timeline reads fill the admission limit
+- **THEN** additional readers wait only for the bounded admission interval
+- **AND** exhausted readers receive HTTP 503 with `Retry-After`
+- **AND** unrelated dashboard routes do not queue on the Timeline admission limit
+
+#### Scenario: Abandoned reads release capacity
+
+- **WHEN** a reader disconnects or a read exceeds its execution deadline
+- **THEN** the in-flight read is cancelled and its admission slot is released
+- **AND** categorical outcome, admission-wait and execution-duration metrics are recorded
+- **AND** metrics contain no event IDs, payloads or filter values
+
+### Requirement: Timeline Refresh Does Not Multiply Historical Reads
+
+The live head SHALL refresh independently of already loaded historical pages.
+Paging into history SHALL retain a stable snapshot and retry cursor, while
+new head arrivals remain discoverable. Superseded HTTP work SHALL receive
+cancellation signals. Speculative row hover or focus SHALL NOT invoke an
+audited event-detail read; activating the drawer retains its normal access.
+
+#### Scenario: A reader has loaded several pages
+
+- **WHEN** polling or an ingestion notification refreshes the ledger
+- **THEN** only the live head is automatically fetched
+- **AND** loaded historical pages remain in place
+- **AND** new arrivals can be revealed through an explicit return-to-live action
+
+#### Scenario: A burst of ingestion notifications arrives
+
+- **WHEN** several ingestion notifications arrive in a short fixed window
+- **THEN** the ledger and aggregate refreshes are coalesced
+- **AND** unrelated historical details, replay history and audited payloads are not refetched
+- **AND** session lifecycle notifications still refresh session-dependent evidence
+- **AND** reconnect replay and fallback polling preserve eventual freshness
+
+#### Scenario: Drawer reads only consumed data
+
+- **WHEN** the owner opens the event drawer
+- **THEN** it reads session lineage without an unused duplicate rollup request
+- **AND** changing filters or leaving the view cancels superseded reads
+
 ## Source References
 
 - Non-Negotiable Rule 3 (MCP-only inter-butler communication)

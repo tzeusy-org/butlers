@@ -184,7 +184,6 @@ import type {
   OwnerSetupStatus,
   IngestionEventSummary,
   IngestionEventSession,
-  IngestionEventRollup,
   IngestionEventReplayResponse,
   IngestionEventReplayHistoryEntry,
   BulkRetryEventsResponse,
@@ -4905,6 +4904,7 @@ export function searchContacts(
 /** List ingestion events with cursor pagination (GET /api/ingestion/events). */
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
+  signal?: AbortSignal,
 ): Promise<CursorPaginatedResponse<IngestionEventSummary>> {
   const sp = new URLSearchParams();
   if (params?.limit !== undefined) sp.set("limit", String(params.limit));
@@ -4920,6 +4920,7 @@ export async function listIngestionEvents(
   const qs = sp.toString() ? `?${sp.toString()}` : "";
   return apiFetch<CursorPaginatedResponse<IngestionEventSummary>>(
     `/ingestion/events${qs}`,
+    { signal },
   );
 }
 
@@ -4933,6 +4934,7 @@ export async function listIngestionEvents(
  */
 export async function getIngestionWindowRollup(
   params?: IngestionWindowRollupParams,
+  signal?: AbortSignal,
 ): Promise<IngestionWindowRollup> {
   const sp = new URLSearchParams();
   if (params?.from) sp.set("from", params.from);
@@ -4942,7 +4944,7 @@ export async function getIngestionWindowRollup(
   if (params?.q) sp.set("q", params.q);
   if (params?.trace_id) sp.set("trace_id", params.trace_id);
   const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`);
+  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`, { signal });
 }
 
 /**
@@ -4963,6 +4965,7 @@ export async function getIngestionWindowRollup(
  */
 export async function getIngestionEventsHistogram(
   params: IngestionHistogramParams,
+  signal?: AbortSignal,
 ): Promise<IngestionHistogramResponse> {
   const sp = new URLSearchParams();
   if (params.from) sp.set("from", params.from);
@@ -4974,33 +4977,29 @@ export async function getIngestionEventsHistogram(
   if (params.trace_id) sp.set("trace_id", params.trace_id);
   return apiFetch<IngestionHistogramResponse>(
     `/ingestion/events/histogram?${sp.toString()}`,
+    { signal },
   );
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventDetail>> {
   return apiFetch<ApiResponse<IngestionEventDetail>>(
     `/ingestion/events/${encodeURIComponent(requestId)}`,
+    { signal },
   );
 }
 
 /** Get sessions for an ingestion event (GET /api/ingestion/events/{id}/sessions). */
 export async function getIngestionEventSessions(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSession[]>> {
   return apiFetch<ApiResponse<IngestionEventSession[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
-  );
-}
-
-/** Get cost/token rollup for an ingestion event (GET /api/ingestion/events/{id}/rollup). */
-export async function getIngestionEventRollup(
-  requestId: string,
-): Promise<ApiResponse<IngestionEventRollup>> {
-  return apiFetch<ApiResponse<IngestionEventRollup>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/rollup`,
+    { signal },
   );
 }
 
@@ -5026,9 +5025,11 @@ export async function replayIngestionEvent(
  */
 export async function getIngestionEventReplays(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventReplayHistoryEntry[]>> {
   return apiFetch<ApiResponse<IngestionEventReplayHistoryEntry[]>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/replays`,
+    { signal },
   );
 }
 
@@ -5038,9 +5039,11 @@ export async function getIngestionEventReplays(
  */
 export async function getIngestionEventSenderContact(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventSenderContact>> {
   return apiFetch<ApiResponse<IngestionEventSenderContact>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
+    { signal },
   );
 }
 
@@ -5054,9 +5057,11 @@ export async function getIngestionEventSenderContact(
  */
 export async function getIngestionEventPayload(
   requestId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<IngestionEventPayload>> {
   return apiFetch<ApiResponse<IngestionEventPayload>>(
     `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
+    { signal },
   );
 }
 

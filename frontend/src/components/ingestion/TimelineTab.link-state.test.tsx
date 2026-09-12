@@ -45,8 +45,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/use-ingestion-events", () => ({
   useIngestionEvents: vi.fn(),
-  useIngestionEventLineage: vi.fn(),
-  useIngestionEventRollup: vi.fn(),
+  useIngestionEventSessions: vi.fn(),
   useIngestionEventSenderContact: vi.fn(),
   useIngestionEventReplays: vi.fn(),
   useIngestionEventPayload: vi.fn(),
@@ -67,8 +66,7 @@ vi.mock("@/hooks/use-timeline-saved-views", () => ({
 
 import {
   useIngestionEvents,
-  useIngestionEventLineage,
-  useIngestionEventRollup,
+  useIngestionEventSessions,
   useIngestionEventSenderContact,
   useIngestionEventReplays,
   useIngestionEventPayload,
@@ -166,9 +164,7 @@ function setupDefaultMocks() {
   vi.mocked(useIngestionEvents).mockReturnValue(
     makeInfiniteEventsResult([makeEvent()]) as unknown as ReturnType<typeof useIngestionEvents>,
   );
-  vi.mocked(useIngestionEventRollup).mockReturnValue({
-    data: undefined, isLoading: false, isError: false,
-  } as unknown as ReturnType<typeof useIngestionEventRollup>);
+
   vi.mocked(useIngestionEventSenderContact).mockReturnValue({
     data: undefined, isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useIngestionEventSenderContact>);
@@ -178,10 +174,7 @@ function setupDefaultMocks() {
   vi.mocked(useIngestionEventPayload).mockReturnValue({
     data: undefined, isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useIngestionEventPayload>);
-  vi.mocked(useIngestionEventLineage).mockReturnValue({
-    sessions: { data: { data: [] }, isLoading: false, isError: false } as never,
-    rollup: { data: undefined, isLoading: false, isError: false } as never,
-  });
+  vi.mocked(useIngestionEventSessions).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false } as never);
   vi.mocked(useConnectorSummaries).mockReturnValue({
     data: { data: { connectors: [] } }, isLoading: false, isError: false,
   } as unknown as ReturnType<typeof useConnectorSummaries>);

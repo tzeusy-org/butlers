@@ -34,6 +34,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
+from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
 from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
 from butlers.api.models.ingestion_event import (
     IngestionEventDetail,
@@ -75,8 +76,12 @@ from butlers.identity import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/ingestion/events", tags=["ingestion"])
-rollup_router = APIRouter(prefix="/api/ingestion/rollup", tags=["ingestion"])
+router = APIRouter(
+    prefix="/api/ingestion/events", tags=["ingestion"], route_class=IngestionReadBudgetRoute
+)
+rollup_router = APIRouter(
+    prefix="/api/ingestion/rollup", tags=["ingestion"], route_class=IngestionReadBudgetRoute
+)
 
 _REPLAY_SAFETY_UNAVAILABLE_REASON = "Replay safety could not be confirmed"
 
@@ -1395,17 +1400,21 @@ async def get_ingestion_window_rollup(
     if is_trace_scoped:
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
-    result = await ingestion_window_rollup(
-        pool,
-        from_dt=from_dt,
-        to_dt=to_dt,
-        channels=channel_list,
-        statuses=status_list,
-        q=q,
-        db=db,
-        pricing=pricing,
-        event_ids=event_ids,
-    )
+    try:
+        result = await ingestion_window_rollup(
+            pool,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            channels=channel_list,
+            statuses=status_list,
+            q=q,
+            db=db,
+            pricing=pricing,
+            event_ids=event_ids,
+        )
+    except Exception:
+        logger.warning("Ingestion window rollup unavailable")
+        raise HTTPException(status_code=503, detail="Ingestion rollup unavailable") from None
 
     return IngestionWindowRollup(
         events=result["events"],
