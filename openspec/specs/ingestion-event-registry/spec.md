@@ -117,6 +117,46 @@ absence of runtime usage.
 - **AND** lazy write-back to `public.ingestion_events.cost_usd` occurs only when at least one session exists, every session has a known price, and the known subtotal is non-null; an explicitly known `0.0` MUST still be persisted.
 - **AND** the rollup covers all sessions with `request_id` equal to the given value regardless of whether an `ingestion_events` row exists.
 
+### Requirement: Indexed Filtered Event Identity Reads
+
+Filtered-event detail and replay-policy reads SHALL have an ID-leading index
+on every partition, including newly created partitions. Index installation
+SHALL preserve event data and permit ingestion writes during leaf-index builds.
+
+#### Scenario: Identity lookup across retained partitions
+
+- **WHEN** a detail or replay-policy read selects events by ID without a date
+- **THEN** PostgreSQL can use an ID-leading index on each retained partition
+- **AND** replay eligibility still comes from the authoritative connector policy
+
+#### Scenario: Interrupted index installation is retryable
+
+- **WHEN** installation is retried after an interrupted concurrent leaf build
+- **THEN** the migration repairs the incomplete leaf index and attaches it
+- **AND** a subsequent per-schema migration run preserves completed indexes
+- **AND** future partitions inherit the same ID lookup index
+
+### Requirement: Complete Window Rollup Evidence
+
+Window rollups SHALL aggregate all sessions belonging to the matching events
+through their owning database pools. The matching event set SHALL remain in
+PostgreSQL instead of being truncated to an application-side ID sample. An
+unavailable event or session source SHALL produce an unavailable response,
+not a fabricated zero or an unlabelled partial total.
+
+#### Scenario: A window contains more than ten thousand events
+
+- **WHEN** a matching window exceeds ten thousand events
+- **THEN** the session and cost aggregates include matches beyond that threshold
+- **AND** channel, status, search and trace filters apply to the complete aggregate
+- **AND** priced, unpriced and no-usage evidence retain their existing meanings
+
+#### Scenario: An aggregate source fails
+
+- **WHEN** an event count or any owning session aggregate cannot be read
+- **THEN** the window-rollup endpoint returns HTTP 503
+- **AND** it does not publish incomplete numeric totals as a successful response
+
 ### Requirement: Session Cost Evidence
 List and detail session projections SHALL expose cost evidence without exposing
 raw runtime failures.
