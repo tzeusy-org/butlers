@@ -56,6 +56,7 @@ The `public.dashboard_messages` table SHALL store individual messages within a c
   - `tool_calls` (JSONB, nullable) — array of tool calls made during response; NULL for user messages
   - `error` (TEXT, nullable) — error message if the response failed; NULL on success and for user messages
   - `request_id` (UUID, nullable) — the Switchboard request_id for lineage; NULL for user messages
+  - `sources` (JSONB, nullable) — array of source strings named by an answer-lane `conversation_reply` call (see the Conversation Reply Channel requirement); NULL for user messages and for any assistant reply that did not pass `sources`
 
 #### Scenario: Message table indexes
 
@@ -292,7 +293,7 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **THEN** the response is a `StreamingResponse` with `media_type: "text/event-stream"`
 - **AND** the first event is `event: conversation_created` with `data: {"conversation_id": "...", "title": "..."}`
 - **AND** one or more `event: token` events with `data: {"content": "..."}` carry the `conversation_reply` message text — a single event carrying the full text when the routed runtime cannot stream incrementally (every runtime adapter today), or several events whose concatenated `content` fields are byte-for-byte identical to the persisted reply row's content when a streaming-capable producer publishes incremental deltas on the turn's chat-stream channel (see the Real-Time Processing Phase Events requirement's Trust boundary)
-- **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known
+- **AND** a final `event: message_complete` with `data: {"message_id": "...", "model_name": null, "input_tokens": null, "output_tokens": null, "duration_ms": null, "tool_calls": [], "sources": []}` is sent — attribution fields are `null` because the reply is persisted mid-session, before the routed session's own accounting (tokens/duration/model) is known; `sources` is the list passed to `conversation_reply` (or `[]` if omitted)
 - **AND** an `event: done` is sent to signal the stream is finished
 
 #### Scenario: SSE stream for follow-up message
@@ -463,11 +464,11 @@ Conversation endpoint API response models SHALL provide typed response shapes.
 ### Requirement: Conversation Reply Channel
 
 A routed butler session SHALL confirm its interpretation of a dashboard
-statement (or acknowledge a filed bug report) by calling the
-`conversation_reply` MCP tool, which persists an assistant-role message
-directly into the conversation it was routed from. The SSE poller MUST watch
-for this message rather than the routed session's raw completion (see the
-SSE Response Streaming requirement).
+statement (or acknowledge a filed bug report, or answer a question) by
+calling the `conversation_reply` MCP tool, which persists an assistant-role
+message directly into the conversation it was routed from. The SSE poller
+MUST watch for this message rather than the routed session's raw completion
+(see the SSE Response Streaming requirement).
 
 #### Scenario: conversation_reply persists the confirm-loop message
 
@@ -487,14 +488,32 @@ SSE Response Streaming requirement).
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
 
+#### Scenario: conversation_reply accepts an optional sources list for an answer-lane reply
+
+- **WHEN** a routed butler session calls `conversation_reply(conversation_id, message, sources=[...])` with a non-empty list of strings
+- **THEN** the inserted message row's `sources` column SHALL persist the given list
+- **AND** the tool's success response SHALL be unaffected in shape otherwise
+
+#### Scenario: conversation_reply is unaffected when sources is omitted
+
+- **WHEN** `conversation_reply` is called without a `sources` argument (the existing confirm-loop, action-proposal, and bug-report call sites)
+- **THEN** the inserted message row's `sources` column SHALL be NULL
+- **AND** behavior SHALL be identical to before `sources` existed
+
+#### Scenario: conversation_reply rejects empty or blank source names
+
+- **WHEN** `conversation_reply` is called with `sources=[]` or with any blank source name
+- **THEN** no message row is inserted
+- **AND** the tool returns `{"status": "error", "error": "..."}` guiding the caller to either name what it consulted or omit `sources` entirely and give an honest decline instead of fabricating a citation
+
 ### Requirement: Dashboard Message Intent Lanes
 
-A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done.
+A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, ACTION REQUEST, QUESTION, or ambiguous before it produces any effect. Consent MUST precede effect for an ACTION REQUEST (`about/heart-and-soul/security.md`, "Approval gates must never be bypassable by the LLM session"): a dashboard turn that asks the routed butler to DO something with a real-world or hard-to-reverse effect SHALL never apply a write before the owner has approved it, and SHALL never be reported to the owner as already done. A QUESTION turn SHALL never apply a write and SHALL never be reported as an action taken.
 
 #### Scenario: Classifier offers a distinct ACTION lane alongside statement and bug lanes
 
 - **WHEN** the Switchboard's dashboard classification prompt is built for a chat-widget message
-- **THEN** it SHALL present three lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), and LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself)
+- **THEN** it SHALL present four lanes: LANE A (data statement/correction, routed via `route_to_butler`), LANE B (bug/system report, filed via `file_bug_report`), LANE C (action request, also routed via `route_to_butler` — the classifier's job is only to pick the target butler; the propose-don't-apply contract is enforced by the routed envelope's injected instructions, not by the classifier itself), and LANE D (question, answered via `answer_question` or dead-lettered via `cannot_answer`)
 
 #### Scenario: The routed envelope carries distinct STATEMENT and ACTION-REQUEST instructions
 
@@ -502,6 +521,8 @@ A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, 
 - **THEN** the block SHALL contain a STATEMENT instruction set (interpret, apply the write, then call `conversation_reply` to confirm) and a distinct ACTION-REQUEST instruction set
 - **AND** the ACTION-REQUEST set SHALL instruct the routed session to route the write through its normal approval-gated tool (never an ungated path) so the gate parks it before anything happens, and to call `conversation_reply` describing the action as proposed and awaiting approval — never as already completed
 - **AND** the block SHALL state the failure mode explicitly: applying an action's write before the gate parks it, or claiming completion for a pending action, is never acceptable
+- **WHEN** `answer_question(scope="domain")` injects the deterministic dashboard answer block into a routed envelope's `input.context` instead of the confirm-loop block
+- **THEN** the block SHALL instruct the routed session to answer strictly read-only, from its own tools only, and to call `conversation_reply` citing what it consulted via `sources` when grounded, or to give an honest decline (never fabricate a citation) when it cannot ground the answer
 
 #### Scenario: A parked action request produces zero domain writes and no completion claim
 
@@ -512,6 +533,6 @@ A dashboard chat-widget turn SHALL be classified into exactly one of STATEMENT, 
 
 #### Scenario: An ambiguous dashboard turn yields a clarifying reply, never a best-guess route
 
-- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, or C
-- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler
+- **WHEN** the dashboard classification session cannot confidently place a message into LANE A, B, C, or D
+- **THEN** it SHALL call neither `route_to_butler` nor `file_bug_report` rather than guessing a target butler, and SHALL likewise not call `answer_question` or `cannot_answer` while the turn remains ambiguous
 - **AND** the pipeline's existing dashboard dead-letter path (see the Durable Dashboard Turn Control requirement's failure handling) SHALL capture the turn and reply in-thread asking the owner to clarify, with no route to any domain butler

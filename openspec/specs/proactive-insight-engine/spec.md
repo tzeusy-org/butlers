@@ -167,7 +167,7 @@ cycle after logging the diagnostic condition.
 
 #### Scenario: Canonical quiet-hours configuration
 - **WHEN** the owner configures quiet hours through the Owner Attention Policy
-- **THEN** the setting SHALL be stored in `public.approvals_policy` as
+- **THEN** the setting is stored in `public.approvals_policy` as
   `quiet_start_hour` (INTEGER, hour 0-23), `quiet_end_hour` (INTEGER, hour
   0-23), and `timezone` (TEXT, IANA timezone)
 - **AND** no broker-private quiet-hours setting is read at runtime
@@ -175,7 +175,7 @@ cycle after logging the diagnostic condition.
 #### Scenario: Delivery suppression during quiet hours
 - **WHEN** the regular delivery cycle runs and the current time falls within
   the Owner Attention Policy interval
-- **THEN** the delivery cycle SHALL skip delivery entirely
+- **THEN** the delivery cycle SHALL skip routine delivery entirely
 - **AND** pending candidates SHALL remain for the next non-quiet delivery cycle
 
 #### Scenario: Exact quiet end resumes routine delivery
@@ -187,36 +187,44 @@ cycle after logging the diagnostic condition.
 - **WHEN** the delivery cycle runs after quiet hours have ended
 - **AND** candidates accumulated during quiet hours
 - **THEN** the daily budget SHALL still apply — at most B insights are delivered
-- **AND** candidates that exceed the budget remain pending for the next day (they do not get a "bonus" delivery slot)
+- **AND** candidates that exceed the budget remain pending for the next day
+  (they do not get a "bonus" delivery slot)
 
 #### Scenario: No usable policy configured
 - **WHEN** `public.approvals_policy` has no complete usable quiet window
-- **THEN** delivery SHALL proceed at the scheduled delivery cycle time without time-based suppression
+- **THEN** delivery SHALL proceed at the scheduled delivery cycle time without
+  time-based suppression
 
 ### Requirement: Priority-Urgent Bypass of Quiet Hours and the Context Bus
-Neither the global Owner Attention Policy nor a context-bus `dnd`/`sleeping`
-signal SHALL suppress a candidate whose `priority` is at or above
-`URGENT_PRIORITY_THRESHOLD` (90 — RFC 0011's "time-critical" floor). When at
-least one such candidate is pending during what would otherwise be a
-fully-suppressed cycle, the delivery cycle proceeds for urgent candidates only;
-candidates below the threshold remain `status='pending'`, untouched, for a
-later non-suppressed cycle.
+The delivery cycle SHALL allow a candidate whose `priority` is at or above
+`URGENT_PRIORITY_THRESHOLD` (90 — RFC 0011's "time-critical" floor) to bypass
+both the global Owner Attention Policy and a context-bus `dnd`/`sleeping`
+signal. When at least one such candidate is pending during what would otherwise
+be a fully-suppressed cycle, the delivery cycle proceeds for urgent candidates
+only; candidates below the threshold remain `status='pending'`, untouched, for
+a later non-suppressed cycle.
 
 #### Scenario: Urgent candidate delivered during quiet hours, routine candidate untouched
-- **WHEN** the delivery cycle runs during active quiet hours
+- **WHEN** the delivery cycle runs during active Owner Attention Policy quiet
+  hours
 - **AND** one pending candidate has `priority=95` and another has `priority=70`
 - **THEN** the `priority=95` candidate is delivered (or included in a digest)
-- **AND** the `priority=70` candidate's status remains `'pending'` — it is neither delivered nor marked `filtered`/`expired` by this cycle
+- **AND** the `priority=70` candidate's status remains `'pending'` — it is
+  neither delivered nor marked `filtered`/`expired` by this cycle
 
 #### Scenario: Fully suppressed cycle when no candidate is urgent
-- **WHEN** the delivery cycle runs during active quiet hours (or an active context-bus `dnd`/`sleeping` signal)
+- **WHEN** the delivery cycle runs during active Owner Attention Policy quiet
+  hours (or an active context-bus `dnd`/`sleeping` signal)
 - **AND** every pending candidate has `priority < 90`
-- **THEN** the cycle returns `skipped=True` and delivers nothing, exactly as before this requirement
-- **AND** one `public.attention_ledger` row is written with `outcome="suppressed"` and the triggering `reason`
+- **THEN** the cycle returns `skipped=True` and delivers nothing
+- **AND** one `public.attention_ledger` row is written with `outcome="suppressed"`
+  and the triggering `reason`
 
 #### Scenario: Expiry runs regardless of suppression
-- **WHEN** the delivery cycle would otherwise be fully suppressed (quiet hours or context bus, no urgent candidate)
-- **THEN** the expiry step (marking `expires_at`-past candidates as `expired`) still runs unconditionally before the suppression check
+- **WHEN** the delivery cycle would otherwise be fully suppressed (Owner
+  Attention Policy or context bus, no urgent candidate)
+- **THEN** the expiry step (marking `expires_at`-past candidates as `expired`)
+  still runs unconditionally before the suppression check
 
 ### Requirement: Context-Bus Gating of the Delivery Cycle
 The delivery cycle SHALL consult the situational context bus
@@ -475,3 +483,72 @@ allowed to see.
 
 - **WHEN** the reader is called with `butler=health`
 - **THEN** candidates whose `origin_butler` is not `health` MUST NOT appear in the result
+
+### Requirement: Broker Catch-Up Cycle at Suppression End
+When the delivery cycle fully suppresses a routine (non-urgent) cycle —
+no candidate at or above `URGENT_PRIORITY_THRESHOLD` pending, and the cycle
+returns `skipped=True` with an `outcome="suppressed"` attention-ledger row —
+it SHALL reconcile a deterministic one-shot scheduled task that re-invokes
+the delivery cycle at the suppression's own computed end instant, instead of
+relying solely on the next regularly scheduled cron tick. The suppression
+end SHALL be computed as: the Owner Attention Policy's end-exclusive quiet
+window boundary when the active suppression is `quiet_hours`; or the
+suppressing context-bus signal's `set_at` plus that signal's own max-hold TTL
+(per "Context-Bus Gating of the Delivery Cycle") when the active suppression
+is a context-bus signal. Reconciliation SHALL be idempotent, keyed by a
+single deterministic task identity so a suppressed cycle re-run before the
+catch-up fires reschedules the existing task to a materially different
+target rather than duplicating it, and best-effort/fail-open: a scheduling
+failure SHALL NOT abort or alter the suppressed cycle's return.
+
+A cycle that delivers at least one urgent candidate this tick (the
+Priority-Urgent Bypass) was never fully suppressed and SHALL NOT reconcile a
+catch-up task. A `daily_hold_mode` cycle that bypasses suppression via the
+hard fallback deadline delivers this tick and SHALL NOT reconcile a catch-up
+task either. A `daily_hold_mode` cycle that defers on a travel day
+(`reason="travel_day_defer"`) IS a fully suppressed skip and SHALL reconcile
+a catch-up task for `traveling`'s own max-hold end, exactly like any other
+suppressed skip.
+
+#### Scenario: Quiet-hours suppression schedules a catch-up at the policy's end boundary
+- **WHEN** the delivery cycle is fully suppressed by the Owner Attention
+  Policy quiet-hours window, with no urgent candidate pending
+- **THEN** a one-shot catch-up task is reconciled for the exact instant the
+  quiet window ends in the policy's configured timezone
+
+#### Scenario: A context-bus signal schedules a catch-up at its max-hold end
+- **WHEN** the delivery cycle is fully suppressed by an active context-bus
+  signal (`dnd`, `meeting`, `sleeping`, or `traveling`), with no urgent
+  candidate pending
+- **THEN** a one-shot catch-up task is reconciled for that signal's `set_at`
+  plus its own max-hold TTL
+
+#### Scenario: A travel-day defer also schedules a catch-up
+- **WHEN** `daily_hold_mode=True`, the active suppressing signal is
+  `traveling`, and no urgent candidate is pending
+- **THEN** the cycle still defers with `reason="travel_day_defer"` (per
+  "Hold-Until-First-Active Daily Digest Cadence") AND a one-shot catch-up
+  task is reconciled for `traveling`'s max-hold end, even though the hard
+  fallback deadline never force-delivers this cycle
+
+#### Scenario: An urgent-bypass cycle does not schedule a catch-up
+- **WHEN** the delivery cycle delivers at least one urgent (priority >=
+  `URGENT_PRIORITY_THRESHOLD`) candidate this tick, whether or not a
+  suppression signal is also active
+- **THEN** no catch-up task is reconciled — the cycle was not fully
+  suppressed
+
+#### Scenario: Repeated suppression before the catch-up fires reschedules rather than duplicates
+- **WHEN** a suppressed cycle reconciles a catch-up task for one computed end
+  instant, and a later suppressed cycle (before that task has fired)
+  computes a materially different end instant for the same or a different
+  active suppression
+- **THEN** the existing catch-up task is rescheduled to the new instant
+  rather than a second task being created
+
+#### Scenario: Scheduling failure does not abort the suppressed cycle
+- **WHEN** reconciling the catch-up task raises an error (e.g. the scheduler
+  is unavailable)
+- **THEN** the delivery cycle still returns `skipped=True` with its
+  suppressed-outcome ledger row intact, exactly as if catch-up reconciliation
+  had not been attempted

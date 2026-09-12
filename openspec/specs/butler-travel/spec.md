@@ -23,11 +23,14 @@ The travel butler SHALL manage trip lifecycle and booking data with structured c
 - **THEN** it loads modules: `email`, `calendar` (Google provider, suggest conflicts policy), and `memory`
 
 ### Requirement: Travel Butler Tool Surface
-The travel butler SHALL provide booking, itinerary, and document management tools.
+The travel butler SHALL provide booking, itinerary, document management, and narrowly scoped
+cross-butler medication-preparation tools.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the travel butler
-- **THEN** it has access to: `record_booking`, `update_itinerary`, `acknowledge_connection_risk`, `list_trips`, `trip_summary`, `upcoming_travel`, `add_document`, and calendar tools
+- **THEN** it has access to: `record_booking`, `update_itinerary`,
+  `acknowledge_connection_risk`, `list_trips`, `trip_summary`, `upcoming_travel`,
+  `add_document`, `health_medication_snapshot`, and calendar tools
 
 ### Requirement: Trip Container Model
 All travel data SHALL be organized under trip containers with strict status transitions.
@@ -136,7 +139,7 @@ The travel butler SHALL use a travel-centric memory taxonomy with loyalty and pr
 - **THEN** it uses subjects like airline names, hotel chains, or "user"; predicates like `preferred_airline`, `preferred_seat`, `passport_expiry`, `frequent_flyer`, `known_airport`; permanence `stable` for passport info and loyalty numbers, `standard` for current trip context, `volatile` for real-time flight status
 
 ### Requirement: Travel Insight Scan Job
-The travel butler's `insight-scan` job SHALL evaluate travel domain data and produce insight candidates covering pre-trip preparation, document expiry warnings, and cross-domain coordination hints. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool — the butler does not write to `public.insight_candidates` directly.
+The travel butler's `insight-scan` job SHALL evaluate travel domain data and produce insight candidates covering pre-trip preparation, document expiry warnings, and cross-domain coordination hints. All candidates are submitted via the Switchboard's `propose_insight_candidate()` MCP tool; the butler does not write to `public.insight_candidates` directly.
 
 #### Scenario: Insight-scan job handler registration
 - **WHEN** the travel butler starts
@@ -170,8 +173,12 @@ The travel butler's `insight-scan` job SHALL evaluate travel domain data and pro
 
 #### Scenario: Medication prep for travel insights
 - **WHEN** the insight-scan job evaluates upcoming trips
-- **AND** the user has active medications tracked by the health butler (queryable vithe `public` schema or known from memory facts)
-- **THEN** it SHALL generate candidates reminding the user to ensure adequate medication supply for the trip duration
+- **AND** the user has active medications owned by the Health butler
+- **THEN** Travel SHALL obtain the active medication snapshot through its
+  `health_medication_snapshot` MCP tool, which routes through the Switchboard to Health's
+  `medication_travel_snapshot` MCP tool
+- **AND** Travel MUST NOT query the Health schema or import Health implementation code
+- **AND** it SHALL generate candidates reminding the user to ensure adequate medication supply for the trip duration
 - **AND** priority SHALL be 75 for trips within 7 days, 55 for trips within 14 days
 - **AND** the `dedup_key` SHALL be `travel:medication-prep:{trip-id}`
 - **AND** `expires_at` SHALL be the departure date
@@ -181,3 +188,70 @@ The travel butler's `insight-scan` job SHALL evaluate travel domain data and pro
 - **WHEN** the insight-scan job evaluates trips
 - **THEN** it SHALL exclude trips with status `completed` or `cancelled`
 - **AND** it SHALL exclude trips whose departure date is in the past
+
+### Requirement: Travel Health Medication Snapshot MCP Consumer
+The Travel butler SHALL expose a parameterless `health_medication_snapshot` MCP tool that retrieves
+the minimum active medication preparation view through the Switchboard. The tool SHALL NOT accept a
+caller-selected target butler, tool name, scope, or raw query.
+
+#### Scenario: Authorized request routes through Switchboard and Health MCP
+- **WHEN** Travel is allowed the `cross_butler` permission and calls
+  `health_medication_snapshot`
+- **THEN** it SHALL call the connected Switchboard client's `route` MCP tool with
+  `target_butler = "health"`, `tool_name = "medication_travel_snapshot"`, and
+  `source_butler = "travel"`
+- **AND** it SHALL validate the returned `health.medication-travel.v1` envelope strictly before
+  returning it
+- **AND** it MUST NOT query the Health schema directly
+
+#### Scenario: Permission revocation returns a typed denial
+- **WHEN** Travel's `cross_butler` permission is explicitly revoked
+- **THEN** `health_medication_snapshot` SHALL return `status = "error"`, an empty medication list,
+  and error code `permission_denied` with `retryable = false`
+- **AND** it SHALL NOT call the Switchboard
+
+#### Scenario: Provider unavailability is not an empty success
+- **WHEN** the Switchboard client is missing, the route times out, Health is unavailable, or the
+  routed MCP call fails
+- **THEN** `health_medication_snapshot` SHALL return `status = "error"` and an empty medication list
+- **AND** the error SHALL distinguish `switchboard_unavailable` from `health_unavailable`
+- **AND** the error SHALL have `retryable = true`
+
+#### Scenario: Malformed provider response fails closed
+- **WHEN** Health returns an envelope with an unknown version, missing required field, wrong field
+  type, or extra field, or the Switchboard response lacks the serialized `result.data`
+  `CallToolResult` shape
+- **THEN** Travel SHALL return `status = "error"`, error code `invalid_health_response`, and an empty
+  medication list
+- **AND** it SHALL NOT pass the malformed or extra data to its caller
+
+#### Scenario: Successful empty response remains successful
+- **WHEN** Health returns a valid `status = "ok"` envelope with `medications = []`
+- **THEN** Travel SHALL return that successful empty envelope without converting it to an error
+
+### Requirement: Upcoming Travel Degraded Disclosure
+
+`GET /api/travel/upcoming` and its dashboard KPI strip consumer SHALL NOT
+render a healthy-looking empty or zero result when the upstream query fails
+or when an individual trip's row cannot be normalized. A source failure or a
+per-trip normalization failure SHALL be disclosed by name rather than
+suppressed.
+
+#### Scenario: Upstream query failure never renders as an all-clear zero
+
+- **WHEN** the query backing `GET /api/travel/upcoming` fails or is
+  unreachable
+- **THEN** the KPI strip SHALL render "unavailable" (never a numeral, never
+  `0`) for next departure, active trips, planned trips, and open actions
+- **AND** the KPI strip SHALL show a degraded-source notice naming the
+  endpoint, with a retry action
+
+#### Scenario: One unreadable trip is excluded and disclosed, not silently dropped
+
+- **WHEN** `GET /api/travel/upcoming` otherwise succeeds but one trip's
+  nested legs or accommodations cannot be normalized
+- **THEN** that trip SHALL be excluded from `upcoming_trips` and its id SHALL
+  appear in the response's `unreadable_trip_ids` list
+- **AND** the remaining trips SHALL still render normally
+- **AND** the KPI strip SHALL disclose the number of excluded trips rather
+  than silently undercounting

@@ -3,12 +3,18 @@
 ### Requirement: Dashboard Chat-Widget Classification Lanes
 
 The Switchboard SHALL classify `dashboard` source-channel messages (the
-owner's floating chat widget) into one of two lanes instead of always calling
-`route_to_butler`: Lane A (data statement/correction) or Lane B (bug/system
-report). Bug/system reports SHALL NEVER be routed to a domain butler. A
-dashboard terminal lane SHALL use the singular durable terminal-action journal
-and SHALL never claim that a visible effect was filed or cancelled before its
-required child-effect receipts prove that result.
+owner's floating chat widget) into one of four lanes instead of always
+calling `route_to_butler`: Lane A (data statement/correction) or Lane B
+(bug/system report). Bug/system reports SHALL NEVER be routed to a domain
+butler. The remaining two lanes are Lane C (action request) and Lane D
+(question); Lane D SHALL be answered either via `answer_question` (a
+domain butler answers from its own tools, or the system-scope fallback
+dead-letters until Concierge system-scope tools exist) or via
+`cannot_answer` (dead-letters directly); neither Lane D tool SHALL ever
+route to a domain butler for an ordinary write, and `cannot_answer` SHALL
+NEVER file a QA bug report.
+
+Every dashboard terminal lane SHALL use the singular durable terminal-action journal and SHALL never claim that a visible effect was filed or cancelled before its required child-effect receipts prove that result.
 
 ID: REQ-butler-switchboard-001
 Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-001; design.md Decisions 1-5
@@ -167,9 +173,11 @@ Scope: v1-mandatory
 
 #### Scenario: Lane exclusivity is enforced at the tool layer, not just the classification prompt
 
-- **WHEN** a dashboard classification session calls `file_bug_report` and then calls `route_to_butler` for the same session (regardless of what the classification prompt instructs)
+- **WHEN** a dashboard classification session calls `file_bug_report`, `answer_question`, or `cannot_answer`, and then calls `route_to_butler` for the same session (regardless of what the classification prompt instructs)
 - **THEN** `route_to_butler` SHALL refuse to dispatch to a domain butler and SHALL return a structured refusal (`status: "refused"`, `reason: "dashboard_lane_conflict"`) instead of invoking `route.execute`
 - **AND** the refusal SHALL be logged at WARNING with the conversation id and the attempted target butler
+- **WHEN** a dashboard classification session calls `route_to_butler` and then calls `answer_question` or `cannot_answer` for the same session, or calls `answer_question`/`cannot_answer` a second time in the same session (including a repeat of itself)
+- **THEN** the second call SHALL be refused with the same structured refusal (`status: "refused"`, `reason: "dashboard_lane_conflict"`) — `answer_question` and `cannot_answer` are strict single-shot per turn, unlike `file_bug_report`
 - **WHEN** a dashboard classification session calls `route_to_butler` and then calls `file_bug_report` for the same session
 - **THEN** `file_bug_report` SHALL still file the bug report (bug reports are terminal and are never suppressed)
 - **AND** the co-occurrence SHALL be logged at WARNING with the conversation id and outcome-qualified targets, and SHALL be surfaced in `file_bug_report`'s own result (`dashboard_lane_conflict`) and in the pipeline's `RoutingResult.route_result` rather than being hidden by tool-call extraction that stops at the first matching call
@@ -178,10 +186,11 @@ Scope: v1-mandatory
 
 #### Scenario: Unroutable dashboard message dead-letters and notifies the owner
 
-- **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message), the classification spawn raises an exception, or `route_to_butler` was attempted but no target acknowledged the route because every `route.execute` dispatch failed
+- **WHEN** a dashboard message's classification session calls none of `route_to_butler`, `file_bug_report`, `answer_question`, or `cannot_answer` (e.g. an ambiguous or unclassifiable message), the classification spawn raises an exception, or `route_to_butler` was attempted but no target acknowledged the route because every `route.execute` dispatch failed
 - **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
 - **AND** SHALL persist an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
 - **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
+- **AND** a genuine question with no identifiable owner SHALL always resolve via `cannot_answer` (Lane D) rather than this generic silent path — the classification prompt SHALL NOT instruct a best-guess route or a fallback to `general` for an unowned question
 
 #### Scenario: Route acknowledgement is terminal for the dead-letter net; downstream session completion is out of scope
 
@@ -189,3 +198,29 @@ Scope: v1-mandatory
 - **THEN** the dead-letter net gate SHALL treat that acknowledgement as terminal success for the synchronous reply contract — the target butler has confirmed only that it accepted the dispatch, not that the spawned downstream session will run to completion
 - **AND** if that downstream session subsequently crashes, hangs, or times out after acknowledgement, this contract SHALL NOT capture the failure to the dead-letter queue and SHALL NOT persist an additional in-thread reply on its behalf; the owner is left with whatever live-only signal (e.g. a widget-side `SESSION_TIMEOUT`) the caller surfaces independently
 - **AND** this ack-terminal boundary is a deliberate, accepted scope decision for the synchronous reply contract, not an oversight — closing the last hop (e.g. a reply-watch timeout that persists an in-thread failure note when an acknowledged downstream session never completes) is a possible future extension, not a current requirement
+
+#### Scenario: Lane D — a domain question dispatches through the answer-block spine, never the confirm-loop block
+
+- **WHEN** a dashboard message is classified as a genuine question with an identifiable domain owner (e.g. "how much did I spend on groceries this month?")
+- **THEN** the classification session SHALL call `answer_question(scope="domain", question, target)` naming the owning butler as `target`
+- **AND** `answer_question` SHALL dispatch through the same `route.execute` spine `route_to_butler` uses (via the shared `_dispatch_dashboard_target` helper), but SHALL inject a read-only answer-block instruction (`_build_dashboard_answer_block`) into `input.context` instead of the confirm-loop block: the routed session MUST answer only from its own tools, cite what it consulted via `conversation_reply`'s `sources` list when grounded, or give an honest decline (never fabricate a citation) when it cannot ground the answer
+- **AND** a successful acknowledged dispatch SHALL flow through the same routed/acked/failed bookkeeping `route_to_butler` populates, but SHALL leave `routed_butler` unset so every follow-up re-enters four-lane classification and cannot bypass the answer lane's read-only/citation contract or inherit a stale domain target
+
+#### Scenario: Lane D tools require dashboard conversation context
+
+- **WHEN** `answer_question` or `cannot_answer` is called without a valid dashboard `conversation_id`
+- **THEN** the tool SHALL fail closed with `reason="dashboard_context_required"`
+- **AND** it SHALL NOT route a butler, capture a dead letter, or create a conversation reply
+
+#### Scenario: Lane D — a system-scope question falls back to the honest-decline dead-letter path
+
+- **WHEN** the classification session calls `answer_question(scope="system", question)` and no Concierge system-scope answering tool is available
+- **THEN** `answer_question` SHALL NOT route to any domain butler
+- **AND** it SHALL dead-letter the request with `failure_category="unanswerable"` and persist an in-thread `conversation_reply` naming what was checked, via the same shared path `cannot_answer` uses
+
+#### Scenario: Lane D — cannot_answer dead-letters directly and never files a bug report or domain route
+
+- **WHEN** the classification session determines a question cannot be answered from any available tool or owner (e.g. no butler owns the domain, or the owning butler's tools do not cover the question) and calls `cannot_answer(question_summary, scope_checked, reason)`
+- **THEN** the tool SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`, `failure_category="unanswerable"`)
+- **AND** SHALL persist an in-thread `conversation_reply` naming exactly what was checked (`scope_checked`) and the `reason`
+- **AND** SHALL NOT call `file_bug_report` and SHALL NOT route to any domain butler via `route_to_butler`

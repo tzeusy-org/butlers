@@ -1194,7 +1194,18 @@ The dashboard MUST provide a `TopSessionsTable` component displaying the most ex
 - **WHEN** a session has 50,000 input tokens and 12,000 output tokens
 - **THEN** the Tokens column MUST display "50.0K / 12.0K"
 
----
+#### Scenario: Direct top-sessions reader failure is unavailable
+
+- **WHEN** the Overview's direct `useTopSessions()` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `TopSessionsTable`
+- **AND** the table MUST render a named top-sessions-unavailable state before its empty-state branch
+- **AND** it MUST NOT render "No session data available"
+
+#### Scenario: Successful empty top sessions remain calm
+
+- **WHEN** the direct top-sessions query succeeds with an empty list
+- **THEN** the table MUST render "No session data available"
+- **AND** it MUST NOT render the top-sessions-unavailable state
 
 ### Requirement: Cross-butler global search
 
@@ -1572,14 +1583,31 @@ Shared Spend consumers MUST use the following TanStack Query hooks:
 
 The dashboard MUST provide a `CostWidget` component for embedding on the overview page. The widget MUST display:
 - Title "Cost Today" with a "View all" link to `/spend`.
-- Total cost for the day formatted as currency.
-- Top butler name and cost (e.g., "Top: health ($3.50)").
+- Total cost for the day formatted as currency when its direct summary query succeeds with priced data.
+- Top butler name and cost (e.g., "Top: health ($3.50)") when its direct summary query succeeds with a top butler.
 - A sparkline showing the real trailing 7-day daily spend series.
+
+The widget MUST distinguish a direct Overview summary-query failure from a successful
+compatibility envelope with `source_error` and from a successful zero-cost summary.
 
 #### Scenario: Widget with no data
 
 - **WHEN** `totalCostUsd` is 0 and `topButler` is null
+- **AND** the direct summary query succeeded without `source_error`
 - **THEN** the widget MUST display "$0.00" and no top-butler line
+
+#### Scenario: Direct summary reader failure is unavailable
+
+- **WHEN** the Overview's direct `useSpendSummary("today")` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `CostWidget`
+- **AND** the widget MUST render a named cost-summary-unavailable state
+- **AND** it MUST NOT render a formatted cost total or a top-butler claim from fallback or retained data
+
+#### Scenario: Successful compatibility summary remains degraded
+
+- **WHEN** the direct summary request succeeds with `source_error: true`
+- **THEN** the widget MUST render its existing source-degraded state
+- **AND** it MUST NOT render the direct-summary-unavailable state or a calm "$0.00" total
 
 ### Requirement: Health Overview landing page
 
@@ -1712,6 +1740,29 @@ keys.
 - **WHEN** a measurement insight omits a typed door or its type, dates, or date ordering are invalid
 - **THEN** its attention row MUST fall back to `/health/measurements` without typed query keys
 - **AND** arbitrary metadata values MUST NOT redirect the owner away from that same-origin route
+
+### Requirement: Expired Episode Provenance Has No Dangling Door
+
+Memory detail and register surfaces SHALL render a source episode as a
+navigation link only when the typed source state is `available`. An `expired`
+source MUST remain visible as truthful content-free provenance but MUST be
+non-clickable; an `unresolved` source MUST be visibly uncertain and
+non-clickable. The surfaces MUST NOT replace either state with a false
+no-provenance presentation.
+
+#### Scenario: Fact detail renders a deleted source without navigation
+
+- **WHEN** FactDetailPage receives a fact with an `expired` source episode
+- **THEN** it MUST display a visible `Source expired` provenance state
+- **AND** it MUST NOT render a link to `/memory/episodes/:episodeId`
+
+#### Scenario: Rule and register surfaces preserve truthfulness
+
+- **WHEN** RuleDetailPage or a memory register receives an `expired` or
+  `unresolved` source episode state
+- **THEN** it MUST display the matching source state without a live-episode
+  navigation affordance
+- **AND** it MUST retain the durable fact, rule, or link evidence in view
 
 ## Source References
 

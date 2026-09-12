@@ -1704,6 +1704,117 @@ The dashboard SHALL expose per-butler memory tier access.
 - **WHEN** `GET /api/butlers/{name}/memory-access` is called
 - **THEN** the response is `ApiResponse[MemoryAccess]` with `read: ("short"|"mid"|"long")[]`, `write: ("short"|"mid"|"long")[]`, `namespace: str`, `embedding_model: str`, `drops_7d: int`.
 
+### Requirement: Butler detail header schedule facts are truthful
+
+`ButlerDetailHeader` SHALL derive schedule facts only from enabled schedule
+rows with a parseable finite `next_run_at` instant. The header SHALL use the
+existing read-only schedule query and SHALL NOT write schedules, alter
+scheduler calculations, or derive status-board activity. A scheduled instant
+at or before the current wall clock is overdue; an instant strictly after it
+is future-next. The header SHALL recompute that classification on schedule
+polling and at least once per minute while mounted.
+
+#### Scenario: Earliest future schedule is shown as next
+
+- **WHEN** one or more enabled schedules have parseable `next_run_at` values
+  strictly after the current wall clock
+- **THEN** the header SHALL render the earliest such timestamp as its `next`
+  fact using the shared `<Time>` primitive
+- **AND** no later future schedule SHALL replace that fact
+
+#### Scenario: Stale schedule is shown as an actionable overdue fact
+
+- **WHEN** one or more enabled schedules have parseable `next_run_at` values
+  at or before the current wall clock
+- **THEN** the header SHALL render the oldest such timestamp as a visibly
+  named `overdue` fact with the schedule name and a deterministic relative age
+- **AND** the fact SHALL use the established amber foreground token and an
+  accessible link name that does not rely on color alone
+- **AND** the fact link SHALL target
+  `/butlers/:name?tab=system&section=schedules`
+- **AND** the stale timestamp SHALL NOT render as a literal `next` fact
+
+#### Scenario: Overdue and future facts coexist
+
+- **WHEN** enabled schedules include both overdue and future parseable
+  `next_run_at` values
+- **THEN** the header SHALL keep the most-overdue named fact visible
+- **AND** the earliest independently truthful future-next fact SHALL remain
+  visible
+
+#### Scenario: Unusable timestamps do not fabricate certainty
+
+- **WHEN** a schedule is disabled, has a null timestamp, has a malformed
+  timestamp, or has an unparsable timestamp
+- **THEN** that row SHALL contribute neither an overdue nor a future-next fact
+- **AND** the header SHALL render no fabricated schedule age or future time for
+  that row
+
+#### Scenario: Equal schedule instants select a stable named fact
+
+- **WHEN** multiple enabled parseable schedules tie for the selected overdue
+  or future timestamp
+- **THEN** the header SHALL select the fact deterministically by schedule name
+  and then schedule id
+
+### Requirement: Truthful Status-Board Summary and Error Composition
+
+The `/butlers` status board SHALL present fleet health from the canonical
+server-derived `BoardRow.activity` vocabulary. A healthy count SHALL exclude
+every row whose activity is `offline`, `quarantined`, `overdue`, or `unknown`.
+The `unknown` aggregate SHALL be derived from canonical row activity, not from
+registry `eligibility = unavailable`, which remains a separate availability
+diagnostic.
+
+The Page shell SHALL omit status-board header and footer slots only when its
+initial board request has failed and no cached rows exist. A normal empty
+response and initial loading continue to use the shell’s existing behavior.
+
+#### Scenario: Fleet health excludes every non-healthy activity
+
+- **WHEN** board rows contain one or more `offline`, `quarantined`, `overdue`,
+  or `unknown` canonical activity verdicts
+- **THEN** the header’s healthy/total pill subtracts all four counts from the
+  registered total
+- **AND** registry availability alone SHALL NOT change the `unknown` count or
+  make a row appear unhealthy without its canonical activity verdict
+
+#### Scenario: Initial failure has no misleading board chrome
+
+- **WHEN** the initial board request fails and no cached rows are available
+- **THEN** the Page error region renders the error and retry control
+- **AND** the status-board header and footer SHALL NOT render around that error
+
+#### Scenario: Cached refresh failure keeps contextual chrome
+
+- **WHEN** a board refresh fails after one or more cached rows were loaded
+- **THEN** the cached rows, status-board header, and footer remain visible
+- **AND** the page renders its stale-data warning instead of replacing the
+  board with a full-page error
+
+### Requirement: Canonical Status-Board Cadence Labels
+
+The board’s human-facing cadence label SHALL describe only a canonical
+interval: exactly one hour is `hourly`, exactly one day is `daily`, and
+exactly seven days is `weekly`. A positive interval that is not one of those
+canonical values, including two hours, SHALL be labeled `custom`. A butler with
+no enabled schedule SHALL retain a null cadence label. The raw
+`cadence_seconds` and cadence-overdue calculation remain authoritative and
+unchanged.
+
+#### Scenario: Canonical cadence interval has its named label
+
+- **WHEN** a butler’s shortest enabled cron interval is exactly one hour, one
+  day, or seven days
+- **THEN** its board row exposes `hourly`, `daily`, or `weekly` respectively
+
+#### Scenario: Noncanonical cadence avoids an inaccurate named label
+
+- **WHEN** a butler’s shortest enabled cron interval is two hours or any other
+  positive noncanonical duration
+- **THEN** its board row exposes `cadence_label = custom`
+- **AND** it SHALL NOT label that duration `hourly`, `daily`, or `weekly`
+
 ## Source References
 
 - `about/heart-and-soul/design-language.md` Non-Negotiable 1 (one token system),

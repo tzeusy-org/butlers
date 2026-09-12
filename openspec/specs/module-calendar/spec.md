@@ -3,7 +3,9 @@
 ## Purpose
 
 The Calendar module is a provider-agnostic module that reads and writes calendar events, manages event lifecycle (create, update, reschedule, cancel), enforces conflict detection policies, supports timezone-aware scheduling with all-day and timed event semantics, and projects scheduled tasks and reminders into a unified calendar view.
+
 ## Requirements
+
 ### Requirement: Provider-Agnostic Architecture
 
 The module defines an abstract `CalendarProvider` interface with concrete implementations per provider. Currently only Google Calendar is implemented via `_GoogleProvider`. The module SHALL track the dedicated "Butlers" calendar id and the user's primary calendar id as distinct roles, and SHALL NOT overwrite the Butlers calendar id when the user changes the default target.
@@ -115,15 +117,24 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 
 ### Requirement: CalendarEvent Model
 
-The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `all_day`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
+The canonical `CalendarEvent` model SHALL be provider-neutral with fields:
+`event_id`, `title`, `start_at`, `end_at`, `timezone`, `all_day`,
+`description`, `body`, `location`, `attendees` (list of `AttendeeInfo`),
+`recurrence_rule`, `color_id`, `butler_generated`, `butler_name`,
+`source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`,
+`visibility`, `etag`, `created_at`, and `updated_at`.
 
-- `all_day` — provider-authoritative boolean truth; Google `start.date` and
-  `end.date` boundaries set it to `true` and SHALL be re-serialized as dates
-  for all-day creates and updates
-- `body` — a longer freeform description to complement the short `title` (nullable; maps to Google Calendar `description` field on parse)
-- `source_butler` — the butler name that created or owns the event (NOT NULL; backfilled from `metadata.butler_name` on migration)
-- `source_session_id` — session identifier of the creating LLM session (nullable)
-- `entity_ids` — list of entity UUIDs linked to this event via the `calendar_event_entities` junction table; populated on read, accepted on create/update
+- `all_day` is provider-authoritative boolean truth. Google `start.date` and
+  `end.date` boundaries set it to `true`, and all-day writes SHALL preserve the
+  same date-only representation.
+
+#### Scenario: Google date-only event preserves all-day truth
+
+- **WHEN** a Google event payload has date-only `start.date` and `end.date`
+  boundaries
+- **THEN** its `CalendarEvent` has `all_day=true`
+- **AND** a create or update carrying that truth serializes Google `start.date`
+  and `end.date`, never `dateTime` boundaries
 
 #### Scenario: Google event parsing
 
@@ -743,14 +754,25 @@ The module SHALL register a read-only `calendar_list_calendars` MCP tool that wr
 
 ### Requirement: Reversible Mutation Pre-State Capture
 
-The calendar module SHALL capture the pre-mutation event state of every reversible
-user-lane mutation into the recorded `action_result` so an inverse is
-reconstructable. For `workspace_user_update` and `workspace_user_delete`, the
-captured pre-image (the event state fetched before the write) MUST be stored in
-the existing `action_result` JSONB column alongside the existing post-mutation
-outcome, with no schema change. The capture MUST reuse the existing pre-write
-provider fetch (`existing_event`) where available. This pre-image is the contract
-the dashboard undo endpoint reverse-applies.
+The calendar module SHALL capture the pre-mutation event state of every
+reversible user-lane mutation into the recorded `action_result` so an inverse
+is reconstructable. For `workspace_user_update` and `workspace_user_delete`,
+the captured pre-image MUST include `all_day` with the existing title, start,
+end, timezone, recurrence, calendar, and linked-people fields. The dashboard
+undo endpoint SHALL pass the nullable `all_day` truth through the inverse
+`calendar_update_event` or `calendar_create_event` payload without an extra
+provider read.
+
+#### Scenario: All-day pre-state round-trips through undo
+
+- **WHEN** an applied user-lane update or delete has a captured pre-state with
+  `all_day=true` and the dashboard reverses it
+- **THEN** the inverse `calendar_update_event` or `calendar_create_event` call
+  carries `all_day=true` with the captured start and end boundaries
+- **AND** Google receives `start.date` and `end.date`, with no `dateTime`
+  boundary in the inverse write
+- **AND** the existing `this`, `following`, and `series` recurrence-scope
+  semantics remain unchanged
 
 #### Scenario: Update captures the pre-mutation event state
 
@@ -774,17 +796,6 @@ the dashboard undo endpoint reverse-applies.
   `calendar_create_event` to recreate the event and its linked people on its home
   calendar
 
-#### Scenario: All-day pre-state round-trips through undo
-
-- **WHEN** an applied user-lane update or delete has a captured pre-state with
-  `all_day=true` and the dashboard reverses it
-- **THEN** the inverse `calendar_update_event` or `calendar_create_event` call
-  carries `all_day=true` with the captured start and end boundaries
-- **AND** Google receives `start.date` and `end.date`, with no `dateTime`
-  boundary in the inverse write
-- **AND** the existing `this`, `following`, and `series` recurrence-scope
-  semantics remain unchanged
-
 #### Scenario: Pre-state is absent for non-reversible or non-applied outcomes
 
 - **WHEN** a mutation finalizes with status `failed` or `noop` (e.g. the target
@@ -801,6 +812,97 @@ the dashboard undo endpoint reverse-applies.
   returned with `idempotent_replay=true`)
 - **AND** capturing pre-state does not alter the `idempotency_key`, the action
   status transitions, or the replay contract
+
+### Requirement: Projection Provenance Truth and Source-Ledger Hygiene
+
+The Calendar module SHALL preserve provider events in the workspace projection
+while carrying durable provenance needed by downstream analysis. A Google
+date-only event (both boundaries use the provider `date` form) SHALL project
+with `all_day=true`. A legacy event with `all_day=false` whose duration is at
+least 24 hours and whose boundaries are both local midnight in its valid stored
+IANA timezone SHALL be recognized as a non-meeting by analysis consumers.
+
+The module SHALL retain provider rows whose `metadata.butler_generated` value
+is true in the workspace projection. It SHALL not delete, hide, or change the
+provider-authoritative state of those rows merely because they are
+butler-generated.
+
+On startup, the module SHALL idempotently delete source-ledger rows with
+exactly these source keys: `internal_scheduler:butler`,
+`internal_scheduler:butlers`, and `internal_reminders:butlers`. The purge SHALL
+use no wildcard or source-name policy and SHALL preserve normal source/event/
+instance cascade semantics. Internal source registration SHALL reject an
+invalid roster butler name without writing a source row, and SHALL continue to
+register valid roster names. All of these projection paths SHALL retain their
+existing fail-open behavior when projection tables are unavailable.
+
+#### Scenario: Google date-only event projects as all-day
+
+- **WHEN** a Google event payload has date-only `start.date` and `end.date`
+- **THEN** the parsed provider event and its projected `calendar_events` row
+  have `all_day=true`
+- **AND** the original date boundaries and provider source remain preserved
+
+#### Scenario: Butler-generated provider event remains visible
+
+- **WHEN** a provider event carries `metadata.butler_generated=true`
+- **THEN** it is upserted into the existing workspace projection with that
+  provenance retained
+- **AND** no source or event row is deleted or hidden because of the marker
+
+#### Scenario: Only obsolete internal source keys are purged
+
+- **WHEN** startup ledger hygiene runs with obsolete rows and a valid internal
+  source row present
+- **THEN** it deletes only `internal_scheduler:butler`,
+  `internal_scheduler:butlers`, and `internal_reminders:butlers`
+- **AND** the valid source row remains registered with its existing events and
+  instances intact
+
+#### Scenario: Invalid roster name cannot create an internal source
+
+- **WHEN** internal source registration is requested for a butler name that is
+  not present in the roster
+- **THEN** no `calendar_sources` row is written
+- **AND** a request for a valid roster name still performs the normal idempotent
+  source upsert
+
+### Requirement: Durable Queued Force-Sync Commands
+
+`calendar_force_sync` SHALL preserve its existing inline behavior by default and SHALL accept a dashboard-requested queued mode. Queued mode SHALL durably record the request in the owning schema's `calendar_action_log`, return acknowledgement before provider I/O, and execute the request through the owning CalendarModule rather than the dashboard process.
+
+#### Scenario: Queue acknowledgement is durable and prompt
+
+- **WHEN** `calendar_force_sync` is called with `queue=true`, a `request_id`, and optional `calendar_id`/`full`
+- **THEN** the module records a `calendar_force_sync` action-log row in `pending` status before returning
+- **AND** it returns `status="queued"` with the durable request correlation and requested recovery strength
+- **AND** it does not perform provider pull or mirror I/O in that acknowledgement path
+
+#### Scenario: Owner drains queued command serially
+
+- **WHEN** a pending queued force-sync command exists in a running CalendarModule
+- **THEN** the module atomically claims it as `running` and executes the existing incremental or full force-sync behavior
+- **AND** it processes at most one queued force-sync command at a time for that owner
+- **AND** it records terminal `applied` when the provider/mirror operation completes without recorded errors, otherwise `failed` with the structured result/error
+
+#### Scenario: Restart resumes interrupted queued command
+
+- **WHEN** the owning CalendarModule starts and finds an interrupted `calendar_force_sync` action-log command in `running` status
+- **THEN** it returns that command to `pending` and drains it after provider initialization
+- **AND** the command is not silently discarded because the dashboard API process or prior daemon process restarted
+
+#### Scenario: Redundant manual clicks coalesce without weakening recovery
+
+- **WHEN** a compatible queued force-sync command is pending or an incremental command is already running for the owner
+- **THEN** an additional incremental request returns a queued/coalesced acknowledgement instead of creating duplicate provider work
+- **AND** a `full=true` recovery request upgrades a pending incremental command or creates one pending full successor behind a running incremental command
+- **AND** a full recovery request is never acknowledged as satisfied solely by an incremental command
+
+#### Scenario: Direct tool callers retain inline semantics
+
+- **WHEN** `calendar_force_sync` is called without `queue=true`
+- **THEN** it retains the existing inline incremental/full behavior and response fields
+- **AND** queued-command processing does not require the normal sync poller to be enabled
 
 ## Source References
 

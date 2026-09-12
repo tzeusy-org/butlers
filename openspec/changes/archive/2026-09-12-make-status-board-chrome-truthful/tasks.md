@@ -19,5 +19,5 @@
 
 - [x] 3.1 Run strict OpenSpec validation, focused Python/Vitest suites, and
   proportionate frontend lint/build checks; review the scoped diff.
-- [ ] 3.2 Commit the scoped change, push the dedicated branch, and open a
+- [x] 3.2 Commit the scoped change, push the dedicated branch, and open a
   draft PR for exact-head independent review without requesting a merge.

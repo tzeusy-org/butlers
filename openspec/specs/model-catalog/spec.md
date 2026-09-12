@@ -76,6 +76,7 @@ The system SHALL maintain a `public.butler_model_overrides` table for per-butler
 - **AND** because `enabled` is NOT NULL, `COALESCE(bmo.enabled, mc.enabled)` always resolves to the override's own `enabled` value (the override cannot inherit the global enabled flag)
 
 ### Requirement: Model Resolution
+
 The system SHALL provide model resolution functions that select catalog entries at spawn time by querying the catalog with butler-specific overrides applied. The primary `resolve_model(pool, butler_name, complexity_tier)` function selects the appropriate model configuration for initial spawn, `resolve_model_with_effective_tier()` additionally returns the effective tier that produced the candidate, and `next_same_tier_candidate()` supports same-tier failover. Higher `priority` is more preferred (the resolver selects the MAX effective priority in the winning tier).
 
 #### Scenario: Resolution with global defaults only
@@ -101,10 +102,13 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **THEN** the function returns `None`
 - **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` - Catalog empty fallback)
 
-#### Scenario: Priority tie-breaking via round-robin
+#### Scenario: Priority tie-breaking prefers evidence, falls back to round-robin
 - **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
-- **THEN** the initial resolver load-balances across them using a per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
-- **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter)
+- **THEN** the resolver SHALL compute an evidence-based routing score for each tied candidate from recent `public.model_dispatch_attempts` history (success rate, p95 `duration_ms`, and a reference per-call USD cost -- `butlers.core.model_routing.compute_routing_score`)
+- **AND** WHEN at least two tied candidates have `_EVIDENCE_MIN_SAMPLES` (5) or more qualifying (`success`/`runtime_failure`) attempts in the trailing evidence window, the resolver SHALL select the candidate with the highest score
+- **AND** WHEN fewer than two tied candidates meet that evidence threshold (a new catalog, sparse history, or all-tied scores), the resolver SHALL fall back to the original per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
+- **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter), regardless of which selection path is used
+- **AND** a candidate's score is never fabricated below the evidence threshold: `compute_routing_score` returns `score=None` and callers MUST treat that as "no opinion", not a low score
 
 #### Scenario: Verification filter
 - **WHEN** the resolver evaluates candidate rows
@@ -128,6 +132,26 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **AND** it SHALL exclude all previously attempted or skipped `catalog_entry_id` values
 - **AND** it SHALL return the next highest-priority enabled model in that same tier
 
+#### Scenario: Discretion quota skip uses the same effective tier
+- **WHEN** the discretion dispatcher selects a catalog entry and its pre-invocation
+  `check_token_quota()` result is `allowed=False`
+- **THEN** it SHALL treat that catalog entry as a per-entry availability skip, without
+  invoking its adapter
+- **AND** it SHALL exclude the skipped `catalog_entry_id` and seek the next candidate only
+  in the already selected effective complexity tier
+- **AND** it SHALL consume one slot from the dispatcher's existing bounded same-tier
+  failover-attempt budget
+- **AND** it SHALL emit bounded operational provenance limited to the catalog model,
+  effective tier, quota-window state, bounded attempt count, and a stable quota-skip reason;
+  it SHALL NOT add prompt, system-prompt, caller identity, or Spawner session provenance
+
+#### Scenario: Discretion same-tier quota exhaustion is terminal
+- **WHEN** quota skips and/or eligible runtime failures consume every candidate in the
+  discretion dispatcher's effective complexity tier, or consume its bounded attempt budget
+- **THEN** the dispatcher SHALL raise `RuntimeError` tagged
+  `same_tier_failover_exhausted`
+- **AND** it SHALL NOT retry a candidate from a different effective complexity tier
+
 #### Scenario: Initial tier fallthrough remains separate
 - **WHEN** initial model resolution finds no candidate in the requested tier
 - **THEN** the existing canonical tier fallthrough behavior MAY select a candidate from
@@ -145,6 +169,11 @@ The system SHALL provide model resolution functions that select catalog entries 
   separate connection-state machine (no distinct error / offline / deprecated / rate-limited /
   anomaly states); `last_verified_ok`, `enabled`, and breaker state are the canonical and only
   eligibility signals.
+
+#### Scenario: Priority tie-breaking via round-robin
+- **WHEN** multiple enabled entries exist for the same butler+tier at the same effective priority
+- **THEN** the initial resolver load-balances across them using a per-`(butler_name, complexity_tier)` round-robin counter in `public.model_round_robin_counters`, ordering candidates by `created_at ASC, id ASC` and selecting index `counter % total`
+- **AND** the counter is incremented atomically only when a winning tier exists (empty-tier fallthrough attempts never increment any counter)
 
 ### Requirement: Dispatch-Outcome Circuit Breaker
 The system SHALL exclude a catalog entry from resolution (initial resolve, effective-tier
@@ -269,3 +298,67 @@ All runtime adapters SHALL return `input_tokens` and `output_tokens` in their us
 #### Scenario: Known adapters to audit
 - **WHEN** the adapter token reporting contract is enforced
 - **THEN** the following adapters are verified: `claude`, `codex`, `gemini`, `opencode` (including ollama via opencode), `api` (direct Anthropic Messages API, no subprocess)
+
+### Requirement: Model Catalog Capability Envelope
+The `public.model_catalog` table SHALL carry a per-entry capability and context
+envelope: a `capabilities` JSONB object (NOT NULL, default `{}`), a nullable
+`max_context_tokens` integer, and a nullable `max_output_tokens` integer, added by
+migration `core_204`.
+
+#### Scenario: Envelope column shape is constrained in the database
+- **WHEN** a catalog entry is written
+- **THEN** `capabilities` MUST be a JSON object (`chk_model_catalog_capabilities_object`)
+- **AND** `max_context_tokens` and `max_output_tokens` MUST be NULL or positive
+- **AND** the feature vocabulary itself is validated in application code rather than
+  by a CHECK constraint, because the vocabulary lives with the runtime adapters and a
+  database constraint would need re-migrating every time it grows
+
+#### Scenario: Existing entries are unaffected
+- **WHEN** the migration runs against a populated catalog
+- **THEN** no row is backfilled and every existing entry keeps an empty envelope
+- **AND** an empty envelope excludes no candidate, because the adapter baseline
+  already answers `tool_use` and `session_resume` for every registered runtime type
+
+#### Scenario: Undeclared context window stays undeclared
+- **WHEN** `max_context_tokens` is NULL
+- **THEN** the window is treated as undeclared and therefore unproven, so a dispatch
+  that requires a context floor excludes the entry rather than guessing a value
+
+### Requirement: Fit Before Ranking
+When resolution is given a dispatch intent, the system SHALL exclude every candidate
+that cannot satisfy the intent's required capabilities, context floor, deadline, or
+per-call budget BEFORE selecting the winning tier, before narrowing to the highest
+effective priority, and before the tie-break.
+
+#### Scenario: An unusable top-priority entry does not take its tier down
+- **WHEN** the highest-priority entry in a tier cannot satisfy the intent and a
+  lower-priority entry in the same tier can
+- **THEN** the lower-priority entry is selected
+- **AND** the excluded entry is recorded on the receipt with its fit findings
+
+#### Scenario: A tier with no fitting candidate is not a winning tier
+- **WHEN** every candidate in the requested tier fails hard fit and tier
+  fallthrough is allowed
+- **THEN** resolution continues to the next canonical tier
+
+#### Scenario: No fitting candidate anywhere returns no selection
+- **WHEN** eligible catalog entries exist but none of them fit the intent
+- **THEN** resolution yields no selection, and the caller's existing static-fallback
+  path applies
+- **AND** the receipt records why each candidate was excluded, which a bare "no
+  candidates" result cannot express
+
+#### Scenario: An intent requiring nothing resolves exactly as before
+- **WHEN** an intent requires no capabilities and sets no context floor, deadline,
+  or budget
+- **THEN** no candidate is excluded and the selected entry is identical to the one
+  the pre-existing resolution path selects
+- **AND** priority narrowing, evidence-based scoring, and the round-robin tie-break
+  are unchanged for intent-aware resolution
+
+#### Scenario: Quota semantics are preserved
+- **WHEN** intent-aware resolution runs quota-aware and any fit-surviving
+  top-priority candidate in the winning tier lacks quota headroom
+- **THEN** tier quota exhaustion is raised with the same representative contract as
+  the pre-existing resolution path, so the caller's sequential quota and same-tier
+  failover loop still applies
