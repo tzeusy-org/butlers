@@ -1,12 +1,4 @@
 {
-  "add-health-medication-travel-mcp/butler-travel/Travel Insight Scan Job": [
-    {
-      "kind": "clause",
-      "scenario": "Medication prep for travel insights",
-      "digest": "3506801af226",
-      "excerpt": "- **AND** the user has active medications tracked by the health butler (queryable vithe `public` schema or known from..."
-    }
-  ],
   "add-runtime-tool-surface-discovery/session-process-logs/Process log table schema": [
     {
       "kind": "clause",
@@ -27,28 +19,6 @@
       "scenario": "Inventory rows are content-blind",
       "digest": "176715cfc640",
       "excerpt": "- **AND** operator-authored labels on system and CLI rows — `key`, `category`, `description` — are outside this contr..."
-    }
-  ],
-  "approval-abandon-recovery/module-approvals/Retention Policy": [
-    {
-      "kind": "clause",
-      "scenario": "Cleanup old actions",
-      "digest": "40e5c84a1798",
-      "excerpt": "- **THEN** terminal-status actions (`rejected`, `expired`, `executed`, `abandoned`) older than the retention window a..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Cleanup old actions",
-      "digest": "5d2272d2be59",
-      "excerpt": "- **AND** that exempt entity-merge decision remains durable so curation cannot re-propose the same ordered pair after..."
-    }
-  ],
-  "approval-abandon-recovery/module-approvals/Status Transition Contract": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "3b1a60b66bd7",
-      "excerpt": "The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `approved -> executed|abandoned`; `rejec..."
     }
   ],
   "beads-projection-exporter/dashboard-api/Decisions Digest Endpoint": [
@@ -121,62 +91,6 @@
       "excerpt": "The `/decisions` page SHALL render an export-as-of plaque whenever `meta.export_as_of` is known. A recently refreshed..."
     }
   ],
-  "bind-day-close-cache-timezone/dashboard-chronicles/Day-Close Cache Invalidation": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "910752986289",
-      "excerpt": "Cached `chronicler_day_close` Tier-2 prose SHALL be invalidated and visually flagged stale whenever any episode, poin..."
-    }
-  ],
-  "calendar-provenance-truth/calendar-conflict-overcommitment-radar/[TARGET-STATE] Forward-Window Conflict Scan Endpoint": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "0b2063d89510",
-      "excerpt": "Before detection runs, the endpoint MUST collapse cross-source duplicate rows with the SAME dedup pass the workspace ..."
-    }
-  ],
-  "calendar-provenance-truth/module-calendar/CalendarEvent Model": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "64d7c4e6eb81",
-      "excerpt": "- `all_day` — provider-authoritative boolean truth; Google `start.date` and `end.date` boundaries set it to `true` an..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f761c30392cb",
-      "excerpt": "- `body` — a longer freeform description to complement the short `title` (nullable; maps to Google Calendar `descript..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "9208d1527cd2",
-      "excerpt": "- `source_butler` — the butler name that created or owns the event (NOT NULL; backfilled from `metadata.butler_name` ..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5ef61105f805",
-      "excerpt": "- `source_session_id` — session identifier of the creating LLM session (nullable)"
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "9f949c42e8aa",
-      "excerpt": "- `entity_ids` — list of entity UUIDs linked to this event via the `calendar_event_entities` junction table; populate..."
-    }
-  ],
-  "calendar-provenance-truth/module-calendar/Reversible Mutation Pre-State Capture": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "c37d8781a1a5",
-      "excerpt": "The calendar module SHALL capture the pre-mutation event state of every reversible user-lane mutation into the record..."
-    }
-  ],
   "canonical-dnd-generation-guard/context-bus/Write Permissions": [
     {
       "kind": "prose",
@@ -199,28 +113,6 @@
       "scenario": null,
       "digest": "182b248b6b98",
       "excerpt": "Butler runtime roles SHALL have write access to a specific set of public tables. The authorization matrix is maintain..."
-    }
-  ],
-  "close-audit-failure-spine/dashboard-audit-log/Audit Log Read API": [
-    {
-      "kind": "clause",
-      "scenario": "List audit entries",
-      "digest": "e0e990f78b88",
-      "excerpt": "- **AND** `key` filters by normalised credential key; `kind=privileged` excludes `*_heartbeat` and `GET /*` noise rows"
-    }
-  ],
-  "consolidate-owner-attention-policy/proactive-insight-engine/Priority-Urgent Bypass of Quiet Hours and the Context Bus": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b6a5518bde75",
-      "excerpt": "Neither the global Owner Attention Policy nor a context-bus `dnd`/`sleeping` signal SHALL suppress a candidate whose ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Fully suppressed cycle when no candidate is urgent",
-      "digest": "456580745bfb",
-      "excerpt": "- **THEN** the cycle returns `skipped=True` and delivers nothing, exactly as before this requirement"
     }
   ],
   "decision-loop-one-tap-approvals/autonomy-tracker/Pattern Fingerprint Computation": [
@@ -329,14 +221,6 @@
       "excerpt": "- **AND** any rejection before the first investigation session launches is tracked as a dispatch decision, not an exe..."
     }
   ],
-  "distinguish-invalid-day-close-refresh/chronicler-api/Chronicler Day-Close Cache Surface": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "556ca1f8f9ea",
-      "excerpt": "The API SHALL expose a read endpoint for cached `chronicler_day_close` Tier-2 prose and a re-invocation endpoint that..."
-    }
-  ],
   "durable-approval-delivery-intent-recovery/module-approvals/Pending Actions Queue": [
     {
       "kind": "prose",
@@ -371,12 +255,6 @@
   ],
   "durable-approval-delivery-intent-recovery/module-approvals/Status Transition Contract": [
     {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "3b1a60b66bd7",
-      "excerpt": "The approval lifecycle MUST allow `pending -> approved|rejected|expired` and `approved -> executed|abandoned`; `rejec..."
-    },
-    {
       "kind": "clause",
       "scenario": "Approve a pending action",
       "digest": "db39ecfdacd4",
@@ -387,18 +265,6 @@
       "scenario": "Approve a pending action",
       "digest": "60defe7c15af",
       "excerpt": "- **AND** status advances to `executed` only after that execution persists its result and success audit event"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Dashboard abandons a stalled approved action",
-      "digest": "968f7f4cf18c",
-      "excerpt": "- **AND** an immutable `action_abandoned` event stores the actor and reason in the same transaction"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Dashboard abandons a stalled approved action",
-      "digest": "7d3e952d266c",
-      "excerpt": "- **AND** an action outside that exact predicate remains unchanged"
     },
     {
       "kind": "clause",
@@ -429,6 +295,18 @@
       "scenario": "Expire stale actions",
       "digest": "5f7a91e581c5",
       "excerpt": "- **AND** an `action_expired` audit event is recorded for each"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Dashboard abandons a stalled approved action",
+      "digest": "968f7f4cf18c",
+      "excerpt": "- **AND** an immutable `action_abandoned` event stores the actor and reason in the same transaction"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Dashboard abandons a stalled approved action",
+      "digest": "7d3e952d266c",
+      "excerpt": "- **AND** an action outside that exact predicate remains unchanged"
     }
   ],
   "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/Conversation React Query Hooks": [
@@ -545,14 +423,6 @@
       "excerpt": "- **THEN** each entry includes the `ConversationSummary` fields plus `snippet` (the matching message content excerpt)"
     }
   ],
-  "durable-dashboard-terminal-action-recovery/dashboard-conversations/Conversation Reply Channel": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "c974081782da",
-      "excerpt": "A routed butler session SHALL confirm its interpretation of a dashboard statement (or acknowledge a filed bug report)..."
-    }
-  ],
   "durable-dashboard-terminal-action-recovery/staffer-qa/Pluggable Discovery Source Architecture": [
     {
       "kind": "clause",
@@ -589,14 +459,6 @@
       "scenario": "QA module MCP tool registration",
       "digest": "bf06cec9d345",
       "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen..."
-    }
-  ],
-  "durable-issue-condition-ledger/dashboard-api/Issues Aggregation": [
-    {
-      "kind": "clause",
-      "scenario": "Issues degraded sources are named, not rendered as an all-clear",
-      "digest": "df5dc6d5d432",
-      "excerpt": "- **THEN** the response includes `meta.sources_degraded: string[]` naming the dropped source(s) (`audit-groups` and/o..."
     }
   ],
   "education-mind-map-lifecycle-integrity/butler-education/Scheduled Tasks": [
@@ -655,26 +517,6 @@
       "scenario": "Submit request without goal",
       "digest": "0cc85e0b646a",
       "excerpt": "- **AND** no non-terminal receipt exists"
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/dashboard-education-ui/Curriculum management actions": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "1248756829d3",
-      "excerpt": "Above the mind map selector, a \"Request curriculum\" button SHALL open a dialog with fields for topic (required) and g..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Request a new curriculum",
-      "digest": "562047cf3c3f",
-      "excerpt": "- **AND** on 202 response, the toast SHALL claim acceptance only, and SHALL NOT claim the curriculum was created or t..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Request a new curriculum",
-      "digest": "c05f4f945da1",
-      "excerpt": "- **AND** the returned `request_id` SHALL become the tracked receipt for the outcome"
     }
   ],
   "education-mind-map-lifecycle-integrity/dashboard-education-ui/Education page layout with tab panels": [
@@ -1015,42 +857,6 @@
       "excerpt": "The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping..."
     }
   ],
-  "make-operator-status-readers-distinguish-unavailable/butler-secrets/One Row Template Across All Three Families": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "037793ac326f",
-      "excerpt": "The User-tab's six bespoke provider Setup cards SHALL be replaced by one row template applicable to System, User (oau..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Row-template uniformity",
-      "digest": "03b4841d4a2b",
-      "excerpt": "- **AND** a connector-owned Passport projection uses that same structure while preserving its separate storage-author..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "One spine row per credential concept",
-      "digest": "fbaed8541896",
-      "excerpt": "- **AND** a connector-owned projection has one row independent of raw token rows and SHALL NOT be represented by a du..."
-    }
-  ],
-  "make-overview-cost-readers-honest/dashboard-domain-pages/Cost widget for dashboard overview": [
-    {
-      "kind": "clause",
-      "scenario": "Widget with no data",
-      "digest": "106bedf6ecf9",
-      "excerpt": "- **WHEN** `totalCostUsd` is 0 and `topButler` is null"
-    }
-  ],
-  "make-routed-approvals-replayable/module-approvals/Defense-in-Depth at the Delivery Layer": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "5a0268d0c97a",
-      "excerpt": "**Layer 2 (inline delivery gate)** (`core_tools/_notifications.py` and `core_tools/_routing.py`): Outbound delivery p..."
-    }
-  ],
   "memory-honesty-last-mile/module-memory/LLM-driven memory consolidation pipeline": [
     {
       "kind": "prose",
@@ -1069,58 +875,6 @@
       "scenario": "Episode grouping by tenant and butler",
       "digest": "92dc357d3c5a",
       "excerpt": "- **THEN** episodes with `consolidation_status='pending'` MUST be fetched ordered by `(tenant_id, butler, created_at,..."
-    }
-  ],
-  "permissions-inherited-cell-mutation/dashboard-permissions/Permissions Matrix API": [
-    {
-      "kind": "clause",
-      "scenario": "Inherited vs explicit cells",
-      "digest": "009d871be6de",
-      "excerpt": "- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, ..."
-    }
-  ],
-  "project-audit-history-content-blind/dashboard-api/Secrets Audit-History and Breaks-Catalogue Endpoints": [
-    {
-      "kind": "clause",
-      "scenario": "Audit history endpoint",
-      "digest": "95aaf609a86d",
-      "excerpt": "- **AND** each `AuditEvent` includes `ts` (server pre-formatted relative timestamp), `actor`, `action`, `note` (serif..."
-    }
-  ],
-  "project-secret-read-endpoints-content-blind/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
-    {
-      "kind": "clause",
-      "scenario": "Per-credential read endpoints",
-      "digest": "c7e0ad36223a",
-      "excerpt": "- **AND** `GET /api/secrets/system/<key>` returns `ApiResponse<SystemSecret>` with `key`, `category`, `row_state` (on..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Per-credential read endpoints",
-      "digest": "6b023e3b5c2b",
-      "excerpt": "- **AND** `GET /api/secrets/cli/<id>` returns `ApiResponse<CliRuntime>` with `id`, `label`, `fingerprint`, `state`, `..."
-    }
-  ],
-  "reconcile-chronicler-google-health-source-contract/butler-chronicler/Source Compatibility Declarations": [
-    {
-      "kind": "clause",
-      "scenario": "Initial supported sources",
-      "digest": "980f4be7e73e",
-      "excerpt": "- **AND** `google_health.*` SHALL be declared `deferred`"
-    }
-  ],
-  "reconcile-chronicler-google-health-source-contract/connector-google-health/Chronicler Compatibility Deferred": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "abf4c527b5fc",
-      "excerpt": "The connector SHALL explicitly defer Chronicler compatibility until the Chronicler Time Butler proposal is accepted a..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Google Health not projected by Chronicler initially",
-      "digest": "afedf491aa81",
-      "excerpt": "- **THEN** Chronicler SHALL NOT claim deterministic projection support for those records in its initial source set"
     }
   ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
@@ -1171,20 +925,6 @@
       "excerpt": "No predicate ID MAY be hardcoded outside `entity-model.ts` (frontend) and `relationship.entity_predicate_registry` (b..."
     }
   ],
-  "repair-non-messenger-approval-replay/module-approvals/Shared Executor Path": [
-    {
-      "kind": "clause",
-      "scenario": "Tool execution fails with exception",
-      "digest": "e5050ac38286",
-      "excerpt": "- **AND** no automatic replay occurs; an operator may retry the approved action, reject it explicitly, or dashboard-a..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "At-most-once execution with concurrency lock",
-      "digest": "d3295c2db17c",
-      "excerpt": "- **AND** the executor holds a database `FOR UPDATE` row lock from its approved/null eligibility check through handle..."
-    }
-  ],
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Cherry-Picked Message Excerpts": [
     {
       "kind": "prose",
@@ -1203,26 +943,6 @@
       "scenario": "Conceptual message structure",
       "digest": "e323266b5652",
       "excerpt": "- `excerpts`: array of `{sender, text, timestamp, message_id}` cherry-picked from the conversation"
-    }
-  ],
-  "respec-unknown-sender-owner-notification/switchboard-identity/Inbound message identity resolution": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "d584f6f7acc4",
-      "excerpt": "The Switchboard fleet startup wiring SHALL enable this resolution for its production `MessagePipeline` and provide a ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Unknown sender sends a Telegram message",
-      "digest": "6141e4b0f7a9",
-      "excerpt": "- **AND** concurrent first messages for the same sender MUST reuse one transitory `entity_id` before their routing co..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Unknown sender sends a Telegram message",
-      "digest": "c0f7f72c8f18",
-      "excerpt": "- **AND** that minting reservation MUST NOT move `relationship.entity_facts` writes into Switchboard"
     }
   ],
   "restore-drill-recovery-truthfulness/core-notify/Attention Ledger Reader": [
@@ -1252,12 +972,6 @@
     }
   ],
   "restore-drill-recovery-truthfulness/deployment-hardening/Backup And Restore Verification Path": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "59d1ea3a15ea",
-      "excerpt": "An always-on personal-data deployment SHALL have a documented, executable backup-and-restore path for the PostgreSQL ..."
-    },
     {
       "kind": "clause",
       "scenario": "Documented restore drill exists and is verifiable",

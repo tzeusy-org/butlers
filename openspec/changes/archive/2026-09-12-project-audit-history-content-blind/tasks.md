@@ -30,6 +30,6 @@
 
 ## 4. Close out
 
-- [ ] 4.1 After merge, apply the delta to `openspec/specs/dashboard-api/spec.md`
+- [x] 4.1 After merge, apply the delta to `openspec/specs/dashboard-api/spec.md`
   and archive to
   `openspec/changes/archive/YYYY-MM-DD-project-audit-history-content-blind`.
