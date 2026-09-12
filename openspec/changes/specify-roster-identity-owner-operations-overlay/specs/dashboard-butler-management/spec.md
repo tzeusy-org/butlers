@@ -35,6 +35,13 @@ legacy head, and `acknowledge_identity_replacement=true`. A committed transition
 `butler.prompt_mode_changed` with target equal to the canonical agent name and metadata limited to
 `mode_version`, `from_mode`, `to_mode`, `overlay_version`, and `roster_digest`. An exact no-op SHALL
 emit no audit event.
+Rollback-window authority SHALL come only from server-side deployment configuration
+`BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL`, parsed as an RFC 3339 UTC timestamp. A missing, malformed,
+or expired value SHALL mean closed. No request field, prompt/mode row, MCP tool, runtime session, or
+generic API route SHALL open or extend the window. The migration-seeded
+`precutover_legacy_hold` SHALL be a distinct read-only compatibility state: it SHALL NOT require or
+claim owner selection, SHALL NOT be accepted as a mode PUT target, and SHALL NOT be re-enterable
+after an agent leaves it.
 
 ID: REQ-dashboard-butler-management-001
 Source: specify-roster-identity-owner-operations-overlay design D4 and D7; heart-and-soul/security.md Dashboard and API Authentication
@@ -114,6 +121,17 @@ Scope: v1-mandatory
 - **WHEN** an authenticated owner selects `legacy_full_replacement` during the approved rollback window
 - **THEN** the change succeeds only when a legacy head exists and `acknowledge_identity_replacement=true`
 - **AND** a missing acknowledgement, closed window, or absent legacy head returns a fixed content-blind conflict without a write
+
+#### Scenario: Rollback window fails closed
+- **WHEN** `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL` is absent, malformed, or not later than the current UTC time
+- **THEN** a request for `legacy_full_replacement` returns the fixed content-blind conflict without a write
+- **AND** no request or stored row can override that closed result
+
+#### Scenario: Pre-cutover hold is not an owner rollback target
+- **WHEN** an existing agent is still in migration-seeded `precutover_legacy_hold`
+- **THEN** the owner projection labels it as unreviewed pre-cutover compatibility state
+- **AND** the mode route accepts a transition out to `roster_overlay` but rejects `precutover_legacy_hold` as an input mode
+- **AND** no audit evidence claims the owner selected the seeded hold
 
 #### Scenario: Dashboard discloses the semantic limit
 - **WHEN** the owner views or edits an overlay

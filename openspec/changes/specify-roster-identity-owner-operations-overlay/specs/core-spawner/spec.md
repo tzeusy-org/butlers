@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: System Prompt Composition
-For every admitted roster agent, the spawner SHALL assemble the final system prompt from this closed
+For every admitted roster agent in `roster_overlay` mode, the spawner SHALL assemble the final system prompt from this closed
 ordered list: (1) resolved roster identity, (2) shared `BUTLER_SKILLS.md` then `MCP_LOGGING.md`,
 (3) an optional active owner-operations overlay, (4) general
 timezone/locale/date/time/week/currency/measurement-system instructions, (5) situational context,
@@ -19,10 +19,11 @@ content-blind operational warning. Existing availability behavior remains layer-
 settings, situational context, Switchboard routing, and memory failures omit only their layer;
 blind-spot failures retain their separate fail-closed disclosure contract. An invalid roster identity
 or unknown source name SHALL block adapter invocation.
-The only compatibility exception SHALL be an owner-selected `legacy_full_replacement` mode during
-the approved migration rollback window. That mode SHALL use the preserved pre-cutover base selector
-plus its then-authorized dynamic suffixes, SHALL omit the new owner-operations overlay, and SHALL be
-reported as identity-replacing rather than as satisfying roster-plus-overlay composition.
+The compatibility exceptions SHALL be migration-seeded `precutover_legacy_hold` for existing agents
+not yet cut over and owner-selected `legacy_full_replacement` during the approved migration rollback
+window after cutover. Both SHALL use the preserved pre-cutover base selector plus its then-authorized
+dynamic suffixes, SHALL omit the new owner-operations overlay, and SHALL be reported as
+identity-replacing rather than as satisfying roster-plus-overlay composition.
 
 ID: REQ-core-spawner-004
 Source: specify-roster-identity-owner-operations-overlay design D1-D2 and D7; heart-and-soul/vision.md Rule 5
@@ -81,3 +82,9 @@ Scope: v1-mandatory
 - **THEN** the spawner uses the preserved pre-cutover base selector and authorized dynamic suffixes for that agent
 - **AND** it does not add an owner-operations overlay or report roster identity as structurally present
 - **AND** no other mode or agent inherits that exception
+
+#### Scenario: Pre-cutover hold preserves existing selection without owner attribution
+- **WHEN** an existing agent's migration-seeded mode is `precutover_legacy_hold`
+- **THEN** the spawner uses the preserved pre-cutover selector and authorized dynamic suffixes
+- **AND** it does not report that the owner selected rollback or that roster identity is structurally present
+- **AND** leaving the hold is one-way

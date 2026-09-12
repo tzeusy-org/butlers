@@ -20,10 +20,11 @@ it changes no roster or prompt bytes.
   general timezone/locale/date/time/week/currency/measurement-system settings, situational context,
   blind-spot disclosure, Switchboard routing instructions,
   and memory context. An unnamed source cannot enter the system prompt.
-- Keep the resolved roster chain present for every admitted roster agent. Unknown agents, missing or
-  invalid roster roots, unresolved required bare references, and include cycles fail before a
-  runtime starts rather than allowing mutable database text or a generic fallback to stand in for
-  identity.
+- Keep the resolved roster chain present for every admitted roster agent in the target
+  `roster_overlay` mode. Existing agents may remain in a one-way migration-seeded
+  `precutover_legacy_hold` until individually reviewed; unknown agents and invalid roster roots fail
+  before a target-mode runtime starts rather than allowing mutable database text or a generic
+  fallback to stand in for identity.
 - Specify recursive bare `@file.md` expansion in the shared core-skills seam, separately from the
   existing non-recursive HTML include contract. Domain butlers retain the first-line
   `@../shared/AGENTS.md` rule. Staffers use an explicit infrastructure-contract opt-in/opt-out; QA's
@@ -43,6 +44,8 @@ it changes no roster or prompt bytes.
 - Specify that rollback switch as a separate owner-gated, append-only, compare-and-swap mode-history
   control using the same dedicated pool, ownership, RLS, audit, and privacy boundaries as overlays.
   Database privilege cutover must pass before either mode can make an overlay load-bearing.
+- Make the rollback window fail closed from deployment-owned server configuration. No request,
+  database row, MCP tool, runtime session, or generic API can open or extend it.
 - Inventory every current source and writer seam in `design.md`. The active
   `k3s-deployment-helm-chart` and `specify-improvement-proposal-spine` changes remain the only
   whole-requirement owners of `core-skills / AGENTS.md Read/Write Access`; this change neither

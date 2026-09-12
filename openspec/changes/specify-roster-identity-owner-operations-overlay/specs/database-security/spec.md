@@ -78,7 +78,8 @@ SHALL create append-only per-agent composition-mode history protected by the sam
 and grant boundary as prompt history. No migration or bootstrap process SHALL reinterpret, copy,
 activate, or delete legacy text as owner-operations
 content. Compatibility code and the dedicated prompt pool SHALL be available before schema,
-behavior, or privilege cutover. Each agent SHALL remain on its last verified mode until an
+behavior, or privilege cutover. Each existing agent SHALL receive a
+`precutover_legacy_hold` mode-history row and remain on that last verified behavior until an
 authenticated owner explicitly reviews its legacy head and creates or activates an overlay.
 Rollback during the approved observation window SHALL restore the selected legacy behavior without
 rewriting history or restoring broad runtime, connector, generic API, table, or sequence authority.
@@ -92,7 +93,7 @@ Scope: v1-mandatory
 - **THEN** every row retains its exact version, text, timestamp, and actor
 - **AND** every row is labeled `legacy_full_replacement`
 - **AND** no row is active or represented as an owner-operations overlay
-- **AND** the initial mode-history row selects `legacy_full_replacement` without rewriting prompt history
+- **AND** the initial mode-history row selects `precutover_legacy_hold` without claiming owner selection or rewriting prompt history
 
 #### Scenario: Failed migration preserves the prior verified stage
 - **WHEN** schema backfill, role creation, RLS setup, credential provisioning, or verification fails
@@ -101,9 +102,14 @@ Scope: v1-mandatory
 - **AND** no partial success is reported
 
 #### Scenario: Owner review precedes per-agent cutover
-- **WHEN** an agent has only legacy full-replacement history
+- **WHEN** an existing agent has only legacy full-replacement history and `precutover_legacy_hold`
 - **THEN** migration code does not infer which text is identity or operations content
 - **AND** roster-plus-overlay activation waits for an authenticated owner to create or activate an overlay explicitly
+
+#### Scenario: New agent cannot enter a legacy hold
+- **WHEN** an agent is created after the migration
+- **THEN** its initial mode is `roster_overlay`
+- **AND** no migration or API path assigns `precutover_legacy_hold`
 
 #### Scenario: Prepared agent cuts over without history rewrite
 - **WHEN** the owner activates a reviewed overlay for one agent and that agent passes cutover verification

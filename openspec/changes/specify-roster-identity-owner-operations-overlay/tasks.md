@@ -13,7 +13,7 @@
 
 ## 3. Future storage and role foundation after adoption
 
-- [ ] 3.1 Add a forward core migration that preserves every prompt-history row, backfills explicit `legacy_full_replacement` provenance, and creates append-only per-agent composition-mode history without activating any legacy row as an overlay.
+- [ ] 3.1 Add a forward core migration that preserves every prompt-history row, backfills explicit `legacy_full_replacement` provenance, seeds existing agents into one-way `precutover_legacy_hold`, and starts later agents in `roster_overlay`.
 - [ ] 3.2 Create the non-login table owner and direct-login prompt writer with the exact `NOINHERIT` and `NOBYPASSRLS` attributes from the database-security delta.
 - [ ] 3.3 Add fixed runtime-role-to-agent RLS read policies plus writer-only INSERT policy; leave backup/migration authority on its separately governed operational path.
 - [ ] 3.4 Provision the dedicated writer credential and pool plus a separate non-application migration/backup principal; make the generic dashboard login `NOSUPERUSER NOBYPASSRLS` before privilege cutover.
@@ -35,6 +35,7 @@
 - [ ] 5.4 Implement bounded literal overlay validation, reserved-delimiter rejection, per-agent compare-and-swap serialization, identical-update no-op behavior, and atomic `butler.prompt_overlay_set` persistence with the exact metadata allowlist.
 - [ ] 5.5 Update the dashboard editor to distinguish roster identity from the mutable overlay and require explicit confirmation of the natural-language semantic-limit warning.
 - [ ] 5.6 Add the owner-only composition-mode route over append-only mode history with compare-and-swap, identity-replacement acknowledgement, approved-window enforcement, and atomic `butler.prompt_mode_changed` evidence.
+- [ ] 5.7 Read the rollback deadline only from fail-closed `BUTLERS_PROMPT_LEGACY_ROLLBACK_UNTIL`; reject request/DB/MCP/runtime authority to open it and reject `precutover_legacy_hold` as an API target.
 
 ## 6. Future roster governance after adoption
 
@@ -46,8 +47,8 @@
 ## 7. Future verification after adoption
 
 - [ ] 7.1 Extend `tests/features/test_skills.py` for recursive bare references, invalid identity graphs, literal overlay include-like text, shared snippets, and generated-fallback retirement.
-- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for complete layer order including currency and measurement system, exact separators, unavailable-overlay behavior, closed-source rejection, and byte-identical adapter handoff.
-- [ ] 7.3 Extend `tests/api/test_butler_management.py` for 503/401 pre-access denial, unknown-agent pre-pool rejection, bounded validation, owner-only projections, overlay/mode compare-and-swap races, no-op retries, exact audit actions, and content-blind evidence.
+- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for target-mode layer order including currency and measurement system, exact separators, unavailable-overlay behavior, both bounded legacy modes, closed-source rejection, and byte-identical adapter handoff.
+- [ ] 7.3 Extend `tests/api/test_butler_management.py` for 503/401 pre-access denial, unknown-agent pre-pool rejection, bounded validation, owner-only projections, overlay/mode compare-and-swap races, fail-closed rollback-window parsing, one-way pre-cutover hold, no-op retries, exact audit actions, and content-blind evidence.
 - [ ] 7.4 Extend `tests/config/test_roster_claude_md_include.py` and `tests/config/test_delegation_guidance_reachability.py` to classify domain butlers and staffers from roster configuration, positively pin Travel conformance, and pin QA's explicit governance opt-out without asserting changed QA prompt bytes.
 - [ ] 7.5 Add `tests/migrations/test_core_prompt_overlay_authority.py` using direct-login writer, actual no-`SET ROLE` generic API, connector, mapped runtime, unmapped runtime, table-owner, sequence, both history tables, and bootstrap-rerun contexts.
 - [ ] 7.6 Add privacy absence-sentinel coverage proving roster and overlay bytes never enter denied/conflict/error bodies, audit notes, logs, metric labels, or span attributes, with positive allowlist assertions so empty evidence cannot pass vacuously.
