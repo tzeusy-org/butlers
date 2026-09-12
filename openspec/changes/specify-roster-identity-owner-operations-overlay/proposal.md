@@ -17,7 +17,8 @@ it changes no roster or prompt bytes.
 
 - **BREAKING**: Replace full database prompt substitution with a closed, ordered composition:
   resolved roster identity, shared prompt snippets, an optional delimited owner-operations overlay,
-  general settings, situational context, blind-spot disclosure, Switchboard routing instructions,
+  general timezone/locale/date/time/week/currency/measurement-system settings, situational context,
+  blind-spot disclosure, Switchboard routing instructions,
   and memory context. An unnamed source cannot enter the system prompt.
 - Keep the resolved roster chain present for every admitted roster agent. Unknown agents, missing or
   invalid roster roots, unresolved required bare references, and include cycles fail before a
@@ -39,6 +40,9 @@ it changes no roster or prompt bytes.
   cutover, require owner-reviewed overlay activation, retain a reversible legacy-selection switch
   during the rollback window, and never silently reinterpret a legacy full replacement as an
   operations overlay.
+- Specify that rollback switch as a separate owner-gated, append-only, compare-and-swap mode-history
+  control using the same dedicated pool, ownership, RLS, audit, and privacy boundaries as overlays.
+  Database privilege cutover must pass before either mode can make an overlay load-bearing.
 - Inventory every current source and writer seam in `design.md`. The active
   `k3s-deployment-helm-chart` and `specify-improvement-proposal-spine` changes remain the only
   whole-requirement owners of `core-skills / AGENTS.md Read/Write Access`; this change neither

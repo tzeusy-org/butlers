@@ -18,7 +18,7 @@ source inspection was refreshed here before drafting. Evidence labels in this do
 | 3 | Recursive bare references, including `CLAUDE.md -> AGENTS.md -> ../shared/AGENTS.md` | `core/skills.py` resolves them relative to the containing file, confines the result to the roster root, preserves missing/unsafe/cyclic directives, and logs. | Core-skills owns this behavior; an unresolved required identity reference is an invalid roster root, not prompt text passed to a runtime. |
 | 4 | HTML `<!-- @include ... -->` references | `core/skills.py` resolves roster-relative safe paths non-recursively and preserves missing/unsafe directives. | Existing contract remains separate. Owner overlay text is literal and never interpreted as either include syntax. |
 | 5 | `roster/shared/BUTLER_SKILLS.md`, then `MCP_LOGGING.md` | Appended by `process_system_prompt_base()` to either the disk or DB-selected base. | Appended only to the roster identity segment, in the existing stable order, before the owner overlay. |
-| 6 | General timezone/locale/date/time/week instruction | Fetched from general settings and appended first after the processed base; failure omits it. | Enumerated dynamic layer after the optional overlay; content-blind warning on failure. |
+| 6 | General timezone/locale/date/time/week/currency/measurement-system instruction | Fetched from general settings and appended first after the processed base; failure omits it. | Enumerated dynamic layer after the optional overlay; content-blind warning on failure. |
 | 7 | Situational context preamble | Fetched from `public.user_context`; failure logs and omits it. | Enumerated after general settings; existing availability behavior retained. |
 | 8 | Blind-spot disclosure | Appended for declared absent/unmeasurable signals; query failure produces explicit disclosure; a runtime flag may disable it. | Enumerated after situational context; existing fail-closed disclosure contract retained. |
 | 9 | Switchboard routing instructions | Appended only for Switchboard, sorted by priority; failure omits them. | Enumerated after blind-spot disclosure and rejected for other agents. |
@@ -79,7 +79,7 @@ The final system prompt is assembled in exactly this order:
 1. resolved roster identity (`CLAUDE.md` and recursive bare references);
 2. shared `BUTLER_SKILLS.md`, then `MCP_LOGGING.md`;
 3. optional active owner-operations overlay;
-4. general timezone/locale/date/time/week instructions;
+4. general timezone/locale/date/time/week/currency/measurement-system instructions;
 5. situational context;
 6. blind-spot disclosure;
 7. Switchboard routing instructions, for Switchboard only;
@@ -135,12 +135,16 @@ All three existing routes retain their paths but change representation and autho
 
 - `GET /api/butlers/{name}/prompt` returns an owner-only composition projection with the resolved
   roster identity content and digest, the current overlay state (content, active, version, source,
-  trust label, timestamp, server-derived actor), the ordered layer names, and
+  trust label, timestamp, server-derived actor), the selected composition mode and mode version,
+  the ordered layer names, and
   `semantic_enforcement=false`.
 - `PUT /api/butlers/{name}/prompt` accepts exactly `overlay` (string), `active` (boolean), and
   `expected_version` (non-negative integer). Unknown fields are rejected.
 - `GET /api/butlers/{name}/prompt/history` returns overlay/legacy provenance per version and never
   labels a legacy full replacement as an overlay.
+- `PUT /api/butlers/{name}/prompt/mode` appends a separately versioned composition-mode transition;
+  it is the only application path that can select `roster_overlay` or the temporary
+  `legacy_full_replacement` rollback mode.
 
 Owner control runs before body buffering, pool acquisition, roster content reads, or protected
 state access. Unconfigured owner control returns 503; a missing or mismatched credential returns
@@ -161,6 +165,20 @@ PUT executes under one transaction and per-agent serialization lock. After valid
 - concurrent identical writers converge on one commit plus one no-op response;
 - any persistence or audit failure rolls back both.
 
+A committed overlay change emits `butler.prompt_overlay_set` with target equal to the canonical
+agent name and metadata limited to `version`, `active`, `byte_count`, `digest`, and `roster_digest`.
+An exact no-op emits no audit event. No audit note or field contains roster or overlay text.
+
+The mode PUT accepts exactly `mode`, `expected_mode_version`, and
+`acknowledge_identity_replacement`. It runs behind the same pre-body owner control and dedicated
+pool, takes the same per-agent serialization boundary, and appends to an immutable
+`system_prompt_mode_history` relation owned and protected like prompt history. A divergent stale
+mode version returns 409; identical state is a no-op. Selecting `legacy_full_replacement` additionally
+requires `acknowledge_identity_replacement=true`, an existing legacy head, and an open approved
+rollback window. A committed transition emits `butler.prompt_mode_changed`, target equal to the
+canonical agent name, and metadata limited to `mode_version`, `from_mode`, `to_mode`,
+`overlay_version`, and `roster_digest`. Mode persistence and audit are one transaction.
+
 Alternative rejected: `MAX(version)+1` alone. It detects collisions only through a database error
 and does not give callers a usable lost-update contract.
 
@@ -176,6 +194,11 @@ The migration revokes `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, an
 `PUBLIC`, every runtime role, `connector_writer`, and the generic API login, plus associated sequence
 privileges. The prompt writer receives only table `SELECT, INSERT` and required sequence usage. Rows
 are append-only through application paths; no application role receives update/delete/truncate.
+
+The generic dashboard login itself must be `NOSUPERUSER NOBYPASSRLS` and must not own or inherit the
+owner roles. Schema migration and backup/restore use a separately provisioned operational principal
+that is never supplied to the dashboard process. Without that credential split, grant revocation and
+RLS would not independently constrain a generic API pool authenticated as a superuser.
 
 RLS is enabled. A fixed migration-owned mapping from canonical `butler_{name}_rw` current users to
 exact `butler_name` values permits each runtime role to select only its own rows. An unknown runtime
@@ -203,6 +226,20 @@ row is backfilled as `legacy_full_replacement`; none is automatically active as 
 overlay rows are append-only and record the roster digest observed at acceptance so history can show
 which immutable identity revision they accompanied. The runtime always reads the current roster
 bytes; the digest is provenance, not a mechanism for pinning stale identity.
+
+An append-only `system_prompt_mode_history` relation records per-agent selection, mode version,
+timestamp, and server-derived actor. It shares the prompt table's non-login owner, direct-login
+writer, RLS mapping, and denial of generic/runtime/connector DML. Runtime roles may read only their
+own current mode. The initial migrated mode is `legacy_full_replacement`; the owner-only mode API is
+the sole application writer. This table makes rollback authority explicit without granting a second
+generic operator or SQL mutation path.
+
+`legacy_full_replacement` is a migration-only compatibility exception to roster-rooted identity. In
+that mode, the runtime applies the compatibility release's pre-cutover DB-base selector and dynamic
+suffixes, labels the mode as identity-replacing in owner projections, and does not apply an
+owner-operations overlay. The exception can be selected only through the bounded mode API while the
+approved rollback window is open; it cannot become the default for a new agent or survive final
+legacy-mode retirement.
 
 The owner must review each agent's legacy head and explicitly create or activate an overlay through
 the owner-only API. Copying useful operations text is an owner action; migration code does not infer
@@ -264,20 +301,21 @@ adopt their candidate semantics.
    closed composition, legacy selection, and inactive overlay support while current broad grants and
    current legacy runtime selection remain. Provision the direct-login writer credential through an
    independently authorized secret path. No existing row changes meaning.
-3. **Additive migration:** add provenance columns, non-login owner, direct-login writer, RLS policy,
-   and backfill every current row as `legacy_full_replacement`. Validate counts and digests before and
-   after. Continue legacy selection until an owner reviews each head.
+3. **Additive and privilege migration:** add provenance columns and mode history, backfill every
+   current row as `legacy_full_replacement`, create and transfer to the non-login owner, enable RLS,
+   revoke historical table/sequence authority, and activate the direct-login writer. Validate counts,
+   digests, catalog state, direct-login behavior, and bootstrap rerun before any overlay is load-bearing.
+   Continue legacy selection until an owner reviews each head.
 4. **Owner preparation:** through the owner-only route, create inactive or active operations overlays
    as explicitly chosen. The system never copies or activates legacy text automatically.
-5. **Behavior cutover:** switch each prepared agent to roster-plus-overlay composition. Verify exact
+5. **Behavior cutover:** only after the privilege migration passes, use the owner-gated mode API to
+   switch each prepared agent to roster-plus-overlay composition. Verify exact
    layer order, roster digest, Travel conformance, QA opt-out governance, and content-blind evidence.
-6. **Privilege cutover:** route all owner reads/writes through the dedicated prompt pool, transfer
-   ownership, revoke historical DML/sequence privileges, enable RLS, and rerun the normal grant
-   finalizer. Catalog and direct-login tests must pass before this stage is declared complete.
-7. **Rollback window:** retain the compatibility release and an operator-visible per-agent selector
-   that can restore legacy full-replacement selection without rewriting/deleting history. A rollback
-   records metadata-only audit evidence. RLS and writer isolation remain active.
-8. **Finalize:** only after an approved observation window may a later reviewed change retire legacy
+6. **Rollback window:** retain the compatibility release and owner-gated compare-and-swap mode API.
+   It may restore legacy full-replacement selection only with explicit identity-replacement
+   acknowledgement, an existing legacy head, and a metadata-only atomic audit record. RLS and writer
+   isolation remain active.
+7. **Finalize:** only after an approved observation window may a later reviewed change retire legacy
    selection. History remains retained. Archival, deployment, and live activation each require their
    own authority.
 

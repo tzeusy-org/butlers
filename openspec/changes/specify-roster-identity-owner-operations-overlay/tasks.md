@@ -13,11 +13,11 @@
 
 ## 3. Future storage and role foundation after adoption
 
-- [ ] 3.1 Add a forward core migration that preserves every prompt-history row and backfills explicit `legacy_full_replacement` provenance without activating any legacy row as an overlay.
+- [ ] 3.1 Add a forward core migration that preserves every prompt-history row, backfills explicit `legacy_full_replacement` provenance, and creates append-only per-agent composition-mode history without activating any legacy row as an overlay.
 - [ ] 3.2 Create the non-login table owner and direct-login prompt writer with the exact `NOINHERIT` and `NOBYPASSRLS` attributes from the database-security delta.
 - [ ] 3.3 Add fixed runtime-role-to-agent RLS read policies plus writer-only INSERT policy; leave backup/migration authority on its separately governed operational path.
-- [ ] 3.4 Revoke historic table and sequence DML from `PUBLIC`, runtime roles, connectors, and the generic API login, then update bootstrap/finalizer reconciliation so reruns preserve the restriction.
-- [ ] 3.5 Provision the dedicated writer credential and pool through a separately authorized secret path before any privilege or behavior cutover.
+- [ ] 3.4 Provision the dedicated writer credential and pool plus a separate non-application migration/backup principal; make the generic dashboard login `NOSUPERUSER NOBYPASSRLS` before privilege cutover.
+- [ ] 3.5 Transfer both history tables to the non-login owner, revoke historic table and sequence DML from `PUBLIC`, runtime roles, connectors, and the generic API login, then update bootstrap/finalizer reconciliation so reruns preserve the restriction.
 
 ## 4. Future roster and composition implementation after adoption
 
@@ -32,8 +32,9 @@
 - [ ] 5.1 Convert the current prompt GET, PUT, and history routes to the field-by-field identity/overlay/provenance representations in the dashboard capability delta.
 - [ ] 5.2 Require fail-closed owner control before body, pool, roster, or protected-state access; use `authenticated_principal()` only for post-admission attribution.
 - [ ] 5.3 Route all prompt reads and writes through the dedicated direct-login pool and reject unknown roster agents before acquiring that pool.
-- [ ] 5.4 Implement bounded literal overlay validation, reserved-delimiter rejection, per-agent compare-and-swap serialization, identical-update no-op behavior, and atomic audit persistence.
+- [ ] 5.4 Implement bounded literal overlay validation, reserved-delimiter rejection, per-agent compare-and-swap serialization, identical-update no-op behavior, and atomic `butler.prompt_overlay_set` persistence with the exact metadata allowlist.
 - [ ] 5.5 Update the dashboard editor to distinguish roster identity from the mutable overlay and require explicit confirmation of the natural-language semantic-limit warning.
+- [ ] 5.6 Add the owner-only composition-mode route over append-only mode history with compare-and-swap, identity-replacement acknowledgement, approved-window enforcement, and atomic `butler.prompt_mode_changed` evidence.
 
 ## 6. Future roster governance after adoption
 
@@ -45,19 +46,20 @@
 ## 7. Future verification after adoption
 
 - [ ] 7.1 Extend `tests/features/test_skills.py` for recursive bare references, invalid identity graphs, literal overlay include-like text, shared snippets, and generated-fallback retirement.
-- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for complete layer order, exact separators, unavailable-overlay behavior, closed-source rejection, and byte-identical adapter handoff.
-- [ ] 7.3 Extend `tests/api/test_butler_management.py` for 503/401 pre-access denial, unknown-agent pre-pool rejection, bounded validation, owner-only projections, compare-and-swap races, no-op retries, atomic audit, and content-blind evidence.
+- [ ] 7.2 Extend `tests/core/test_core_spawner.py` and `tests/core/test_core_spawner_context.py` for complete layer order including currency and measurement system, exact separators, unavailable-overlay behavior, closed-source rejection, and byte-identical adapter handoff.
+- [ ] 7.3 Extend `tests/api/test_butler_management.py` for 503/401 pre-access denial, unknown-agent pre-pool rejection, bounded validation, owner-only projections, overlay/mode compare-and-swap races, no-op retries, exact audit actions, and content-blind evidence.
 - [ ] 7.4 Extend `tests/config/test_roster_claude_md_include.py` and `tests/config/test_delegation_guidance_reachability.py` to classify domain butlers and staffers from roster configuration, positively pin Travel conformance, and pin QA's explicit governance opt-out without asserting changed QA prompt bytes.
-- [ ] 7.5 Add a real-PostgreSQL migration and role suite using direct-login writer, actual no-`SET ROLE` generic API, connector, mapped runtime, unmapped runtime, table-owner, sequence, and bootstrap-rerun contexts.
+- [ ] 7.5 Add `tests/migrations/test_core_prompt_overlay_authority.py` using direct-login writer, actual no-`SET ROLE` generic API, connector, mapped runtime, unmapped runtime, table-owner, sequence, both history tables, and bootstrap-rerun contexts.
 - [ ] 7.6 Add privacy absence-sentinel coverage proving roster and overlay bytes never enter denied/conflict/error bodies, audit notes, logs, metric labels, or span attributes, with positive allowlist assertions so empty evidence cannot pass vacuously.
 - [ ] 7.7 Run targeted nodes first, topology collection where applicable, migration/contract lanes, `make check-guards`, strict OpenSpec and overwrite checks, diff hygiene, fresh exact-head semantic/security review, and terminal hosted CI. Report the implementation test delta separately.
 
 ## 8. Future staged cutover and rollback after adoption
 
 - [ ] 8.1 Ship and verify the compatibility release before the additive migration, credential provisioning, behavior cutover, or privilege cutover.
-- [ ] 8.2 Require explicit owner review of each legacy head before creating or activating an operations overlay; never infer or copy identity/operations text during migration.
-- [ ] 8.3 Cut over prepared agents individually, recording metadata-only evidence for roster digest, overlay version, and selected composition mode.
-- [ ] 8.4 Retain an operator-visible legacy-selection rollback during the approved observation window without deleting history or restoring broad DML grants.
+- [ ] 8.2 Complete ownership transfer, RLS enablement, historic grant revocation, direct-login verification, and bootstrap-rerun verification before any overlay becomes load-bearing.
+- [ ] 8.3 Require explicit owner review of each legacy head before creating or activating an operations overlay; never infer or copy identity/operations text during migration.
+- [ ] 8.4 Cut over prepared agents individually through the owner-only mode route, recording only the specified audit metadata.
+- [ ] 8.5 Retain the owner-gated compare-and-swap legacy selector during the approved observation window without deleting history or restoring broad DML grants.
 
 ## 9. Archive only after implementation
 

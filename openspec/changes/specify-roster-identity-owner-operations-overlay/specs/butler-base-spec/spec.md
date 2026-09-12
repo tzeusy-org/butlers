@@ -11,6 +11,10 @@ After identity resolution, only the layers enumerated by `core-spawner / System 
 may join the final system prompt. A missing, blank, escaping, cyclic, or otherwise unresolved
 required roster root SHALL block runtime invocation; no generic generated prompt, database row, or
 runtime-adapter behavior may stand in for that identity.
+The sole temporary exception SHALL be an explicitly owner-selected `legacy_full_replacement` mode
+during the approved migration rollback window. That mode SHALL be represented as identity-replacing,
+SHALL NOT be represented as roster-plus-overlay composition, and SHALL become unavailable only
+through a later reviewed legacy-retirement change.
 
 ID: REQ-butler-base-spec-001
 Source: heart-and-soul/vision.md Rules 5 and 6; specify-roster-identity-owner-operations-overlay design D1-D3
@@ -44,3 +48,9 @@ Scope: v1-mandatory
 - **THEN** prompt composition fails before a runtime adapter starts
 - **AND** no owner overlay or generated default is used as substitute identity
 - **AND** the failure evidence names only the agent and fixed failure category, not prompt content
+
+#### Scenario: Legacy rollback mode is an explicit temporary exception
+- **WHEN** an authenticated owner has selected `legacy_full_replacement` during the approved rollback window
+- **THEN** the runtime may use the preserved compatibility selector for that agent
+- **AND** owner projections identify the mode as replacing roster identity rather than as an overlay
+- **AND** the exception supplies no permanent doctrine amendment or default for another agent

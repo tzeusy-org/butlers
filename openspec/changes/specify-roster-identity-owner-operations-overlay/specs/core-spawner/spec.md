@@ -3,8 +3,9 @@
 ### Requirement: System Prompt Composition
 For every admitted roster agent, the spawner SHALL assemble the final system prompt from this closed
 ordered list: (1) resolved roster identity, (2) shared `BUTLER_SKILLS.md` then `MCP_LOGGING.md`,
-(3) an optional active owner-operations overlay, (4) general timezone/locale/date/time/week
-instructions, (5) situational context, (6) blind-spot disclosure, (7) Switchboard routing
+(3) an optional active owner-operations overlay, (4) general
+timezone/locale/date/time/week/currency/measurement-system instructions, (5) situational context,
+(6) blind-spot disclosure, (7) Switchboard routing
 instructions for Switchboard only, and (8) memory context. No unnamed source SHALL be injected.
 Every present adjacent layer SHALL be separated by exactly one blank line. An absent optional layer
 SHALL contribute neither content nor separator. The owner overlay SHALL be enclosed in reserved
@@ -18,6 +19,10 @@ content-blind operational warning. Existing availability behavior remains layer-
 settings, situational context, Switchboard routing, and memory failures omit only their layer;
 blind-spot failures retain their separate fail-closed disclosure contract. An invalid roster identity
 or unknown source name SHALL block adapter invocation.
+The only compatibility exception SHALL be an owner-selected `legacy_full_replacement` mode during
+the approved migration rollback window. That mode SHALL use the preserved pre-cutover base selector
+plus its then-authorized dynamic suffixes, SHALL omit the new owner-operations overlay, and SHALL be
+reported as identity-replacing rather than as satisfying roster-plus-overlay composition.
 
 ID: REQ-core-spawner-004
 Source: specify-roster-identity-owner-operations-overlay design D1-D2 and D7; heart-and-soul/vision.md Rule 5
@@ -48,6 +53,7 @@ Scope: v1-mandatory
 - **WHEN** all eight allowed layers are present for Switchboard
 - **THEN** the final prompt contains them in the exact normative order with one blank line between adjacent layers
 - **AND** the owner overlay carries its source, trust, and version markers
+- **AND** the general-settings layer retains timezone, locale, local date/time, week start, currency, and measurement-system instructions
 
 #### Scenario: Overlay store failure preserves identity
 - **WHEN** the owner-overlay query is unavailable, malformed, or denied to the runtime reader
@@ -69,3 +75,9 @@ Scope: v1-mandatory
 - **WHEN** trusted owner overlay text contradicts a roster instruction in natural language
 - **THEN** the structural prompt still contains both delimited sources in the defined order
 - **AND** no response, audit event, or test result claims the delimiter guarantees model obedience or semantic isolation
+
+#### Scenario: Legacy rollback uses the compatibility selector only
+- **WHEN** the owner-gated mode history selects `legacy_full_replacement` during the approved rollback window
+- **THEN** the spawner uses the preserved pre-cutover base selector and authorized dynamic suffixes for that agent
+- **AND** it does not add an owner-operations overlay or report roster identity as structurally present
+- **AND** no other mode or agent inherits that exception
