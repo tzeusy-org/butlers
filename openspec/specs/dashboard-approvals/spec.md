@@ -5,7 +5,9 @@ the human-in-the-loop approvals queue: listing approval actions, viewing action
 detail, deciding actions (approve/deny/defer), managing notification policy
 (quiet hours), streaming lifecycle events, and surfacing autonomy promotion/
 demotion suggestions.
+
 ## Requirements
+
 ### Requirement: Approvals action list API
 
 The dashboard API SHALL expose `GET /api/approvals/actions` which returns a paginated list of approval actions.
@@ -248,14 +250,18 @@ An approval whose backend `status` is `"approved"` (approved but not yet dispatc
 
 ### Requirement: Approvals Flat List API
 
-The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled` as a flat-list view complementing the existing `GET /api/approvals/actions` paginated list.
+The dashboard SHALL expose `GET /api/approvals?state=waiting|decided|all|stalled`
+as a flat-list view complementing the existing `GET /api/approvals/actions`
+paginated list.
 
 #### Scenario: Filter by state
 
 - **WHEN** `GET /api/approvals?state=waiting` is called
-- **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only actions in `pending` state, ordered `created_at DESC`.
+- **THEN** the response is `ApiResponse[ApprovalSummary[]]` containing only
+  actions in `pending` state, ordered `created_at DESC`.
 - **WHEN** `GET /api/approvals?state=decided` is called
-- **THEN** the response contains actions in `approved | rejected | expired | executed | abandoned` states.
+- **THEN** the response contains actions in `approved | rejected | expired |
+  executed | abandoned` states.
 - **WHEN** `GET /api/approvals?state=all` is called or `state` is omitted
 - **THEN** all states are included.
 
@@ -273,6 +279,41 @@ actions across the endpoint's eligible approval-source population. The list
 filter and the aggregate SHALL use the same per-pool eligibility and exact
 stalled predicate.
 
+#### Scenario: Stalled filter selects only approved actions without execution
+
+- **WHEN** `GET /api/approvals?state=stalled` reads a population containing
+  approved actions with null and non-null execution results plus other statuses
+- **THEN** it returns only actions whose status is `approved` and whose
+  `execution_result` is null
+- **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
+  `abandoned`, or approved action with a non-null execution result.
+
+#### Scenario: History retry uses the durable eligibility predicate
+
+- **WHEN** the bounded history response includes approved actions with null and
+  non-null execution results
+- **THEN** each `ApprovalSummary` includes its nullable, redacted
+  `execution_result`
+- **AND** the dashboard renders Retry only for actions whose status is
+  `approved` and whose `execution_result` is null.
+
+#### Scenario: Stalled metadata is independent of the page window
+
+- **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
+  history page while more than 30 older/newer rows exist
+- **THEN** `meta.stalled_count` equals the count of every eligible stalled
+  approval, not the count of rows on that page
+- **AND** the same count is returned for `state=waiting`, `state=decided`,
+  `state=all`, and `state=stalled` requests over the same healthy population.
+
+#### Scenario: Degraded approval sources cannot imply an all-clear
+
+- **WHEN** any eligible approval source cannot supply its list or stalled
+  aggregate contribution
+- **THEN** the flat response identifies that source in `meta.sources_degraded`
+- **AND** any returned `meta.stalled_count` is treated as observed partial
+  coverage rather than proof that no stalled approvals exist.
+
 #### Scenario: Dashboard abandons an eligible stalled action
 
 - **WHEN** `POST /api/approvals/{id}/abandon` receives a non-blank reason from
@@ -284,41 +325,6 @@ stalled predicate.
 - **WHEN** a callback, MCP, automatic, bulk, or scheduled path attempts the
   same operation
 - **THEN** that path does not expose or invoke abandonment.
-
-#### Scenario: Stalled filter selects only approved actions without execution
-
-- **WHEN** `GET /api/approvals?state=stalled` reads a population containing
-  approved actions with null and non-null execution results plus other statuses
-- **THEN** it returns only actions whose status is `approved` and whose
-  `execution_result` is null
-- **AND** it does not return an `executed`, `pending`, `rejected`, `expired`,
-  `abandoned`, or approved action with a non-null execution result
-
-#### Scenario: History retry uses the durable eligibility predicate
-
-- **WHEN** the bounded history response includes approved actions with null and
-  non-null execution results
-- **THEN** each `ApprovalSummary` includes its nullable, redacted
-  `execution_result`
-- **AND** the dashboard renders Retry only for actions whose status is
-  `approved` and whose `execution_result` is null
-
-#### Scenario: Stalled metadata is independent of the page window
-
-- **WHEN** `GET /api/approvals?state=decided&limit=30` returns a bounded
-  history page while more than 30 older/newer rows exist
-- **THEN** `meta.stalled_count` equals the count of every eligible stalled
-  approval, not the count of rows on that page
-- **AND** the same count is returned for `state=waiting`, `state=decided`,
-  `state=all`, and `state=stalled` requests over the same healthy population
-
-#### Scenario: Degraded approval sources cannot imply an all-clear
-
-- **WHEN** any eligible approval source cannot supply its list or stalled
-  aggregate contribution
-- **THEN** the flat response identifies that source in `meta.sources_degraded`
-- **AND** any returned `meta.stalled_count` is treated as observed partial
-  coverage rather than proof that no stalled approvals exist
 
 ### Requirement: Trust Console verdict uses stalled radar metadata
 
@@ -346,38 +352,78 @@ as a calm all-clear.
 
 ### Requirement: Approval Detail API
 
-The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier for one approval.
+The dashboard SHALL expose `GET /api/approvals/{id}` returning the full dossier
+for one approval.
 
 #### Scenario: Detail response shape
 
 - **WHEN** `GET /api/approvals/{id}` is called
-- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`, `title`, `butler`, `created_at` (alias `ts`), `expires_at` (alias `expires`), `why` (string | null — serif paragraph), `evidence` (string[] | null — mono lines), `proposed_action` (object describing the tool call being approved), `session_id` (string | null — the originating session/trace, when known).
-- **AND** when `why` or `evidence` is null (legacy row), the UI renders a serif-italic empty state for the missing section.
-- **AND** when `session_id` is present, the dossier header links to `/sessions/{session_id}` so the owner can inspect the originating session/trace before deciding.
+- **THEN** the response is `ApiResponse[ApprovalDetail]` with fields `id`,
+  `title`, `butler`, `status`, `created_at` (alias `ts`), `expires_at` (alias
+  `expires`), `why` (string | null — serif paragraph), `evidence` (string[] |
+  null — mono lines), `proposed_action` (object describing the tool call being
+  approved), `session_id` (string | null — the originating session/trace, when
+  known), `decided_by` (string | null), `decided_at` (timestamp | null),
+  `denial_reason` (string | null), and `execution_result` (object | null).
+- **AND** when `why` or `evidence` is null (legacy row), the UI renders a
+  serif-italic empty state for the missing section.
+- **AND** when `session_id` is present, the dossier header links to
+  `/sessions/{session_id}` so the owner can inspect the originating
+  session/trace before deciding.
 
 ### Requirement: Approval Verbs
 
-The dashboard SHALL expose explicit verb endpoints for approve, deny, and defer.
+The dashboard SHALL expose explicit verb endpoints for approve, deny, defer,
+and dashboard-only abandonment.
 
 #### Scenario: Approve with optional edits
 
 - **WHEN** `POST /api/approvals/{id}/approve {edits?: object}` is called
-- **THEN** the action is approved with any supplied `edits` applied to its arguments
-- **AND** `audit.append("approval.approve", target=action_id, note=json.dumps(edits))` is invoked
-- **AND** the underlying tool is executed via the shared executor (existing module-approvals behavior).
+- **THEN** the action is approved with any supplied `edits` applied to its
+  arguments
+- **AND** `audit.append("approval.approve", target=action_id,
+  note=json.dumps(edits))` is invoked
+- **AND** the underlying tool is executed via the shared executor (existing
+  module-approvals behavior).
 
 #### Scenario: Deny with reason
 
 - **WHEN** `POST /api/approvals/{id}/deny {reason?: str}` is called
 - **THEN** the action transitions to `rejected`
-- **AND** `audit.append("approval.deny", target=action_id, note=reason)` is invoked.
+- **AND** `audit.append("approval.deny", target=action_id, note=reason)` is
+  invoked.
 
 #### Scenario: Defer with bounded hours
 
 - **WHEN** `POST /api/approvals/{id}/defer {hours: int}` is called
 - **THEN** the call is rejected with `422` unless `1 ≤ hours ≤ 168`
-- **AND** on success, the action's `expires_at` is extended by `hours` and the notification re-presentation timer is reset to `now + hours`
-- **AND** `audit.append("approval.defer", target=action_id, note=str(hours))` is invoked.
+- **AND** on success, the action's `expires_at` is extended by `hours` and the
+  notification re-presentation timer is reset to `now + hours`
+- **AND** `audit.append("approval.defer", target=action_id, note=str(hours))`
+  is invoked.
+
+#### Scenario: Dashboard abandons an eligible stalled action
+
+- **WHEN** `POST /api/approvals/{id}/abandon {reason: string}` is called by an
+  authenticated dashboard actor for an action whose status is `approved` and
+  execution result is null
+- **THEN** the action transitions to `abandoned` with an immutable
+  `action_abandoned` event carrying the actor and non-blank reason
+- **AND** the response reports the terminal status
+- **AND** the action is absent from stalled results and has no Retry affordance.
+
+#### Scenario: Dashboard rejects invalid abandonment without mutation
+
+- **WHEN** the abandon endpoint receives a blank reason or an action outside
+  the exact approved/null-execution predicate
+- **THEN** it returns a validation or transition error without writing an event
+  or changing the action.
+
+#### Scenario: Abandonment has no alternate invocation path
+
+- **WHEN** an approval is surfaced through an MCP tool, Telegram callback,
+  automatic workflow, scheduled cleanup, or bulk operation
+- **THEN** that path does not expose or invoke abandonment.
 
 ### Requirement: Post-Approval Teaching Digest
 
@@ -409,8 +455,9 @@ After a successful approval, `/approvals` SHALL offer a short, inline opportunit
 ### Requirement: Owner Attention Policy
 
 The dashboard SHALL expose the stable `GET/PUT /api/approvals/policy` endpoint
-to manage the global Owner Attention Policy. The policy controls routine owner
-attention suppression; it does not configure per-butler `delivery_preferences`.
+to manage the global Owner Attention Policy. The policy controls routine
+owner-attention suppression; it does not configure per-butler
+`delivery_preferences`.
 
 #### Scenario: Read policy
 
@@ -419,25 +466,26 @@ attention suppression; it does not configure per-butler `delivery_preferences`.
   `quiet_start_hour: int` (0–23), `quiet_end_hour: int` (0–23), and
   `timezone: str` (IANA)
 - **AND** its semantics are an end-exclusive
-  `[quiet_start_hour, quiet_end_hour)` Owner Attention Policy interval.
+  `[quiet_start_hour, quiet_end_hour)` Owner Attention Policy interval
 
 #### Scenario: Update complete policy
 
 - **WHEN** `PUT /api/approvals/policy` is called with both hour fields in
   0–23 and a recognized IANA timezone
-- **THEN** the singleton row is updated and `audit.append("approvals.policy")` is invoked.
+- **THEN** the singleton row is updated and `audit.append("approvals.policy")`
+  is invoked
 
 #### Scenario: Reject incomplete or invalid policy
 
 - **WHEN** `PUT /api/approvals/policy` supplies only one quiet hour or an
   unrecognized IANA timezone
-- **THEN** validation rejects the request without mutating the singleton row.
+- **THEN** validation rejects the request without mutating the singleton row
 
 #### Scenario: Quiet hours defer a routine owner-default notification
 
 - **WHEN** the notification dispatcher handles a routine implicit-owner `send`
   or `insight` call with priority other than `high`
-- **AND** the current local hour is within the end-exclusive policy interval
+- **AND** the current local time is within the end-exclusive policy interval
 - **THEN** it parks the full envelope in the originating schema's
   `deferred_notifications` table for the exact configured quiet end
 - **AND** it returns the established `deferred` result rather than silently
@@ -690,6 +738,222 @@ The approvals dashboard SHALL render a rule-promotion metrics tile from this end
 
 - **WHEN** the metrics tile renders the sessions-avoided figure
 - **THEN** the tile MUST label it an estimate rather than an exact measured count
+
+### Requirement: Decision and execution outcome in approval dossier
+
+The dashboard SHALL render an approval's retained decision provenance and safe
+terminal outcome from the approval-detail response. It SHALL not add a durable
+copy of an audit-event rejection reason or broaden retry behavior.
+
+#### Scenario: Rejection reason comes from the latest immutable event
+
+- **WHEN** a rejected action has one or more immutable `action_rejected`
+  `approval_events` with a recorded reason
+- **THEN** the detail response includes the reason from the latest such event
+  as `denial_reason`
+- **AND** the dossier renders that recorded denial reason alongside its existing
+  `decided_by` and `decided_at` provenance.
+
+#### Scenario: Legacy or unavailable rejection event does not break detail
+
+- **WHEN** an action has no readable `action_rejected` event, including a legacy
+  row or a pool where the optional event lookup is unavailable
+- **THEN** the detail response includes `denial_reason: null`
+- **AND** the remaining dossier detail remains available without synthesizing a
+  reason from presentation text.
+
+#### Scenario: Execution outcome is redacted before presentation
+
+- **WHEN** an action has a persisted `execution_result`
+- **THEN** the detail response and dossier render only the result after the
+  established approvals redaction contract is applied
+- **AND** an execution-result `error` does not expose its raw message or any
+  secret-derived text.
+
+#### Scenario: Retry is offered only to an approved unexecuted action
+
+- **WHEN** the dossier detail reports `status = "approved"` and
+  `execution_result = null`
+- **THEN** the dossier renders its Retry dispatch control.
+
+#### Scenario: Retry is absent after an execution record or a non-approved decision
+
+- **WHEN** the dossier detail has a non-null `execution_result` or a status
+  other than `approved`
+- **THEN** the dossier does not render Retry dispatch
+- **AND** an executed failure is not made retryable by this dashboard surface.
+
+### Requirement: Retry Reports Dispatch Failure Class Truthfully
+
+Approval Retry endpoints MUST distinguish failure to reach the owning butler from a
+reachable executor or tool rejection. Neither failure class may be presented as
+successful execution, and safe actionable detail MUST be returned for a reachable
+rejection.
+
+#### Scenario: Owning butler is unreachable
+
+- **WHEN** Retry cannot establish a dispatch path to the owning butler
+- **THEN** the API returns an unavailable response identifying that no owning butler is reachable
+
+#### Scenario: Reachable executor rejects stored action
+
+- **WHEN** Retry reaches the owning butler and its executor or native handler rejects the stored action
+- **THEN** the API returns a failure response identifying an executor or tool rejection
+- **AND** the response includes bounded safe detail suitable for operator diagnosis
+- **AND** it MUST NOT claim that no butler was reachable
+
+#### Scenario: Retry execution fails
+
+- **WHEN** either Retry endpoint receives a dispatch failure
+- **THEN** the action remains `approved` with `execution_result = null`
+
+### Requirement: Approval readers preserve unavailable source evidence
+
+The `/approvals` surface SHALL distinguish a successful empty metrics,
+autonomy-suggestions, or rule-promotion response from a failed or degraded
+read. A family-specific approval metrics failure SHALL name the affected pool
+and never imply a zero-derived all-clear. A whole suggestions or promotion
+query failure SHALL render a named unavailable state with a read-only retry;
+an error after cached cards or a cached tile SHALL retain that usable evidence
+alongside the unavailable state.
+
+#### Scenario: Pending metrics are partial
+
+- **WHEN** approval metrics include non-empty
+  `meta.pending_actions_sources_degraded`
+- **THEN** `/approvals` names the unavailable pending-actions source(s) and
+  exposes a retry of the metrics read
+- **AND** it does not present the partial pending count as a complete empty or
+  all-clear result
+- **AND** the independently fetched queue remains visible according to its own
+  source health.
+
+#### Scenario: Rule metrics are partial without affecting action metrics
+
+- **WHEN** approval metrics include non-empty
+  `meta.approval_rules_sources_degraded` but no pending-actions degradation
+- **THEN** `/approvals` names the unavailable rule source(s) and exposes a
+  retry of the metrics read
+- **AND** it does not classify a partial active-rule count as a real zero
+- **AND** it does not label a healthy pending-actions result unavailable.
+
+#### Scenario: A suggestions reader fails before returning data
+
+- **WHEN** an autonomy-suggestions or rule-promotion-suggestions query fails
+  before a successful response is available
+- **THEN** its section renders a named unavailable state and a retry control
+- **AND** it does not hide the section by treating the missing response as an
+  empty suggestions list.
+
+#### Scenario: A promotion reader retains cached evidence on refresh failure
+
+- **WHEN** a rule-promotion suggestions or statistics query fails after cached
+  cards or statistics are available
+- **THEN** the cached cards or tile remain visible
+- **AND** a named unavailable state and retry control are rendered beside that
+  stale evidence
+- **AND** an existing per-block `meta.sources_degraded` note continues to hide
+  only its affected fabricated-zero block.
+
+### Requirement: URL-backed stalled approvals lane
+
+The Approvals Trust Console SHALL treat its `state` query parameter as the
+source of truth for the rail lane. The default rail SHALL read the waiting
+flat approvals state, and `/approvals?state=stalled` SHALL read the existing
+flat stalled state whose rows satisfy exactly `status = approved` and
+`execution_result = null`. The dashboard SHALL NOT persist `stalled` as an
+approval status.
+
+The lane control and its rows SHALL use native keyboard-operable elements,
+show visible focus, and expose the active lane semantically. Selecting a
+dossier from the stalled lane SHALL retain `state=stalled` in its URL.
+
+#### Scenario: Direct stalled deep link opens the stalled rail
+
+- **WHEN** the owner navigates directly to `/approvals?state=stalled`
+- **THEN** the Trust Console requests the flat approvals endpoint with
+  `state=stalled`
+- **AND** the rail labels and displays only the returned stalled rows rather
+  than the waiting queue.
+
+#### Scenario: Direct stalled dossier remains reachable beyond the rail page
+
+- **WHEN** the owner navigates to `/approvals/{id}?state=stalled` and the
+  approval is stalled but falls outside the current bounded flat-result page
+- **THEN** after the current stalled flat result settles, the Trust Console
+  verifies that id through a dedicated forced-fresh detail query that does not
+  reuse the ordinary dossier cache
+- **AND** it displays the dossier only when that current verifier response has
+  the exact requested id, `status = approved`, and an explicitly null
+  `execution_result`
+- **AND** it suppresses the dossier while verification is pending or fails,
+  and when the response is pending, has a non-null or missing execution
+  result, or names another id.
+
+#### Scenario: Empty stalled lane remains truthful
+
+- **WHEN** the settled stalled flat response has no rows and no degraded
+  sources
+- **THEN** the Trust Console reports that there are no stalled approvals
+- **AND** it does not claim that no approvals are waiting or prompt the owner
+  to select a pending approval.
+
+#### Scenario: Stalled radar has a truthful drill-down destination
+
+- **WHEN** the flat response reports one or more stalled actions in
+  `meta.stalled_count`
+- **THEN** the stalled verdict clause is a keyboard-operable link to
+  `/approvals?state=stalled`
+- **AND** it does not fabricate a link to a particular approval id from the
+  aggregate count.
+
+#### Scenario: Stalled lane does not expose pending-decision shortcuts
+
+- **WHEN** the owner is viewing the stalled lane
+- **THEN** its rail remains navigable by the existing keyboard movement
+  controls
+- **AND** it does not register approval, denial, or defer keyboard verbs for
+  the selected stalled row.
+
+### Requirement: Safe retry refreshes confirmed approval state
+
+The dashboard SHALL reuse the existing Retry dispatch action only when an
+approval has `status = approved` and an explicitly null `execution_result`.
+It SHALL NOT render Retry for an executed failure, any non-approved status, or
+an unknown/missing execution result. The Retry control SHALL remain pending
+without locally removing the row while its server request is in flight.
+
+After a successful server response, the dashboard SHALL invalidate all flat
+approval query variants, the affected approval dossier, every isolated Stalled
+direct-link verifier generation for that id, approval history, and approval
+metrics so the count, lane, history, and dossier reconcile from
+server-authoritative data. It SHALL not optimistically remove the row or
+invalidate those views when the retry request fails.
+
+#### Scenario: Retry stays bounded to an approved action without a result
+
+- **WHEN** a stalled row has `status = approved` and
+  `execution_result = null`
+- **THEN** the dashboard renders the existing Retry dispatch control
+- **AND** when the same row has a non-null or missing execution result, or a
+  different status, the dashboard renders no Retry control.
+
+#### Scenario: Confirmed retry reconciles every approval read
+
+- **WHEN** the owner activates Retry dispatch and the server returns a
+  successful response
+- **THEN** the UI reports whether dispatch ran from that response
+- **AND** it invalidates the waiting and stalled flat views, history, the
+  affected dossier, any isolated Stalled direct-link verifier for that id, and
+  metrics after that completion.
+
+#### Scenario: Failed retry leaves the server-authoritative row visible
+
+- **WHEN** the Retry dispatch request fails
+- **THEN** the dashboard reports the returned error without claiming a
+  dispatch cause
+- **AND** it does not optimistically remove the row or invalidate the
+  approval read caches.
 
 ## Source References
 

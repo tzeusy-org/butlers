@@ -2,10 +2,11 @@
 
 ### Requirement: Day-Close Cache Invalidation
 
-Cached `chronicler_day_close` Tier-2 prose SHALL be identified by the selected
-local `(date, timezone)` tuple, invalidated, and visually flagged stale whenever
-any episode, point event, or override in that tuple's cached window changes
-after the cache was built.
+Cached `chronicler_day_close` Tier-2 prose SHALL be invalidated and visually
+flagged stale whenever any episode, point event, or override in the cached
+window changes after the cache was built. The cache SHALL be identified by the
+selected local `(date, timezone)` tuple, and that tuple SHALL define the cached
+window used for invalidation.
 
 #### Scenario: Cache stale on tombstone
 
@@ -32,17 +33,6 @@ after the cache was built.
   unchanged (because precision-reduction or correction landed on the
   override row)
 
-#### Scenario: Client cache identity includes timezone
-
-- **WHEN** the dashboard addresses a selected local day through the day-close
-  cache client or its query key
-- **THEN** it SHALL include the exact owner IANA timezone in the HTTP request
-  and cache/query identity
-- **AND** the same ISO date in two different timezones SHALL not reuse a
-  client cache result
-- **AND** a date-only legacy cache response SHALL not be requested as a
-  compatibility fallback
-
 #### Scenario: User-clicked refresh re-invokes existing path
 
 - **WHEN** the user clicks the "regenerate" affordance on a stale
@@ -57,3 +47,14 @@ after the cache was built.
 - **AND** the re-invocation SHALL be rate-limited to 1 per day per
   tuple window
 - **AND** no new LLM call path SHALL be introduced
+
+#### Scenario: Client cache identity includes timezone
+
+- **WHEN** the dashboard addresses a selected local day through the day-close
+  cache client or its query key
+- **THEN** it SHALL include the exact owner IANA timezone in the HTTP request
+  and cache/query identity
+- **AND** the same ISO date in two different timezones SHALL not reuse a
+  client cache result
+- **AND** a date-only legacy cache response SHALL not be requested as a
+  compatibility fallback

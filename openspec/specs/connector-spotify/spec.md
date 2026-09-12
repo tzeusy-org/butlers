@@ -16,7 +16,8 @@ The connector SHALL poll the Spotify Web API at configurable intervals to detect
 
 - **WHEN** the connector detects active playback (Spotify returns `is_playing: true`)
 - **THEN** it SHALL poll `GET /me/player/currently-playing` every `SPOTIFY_POLL_ACTIVE_S` seconds (default 60)
-- **AND** each poll response SHALL be compared against the previous state to detect track changes and context changes
+- **AND** the request SHALL include both `track` and `episode` additional types
+- **AND** each poll response SHALL be compared against the appropriate music or spoken state to detect item changes and context changes
 
 #### Scenario: Idle polling with backoff
 
@@ -261,7 +262,7 @@ The connector SHALL auto-resolve its `endpoint_identity` at startup by calling t
 
 ### Requirement: Connector Lifecycle
 
-The connector SHALL follow the standard connector lifecycle defined in `connector-base-spec`.
+The connector SHALL follow the standard connector lifecycle defined in `connector-base-spec`, and SHALL treat an owner who has never connected a Spotify account as an expected steady state rather than a startup failure.
 
 #### Scenario: Startup sequence
 
@@ -272,6 +273,39 @@ The connector SHALL follow the standard connector lifecycle defined in `connecto
   load the last checkpoint from `cursor_store`; initialize the source filter
   gate via `IngestionPolicyEvaluator`; send an initial heartbeat; and begin
   the polling loop
+
+#### Scenario: Unconfigured account parks instead of exiting
+
+- **WHEN** the connector starts and no Spotify app client ID or owner refresh
+  token has ever been stored
+- **THEN** it SHALL NOT raise out of startup, exit non-zero, or restart
+- **AND** it SHALL skip identity resolution and checkpoint load, start its
+  health server and heartbeat under the sentinel endpoint identity
+  `spotify:unconfigured`, and report state `degraded` with the fixed local
+  message `awaiting_credentials` through both the heartbeat and `/health`
+- **AND** it SHALL emit at most one log line per entry into the parked state,
+  never a traceback per re-check
+- **AND** it SHALL NOT attribute any ingest envelope or checkpoint to the
+  sentinel identity
+
+#### Scenario: Configuring an account activates the parked connector in place
+
+- **WHEN** a parked connector's periodic 60s credential re-check first
+  resolves an app client ID and owner refresh token
+- **THEN** it SHALL resolve endpoint identity via `GET /me`, rebind metrics,
+  the ingestion policy scope, the filtered-event buffer, and the heartbeat to
+  the resolved `spotify:<spotify_user_id>` identity, load the checkpoint, and
+  begin polling without a process restart
+
+#### Scenario: Credential faults after configuration remain loud
+
+- **WHEN** credential resolution fails for any reason other than a
+  never-connected account, or a credential fault occurs after the connector
+  has successfully configured
+- **THEN** the parked path SHALL NOT swallow it
+- **AND** the connector SHALL surface it exactly as before: heartbeat state
+  `error` for a proven token-endpoint revocation, and a non-zero exit for a
+  fault raised out of startup
 
 #### Scenario: Graceful shutdown
 
@@ -380,3 +414,72 @@ The connector SHALL implement the source filter gate per `connector-base-spec`.
 
 - **WHEN** a poll cycle completes
 - **THEN** the connector SHALL flush any filtered events to `connectors.filtered_events` via batch INSERT
+
+### Requirement: Capture-Only Spoken Playback Evidence
+
+The Spotify connector SHALL request both track and episode items from current
+playback. When an actively playing item is an episode, it SHALL normalize a
+separate spoken session without changing track listening-session behavior. The
+connector SHALL classify an episode with `item.show` as `podcast`, with
+`item.audiobook` as `audiobook`, and all other episode parents as
+`unknown_episode`.
+
+#### Scenario: Podcast episode opens a passive spoken session
+
+- **WHEN** current playback first reports an active episode with a `show`
+  parent
+- **THEN** the connector SHALL open a `podcast` spoken session, persist its
+  bounded connector evidence, and submit one `spotify.spoken_session`
+  metadata-tier `ingest.v1` envelope through the existing policy/replay path
+- **AND** a narrow global `substring` policy for the stable
+  `spotify:spoken:` event-id prefix SHALL pre-resolve `metadata_only` triage,
+  so the envelope is persisted without LLM classification, butler routing, or
+  proactive notification
+- **AND** the envelope SHALL have `payload.raw = null` and SHALL NOT route
+  directly to Education or Chronicler
+
+#### Scenario: Audiobook chapter opens a spoken session
+
+- **WHEN** current playback first reports an active episode with an `audiobook`
+  parent
+- **THEN** the connector SHALL open an `audiobook` spoken session using the
+  chapter and audiobook identifiers available in that response
+- **AND** it SHALL NOT add the chapter name to music `ListeningSession.track_names`
+
+#### Scenario: Parentless episode remains explicit
+
+- **WHEN** current playback reports an active episode with neither `show` nor
+  `audiobook`
+- **THEN** the connector SHALL capture it as `unknown_episode`
+- **AND** it SHALL NOT infer a podcast or audiobook type from title or URI text
+
+#### Scenario: Repeat, switch, pause, and replay boundaries are deterministic
+
+- **WHEN** the same spoken episode is observed again while active
+- **THEN** the connector SHALL update the existing evidence row without a
+  duplicate passive envelope
+- **WHEN** a different spoken episode becomes active
+- **THEN** it SHALL close the prior spoken session and open a new one
+- **WHEN** playback pauses past the configured idle drain
+- **THEN** it SHALL close the spoken session
+- **WHEN** the same episode resumes after that close
+- **THEN** it SHALL open a distinct replay session with a new start-boundary key
+
+#### Scenario: Spoken evidence is bounded and idempotent
+
+- **WHEN** the connector writes a spoken session
+- **THEN** it SHALL upsert `connectors.spotify_spoken_sessions` by a stable key
+  composed of endpoint identity, initial observed timestamp, and episode ID
+- **AND** the row SHALL contain only typed session/episode/parent fields and a
+  bounded metadata object, with no transcript, description, HTML, or raw
+  Spotify API payload
+- **AND** connector evidence-write failure SHALL NOT prevent the normal passive
+  envelope submission
+
+#### Scenario: Connector-owned ACLs remain least-privilege
+
+- **WHEN** core migrations create the spoken evidence surface
+- **THEN** they SHALL tolerate absent runtime roles while granting
+  `connector_writer` connector DML and `butler_chronicler_rw` SELECT only when
+  those roles exist
+- **AND** no butler receives write permission through this migration

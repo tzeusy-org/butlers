@@ -70,23 +70,78 @@ The `pending_actions` table MUST provide a durable queue and audit log for appro
 
 ### Requirement: Status Transition Contract
 
-The approval lifecycle MUST allow `pending -> approved|rejected|expired` and
-`approved -> executed|abandoned`; `rejected|expired|executed|abandoned` are
-terminal. Invalid transitions raise `InvalidTransitionError`.
+The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
+`approved -> executed|abandoned`, and no transition from
+`rejected|expired|executed|abandoned`. Invalid transitions raise
+`InvalidTransitionError`.
 
 #### Scenario: Approve a pending action
 
-- **WHEN** `approve_action` is called with a valid action_id and authenticated human actor context
-- **THEN** a compare-and-set UPDATE transitions status from `pending` to `approved`
+- **WHEN** `approve_action` is called with a valid action_id and authenticated
+  human actor context
+- **THEN** a compare-and-set UPDATE transitions status from `pending` to
+  `approved`
 - **AND** an `action_approved` audit event is recorded
 - **AND** an available owning executor MAY then run the original tool function
-- **AND** status advances to `executed` only after that execution persists its result and success audit event
+- **AND** status advances to `executed` only after that execution persists its
+  result and success audit event.
 
 #### Scenario: Approve with concurrent race
 
 - **WHEN** two concurrent approve calls target the same pending action
-- **THEN** the compare-and-set ensures only one succeeds (WHERE status = 'pending')
-- **AND** the losing call receives a transition error with the current status
+- **THEN** the compare-and-set ensures only one succeeds (WHERE status =
+  'pending')
+- **AND** the losing call receives a transition error with the current status.
+
+#### Scenario: Reject a pending action
+
+- **WHEN** `reject_action` is called with a valid action_id and authenticated
+  human actor
+- **THEN** status transitions from `pending` to `rejected` with `decided_by`
+  set to `human:<actor_id> (reason: <escaped_reason>)`
+- **AND** an `action_rejected` audit event is recorded.
+
+#### Scenario: Expire stale actions
+
+- **WHEN** `expire_stale_actions` is called
+- **THEN** all pending actions where `expires_at < now()` are transitioned to
+  `expired`
+- **AND** an `action_expired` audit event is recorded for each.
+
+#### Scenario: Abandon an approved unexecuted action
+
+- **WHEN** an authenticated dashboard actor requests abandonment with a
+  non-blank reason for an action whose status is `approved` and execution
+  result is null
+- **THEN** a compare-and-set UPDATE transitions it to `abandoned`
+- **AND** an immutable `action_abandoned` event records the actor and exact
+  reason in the same transaction
+- **AND** the action cannot subsequently execute or return to an eligible
+  recovery state.
+
+#### Scenario: Invalid abandonment source state is rejected
+
+- **WHEN** abandonment targets an action that is pending, rejected, expired,
+  executed, abandoned, or has a non-null execution result
+- **THEN** no action state or event is written
+- **AND** the caller receives a transition error describing the durable current
+  state.
+
+#### Scenario: Retry and abandonment race
+
+- **WHEN** retry dispatch and abandonment concurrently target the same approved
+  action with a null execution result
+- **THEN** the executor acquires a database row lock before any handler is
+  invoked, and abandonment's compare-and-set waits for that lock
+- **AND** only the winning terminal outcome is durably recorded
+- **AND** the loser returns the current durable state without appending another
+  terminal event.
+
+#### Scenario: Already-executed action is replayed
+
+- **WHEN** the executor is called for an action that is already `executed`
+- **THEN** the stored `execution_result` is returned (idempotent replay)
+- **AND** no second execution occurs.
 
 #### Scenario: Dashboard abandons a stalled approved action
 
@@ -98,24 +153,6 @@ terminal. Invalid transitions raise `InvalidTransitionError`.
 - **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
   invoke abandonment
 - **AND** an action outside that exact predicate remains unchanged.
-
-#### Scenario: Reject a pending action
-
-- **WHEN** `reject_action` is called with a valid action_id and authenticated human actor
-- **THEN** status transitions from `pending` to `rejected` with `decided_by` set to `human:<actor_id> (reason: <escaped_reason>)`
-- **AND** an `action_rejected` audit event is recorded
-
-#### Scenario: Expire stale actions
-
-- **WHEN** `expire_stale_actions` is called
-- **THEN** all pending actions where `expires_at < now()` are transitioned to `expired`
-- **AND** an `action_expired` audit event is recorded for each
-
-#### Scenario: Already-executed action is replayed
-
-- **WHEN** the executor is called for an action that is already `executed`
-- **THEN** the stored `execution_result` is returned (idempotent replay)
-- **AND** no second execution occurs
 
 ### Requirement: Standing Rules CRUD and Matching
 
@@ -189,6 +226,12 @@ The module MUST classify tools into explicit risk tiers (`low`, `medium`, `high`
 
 All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, immutable success audit event, and any auto-approval `use_count` increment. The terminal state and audit append are atomic when the runtime provides a transaction.
 
+Direct non-Messenger producers covered by the executable-command contract MUST
+persist a declared executable command: the owning daemon, registered original
+tool name, and exact handler kwargs are validated before the row can be
+parked. The owning daemon validates its declared command contracts against the
+registered MCP surface during startup.
+
 #### Scenario: Tool execution succeeds
 
 - **WHEN** the executor calls the original tool function successfully
@@ -202,14 +245,19 @@ All actual execution — auto-approved actions and manually approved actions dis
 - **WHEN** the tool function raises an exception
 - **THEN** the error is returned to the caller and an `action_execution_failed` audit event is recorded
 - **AND** status remains `approved` with `execution_result = null`
-- **AND** no automatic replay occurs; an operator may retry the approved action,
-  reject it explicitly, or dashboard-abandon the eligible stalled action
+- **AND** no automatic replay occurs; an operator may retry the approved action or reject it explicitly
 
 #### Scenario: Manual approval without executor wired
 
 - **WHEN** `approve_action` is called but no tool executor is wired
 - **THEN** status remains `approved` with `execution_result = null`
 - **AND** the action remains eligible for the owning-butler dispatch/retry seam
+
+#### Scenario: Declared direct command dispatches through its owner
+
+- **WHEN** an approved direct non-Messenger action has a declared command and a null execution result
+- **THEN** `dispatch_approved_action` invokes the owning daemon's registered original handler with exactly the persisted declared kwargs
+- **AND** it does not re-enter the approval gate or use a different butler
 
 #### Scenario: Approved dispatch recovery is deliberately narrow
 
@@ -218,41 +266,60 @@ All actual execution — auto-approved actions and manually approved actions dis
 - **AND** a legacy `relationship` action named `entity_merge` is resolved as the registered `memory_entity_merge` callable without rewriting the stored row
 - **AND** actions in any other status, or approved actions with a non-null result, are not replayed
 
+#### Scenario: Historic malformed command remains unchanged
+
+- **WHEN** a historic approved action has an unregistered name or incompatible stored arguments
+- **THEN** dispatch records the failure and leaves the action approved with a null execution result
+- **AND** it does not infer replacement arguments or rewrite the stored action provenance
+
 #### Scenario: At-most-once execution with concurrency lock
 
 - **WHEN** concurrent execution attempts target the same action
 - **THEN** a per-action asyncio lock (WeakValueDictionary-based) serializes attempts within one daemon process
-- **AND** the executor holds a database `FOR UPDATE` row lock from its
-  approved/null eligibility check through handler invocation and the successful
-  terminal write, so dashboard abandonment cannot win after a side effect begins
 - **AND** a persisted `executed` result is replayed without invoking the tool again
 
 ### Requirement: Immutable Audit Events
 
-The `approval_events` table MUST be an append-only audit log. Events include `event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata` (JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE operations. An event's `action_id` and `rule_id` are immutable historical provenance rather than deletion-blocking foreign keys, so terminal-action and inactive-rule retention do not mutate or delete the event. A newly inserted non-null action or rule reference MUST still resolve to its live row when the event is written.
+The `approval_events` table MUST be an append-only audit log. Events include
+`event_type`, `action_id`, `rule_id`, `actor`, `reason`, `event_metadata`
+(JSONB), and `occurred_at`. A database trigger prevents UPDATE and DELETE
+operations. An event's `action_id` and `rule_id` are immutable historical
+provenance rather than deletion-blocking foreign keys, so terminal-action and
+inactive-rule retention do not mutate or delete the event. A newly inserted
+non-null action or rule reference MUST still resolve to its live row when the
+event is written.
 
 #### Scenario: Audit event creation for all state transitions
 
-- **WHEN** any approval state transition occurs (queued, auto-approved, approved, rejected, expired, abandoned, execution succeeded, execution failed, rule created, rule revoked)
-- **THEN** an immutable event row is inserted with the corresponding `ApprovalEventType` value
-- **AND** actor, action_id/rule_id, reason, and metadata are captured
+- **WHEN** any approval state transition occurs (queued, auto-approved,
+  approved, rejected, expired, abandoned, execution succeeded, execution
+  failed, rule created, rule revoked)
+- **THEN** an immutable event row is inserted with the corresponding
+  `ApprovalEventType` value
+- **AND** actor, action_id/rule_id, reason, and metadata are captured.
 
 #### Scenario: Audit event types
 
 - **WHEN** events are recorded
-- **THEN** the following canonical event types are used: `action_queued`, `action_auto_approved`, `action_approved`, `action_rejected`, `action_expired`, `action_abandoned`, `action_execution_succeeded`, `action_execution_failed`, `rule_created`, `rule_revoked`
+- **THEN** the following canonical event types are used: `action_queued`,
+  `action_auto_approved`, `action_approved`, `action_rejected`,
+  `action_expired`, `action_abandoned`, `action_execution_succeeded`,
+  `action_execution_failed`, `rule_created`, `rule_revoked`.
 
 #### Scenario: Audit event immutability
 
 - **WHEN** an UPDATE or DELETE is attempted on `approval_events`
 - **THEN** the database trigger rejects the operation
-- **AND** the row remains unchanged
+- **AND** the row remains unchanged.
 
 #### Scenario: Historical audit references preserve new-write validation
 
 - **WHEN** a new event is inserted with a non-null `action_id` or `rule_id`
-- **THEN** that identifier must reference a live pending action or approval rule when the event is written
-- **AND** a retained event may continue to expose that identifier after its referenced terminal action or inactive rule is cleaned under the shorter retention policy
+- **THEN** that identifier must reference a live pending action or approval
+  rule when the event is written
+- **AND** a retained event may continue to expose that identifier after its
+  referenced terminal action or inactive rule is cleaned under the shorter
+  retention policy.
 
 ### Requirement: Redaction
 
@@ -278,25 +345,35 @@ Sensitive fields in tool arguments and execution results MUST be redacted before
 
 ### Requirement: Retention Policy
 
-The module MUST support configurable retention windows for approvals data: `pending_actions_retention_days` (default 90), `approval_rules_retention_days` (default 180), `approval_events_retention_days` (default 365).
+The module MUST support configurable retention windows for approvals data:
+`pending_actions_retention_days` (default 90),
+`approval_rules_retention_days` (default 180), and
+`approval_events_retention_days` (default 365).
 
 #### Scenario: Cleanup old actions
 
 - **WHEN** `cleanup_old_actions` runs
-- **THEN** terminal-status actions (`rejected`, `expired`, `executed`, `abandoned`) older than the retention window are deleted, except an ordered-pair `memory_entity_merge` or legacy `entity_merge` decision in `rejected` or `abandoned` state
-- **AND** that exempt entity-merge decision remains durable so curation cannot re-propose the same ordered pair after the ordinary approval retention window
-- **AND** `approved` actions remain retained and retryable, including old rows with a null `execution_result`
-- **AND** related immutable action events remain unchanged with their historical `action_id` until their own event-retention window
-- **AND** standing rules created from those terminal actions remain unchanged with their historical `created_from` until their separate rule-retention policy applies
+- **THEN** only terminal-status actions (`rejected`, `expired`, `executed`,
+  `abandoned`) older than the retention window are deleted
+- **AND** `approved` actions remain retained and retryable, including old rows
+  with a null `execution_result`
+- **AND** related immutable action events remain unchanged with their historical
+  `action_id` until their own event-retention window
+- **AND** standing rules created from those terminal actions remain unchanged
+  with their historical `created_from` until their separate rule-retention
+  policy applies
 - **AND** pending actions are never cleaned up automatically
-- **AND** a dry-run mode returns counts without deleting
+- **AND** a dry-run mode returns counts without deleting.
 
 #### Scenario: Cleanup old rules
 
 - **WHEN** `cleanup_old_rules` runs
-- **THEN** only inactive rules (`active=false`) older than the retention window are deleted
-- **AND** immutable rule events remain unchanged with their historical `rule_id` until their separate 365-day event-retention window
-- **AND** rerunning the cleanup after an eligible rule is deleted returns no additional rule deletion and never mutates or deletes the retained event
+- **THEN** only inactive rules (`active=false`) older than the retention window
+  are deleted
+- **AND** immutable rule events remain unchanged with their historical `rule_id`
+  until their separate 365-day event-retention window
+- **AND** rerunning the cleanup after an eligible rule is deleted returns no
+  additional rule deletion and never mutates or deletes the retained event.
 
 #### Scenario: Cleanup old events requires privilege
 
@@ -304,7 +381,8 @@ The module MUST support configurable retention windows for approvals data: `pend
 - **THEN** a `PermissionError` is raised
 - **AND** no events are deleted
 - **WHEN** `cleanup_old_events` is called with `privileged=True`
-- **THEN** events older than the retention window are deleted (bypasses immutability trigger)
+- **THEN** events older than the retention window are deleted (bypasses
+  immutability trigger).
 
 ### Requirement: MCP Tool Surface (17 Tools)
 
@@ -362,9 +440,19 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 The approval gate operates at two layers. Both MUST enforce gating independently.
 
-**Layer 1 — MCP tool wrapping** (gate.py): Intercepts gated tool calls at the MCP boundary before the tool handler runs. This is the primary gate for direct tool invocations.
+**Layer 1 - MCP tool wrapping** (gate.py): Intercepts gated tool calls at the MCP
+boundary before the tool handler runs. This is the primary gate for direct tool
+invocations.
 
-**Layer 2 (inline delivery gate)** (`core_tools/_notifications.py` and `core_tools/_routing.py`): Outbound delivery paths call module methods directly (e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely. An inline approval gate MUST re-enforce role-based gating at this layer for every outbound channel. As of the channel-general gating work, `notify()` (`_notifications.py`) enforces the gate on all channels: the email channel via `check_email_recipient` and every non-email channel (telegram and beyond) via the channel-general `check_recipient` guard. The Messenger's `route.execute` synchronous delivery path (`_routing.py`) currently enforces the inline gate for the email channel only; extending it to telegram and other channels for full parity is tracked as remediation work.
+**Layer 2 (inline delivery gate)** (`core_tools/_notifications.py` and
+`core_tools/_routing.py`): Outbound delivery paths call module methods directly
+(e.g., `_send_email()`, `_send_message()`), bypassing MCP tool wrappers entirely.
+An inline approval gate MUST re-enforce role-based gating at this layer for every
+outbound channel. `notify()` (`_notifications.py`) enforces the gate on all channels:
+the email channel via `check_email_recipient` and every non-email channel via the
+channel-general `check_recipient` guard. Messenger `route.execute` synchronous
+delivery (`_routing.py`) likewise gates email via `check_email_recipient` and
+Telegram, WhatsApp, and future non-email channels via `check_recipient`.
 
 #### Scenario: route.execute enforces approval gate for email delivery
 
@@ -382,6 +470,14 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check
 
+#### Scenario: route.execute enforces approval gate for WhatsApp delivery
+
+- **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="whatsapp"` and `intent` of `"send"` or `"reply"`
+- **THEN** it MUST resolve the target contact by WhatsApp recipient identity via `public.contacts`
+- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
+- **AND** if the target is an owner, delivery proceeds without rule check
+
 #### Scenario: route.execute skips gate for emoji reactions
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent="react"`
@@ -390,7 +486,7 @@ The approval gate operates at two layers. Both MUST enforce gating independently
 #### Scenario: All channels have parity
 
 - **WHEN** a new outbound channel is added to the Messenger butler
-- **THEN** the `route.execute` handler MUST include an inline approval gate for that channel matching the email/telegram pattern
+- **THEN** the `route.execute` handler MUST include an inline approval gate for that channel matching the email/telegram/WhatsApp pattern
 - **AND** the absence of an inline gate for any outbound channel is a spec violation
 
 ### Requirement: Authorization Model
@@ -495,3 +591,42 @@ child task that inherits context storage MUST receive no approval authority.
 - **WHEN** an approved action is dispatched through `execute_approved_action`
 - **THEN** the original handler can read its action id, session id, and decision actor from executor-owned context
 - **AND** wrong-tool, wrong-argument, concurrent child-task, and subsequent calls cannot observe that action's lineage
+
+### Requirement: Approval-Request Pushes Share the Owner Attention Policy Anchor
+The approvals module SHALL use the shared global Owner Attention Policy's
+end-exclusive interval and exact-end UTC anchor when it defers an
+owner-targeted `approval_request` push for quiet hours. The pending action's
+existing expiry, status transitions, and execution rules
+SHALL remain independent of the deferred push.
+
+#### Scenario: Approval push at the final quiet hour
+- **WHEN** an approval request is parked one hour before the configured local
+  `quiet_end_hour`
+- **THEN** its deferred push is scheduled for that exact local end converted to
+  UTC
+- **AND** the pending action does not gain an hour of expiry from push timing
+
+### Requirement: Pending Actions Store Replayable Executable Commands
+
+An inline approval producer MUST persist the exact registered native tool name and a
+`tool_args` object accepted by that tool's handler. Executable arguments MUST NOT
+contain routing-only fields, and the same materialized command values MUST be used for
+immediate execution when approval is not required.
+
+#### Scenario: Routed delivery is parked
+
+- **WHEN** an outbound routed delivery requires approval
+- **THEN** the pending action stores the registered native delivery tool name
+- **AND** `tool_args` contains every required handler argument and no routing-only argument
+
+#### Scenario: Immediate and deferred execution are equivalent
+
+- **WHEN** equivalent routed deliveries take the immediate and approval-replay paths
+- **THEN** both invoke the same native handler with the same normalized argument values
+
+#### Scenario: Stored command is malformed
+
+- **WHEN** an approved historical action cannot be accepted by its registered handler
+- **THEN** dispatch MUST fail without rewriting or guessing its executable arguments
+- **AND** the action MUST remain `approved` with `execution_result = null`
+- **AND** an immutable `action_execution_failed` event MUST be recorded
