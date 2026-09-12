@@ -413,6 +413,9 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+- In partitioned-index migrations, a blocking `pg_advisory_lock()` waiter can retain a snapshot that `CREATE INDEX CONCURRENTLY` waits for. Use bounded `pg_try_advisory_lock()` polling in autocommit with waits outside PostgreSQL; `core_231` and its concurrent migration regression cover this failure mode.
+- A disconnect watcher inside the dashboard's nested `BaseHTTPMiddleware` stack needs AnyIO level cancellation. A one-shot `asyncio.Task.cancel()` followed by awaiting the watcher can deadlock response delivery; `IngestionReadBudgetRoute` uses a watcher-owned `CancelScope`, and full-app API tests protect the middleware interaction.
+
 - Catalog read authority is server-held in each schema's `runtime_config.catalog_read_sensitivity` (`normal|internal|confidential`; `internal` maps to stored `normal` + `pii`). The MCP search/fetch surfaces expose no caller ceiling. Cross-butler canonical fetches must route through Switchboard to the owning butler's local `memory_get`; never add general cross-schema SELECT or a caller-parameterized SECURITY DEFINER shortcut.
 
 - Test-condensation counts: anchor the grep as `^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_`. Not for async/indented tests — plain `grep -rc 'def test_'` already matches those (both give 12,322 in `tests/`, per-file diff empty). The anchor's real value is excluding commented-out and in-string matches (it changes `roster/` from 3,957 to 3,956). **Scope is what actually moves the number** — `tests/` alone is 12,322, `tests/ roster/` is 16,278 — so always state the scope beside a count, and keep historical phase figures separate from the current measurement.

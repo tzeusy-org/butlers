@@ -4298,34 +4298,6 @@ export interface IngestionEventSession {
   model: string | null;
 }
 
-/** Per-butler breakdown within an IngestionEventRollup. */
-export interface ButlerRollupEntry {
-  sessions: number;
-  input_tokens: number;
-  output_tokens: number;
-  /** Known-priced subtotal for this butler, if any. */
-  cost: number | null;
-  /** Token-using sessions omitted from cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-}
-
-/** Aggregate cost/token totals for all sessions linked to one ingestion event. */
-export interface IngestionEventRollup {
-  request_id: string;
-  total_sessions: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  /** Known-priced subtotal across all sessions, if any. */
-  total_cost: number | null;
-  /** Token-using sessions omitted from total_cost because their price is unavailable. */
-  unpriced_session_count?: number;
-  /** Sessions with no token or stored-cost evidence. */
-  no_usage_session_count?: number;
-  by_butler: Record<string, ButlerRollupEntry>;
-}
-
 /** Cursor pagination metadata returned by keyset-paginated endpoints. */
 export interface CursorPaginationMeta {
   next_cursor: string | null;

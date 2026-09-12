@@ -24,7 +24,6 @@ vi.mock("@/api/index.ts", () => ({
   listIngestionEvents: vi.fn(),
   getIngestionEvent: vi.fn(),
   getIngestionEventSessions: vi.fn(),
-  getIngestionEventRollup: vi.fn(),
   getIngestionWindowRollup: vi.fn(),
   getIngestionEventReplays: vi.fn(),
   getIngestionEventSenderContact: vi.fn(),
@@ -78,7 +77,7 @@ describe("useIngestionEventsHistogram", () => {
     await waitFor(() =>
       expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(1),
     );
-    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledWith(params);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledWith(params, expect.any(AbortSignal));
   });
 
   it("does not fetch when 'from' is missing", async () => {
@@ -115,7 +114,7 @@ describe("useIngestionEventsHistogram", () => {
     await waitFor(() =>
       expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(1),
     );
-    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledWith(params);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenCalledWith(params, expect.any(AbortSignal));
   });
 
   it("does not fetch when options.enabled is false, even with from/to present", async () => {
@@ -173,11 +172,11 @@ describe("useIngestionEventsHistogram", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(mockGetIngestionEventsHistogram).toHaveBeenCalledTimes(2);
-    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(1, params);
+    expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(1, params, expect.any(AbortSignal));
     expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
       ...params,
       bucket: "5m",
-    });
+    }, expect.any(AbortSignal));
   });
 
   it("does not make a second coarsening attempt when the fallback also returns 422", async () => {
@@ -200,6 +199,6 @@ describe("useIngestionEventsHistogram", () => {
     expect(mockGetIngestionEventsHistogram).toHaveBeenNthCalledWith(2, {
       ...params,
       bucket: "5m",
-    });
+    }, expect.any(AbortSignal));
   });
 });
