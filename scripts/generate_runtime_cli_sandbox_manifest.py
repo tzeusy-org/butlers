@@ -44,6 +44,7 @@ _RUNTIME_PROVIDERS = (
 )
 _NETWORK_RUNTIME_FILES = (Path("/etc/resolv.conf"), Path("/etc/ssl/certs/ca-certificates.crt"))
 _SHIM_PATH = Path("/usr/local/libexec/butlers/runtime-cli-sandbox-init")
+_STATIC_EXECUTABLE_MARKERS = frozenset(("not a dynamic executable", "statically linked"))
 
 
 class ManifestGenerationError(RuntimeError):
@@ -135,18 +136,12 @@ def _ldd_dependencies(
         capture_output=True,
         text=True,
     )
-    static_markers = ("not a dynamic executable", "statically linked")
-    stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if strict and result.stderr.strip():
+    normalized_stdout = result.stdout.strip().casefold()
+    if strict and result.stderr:
         raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
-    if strict and "not found" in result.stdout.lower():
+    if strict and "not found" in normalized_stdout:
         raise ManifestGenerationError(f"runtime input dependency is unresolved: {path}")
-    static_lines = [
-        line for line in stdout_lines if any(marker in line.lower() for marker in static_markers)
-    ]
-    if strict and static_lines:
-        if len(stdout_lines) != 1:
-            raise ManifestGenerationError(f"runtime dependency output is ambiguous: {path}")
+    if strict and normalized_stdout in _STATIC_EXECUTABLE_MARKERS:
         return ()
     if result.returncode != 0:
         # Provider launchers may be scripts, while the fixed compiled shim must
