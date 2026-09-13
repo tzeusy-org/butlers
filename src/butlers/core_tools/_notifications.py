@@ -668,12 +668,9 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             default=str,
                         )
                     )
-                    # park_pending_action is the single choke point for
-                    # PENDING inserts: it writes the row AND attempts the
-                    # owner-facing push in one call, replacing the ad hoc
-                    # owner-alert deliver() this site used to build by hand
-                    # (which had no reservation, no quiet-hours deferral, and
-                    # no Approve/Reject affordance -- see bu-mda0r).
+                    # The atomic admission helper commits the action and its
+                    # recoverable presentation together. This storage-only
+                    # slice performs no direct owner delivery.
                     await park_pending_action(
                         pool,
                         action_id=action_id,

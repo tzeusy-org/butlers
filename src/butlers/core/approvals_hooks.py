@@ -402,8 +402,8 @@ async def check_email_recipient(
     ``approval_push_runtime`` (an
     ``modules.approvals.notifications.ApprovalPushRuntime`` or ``None``) is
     passed through untyped here to avoid importing the approvals module from
-    core; the registered hook applies it when parking an action so the owner
-    is actually notified (bu-mda0r).
+    core. It is retained for rolling-callsite compatibility; admission does
+    not invoke the live runtime.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -472,9 +472,9 @@ async def check_recipient(
     decision so butlers without approvals remain functional.
 
     Parameters mirror ``modules.approvals.email_guard.check_recipient``.
-    ``approval_push_runtime`` is forwarded untyped (see
-    :func:`check_email_recipient`) so a parked action is actually pushed to
-    the owner (bu-mda0r).
+    ``approval_push_runtime`` is forwarded untyped for rolling-callsite
+    compatibility. Atomic admission does not invoke it; delivery belongs to
+    the separately activated recovery worker.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -529,7 +529,7 @@ async def park_pending_action(
     approval_push_runtime: Any = None,
     deduplication_key: str | None = None,
 ) -> Any | None:
-    """Insert one PENDING ``pending_actions`` row and push it to the owner.
+    """Atomically insert one PENDING action and its durable delivery intent.
 
     Delegates to the hook registered by ``modules.approvals``
     (``modules.approvals.park.park_pending_action``, the single choke point
@@ -539,7 +539,7 @@ async def park_pending_action(
     cannot fail open: there is no safe default for "park this action" when no
     hook is registered.  A butler with no approvals module also has no
     ``pending_actions`` table to park into, so this logs a loud warning and
-    returns ``None`` (no row written, no push attempted) rather than
+    returns ``None`` (no row or intent written) rather than
     fabricating a park that never happened.
     """
     runtime = _resolve_pool_runtime(pool)

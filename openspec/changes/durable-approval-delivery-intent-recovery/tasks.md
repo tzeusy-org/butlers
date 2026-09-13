@@ -1,18 +1,18 @@
 ## 1. Contract and additive persistence
 
-- [ ] 1.1 Confirm the owner-approved RFC 0023 constants: closed root/presentation/cohort state and reason vocabulary, logical action/cohort-subject and presentation-key formats, defer-generation/cohort replacement bounds, lease/backoff/stuck SLOs, authenticated transport-principal contract, and the per-provider idempotency/reconciliation capability inventory.
-- [ ] 1.2 Add guarded Approvals migrations for `approval_delivery_intents`, monotonic `approval_delivery_presentations`, durable burst cohorts/membership, append-only attempts, safe terminal event vocabulary, due/lease indexes, foreign keys, and fail-closed downgrade checks; do not backfill legacy rows.
-- [ ] 1.3 Add the narrowly wired Messenger approval-handoff migration keyed by trusted `(issuer, owning_schema, presentation_key, mode)`, with pre-provider-start persistence and non-destructive downgrade checks; store no recovery envelope/callback material in generic notification tables.
-- [ ] 1.4 Add real-PostgreSQL migration tests proving fresh/upgrade shape, generation/cohort uniqueness and constraints, legacy `approval_push_emissions` preservation, no historical intent creation, safe closed vocabularies, and downgrade refusal while recovery data exists.
+- [x] 1.1 Confirm the owner-approved RFC 0023 constants: closed root/presentation/cohort state and reason vocabulary, logical action/cohort-subject and presentation-key formats, defer-generation/cohort replacement bounds, lease/backoff/stuck SLOs, authenticated transport-principal contract, and the per-provider idempotency/reconciliation capability inventory.
+- [x] 1.2 Add guarded Approvals migrations for `approval_delivery_intents`, monotonic `approval_delivery_presentations`, durable burst cohorts/membership, append-only attempts, safe terminal event vocabulary, due/lease indexes, foreign keys, and fail-closed downgrade checks; do not backfill legacy rows.
+- [x] 1.3 Add the narrowly wired Messenger approval-handoff migration keyed by trusted `(issuer, owning_schema, presentation_key, mode)`, with pre-provider-start persistence and non-destructive downgrade checks; store no recovery envelope/callback material in generic notification tables.
+- [x] 1.4 Add real-PostgreSQL migration tests proving fresh/upgrade shape, generation/cohort uniqueness and constraints, legacy `approval_push_emissions` preservation, no historical intent creation, safe closed vocabularies, and downgrade refusal while recovery data exists.
 
 ## 2. Atomic parking admission and producer conversion
 
-- [ ] 2.1 Refactor `src/butlers/modules/approvals/park.py` into the sole typed transaction helper that validates origin/dossier inputs, inserts or resolves the action, computes RFC 0021 admission, and inserts one logical intent/action key plus the required direct presentation, cohort-owned digest, or collapsed membership atomically.
-- [ ] 2.2 Move burst reservation from independent `approval_push_emissions` work into the helper's same-transaction admission path, preserving first-three / cohort-owned digest / collapsed membership semantics and leaving legacy emissions read-only.
-- [ ] 2.3 Convert the gate and all three recipient/email guard paths to the new helper without changing their fail-closed approval decision behavior.
-- [ ] 2.4 Convert the core notify missing-identifier path, daemon calendar-overlap path, and dashboard connector-disconnect path to the new helper.
-- [ ] 2.5 Convert relationship assertion plus memory fact retraction, entity merge, email identity enrichment, and memory reclassification curation paths to the new helper, preserving each producer's semantic deduplication contract.
-- [ ] 2.6 Add a source-level producer inventory/AST contract that rejects every direct `pending_actions(status='pending')` insert outside the helper while allowing explicitly auto-approved paths.
+- [x] 2.1 Refactor `src/butlers/modules/approvals/park.py` into the sole typed transaction helper that validates origin/dossier inputs, inserts or resolves the action, computes RFC 0021 admission, and inserts one logical intent/action key plus the required direct presentation, cohort-owned digest, or collapsed membership atomically.
+- [x] 2.2 Move burst reservation from independent `approval_push_emissions` work into the helper's same-transaction admission path, preserving first-three / cohort-owned digest / collapsed membership semantics and leaving legacy emissions read-only.
+- [x] 2.3 Convert the gate and all three recipient/email guard paths to the new helper without changing their fail-closed approval decision behavior.
+- [x] 2.4 Convert the core notify missing-identifier path, daemon calendar-overlap path, and dashboard connector-disconnect path to the new helper.
+- [x] 2.5 Convert relationship assertion plus memory fact retraction, entity merge, email identity enrichment, and memory reclassification curation paths to the new helper, preserving each producer's semantic deduplication contract.
+- [x] 2.6 Add a source-level producer inventory/AST contract that rejects every direct `pending_actions(status='pending')` insert outside the helper while allowing explicitly auto-approved paths.
 
 ## 3. Fenced notification-only recovery worker
 

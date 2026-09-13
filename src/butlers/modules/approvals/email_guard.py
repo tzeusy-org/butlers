@@ -275,9 +275,7 @@ async def check_email_recipient(
                 # cast) — asyncpg's registered jsonb codec already serializes
                 # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
                 safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-                # park_pending_action is the single choke point for PENDING
-                # inserts: it writes the row AND attempts the owner-facing
-                # push in one call (bu-mda0r).
+                # Atomic action + delivery-intent admission.
                 await park_pending_action(
                     pool,
                     action_id=action_id,
@@ -361,9 +359,7 @@ async def check_email_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r).
+        # Atomic action + delivery-intent admission.
         await park_pending_action(
             pool,
             action_id=action_id,
@@ -566,9 +562,7 @@ async def check_recipient(
 
     try:
         safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call
-        # (bu-mda0r).
+        # Atomic action + delivery-intent admission.
         await park_pending_action(
             pool,
             action_id=action_id,

@@ -1725,10 +1725,8 @@ class ButlerDaemon:
             # instead of an OBJECT (bu-cymc4/bu-bstqu; mirrors gate.py's fix).
             safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
-            # park_pending_action is the single choke point for PENDING
-            # inserts: it writes the row AND attempts the owner-facing push
-            # in one call, so this park path cannot silently skip notifying
-            # the owner (bu-mda0r).
+            # Atomic action + delivery-intent admission; provider delivery is
+            # intentionally outside this calendar callback.
             await park_pending_action(
                 pool,
                 action_id=action_id,

@@ -26,6 +26,7 @@ import pytest
 
 from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
 
@@ -699,13 +700,17 @@ class TestNotifyMissingIdentifierAndOwner:
 
 @pytest.fixture
 def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
-    """Register all real approvals hooks for each daemon pool started by a test."""
+    """Register real guards plus a narrow park recorder for mocked daemon pools."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
         check_email_recipient,
         check_recipient,
     )
-    from butlers.modules.approvals.park import park_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
 
     original_start = _start_daemon_with_notify
     registrations = []
@@ -717,7 +722,7 @@ def registered_approval_hooks(monkeypatch: pytest.MonkeyPatch):
             pool,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
-            park_pending_action=park_pending_action,
+            park_pending_action=record_pending_action,
         )
         registrations.append((pool, runtime))
         return daemon, notify_fn
