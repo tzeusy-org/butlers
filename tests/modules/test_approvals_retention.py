@@ -245,6 +245,76 @@ async def test_delivery_retention_deletes_resolved_root_after_safe_summary(appro
     assert event["event_metadata"]["reason_code"] == "action_expired"
 
 
+@pytest.mark.parametrize(
+    ("handoff_result", "expected_state"),
+    [
+        (HandoffResult("confirmed"), "delivered"),
+        (HandoffResult("safe_retry", "transport_unavailable"), "cancelled"),
+    ],
+)
+async def test_delivery_retention_cascades_attempted_terminal_graph_after_safe_summary(
+    approvals_pool,
+    handoff_result: HandoffResult,
+    expected_state: str,
+) -> None:
+    """Attempt rows stay immutable during life but age out with a resolved root."""
+    action_id = await _park_delivery_action(approvals_pool)
+    repository = ApprovalDeliveryRepository(approvals_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+    assert await repository.complete_handoff(claim, handoff_result) is True
+
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.REJECTED,
+        decided_by="owner",
+        event_actor="owner",
+        event_reason="synthetic attempted retention decision",
+    )
+    assert transition.changed is True
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE id = $1",
+            claim.presentation_id,
+        )
+        == expected_state
+    )
+    with pytest.raises(asyncpg.RaiseError, match="append-only"):
+        await approvals_pool.execute(
+            "DELETE FROM approval_delivery_attempts WHERE presentation_id = $1",
+            claim.presentation_id,
+        )
+
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+    summary_id = await approvals_pool.fetchval(
+        "SELECT event_id FROM approval_events WHERE action_id = $1 "
+        "AND event_type = 'approval_delivery_terminal'",
+        action_id,
+    )
+
+    assert await cleanup_old_actions(
+        approvals_pool,
+        RetentionPolicy(pending_actions_retention_days=90),
+    ) == {"rejected": 1}
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT count(*) FROM approval_delivery_attempts WHERE presentation_id = $1",
+            claim.presentation_id,
+        )
+        == 0
+    )
+    assert await approvals_pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM approval_events WHERE event_id = $1)",
+        summary_id,
+    )
+
+
 async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run(
     approvals_pool,
 ) -> None:

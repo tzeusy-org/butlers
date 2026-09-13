@@ -326,6 +326,7 @@ async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
     assert {(row["event_type"], row["actor"]) for row in event_rows} == {
         ("action_queued", "system:approval_gate"),
         ("action_approved", "human:owner@telegram"),
+        ("approval_delivery_terminal", "human:owner@telegram"),
         ("action_execution_succeeded", "system:executor"),
     }
     assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [

@@ -73,6 +73,7 @@ from butlers.modules.approvals.decision_memory import (
 )
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
+    emit_lifecycle_success,
     transition_pending_action,
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
@@ -3258,6 +3259,8 @@ async def defer_approval(
             )
             if projected is not None:
                 updated_delivery = _delivery_truth(projected, updated)
+
+    emit_lifecycle_success(transition.success_observation)
 
     if transition_error is not None:
         if "not found" in transition_error.lower():

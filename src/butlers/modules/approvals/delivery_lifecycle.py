@@ -64,6 +64,7 @@ class PendingTransition:
     action: PendingAction | None
     changed: bool
     expired_instead: bool = False
+    success_observation: LifecycleSuccessObservation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,15 +75,65 @@ class DeferTransition:
     changed: bool
     expired_instead: bool = False
     delivery_missing: bool = False
+    success_observation: LifecycleSuccessObservation | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleSuccessObservation:
+    """Content-blind success data emitted only after transaction commit."""
+
+    operation: Literal["terminal", "defer"]
+    reason: str
+    terminal_status: str | None = None
+    cancelled_count: int = 0
+    successor_generation: int | None = None
+    superseded_count: int = 0
+    cohort_membership_changed: bool = False
+
+
+def emit_lifecycle_success(observation: LifecycleSuccessObservation | None) -> None:
+    """Emit a committed lifecycle transition's bounded metric and log."""
+    if observation is None:
+        return
+    approval_delivery_lifecycle_total.labels(
+        operation=observation.operation,
+        reason=observation.reason,
+    ).inc()
+    if observation.cohort_membership_changed:
+        approval_delivery_lifecycle_total.labels(
+            operation="cohort_replacement",
+            reason=observation.reason,
+        ).inc()
+    if observation.operation == "terminal":
+        logger.info(
+            "approval delivery terminalized operation=%s reason=%s cancelled=%d",
+            observation.terminal_status,
+            observation.reason,
+            observation.cancelled_count,
+        )
+        return
+    logger.info(
+        "approval delivery deferred generation=%d superseded=%d cohort_member=%s",
+        observation.successor_generation,
+        observation.superseded_count,
+        observation.cohort_membership_changed,
+    )
 
 
 @asynccontextmanager
-async def _write_scope(source: Any, *, already_in_transaction: bool):
+async def _write_scope(
+    source: Any,
+    *,
+    already_in_transaction: bool,
+    success_observations: list[LifecycleSuccessObservation],
+):
     if already_in_transaction:
         yield source
         return
     async with _approval_write_transaction(source) as connection:
         yield connection
+    for observation in success_observations:
+        emit_lifecycle_success(observation)
 
 
 async def _lock_delivery_root(connection: Any, action_id: uuid.UUID) -> Any | None:
@@ -230,7 +281,12 @@ async def transition_pending_action(
     _already_in_transaction: bool = False,
 ) -> PendingTransition:
     """Atomically leave pending state and fence that action's delivery work."""
-    async with _write_scope(source, already_in_transaction=_already_in_transaction) as connection:
+    success_observations: list[LifecycleSuccessObservation] = []
+    async with _write_scope(
+        source,
+        already_in_transaction=_already_in_transaction,
+        success_observations=success_observations,
+    ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",
             action_id,
@@ -326,20 +382,18 @@ async def transition_pending_action(
                 attempt_count=attempt_count,
                 occurred_at=database_now,
             )
-        approval_delivery_lifecycle_total.labels(
+        observation = LifecycleSuccessObservation(
             operation="terminal",
             reason=_REASON_FOR_STATUS[effective_status],
-        ).inc()
-        logger.info(
-            "approval delivery terminalized operation=%s reason=%s cancelled=%d",
-            effective_status.value,
-            _REASON_FOR_STATUS[effective_status],
-            cancelled_count,
+            terminal_status=effective_status.value,
+            cancelled_count=cancelled_count,
         )
+        success_observations.append(observation)
         return PendingTransition(
             PendingAction.from_row(updated),
             True,
             expired_instead=expired_instead,
+            success_observation=observation,
         )
 
 
@@ -355,7 +409,12 @@ async def defer_pending_action(
     """Append exactly one direct successor for an authenticated defer."""
     if not 1 <= hours <= 168:
         raise ValueError("hours must be between 1 and 168")
-    async with _write_scope(source, already_in_transaction=_already_in_transaction) as connection:
+    success_observations: list[LifecycleSuccessObservation] = []
+    async with _write_scope(
+        source,
+        already_in_transaction=_already_in_transaction,
+        success_observations=success_observations,
+    ) as connection:
         row = await connection.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",
             action_id,
@@ -381,7 +440,14 @@ async def defer_pending_action(
                 now=database_now,
                 _already_in_transaction=True,
             )
-            return DeferTransition(expired.action, expired.changed, expired_instead=True)
+            if expired.success_observation is not None:
+                success_observations.append(expired.success_observation)
+            return DeferTransition(
+                expired.action,
+                expired.changed,
+                expired_instead=True,
+                success_observation=expired.success_observation,
+            )
 
         intent = await _lock_delivery_root(connection, action_id)
         if intent is None:
@@ -389,7 +455,7 @@ async def defer_pending_action(
 
         presentations = await connection.fetch(
             """
-            SELECT p.id, p.presentation_generation, p.state
+            SELECT p.id, p.intent_id, p.presentation_generation, p.state
               FROM approval_delivery_presentations AS p
              WHERE p.intent_id = $1
                 OR p.cohort_id IN (
@@ -402,7 +468,11 @@ async def defer_pending_action(
             intent["id"],
         )
         highest_generation = max(
-            (int(item["presentation_generation"]) for item in presentations),
+            (
+                int(item["presentation_generation"])
+                for item in presentations
+                if item["intent_id"] == intent["id"]
+            ),
             default=0,
         )
         successor_generation = highest_generation + 1
@@ -476,27 +546,26 @@ async def defer_pending_action(
             attempt_count=attempt_count,
             occurred_at=database_now,
         )
-        approval_delivery_lifecycle_total.labels(
+        observation = LifecycleSuccessObservation(
             operation="defer",
             reason="defer_rescheduled",
-        ).inc()
-        if membership_changed:
-            approval_delivery_lifecycle_total.labels(
-                operation="cohort_replacement",
-                reason="defer_rescheduled",
-            ).inc()
-        logger.info(
-            "approval delivery deferred generation=%d superseded=%d cohort_member=%s",
-            successor_generation,
-            superseded_count,
-            membership_changed,
+            successor_generation=successor_generation,
+            superseded_count=superseded_count,
+            cohort_membership_changed=membership_changed,
         )
-        return DeferTransition(PendingAction.from_row(updated), True)
+        success_observations.append(observation)
+        return DeferTransition(
+            PendingAction.from_row(updated),
+            True,
+            success_observation=observation,
+        )
 
 
 __all__ = [
     "DeferTransition",
+    "LifecycleSuccessObservation",
     "PendingTransition",
     "defer_pending_action",
+    "emit_lifecycle_success",
     "transition_pending_action",
 ]
