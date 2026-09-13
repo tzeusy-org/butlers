@@ -764,7 +764,17 @@ async def test_unroutable_attention_lists_owner_visible_replayable_rows(app):
         "created_at": _NOW,
         "replayed_at": None,
     }
-    wired_app, conn = _app_with_mock_db(app, fetch_rows=[row])
+    malformed = {
+        **row,
+        "id": uuid4(),
+        "original_payload": "{not-json",
+    }
+    missing_content = {
+        **row,
+        "id": uuid4(),
+        "original_payload": {"metadata": "no owner-authored content"},
+    }
+    wired_app, conn = _app_with_mock_db(app, fetch_rows=[row, malformed, missing_content])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
@@ -772,11 +782,16 @@ async def test_unroutable_attention_lists_owner_visible_replayable_rows(app):
         response = await client.get("/api/approvals/unroutable")
 
     assert response.status_code == 200
-    item = response.json()["data"][0]
+    items = response.json()["data"]
+    item = items[0]
     assert item["id"] == str(dead_letter_id)
     assert item["question"] == "Which butler owns this?"
     assert item["failure_reason"] == "Dashboard message classification produced no lane decision"
     assert datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")) == _NOW
+    assert [item["question"] for item in items[1:]] == [
+        "Message content unavailable",
+        "Message content unavailable",
+    ]
     query = conn.fetch.await_args.args[0]
     assert "replay_eligible" in query
     assert "replayed_at IS NULL" in query
@@ -842,6 +857,27 @@ async def test_retry_unroutable_failures_remain_typed_and_fail_closed(
 
     assert response.status_code == expected_status
     assert replay.await_count == expected_calls
+
+
+async def test_unroutable_endpoints_fail_closed_when_switchboard_pool_is_unavailable(app):
+    dead_letter_id = uuid4()
+    wired_app, _ = _app_with_mock_db(app, has_approvals_tables=False)
+    replay = AsyncMock()
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            listed = await client.get("/api/approvals/unroutable")
+            retried = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    for response in (listed, retried):
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Switchboard database is unavailable"
+    replay.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
