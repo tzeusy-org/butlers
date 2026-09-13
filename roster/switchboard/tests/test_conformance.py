@@ -10,6 +10,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -685,6 +686,64 @@ class TestDeadLetterReplay:
             )
             assert result2["success"] is False
             assert result2["error"] == "already_replayed"
+
+    @pytest.mark.pg_clock
+    async def test_concurrent_replay_creates_one_inbox_row_and_success_audit(
+        self, switchboard_pool
+    ):
+        """The row lock spans replay insertion and the success audit."""
+        from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+        from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+        async with switchboard_pool.acquire() as conn:
+            failed_request_id = uuid.uuid4()
+            dl_id = await capture_to_dead_letter(
+                conn,
+                original_request_id=failed_request_id,
+                source_table="message_inbox",
+                failure_reason="Test",
+                failure_category="unknown",
+                retry_count=0,
+                last_retry_at=None,
+                original_payload={"content": "Concurrent replay"},
+                request_context={"source_channel": "test"},
+                error_details={},
+            )
+
+        async def replay(operator: str):
+            async with switchboard_pool.acquire() as conn:
+                return await replay_dead_letter_request(
+                    conn,
+                    dead_letter_id=dl_id,
+                    operator_identity=operator,
+                    reason="Concurrent retry",
+                )
+
+        outcomes = await asyncio.gather(replay("operator-a"), replay("operator-b"))
+
+        assert sum(result["success"] is True for result in outcomes) == 1
+        assert {result.get("error") for result in outcomes if not result["success"]} == {
+            "already_replayed"
+        }
+        inbox_rows = await switchboard_pool.fetch(
+            "SELECT processing_metadata FROM switchboard.message_inbox"
+        )
+        matching_inbox_rows = [
+            row
+            for row in inbox_rows
+            if json.loads(row["processing_metadata"]).get("replayed_from_dead_letter") == str(dl_id)
+        ]
+        assert len(matching_inbox_rows) == 1
+        assert (
+            await switchboard_pool.fetchval(
+                "SELECT count(*) FROM switchboard.operator_audit_log "
+                "WHERE action_type = 'controlled_replay' "
+                "AND target_request_id = $1 "
+                "AND outcome = 'success'",
+                failed_request_id,
+            )
+            == 1
+        )
 
 
 class TestOperatorControls:

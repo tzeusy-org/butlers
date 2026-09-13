@@ -83,6 +83,7 @@ async def test_manifesto_owned_groups_register_complete_relationship_surface():
         "relationship_add",
         "entity_resolve",
         "relationship_lookup",
+        "feed_get",
     } <= names
 
 

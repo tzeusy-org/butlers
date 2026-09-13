@@ -332,7 +332,7 @@ async def get_delivery_status(pool: asyncpg.Pool, delivery_id: uuid.UUID | str) 
 async def requeue_failed_delivery(
     pool: asyncpg.Pool | asyncpg.Connection,
     delivery_id: uuid.UUID | str,
-) -> str | None:
+) -> str:
     """Atomically requeue one terminal delivery for the reconciliation worker.
 
     The status predicate is the idempotence boundary: exactly one caller can
@@ -341,18 +341,29 @@ async def requeue_failed_delivery(
     never enqueue a second delivery. The original event/subscriber identity
     and unique constraint remain unchanged.
     """
-    resulting_status = await pool.fetchval(
+    outcome = await pool.fetchval(
         """
-        UPDATE public.domain_event_deliveries
-        SET status = 'pending', attempt_count = 0, error_message = NULL,
-            task_id = NULL, task_name = NULL, delivered_at = NULL,
-            updated_at = now()
-        WHERE id = $1 AND status = 'failed_permanent'
-        RETURNING status
+        WITH candidate AS MATERIALIZED (
+            SELECT id
+            FROM public.domain_event_deliveries
+            WHERE id = $1
+        ), requeued AS (
+            UPDATE public.domain_event_deliveries
+            SET status = 'pending', attempt_count = 0, error_message = NULL,
+                task_id = NULL, task_name = NULL, delivered_at = NULL,
+                updated_at = now()
+            WHERE id = $1 AND status = 'failed_permanent'
+            RETURNING 1
+        )
+        SELECT CASE
+            WHEN EXISTS (SELECT 1 FROM requeued) THEN 'pending'
+            WHEN EXISTS (SELECT 1 FROM candidate) THEN 'conflict'
+            ELSE 'not_found'
+        END
         """,
         uuid.UUID(str(delivery_id)),
     )
-    return str(resulting_status) if resulting_status is not None else None
+    return str(outcome)
 
 
 async def mark_delivery_delivered(

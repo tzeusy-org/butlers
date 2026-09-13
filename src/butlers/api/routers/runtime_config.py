@@ -11,7 +11,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -78,6 +78,7 @@ class RuntimeConfigResponse(BaseModel):
     declared_tool_names: list[str] | None = None
     effective_tool_names: list[str] | None = None
     tool_declaration_complete: bool | None = None
+    tool_snapshot_status: Literal["available", "unavailable"] = "unavailable"
     catalog_read_sensitivity: str = "normal"
     max_concurrent: int = 3
     max_queued: int = 10
@@ -170,32 +171,34 @@ async def _tool_surface_snapshot(
     name: str,
 ) -> dict[str, Any]:
     """Read the daemon's content-blind registration snapshot best-effort."""
+    unavailable = {"tool_snapshot_status": "unavailable"}
     if mcp_manager is None:
-        return {}
+        return unavailable
     try:
         client = await asyncio.wait_for(mcp_manager.get_client(name), timeout=5.0)
         result = await asyncio.wait_for(client.call_tool("status", {}), timeout=5.0)
         if not result.content or not hasattr(result.content[0], "text"):
-            return {}
+            return unavailable
         payload = json.loads(result.content[0].text)
         surface = payload.get("tool_surface")
         if not isinstance(surface, dict):
-            return {}
+            return unavailable
         declared = surface.get("declared_names")
         effective = surface.get("effective_names")
         complete = surface.get("declaration_complete")
         if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
-            return {}
+            return unavailable
         if not isinstance(effective, list) or not all(isinstance(name, str) for name in effective):
-            return {}
+            return unavailable
         return {
             "declared_tool_names": declared,
             "effective_tool_names": effective,
             "tool_declaration_complete": complete if isinstance(complete, bool) else None,
+            "tool_snapshot_status": "available",
         }
     except Exception:
         logger.warning("Tool-surface snapshot unavailable for butler=%s", name, exc_info=True)
-        return {}
+        return unavailable
 
 
 def _declared_core_groups(roster_dir: Path, name: str) -> tuple[str, ...] | None:

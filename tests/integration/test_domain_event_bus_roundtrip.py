@@ -1443,7 +1443,7 @@ async def test_failed_permanent_delivery_replay_requeues_exactly_once(pool: asyn
         requeue_failed_delivery(pool, delivery_id),
     )
 
-    assert sorted(outcomes, key=lambda value: value is None) == ["pending", None]
+    assert sorted(outcomes) == ["conflict", "pending"]
     row = await pool.fetchrow(
         """
         SELECT status, attempt_count, error_message, task_id, task_name, delivered_at

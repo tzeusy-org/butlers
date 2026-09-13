@@ -1868,6 +1868,8 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - registered tools
 - No core-group drift.
 - Registered surface unavailable.
+- Declaration snapshot unavailable.
+- Module health unavailable.
 - Declaration snapshot incomplete; module registration failed partway.
 - Max Concurrent
 - Max Queued
@@ -4281,4 +4283,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3356*
+*Total strings: 3358*

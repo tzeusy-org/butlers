@@ -53,6 +53,33 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # core_231's downgrade enters an autocommit block. If the protected
+    # core_198 boundary will refuse this rollback, fail before reaching that
+    # block so this revision's schema changes and version stamp remain atomic.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF to_regclass('public.runtime_attention_outbox') IS NOT NULL
+               AND (
+                   NOT has_function_privilege(
+                       current_user,
+                       'runtime_attention_admin.rollback_interface()',
+                       'EXECUTE'
+                   )
+                   OR to_regclass('public.runtime_attention_producer_control') IS NOT NULL
+                   OR to_regprocedure(
+                       'public.runtime_attention_plant_legacy_debounce_marker()'
+                   ) IS NOT NULL
+               )
+            THEN
+                RAISE EXCEPTION
+                    'core_198 downgrade requires trusted bootstrap rollback interface';
+            END IF;
+        END;
+        $$;
+        """
+    )
     op.execute(
         """
         DROP INDEX IF EXISTS public.uq_audit_core_groups_reconciled_toml_digest
