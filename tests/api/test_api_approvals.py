@@ -793,7 +793,7 @@ async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
     }
 
     with patch(
-        "butlers.tools.switchboard.dead_letter.replay.replay_dead_letter_request",
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
         new=AsyncMock(side_effect=[first_result, {"success": False, "error": "already_replayed"}]),
     ) as replay:
         async with httpx.AsyncClient(

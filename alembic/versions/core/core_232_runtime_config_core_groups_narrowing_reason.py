@@ -12,7 +12,7 @@ the next daemon start instead of silently suppressing new Git capabilities.
 
 from __future__ import annotations
 
-import sqlalchemy as sa
+import re
 
 from alembic import op
 
@@ -29,21 +29,31 @@ _PROTECTED_ROLLBACK_ERROR = (
 
 def _downgrade_crosses_core_198() -> bool:
     """Return whether this Alembic invocation will actually downgrade core_198."""
-    from butlers.migrations import _chain_script_directory
-
-    destination = op.get_context().opts.get("destination_rev")
-    if not isinstance(destination, str):
+    migration_context = op.get_context()
+    environment_context = migration_context.environment_context
+    script = migration_context.script
+    if environment_context is None or script is None:
         return True
-    script = _chain_script_directory("core")
-    steps = script._downgrade_revs(destination, (revision,))
-    return any(step.revision.revision == "core_198" for step in steps)
+    destination = environment_context.get_revision_argument()
+    if isinstance(destination, str):
+        relative = re.fullmatch(r"-(\d+)", destination)
+        if relative is not None:
+            # iterate_revisions excludes its lower bound. A relative downgrade
+            # crosses core_198 only after consuming every revision above it.
+            revisions_above_core_198 = sum(
+                1 for _step in script.iterate_revisions(revision, "core_198")
+            )
+            return int(relative.group(1)) > revisions_above_core_198
+    revisions = script.iterate_revisions(revision, destination)
+    return any(step.revision == "core_198" for step in revisions)
 
 
-def _protected_rollback_preflight_passes(bind: sa.Connection) -> bool:
+def _protected_rollback_preflight_passes(bind) -> bool:
     """Delegate to core_198's complete, canonical role/catalog/ACL proof."""
-    from butlers.migrations import _chain_script_directory
-
-    protected_revision = _chain_script_directory("core").get_revision("core_198")
+    script = op.get_context().script
+    if script is None:
+        return False
+    protected_revision = script.get_revision("core_198")
     return protected_revision.module.protected_rollback_preflight_passes(bind)
 
 

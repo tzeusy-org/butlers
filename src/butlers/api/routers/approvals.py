@@ -2334,7 +2334,7 @@ async def retry_unroutable_attention(
             status_code=400, detail=f"Invalid dead_letter_id: {dead_letter_id}"
         ) from exc
 
-    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+    from butlers.tools.switchboard.dead_letter import replay_dead_letter_request
 
     pool = _switchboard_pool(db_mgr)
     async with pool.acquire() as conn, conn.transaction():
