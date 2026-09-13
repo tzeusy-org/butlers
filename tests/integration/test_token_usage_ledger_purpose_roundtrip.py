@@ -17,7 +17,14 @@ tests — against a real, fully-migrated Postgres instance (testcontainers):
   asyncpg INSERT (the mocked-pool unit tests in
   ``tests/connectors/test_discretion_dispatcher.py`` cannot catch a
   parameter-count/column-order mismatch between ``_LEDGER_INSERT_SQL`` and
-  the real table — this test can).
+  the real table — this test can), and its composition/resume columns land
+  honestly NULL (bu-hz0g0) since the discretion lane never composes a
+  layered prompt.
+- core_223 additively adds the five prompt-composition columns
+  (``base_prompt_tokens``, ``timezone_instruction_tokens``,
+  ``context_preamble_tokens``, ``routing_instructions_tokens``,
+  ``memory_context_tokens``) and ``resume_outcome`` (bu-hz0g0), all
+  nullable/no-default like ``purpose``.
 """
 
 from __future__ import annotations
@@ -114,7 +121,10 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
 
     row = await pool.fetchrow(
         """
-        SELECT butler_name, session_id, purpose, input_tokens, output_tokens
+        SELECT butler_name, session_id, purpose, input_tokens, output_tokens,
+               base_prompt_tokens, timezone_instruction_tokens,
+               context_preamble_tokens, routing_instructions_tokens,
+               memory_context_tokens, resume_outcome
         FROM public.token_usage_ledger
         WHERE butler_name = 'tg:555'
         ORDER BY recorded_at DESC LIMIT 1
@@ -124,6 +134,14 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
     assert row["session_id"] is None
     assert row["purpose"] == "discretion"
     assert row["input_tokens"] == 7 and row["output_tokens"] == 3
+    # bu-hz0g0: discretion never composes a layered prompt or resumes a
+    # conversation, so every new column stays honestly NULL.
+    assert row["base_prompt_tokens"] is None
+    assert row["timezone_instruction_tokens"] is None
+    assert row["context_preamble_tokens"] is None
+    assert row["routing_instructions_tokens"] is None
+    assert row["memory_context_tokens"] is None
+    assert row["resume_outcome"] is None
 
 
 async def test_record_token_usage_purpose_defaults_null_when_omitted(pool: asyncpg.Pool) -> None:
@@ -147,3 +165,78 @@ async def test_record_token_usage_purpose_defaults_null_when_omitted(pool: async
         entry_id,
     )
     assert written is not None and written["purpose"] is None
+
+
+async def test_composition_and_resume_columns_exist_and_are_nullable(pool: asyncpg.Pool) -> None:
+    """core_223 added all six columns nullable, no default (bu-hz0g0)."""
+    rows = await pool.fetch(
+        """
+        SELECT column_name, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'token_usage_ledger'
+          AND column_name = ANY($1::text[])
+        """,
+        [
+            "base_prompt_tokens",
+            "timezone_instruction_tokens",
+            "context_preamble_tokens",
+            "routing_instructions_tokens",
+            "memory_context_tokens",
+            "resume_outcome",
+        ],
+    )
+    by_name = {row["column_name"]: row for row in rows}
+    assert set(by_name) == {
+        "base_prompt_tokens",
+        "timezone_instruction_tokens",
+        "context_preamble_tokens",
+        "routing_instructions_tokens",
+        "memory_context_tokens",
+        "resume_outcome",
+    }
+    for column_name, row in by_name.items():
+        assert row["is_nullable"] == "YES", f"{column_name} must be nullable"
+        assert row["column_default"] is None, f"{column_name} must have no default"
+
+
+async def test_record_token_usage_persists_composition_digest_and_resume_outcome(
+    pool: asyncpg.Pool,
+) -> None:
+    """A caller passing the new kwargs (the spawner's composed-prompt path)
+    round-trips every value through a real INSERT -- catching a
+    parameter-count/column-order mismatch the mocked-pool unit tests cannot."""
+    row = await pool.fetchrow("SELECT id FROM public.model_catalog WHERE alias = 'api-haiku-cheap'")
+    assert row is not None
+    entry_id = row["id"]
+    session_id = uuid.uuid4()
+
+    await record_token_usage(
+        pool,
+        catalog_entry_id=entry_id,
+        butler_name="atlas",
+        session_id=session_id,
+        input_tokens=100,
+        output_tokens=20,
+        purpose="route",
+        base_prompt_tokens=400,
+        timezone_instruction_tokens=10,
+        context_preamble_tokens=25,
+        routing_instructions_tokens=0,
+        memory_context_tokens=150,
+        resume_outcome="resumed",
+    )
+    written = await pool.fetchrow(
+        """
+        SELECT base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
+               routing_instructions_tokens, memory_context_tokens, resume_outcome
+        FROM public.token_usage_ledger WHERE session_id = $1
+        """,
+        session_id,
+    )
+    assert written is not None
+    assert written["base_prompt_tokens"] == 400
+    assert written["timezone_instruction_tokens"] == 10
+    assert written["context_preamble_tokens"] == 25
+    assert written["routing_instructions_tokens"] == 0
+    assert written["memory_context_tokens"] == 150
+    assert written["resume_outcome"] == "resumed"

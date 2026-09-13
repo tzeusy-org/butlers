@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 
 import asyncpg
 
@@ -111,6 +112,57 @@ def _memory_context_token_budget(config: ButlerConfig) -> int:
 # ---------------------------------------------------------------------------
 # System prompt composition
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ComposedPrompt:
+    """Per-layer token digest for a composed system prompt (bu-hz0g0).
+
+    Records the five ledger-supported layers of ``_compose_system_prompt``.
+    Persisted onto ``public.token_usage_ledger`` alongside a spawn's token
+    counts so a query can compare their contribution instead of only seeing
+    the merged total. The separately governed blind-spot preamble is not part
+    of this ledger schema.
+    """
+
+    base_prompt_tokens: int
+    timezone_instruction_tokens: int
+    context_preamble_tokens: int
+    routing_instructions_tokens: int
+    memory_context_tokens: int
+
+
+def _estimate_layer_tokens(text: str | None) -> int:
+    """Estimate a prompt layer's token count at chars/4.
+
+    Same heuristic as ``butlers.modules.pipeline._load_email_history`` --
+    no tokenizer is wired into the spawn hot path, and an estimate is enough
+    to answer relative "which layer dominates" questions.
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+def compose_prompt_digest(
+    base_system_prompt: str,
+    memory_context: str | None,
+    general_timezone_instruction: str | None = None,
+    routing_instructions: str | None = None,
+    context_preamble: str | None = None,
+) -> ComposedPrompt:
+    """Compute the per-layer token digest for a composed system prompt.
+
+    Takes the five inputs represented by the ledger columns. Call it at the
+    spawn seam before composition overwrites the base prompt variable.
+    """
+    return ComposedPrompt(
+        base_prompt_tokens=_estimate_layer_tokens(base_system_prompt),
+        timezone_instruction_tokens=_estimate_layer_tokens(general_timezone_instruction),
+        context_preamble_tokens=_estimate_layer_tokens(context_preamble),
+        routing_instructions_tokens=_estimate_layer_tokens(routing_instructions),
+        memory_context_tokens=_estimate_layer_tokens(memory_context),
+    )
 
 
 def _compose_system_prompt(
