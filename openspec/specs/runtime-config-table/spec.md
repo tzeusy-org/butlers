@@ -60,9 +60,9 @@ Scope: v1-mandatory
 - **WHEN** `accessor.get()` is called with no prior cache and the DB query fails
 - **THEN** the accessor SHALL raise the DB exception (fatal — no config available)
 
-### Requirement: Seed and reconcile Git-owned core groups
+### Requirement: Seed-if-empty on first boot
 
-The accessor SHALL provide a `seed_if_empty(seed: RuntimeSeedConfig)` method that inserts a row from the toml seed values when no row exists and reconciles an existing unreasoned `core_groups` value to the current Git declaration. Other runtime-config fields remain DB-owned and SHALL NOT be overwritten by this reconciliation.
+The accessor SHALL provide a `seed_if_empty(seed: RuntimeSeedConfig)` method that inserts a row from the toml seed values only if no row exists. After that race-safe seed, the same call SHALL reconcile an existing unreasoned `core_groups` value to the current Git declaration. Other runtime-config fields remain DB-owned and SHALL NOT be overwritten by this reconciliation.
 
 Source: Doctrine Rule #5 (git seeds identity and operational defaults)
 Scope: v1-mandatory
@@ -70,6 +70,11 @@ Scope: v1-mandatory
 #### Scenario: First boot seeds from toml
 - **WHEN** `seed_if_empty()` is called and the `runtime_config` table is empty
 - **THEN** a row SHALL be inserted with values from the `RuntimeSeedConfig` and `seeded_at` set to now
+
+#### Scenario: Subsequent boot uses existing row
+- **WHEN** `seed_if_empty()` is called and the `runtime_config` table already has a row
+- **THEN** the existing row SHALL be returned unchanged (toml seed values are ignored) for DB-owned operational fields
+- **AND** `core_groups` SHALL follow the reconciliation scenarios below
 
 #### Scenario: Unreasoned stale groups reconcile to Git
 - **WHEN** `seed_if_empty()` is called, the row's `core_groups` differs from `[butler.runtime_seed].core_groups`, and `core_groups_narrowing_reason` is null or blank
