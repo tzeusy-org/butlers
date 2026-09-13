@@ -16,10 +16,20 @@ surface. The dashboard currently has two distinct authentication contracts:
 - `require_dashboard_owner_control` fails closed: absent configuration is `503`,
   and a missing or wrong `X-API-Key` is `401` after constant-time comparison.
 
-The frontend does not yet have an approved way to supply that credential.
-`bu-pb6oy` owns that decision. `authenticated_principal()` merely records that
-an already-authenticated single-user request is attributed to `owner`; it does
-not authenticate a request and cannot substitute for either boundary.
+The configured-key browser mechanism is no longer undecided. The owner closed
+and adopted `bu-pb6oy` Option A: an HTTPS session-establishment surface accepts
+the configured key once, issues an expiring/revocable server-managed
+HttpOnly/Secure/SameSite=Strict cookie, protects state-changing requests against
+CSRF, preserves `X-API-Key` for non-browser callers, and rejects same-origin as
+authentication. That mechanism remains unimplemented. `authenticated_principal()`
+merely attributes an already-authenticated single-user request to `owner`; it
+does not authenticate a request or replace the session boundary.
+
+Default keyless Compose enrollment is a separate unresolved authority decision
+in `bu-azqfpk`. E1 must select either a transferable one-time host code or host
+approval of an inert browser challenge. E2 must select either existing Tailscale
+Serve HTTPS or a separately specified loopback TLS terminator. Neither choice
+is made by this mapping contract.
 
 ## Goals and non-goals
 
@@ -42,8 +52,9 @@ Non-goals:
 - No entity creation, merge, promotion, rename, alias lookup, or role change.
 - No Home Assistant API, snapshot, credential, secret, provider payload, or
   connector read.
-- No new authentication mechanism, browser credential transport, or bypass of
-  `bu-pb6oy`.
+- No implementation or alteration of the adopted `bu-pb6oy` configured-key
+  session/CSRF mechanism, and no selection or implementation of `bu-azqfpk`
+  E1/E2 enrollment.
 - No MCP tool, LLM prompt, session, scheduled job, CLI, direct-SQL operator
   workflow, background retry, or ingestion path.
 - No restart, replay, checkpoint or watermark change, synthetic transition,
@@ -113,11 +124,19 @@ Only after that gate succeeds may the handler call
 query parameter, or body field may assert the actor. The literal actor label
 `owner` is attribution, not evidence that authentication happened.
 
-The existing browser-auth decision `bu-pb6oy` is a hard prerequisite for the UI
-and for claiming the workflow usable. This contract neither chooses a cookie,
-JavaScript-held key, build-time key, nor same-origin bypass. Until the approved
-`bu-pb6oy` mechanism is implemented and proven, the mapping UI must not ship and
-the backend route must not be described as an available dashboard workflow.
+The `bu-pb6oy` decision is closed and adopted; only its conforming implementation
+and proof remain a hard prerequisite for the mapping UI in configured-key
+deployments. This contract does not reopen that choice, introduce a
+JavaScript-held/build-time key, or accept same-origin as authentication. Until
+the approved session/CSRF mechanism is implemented and proven, the mapping UI
+must not ship and the backend route must not be described as an available
+dashboard workflow.
+
+Separately, the workflow must not be described as usable in default keyless
+Compose until `bu-azqfpk` E1/E2 are selected, independently reviewed, adopted,
+implemented, and proven. A configured-key session implementation does not
+silently choose host enrollment, and unresolved enrollment does not reopen the
+configured-key decision.
 
 ### D3: One mapping-specific lock and one transaction decide the batch
 
@@ -295,9 +314,10 @@ remain absent from every generic MCP and runtime tool registry.
 - Durable idempotency evidence adds storage. Unbounded retention avoids a replay
   window that could silently expire; a later retention policy needs separate
   privacy and replay analysis.
-- The current browser cannot yet reach fail-closed owner-control routes. Keeping
-  `bu-pb6oy` explicit prevents this spec from laundering an unresolved
-  credential-transport choice into implementation.
+- The current browser cannot yet use the adopted configured-key session because
+  its implementation remains outstanding. Keeping that implementation gate
+  separate from `bu-azqfpk` E1/E2 prevents this spec from laundering either
+  browser-session delivery or host enrollment into mapping authority.
 - Existing conflicting or legacy-null mappings are refused, not repaired. Any
   remap, delete, rollback, cleanup, or historical-data correction is a separate
   owner-approved workflow.
@@ -308,8 +328,10 @@ remain absent from every generic MCP and runtime tool registry.
    commit. Any semantic edit invalidates that review.
 2. Obtain separate owner approval that names the exact reviewed commit and this
    change. Review or merge is not approval to implement, deploy, or submit data.
-3. Resolve `bu-pb6oy` with its own owner-approved browser-auth contract before
-   implementing or exposing the UI.
+3. Implement and prove the already-adopted `bu-pb6oy` configured-key
+   session/CSRF contract before exposing the UI in configured-key deployments.
+   Resolve, review, and adopt `bu-azqfpk` E1/E2 separately before claiming the
+   same UI usable in default keyless Compose.
 4. Implement under `bu-q364q` with the tests in `tasks.md`; obtain a fresh
    independent exact-head review and terminal hosted CI.
 5. Treat merge, queue, deployment/environment availability, `bu-pvapy` mapping
@@ -317,5 +339,6 @@ remain absent from every generic MCP and runtime tool registry.
 
 ## Open questions
 
-None are silently decided here. Browser credential transport remains explicitly
-owned by `bu-pb6oy`.
+None are silently decided here. The configured-key browser-session choice is
+closed in `bu-pb6oy`, while `bu-azqfpk` E1 host-authority transport and E2 HTTPS
+entry remain explicitly unresolved.

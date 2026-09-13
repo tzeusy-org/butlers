@@ -7,7 +7,9 @@
   failure behavior.
 - [x] 1.2 Specify request-capture, URL, response/error, audit, log, telemetry,
   prompt/session, MCP, provider-read, and browser-persistence exclusions.
-- [x] 1.3 Name `bu-pb6oy` as the unresolved browser-auth prerequisite and keep
+- [x] 1.3 Record closed/adopted `bu-pb6oy` Option A without reopening it, keep
+  its configured-key session/CSRF implementation as the UI prerequisite, name
+  unresolved `bu-azqfpk` E1/E2 host enrollment, and keep
   `authenticated_principal()` limited to server-derived attribution.
 
 ## 2. Approval gates
@@ -22,7 +24,10 @@
 ## 3. Future implementation after approval (`bu-q364q`)
 
 - [ ] 3.1 Add the fail-closed dashboard route and browser client only after the
-  separately approved `bu-pb6oy` credential-transport mechanism exists. Prove
+  adopted `bu-pb6oy` configured-key session/CSRF mechanism is implemented. Do
+  not claim default keyless Compose usability until `bu-azqfpk` E1 host
+  authority and E2 HTTPS entry are selected, independently reviewed, adopted,
+  implemented, and proven; this mapping change selects neither choice. Prove
   authentication finishes before body buffering, receipt creation, pool
   acquisition, or protected reads. After authentication, enforce the 32,768-octet
   raw encoded body maximum with a bounded streamed reader before UTF-8/JSON
