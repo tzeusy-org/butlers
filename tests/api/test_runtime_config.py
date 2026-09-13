@@ -291,3 +291,25 @@ def test_patch_cold_field_returns_restart_required(tmp_path: Path):
         json={"core_groups": ["infra", "delegation", "graph"]},
     )
     assert resp_known_groups.status_code == 200
+
+    # Clearing the explicit narrowing reason restores Git authority in the
+    # same PATCH instead of leaving a stale subset until a later restart.
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_row(
+                core_groups=["infra"],
+                core_groups_narrowing_reason="Temporary incident containment",
+            ),
+            _mock_row(core_groups=["infra", "delegation", "graph"]),
+        ]
+    )
+    resp_clear_reason = client.patch(
+        "/api/butlers/test/runtime-config",
+        json={"core_groups_narrowing_reason": None},
+    )
+    assert resp_clear_reason.status_code == 200
+    assert resp_clear_reason.json()["config"]["core_groups_source"] == "git"
+    assert set(resp_clear_reason.json()["restart_required"]) == {
+        "core_groups",
+        "core_groups_narrowing_reason",
+    }
