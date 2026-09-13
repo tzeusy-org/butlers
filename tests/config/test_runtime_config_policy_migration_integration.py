@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import asyncpg
 import pytest
@@ -319,14 +321,16 @@ async def test_rejected_patch_value_never_becomes_the_committed_policy(postgres_
 
 
 @_skip_without_docker
-def test_core_232_deep_downgrade_acl_preflight_preserves_head_and_round_trips(
+@pytest.mark.parametrize("failed_predicate", ["acl", "durable_evidence"])
+def test_core_232_deep_downgrade_preflight_preserves_head_and_round_trips(
     postgres_container,
+    failed_predicate: str,
 ) -> None:
-    """A non-producer core_198 predicate fails before core_231 can commit."""
+    """Every core_198 refusal fails before core_231 can commit."""
     from sqlalchemy import create_engine, text
 
     from alembic import command
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
     from butlers.testing.migration import (
         create_migration_db,
         migration_bootstrap_db_url,
@@ -358,17 +362,32 @@ def test_core_232_deep_downgrade_acl_preflight_preserves_head_and_round_trips(
                 )
             )
             conn.execute(text("DROP TABLE IF EXISTS public.runtime_attention_producer_control"))
-            conn.execute(
-                text("GRANT INSERT ON public.model_catalog TO runtime_attention_outbox_owner")
-            )
+            if failed_predicate == "acl":
+                conn.execute(
+                    text("GRANT INSERT ON public.model_catalog TO runtime_attention_outbox_owner")
+                )
+            else:
+                conn.execute(
+                    text(
+                        "INSERT INTO public.runtime_attention_outbox ("
+                        "source, fleet_halt_month, lifecycle_state, source_snapshot, payload"
+                        ") VALUES ("
+                        "'fleet_halt', date '2026-08-01', 'pending', "
+                        "jsonb_build_object('month', '2026-08', 'denied_count', 1, "
+                        "'first_denied_at', NULL), "
+                        "jsonb_build_object('classification', 'monthly_spend_ceiling', "
+                        "'door', '/spend?outcome=quota_skip')"
+                        ")"
+                    )
+                )
 
         with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
             command.downgrade(bootstrap_config, "core_197")
 
         with create_engine(db_url).connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "core_232"
-            )
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == get_chain_head("core")
             assert (
                 conn.execute(
                     text(
@@ -381,16 +400,126 @@ def test_core_232_deep_downgrade_acl_preflight_preserves_head_and_round_trips(
             )
 
         with admin_engine.connect() as conn:
-            conn.execute(
-                text("REVOKE INSERT ON public.model_catalog FROM runtime_attention_outbox_owner")
-            )
+            if failed_predicate == "acl":
+                conn.execute(
+                    text(
+                        "REVOKE INSERT ON public.model_catalog FROM runtime_attention_outbox_owner"
+                    )
+                )
+            else:
+                conn.execute(text("TRUNCATE public.runtime_attention_outbox"))
 
         # A bounded rollback never crosses core_198 and remains reversible.
         command.downgrade(bootstrap_config, "core@-1")
         command.upgrade(bootstrap_config, "core@head")
         with create_engine(db_url).connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "core_232"
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == get_chain_head("core")
+    finally:
+        admin_engine.dispose()
+
+
+@_skip_without_docker
+def test_core_232_deep_downgrade_rechecks_evidence_after_lock_wait(
+    postgres_container,
+) -> None:
+    """Evidence committed while preflight waits preserves the current head."""
+    from sqlalchemy import create_engine, text
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.testing.migration import (
+        assert_at_chain_head,
+        create_migration_db,
+        migration_bootstrap_db_url,
+        migration_db_name,
+    )
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    bootstrap_config = _build_alembic_config(bootstrap_url, chains=["core"])
+    engine = create_engine(bootstrap_url)
+    admin_engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS runtime_attention_plant_legacy_debounce_marker_trigger "
+                    "ON public.model_dispatch_attempts"
+                )
+            )
+            conn.execute(
+                text(
+                    "DROP FUNCTION IF EXISTS "
+                    "public.runtime_attention_plant_legacy_debounce_marker()"
+                )
+            )
+            conn.execute(text("DROP TABLE IF EXISTS public.runtime_attention_producer_control"))
+
+        writer = engine.connect()
+        writer.execute(
+            text(
+                "INSERT INTO public.runtime_attention_outbox ("
+                "source, fleet_halt_month, lifecycle_state, source_snapshot, payload"
+                ") VALUES ("
+                "'fleet_halt', date '2026-08-01', 'pending', "
+                "jsonb_build_object('month', '2026-08', 'denied_count', 1, "
+                "'first_denied_at', NULL), "
+                "jsonb_build_object('classification', 'monthly_spend_ceiling', "
+                "'door', '/spend?outcome=quota_skip')"
+                ")"
+            )
+        )
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            downgrade = pool.submit(command.downgrade, bootstrap_config, "core_197")
+            try:
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    with admin_engine.connect() as observer:
+                        waiting = observer.execute(
+                            text(
+                                "SELECT EXISTS ("
+                                "SELECT 1 FROM pg_locks WHERE NOT granted "
+                                "AND locktype = 'relation' AND mode = 'AccessExclusiveLock' "
+                                "AND relation = 'public.runtime_attention_outbox'::regclass"
+                                ")"
+                            )
+                        ).scalar_one()
+                    if waiting:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise AssertionError("core_232 preflight never waited for the evidence lock")
+
+                writer.commit()
+                with pytest.raises(
+                    RuntimeError, match="protected core_198 rollback preflight failed"
+                ):
+                    downgrade.result(timeout=60)
+            finally:
+                writer.close()
+
+        with engine.connect() as conn:
+            assert_at_chain_head(conn)
+            assert conn.execute(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'runtime_config' "
+                    "AND column_name = 'core_groups_narrowing_reason'"
+                    ")"
+                )
+            ).scalar_one()
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM public.runtime_attention_outbox")
+                ).scalar_one()
+                == 1
             )
     finally:
+        engine.dispose()
         admin_engine.dispose()

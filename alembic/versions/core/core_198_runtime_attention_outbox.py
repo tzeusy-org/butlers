@@ -652,9 +652,36 @@ def protected_rollback_preflight_passes(bind: sa.Connection) -> bool:
     """
     if bool(bind.execute(sa.text(_EXACT_ROLLBACK_READY_ABSENCE_SQL)).scalar_one()):
         return True
-    return bool(bind.execute(sa.text(_TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one()) and (
-        _has_trusted_finalized_interface(bind)
-    )
+    if not (
+        bool(bind.execute(sa.text(_TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one())
+        and _has_trusted_finalized_interface(bind)
+    ):
+        return False
+
+    # Mirror rollback_interface's durable-evidence refusal before a later
+    # migration can enter autocommit. The trusted rollback proof above also
+    # requires the v2 producer controls to be absent, so ordinary producers
+    # cannot create new evidence after this point. Lock and recheck to cover a
+    # writer that began before the operator established that rollback-ready
+    # state; the relation lock remains held through this migration transaction.
+    if not bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one()):
+        return False
+    bind.execute(sa.text(_LOCK_DURABLE_EVIDENCE_SQL))
+    return bool(bind.execute(sa.text(_DURABLE_EVIDENCE_ABSENT_SQL)).scalar_one())
+
+
+_DURABLE_EVIDENCE_ABSENT_SQL = """
+    SELECT
+        NOT EXISTS (SELECT 1 FROM public.runtime_attention_outbox)
+        AND NOT EXISTS (SELECT 1 FROM public.runtime_attention_delivery_lease)
+"""
+
+_LOCK_DURABLE_EVIDENCE_SQL = """
+    LOCK TABLE
+        public.runtime_attention_outbox,
+        public.runtime_attention_delivery_lease
+    IN ACCESS EXCLUSIVE MODE
+"""
 
 
 _TRUSTED_BOOTSTRAP_INSTALLER_SQL = """
