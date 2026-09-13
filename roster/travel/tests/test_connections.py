@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import PENDING_ACTIONS
+from butlers.testing.schema_standins import APPROVAL_EVENTS, PENDING_ACTIONS
 from butlers.tools.travel.connections import (
     acknowledge_connection_risk,
     compute_connection_verdict,
@@ -250,6 +250,7 @@ async def pool(provisioned_postgres_pool):
         await p.execute(CREATE_CONNECTIONS_SQL)
         await p.execute(CREATE_EXPECTED_SIGNALS_SQL)
         await p.execute(PENDING_ACTIONS.ddl())
+        await p.execute(APPROVAL_EVENTS.ddl())
         await p.execute(CREATE_INSIGHT_CANDIDATES_SQL)
         yield p
 
@@ -685,10 +686,14 @@ class TestRecomputeTripConnectionsAgainstPostgres:
             def __getattr__(self, name):
                 return getattr(self._conn, name)
 
-            async def execute(self, query, *args):
-                if "UPDATE pending_actions SET status = 'rejected'" in query:
+            async def fetchrow(self, query, *args):
+                if (
+                    "UPDATE pending_actions SET status = $1" in query
+                    and args
+                    and args[0] == "rejected"
+                ):
                     raise RuntimeError("injected withdrawal persistence failure")
-                return await self._conn.execute(query, *args)
+                return await self._conn.fetchrow(query, *args)
 
         async with pool.acquire() as conn:
             with pytest.raises(RuntimeError, match="injected withdrawal persistence failure"):

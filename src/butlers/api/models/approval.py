@@ -47,6 +47,49 @@ class ApprovalEvidence(BaseModel):
     note: str
 
 
+DeliveryPresentationState = Literal[
+    "ready",
+    "claimed",
+    "handoff_started",
+    "retry_wait",
+    "delivered",
+    "collapsed",
+    "cancelled",
+    "superseded",
+    "ambiguous",
+]
+
+
+class ApprovalDeliveryCohort(BaseModel):
+    """Safe state of the shared digest associated with one action."""
+
+    eligible: bool
+    state: DeliveryPresentationState | None = None
+    generation: int | None = None
+    attempt_count: int = 0
+    next_eligible_at: datetime | None = None
+    stuck: bool = False
+    ambiguous: bool = False
+
+
+class ApprovalDeliveryTruth(BaseModel):
+    """Content-blind durable or legacy notification evidence."""
+
+    source: Literal["durable", "legacy", "unknown"]
+    state: DeliveryPresentationState | None = None
+    mode: Literal["single", "burst_digest", "collapsed"] | None = None
+    generation: int | None = None
+    last_reason_code: str | None = None
+    attempt_count: int = 0
+    next_eligible_at: datetime | None = None
+    stuck: bool = False
+    ambiguous: bool = False
+    legacy_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
+        None
+    )
+    cohort: ApprovalDeliveryCohort | None = None
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -106,6 +149,7 @@ class ApprovalAction(BaseModel):
             "action (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
 
 
 class ApprovalDetail(BaseModel):
@@ -165,6 +209,7 @@ class ApprovalDetail(BaseModel):
             "notified. Never fabricate calm (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
 
 
 class ApprovalAbandonRequest(BaseModel):
@@ -209,6 +254,7 @@ class ApprovalSummary(BaseModel):
             "notified. Never fabricate calm (bu-mda0r)."
         ),
     )
+    delivery: ApprovalDeliveryTruth | None = None
 
 
 class UnroutableAttentionItem(BaseModel):
@@ -340,6 +386,15 @@ class ApprovalMetrics(BaseModel):
             "when this could not be determined (e.g. no approvals pool available)."
         ),
     )
+    delivery_due_count: int = 0
+    delivery_retry_wait_count: int = 0
+    delivery_expired_lease_count: int = 0
+    delivery_ambiguous_count: int = 0
+    delivery_stuck_count: int = 0
+    delivery_oldest_due_age_seconds: float | None = None
+    delivery_by_state: dict[str, int] = Field(default_factory=dict)
+    delivery_by_reason: dict[str, int] = Field(default_factory=dict)
+    delivery_sources_complete: bool = False
 
 
 class ApprovalActionApproveRequest(BaseModel):

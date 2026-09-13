@@ -392,6 +392,57 @@ async def test_metrics_keeps_a_configured_but_empty_source_as_a_truthful_zero(ap
     assert "sources_degraded" not in body["meta"]
 
 
+async def test_metrics_projects_safe_delivery_backlog_dimensions(app):
+    """Operator metrics include only aggregate state and closed reason dimensions."""
+    from types import SimpleNamespace
+
+    app, _ = _app_with_mock_db(
+        app,
+        fetchval_return=0,
+        fetchrow_return={"avg_latency": None, "cnt": 0},
+    )
+    snapshot = SimpleNamespace(
+        due_count=3,
+        retry_wait_count=2,
+        expired_lease_count=1,
+        ambiguous_count=1,
+        stuck_count=2,
+        oldest_due_age_seconds=901.0,
+        by_state={"retry_wait": 2, "ambiguous": 1},
+        by_reason={"transport_unavailable": 2, "provider_outcome_unknown": 1},
+    )
+
+    with (
+        patch(
+            "butlers.api.routers.approvals.ApprovalDeliveryRepository.backlog_snapshot",
+            new=AsyncMock(return_value=snapshot),
+        ),
+        patch(
+            "butlers.api.routers.approvals._callback_secret_configured",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/approvals/metrics")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["delivery_due_count"] == 3
+    assert data["delivery_retry_wait_count"] == 2
+    assert data["delivery_expired_lease_count"] == 1
+    assert data["delivery_ambiguous_count"] == 1
+    assert data["delivery_stuck_count"] == 2
+    assert data["delivery_oldest_due_age_seconds"] == 901.0
+    assert data["delivery_by_state"] == {"retry_wait": 2, "ambiguous": 1}
+    assert data["delivery_by_reason"] == {
+        "transport_unavailable": 2,
+        "provider_outcome_unknown": 1,
+    }
+    assert data["delivery_sources_complete"] is True
+
+
 # ---------------------------------------------------------------------------
 # GET /api/approvals (flat) and /api/approvals/history --
 # sources_degraded contract (bu-qvnce.1)
@@ -1312,10 +1363,8 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
     pending_row["id"] = action_id
 
     mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
-    mock_conn.execute = AsyncMock()
-    # audit.append uses fetchval
-    mock_conn.fetchval = AsyncMock(return_value=1)
+    intent_id = uuid4()
+    mock_conn.execute = AsyncMock(return_value="UPDATE 1")
     mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
 
     class _MockAcquire:
@@ -1334,19 +1383,31 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
         sql = args[0] if args else ""
         if "to_regclass" in sql or "EXISTS" in sql:
             return True
+        if "clock_timestamp" in sql:
+            return _NOW
         return 1
 
     mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
-    # Updated fetchrow to return the action when queried by ID
-    mock_conn.fetchrow = AsyncMock(return_value=pending_row)
-    # fetchrow for the deferred update
     updated_row = dict(pending_row)
-    updated_row["expires_at"] = _NOW
+    updated_row["expires_at"] = _NOW + timedelta(hours=hours)
 
-    async def fetchrow_side(*args, **kwargs):
-        return pending_row if "id" in str(args) else updated_row
+    async def fetchrow_side(query, *args, **kwargs):
+        if "FROM approval_delivery_intents" in query:
+            return {
+                "id": intent_id,
+                "action_key": f"approval-action:{action_id}",
+                "admission_mode": "single",
+            }
+        if "FROM approval_delivery_cohort_members" in query:
+            return None
+        if "ambiguous_count" in query:
+            return {"ambiguous_count": 0, "delivered_count": 0, "attempt_count": 0}
+        if "UPDATE pending_actions SET expires_at" in query:
+            return updated_row
+        return pending_row
 
-    mock_conn.fetchrow = AsyncMock(side_effect=lambda *a, **k: pending_row)
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
+    mock_conn.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general"]
@@ -1405,6 +1466,8 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
         sql = args[0] if args else ""
         if "to_regclass" in sql or "EXISTS" in sql:
             return True
+        if "clock_timestamp" in sql:
+            return _NOW
         return 1
 
     async def fetchrow_side(query, *args, **kwargs):
@@ -1414,7 +1477,9 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
             return expired_row
         if "SELECT * FROM pending_actions" in query:
             return pending_row
-        return pending_row
+        if "FROM approval_delivery_intents" in query:
+            return None
+        return None
 
     mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
     mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
@@ -2014,6 +2079,57 @@ async def test_detail_preserves_failed_push_delivery_state(app):
     detail = resp.json()["data"]
     assert detail["push_outcome"] == "failed"
     assert detail["push_failed"] is True
+
+
+async def test_detail_projects_only_safe_durable_delivery_truth(app):
+    """The dossier exposes state, not correlation, recipient, callback, or provider data."""
+    row = {
+        **_make_pending_row(),
+        "legacy_push_action_id": None,
+        "delivery_intent_id": uuid4(),
+        "delivery_admission_mode": "single",
+        "delivery_state": "ambiguous",
+        "delivery_mode": "single",
+        "delivery_generation": 2,
+        "delivery_reason": "provider_outcome_unknown",
+        "delivery_attempt_count": 1,
+        "delivery_next_at": None,
+        "delivery_stuck": True,
+        "delivery_cohort_eligible": None,
+        "delivery_cohort_state": None,
+        "delivery_cohort_generation": None,
+        "delivery_cohort_attempt_count": None,
+        "delivery_cohort_next_at": None,
+        "delivery_cohort_stuck": False,
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    delivery = resp.json()["data"]["delivery"]
+    assert delivery == {
+        "source": "durable",
+        "state": "ambiguous",
+        "mode": "single",
+        "generation": 2,
+        "last_reason_code": "provider_outcome_unknown",
+        "attempt_count": 1,
+        "next_eligible_at": None,
+        "stuck": True,
+        "ambiguous": True,
+        "legacy_outcome": None,
+        "cohort": None,
+    }
+    serialized = resp.text.lower()
+    assert "presentation_key" not in serialized
+    assert "action_key" not in serialized
+    assert "provider_reference" not in serialized
+    assert "callback" not in serialized
+    assert "recipient" not in serialized
 
 
 async def test_detail_includes_originating_session_id(app):

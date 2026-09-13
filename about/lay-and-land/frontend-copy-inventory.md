@@ -32,7 +32,13 @@ files under `frontend/src/pages` and `frontend/src/components`.
 
 ## `frontend/src/pages/ApprovalsPage.tsx`
 
-- Owner not notified · push failed
+- Delivery evidence
+- Generation
+- Attempts
+- Next eligible
+- Reason
+- Shared digest
+- Legacy push failed
 - Undo
 - loading…
 - failed to load dossier
@@ -4282,4 +4288,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3357*
+*Total strings: 3363*
