@@ -3416,6 +3416,20 @@ export interface ApprovalSummary {
   push_failed?: boolean;
 }
 
+/** Replayable dashboard routing failure shown on the Approvals/Command surface. */
+export interface UnroutableAttentionItem {
+  id: string;
+  question: string;
+  failure_reason: string;
+  created_at: string;
+}
+
+export interface UnroutableRetryResult {
+  dead_letter_id: string;
+  replayed_request_id: string;
+  status: "queued";
+}
+
 /**
  * Metadata for the approvals list endpoints (GET /api/approvals and
  * /api/approvals/history). Extends the base bag with the degraded-envelope

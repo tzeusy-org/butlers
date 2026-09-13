@@ -34,6 +34,7 @@ vi.mock("@/hooks/use-domain-events", () => ({
   useDomainEventDeliveries: vi.fn(),
   useDomainEventReactions: vi.fn(),
   useDomainEventContracts: vi.fn(),
+  useReplayDomainEventDelivery: vi.fn(),
 }))
 
 vi.mock("@/components/ui/time", () => ({
@@ -45,12 +46,14 @@ import {
   useDomainEventDeliveries,
   useDomainEventReactions,
   useDomainEventContracts,
+  useReplayDomainEventDelivery,
 } from "@/hooks/use-domain-events"
 
 const mockUseSubscriptions = useDomainEventSubscriptions as unknown as ReturnType<typeof vi.fn>
 const mockUseDeliveries = useDomainEventDeliveries as unknown as ReturnType<typeof vi.fn>
 const mockUseReactions = useDomainEventReactions as unknown as ReturnType<typeof vi.fn>
 const mockUseContracts = useDomainEventContracts as unknown as ReturnType<typeof vi.fn>
+const mockUseReplay = useReplayDomainEventDelivery as unknown as ReturnType<typeof vi.fn>
 
 function makeSubscription(overrides: Partial<SubscriptionEntry> = {}): SubscriptionEntry {
   return {
@@ -139,6 +142,7 @@ function stubQueries({
   mockUseDeliveries.mockReturnValue(deliveries)
   mockUseReactions.mockReturnValue({ data: undefined, isLoading: false, isError: false })
   mockUseContracts.mockReturnValue(contracts)
+  mockUseReplay.mockReturnValue({ mutate: vi.fn(), isPending: false, variables: undefined })
 }
 
 afterEach(() => {
@@ -147,6 +151,7 @@ afterEach(() => {
   mockUseDeliveries.mockReset()
   mockUseReactions.mockReset()
   mockUseContracts.mockReset()
+  mockUseReplay.mockReset()
 })
 
 describe("ButlerDomainEventsPanel", () => {
@@ -219,6 +224,33 @@ describe("ButlerDomainEventsPanel", () => {
     renderPanel()
     const badge = screen.getByTestId("delivery-status-badge")
     expect(badge.textContent).toContain("failed")
+  })
+
+  it("exposes failed_permanent deliveries with a single idempotent replay control", async () => {
+    const user = userEvent.setup()
+    const mutate = vi.fn()
+    const entry = makeDelivery({ status: "failed_permanent", error_message: "Unknown tool" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({ mutate, isPending: false, variables: undefined })
+
+    renderPanel()
+    const replay = screen.getByRole("button", { name: "Replay travel.trip_booked delivery" })
+    expect(screen.getByTestId("delivery-status-badge").textContent).toContain("failed_permanent")
+    await user.click(replay)
+
+    expect(mutate).toHaveBeenCalledTimes(1)
+    expect(mutate).toHaveBeenCalledWith(entry.id)
+  })
+
+  it("disables replay while the exact delivery is being requeued", () => {
+    const entry = makeDelivery({ status: "failed_permanent" })
+    stubQueries({ deliveries: { data: { data: [entry] }, isLoading: false, isError: false } })
+    mockUseReplay.mockReturnValue({ mutate: vi.fn(), isPending: true, variables: entry.id })
+
+    renderPanel()
+
+    const replay = screen.getByRole("button", { name: "Replaying travel.trip_booked delivery" })
+    expect(replay).toHaveProperty("disabled", true)
   })
 
   it("renders inactive subscriptions with a distinct label", () => {

@@ -1726,7 +1726,7 @@ class MessagePipeline:
                     original_payload={"message_text": message_text},
                     request_context=request_context or {},
                     error_details={"cc_output": cc_output[:500] if cc_output else ""},
-                    replay_eligible=False,
+                    replay_eligible=True,
                 )
             dead_letter_id = str(dl_id)
         except Exception:
@@ -1780,7 +1780,11 @@ class MessagePipeline:
 
         return RoutingResult(
             target_butler="dead_letter",
-            route_result={"dead_letter_id": dead_letter_id},
+            route_result={"status": "unroutable", "dead_letter_id": dead_letter_id},
+            routing_error="unroutable",
+            routed_targets=[],
+            acked_targets=[],
+            failed_targets=[],
         )
 
     @staticmethod
