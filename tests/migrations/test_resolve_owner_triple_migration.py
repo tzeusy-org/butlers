@@ -104,6 +104,8 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     owner_primary_email = "owner-primary@example.test"
     owner_secondary_email = "owner-secondary@example.test"
     non_owner_email = "external@example.test"
+    owner_secondary_whatsapp = "15551234567@s.whatsapp.net"
+    non_owner_whatsapp = "15557654321@s.whatsapp.net"
     ambiguous_email = "ambiguous@example.test"
     ambiguous_handle = "telegram:ambiguous-11111"
     normalized_ambiguous_handle = "@MixedCaseOwner"
@@ -168,6 +170,8 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
             (non_owner_id, ambiguous_handle, False),
             (owner_id, "MixedCaseOwner", False),
             (non_owner_id, "telegram:mixedcaseowner", False),
+            (owner_id, owner_secondary_whatsapp, False),
+            (non_owner_id, non_owner_whatsapp, False),
         ],
     )
     await migration_pool.execute(
@@ -189,6 +193,8 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         "owner_primary_email": owner_primary_email,
         "owner_secondary_email": owner_secondary_email,
         "non_owner_email": non_owner_email,
+        "owner_secondary_whatsapp": owner_secondary_whatsapp,
+        "non_owner_whatsapp": non_owner_whatsapp,
         "ambiguous_email": ambiguous_email,
         "ambiguous_handle": ambiguous_handle,
         "normalized_ambiguous_handle": normalized_ambiguous_handle,
@@ -574,6 +580,19 @@ class TestSchemaIsolation:
                 butler_name="messenger",
             )
 
+        async def whatsapp_decision(target: str):
+            return await check_recipient(
+                messenger_role_pool,
+                channel="whatsapp",
+                target=target,
+                rule_tool_name="whatsapp_send_message",
+                rule_match_args={"recipient": target},
+                park_tool_name="whatsapp_send_message",
+                park_tool_args={"recipient": target},
+                park_summary="whatsapp authorization matrix",
+                butler_name="messenger",
+            )
+
         pending_before = await messenger_role_pool.fetchval(
             "SELECT count(*) FROM pending_actions WHERE status = 'pending'"
         )
@@ -584,8 +603,10 @@ class TestSchemaIsolation:
         owner_telegram = await telegram_decision("owner-secondary-54321")
         assert (owner_telegram.allowed, owner_telegram.reason) == (True, "owner")
 
+        owner_whatsapp = await whatsapp_decision(seeded_data["owner_secondary_whatsapp"])
+        assert (owner_whatsapp.allowed, owner_whatsapp.reason) == (True, "owner")
+
         for target in (
-            seeded_data["owner_secondary_email"],
             seeded_data["non_owner_email"],
             seeded_data["ambiguous_email"],
         ):
@@ -594,18 +615,27 @@ class TestSchemaIsolation:
 
         ambiguous_telegram = await telegram_decision(seeded_data["normalized_ambiguous_handle"])
         assert (ambiguous_telegram.allowed, ambiguous_telegram.reason) == (False, "parked")
+        secondary_email = await email_decision(seeded_data["owner_secondary_email"])
+        assert (secondary_email.allowed, secondary_email.reason) == (True, "owner")
+
+        external_whatsapp = await whatsapp_decision(seeded_data["non_owner_whatsapp"])
+        assert (external_whatsapp.allowed, external_whatsapp.reason) == (False, "parked")
 
         pending_after = await messenger_role_pool.fetchval(
             "SELECT count(*) FROM pending_actions WHERE status = 'pending'"
         )
+
         assert pending_after - pending_before == 4
 
-    async def test_messenger_role_email_wrapper_requires_primary_owner_address(
+    async def test_messenger_role_email_wrapper_allows_secondary_owner_address(
         self, messenger_role_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
-        """The production MCP wrapper preserves the email-specific primacy safeguard."""
+        """The production MCP wrapper authorizes every unique owner email."""
+
+        sent_to: list[str] = []
 
         async def send_email(to: str, subject: str, body: str) -> dict[str, str]:
+            sent_to.append(to)
             return {"status": "sent", "to": to, "subject": subject, "body": body}
 
         wrapper = _make_gate_wrapper(
@@ -629,10 +659,23 @@ class TestSchemaIsolation:
             to=seeded_data["owner_secondary_email"],
             subject="Owner delivery",
             body="Secondary address",
-            _why="The secondary address requires explicit approval.",
-            _evidence=[],
         )
-        assert secondary["status"] == "pending_approval"
+        assert secondary["status"] == "sent"
+
+        for target in (seeded_data["non_owner_email"], seeded_data["ambiguous_email"]):
+            blocked = await wrapper(
+                to=target,
+                subject="External delivery",
+                body="Requires review",
+                _why="The target is not uniquely associated with the owner.",
+                _evidence=[],
+            )
+            assert blocked["status"] == "pending_approval"
+
+        assert sent_to == [
+            seeded_data["owner_primary_email"],
+            seeded_data["owner_secondary_email"],
+        ]
 
     async def test_isolated_role_owner_only_scoping_still_enforced(
         self, isolated_role_pool: asyncpg.Pool, seeded_data: dict

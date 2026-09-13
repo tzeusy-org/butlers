@@ -1,9 +1,8 @@
 """Unit tests for the approval gate owner-bypass policy.
 
-Covers bu-nd5me: for owner-directed OUTBOUND sends, gate.py auto-approves any
-active, verified non-email owner channel. Email retains RFC 0017's stricter
-primary-address requirement. The shared ``is_primary_contact`` helper remains
-the ordinary direct-read primacy check for inbound identity and email delivery.
+Covers bu-nd5me and bu-rp2ie7: owner-directed outbound sends auto-approve any
+active channel identifier that resolves uniquely to the owner. Primacy remains
+identity metadata, not an outbound-authorization requirement.
 
 [bu-nd5me]
 """
@@ -16,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.gate import (
     _make_gate_wrapper as _production_make_gate_wrapper,
 )
@@ -223,112 +221,12 @@ class TestMatchStandingRule:
 
 
 # ---------------------------------------------------------------------------
-# is_primary_contact unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestIsPrimaryContact:
-    """Unit tests for the shared is_primary_contact helper.
-
-    Migration bead 7 (bu-akads): is_primary_contact now takes entity_id and
-    queries relationship.entity_facts instead of public.contact_info.
-    The triple's ``"primary"`` column replaces the legacy ``is_primary`` column.
-    """
-
-    async def test_returns_true_when_is_primary(self) -> None:
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"primary": True})
-        result = await is_primary_contact(pool, entity_id, "telegram", "12345")
-        assert result is True
-
-    async def test_returns_false_when_not_primary(self) -> None:
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"primary": False})
-        result = await is_primary_contact(pool, entity_id, "telegram", "99999")
-        assert result is False
-
-    async def test_returns_false_when_row_missing(self) -> None:
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return=None)
-        result = await is_primary_contact(pool, entity_id, "telegram", "no-such-id")
-        assert result is False
-
-    async def test_returns_false_on_db_error(self) -> None:
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_side_effect=Exception("connection lost"))
-        result = await is_primary_contact(pool, entity_id, "whatsapp_jid", "+15555555")
-        assert result is False
-
-    async def test_queries_correct_columns(self) -> None:
-        """Bead 7 cut-over: query targets relationship.entity_facts with entity_id."""
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return={"primary": True})
-        await is_primary_contact(pool, entity_id, "telegram", "chat-99")
-        query, *args = pool.fetchrow.call_args.args
-        assert "entity_facts" in query
-        assert '"primary"' in query or "primary" in query
-        assert args[0] == entity_id
-        assert args[1] == "has-handle"  # telegram → has-handle predicate
-        assert args[2] == "chat-99"
-
-    async def test_at_prefixed_username_returns_true_when_stored_without_at(self) -> None:
-        """is_primary_contact normalises '@Tzeusy' → 'Tzeusy' for telegram channel.
-
-        Regression for bu-c4f7f: the primacy check must be consistent with
-        resolve_contact_by_channel's @-prefix normalisation so that an owner send
-        with chat_id='@Tzeusy' is not mis-classified as non-primary when the
-        stored fact uses bare 'Tzeusy'.
-        """
-        entity_id = uuid.uuid4()
-        stored = "Tzeusy"
-
-        # fetchrow returns the primary row only for the stored bare value
-        def _fetchrow(query: str, eid: Any, predicate: str, value: str) -> dict | None:
-            if value.lower() == stored.lower():
-                return {"primary": True}
-            return None
-
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-
-        result = await is_primary_contact(pool, entity_id, "telegram", "@Tzeusy")
-
-        assert result is True, (
-            "is_primary_contact must resolve '@Tzeusy' to stored 'Tzeusy' and return True"
-        )
-
-    async def test_at_prefixed_username_returns_false_when_not_stored(self) -> None:
-        """is_primary_contact returns False when no variant of the username is primary."""
-        entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_return=None)
-
-        result = await is_primary_contact(pool, entity_id, "telegram", "@nobody")
-
-        assert result is False
-
-    async def test_non_telegram_channel_uses_exact_match_only(self) -> None:
-        """Non-telegram channels (e.g. email) are not subject to @-prefix normalization."""
-        entity_id = uuid.uuid4()
-        # Only one fetchrow call expected — email uses exact match, not candidate loop
-        pool = _make_pool(fetchrow_return={"primary": True})
-
-        result = await is_primary_contact(pool, entity_id, "email", "owner@example.com")
-
-        assert result is True
-        assert pool.fetchrow.await_count == 1, "email must use a single exact-match query"
-
-
-# ---------------------------------------------------------------------------
-# Gate wrapper: owner bypass requires is_primary
+# Gate wrapper: unique owner association bypasses approval
 # ---------------------------------------------------------------------------
 
 
 class TestGateOwnerOutboundAutoApprove:
-    """gate.py auto-approves only policy-safe owner-directed outbound sends.
-
-    Non-email owner self-notification may use any verified active association.
-    Email retains RFC 0017's primary-address safeguard.
-    """
+    """gate.py auto-approves every uniquely verified owner-directed send."""
 
     async def test_owner_primary_telegram_auto_approves(self) -> None:
         """Owner send to primary telegram chat_id is auto-approved."""
@@ -383,7 +281,6 @@ class TestGateOwnerOutboundAutoApprove:
         """
         owner_id = uuid.uuid4()
         owner = _owner_contact(owner_id)
-        # fetchrow will NOT be called for is_primary in entity_id path
         pool = _make_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
@@ -391,12 +288,7 @@ class TestGateOwnerOutboundAutoApprove:
             resolved_contact=owner,
             pool=pool,
         )
-        # Should auto-approve — entity_id dispatch skips primacy gate
         assert result == {"status": "sent"}
-        # Confirm fetchrow was NOT called for primacy (only _resolve_target_contact is patched)
-        # pool.fetchrow may be called by _resolve_target_contact's internal direct UUID lookup,
-        # but _is_primary_contact must NOT be called for entity_id dispatch.
-        # We verify this indirectly: if it were called with is_primary=False the action would park.
 
     async def test_owner_plain_string_evidence_is_rejected_before_persistence(self) -> None:
         """Owner bypass may omit a dossier, but supplied evidence stays strict."""
@@ -487,26 +379,6 @@ class TestGateOwnerOutboundAutoApprove:
 
         # No matching rule → parked (fetch returns [])
         assert result.get("status") == "pending_approval"
-
-    async def test_owner_with_two_telegram_chat_ids_both_auto_approve(self) -> None:
-        """Scenario: owner has two Telegram chat IDs; sends to EITHER auto-approve.
-
-        bu-nd5me acceptance: two entity_facts rows for the same channel type
-        (telegram), one primary and one not.  Both are verified owner channels, so
-        an owner self-notification to either must auto-approve — primacy is no
-        longer consulted for outbound owner sends.
-        """
-        owner = _owner_contact()
-        primary_chat_id = "11111111"
-        secondary_chat_id = "22222222"
-
-        for chat_id in (primary_chat_id, secondary_chat_id):
-            result = await _call_gate(
-                {"chat_id": chat_id, "message": "hi"},
-                resolved_contact=owner,
-                pool=_make_pool(fetchrow_return={"primary": chat_id == primary_chat_id}),
-            )
-            assert result == {"status": "sent"}, f"send to {chat_id} should auto-approve"
 
 
 # ---------------------------------------------------------------------------
@@ -883,18 +755,18 @@ class TestOwnerCrossSchemaFallback:
 
 
 # ---------------------------------------------------------------------------
-# Email primacy applies to the generic notify() approval wrapper too
+# Secondary owner email uses the same owner bypass as other channels
 # ---------------------------------------------------------------------------
 
 
 class TestNotifySecondaryOwnerChannel:
-    """Secondary owner email remains gated through the generic notify shape."""
+    """Secondary owner email auto-approves through the generic notify shape."""
 
     _SECONDARY_OWNER_EMAIL = "tzeuse@gmail.com"
     _NON_OWNER_EMAIL = "stranger@example.com"
 
-    async def test_notify_secondary_owner_email_parks(self) -> None:
-        """A direct owner lookup cannot bypass email primacy."""
+    async def test_notify_secondary_owner_email_auto_approves(self) -> None:
+        """A direct unique owner lookup bypasses approval regardless of primacy."""
         owner = _owner_contact()
         pool = _make_pool(fetchrow_return={"primary": False})
 
@@ -909,9 +781,9 @@ class TestNotifySecondaryOwnerChannel:
             owner_channel_is_primary=False,
             tool_name="notify",
         )
-        assert result["status"] == "pending_approval"
+        assert result == {"status": "sent"}
 
-    async def test_notify_secondary_owner_email_parks_cross_schema(self) -> None:
+    async def test_notify_secondary_owner_email_auto_approves_cross_schema(self) -> None:
         """The messenger scenario: the butler role cannot read relationship schema,
         so resolve_contact_by_channel returns None and the owner is recognized via
         the SECURITY DEFINER fallback reporting a non-primary owner channel."""
@@ -944,16 +816,14 @@ class TestNotifySecondaryOwnerChannel:
                 channel="email",
                 recipient=self._SECONDARY_OWNER_EMAIL,
                 message="time-sensitive reminder",
-                _why="The secondary address requires explicit approval.",
-                _evidence=[],
             )
-        assert result["status"] == "pending_approval"
-        exec_mock.assert_not_awaited()
+        assert result == {"status": "sent"}
+        exec_mock.assert_awaited_once()
 
     async def test_notify_non_owner_email_still_parks(self) -> None:
         """notify() to a non-owner recipient with no standing rule still parks.
 
-        Guardrail: enforcing email primacy must not auto-approve non-owners.
+        Guardrail: owner-associated bypass must not auto-approve non-owners.
         """
         non_owner = _non_owner_contact()
         pool = _make_pool(fetchrow_return=None)  # no standing rules (fetch → [])

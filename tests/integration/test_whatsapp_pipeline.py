@@ -370,14 +370,6 @@ class _GateTestPool:
                 return None
             return {"entity_id": matches[0].get("entity_id"), "is_primary": True}
         if "relationship.entity_facts" in query and args:
-            if '"primary"' in query and len(args) == 3:
-                # is_primary_contact query (bead 7): SELECT "primary" FROM relationship.entity_facts
-                # WHERE subject=$1 AND predicate=$2 AND object=$3
-                channel_value = str(args[2])
-                found = any(ci_val == channel_value for (ci_type, ci_val) in self._contacts)
-                if not found:
-                    return None
-                return {"primary": True}
             if "ef.subject" in query and "entity_facts ef" in query and len(args) >= 2:
                 # resolve_contact_by_channel: SELECT ef.subject AS entity_id, e.canonical_name, ...
                 # WHERE ef.predicate=$1 AND ef.object=$2
