@@ -1530,7 +1530,17 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                assert_at_chain_head(conn, target_schema)
+                stamped = [
+                    row[0]
+                    for row in conn.execute(
+                        text(
+                            f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
+                        )
+                    )
+                ]
+                # pinned-revision: core_231's autocommit downgrade commits the
+                # preceding irreversible core_234 no-op stamp before core_198 refuses.
+                assert stamped == ["core_231"]
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
@@ -1543,6 +1553,22 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     finally:
         engine.dispose()
     assert _has_bootstrap_finalized_runtime_attention_interface(bootstrap_url)
+
+    reapply_results = _run_concurrent_core_head_upgrades(db_url, target_schemas)
+    failed_reapplies = {
+        target_schema: stderr
+        for target_schema, (returncode, _stdout, stderr) in reapply_results.items()
+        if returncode != 0
+    }
+    assert not failed_reapplies, "\n".join(failed_reapplies.values())
+
+    engine = create_engine(bootstrap_url)
+    try:
+        with engine.connect() as conn:
+            for target_schema in target_schemas:
+                assert_at_chain_head(conn, target_schema)
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize(
