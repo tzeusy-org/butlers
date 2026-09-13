@@ -22,11 +22,18 @@ After authentication, the audit actor SHALL be derived server-side through
 `authenticated_principal()` is attribution only and SHALL NOT be treated as an
 authentication check.
 
-The dashboard UI SHALL remain blocked until `bu-pb6oy` supplies a separately
-approved and implemented browser credential-transport contract. This
-requirement SHALL NOT choose or imply a cookie, JavaScript-held credential,
-build-time credential, same-origin bypass, or any other new browser
-authentication mechanism.
+The `bu-pb6oy` browser-session policy is closed and adopted: configured-key
+browser authentication uses an expiring/revocable server-managed
+HttpOnly/Secure/SameSite=Strict session over HTTPS with CSRF protection,
+preserves `X-API-Key` for non-browser callers, and does not treat same-origin as
+authentication. Its conforming configured-key session/CSRF implementation
+remains unimplemented and SHALL remain a prerequisite for this mapping UI.
+
+Default keyless Compose/browser usability SHALL remain separately blocked on
+`bu-azqfpk`: the owner has not selected E1 host-authority transport or E2 HTTPS
+entry, nor adopted and implemented the resulting exact enrollment contract.
+This mapping artifact SHALL select neither E1 mechanism nor E2 mechanism and
+SHALL NOT imply that default keyless Compose is enrolled or browser-usable.
 
 #### Scenario: Unconfigured owner control fails before body access
 
@@ -55,11 +62,20 @@ authentication mechanism.
 
 #### Scenario: Browser workflow waits for its authentication prerequisite
 
-- **WHEN** `bu-pb6oy` has not produced an approved and implemented browser-auth
-  contract that can satisfy the owner-control boundary
+- **WHEN** the adopted `bu-pb6oy` configured-key session/CSRF contract has not
+  been implemented and proven at the owner-control boundary
 - **THEN** the mapping UI SHALL NOT ship or be described as usable
 - **AND** no alternate credential transport or same-origin bypass SHALL be
   introduced by this capability
+
+#### Scenario: Default keyless workflow waits for host enrollment choices
+
+- **WHEN** `bu-azqfpk` E1 host-authority transport and E2 HTTPS entry remain
+  unselected, unadopted, or unimplemented
+- **THEN** the mapping workflow SHALL NOT ship or be described as usable in
+  default keyless Compose
+- **AND** this capability SHALL NOT select a host code, browser challenge,
+  Tailscale Serve, loopback TLS, or any other enrollment mechanism
 
 ### Requirement: Exact bounded mapping request
 
@@ -383,8 +399,13 @@ receipt.
 This specification is authority to review the contract only. Implementation
 SHALL remain blocked until independent privacy/security review passes on the
 exact artifact, the owner separately approves that exact reviewed artifact, and
-`bu-pb6oy` supplies the approved browser authentication path. Any semantic edit
-invalidates prior review and approval.
+the adopted `bu-pb6oy` configured-key session/CSRF contract is implemented and
+proven. Implementation or usability claims for default keyless Compose SHALL
+also remain blocked until the owner resolves `bu-azqfpk` E1/E2, the resulting
+exact host-authorized enrollment artifact is independently reviewed and
+adopted, and that enrollment/HTTPS path is implemented and proven. This mapping
+artifact selects neither enrollment mechanism. Any semantic edit invalidates
+prior review and approval.
 
 Implementation SHALL then require real-PostgreSQL tests at the migrated schema,
 API and browser-client tests, advisory-lock concurrency tests, transaction
@@ -409,6 +430,17 @@ their own authority.
   exact commit and then received separate owner approval naming that artifact
 - **THEN** no implementation, deployment, mapping operation, or private-data
   submission SHALL occur
+
+#### Scenario: Both browser authentication prerequisites precede implementation
+
+- **WHEN** the configured-key session/CSRF path remains unimplemented or the
+  host-authorized E1/E2 enrollment path remains unresolved, unadopted, or
+  unimplemented
+- **THEN** the mapping UI SHALL remain blocked in configured-key deployments
+  while the session path is missing, and SHALL remain blocked in default
+  keyless Compose while the enrollment path is incomplete
+- **AND** neither same-origin access nor an arbitrary first visitor may supply
+  the missing authority
 
 #### Scenario: Future verification exercises the real seams
 
