@@ -297,7 +297,7 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
     dispatch.assert_not_awaited()
     row = await approval_push_pool.fetchrow(
         """
-        SELECT pa.id, pa.tool_name, adi.action_key, adi.admission_mode,
+        SELECT pa.id, pa.tool_name, adi.action_key, adi.origin_butler, adi.admission_mode,
                adp.presentation_key, adp.presentation_mode, adp.state
           FROM pending_actions AS pa
           JOIN approval_delivery_intents AS adi ON adi.action_id = pa.id
@@ -309,6 +309,7 @@ async def test_gate_park_atomically_admits_one_recoverable_presentation_without_
     assert row is not None
     assert row["tool_name"] == "relationship_assert_fact"
     assert row["action_key"] == f"approval:public:{action_id}"
+    assert row["origin_butler"] == "relationship"
     assert row["admission_mode"] == "single"
     assert row["presentation_key"] == f"approval:public:{action_id}:p:1"
     assert row["presentation_mode"] == "single"
