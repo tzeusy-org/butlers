@@ -17,6 +17,11 @@ Scope: v1-mandatory
 - **WHEN** a GET request is made for a non-existent butler
 - **THEN** the response SHALL return HTTP 404
 
+#### Scenario: Tool declaration snapshot is unavailable
+- **WHEN** the daemon status tool cannot provide a valid declaration snapshot
+- **THEN** the response SHALL set `tool_snapshot_status` to `unavailable`
+- **AND** it SHALL NOT represent the missing snapshot as an empty or complete tool surface
+
 #### Scenario: Field tiers included in response
 - **WHEN** a GET response is returned
 - **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold

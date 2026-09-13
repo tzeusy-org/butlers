@@ -298,6 +298,7 @@ const RUNTIME_CONFIG = {
   declared_tool_names: ["status", "delegate_ask"],
   effective_tool_names: ["status", "delegate_ask"],
   tool_declaration_complete: true,
+  tool_snapshot_status: "available" as const,
   catalog_read_sensitivity: "normal" as const,
   max_concurrent: 3,
   max_queued: 10,
@@ -392,6 +393,30 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
         "Declared, not registered: relationship (tools) — optional import unavailable",
       ),
     ).toBeTruthy();
+  });
+
+  it("names an unavailable declaration snapshot instead of rendering an unknown all-clear", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: {
+        ...RUNTIME_CONFIG,
+        declared_tool_names: null,
+        effective_tool_names: null,
+        tool_declaration_complete: null,
+        tool_snapshot_status: "unavailable",
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    expect(screen.getByText("Declaration snapshot unavailable.")).toBeTruthy();
   });
 
   it("surfaces the cold (restart required) tier badge for ceiling fields", () => {

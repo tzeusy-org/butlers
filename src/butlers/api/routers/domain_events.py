@@ -235,7 +235,9 @@ async def replay_domain_event_delivery(
         raise HTTPException(status_code=400, detail=f"Invalid delivery id {delivery_id!r}") from exc
 
     status = await requeue_failed_delivery(_any_pool(db), parsed_id)
-    if status is None:
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="Delivery not found.")
+    if status == "conflict":
         raise HTTPException(
             status_code=409,
             detail="Delivery is not failed_permanent or was already replayed.",

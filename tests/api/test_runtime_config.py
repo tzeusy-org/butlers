@@ -109,6 +109,7 @@ def test_get_success_returns_field_tiers(tmp_path: Path):
     assert data["declared_core_groups"] == ["infra", "delegation", "graph"]
     assert data["effective_core_groups"] == ["infra", "delegation", "graph"]
     assert data["core_groups_source"] == "git"
+    assert data["tool_snapshot_status"] == "unavailable"
     # Hot runtime-selection fields removed from this endpoint
     for field in ("model", "runtime_type", "args", "session_timeout_s"):
         assert field not in data
@@ -138,6 +139,18 @@ async def test_tool_surface_snapshot_preserves_comparable_tool_names():
         "declared_tool_names": ["delegate_ask", "status"],
         "effective_tool_names": ["status"],
         "tool_declaration_complete": False,
+        "tool_snapshot_status": "available",
+    }
+
+
+async def test_tool_surface_snapshot_names_unavailable_evidence():
+    from butlers.api.routers.runtime_config import _tool_surface_snapshot
+
+    manager = AsyncMock()
+    manager.get_client.side_effect = RuntimeError("daemon offline")
+
+    assert await _tool_surface_snapshot(manager, "relationship") == {
+        "tool_snapshot_status": "unavailable"
     }
 
 
