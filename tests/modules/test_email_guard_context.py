@@ -17,6 +17,16 @@ from butlers.modules.approvals.email_guard import (
     _get_email_context,
     check_email_recipient,
 )
+from butlers.testing.approval_parking_fake import record_pending_action
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
+
 
 # ---------------------------------------------------------------------------
 # _context_conflicts unit tests
@@ -116,6 +126,7 @@ _COMMON_KWARGS = {
     "park_tool_name": "notify",
     "park_tool_args": {"recipient": "friend@work.com", "channel": "email"},
     "park_summary": "test park summary",
+    "butler_name": "messenger",
 }
 
 

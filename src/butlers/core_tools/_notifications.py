@@ -671,22 +671,39 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     # The atomic admission helper commits the action and its
                     # recoverable presentation together. This storage-only
                     # slice performs no direct owner delivery.
-                    await park_pending_action(
-                        pool,
-                        action_id=action_id,
-                        tool_name="notify",
-                        tool_args=safe_park_tool_args,
-                        agent_summary=agent_summary,
-                        requested_at=now,
-                        expires_at=expires_at,
-                        session_id=get_current_runtime_session_id(),
-                        why=dossier.why,
-                        evidence=dossier.evidence,
-                        blast_radius=dossier.blast_radius,
-                        reversibility=dossier.reversibility,
-                        origin_butler=butler_name,
-                        approval_push_runtime=daemon._approval_push_runtime,
-                    )
+                    try:
+                        admission = await park_pending_action(
+                            pool,
+                            action_id=action_id,
+                            tool_name="notify",
+                            tool_args=safe_park_tool_args,
+                            agent_summary=agent_summary,
+                            requested_at=now,
+                            expires_at=expires_at,
+                            session_id=get_current_runtime_session_id(),
+                            why=dossier.why,
+                            evidence=dossier.evidence,
+                            blast_radius=dossier.blast_radius,
+                            reversibility=dossier.reversibility,
+                            origin_butler=butler_name,
+                            approval_push_runtime=daemon._approval_push_runtime,
+                        )
+                        if admission is None or not isinstance(admission.action_id, uuid.UUID):
+                            raise RuntimeError("Approval parking returned no durable action")
+                        action_id = admission.action_id
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "notify() failed to atomically park missing-identifier action"
+                        )
+                        return {
+                            "status": "error",
+                            "error": (
+                                "Delivery remains blocked because approval parking failed. "
+                                "No pending action was created; recover the approvals subsystem "
+                                "and retry."
+                            ),
+                            "retryable": False,
+                        }
                     logger.warning(
                         "notify() parked as pending_missing_identifier: "
                         "entity_id=%s has no %r entity_facts triple (action=%s)",
@@ -755,11 +772,22 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         blast_radius=_blast_radius,
                         reversibility=_reversibility,
                         enforce_dossier=True,
+                        butler_name=butler_name,
                         approval_push_runtime=daemon._approval_push_runtime,
                     )
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
                     if not _decision.allowed:
+                        if _decision.reason == "parking_failed":
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Delivery remains blocked because approval parking failed. "
+                                    "No pending action was created; recover the approvals "
+                                    "subsystem and retry."
+                                ),
+                                "retryable": False,
+                            }
                         return {
                             "status": "pending_approval",
                             "error": (
@@ -818,6 +846,16 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     if _decision.dossier_error is not None:
                         return _decision.dossier_error
                     if not _decision.allowed:
+                        if _decision.reason == "parking_failed":
+                            return {
+                                "status": "error",
+                                "error": (
+                                    "Delivery remains blocked because approval parking failed. "
+                                    "No pending action was created; recover the approvals "
+                                    "subsystem and retry."
+                                ),
+                                "retryable": False,
+                            }
                         return {
                             "status": "pending_approval",
                             "error": (

@@ -123,6 +123,31 @@ def test_production_parking_never_calls_legacy_push_writer() -> None:
     )
 
 
+def test_every_atomic_park_producer_supplies_origin() -> None:
+    """No producer may defer owning-schema attribution to the parking helper."""
+    violations: list[str] = []
+    repo_root = _repo_root()
+    for source_root in (repo_root / "src", repo_root / "roster"):
+        for py_file in sorted(source_root.rglob("*.py")):
+            if any(part in {"tests", "testing", "migrations"} for part in py_file.parts):
+                continue
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                called = node.func
+                name = called.id if isinstance(called, ast.Name) else None
+                if isinstance(called, ast.Attribute):
+                    name = called.attr
+                if name != "park_pending_action":
+                    continue
+                if py_file.name == "approvals_hooks.py" and isinstance(called, ast.Attribute):
+                    continue
+                if not any(keyword.arg == "origin_butler" for keyword in node.keywords):
+                    violations.append(f"{py_file.relative_to(repo_root)}:{node.lineno}")
+    assert not violations, "Atomic park producer omitted origin_butler:\n" + "\n".join(violations)
+
+
 def test_relationship_library_helper_delegates_to_choke_point() -> None:
     """The shared relationship helper must call the core choke point, not raw SQL."""
     helper_path = _relationship_dir() / "tools" / "relationship_assert_fact.py"

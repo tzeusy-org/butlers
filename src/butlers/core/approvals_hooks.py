@@ -278,7 +278,7 @@ class EmailGuardDecision:
     """
 
     allowed: bool
-    reason: str  # "owner" | "rule" | "parked" | "dossier_error"
+    reason: str  # "owner" | "rule" | "parked" | "parking_failed" | "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None
@@ -539,8 +539,7 @@ async def park_pending_action(
     cannot fail open: there is no safe default for "park this action" when no
     hook is registered.  A butler with no approvals module also has no
     ``pending_actions`` table to park into, so this logs a loud warning and
-    returns ``None`` (no row or intent written) rather than
-    fabricating a park that never happened.
+    raises rather than fabricating a park that never happened.
     """
     runtime = _resolve_pool_runtime(pool)
     if runtime is None:
@@ -550,7 +549,7 @@ async def park_pending_action(
             action_id,
             tool_name,
         )
-        return None
+        raise RuntimeError("Approval parking is unavailable for this butler")
 
     kwargs: dict[str, Any] = {
         "action_id": action_id,
@@ -569,4 +568,8 @@ async def park_pending_action(
     }
     if deduplication_key is not None:
         kwargs["deduplication_key"] = deduplication_key
-    return await runtime.park_pending_action(pool, **kwargs)
+    result = await runtime.park_pending_action(pool, **kwargs)
+    admitted_action_id = getattr(result, "action_id", None)
+    if not isinstance(admitted_action_id, uuid.UUID):
+        raise RuntimeError("Approval parking returned no durable action")
+    return result

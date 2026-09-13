@@ -19,6 +19,7 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -575,7 +576,11 @@ class TestNotifyMissingIdentifierAndOwner:
             ),
             patch(
                 "butlers.core.owner.fetch_owner_entity_id",
-                new=AsyncMock(return_value=None),
+                new=AsyncMock(
+                    side_effect=lambda _pool, **kwargs: SimpleNamespace(
+                        action_id=kwargs["action_id"]
+                    )
+                ),
             ),
         ):
             result = await notify_fn(
@@ -636,7 +641,11 @@ class TestNotifyMissingIdentifierAndOwner:
                 # core.approvals_hooks indirection (core_tools must never
                 # import modules.* directly; bu-mda0r).
                 "butlers.core.approvals_hooks.park_pending_action",
-                new=AsyncMock(return_value=None),
+                new=AsyncMock(
+                    side_effect=lambda _pool, **kwargs: SimpleNamespace(
+                        action_id=kwargs["action_id"]
+                    )
+                ),
             ) as mock_park,
             patch(
                 "butlers.core.approvals_hooks.is_approval_parking_available",
@@ -658,6 +667,39 @@ class TestNotifyMissingIdentifierAndOwner:
         assert park_kwargs["origin_butler"] == daemon.config.name
         assert park_kwargs["approval_push_runtime"] is push_runtime
         assert park_kwargs["tool_args"]["entity_id"] == str(entity_id)
+
+    async def test_missing_identifier_reports_atomic_parking_failure(
+        self, butler_dir: Path
+    ) -> None:
+        """A failed admission never fabricates a pending_missing_identifier row."""
+        patches, _, _ = _make_missing_id_patches(butler_dir)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000032")
+        with (
+            patch.object(
+                daemon, "_resolve_entity_channel_identifier", new=AsyncMock(return_value=None)
+            ),
+            patch(
+                "butlers.core.approvals_hooks.park_pending_action",
+                new=AsyncMock(side_effect=RuntimeError("intent insert failed")),
+            ),
+            patch(
+                "butlers.core.approvals_hooks.is_approval_parking_available",
+                return_value=True,
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Hello contact",
+                entity_id=entity_id,
+                _why="The contact needs this delivery after configuration.",
+                _evidence=[],
+            )
+        assert result["status"] == "error"
+        assert result["retryable"] is False
+        assert "no pending action was created" in result["error"].lower()
+        assert "pending_action_id" not in result
 
         # No entity_id → default owner resolver called
         patches3 = _patch_infra()
@@ -782,6 +824,37 @@ class TestNotifyEmailRecipientValidation:
                 _evidence=[],
             )
         assert result3["status"] == "pending_approval"
+
+    async def test_email_admission_failure_is_not_reported_as_pending(
+        self, butler_dir: Path
+    ) -> None:
+        """The email guard's parking failure remains an explicit notify error."""
+        patches = _patch_infra()
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.email_guard.park_pending_action",
+                new=AsyncMock(side_effect=RuntimeError("intent insert failed")),
+            ),
+        ):
+            result = await notify_fn(
+                channel="email",
+                message="Hello stranger",
+                recipient="hallucinated@example.com",
+                _why="The recipient requested this update.",
+                _evidence=[],
+            )
+        assert result["status"] == "error"
+        assert result["retryable"] is False
+        assert "no pending action was created" in result["error"].lower()
+        assert "pending_action_id" not in result
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
 
 @pytest.mark.asyncio

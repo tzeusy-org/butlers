@@ -370,6 +370,55 @@ async def test_concurrent_first_three_digest_and_collapse_are_durable(
     assert [tuple(row.values()) for row in digest_rows] == [(1, "cancelled"), (2, "ready")]
 
 
+async def test_admission_recomputes_database_time_after_serialization_wait(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """A cohort expiring during lock wait cannot capture the delayed admission."""
+    database_now = await approval_push_pool.fetchval("SELECT clock_timestamp()")
+    cohort_id = uuid.uuid4()
+    cohort_key = f"approval-cohort:public:{cohort_id}"
+    window_start = database_now - timedelta(minutes=10) + timedelta(milliseconds=250)
+    await approval_push_pool.execute(
+        """
+        INSERT INTO approval_delivery_cohorts (
+            id, cohort_key, owning_schema, window_started_at, window_ends_at
+        ) VALUES (
+            $1, $2, 'public', $3::timestamptz,
+            $3::timestamptz + interval '10 minutes'
+        )
+        """,
+        cohort_id,
+        cohort_key,
+        window_start,
+    )
+
+    action_id = uuid.uuid4()
+    async with approval_push_pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
+            )
+            admission_task = asyncio.create_task(
+                park_pending_action(
+                    approval_push_pool,
+                    action_id=action_id,
+                    tool_name="relationship_assert_fact",
+                    tool_args={"subject": "owner"},
+                    agent_summary="Post-lock clock admission",
+                    requested_at=database_now,
+                    expires_at=database_now + timedelta(hours=72),
+                    origin_butler="relationship",
+                    approval_push_runtime=None,
+                )
+            )
+            await asyncio.sleep(0.4)
+            release_time = await blocker.fetchval("SELECT clock_timestamp()")
+        admission = await asyncio.wait_for(admission_task, timeout=5)
+
+    assert admission.admission_mode == "single"
+    assert admission.not_before >= release_time
+
+
 async def test_quiet_hours_are_snapshotted_without_generic_deferral(
     approval_push_pool: asyncpg.Pool,
 ) -> None:

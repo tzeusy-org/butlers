@@ -1373,6 +1373,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
+                            if decision.reason == "parking_failed":
+                                raise RuntimeError(
+                                    "Delivery remains blocked because approval parking failed; "
+                                    "no pending action was created."
+                                )
                             raise ValueError(
                                 f"Delivery blocked: {channel} target '{gate_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule "
@@ -1469,6 +1474,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
+                            if decision.reason == "parking_failed":
+                                raise RuntimeError(
+                                    "Delivery remains blocked because approval parking failed; "
+                                    "no pending action was created."
+                                )
                             raise ValueError(
                                 f"Delivery blocked: email target '{email_target}' is a "
                                 f"{decision.contact_desc} and no standing approval rule matches. "

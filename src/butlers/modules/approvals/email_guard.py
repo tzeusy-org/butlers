@@ -105,7 +105,7 @@ class EmailGuardDecision:
     """Result of an email recipient guard check."""
 
     allowed: bool
-    reason: str  # "owner", "rule", "parked", "dossier_error"
+    reason: str  # "owner", "rule", "parked", "parking_failed", "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None  # "known non-owner contact" | "unknown contact"
@@ -308,6 +308,12 @@ async def check_email_recipient(
                     email_target,
                     exc_info=True,
                 )
+                return EmailGuardDecision(
+                    allowed=False,
+                    reason="parking_failed",
+                    action_id=None,
+                    contact_desc=contact_desc,
+                )
             return EmailGuardDecision(
                 allowed=False,
                 reason="parked",
@@ -388,6 +394,12 @@ async def check_email_recipient(
             "email guard: failed to park pending_action for %r",
             email_target,
             exc_info=True,
+        )
+        return EmailGuardDecision(
+            allowed=False,
+            reason="parking_failed",
+            action_id=None,
+            contact_desc=contact_desc,
         )
 
     return EmailGuardDecision(
@@ -593,6 +605,12 @@ async def check_recipient(
             channel,
             target,
             exc_info=True,
+        )
+        return EmailGuardDecision(
+            allowed=False,
+            reason="parking_failed",
+            action_id=None,
+            contact_desc=contact_desc,
         )
 
     return EmailGuardDecision(

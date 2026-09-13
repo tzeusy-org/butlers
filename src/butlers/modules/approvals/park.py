@@ -71,7 +71,9 @@ def _validate_request(request: ParkRequest) -> None:
         raise ValueError("tool_name must be non-empty")
     if not isinstance(request.tool_args, dict):
         raise ValueError("tool_args must be a JSON object")
-    if not _ORIGIN_RE.fullmatch(request.origin_butler):
+    if not isinstance(request.origin_butler, str) or not _ORIGIN_RE.fullmatch(
+        request.origin_butler
+    ):
         raise ValueError("origin_butler must be a canonical butler name")
     if request.requested_at.tzinfo is None or request.requested_at.utcoffset() is None:
         raise ValueError("requested_at must be timezone-aware")
@@ -239,7 +241,9 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
     if existing is not None:
         return existing
 
-    database_now = await connection.fetchval("SELECT transaction_timestamp()")
+    # transaction_timestamp() is fixed before a contended advisory-lock wait.
+    # Admission policy must observe database time after it wins serialization.
+    database_now = await connection.fetchval("SELECT clock_timestamp()")
     policy = await get_approvals_policy_quiet_hours(connection)
     quiet_release = approval_push_deliver_at(policy, now=database_now)
     not_before = quiet_release or database_now
