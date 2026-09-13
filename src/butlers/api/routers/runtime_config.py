@@ -322,98 +322,97 @@ async def patch_runtime_config(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Butler '{name}' not found")
 
-    current_row = await pool.fetchrow("SELECT * FROM runtime_config LIMIT 1")
-    if current_row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No runtime_config row found for butler '{name}'",
-        )
-    declared_groups = _declared_core_groups(roster_dir, name)
-
-    # Build SET clauses from supplied patch fields.
     updates: dict[str, Any] = {}
-    if "core_groups" in patch.model_fields_set:
-        updates["core_groups"] = patch.core_groups
-    if "core_groups_narrowing_reason" in patch.model_fields_set:
-        updates["core_groups_narrowing_reason"] = patch.core_groups_narrowing_reason
-        # Clearing the reason revokes the runtime override immediately. Do not
-        # leave a stale subset in the row until some future daemon restart.
-        if (
-            patch.core_groups_narrowing_reason is None
-            and "core_groups" not in patch.model_fields_set
-        ):
-            updates["core_groups"] = None if declared_groups is None else list(declared_groups)
-    if patch.catalog_read_sensitivity is not None:
-        updates["catalog_read_sensitivity"] = patch.catalog_read_sensitivity
-    if patch.max_concurrent is not None:
-        updates["max_concurrent"] = patch.max_concurrent
-    if patch.max_queued is not None:
-        updates["max_queued"] = patch.max_queued
-    if patch.tool_exposure_policy is not None:
-        updates["tool_exposure_policy"] = patch.tool_exposure_policy
-
-    current_groups = (
-        tuple(current_row["core_groups"]) if current_row["core_groups"] is not None else None
-    )
-    try:
-        current_reason = current_row["core_groups_narrowing_reason"]
-    except (KeyError, IndexError):
-        current_reason = None
-    target_groups_raw = updates.get("core_groups", current_groups)
-    target_groups = None if target_groups_raw is None else tuple(target_groups_raw)
-    target_reason = updates.get("core_groups_narrowing_reason", current_reason)
-    authority = resolve_effective_core_groups(
-        declared_groups,
-        target_groups,
-        narrowing_reason=target_reason,
-    )
-    authority_fields_changed = bool(
-        {"core_groups", "core_groups_narrowing_reason"} & patch.model_fields_set
-    )
-    if authority_fields_changed:
-        if target_groups != declared_groups and authority.source != "runtime_narrowing":
+    async with pool.acquire() as connection, connection.transaction():
+        # Runtime authority is represented by two columns. Lock the row before
+        # deriving their target state so concurrent partial PATCHes cannot each
+        # validate against a stale half of the pair and then commit an invalid
+        # subset with no narrowing reason.
+        current_row = await connection.fetchrow("SELECT * FROM runtime_config LIMIT 1 FOR UPDATE")
+        if current_row is None:
             raise HTTPException(
-                status_code=422,
-                detail=(
-                    "core_groups may only be a strict subset of Git-declared groups and requires "
-                    "a non-empty core_groups_narrowing_reason"
-                ),
-            )
-        if target_groups == declared_groups and target_reason is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="core_groups_narrowing_reason is only valid for a strict runtime narrowing",
+                status_code=404,
+                detail=f"No runtime_config row found for butler '{name}'",
             )
 
-    restart_required: list[str] = []
-    if updates:
-        # Identify cold fields that changed
-        for field_name in updates:
-            if field_name in COLD_FIELDS:
-                restart_required.append(field_name)
+        declared_groups = _declared_core_groups(roster_dir, name)
 
-        # Build dynamic UPDATE SQL
-        set_clauses: list[str] = []
-        params: list[Any] = []
-        idx = 1
-        for col, val in updates.items():
-            set_clauses.append(f"{col} = ${idx}")
-            params.append(val)
-            idx += 1
+        # Build SET clauses from supplied patch fields.
+        if "core_groups" in patch.model_fields_set:
+            updates["core_groups"] = patch.core_groups
+        if "core_groups_narrowing_reason" in patch.model_fields_set:
+            updates["core_groups_narrowing_reason"] = patch.core_groups_narrowing_reason
+            # Clearing the reason revokes the runtime override immediately. Do not
+            # leave a stale subset in the row until some future daemon restart.
+            if (
+                patch.core_groups_narrowing_reason is None
+                and "core_groups" not in patch.model_fields_set
+            ):
+                updates["core_groups"] = None if declared_groups is None else list(declared_groups)
+        if patch.catalog_read_sensitivity is not None:
+            updates["catalog_read_sensitivity"] = patch.catalog_read_sensitivity
+        if patch.max_concurrent is not None:
+            updates["max_concurrent"] = patch.max_concurrent
+        if patch.max_queued is not None:
+            updates["max_queued"] = patch.max_queued
+        if patch.tool_exposure_policy is not None:
+            updates["tool_exposure_policy"] = patch.tool_exposure_policy
 
-        set_clauses.append(f"updated_at = ${idx}")
-        params.append(datetime.now(UTC))
-
-        sql = f"UPDATE runtime_config SET {', '.join(set_clauses)}"
-        await pool.execute(sql, *params)
-
-    # Read back the updated row
-    row = await pool.fetchrow("SELECT * FROM runtime_config LIMIT 1")
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No runtime_config row found for butler '{name}'",
+        current_groups = (
+            tuple(current_row["core_groups"]) if current_row["core_groups"] is not None else None
         )
+        try:
+            current_reason = current_row["core_groups_narrowing_reason"]
+        except (KeyError, IndexError):
+            current_reason = None
+        target_groups_raw = updates.get("core_groups", current_groups)
+        target_groups = None if target_groups_raw is None else tuple(target_groups_raw)
+        target_reason = updates.get("core_groups_narrowing_reason", current_reason)
+        authority = resolve_effective_core_groups(
+            declared_groups,
+            target_groups,
+            narrowing_reason=target_reason,
+        )
+        authority_fields_changed = bool(
+            {"core_groups", "core_groups_narrowing_reason"} & patch.model_fields_set
+        )
+        if authority_fields_changed:
+            if target_groups != declared_groups and authority.source != "runtime_narrowing":
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "core_groups may only be a strict subset of Git-declared groups and "
+                        "requires a non-empty core_groups_narrowing_reason"
+                    ),
+                )
+            if target_groups == declared_groups and target_reason is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "core_groups_narrowing_reason is only valid for a strict runtime narrowing"
+                    ),
+                )
+
+        restart_required = [field_name for field_name in updates if field_name in COLD_FIELDS]
+        if updates:
+            set_clauses: list[str] = []
+            params: list[Any] = []
+            for idx, (column, value) in enumerate(updates.items(), start=1):
+                set_clauses.append(f"{column} = ${idx}")
+                params.append(value)
+
+            set_clauses.append(f"updated_at = ${len(params) + 1}")
+            params.append(datetime.now(UTC))
+
+            sql = f"UPDATE runtime_config SET {', '.join(set_clauses)}"
+            await connection.execute(sql, *params)
+
+        row = await connection.fetchrow("SELECT * FROM runtime_config LIMIT 1")
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No runtime_config row found for butler '{name}'",
+            )
 
     response = PatchResponse(
         config=_row_to_response(row, declared_core_groups=declared_groups),
