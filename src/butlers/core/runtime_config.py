@@ -95,9 +95,15 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
     raw_core_groups = row["core_groups"]
     core_groups = tuple(raw_core_groups) if raw_core_groups is not None else None
     try:
-        core_groups_narrowing_reason = row["core_groups_narrowing_reason"]
+        raw_narrowing_reason = row["core_groups_narrowing_reason"]
     except (KeyError, IndexError):
-        core_groups_narrowing_reason = None
+        raw_narrowing_reason = None
+    # Rolling/pre-migration record doubles may return a placeholder for an
+    # unknown column instead of raising. Unknown evidence cannot authorize a
+    # runtime narrowing.
+    core_groups_narrowing_reason = (
+        raw_narrowing_reason.strip() if isinstance(raw_narrowing_reason, str) else None
+    )
     try:
         catalog_read_sensitivity = row["catalog_read_sensitivity"]
     except (KeyError, IndexError):
