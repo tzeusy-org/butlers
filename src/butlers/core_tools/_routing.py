@@ -370,6 +370,13 @@ class _RoutedDeliveryCommand:
     execute: Callable[[], Awaitable[Any]]
 
 
+ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
+    "email": "email",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp_jid",
+}
+
+
 async def _build_routed_delivery_command(
     *,
     daemon: Any,
@@ -385,6 +392,8 @@ async def _build_routed_delivery_command(
     """Materialize the registered native command before approval evaluation."""
     if intent not in {"send", "reply"}:
         return None
+    if channel not in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
+        raise ValueError(f"Unsupported notify channel: {channel}")
 
     notify_prefix = f"[{origin}]"
     if channel == "email":
@@ -542,7 +551,7 @@ async def _build_routed_delivery_command(
             execute=partial(send_tool, recipient=target, text=rendered_text),
         )
 
-    raise ValueError(f"Unsupported notify channel: {channel}")
+    raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
 
 
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
@@ -1575,17 +1584,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 notify_context=notify_context,
             )
 
-            # Channel-general role-based approval gating for NON-email channels
-            # (telegram, whatsapp, and any future channel).  route.execute calls
+            # Channel-general role-based approval gating for non-email channels.
+            # route.execute calls
             # module delivery methods directly (not MCP tools), so the MCP-level
             # approval wrappers are not in this path.  Mirror what notify() does
             # via check_recipient (bu-nsml2 / #2722) so a non-owner recipient on
             # any non-email channel is gated/parked exactly as on email:
             # owner-directed sends auto-approve on any active verified owner
             # channel, while non-owner recipients require a standing rule or are
-            # parked (fail-closed).  Email is gated separately in its own block
-            # below via check_email_recipient, which additionally enforces the
-            # email-only channel-primacy / context-conflict incident behaviour.
+            # parked (fail-closed). Email is gated separately via
+            # check_email_recipient so non-owner context conflicts retain their
+            # established behavior; owner authorization is channel-uniform.
             if delivery_command is not None and channel != "email":
                 gate_target = delivery_command.approval_target
                 if gate_target:

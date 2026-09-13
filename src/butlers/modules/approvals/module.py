@@ -573,9 +573,10 @@ class ApprovalsModule(Module):
         # Register the recipient-guard and park hooks so core_tools can call
         # them without importing the approvals module directly (dependency
         # inversion; core_tools.* must never import modules.*, enforced by
-        # tests/contracts/test_dependency_direction.py).  The email guard
-        # keeps its channel-primacy / context-conflict nuance; the
-        # channel-general guard gates telegram (and any other channel); the
+        # tests/contracts/test_dependency_direction.py). The email guard keeps
+        # non-owner context-conflict handling; every channel uses the same
+        # unique-owner authorization rule. The channel-general guard gates
+        # telegram (and any other channel); the
         # park hook is the single choke point every PENDING park path routes
         # through (bu-mda0r).
         from butlers.core.approvals_hooks import (

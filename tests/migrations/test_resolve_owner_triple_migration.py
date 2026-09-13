@@ -98,14 +98,19 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         "Other Person",
         [],
     )
-    owner_primary_handle = "telegram:owner-primary-12345"
-    owner_secondary_handle = "telegram:owner-secondary-54321"
-    non_owner_handle = "telegram:non-owner-99999"
+    owner_primary_handle = "telegram:owner_primary_12345"
+    owner_secondary_handle = "telegram:owner_secondary_54321"
+    non_owner_handle = "telegram:non_owner_99999"
     owner_primary_email = "owner-primary@example.test"
     owner_secondary_email = "owner-secondary@example.test"
     non_owner_email = "external@example.test"
+    case_ambiguous_email = "Case.Owner@Example.Test"
+    malformed_owner_email = "malformed-owner-email"
     owner_secondary_whatsapp = "15551234567@s.whatsapp.net"
     non_owner_whatsapp = "15557654321@s.whatsapp.net"
+    normalized_ambiguous_whatsapp = "15558889999@s.whatsapp.net"
+    malformed_owner_telegram = "bad handle"
+    malformed_owner_whatsapp = "owner@not-whatsapp"
     ambiguous_email = "ambiguous@example.test"
     ambiguous_handle = "telegram:ambiguous-11111"
     normalized_ambiguous_handle = "@MixedCaseOwner"
@@ -157,6 +162,9 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
             (non_owner_id, ambiguous_email, False),
             (owner_id, merged_owner_email, True),
             (owner_id, deleted_owner_email, True),
+            (owner_id, case_ambiguous_email, False),
+            (non_owner_id, case_ambiguous_email.lower(), False),
+            (owner_id, malformed_owner_email, False),
         ],
     )
     await migration_pool.executemany(
@@ -172,7 +180,19 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
             (non_owner_id, "telegram:mixedcaseowner", False),
             (owner_id, owner_secondary_whatsapp, False),
             (non_owner_id, non_owner_whatsapp, False),
+            (owner_id, normalized_ambiguous_whatsapp, False),
+            (owner_id, malformed_owner_telegram, False),
+            (owner_id, malformed_owner_whatsapp, False),
         ],
+    )
+    await migration_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, "primary", validity)
+        VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+        """,
+        non_owner_id,
+        "+1 (555) 888-9999",
     )
     await migration_pool.execute(
         """
@@ -193,8 +213,13 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         "owner_primary_email": owner_primary_email,
         "owner_secondary_email": owner_secondary_email,
         "non_owner_email": non_owner_email,
+        "case_ambiguous_email": case_ambiguous_email,
+        "malformed_owner_email": malformed_owner_email,
         "owner_secondary_whatsapp": owner_secondary_whatsapp,
         "non_owner_whatsapp": non_owner_whatsapp,
+        "normalized_ambiguous_whatsapp": normalized_ambiguous_whatsapp,
+        "malformed_owner_telegram": malformed_owner_telegram,
+        "malformed_owner_whatsapp": malformed_owner_whatsapp,
         "ambiguous_email": ambiguous_email,
         "ambiguous_handle": ambiguous_handle,
         "normalized_ambiguous_handle": normalized_ambiguous_handle,
@@ -600,7 +625,7 @@ class TestSchemaIsolation:
         primary_email = await email_decision(seeded_data["owner_primary_email"])
         assert (primary_email.allowed, primary_email.reason) == (True, "owner")
 
-        owner_telegram = await telegram_decision("owner-secondary-54321")
+        owner_telegram = await telegram_decision("owner_secondary_54321")
         assert (owner_telegram.allowed, owner_telegram.reason) == (True, "owner")
 
         owner_whatsapp = await whatsapp_decision(seeded_data["owner_secondary_whatsapp"])
@@ -609,23 +634,31 @@ class TestSchemaIsolation:
         for target in (
             seeded_data["non_owner_email"],
             seeded_data["ambiguous_email"],
+            seeded_data["case_ambiguous_email"].upper(),
+            seeded_data["malformed_owner_email"],
         ):
             decision = await email_decision(target)
             assert (decision.allowed, decision.reason) == (False, "parked")
 
         ambiguous_telegram = await telegram_decision(seeded_data["normalized_ambiguous_handle"])
         assert (ambiguous_telegram.allowed, ambiguous_telegram.reason) == (False, "parked")
+        malformed_telegram = await telegram_decision(seeded_data["malformed_owner_telegram"])
+        assert (malformed_telegram.allowed, malformed_telegram.reason) == (False, "parked")
         secondary_email = await email_decision(seeded_data["owner_secondary_email"])
         assert (secondary_email.allowed, secondary_email.reason) == (True, "owner")
 
         external_whatsapp = await whatsapp_decision(seeded_data["non_owner_whatsapp"])
         assert (external_whatsapp.allowed, external_whatsapp.reason) == (False, "parked")
+        malformed_whatsapp = await whatsapp_decision(seeded_data["malformed_owner_whatsapp"])
+        assert (malformed_whatsapp.allowed, malformed_whatsapp.reason) == (False, "parked")
+        ambiguous_whatsapp = await whatsapp_decision(seeded_data["normalized_ambiguous_whatsapp"])
+        assert (ambiguous_whatsapp.allowed, ambiguous_whatsapp.reason) == (False, "parked")
 
         pending_after = await messenger_role_pool.fetchval(
             "SELECT count(*) FROM pending_actions WHERE status = 'pending'"
         )
 
-        assert pending_after - pending_before == 4
+        assert pending_after - pending_before == 9
 
     async def test_messenger_role_email_wrapper_allows_secondary_owner_address(
         self, messenger_role_pool: asyncpg.Pool, seeded_data: dict

@@ -230,6 +230,10 @@ class TestCheckEmailRecipientContextMismatch:
                 new=AsyncMock(return_value=owner),
             ),
             patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
+            patch(
                 "butlers.modules.approvals.email_guard._get_email_context",
                 new=AsyncMock(return_value="work"),
             ) as mock_get_ctx,

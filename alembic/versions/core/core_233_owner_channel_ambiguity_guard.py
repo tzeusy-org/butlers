@@ -8,8 +8,10 @@ Create Date: 2026-09-13 00:00:00.000000
 schema-isolated butlers to recognize owner-directed outbound communication.
 The original function filtered to the owner before selecting a match, which
 could erase an owner-plus-external collision on the same channel identifier.
-Require one distinct live entity across the whole candidate set before
-returning owner authorization.
+Require one distinct live entity across the whole typed candidate set before
+returning owner authorization. The owner-channel mode compares normalized
+email and handle facts together with bounded WhatsApp phone equivalence so no
+single-predicate lookup can erase a cross-representation collision.
 """
 
 from __future__ import annotations
@@ -43,8 +45,49 @@ BEGIN
         JOIN public.entities e ON e.id = ef.subject
         WHERE ef.validity = 'active'
           AND ef.object_kind = 'literal'
-          AND ef.predicate = p_predicate
-          AND ef.object = ANY(p_candidates)
+          AND (
+                (
+                    p_predicate = 'owner-channel'
+                    AND (
+                        (
+                            ef.predicate = 'has-email'
+                            AND 'has-email:' || lower(btrim(ef.object)) = ANY(p_candidates)
+                        )
+                        OR (
+                            ef.predicate = 'has-handle'
+                            AND 'has-handle:' || lower(btrim(ef.object)) = ANY(p_candidates)
+                        )
+                        OR (
+                            ef.predicate = 'has-phone'
+                            AND EXISTS (
+                                SELECT 1
+                                FROM unnest(p_candidates) AS candidate(value)
+                                CROSS JOIN LATERAL (
+                                    SELECT substring(candidate.value FROM 14) AS digits
+                                ) AS normalized
+                                WHERE candidate.value LIKE 'phone-digits:%'
+                                  AND length(normalized.digits) >= 8
+                                  AND length(regexp_replace(ef.object, '\\D', '', 'g')) >= 8
+                                  AND abs(
+                                      length(regexp_replace(ef.object, '\\D', '', 'g'))
+                                      - length(normalized.digits)
+                                  ) <= 2
+                                  AND (
+                                      regexp_replace(ef.object, '\\D', '', 'g')
+                                          LIKE '%' || normalized.digits
+                                      OR normalized.digits LIKE '%'
+                                          || regexp_replace(ef.object, '\\D', '', 'g')
+                                  )
+                            )
+                        )
+                    )
+                )
+                OR (
+                    p_predicate <> 'owner-channel'
+                    AND ef.predicate = p_predicate
+                    AND ef.object = ANY(p_candidates)
+                )
+          )
           AND e.metadata ->> 'merged_into' IS NULL
           AND e.metadata ->> 'deleted_at' IS NULL
         GROUP BY ef.subject
