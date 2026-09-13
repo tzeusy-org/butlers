@@ -77,6 +77,7 @@ class RuntimeConfigResponse(BaseModel):
     core_groups_narrowing_reason: str | None = None
     declared_tool_names: list[str] | None = None
     effective_tool_names: list[str] | None = None
+    tool_registration_failures: list[dict[str, str]] | None = None
     tool_declaration_complete: bool | None = None
     tool_snapshot_status: Literal["available", "unavailable"] = "unavailable"
     catalog_read_sensitivity: str = "normal"
@@ -186,13 +187,22 @@ async def _tool_surface_snapshot(
         declared = surface.get("declared_names")
         effective = surface.get("effective_names")
         complete = surface.get("declaration_complete")
+        failures = surface.get("registration_failures")
         if not isinstance(declared, list) or not all(isinstance(name, str) for name in declared):
             return unavailable
         if not isinstance(effective, list) or not all(isinstance(name, str) for name in effective):
             return unavailable
+        if not isinstance(failures, list) or not all(
+            isinstance(failure, dict)
+            and set(failure) == {"tool_name", "module_name", "error_type"}
+            and all(isinstance(value, str) for value in failure.values())
+            for failure in failures
+        ):
+            return unavailable
         return {
             "declared_tool_names": declared,
             "effective_tool_names": effective,
+            "tool_registration_failures": failures,
             "tool_declaration_complete": complete if isinstance(complete, bool) else None,
             "tool_snapshot_status": "available",
         }

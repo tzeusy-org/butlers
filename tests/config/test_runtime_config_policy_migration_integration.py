@@ -316,3 +316,81 @@ async def test_rejected_patch_value_never_becomes_the_committed_policy(postgres_
         assert live == "eager_filtered"
     finally:
         await pool.close()
+
+
+@_skip_without_docker
+def test_core_232_deep_downgrade_acl_preflight_preserves_head_and_round_trips(
+    postgres_container,
+) -> None:
+    """A non-producer core_198 predicate fails before core_231 can commit."""
+    from sqlalchemy import create_engine, text
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.testing.migration import (
+        create_migration_db,
+        migration_bootstrap_db_url,
+        migration_db_name,
+    )
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+    bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    bootstrap_config = _build_alembic_config(bootstrap_url, chains=["core"])
+
+    admin_engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin_engine.connect() as conn:
+            # Project the state core_199's protected downgrade deliberately
+            # requires an operator to establish before crossing core_198, then
+            # introduce a separate catalog/ACL failure.
+            conn.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS runtime_attention_plant_legacy_debounce_marker_trigger "
+                    "ON public.model_dispatch_attempts"
+                )
+            )
+            conn.execute(
+                text(
+                    "DROP FUNCTION IF EXISTS "
+                    "public.runtime_attention_plant_legacy_debounce_marker()"
+                )
+            )
+            conn.execute(text("DROP TABLE IF EXISTS public.runtime_attention_producer_control"))
+            conn.execute(
+                text("GRANT INSERT ON public.model_catalog TO runtime_attention_outbox_owner")
+            )
+
+        with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
+            command.downgrade(bootstrap_config, "core_197")
+
+        with create_engine(db_url).connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "core_232"
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'runtime_config' "
+                        "AND column_name = 'core_groups_narrowing_reason'"
+                    )
+                ).scalar_one()
+                == "core_groups_narrowing_reason"
+            )
+
+        with admin_engine.connect() as conn:
+            conn.execute(
+                text("REVOKE INSERT ON public.model_catalog FROM runtime_attention_outbox_owner")
+            )
+
+        # A bounded rollback never crosses core_198 and remains reversible.
+        command.downgrade(bootstrap_config, "core@-1")
+        command.upgrade(bootstrap_config, "core@head")
+        with create_engine(db_url).connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "core_232"
+            )
+    finally:
+        admin_engine.dispose()

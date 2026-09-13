@@ -220,6 +220,7 @@ class ButlerDaemon:
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
+        self._tool_registration_failures: dict[str, dict[str, str]] = {}
         self._started_at: float | None = None
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
@@ -1252,6 +1253,7 @@ class ButlerDaemon:
         self._declared_tool_names = getattr(self, "_declared_tool_names", set())
         self._effective_tool_names = getattr(self, "_effective_tool_names", set())
         self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
 
         butler_name = self.config.name
         butler_type = self.config.type
@@ -1381,6 +1383,7 @@ class ButlerDaemon:
         self._declared_tool_names = getattr(self, "_declared_tool_names", set())
         self._effective_tool_names = getattr(self, "_effective_tool_names", set())
         self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+        self._tool_registration_failures = getattr(self, "_tool_registration_failures", {})
 
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
@@ -1416,9 +1419,15 @@ class ButlerDaemon:
                 # after installing only some of its handlers.
                 for tool_name in wrapped_mcp._registered_tool_names:
                     self._tool_module_map[tool_name] = mod.name
-                self._declared_tool_names.update(wrapped_mcp._registered_tool_names)
-                self._effective_tool_names.update(wrapped_mcp._registered_tool_names)
+                self._declared_tool_names.update(wrapped_mcp._declared_tool_names)
+                self._effective_tool_names.update(wrapped_mcp._declared_tool_names)
                 self._registered_tool_names.update(wrapped_mcp._registered_tool_names)
+                self._tool_registration_failures.update(
+                    {
+                        tool_name: {"module_name": mod.name, "error_type": error_type}
+                        for tool_name, error_type in wrapped_mcp._registration_failures.items()
+                    }
+                )
 
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}

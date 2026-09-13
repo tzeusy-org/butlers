@@ -156,7 +156,8 @@ The daemon and dashboard SHALL expose a three-way comparison of Git-declared cor
 #### Scenario: Registration failure remains visible
 - **WHEN** a declared module or tool cannot register
 - **THEN** healthy tools SHALL remain available
-- **AND** the butler console SHALL list the declared-but-not-registered tool or module with its bounded startup error
+- **AND** declaration/attempt evidence SHALL retain the failed tool name independently of successful decorator registration
+- **AND** the butler console SHALL list the declared-but-not-registered tool or module with its bounded startup error type
 
 ### Requirement: Blob storage initialization at startup phase 8c
 The daemon SHALL initialize the S3-compatible blob store at startup phase 8c, immediately after the layered `CredentialStore` is built (phase 8b) and before CLI auth restoration (phase 8c2). All S3 connection parameters SHALL be resolved from the credential store with `env_fallback=False`; there is no `[butler.storage]` TOML section and no environment-variable resolution path.

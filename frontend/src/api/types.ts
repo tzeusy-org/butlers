@@ -6279,6 +6279,11 @@ export interface RuntimeConfigResponse {
   core_groups_narrowing_reason: string | null;
   declared_tool_names: string[] | null;
   effective_tool_names: string[] | null;
+  tool_registration_failures: Array<{
+    tool_name: string;
+    module_name: string;
+    error_type: string;
+  }> | null;
   tool_declaration_complete: boolean | null;
   tool_snapshot_status: "available" | "unavailable";
   catalog_read_sensitivity: "normal" | "internal" | "confidential";

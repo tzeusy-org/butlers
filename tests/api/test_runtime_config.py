@@ -125,6 +125,8 @@ async def test_tool_surface_snapshot_preserves_comparable_tool_names():
                 text=(
                     '{"tool_surface":{"declared_names":["delegate_ask","status"],'
                     '"effective_names":["status"],"registered_names":["status"],'
+                    '"registration_failures":[{"tool_name":"delegate_ask",'
+                    '"module_name":"pipeline","error_type":"RuntimeError"}],'
                     '"declaration_complete":false}}'
                 )
             )
@@ -138,6 +140,13 @@ async def test_tool_surface_snapshot_preserves_comparable_tool_names():
     assert snapshot == {
         "declared_tool_names": ["delegate_ask", "status"],
         "effective_tool_names": ["status"],
+        "tool_registration_failures": [
+            {
+                "tool_name": "delegate_ask",
+                "module_name": "pipeline",
+                "error_type": "RuntimeError",
+            }
+        ],
         "tool_declaration_complete": False,
         "tool_snapshot_status": "available",
     }

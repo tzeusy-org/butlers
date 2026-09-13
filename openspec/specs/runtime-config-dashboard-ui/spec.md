@@ -21,7 +21,7 @@ Scope: v1-mandatory
 - **WHEN** the user opens the Management tab for a butler
 - **THEN** the card SHALL show Git-declared, runtime-effective, and actually registered counts
 - **AND** any non-empty diff SHALL name the missing or widened tools/groups and the effective source
-- **AND** a bounded module registration error SHALL be shown for declared-but-not-registered tools
+- **AND** a bounded module registration error SHALL name each declared-but-not-registered tool, its module, and the exception type
 - **AND** an unavailable declaration snapshot SHALL be named explicitly instead of displaying dashes as an unknown all-clear
 
 #### Scenario: Cold fields show restart badge

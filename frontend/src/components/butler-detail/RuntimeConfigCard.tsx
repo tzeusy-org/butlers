@@ -141,6 +141,10 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
     : registeredTools.data?.data.map((tool) => tool.name);
   const declaredToolNames = config.declared_tool_names;
   const effectiveToolNames = config.effective_tool_names;
+  const registrationFailures = config.tool_registration_failures ?? [];
+  const failedRegistrationNames = new Set(
+    registrationFailures.map((failure) => failure.tool_name),
+  );
   const toolSnapshotUnavailable = config.tool_snapshot_status === "unavailable";
   const declaredNotRegistered =
     declaredToolNames && registeredNames
@@ -236,9 +240,17 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
                 Declaration snapshot incomplete; module registration failed partway.
               </p>
             )}
-            {declaredNotRegistered.map((name) => (
+            {declaredNotRegistered
+              .filter((name) => !failedRegistrationNames.has(name))
+              .map((name) => (
               <p key={`declared-missing-${name}`} className="text-destructive">
                 Declared, not registered: {name}
+              </p>
+              ))}
+            {registrationFailures.map((failure) => (
+              <p key={`registration-failed-${failure.tool_name}`} className="text-destructive">
+                Declared, not registered: {failure.tool_name} ({failure.module_name};{" "}
+                {failure.error_type})
               </p>
             ))}
             {effectiveNotRegistered

@@ -297,6 +297,7 @@ const RUNTIME_CONFIG = {
   core_groups_narrowing_reason: null,
   declared_tool_names: ["status", "delegate_ask"],
   effective_tool_names: ["status", "delegate_ask"],
+  tool_registration_failures: null,
   tool_declaration_complete: true,
   tool_snapshot_status: "available" as const,
   catalog_read_sensitivity: "normal" as const,
@@ -391,6 +392,40 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     expect(
       screen.getByText(
         "Declared, not registered: relationship (tools) — optional import unavailable",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("names the declared tool whose decorator registration failed", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: {
+        ...RUNTIME_CONFIG,
+        declared_tool_names: ["status", "calendar_get_events"],
+        effective_tool_names: ["status", "calendar_get_events"],
+        tool_registration_failures: [
+          {
+            tool_name: "calendar_get_events",
+            module_name: "calendar",
+            error_type: "RuntimeError",
+          },
+        ],
+        tool_declaration_complete: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    expect(
+      screen.getByText(
+        "Declared, not registered: calendar_get_events (calendar; RuntimeError)",
       ),
     ).toBeTruthy();
   });
