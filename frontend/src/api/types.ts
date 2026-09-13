@@ -6259,6 +6259,14 @@ export type ToolExposurePolicy = "eager_filtered" | "auto";
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
+  declared_core_groups: string[] | null;
+  effective_core_groups: string[] | null;
+  core_groups_source: "git" | "runtime_narrowing";
+  core_groups_narrowing_reason: string | null;
+  declared_tool_names: string[] | null;
+  effective_tool_names: string[] | null;
+  tool_declaration_complete: boolean | null;
+  catalog_read_sensitivity: "normal" | "internal" | "confidential";
   max_concurrent: number;
   max_queued: number;
   tool_exposure_policy: ToolExposurePolicy;
@@ -6270,6 +6278,8 @@ export interface RuntimeConfigResponse {
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
+  core_groups_narrowing_reason?: string | null;
+  catalog_read_sensitivity?: "normal" | "internal" | "confidential";
   max_concurrent?: number;
   max_queued?: number;
   tool_exposure_policy?: ToolExposurePolicy;

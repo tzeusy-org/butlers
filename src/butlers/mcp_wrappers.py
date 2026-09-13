@@ -325,6 +325,7 @@ class _ToolCallLoggingMCP:
         self._mcp = mcp
         self._butler_name = butler_name
         self._module_name = module_name
+        self._registered_tool_names: set[str] = set()
 
     def _log_tool_call(self, tool_name: str) -> None:
         logger.info(
@@ -341,6 +342,7 @@ class _ToolCallLoggingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
+            self._registered_tool_names.add(resolved_tool_name)
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
