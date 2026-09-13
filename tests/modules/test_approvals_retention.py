@@ -11,8 +11,12 @@ import asyncpg
 import pytest
 
 from alembic import command
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
+from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.retention import (
     RetentionPolicy,
     cleanup_old_actions,
@@ -110,6 +114,135 @@ async def _insert_old_inactive_rule(pool) -> UUID:
         False,
     )
     return rule_id
+
+
+async def _park_delivery_action(pool: asyncpg.Pool):
+    now = datetime.now(UTC)
+    action_id = uuid4()
+    schema_name = await pool.fetchval("SELECT current_schema()")
+    action_key = f"approval:{schema_name}:{action_id}"
+    intent_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO pending_actions (
+            id, tool_name, tool_args, agent_summary, status,
+            requested_at, expires_at, why, evidence, blast_radius, reversibility
+        ) VALUES ($1, 'relationship_assert_fact', $2, $3, 'pending',
+                  $4, $5, $6, '[]'::jsonb, 'contact', 'compensable')
+        """,
+        action_id,
+        {"fixture": "retention"},
+        "Synthetic retention fixture",
+        now,
+        now + timedelta(days=3),
+        "Synthetic retention reason",
+    )
+    await pool.execute(
+        """
+        INSERT INTO approval_delivery_intents (
+            id, action_id, action_key, owning_schema, origin_butler, admission_mode
+        ) VALUES ($1, $2, $3, $4, 'relationship', 'single')
+        """,
+        intent_id,
+        action_id,
+        action_key,
+        schema_name,
+    )
+    await pool.execute(
+        """
+        INSERT INTO approval_delivery_presentations (
+            intent_id, subject_key, subject_kind, presentation_mode,
+            presentation_generation, presentation_key, state,
+            not_before, next_attempt_at
+        ) VALUES ($1, $2, 'action', 'single', 1, $2 || ':p:1',
+                  'ready', $3, $3)
+        """,
+        intent_id,
+        action_key,
+        now,
+    )
+    return action_id
+
+
+async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_pool) -> None:
+    """Terminal action age never discards an unresolved provider outcome."""
+    action_id = await _park_delivery_action(approvals_pool)
+    repository = ApprovalDeliveryRepository(approvals_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+    assert await repository.complete_handoff(
+        claim, HandoffResult("ambiguous", "provider_outcome_unknown")
+    )
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.REJECTED,
+        decided_by="owner",
+        event_actor="owner",
+        event_reason="synthetic retention decision",
+    )
+    assert transition.changed is True
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+
+    assert (
+        await cleanup_old_actions(
+            approvals_pool,
+            RetentionPolicy(pending_actions_retention_days=90),
+        )
+        == {}
+    )
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE id = $1",
+            claim.presentation_id,
+        )
+        == "ambiguous"
+    )
+
+
+async def test_delivery_retention_deletes_resolved_root_after_safe_summary(approvals_pool) -> None:
+    """No-attempt terminal delivery cleans in order while its safe event survives."""
+    action_id = await _park_delivery_action(approvals_pool)
+    transition = await transition_pending_action(
+        approvals_pool,
+        action_id=action_id,
+        target_status=ActionStatus.EXPIRED,
+        decided_by="system:expiry",
+        event_actor="system:expiry",
+        event_reason="synthetic retention expiry",
+    )
+    assert transition.changed is True
+    await approvals_pool.execute(
+        "UPDATE pending_actions SET decided_at = clock_timestamp() - interval '365 days' "
+        "WHERE id = $1",
+        action_id,
+    )
+    summary_id = await approvals_pool.fetchval(
+        "SELECT event_id FROM approval_events WHERE action_id = $1 "
+        "AND event_type = 'approval_delivery_terminal'",
+        action_id,
+    )
+    assert summary_id is not None
+
+    assert await cleanup_old_actions(
+        approvals_pool,
+        RetentionPolicy(pending_actions_retention_days=90),
+    ) == {"expired": 1}
+    assert (
+        await approvals_pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", action_id)
+        is None
+    )
+    event = await approvals_pool.fetchrow(
+        "SELECT action_id, event_metadata FROM approval_events WHERE event_id = $1",
+        summary_id,
+    )
+    assert event["action_id"] == action_id
+    assert event["event_metadata"]["reason_code"] == "action_expired"
 
 
 async def test_old_approved_unexecuted_action_is_excluded_from_retention_dry_run(

@@ -506,6 +506,7 @@ export type {
   TriggerResponse,
   TickResponse,
   UpcomingDate,
+  ApprovalDeliveryTruth,
   ApprovalAction,
   ApprovalActionsMeta,
   ApprovalActionsResponse,

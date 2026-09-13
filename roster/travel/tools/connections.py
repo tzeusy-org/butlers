@@ -318,14 +318,26 @@ async def _withdraw_connection_door(
     pool: Any, *, inbound_leg_id: str, outbound_leg_id: str, now: datetime
 ) -> None:
     """Withdraw a still-open connection-risk door once the layover recovers."""
+    from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+    from butlers.modules.approvals.models import ActionStatus
+
     dedup_prefix = f"travel:connection-risk:{inbound_leg_id}:{outbound_leg_id}:broken:"
-    await pool.execute(
-        "UPDATE pending_actions SET status = 'rejected', "
-        "decided_by = 'system:connection-recovery', decided_at = $2 "
+    rows = await pool.fetch(
+        "SELECT id, tool_name FROM pending_actions "
         "WHERE deduplication_key LIKE $1 AND status = 'pending'",
         f"{dedup_prefix}%",
-        now,
     )
+    for row in rows:
+        await transition_pending_action(
+            pool,
+            action_id=row["id"],
+            target_status=ActionStatus.REJECTED,
+            decided_by="system:connection-recovery",
+            event_actor="system:connection-recovery",
+            event_reason="connection risk recovered",
+            event_metadata={"tool_name": row["tool_name"]},
+            now=now,
+        )
 
 
 async def _recompute_trip_connections_locked(

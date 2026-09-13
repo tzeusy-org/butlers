@@ -50,7 +50,12 @@ import {
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
-import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
+import type {
+  ApprovalDeliveryTruth,
+  ApprovalDetail,
+  ApprovalSummary,
+  ApprovalsPolicy,
+} from "@/api/index.ts";
 import {
   approvalRuleMetricSourcesDegraded,
   pendingApprovalMetricSourcesDegraded,
@@ -358,6 +363,94 @@ function pendingVerbLabel(verb: DecisionVerb): string {
   }
 }
 
+function deliverySummary(delivery: ApprovalDeliveryTruth): string {
+  if (delivery.source === "unknown") return "Legacy delivery evidence unavailable";
+  if (delivery.source === "legacy") {
+    return delivery.legacy_outcome
+      ? `Legacy push evidence: ${delivery.legacy_outcome}`
+      : "Legacy delivery evidence unavailable";
+  }
+  if (delivery.ambiguous) return "Delivery uncertain — automatic resend is blocked";
+  if (delivery.stuck) return `Delivery ${delivery.state ?? "work"} needs attention`;
+  switch (delivery.state) {
+    case "delivered":
+      return "Notification handoff confirmed";
+    case "ready":
+      return "Notification waiting for its eligible time";
+    case "retry_wait":
+      return "Notification retry scheduled";
+    case "claimed":
+    case "handoff_started":
+      return "Notification handoff in progress";
+    case "collapsed":
+      return "Direct notification folded into the shared digest";
+    case "cancelled":
+      return "Notification recovery cancelled";
+    case "superseded":
+      return "Notification generation superseded";
+    default:
+      return "Durable delivery evidence recorded";
+  }
+}
+
+function DeliveryTruth({ delivery }: { delivery: ApprovalDeliveryTruth }) {
+  const attention = delivery.ambiguous || delivery.stuck;
+  return (
+    <section
+      data-testid="approval-delivery-truth"
+      aria-labelledby="approval-delivery-truth-heading"
+      role={attention ? "alert" : undefined}
+      className={[
+        "border-t border-border pt-4",
+        attention ? "text-[var(--red-text)]" : "text-muted-foreground",
+      ].join(" ")}
+    >
+      <h3
+        id="approval-delivery-truth-heading"
+        className="text-[10px] font-mono uppercase tracking-widest mb-2"
+      >
+        Delivery evidence
+      </h3>
+      <p className="text-sm text-foreground">{deliverySummary(delivery)}</p>
+      {delivery.source === "durable" && (
+        <dl className="mt-2 grid grid-cols-1 gap-1 text-[11px] font-mono sm:grid-cols-2">
+          <div>
+            <dt className="inline">Generation </dt>
+            <dd className="inline">
+              {delivery.generation ?? "unknown"} · {delivery.mode ?? "unknown"}
+            </dd>
+          </div>
+          <div>
+            <dt className="inline">Attempts </dt>
+            <dd className="inline">{delivery.attempt_count}</dd>
+          </div>
+          {delivery.next_eligible_at && (
+            <div>
+              <dt className="inline">Next eligible </dt>
+              <dd className="inline">{fmtTs(delivery.next_eligible_at, true)}</dd>
+            </div>
+          )}
+          {delivery.last_reason_code && (
+            <div>
+              <dt className="inline">Reason </dt>
+              <dd className="inline">{delivery.last_reason_code.replace(/_/g, " ")}</dd>
+            </div>
+          )}
+          {delivery.cohort && (
+            <div>
+              <dt className="inline">Shared digest </dt>
+              <dd className="inline">
+                {delivery.cohort.eligible ? "eligible" : "not eligible"} ·{" "}
+                {delivery.cohort.state ?? "unavailable"}
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function RailItem({
   summary,
   selected,
@@ -434,12 +527,17 @@ function RailItem({
             className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--red)]"
             aria-hidden="true"
           />
-          Owner not notified · push failed
+          Legacy push failed
         </div>
       )}
       {summary.why && (
         <div className="mt-0.5 text-xs text-muted-foreground line-clamp-1 italic">
           {summary.why}
+        </div>
+      )}
+      {summary.delivery && (summary.delivery.ambiguous || summary.delivery.stuck) && (
+        <div className="mt-1 text-[10px] font-mono text-[var(--red-text)]">
+          {deliverySummary(summary.delivery)}
         </div>
       )}
       {isPending ? (
@@ -768,13 +866,14 @@ function Dossier({
                 aria-hidden="true"
               />
               <span className="font-medium">
-                Owner was never notified: the approval push
-                {detail.push_outcome ? ` ${detail.push_outcome}` : " was never attempted"}.
-                This is not an ordinary pending action.
+                Legacy approval push reported {detail.push_outcome ?? "failed"}. Durable
+                attempt evidence is unavailable.
               </span>
             </div>
           )}
         </div>
+
+        {detail.delivery && <DeliveryTruth delivery={detail.delivery} />}
 
         {(detail.decided_by || detail.decided_at) && (
           <section

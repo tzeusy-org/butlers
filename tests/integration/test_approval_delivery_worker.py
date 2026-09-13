@@ -17,10 +17,15 @@ from butlers.core.approval_delivery_worker import (
     HandoffResult,
 )
 from butlers.db import register_jsonb_codec
+from butlers.modules.approvals.delivery_lifecycle import (
+    defer_pending_action,
+    transition_pending_action,
+)
 from butlers.modules.approvals.delivery_recovery import (
     ApprovalDeliveryRenderer,
     ApprovalDeliveryRepository,
 )
+from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import ParkAdmission, park_pending_action
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -551,3 +556,155 @@ async def test_stuck_age_starts_at_due_time_not_presentation_creation(
     assert overdue.stuck_count == 1
     assert overdue.oldest_due_age_seconds is not None
     assert overdue.oldest_due_age_seconds >= 16 * 60
+
+
+async def test_decision_and_handoff_start_linearize_without_revival(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """The shared action lock gives either valid race ordering, never a sendable revival."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+
+    started, transition = await asyncio.gather(
+        repository.mark_handoff_started(claim),
+        transition_pending_action(
+            delivery_pool,
+            action_id=admission.action_id,
+            target_status=ActionStatus.APPROVED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="synthetic decision race",
+        ),
+    )
+
+    assert transition.changed is True
+    row = await delivery_pool.fetchrow(
+        """
+        SELECT pa.status, p.state, p.next_attempt_at
+          FROM pending_actions AS pa
+          JOIN approval_delivery_intents AS i ON i.action_id = pa.id
+          JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
+         WHERE pa.id = $1
+        """,
+        admission.action_id,
+    )
+    assert row["status"] == "approved"
+    assert row["state"] == "cancelled"
+    assert row["next_attempt_at"] is None
+    if started:
+        assert await repository.complete_handoff(claim, HandoffResult("confirmed")) is True
+        assert (
+            await delivery_pool.fetchval(
+                "SELECT count(*) FROM approval_delivery_attempts "
+                "WHERE presentation_id = $1 AND outcome = 'confirmed'",
+                claim.presentation_id,
+            )
+            == 1
+        )
+    else:
+        assert await repository.mark_handoff_started(claim) is False
+    assert await repository.claim_next() is None
+
+
+async def test_defer_replaces_prestart_generation_at_database_time(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """A successful defer keeps one root and appends exactly one fenced successor."""
+    admission = await _park(delivery_pool)
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=admission.action_id,
+        hours=3,
+        actor="owner",
+    )
+
+    assert transition.changed is True
+    rows = await delivery_pool.fetch(
+        """
+        SELECT p.presentation_generation, p.state,
+               p.presentation_key, p.not_before = pa.expires_at AS due_matches_expiry
+          FROM approval_delivery_intents AS i
+          JOIN pending_actions AS pa ON pa.id = i.action_id
+          JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
+         WHERE i.action_id = $1 ORDER BY p.presentation_generation
+        """,
+        admission.action_id,
+    )
+    assert [row["presentation_generation"] for row in rows] == [1, 2]
+    assert [row["state"] for row in rows] == ["superseded", "ready"]
+    assert rows[1]["presentation_key"] == f"{admission.action_key}:p:2"
+    assert rows[1]["due_matches_expiry"] is True
+    assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+
+
+async def test_handoff_first_defer_keeps_attempt_and_adds_successor(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Started work remains historical while defer schedules only generation g+1."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.mark_handoff_started(claim) is True
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=admission.action_id,
+        hours=1,
+        actor="owner",
+    )
+    assert transition.changed is True
+    assert await repository.complete_handoff(claim, HandoffResult("confirmed")) is True
+
+    rows = await delivery_pool.fetch(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "ORDER BY presentation_generation"
+    )
+    assert [dict(row) for row in rows] == [
+        {"presentation_generation": 1, "state": "delivered"},
+        {"presentation_generation": 2, "state": "ready"},
+    ]
+
+
+async def test_cohort_member_defer_preserves_other_digest_members(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Deferring one cohort member never cancels another eligible member's digest."""
+    admissions = [await _park(delivery_pool, ordinal=index) for index in range(5)]
+    fourth = admissions[3]
+
+    transition = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=2,
+        actor="owner",
+    )
+    assert transition.changed is True
+
+    memberships = await delivery_pool.fetch(
+        """
+        SELECT i.action_id, m.eligible
+          FROM approval_delivery_cohort_members AS m
+          JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+         ORDER BY i.action_id
+        """
+    )
+    eligibility = {row["action_id"]: row["eligible"] for row in memberships}
+    assert eligibility[fourth.action_id] is False
+    assert eligibility[admissions[4].action_id] is True
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations "
+            "WHERE presentation_mode = 'burst_digest'"
+        )
+        == "ready"
+    )
+    successor = await delivery_pool.fetchrow(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "WHERE intent_id = (SELECT id FROM approval_delivery_intents WHERE action_id = $1)",
+        fourth.action_id,
+    )
+    assert dict(successor) == {"presentation_generation": 2, "state": "ready"}

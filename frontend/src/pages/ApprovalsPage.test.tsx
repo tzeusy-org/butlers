@@ -829,7 +829,7 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 
     const badge = container.querySelector('[data-testid="rail-item-push-failed"]');
     expect(badge).not.toBeNull();
-    expect(badge?.textContent).toContain("Owner not notified");
+    expect(badge?.textContent).toContain("Legacy push failed");
     expect(
       container.querySelector('[data-testid="rail-item"][data-push-failed="true"]'),
     ).not.toBeNull();
@@ -874,7 +874,84 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
 
     const alertEl = container.querySelector('[data-testid="dossier-push-failed"]');
     expect(alertEl).not.toBeNull();
-    expect(alertEl?.textContent).toContain("never notified");
+    expect(alertEl?.textContent).toContain("Legacy approval push reported failed");
+    expect(alertEl?.textContent).not.toContain("never attempted");
+  });
+
+  it("renders durable ambiguous delivery as an accessible alert without sensitive fields", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("ambiguous-1")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("ambiguous-1").then((response) => ({
+        ...response,
+        data: {
+          ...response.data,
+          delivery: {
+            source: "durable",
+            state: "ambiguous",
+            mode: "single",
+            generation: 2,
+            last_reason_code: "provider_outcome_unknown",
+            attempt_count: 1,
+            next_eligible_at: null,
+            stuck: true,
+            ambiguous: true,
+            legacy_outcome: null,
+            cohort: null,
+          },
+        },
+      })) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-delivery-truth"]') !== null,
+    );
+
+    const truth = container.querySelector('[data-testid="approval-delivery-truth"]');
+    expect(truth?.getAttribute("role")).toBe("alert");
+    expect(truth?.textContent).toContain("Delivery uncertain");
+    expect(truth?.textContent).toContain("Generation 2 · single");
+    expect(truth?.textContent).toContain("provider outcome unknown");
+    expect(truth?.textContent).not.toContain("recipient");
+    expect(truth?.textContent).not.toContain("callback");
+  });
+
+  it("labels absent durable truth as unavailable legacy evidence", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("legacy-unknown")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("legacy-unknown").then((response) => ({
+        ...response,
+        data: {
+          ...response.data,
+          delivery: {
+            source: "unknown",
+            state: null,
+            mode: null,
+            generation: null,
+            last_reason_code: null,
+            attempt_count: 0,
+            next_eligible_at: null,
+            stuck: false,
+            ambiguous: false,
+            legacy_outcome: null,
+            cohort: null,
+          },
+        },
+      })) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-delivery-truth"]') !== null,
+    );
+
+    const truth = container.querySelector('[data-testid="approval-delivery-truth"]');
+    expect(truth?.textContent).toContain("Legacy delivery evidence unavailable");
+    expect(truth?.textContent).not.toContain("never attempted");
   });
 
   it("renders the callback-secret degraded banner when callback_secret_configured is false", async () => {
