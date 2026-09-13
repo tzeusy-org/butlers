@@ -643,6 +643,20 @@ def _has_trusted_finalized_interface(bind: sa.Connection) -> bool:
     )
 
 
+def protected_rollback_preflight_passes(bind: sa.Connection) -> bool:
+    """Return whether this exact protected boundary can be rolled back now.
+
+    Later revisions with non-transactional downgrade work use this same proof
+    before crossing that work.  Keeping the predicate here prevents a partial
+    copy from drifting away from core_198's role, catalog, and ACL contract.
+    """
+    if bool(bind.execute(sa.text(_EXACT_ROLLBACK_READY_ABSENCE_SQL)).scalar_one()):
+        return True
+    return bool(bind.execute(sa.text(_TRUSTED_BOOTSTRAP_ROLLBACK_SQL)).scalar_one()) and (
+        _has_trusted_finalized_interface(bind)
+    )
+
+
 _TRUSTED_BOOTSTRAP_INSTALLER_SQL = """
     SELECT EXISTS (
         SELECT 1

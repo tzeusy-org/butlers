@@ -174,6 +174,9 @@ async def test_status_exposes_content_blind_tool_surface_snapshot():
             "_declared_tool_names": {"delegate_ask", "status"},
             "_effective_tool_names": {"status"},
             "_registered_tool_names": {"status"},
+            "_tool_registration_failures": {
+                "delegate_ask": {"module_name": "pipeline", "error_type": "RuntimeError"}
+            },
         },
     )
 
@@ -183,5 +186,12 @@ async def test_status_exposes_content_blind_tool_surface_snapshot():
         "declared_names": ["delegate_ask", "status"],
         "effective_names": ["status"],
         "registered_names": ["status"],
+        "registration_failures": [
+            {
+                "tool_name": "delegate_ask",
+                "module_name": "pipeline",
+                "error_type": "RuntimeError",
+            }
+        ],
         "declaration_complete": True,
     }
