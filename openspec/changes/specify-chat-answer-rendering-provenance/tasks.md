@@ -8,7 +8,7 @@
 ## 2. Add the Canonical Message Contract
 
 - [ ] 2.1 Add the server-loaded citation-route contract manifest with exact static/dynamic patterns, parameter constraints, query and fragment policy, and a parity gate proving every eligible internal route resolves through `SHELL_CAPABILITIES`.
-- [ ] 2.2 Add canonical citation input/output models, deterministic item and payload budgets, stable deduplication, HTTPS and internal-route validation, and content-blind rejection reason/count logging. Keep `sources` as the only MCP evidence argument and do not add a parallel `citations` argument.
+- [ ] 2.2 Add canonical citation input/output models, plain-text labels, deterministic item and payload budgets, stable deduplication, HTTPS and internal-route validation, and content-blind rejection reason/count logging. Preserve whole-call rejection for empty, blank-label, and over-budget inputs; keep `sources` as the only MCP evidence argument and do not add a parallel `citations` argument.
 - [ ] 2.3 Extend `register_conversation_reply_tool` and `conversation_reply_create` so legacy strings normalize to unlinked citations, structured entries normalize server-side, an explicit all-invalid set inserts no reply, and the server-held `ToolContext.butler_name` is the only message-author input.
 - [ ] 2.4 Add an additive core migration for nullable `dashboard_messages.citations` and message `routed_butler`, backfill valid legacy source strings as unlinked citations, leave legacy authors null, retain `sources` for rollback, and prove upgrade/downgrade plus malformed-legacy behavior against real PostgreSQL.
 - [ ] 2.5 Extend message create/find/list queries, `ConversationMessage`, and frontend API types with canonical citations and nullable message author. Preserve null for generic API-created error rows and every path without a registered butler author.
@@ -26,7 +26,7 @@
 ## 4. Extend Existing Verification Seams
 
 - [ ] 4.1 Extend `frontend/src/components/chat/MessageThread.test.tsx` for allowed markdown, raw HTML and unsafe URL suppression, half-open fence completion, Voice/Body/Mono roles, local table/code overflow, internal router navigation, external-link safety, unlinked sources, author/null-author rendering, and disclosure keyboard behavior. Add a focused answer-component test file only if these behaviors cannot remain clear at the existing seam.
-- [ ] 4.2 Extend `tests/core_tools/test_conversation_reply.py` for legacy/structured input normalization, budgets, mixed invalid filtering, all-invalid rejection, content-blind diagnostics, and non-overrideable server-held author.
+- [ ] 4.2 Extend `tests/core_tools/test_conversation_reply.py` for legacy/structured input normalization, plain-text labels, budgets, mixed invalid-target filtering, empty/blank/all-invalid rejection, content-blind diagnostics, and non-overrideable server-held author.
 - [ ] 4.3 Extend `tests/integration/test_conversation_reply_db.py` and the existing dashboard-message migration test for canonical persistence, legacy backfill, nullable authors, downgrade behavior, and no partial message write on rejection.
 - [ ] 4.4 Extend `tests/api/test_conversations.py` for message-list and `message_complete` projection, stored/SSE/reconnect equivalence, compatibility `sources`, and non-session-authored null attribution.
 - [ ] 4.5 Keep one gate species per invariant, reuse existing factories, run the dirty-worktree planner before widening scope, and include the measured `Tests: +a ~b -c` delta plus any adds-only reason in the implementation PR body.

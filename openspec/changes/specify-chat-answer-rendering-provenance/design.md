@@ -108,12 +108,15 @@ question-lane contract and existing callers do not fork. A string source is norm
 source becomes `internal` only after route-manifest validation or `external` only after HTTPS
 validation.
 
-Budgets are deterministic: at most 20 entries; a trimmed label is 1 to 200 Unicode scalar values;
+Budgets are deterministic: at most 20 entries; a trimmed plain-text label is 1 to 200 Unicode scalar values;
 a target is at most 2048 characters; the normalized JSON payload is at most 32 KiB. Stable-order
 deduplication keeps the first identical `(kind, target, label)` tuple. A duplicate is not an error.
 Blank labels, control characters, unsafe schemes, embedded credentials, non-absolute external
 URLs, invalid percent encoding, path traversal, non-allowlisted internal routes, and any item or
-payload over budget are invalid.
+payload over budget are invalid. An empty list, any blank label, or any item/total budget breach
+rejects the entire call to preserve the existing fail-fast `sources` contract. A malformed,
+unsafe, or non-allowlisted structured target is dropped per entry only when at least one usable
+entry remains.
 
 ### Persisted message
 
@@ -258,9 +261,10 @@ target into apparently validated provenance.
 
 ### 7. Make partial rejection and replay deterministic
 
-Normalization is per entry. A mixed valid/invalid list persists only valid citations and emits a
-content-blind reason-code/count warning. An explicit list with zero usable entries rejects the tool
-call and inserts no message, preserving the existing empty-source refusal. Omitting `sources`
+Structured-target normalization is per entry. A mixed valid/invalid-target list persists only valid
+citations and emits a content-blind reason-code/count warning. An empty list, any blank label, any
+budget breach, or a list with zero usable entries rejects the tool call and inserts no message,
+preserving the existing empty/blank-source refusal. Omitting `sources`
 persists an ordinary unattributed-to-evidence reply with null citations, including an honest
 decline.
 
@@ -282,8 +286,8 @@ label.
 | Valid internal structured source | Canonical `internal` citation | Same citation | Router navigation, no full reload | Server manifest is authority |
 | Valid external structured source | Canonical `external` citation | Same citation | Safe external link | Scheme safety only |
 | Legacy string source | Canonical `unlinked` citation plus compatibility label | Same values | Text-only source | No target inferred |
-| Mixed valid and invalid sources | Valid entries only | Valid entries only | Valid citations only | Content-blind reject count/reasons logged |
-| Empty or all-invalid explicit sources | No message | Structured tool error, no SSE completion | No grounded answer appears | Existing refusal behavior preserved |
+| Mixed valid and invalid structured targets | Valid entries only | Valid entries only | Valid citations only | Content-blind reject count/reasons logged |
+| Empty, any blank, over-budget, or all-invalid explicit sources | No message | Structured tool error, no SSE completion | No grounded answer appears | Existing refusal behavior preserved |
 | Sources omitted | Null citations | `citations: []` and compatibility `sources: []` | No citation row | Not treated as grounded or invalid |
 | Registered butler writes reply | Message author persisted from server context | Same nullable author | ButlerMark and name | Caller cannot override |
 | Legacy or API-authored assistant row | Author remains null | Null author | No butler attribution | Conversation route is not substituted |
