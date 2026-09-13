@@ -758,6 +758,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         blast_radius=_blast_radius,
                         reversibility=_reversibility,
                         enforce_dossier=True,
+                        butler_name=daemon.config.name,
                         approval_push_runtime=daemon._approval_push_runtime,
                     )
                     if _decision.dossier_error is not None:
