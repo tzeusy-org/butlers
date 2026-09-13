@@ -417,6 +417,8 @@ class TestOwnerOnlyScoping:
         self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
         """Ambiguous, inactive, merged, and deleted associations cannot authorize."""
+        from butlers.modules.approvals.gate import _resolve_target_contact
+
         for predicate, value, failure_class in (
             ("has-email", seeded_data["ambiguous_email"], "ambiguous email"),
             ("has-handle", seeded_data["ambiguous_handle"], "ambiguous handle"),
@@ -457,6 +459,11 @@ class TestOwnerOnlyScoping:
                 assert row is None, (
                     f"{failure_class} must fail closed instead of producing owner authorization"
                 )
+                direct = await _resolve_target_contact(
+                    migration_pool,
+                    {"entity_id": str(seeded_data["owner_id"])},
+                )
+                assert direct is None, f"direct entity dispatch must also reject a {failure_class}"
         finally:
             await migration_pool.execute(
                 "UPDATE public.entities SET metadata = '{}'::jsonb WHERE id = $1",

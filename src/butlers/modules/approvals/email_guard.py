@@ -197,22 +197,9 @@ async def check_email_recipient(
                 "email guard: publish_fleet_event('approval') failed; ignoring", exc_info=True
             )
 
-    from butlers.identity import (
-        resolve_contact_by_channel,
-        resolve_owner_channel_via_definer,
-    )
+    from butlers.identity import resolve_channel_contact_with_owner_corroboration
 
-    contact = await resolve_contact_by_channel(pool, "email", email_target)
-    if contact is None or "owner" in contact.roles:
-        try:
-            fallback = await resolve_owner_channel_via_definer(pool, "email", email_target)
-        except Exception:  # noqa: BLE001
-            logger.debug("email guard: owner-channel fallback failed", exc_info=True)
-            fallback = None
-        if fallback is not None:
-            contact, _is_primary = fallback
-        elif contact is not None and "owner" in contact.roles:
-            contact = None
+    contact = await resolve_channel_contact_with_owner_corroboration(pool, "email", email_target)
     dossier = DecisionDossier(None, [], None, None)
 
     # A unique, active owner association is sufficient on every channel.
@@ -448,26 +435,9 @@ async def check_recipient(
     Unlike :func:`check_email_recipient`, this guard has no email-context
     mismatch branch. Owner authorization itself is identical across channels.
     """
-    from butlers.identity import (
-        resolve_contact_by_channel,
-        resolve_owner_channel_via_definer,
-    )
+    from butlers.identity import resolve_channel_contact_with_owner_corroboration
 
-    contact = await resolve_contact_by_channel(pool, channel, target)
-
-    # A resolved non-owner is authoritative and never enters the owner-only
-    # fallback.  A direct owner-looking result still needs corroboration because
-    # Telegram normalization can produce multiple candidate identifiers; the
-    # definer evaluates them together and rejects owner/external ambiguity.
-    if contact is None or "owner" in contact.roles:
-        try:
-            fallback = await resolve_owner_channel_via_definer(pool, channel, target)
-        except Exception:  # noqa: BLE001
-            fallback = None
-        if fallback is not None:
-            contact, _owner_is_primary = fallback
-        else:
-            contact = None
+    contact = await resolve_channel_contact_with_owner_corroboration(pool, channel, target)
 
     # Owner-directed outbound: auto-approve on any active, verified owner channel.
     if contact is not None and "owner" in contact.roles:
