@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
@@ -33,6 +34,15 @@ def _downgrade_crosses_runtime_attention(context: Any) -> bool:
         return False
     script = _chain_script_directory("core")
     for destination in _destination_revisions(context):
+        if isinstance(destination, str):
+            relative = re.fullmatch(r"-(\d+)", destination)
+            if relative is not None:
+                revisions_above_core_198 = sum(
+                    1 for _step in script.iterate_revisions(current, _RUNTIME_ATTENTION_REVISION)
+                )
+                if int(relative.group(1)) > revisions_above_core_198:
+                    return True
+                continue
         revisions = script.iterate_revisions(current, destination)
         if any(revision.revision == _RUNTIME_ATTENTION_REVISION for revision in revisions):
             return True
@@ -75,13 +85,7 @@ def preflight_runtime_attention_downgrade(op: Any, context: Any) -> None:
     ) and protected._has_trusted_finalized_interface(bind)
     if authorized:
         return
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            RAISE EXCEPTION
-                'core_198 downgrade requires trusted bootstrap rollback interface';
-        END;
-        $$;
-        """
+    raise RuntimeError(
+        "core_233/core_234 cannot begin downgrade work because the protected "
+        "core_198 rollback preflight failed"
     )

@@ -105,13 +105,12 @@ from butlers.core.skills import read_system_prompt_with_sources
 # ---------------------------------------------------------------------------
 from butlers.core.spawner_context import (
     ComposedPrompt,
-    _compose_system_prompt,
     _is_missing_memory_table_error,  # noqa: F401 — re-export for test patches
     _log_missing_memory_table_once,  # noqa: F401 — re-export for test patches
     _memory_context_token_budget,
     _memory_module_enabled,
-    compose_prompt_digest,
     compose_effective_system_prompt_receipt,
+    compose_prompt_digest,
     fetch_blind_spot_preamble,
     fetch_general_timezone_instruction,
     fetch_memory_context,

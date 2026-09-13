@@ -1,4 +1,4 @@
-"""Real-Postgres lifecycle for core_232 effective-prompt receipts."""
+"""Real-Postgres lifecycle for core_233/core_234 prompt and purpose receipts."""
 
 from __future__ import annotations
 
@@ -14,19 +14,30 @@ pytestmark = [pytest.mark.integration, pytest.mark.db]
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
-    / "alembic/versions/core/core_232_effective_prompt_receipt.py"
+    / "alembic/versions/core/core_233_effective_prompt_receipt.py"
 )
 _PURPOSE_MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_233_session_purpose_lane.py"
+    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_234_session_purpose_lane.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_232", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_233", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_prompt_receipt_migrations_extend_the_live_core_head() -> None:
+    receipt = _load_migration()
+    purpose_spec = importlib.util.spec_from_file_location("core_234", _PURPOSE_MIGRATION_PATH)
+    assert purpose_spec is not None and purpose_spec.loader is not None
+    purpose = importlib.util.module_from_spec(purpose_spec)
+    purpose_spec.loader.exec_module(purpose)
+
+    assert (receipt.revision, receipt.down_revision) == ("core_233", "core_232")
+    assert (purpose.revision, purpose.down_revision) == ("core_234", "core_233")
 
 
 async def _run_migration(pool, direction: str) -> None:
@@ -110,7 +121,7 @@ async def test_purpose_lane_is_closed_additive_and_rollback_safe(
         await pool.execute("INSERT INTO sessions (id) VALUES ($1)", legacy_id)
 
         statements: list[str] = []
-        spec = importlib.util.spec_from_file_location("core_233", _PURPOSE_MIGRATION_PATH)
+        spec = importlib.util.spec_from_file_location("core_234", _PURPOSE_MIGRATION_PATH)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

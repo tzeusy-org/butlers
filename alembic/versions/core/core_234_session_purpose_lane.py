@@ -1,7 +1,7 @@
 """Persist the content-blind purpose lane on session admission.
 
-Revision ID: core_233
-Revises: core_232
+Revision ID: core_234
+Revises: core_233
 Create Date: 2026-09-13 00:00:00.000000
 
 Legacy rows remain NULL. New session admissions write one closed value.
@@ -15,8 +15,8 @@ from __future__ import annotations
 from alembic import context, op
 from butlers.migration_preflight import preflight_runtime_attention_downgrade
 
-revision = "core_233"
-down_revision = "core_232"
+revision = "core_234"
+down_revision = "core_233"
 branch_labels = None
 depends_on = None
 
@@ -50,7 +50,7 @@ def downgrade() -> None:
         DO $$
         BEGIN
             IF EXISTS (SELECT 1 FROM sessions WHERE purpose_lane IS NOT NULL) THEN
-                RAISE EXCEPTION 'cannot downgrade core_233 while session purpose evidence exists';
+                RAISE EXCEPTION 'cannot downgrade core_234 while session purpose evidence exists';
             END IF;
         END
         $$

@@ -18,8 +18,8 @@ from butlers.core.spawner import Spawner
 from butlers.core.spawner_context import (
     ComposedPrompt,
     _compose_system_prompt,
-    compose_prompt_digest,
     compose_effective_system_prompt_receipt,
+    compose_prompt_digest,
 )
 
 pytestmark = pytest.mark.unit
