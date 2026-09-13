@@ -1080,7 +1080,7 @@ class TestMessengerApprovalGate:
 
         tool = await mcp.get_tool("email_send_message")
         with patch(
-            "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+            "butlers.identity.resolve_owner_channel_via_definer",
             new=AsyncMock(return_value=(_owner_contact(), True)),
         ):
             result = await tool.fn(to=OWNER_EMAIL, subject="Report", body="Weekly summary")

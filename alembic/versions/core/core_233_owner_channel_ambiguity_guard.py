@@ -84,6 +84,8 @@ BEGIN
                     )
                 )
                 OR (
+                    -- Preserve the core_145 public ABI for exact legacy
+                    -- predicate callers; owner-channel is the new closed mode.
                     p_predicate <> 'owner-channel'
                     AND ef.predicate = p_predicate
                     AND ef.object = ANY(p_candidates)

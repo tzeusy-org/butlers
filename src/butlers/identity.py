@@ -976,6 +976,30 @@ async def resolve_owner_channel_via_definer(
     return owner_contact, bool(row["is_primary"])
 
 
+async def resolve_channel_contact_with_owner_corroboration(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_value: str,
+) -> ResolvedContact | None:
+    """Resolve one channel target without trusting an owner-looking direct read.
+
+    A directly resolved non-owner is authoritative. A miss or owner-looking
+    result must pass the ambiguity-safe owner-only definer, which evaluates the
+    full normalized candidate set across schema isolation. This is the single
+    policy seam shared by email, generic recipient, and MCP approval gates.
+    """
+    direct = await resolve_contact_by_channel(pool, channel_type, channel_value)
+    if direct is not None and "owner" not in direct.roles:
+        return direct
+
+    try:
+        owner_result = await resolve_owner_channel_via_definer(pool, channel_type, channel_value)
+    except Exception:  # noqa: BLE001
+        logger.debug("identity.owner_channel_corroboration_failed")
+        return None
+    return owner_result[0] if owner_result is not None else None
+
+
 async def create_temp_contact(
     pool: asyncpg.Pool,
     channel_type: str,
@@ -1460,6 +1484,7 @@ __all__ = [
     "normalize_email_sender",
     "parse_email_sender",
     "resolve_contact_by_channel",
+    "resolve_channel_contact_with_owner_corroboration",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",
     # Telegram normalization helpers are exported for migration/write-side

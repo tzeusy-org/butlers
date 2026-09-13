@@ -18,7 +18,7 @@ import pytest
 from butlers.modules.approvals.gate import (
     _make_gate_wrapper as _production_make_gate_wrapper,
 )
-from butlers.modules.approvals.gate import match_standing_rule
+from butlers.modules.approvals.gate import _resolve_target_contact, match_standing_rule
 from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
@@ -134,7 +134,6 @@ async def _call_gate(
     pool: AsyncMock,
     original_fn: AsyncMock | None = None,
     include_dossier: bool = True,
-    owner_channel_is_primary: bool = True,
     tool_name: str = "telegram_send_message",
 ) -> dict:
     """Helper: build a gate wrapper and call it with the given tool_args."""
@@ -162,14 +161,6 @@ async def _call_gate(
         patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
             new=AsyncMock(return_value=resolved_contact),
-        ),
-        patch(
-            "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
-            new=AsyncMock(
-                return_value=(resolved_contact, owner_channel_is_primary)
-                if resolved_contact is not None and "owner" in resolved_contact.roles
-                else None
-            ),
         ),
         patch(
             "butlers.modules.approvals.gate.record_approval_event",
@@ -225,6 +216,48 @@ class TestMatchStandingRule:
 # ---------------------------------------------------------------------------
 
 
+class TestDirectEntityResolution:
+    """Direct entity dispatch accepts only a live owner entity."""
+
+    async def test_live_owner_entity_resolves(self) -> None:
+        owner_id = uuid.uuid4()
+        pool = _make_pool(
+            fetchrow_return={
+                "entity_id": owner_id,
+                "name": "Owner",
+                "roles": ["owner"],
+            }
+        )
+
+        resolved = await _resolve_target_contact(pool, {"entity_id": str(owner_id)})
+
+        assert resolved is not None
+        assert resolved.entity_id == owner_id
+        assert resolved.roles == ["owner"]
+
+    @pytest.mark.parametrize("metadata_key", ["merged_into", "deleted_at"])
+    async def test_stale_owner_entity_is_filtered_before_resolution(
+        self, metadata_key: str
+    ) -> None:
+        owner_id = uuid.uuid4()
+        required_clause = f"e.metadata ->> '{metadata_key}' IS NULL"
+        owner_row = {
+            "entity_id": owner_id,
+            "name": "Stale owner",
+            "roles": ["owner"],
+        }
+
+        def return_only_when_filter_is_missing(query: str, _entity_id: str):
+            return None if required_clause in query else owner_row
+
+        pool = _make_pool(fetchrow_side_effect=return_only_when_filter_is_missing)
+
+        resolved = await _resolve_target_contact(pool, {"entity_id": str(owner_id)})
+
+        assert resolved is None
+        assert required_clause in pool.fetchrow.await_args.args[0]
+
+
 class TestGateOwnerOutboundAutoApprove:
     """gate.py auto-approves every uniquely verified owner-directed send."""
 
@@ -272,13 +305,8 @@ class TestGateOwnerOutboundAutoApprove:
         )
         assert result == {"status": "sent"}
 
-    async def test_owner_entity_id_dispatch_auto_approves_without_primacy_check(self) -> None:
-        """entity_id dispatch is exempt from the primacy check.
-
-        When the tool is called with entity_id (not a specific channel address),
-        the system already resolves to the primary channel.  The gate must not
-        add an extra primacy barrier here.
-        """
+    async def test_owner_entity_id_dispatch_auto_approves(self) -> None:
+        """A live owner entity needs no channel-candidate normalization."""
         owner_id = uuid.uuid4()
         owner = _owner_contact(owner_id)
         pool = _make_pool(fetchrow_return={"primary": False})
@@ -528,14 +556,6 @@ class TestGateEmitsCreatedEvent:
                 new=AsyncMock(return_value=resolved_contact),
             ),
             patch(
-                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
-                new=AsyncMock(
-                    return_value=(resolved_contact, True)
-                    if resolved_contact is not None and "owner" in resolved_contact.roles
-                    else None
-                ),
-            ),
-            patch(
                 "butlers.modules.approvals.gate.record_approval_event",
                 new=AsyncMock(),
             ),
@@ -640,10 +660,6 @@ class TestGateEmitsCreatedEvent:
                 "butlers.modules.approvals.gate._resolve_target_contact",
                 new=AsyncMock(return_value=owner),
             ),
-            patch(
-                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
-                new=AsyncMock(return_value=(owner, True)),
-            ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
             patch(
                 "butlers.modules.approvals.gate.execute_approved_action",
@@ -694,11 +710,11 @@ class TestOwnerCrossSchemaFallback:
         exec_mock = AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"}))
         with (
             patch(
-                "butlers.modules.approvals.gate._resolve_target_contact",
+                "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=resolve_return),
             ),
             patch(
-                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                "butlers.identity.resolve_owner_channel_via_definer",
                 new=AsyncMock(return_value=definer_return),
             ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
@@ -778,7 +794,6 @@ class TestNotifySecondaryOwnerChannel:
             },
             resolved_contact=owner,
             pool=pool,
-            owner_channel_is_primary=False,
             tool_name="notify",
         )
         assert result == {"status": "sent"}
@@ -802,11 +817,11 @@ class TestNotifySecondaryOwnerChannel:
         )
         with (
             patch(
-                "butlers.modules.approvals.gate._resolve_target_contact",
+                "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                "butlers.identity.resolve_owner_channel_via_definer",
                 new=AsyncMock(return_value=(owner, False)),
             ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),

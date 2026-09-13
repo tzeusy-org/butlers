@@ -32,8 +32,7 @@ import butlers.core.approvals_hooks as approval_hooks
 from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.identity import (
     ResolvedContact,
-    resolve_contact_by_channel,
-    resolve_owner_channel_via_definer,
+    resolve_channel_contact_with_owner_corroboration,
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
@@ -357,8 +356,8 @@ async def _resolve_target_contact(
     """Resolve the target contact for an outbound tool call.
 
     Uses :func:`_extract_channel_identity` to determine the channel type and
-    value, then queries ``relationship.entity_facts`` via
-    :func:`resolve_contact_by_channel` (migration bead 7).
+    value, then resolves channel targets through the shared ambiguity-safe
+    owner-corroboration helper.
 
     For ``entity_id`` extractions (explicit entity reference), queries
     ``public.entities`` directly by UUID.
@@ -392,6 +391,8 @@ async def _resolve_target_contact(
                        COALESCE(e.roles, '{}') AS roles
                 FROM public.entities e
                 WHERE e.id = $1::uuid
+                  AND e.metadata ->> 'merged_into' IS NULL
+                  AND e.metadata ->> 'deleted_at' IS NULL
                 """,
                 channel_value,
             )
@@ -424,8 +425,9 @@ async def _resolve_target_contact(
             entity_id=entity_id,
         )
 
-    # Channel-based lookup
-    return await resolve_contact_by_channel(pool, channel_type, channel_value)
+    # Channel-based lookup shares one owner-corroboration policy with both
+    # outbound recipient guards.
+    return await resolve_channel_contact_with_owner_corroboration(pool, channel_type, channel_value)
 
 
 async def resolve_action_target_contact(
@@ -442,24 +444,7 @@ async def resolve_action_target_contact(
     writeback reuses this helper so a previously resolved owner remains
     entity-linked in the tally fact.
     """
-    resolved_contact = await _resolve_target_contact(pool, tool_args)
-    identity = _extract_channel_identity(tool_args)
-    if identity is None or identity[0] == "entity_id":
-        return resolved_contact
-
-    # A normal non-owner resolution is authoritative and must never trigger an
-    # owner-only fallback.  An owner-looking result still needs corroboration:
-    # the normal resolver tries channel-normalization variants sequentially,
-    # while the definer evaluates the full candidate set and rejects a variant
-    # collision spanning owner and external entities.
-    if resolved_contact is not None and "owner" not in resolved_contact.roles:
-        return resolved_contact
-
-    fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
-    if fallback is not None:
-        resolved_contact, _is_primary = fallback
-        return resolved_contact
-    return None
+    return await _resolve_target_contact(pool, tool_args)
 
 
 async def apply_approval_gates(
