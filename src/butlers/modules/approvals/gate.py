@@ -857,12 +857,9 @@ def _make_gate_wrapper(
         else:
             pend_reason = "no matching standing rule"
 
-        # park_pending_action is the single choke point for PENDING inserts:
-        # it writes the row AND attempts the owner-facing push in one call, so
-        # a new park path cannot be added without also notifying (bu-mda0r).
-        # It reserves the action id before dispatch, applies quiet-hours
-        # deferral/burst collapse, and never changes this action's expiry or
-        # approval state if delivery is unavailable.
+        # park_pending_action is the single PENDING-admission transaction: the
+        # action, stable intent, quiet-hours schedule, and direct/digest/
+        # collapsed presentation commit together without provider delivery.
         await park_pending_action(
             pool,
             action_id=action_id,

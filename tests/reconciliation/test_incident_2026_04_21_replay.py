@@ -31,7 +31,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.approval_parking_fake import record_pending_action
+
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.email_guard.park_pending_action",
+        record_pending_action,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -195,6 +206,7 @@ class TestAC1EmailGuardNonPrimary:
                 },
                 park_summary=f"notify() rejected: email to '{WORK_EMAIL}'",
                 msg_context="personal",
+                butler_name="messenger",
             )
 
         assert decision.allowed is False, (
@@ -229,6 +241,7 @@ class TestAC1EmailGuardNonPrimary:
                 park_tool_name="notify",
                 park_tool_args={},
                 park_summary="test",
+                butler_name="messenger",
             )
 
         assert decision.allowed is True
@@ -339,6 +352,7 @@ class TestAC2ContextAwareRouting:
                 park_tool_args={},
                 park_summary="personal message to work email",
                 msg_context="personal",
+                butler_name="messenger",
             )
 
         assert decision.allowed is False

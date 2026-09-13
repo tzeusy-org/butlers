@@ -18,9 +18,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.modules.approvals._shared import is_primary_contact
-from butlers.modules.approvals.gate import _make_gate_wrapper, match_standing_rule
+from butlers.modules.approvals.gate import (
+    _make_gate_wrapper as _production_make_gate_wrapper,
+)
+from butlers.modules.approvals.gate import match_standing_rule
+from butlers.testing.approval_parking_fake import record_pending_action
 
 pytestmark = pytest.mark.unit
+
+
+def _make_gate_wrapper(*args, **kwargs):
+    """Give every mocked gate producer the canonical owning butler."""
+    kwargs.setdefault("butler_name", "messenger")
+    return _production_make_gate_wrapper(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_pool_park_recorder(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
 
 
 # ---------------------------------------------------------------------------

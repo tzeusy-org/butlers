@@ -56,10 +56,9 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "research",
         "symptoms",
     },
-    # msg_003 retires the unwired delivery-tracking tables. Messenger now has
-    # only the shared core tables; delivery outcomes stay in live adapter and
-    # Switchboard/approval paths rather than a private tracking schema.
-    "messenger": set(),
+    # msg_003 retires the generic tracking tables; msg_004 adds only the
+    # narrowly keyed approval-recovery handoff ledger, with no live wiring.
+    "messenger": {"approval_delivery_handoffs"},
     "relationship": {
         "addresses",
         # contact_info moved to shared public schema (core_115 dropped per-schema)
@@ -95,7 +94,16 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "operator_audit_log",
         "routing_log",
     },
-    "approvals": {"approval_events", "approval_rules", "pending_actions"},
+    "approvals": {
+        "approval_delivery_attempts",
+        "approval_delivery_cohort_members",
+        "approval_delivery_cohorts",
+        "approval_delivery_intents",
+        "approval_delivery_presentations",
+        "approval_events",
+        "approval_rules",
+        "pending_actions",
+    },
     # contacts_source_accounts dropped by contacts_002 (verified-dead feature table)
     "contacts": {"contacts_source_links", "contacts_sync_state"},
     "mailbox": {"mailbox"},

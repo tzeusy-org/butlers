@@ -475,10 +475,16 @@ class TestApprovalGateWhatsApp:
         assert action["decided_by"] == "role:owner"
         assert action["status"] in (ActionStatus.APPROVED.value, ActionStatus.EXECUTED.value)
 
-    async def test_external_jid_pends_for_whatsapp_send(self):
+    async def test_external_jid_pends_for_whatsapp_send(self, monkeypatch):
         """whatsapp_send_message to an unknown (external) JID results in pending approval."""
         from butlers.config import ApprovalConfig, GatedToolConfig
         from butlers.modules.approvals.gate import apply_approval_gates
+        from butlers.testing.approval_parking_fake import record_pending_action
+
+        monkeypatch.setattr(
+            "butlers.modules.approvals.gate.park_pending_action",
+            record_pending_action,
+        )
 
         external_jid = "19998887777@s.whatsapp.net"
         pool = _GateTestPool()
@@ -492,7 +498,12 @@ class TestApprovalGateWhatsApp:
             enabled=True,
             gated_tools={"whatsapp_send_message": GatedToolConfig(risk_tier="medium")},
         )
-        await apply_approval_gates(mcp=mcp, approval_config=approval_config, pool=pool)
+        await apply_approval_gates(
+            mcp=mcp,
+            approval_config=approval_config,
+            pool=pool,
+            butler_name="messenger",
+        )
         result = await tools["whatsapp_send_message"](
             recipient=external_jid,
             text="hello",

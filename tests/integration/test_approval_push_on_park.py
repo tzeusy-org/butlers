@@ -1,4 +1,4 @@
-"""Real-Postgres coverage for deterministic approval-request park pushes.
+"""Real-Postgres coverage for approval admission and legacy push evidence.
 
 The reservation query, burst counter, deferred envelope, and pending-action
 clock are all database state. These tests therefore use the production core +
@@ -7,6 +7,7 @@ approvals migration chains rather than a mocked pool.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -24,7 +25,11 @@ from butlers.modules.approvals.notifications import (
     emit_approval_push,
 )
 from butlers.modules.approvals.park import park_pending_action
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    create_migration_db,
+    migration_db_name,
+)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -54,8 +59,10 @@ async def approval_push_pool(migrated_db_url: str):
         init=register_jsonb_codec,
     )
     await pool.execute(
-        "TRUNCATE approval_push_emissions, approval_events, pending_actions, "
-        "deferred_notifications CASCADE"
+        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
+        "approval_delivery_presentations, approval_delivery_cohorts, "
+        "approval_delivery_intents, approval_push_emissions, approval_events, "
+        "pending_actions, deferred_notifications CASCADE"
     )
     await pool.execute(
         "UPDATE public.approvals_policy "
@@ -84,8 +91,8 @@ async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(
     now = datetime.now(UTC)
     deduplication_key = "relationship:entity-dedup:test-source:test-target"
 
-    async def _park(action_id: uuid.UUID) -> None:
-        await park_pending_action(
+    async def _park(action_id: uuid.UUID):
+        return await park_pending_action(
             approval_push_pool,
             action_id=action_id,
             tool_name="memory_entity_merge",
@@ -104,13 +111,17 @@ async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(
     await approval_push_pool.execute(
         "UPDATE pending_actions SET status = 'abandoned' WHERE id = $1", first_action_id
     )
-    with pytest.raises(asyncpg.UniqueViolationError):
-        await _park(uuid.uuid4())
+    duplicate = await _park(uuid.uuid4())
+    assert duplicate.duplicate is True
+    assert duplicate.action_id == first_action_id
 
     await approval_push_pool.execute(
         "UPDATE pending_actions SET status = 'expired' WHERE id = $1", first_action_id
     )
-    await _park(uuid.uuid4())
+    replacement_id = uuid.uuid4()
+    replacement = await _park(replacement_id)
+    assert replacement.duplicate is False
+    assert replacement.action_id == replacement_id
 
 
 async def _insert_pending_action(
@@ -154,10 +165,10 @@ async def _never_execute(**_kwargs: object) -> dict[str, object]:
     raise AssertionError("A parked gate action must not execute its original tool")
 
 
-async def test_gate_park_emits_one_real_database_backed_approval_envelope(
+async def test_gate_park_atomically_admits_one_recoverable_presentation_without_sending(
     approval_push_pool: asyncpg.Pool,
 ) -> None:
-    """Park → one signed owner envelope, with a durable action-id reservation."""
+    """Park creates durable action/presentation state without live delivery."""
     dispatch = AsyncMock()
     runtime = _runtime(dispatch)
     wrapper = _make_gate_wrapper(
@@ -183,48 +194,449 @@ async def test_gate_park_emits_one_real_database_backed_approval_envelope(
 
     assert result["status"] == "pending_approval"
     action_id = uuid.UUID(result["action_id"])
-    dispatch.assert_awaited_once()
-    envelope = dispatch.await_args.args[0]
-    assert envelope["delivery"]["intent"] == "approval_request"
-    assert envelope["delivery"]["recipient"] == "100200300"
-    assert "Tool: relationship_assert_fact" in envelope["delivery"]["message"]
-    assert (
-        "Why: The owner asked to preserve this relationship fact."
-        in envelope["delivery"]["message"]
-    )
-    assert "Blast radius: contact" in envelope["delivery"]["message"]
-    assert "Reversibility: compensable" in envelope["delivery"]["message"]
-    assert "Expires:" in envelope["delivery"]["message"]
-    assert [action["verb"] for action in envelope["actions"]] == [
-        "approve",
-        "reject",
-        "open_dashboard",
-    ]
-
-    emitted = await approval_push_pool.fetchrow(
-        "SELECT emission_kind FROM approval_push_emissions WHERE action_id = $1",
-        action_id,
-    )
-    assert emitted is not None
-    assert emitted["emission_kind"] == "single"
-
+    dispatch.assert_not_awaited()
     row = await approval_push_pool.fetchrow(
         """
-        SELECT id, tool_name, requested_at, expires_at, why, blast_radius, reversibility
-        FROM pending_actions WHERE id = $1
+        SELECT pa.id, pa.tool_name, adi.action_key, adi.admission_mode,
+               adp.presentation_key, adp.presentation_mode, adp.state
+          FROM pending_actions AS pa
+          JOIN approval_delivery_intents AS adi ON adi.action_id = pa.id
+          JOIN approval_delivery_presentations AS adp ON adp.intent_id = adi.id
+         WHERE pa.id = $1
         """,
         action_id,
     )
     assert row is not None
-    duplicate = await emit_approval_push(
-        pool=approval_push_pool,
-        action=dict(row),
+    assert row["tool_name"] == "relationship_assert_fact"
+    assert row["action_key"] == f"approval:public:{action_id}"
+    assert row["admission_mode"] == "single"
+    assert row["presentation_key"] == f"approval:public:{action_id}:p:1"
+    assert row["presentation_mode"] == "single"
+    assert row["state"] == "ready"
+    assert await approval_push_pool.fetchval("SELECT count(*) FROM approval_push_emissions") == 0
+
+    same_id = await park_pending_action(
+        approval_push_pool,
+        action_id=action_id,
+        tool_name="relationship_assert_fact",
+        tool_args={"subject": "owner"},
+        agent_summary="Retry same admission",
+        requested_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(hours=72),
         origin_butler="relationship",
-        runtime=runtime,
-        now=row["requested_at"],
+        approval_push_runtime=None,
     )
-    assert duplicate == "duplicate"
-    dispatch.assert_awaited_once()
+    assert same_id.duplicate is True
+    assert same_id.intent_id is not None
+    assert same_id.action_key == row["action_key"]
+
+
+async def test_atomic_admission_rolls_back_action_when_intent_insert_fails(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """A failure after the action INSERT cannot strand a pending action."""
+    action_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await approval_push_pool.execute(
+        """
+        CREATE OR REPLACE FUNCTION reject_test_intent() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject test intent'; END $$;
+        CREATE TRIGGER reject_test_intent
+        BEFORE INSERT ON approval_delivery_intents
+        FOR EACH ROW EXECUTE FUNCTION reject_test_intent()
+        """
+    )
+    try:
+        with pytest.raises(asyncpg.RaiseError, match="reject test intent"):
+            await park_pending_action(
+                approval_push_pool,
+                action_id=action_id,
+                tool_name="relationship_assert_fact",
+                tool_args={"subject": "owner"},
+                agent_summary="Test atomic rollback",
+                requested_at=now,
+                expires_at=now + timedelta(hours=72),
+                origin_butler="relationship",
+                approval_push_runtime=None,
+            )
+        assert not await approval_push_pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id = $1)", action_id
+        )
+    finally:
+        await approval_push_pool.execute(
+            "DROP TRIGGER IF EXISTS reject_test_intent ON approval_delivery_intents; "
+            "DROP FUNCTION IF EXISTS reject_test_intent()"
+        )
+
+
+async def test_semantic_duplicate_returns_existing_action_and_intent_under_concurrency(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """The schema lock and semantic key admit one stable action/intent pair."""
+    now = datetime.now(UTC)
+    key = f"relationship:test:{uuid.uuid4()}"
+
+    async def admit():
+        return await park_pending_action(
+            approval_push_pool,
+            action_id=uuid.uuid4(),
+            tool_name="memory_entity_merge",
+            tool_args={"source": "one", "target": "two"},
+            agent_summary="Merge duplicate entities",
+            requested_at=now,
+            expires_at=now + timedelta(hours=72),
+            origin_butler="relationship",
+            approval_push_runtime=None,
+            deduplication_key=key,
+        )
+
+    first, second = await asyncio.gather(admit(), admit())
+    assert first.action_id == second.action_id
+    assert first.intent_id == second.intent_id
+    assert first.action_key == second.action_key
+    assert {first.duplicate, second.duplicate} == {False, True}
+    assert (
+        await approval_push_pool.fetchval(
+            "SELECT count(*) FROM pending_actions WHERE deduplication_key = $1", key
+        )
+        == 1
+    )
+
+
+async def test_concurrent_first_three_digest_and_collapse_are_durable(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """Five simultaneous parks yield three direct, one digest, one collapse."""
+    now = datetime.now(UTC)
+
+    async def admit(index: int):
+        return await park_pending_action(
+            approval_push_pool,
+            action_id=uuid.uuid4(),
+            tool_name=f"test_action_{index}",
+            tool_args={"index": index},
+            agent_summary=f"Test action {index}",
+            requested_at=now,
+            expires_at=now + timedelta(hours=72),
+            origin_butler="relationship",
+            approval_push_runtime=None,
+        )
+
+    admissions = await asyncio.gather(*(admit(index) for index in range(5)))
+    assert sorted(item.admission_mode for item in admissions) == [
+        "cohort_anchor",
+        "collapsed",
+        "single",
+        "single",
+        "single",
+    ]
+    assert (
+        await approval_push_pool.fetchval(
+            "SELECT count(*) FROM approval_delivery_presentations "
+            "WHERE presentation_mode = 'burst_digest'"
+        )
+        == 1
+    )
+    assert (
+        await approval_push_pool.fetchval(
+            "SELECT count(*) FROM approval_delivery_presentations WHERE state = 'collapsed'"
+        )
+        == 1
+    )
+    assert (
+        await approval_push_pool.fetchval("SELECT count(*) FROM approval_delivery_cohort_members")
+        == 2
+    )
+    assert await approval_push_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+
+    cohort_id = await approval_push_pool.fetchval("SELECT id FROM approval_delivery_cohorts")
+    await approval_push_pool.execute(
+        "UPDATE approval_delivery_cohort_members SET eligible = false WHERE cohort_id = $1",
+        cohort_id,
+    )
+    await approval_push_pool.execute(
+        "UPDATE approval_delivery_presentations "
+        "SET state = 'cancelled', last_reason_code = 'cohort_empty', next_attempt_at = NULL "
+        "WHERE cohort_id = $1 AND state = 'ready'",
+        cohort_id,
+    )
+    successor = await admit(6)
+    assert successor.admission_mode == "collapsed"
+    digest_rows = await approval_push_pool.fetch(
+        "SELECT presentation_generation, state FROM approval_delivery_presentations "
+        "WHERE cohort_id = $1 ORDER BY presentation_generation",
+        cohort_id,
+    )
+    assert [tuple(row.values()) for row in digest_rows] == [(1, "cancelled"), (2, "ready")]
+
+
+async def test_admission_recomputes_database_time_after_serialization_wait(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """A cohort expiring during lock wait cannot capture the delayed admission."""
+    database_now = await approval_push_pool.fetchval("SELECT clock_timestamp()")
+    cohort_id = uuid.uuid4()
+    cohort_key = f"approval-cohort:public:{cohort_id}"
+    window_start = database_now - timedelta(minutes=10) + timedelta(milliseconds=250)
+    await approval_push_pool.execute(
+        """
+        INSERT INTO approval_delivery_cohorts (
+            id, cohort_key, owning_schema, window_started_at, window_ends_at
+        ) VALUES (
+            $1, $2, 'public', $3::timestamptz,
+            $3::timestamptz + interval '10 minutes'
+        )
+        """,
+        cohort_id,
+        cohort_key,
+        window_start,
+    )
+
+    action_id = uuid.uuid4()
+    async with approval_push_pool.acquire() as blocker:
+        async with blocker.transaction():
+            await blocker.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
+            )
+            admission_task = asyncio.create_task(
+                park_pending_action(
+                    approval_push_pool,
+                    action_id=action_id,
+                    tool_name="relationship_assert_fact",
+                    tool_args={"subject": "owner"},
+                    agent_summary="Post-lock clock admission",
+                    requested_at=database_now,
+                    expires_at=database_now + timedelta(hours=72),
+                    origin_butler="relationship",
+                    approval_push_runtime=None,
+                )
+            )
+            await asyncio.sleep(0.4)
+            release_time = await blocker.fetchval("SELECT clock_timestamp()")
+        admission = await asyncio.wait_for(admission_task, timeout=5)
+
+    assert admission.admission_mode == "single"
+    assert admission.not_before >= release_time
+
+
+async def test_quiet_hours_are_snapshotted_without_generic_deferral(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """Admission stores the exact quiet-hours release and never reuses the generic queue."""
+    database_now = await approval_push_pool.fetchval("SELECT clock_timestamp()")
+    quiet_start = database_now.hour
+    quiet_end = (quiet_start + 1) % 24
+    await approval_push_pool.execute(
+        """
+        UPDATE public.approvals_policy
+           SET quiet_start_hour = $1, quiet_end_hour = $2, timezone = 'UTC'
+         WHERE id = 1
+        """,
+        quiet_start,
+        quiet_end,
+    )
+    now = datetime.now(UTC)
+    admission = await park_pending_action(
+        approval_push_pool,
+        action_id=uuid.uuid4(),
+        tool_name="relationship_assert_fact",
+        tool_args={"subject": "owner"},
+        agent_summary="Quiet-hours admission",
+        requested_at=now,
+        expires_at=now + timedelta(hours=72),
+        origin_butler="relationship",
+        approval_push_runtime=_runtime(AsyncMock()),
+    )
+    row = await approval_push_pool.fetchrow(
+        "SELECT state, last_reason_code, not_before, next_attempt_at "
+        "FROM approval_delivery_presentations WHERE presentation_key = $1",
+        admission.presentation_key,
+    )
+    expected_release = database_now.replace(hour=quiet_end, minute=0, second=0, microsecond=0)
+    if expected_release <= database_now:
+        expected_release += timedelta(days=1)
+    assert row["next_attempt_at"] == row["not_before"]
+    assert row["not_before"] == expected_release
+    assert row["last_reason_code"] == "quiet_hours"
+    assert await approval_push_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+
+
+async def test_delivery_schema_rejects_unknown_vocabulary_and_mutated_attempts(
+    approval_push_pool: asyncpg.Pool,
+) -> None:
+    """Closed values and append-only attempt evidence are enforced in PostgreSQL."""
+    now = datetime.now(UTC)
+    admission = await park_pending_action(
+        approval_push_pool,
+        action_id=uuid.uuid4(),
+        tool_name="relationship_assert_fact",
+        tool_args={"subject": "owner"},
+        agent_summary="Closed-vocabulary admission",
+        requested_at=now,
+        expires_at=now + timedelta(hours=72),
+        origin_butler="relationship",
+        approval_push_runtime=None,
+    )
+    presentation_id = await approval_push_pool.fetchval(
+        "SELECT id FROM approval_delivery_presentations WHERE presentation_key = $1",
+        admission.presentation_key,
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await approval_push_pool.execute(
+            "UPDATE approval_delivery_presentations SET state = 'stuck' WHERE id = $1",
+            presentation_id,
+        )
+    with pytest.raises(asyncpg.CheckViolationError):
+        await approval_push_pool.execute(
+            "UPDATE approval_delivery_presentations SET last_reason_code = 'raw_error' "
+            "WHERE id = $1",
+            presentation_id,
+        )
+    attempt_id = uuid.uuid4()
+    await approval_push_pool.execute(
+        """
+        INSERT INTO approval_delivery_attempts (
+            id, presentation_id, presentation_generation, attempt_number,
+            claim_fence, outcome
+        ) VALUES ($1, $2, 1, 1, 1, 'started')
+        """,
+        attempt_id,
+        presentation_id,
+    )
+    with pytest.raises(asyncpg.RaiseError):
+        await approval_push_pool.execute(
+            "UPDATE approval_delivery_attempts SET outcome = 'confirmed' WHERE id = $1",
+            attempt_id,
+        )
+
+
+@pytest.mark.filterwarnings(
+    "ignore:The test .* is marked with '@pytest.mark.asyncio':pytest.PytestWarning"
+)
+def test_approvals_migration_preserves_legacy_rows_and_refuses_nonempty_downgrade(
+    postgres_container,
+) -> None:
+    """Upgrade performs no backfill; recovery evidence blocks destructive downgrade."""
+    from sqlalchemy import create_engine, exc, text
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config, get_chain_head
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["approvals"])
+    command.upgrade(config, "approvals_014")
+    action_id = uuid.uuid4()
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO pending_actions (id, tool_name, tool_args, status) "
+                    "VALUES (:id, 'legacy_action', '{}'::jsonb, 'pending')"
+                ),
+                {"id": action_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO approval_push_emissions "
+                    "(action_id, emission_kind, outcome) "
+                    "VALUES (:id, 'single', 'delivered')"
+                ),
+                {"id": action_id},
+            )
+        command.upgrade(config, "approvals@head")
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM approval_delivery_intents")
+                ).scalar_one()
+                == 0
+            )
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == (get_chain_head("approvals"))
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT emission_kind || ':' || outcome "
+                        "FROM approval_push_emissions WHERE action_id = :id"
+                    ),
+                    {"id": action_id},
+                ).scalar_one()
+                == "single:delivered"
+            )
+        command.downgrade(config, "approvals_014")
+        command.upgrade(config, "approvals@head")
+        intent_id = uuid.uuid4()
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO approval_delivery_intents "
+                    "(id, action_id, action_key, owning_schema, origin_butler, admission_mode) "
+                    "VALUES (:intent, :action, :key, 'public', 'relationship', 'single')"
+                ),
+                {
+                    "intent": intent_id,
+                    "action": action_id,
+                    "key": f"approval:public:{action_id}",
+                },
+            )
+        with pytest.raises(exc.DBAPIError, match="approval delivery recovery data exists"):
+            command.downgrade(config, "approvals_014")
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.filterwarnings(
+    "ignore:The test .* is marked with '@pytest.mark.asyncio':pytest.PytestWarning"
+)
+def test_messenger_handoff_migration_enforces_binding_and_refuses_data_loss(
+    postgres_container,
+) -> None:
+    """The additive Messenger ledger accepts only bounded trusted tuple shapes."""
+    from sqlalchemy import create_engine, exc, text
+
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["messenger"])
+    command.upgrade(config, "messenger@head")
+    engine = create_engine(db_url)
+    subject_id = uuid.uuid4()
+    try:
+        with pytest.raises(exc.IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO approval_delivery_handoffs "
+                        "(issuer, owning_schema, subject_key, presentation_key, "
+                        "presentation_generation, presentation_mode) VALUES "
+                        "('relationship', 'relationship', :subject, :presentation, 1, "
+                        "'burst_digest')"
+                    ),
+                    {
+                        "subject": f"approval:relationship:{subject_id}",
+                        "presentation": f"approval:relationship:{subject_id}:p:1",
+                    },
+                )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO approval_delivery_handoffs "
+                    "(issuer, owning_schema, subject_key, presentation_key, "
+                    "presentation_generation, presentation_mode) VALUES "
+                    "('relationship', 'relationship', :subject, :presentation, 1, 'single')"
+                ),
+                {
+                    "subject": f"approval:relationship:{subject_id}",
+                    "presentation": f"approval:relationship:{subject_id}:p:1",
+                },
+            )
+        with pytest.raises(exc.DBAPIError, match="Cannot downgrade msg_004"):
+            command.downgrade(config, "msg_003")
+    finally:
+        engine.dispose()
 
 
 async def test_failed_push_is_retried_once_the_callback_secret_is_fixed(

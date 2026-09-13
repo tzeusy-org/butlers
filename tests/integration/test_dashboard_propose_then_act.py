@@ -73,7 +73,9 @@ def _make_fake_target_mcp() -> tuple[Any, dict[str, Any]]:
     return mcp, tools
 
 
-async def test_action_request_parks_zero_writes_no_completion_claim(tmp_path: Path) -> None:
+async def test_action_request_parks_zero_writes_no_completion_claim(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A fake target butler that follows the ACTION-REQUEST branch of the
     injected confirm block: calls its gated tool (which parks, since the
     target contact is unresolvable), never touches the domain write, and
@@ -83,6 +85,12 @@ async def test_action_request_parks_zero_writes_no_completion_claim(tmp_path: Pa
 
     target_pool = MockDB()
     target_mcp, _tools = _make_fake_target_mcp()
+    from butlers.testing.approval_parking_fake import record_pending_action
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.park_pending_action",
+        record_pending_action,
+    )
 
     @target_mcp.tool()
     async def finance_send_payment_reminder(to: str, amount: float) -> dict:
@@ -95,7 +103,12 @@ async def test_action_request_parks_zero_writes_no_completion_claim(tmp_path: Pa
             "finance_send_payment_reminder": GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM),
         },
     )
-    await apply_approval_gates(target_mcp, approval_config, target_pool)
+    await apply_approval_gates(
+        target_mcp,
+        approval_config,
+        target_pool,
+        butler_name="finance",
+    )
     gated_tool = await target_mcp.get_tool("finance_send_payment_reminder")
 
     async def _fake_target_dispatch(*_args: Any, **kwargs: Any) -> dict[str, Any]:
