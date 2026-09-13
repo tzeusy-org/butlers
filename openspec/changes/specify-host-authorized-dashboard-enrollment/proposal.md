@@ -67,6 +67,9 @@ configuration, credential, runtime, or deployment state.
 - `dashboard-admin-gateway`: preserve configured-key header clients while
   accepting the approved browser session and ensuring that an unset API key does
   not bypass the independent owner-authentication boundary.
+- `dashboard-relationship`: preserve every owner-role and PII endpoint gate while
+  allowing an adopted non-development keyless deployment to start only in
+  protected `keyless_unenrolled`, never in absent-key pass-through.
 
 ## Impact
 

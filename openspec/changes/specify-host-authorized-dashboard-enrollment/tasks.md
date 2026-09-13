@@ -4,13 +4,15 @@
 - [x] 1.2 Define configured-key sessions, host-authority proof invariants, single-use/replay/concurrency, expiry/revocation/restart/recovery, CSRF, corrupt/absent state, arbitrary-first-visitor denial, compatibility, and rollback.
 - [x] 1.3 Record the host-proof and HTTPS choices without selecting a mechanism, generating authority, provisioning credentials, or changing runtime state.
 - [x] 1.4 Amend the whole dashboard-admin-gateway API-key requirement while preserving every baseline scenario heading and clause not intentionally changed.
+- [x] 1.5 Add the whole dashboard-relationship owner-only requirement, preserving every endpoint and scenario while resolving its non-dev absent-key startup rule against adopted keyless-unenrolled startup.
+- [x] 1.6 Rebuild the canonical/unarchived owner-only browser-route inventory, including the mounted path `POST /api/secrets/cli/{credential_id:path}/rotate`, and define exact positive issuance allowlists versus absence-sentinel checks.
 
 ## 2. Exact-artifact review and adoption gates
 
 - [ ] 2.1 Obtain independent semantic and security review of the exact draft commit; any semantic correction requires a fresh exact-head review.
 - [ ] 2.2 Obtain separate owner selection of E1 and E2 plus adoption naming the exact independently reviewed commit. Silence keeps keyless enrollment and cutover disabled.
 - [ ] 2.3 Before implementation, amend this change with the selected mechanism's exact host command/control boundary, endpoint and payload shapes, request/flood bounds, HTTPS topology, recovery procedure, and threat analysis; review and owner-adopt that new exact head again.
-- [ ] 2.4 Rebuild every active owner-control requirement against this adopted contract, including `harden-runtime-auth-and-breaker-attention`, `specify-home-presence-owner-entity-configuration`, `specify-roster-identity-owner-operations-overlay`, and `durable-dashboard-terminal-action-recovery`; do not archive a stale header-only or unconfigured-503 clause afterward.
+- [ ] 2.4 Rebuild every active owner-control requirement against this adopted contract, including `harden-runtime-auth-and-breaker-attention`, `specify-home-presence-owner-entity-configuration`, `specify-roster-identity-owner-operations-overlay`, `durable-dashboard-terminal-action-recovery`, `generation-fenced-codex-auth-rotation-provenance`, and `memory-honesty-last-mile`; do not archive a stale header-only, unconfigured-503, implicit-owner, or incomplete-route clause afterward.
 
 ## 3. Future server foundation after adoption and allocation
 
@@ -31,8 +33,8 @@
 
 - [ ] 5.1 Extend mounted full-app API tests for configured-key session issuance, header compatibility, exact cookie attributes, session fixation, expiry/revocation, route coverage, and pre-access denial.
 - [ ] 5.2 Add real-PostgreSQL concurrency/restart tests for one enrollment winner, durable consume receipt, replay denial, expiry, epoch recovery, and unavailable/corrupt state.
-- [ ] 5.3 Add browser tests over the selected exact HTTPS Compose path for cookie acceptance, HttpOnly absence from JS, CSRF success/denial, restart, logout, and revocation.
-- [ ] 5.4 Add positive-allowlist and absence-sentinel tests across responses, audit, logs, telemetry, prompts, MCP, connectors, notifications, frontend bundles, source maps, and service-worker caches.
+- [ ] 5.3 Add browser tests over the selected exact HTTPS Compose path for cookie acceptance, HttpOnly absence from JS, reload rehydration with no Origin plus exact Fetch Metadata, cross-site/forwarded-authority denial, CSRF mutation success/denial, restart, logout, and revocation.
+- [ ] 5.4 Add D7 positive-issuance and non-vacuous absence-sentinel tests across responses, audit, logs, telemetry, prompts, MCP, connectors, notifications, frontend bundles, source maps, and service-worker caches, including the separately sanctioned one-time CLI rotate response.
 - [ ] 5.5 Run targeted tests first, topology collection where applicable, real API/database/browser/Compose security lanes, `make check-guards`, strict OpenSpec and overwrite checks, diff hygiene, fresh exact-head semantic/security review, and terminal hosted CI.
 
 ## 6. Staged cutover and guarded rollback

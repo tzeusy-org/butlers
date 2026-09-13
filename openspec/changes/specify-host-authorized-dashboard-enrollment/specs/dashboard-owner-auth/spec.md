@@ -124,20 +124,32 @@ between the request `Origin` and a finite configured HTTPS allowlist. The CSRF
 token SHALL be random, bound to one session, retained by the server only as a
 digest, and held by the frontend only in page memory. It SHALL NOT be the owner
 credential or enter persistent browser storage. Authenticated
-`GET /api/auth/owner/csrf` with exact HTTPS Origin MAY issue a replacement after
-page reload, with `Cache-Control: no-store`; its response SHALL contain only the
-new token and expiry. The server SHALL retain at most four active CSRF-token
-digests per session, each expiring within 30 minutes and never later than its
-session, so bounded concurrent tabs remain usable.
+`GET /api/auth/owner/csrf` MAY issue a replacement after page reload, with
+`Cache-Control: no-store`. This endpoint is the sole bounded exception to exact
+`Origin` validation because supported browsers do not reliably attach `Origin`
+to a same-origin GET. It SHALL instead require the valid Strict session cookie,
+an HTTPS request authority exactly matching one configured origin,
+`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors`, and
+`Sec-Fetch-Dest: empty`; reject redirects; and emit no permissive CORS header.
+Only explicitly trusted proxy metadata may determine effective scheme and
+authority; arbitrary `Forwarded` or `X-Forwarded-*` values SHALL NOT. Its only
+state effect SHALL be inserting or replacing a bounded CSRF digest; it SHALL
+read no domain data and perform no owner action. Its response SHALL contain
+only the new token and expiry. The server SHALL retain at most four active
+CSRF-token digests per session, each expiring within 30 minutes and never later
+than its session, so bounded concurrent tabs remain usable.
 
 `SameSite=Strict`, CORS, and content type SHALL be defense in depth and SHALL NOT
-replace token validation. A missing, `null`, wildcard, HTTP, malformed, or
-mismatched Origin or a missing/mismatched token SHALL fail before body buffering,
-pool access, or mutation. Safe cookie-backed reads require the valid session and
-origin policy but no CSRF token. Header-authenticated `X-API-Key` requests SHALL
-not require CSRF. Session establishment uses the matching key or adopted host
-authority plus exact HTTPS Origin, never same-origin alone. Logout and browser
-revocation SHALL require CSRF.
+replace token validation. On unsafe methods, a missing, `null`, wildcard, HTTP,
+malformed, or mismatched Origin or a missing/mismatched token SHALL fail before
+body buffering, pool access, or mutation. Safe cookie-backed reads require the
+valid session; they require neither `Origin` nor a CSRF token because they
+perform no mutation. The CSRF rehydration GET has the additional bounded
+Fetch-Metadata and effective-HTTPS checks above because it issues a mutation
+capability and updates its digest set. Header-authenticated `X-API-Key` requests
+SHALL not require CSRF. Session establishment uses the matching key or adopted
+host authority plus exact HTTPS Origin, never same-origin alone. Logout and
+browser revocation SHALL require CSRF.
 
 ID: REQ-dashboard-owner-auth-003
 Source: owner decision owner-auth-keyless-bootstrap Choice A; craft-and-care/security-and-secrets.md; design.md D2
@@ -164,6 +176,13 @@ Scope: v1-mandatory
 
 - **WHEN** a request would pass SameSite cookie handling or CORS policy but lacks the matching synchronizer token for an unsafe cookie-backed method
 - **THEN** it SHALL be rejected without a mutation
+
+#### Scenario: Reload rehydrates CSRF through one bounded GET exception
+
+- **WHEN** a supported browser reloads an authenticated page and fetches `GET /api/auth/owner/csrf` without an `Origin` header
+- **THEN** the request MAY succeed only with the valid Strict session cookie, exact configured HTTPS authority, and `Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors`, `Sec-Fetch-Dest: empty`
+- **AND** the response SHALL be no-store, contain only the replacement token and expiry, permit no redirect or permissive CORS response, and perform no domain read or owner action
+- **AND** a cross-site navigation/fetch, untrusted forwarded authority, missing/wrong Fetch Metadata, or non-HTTPS request SHALL receive no token
 
 ### Requirement: Auth state, expiry, revocation, restart, and recovery fail closed
 
@@ -231,7 +250,7 @@ Scope: v1-mandatory
 
 #### Scenario: Page reload obtains bounded replacement CSRF authority
 
-- **WHEN** an authenticated browser reloads and requests `GET /api/auth/owner/csrf` from an exact allowed HTTPS Origin
+- **WHEN** an authenticated browser reloads and requests `GET /api/auth/owner/csrf` through the bounded Fetch-Metadata and exact-HTTPS-authority exception
 - **THEN** the server SHALL return one no-store CSRF token and expiry without returning session or owner identity
 - **AND** it SHALL retain no more than four active CSRF digests for that session, each bounded by 30 minutes and the session expiry
 
@@ -248,9 +267,13 @@ protected-state observation, or a domain owner/contact assertion. The inventory
 in `design.md` SHALL be covered at implementation time, including Models and
 Spend attention, model Test/Verify, Home presence settings, prompt overlay and
 mode, conversation ingress recovery, terminal-action inspection/resolution,
-dashboard briefing, System egress, and relationship entity PII/mutations. A
-domain assertion that an owner entity exists SHALL remain additive and SHALL
-not authenticate the HTTP caller.
+memory dead-letter requeue, dashboard briefing, System egress, relationship
+entity PII/mutations, and owner-operated credential mutations. In particular,
+the mounted `POST /api/secrets/cli/{credential_id:path}/rotate` SHALL pass the
+central boundary before it reads a body, credential row, or generation state;
+its separately sanctioned one-time response remains governed by
+REQ-dashboard-owner-auth-006. A domain assertion that an owner entity exists
+SHALL remain additive and SHALL not authenticate the HTTP caller.
 
 Mounted route metadata and a route-introspection contract test SHALL make future
 owner-only routes fail when they omit the centralized boundary. Public health,
@@ -284,6 +307,64 @@ Scope: v1-mandatory
 - **WHEN** a new mounted route is tagged or specified as owner-only without the centralized dependency
 - **THEN** the route-introspection contract gate SHALL fail before merge
 
+### Requirement: Owner-auth issuance and absence evidence use exact allowlists
+
+Successful `POST /api/auth/owner/session` and the later-selected keyless
+completion SHALL emit owner-auth material only as: (1) the opaque session token
+in one `Set-Cookie` header carrying every attribute in
+REQ-dashboard-owner-auth-001, and (2) response data containing exactly
+`csrf_token`, `csrf_expires_at`, and `session_expires_at`. Successful
+`GET /api/auth/owner/csrf` SHALL return response data containing exactly
+`csrf_token` and `csrf_expires_at`. All three responses SHALL set
+`Cache-Control: no-store`. Status, denial, conflict, expiry, replay, logout, and
+revocation responses SHALL contain none of those materials.
+
+Privacy verification SHALL seed distinct non-secret fixture sentinels for the
+submitted dashboard key, host proof or challenge authority, issued session,
+issued CSRF token, stored digests, and owner identity. It SHALL positively prove
+that the issued session and CSRF sentinels appear in only the exact allowlisted
+locations above, then prove every other sentinel absent from every other
+response, audit event, log, metric, trace, prompt, MCP surface, connector event,
+notification, built frontend asset, source map, and service-worker cache. The
+test SHALL first prove each sink and positive issuance path was exercised, so an
+empty capture cannot satisfy the absence assertion.
+
+The canonical one-time credential result from
+`POST /api/secrets/cli/{credential_id:path}/rotate` SHALL retain its separate
+successful response allowlist of exactly the already-specified `value` and
+display `fingerprint`. That allowlist SHALL contain no dashboard key, host
+authority, owner session, CSRF token, auth digest, or owner identity. The
+rotated credential SHALL remain absent from every other response and evidence
+sink. No other credential endpoint or status code inherits this exception.
+
+ID: REQ-dashboard-owner-auth-006
+Source: heart-and-soul/security.md credential non-disclosure; dashboard-api Secrets Mutation Endpoints; generation-fenced-codex-auth-rotation-provenance Dashboard Codex Mutations; design.md D7
+Scope: v1-mandatory
+
+#### Scenario: Session issuance emits only the cookie and CSRF tuple
+
+- **WHEN** configured-key or adopted keyless session establishment succeeds
+- **THEN** the session token SHALL appear only in the exact `Set-Cookie` header and response data SHALL contain exactly `csrf_token`, `csrf_expires_at`, and `session_expires_at`
+- **AND** the response SHALL be no-store and SHALL contain no submitted key, host authority, digest, owner identity, or additional auth field
+
+#### Scenario: CSRF rehydration emits only its bounded tuple
+
+- **WHEN** the bounded CSRF rehydration GET succeeds
+- **THEN** response data SHALL contain exactly `csrf_token` and `csrf_expires_at`, with no session token or owner identity
+- **AND** the response SHALL be no-store
+
+#### Scenario: Absence assertions cannot pass vacuously
+
+- **WHEN** privacy verification exercises issuance and every named evidence sink with distinct fixture sentinels
+- **THEN** it SHALL first assert the two allowed token outputs positively
+- **AND** it SHALL assert every key, proof/challenge, digest, and identity sentinel absent everywhere, plus session and CSRF sentinels absent outside their exact allowlists
+
+#### Scenario: CLI rotate keeps only its existing one-time exception
+
+- **WHEN** `POST /api/secrets/cli/{credential_id:path}/rotate` succeeds under its canonical contract
+- **THEN** only that response may contain its newly issued credential `value` and display `fingerprint`
+- **AND** it SHALL contain no owner-auth material, and the rotated credential SHALL be absent from every other response and evidence sink
+
 ### Requirement: Implementation, adoption, and real-world effects remain separately gated
 
 This specification SHALL NOT select a keyless proof transport or HTTPS entry
@@ -303,7 +384,7 @@ access, provisioning, browser enrollment, merge, queue entry, deployment,
 restart, rollback, runtime verification, archive, and release SHALL remain
 distinct authorized acts.
 
-ID: REQ-dashboard-owner-auth-006
+ID: REQ-dashboard-owner-auth-007
 Source: craft-and-care/review-and-documentation.md; craft-and-care/testing-and-verification.md; craft-and-care/security-and-secrets.md; design.md Future verification seams and Adoption boundary
 Scope: v1-mandatory
 

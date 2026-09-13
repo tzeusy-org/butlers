@@ -24,33 +24,103 @@ This design is grounded at source commit
 
 ### Owner-gated browser route inventory
 
-The following routes are the complete transport-auth inventory found in the
-implementation and unarchived capability changes at the source baseline. A
-future route tagged or specified as owner-only joins this set automatically and
-must not depend on a hand-maintained path allowlist.
+The global rule is broader than this list: after keyless cutover every
+dashboard `/api/*` route requires a session except the three narrow exception
+classes in D5. The inventory below is the complete additional owner-only set
+named by current source, canonical specs, and unarchived deltas at the source
+baseline. A future route tagged or specified as owner-only joins the set
+automatically and must not depend on this hand-maintained list for enforcement.
 
-| Status | Method and route | Existing/additional domain check |
+| Contract/source | Method and route | Additional check |
 | --- | --- | --- |
-| Implemented | `GET /api/settings/models/attention` | runtime-attention state |
-| Implemented | `POST /api/settings/models/attention/{episode_id}/reissue` | uncertain-state/idempotency check |
-| Implemented | `GET /api/spend/runtime-attention` | fleet-halt state |
-| Required by active change | `POST /api/settings/models/{entry_id}/test` | catalog/probe-control checks |
-| Required by active change | `POST /api/settings/models/verify-all` | rate/concurrency/probe-control checks |
-| Required by active change | `GET /api/home/settings/presence/owner-entities` | Home configuration rules |
-| Required by active change | `PUT /api/home/settings/presence/owner-entities` | Home validation/CAS rules |
-| Required by active change | `GET /api/butlers/{name}/prompt` | known-roster/dedicated-pool rules |
-| Required by active change | `GET /api/butlers/{name}/prompt/history` | known-roster/dedicated-pool rules |
-| Required by active change | `PUT /api/butlers/{name}/prompt` | overlay validation/CAS rules |
-| Required by active change | `PUT /api/butlers/{name}/prompt/mode` | rollback-window/CAS rules |
-| Required by active change | `POST /api/butlers/{name}/conversation-turns/{message_id}/retry-ingress` | durable ingress fence |
-| Required by active change | `GET /api/dashboard/terminal-actions/{id}` | action ownership/read model |
-| Required by active change | `POST /api/dashboard/terminal-actions/{id}/resolve` | immutable resolution rules |
+| Implemented `require_dashboard_owner_control` | `GET /api/settings/models/attention` | runtime-attention state |
+| Implemented `require_dashboard_owner_control` | `POST /api/settings/models/attention/{episode_id}/reissue` | uncertain-state/idempotency |
+| Implemented `require_dashboard_owner_control` | `GET /api/spend/runtime-attention` | fleet-halt state |
+| `harden-runtime-auth-and-breaker-attention` | `POST /api/settings/models/{entry_id}/test` | catalog/probe control |
+| `harden-runtime-auth-and-breaker-attention` | `POST /api/settings/models/verify-all` | rate/concurrency/probe control |
+| `specify-home-presence-owner-entity-configuration` | `GET`, `PUT /api/home/settings/presence/owner-entities` | Home validation/CAS |
+| `specify-roster-identity-owner-operations-overlay` | `GET`, `PUT /api/butlers/{name}/prompt` | roster/pool/overlay CAS |
+| `specify-roster-identity-owner-operations-overlay` | `GET /api/butlers/{name}/prompt/history` | roster/pool/history |
+| `specify-roster-identity-owner-operations-overlay` | `PUT /api/butlers/{name}/prompt/mode` | rollback-window CAS |
+| `durable-dashboard-terminal-action-recovery` | `POST /api/butlers/{name}/conversation-turns/{message_id}/retry-ingress` | durable ingress fence |
+| `durable-dashboard-terminal-action-recovery` | `GET /api/dashboard/terminal-actions/{id}` | action ownership/read model |
+| `durable-dashboard-terminal-action-recovery` | `POST /api/dashboard/terminal-actions/{id}/resolve` | immutable resolution |
+| `memory-honesty-last-mile` | `POST /api/memory/episodes/{episode_id}/requeue` | recovery eligibility/idempotency |
+| canonical `dashboard-briefing` | `GET /api/dashboard/briefing` | owner-contact assertion/cache |
+| canonical `system-overview-page` | `GET /api/system/egress` | owner-contact assertion |
 
-The same central session boundary also precedes owner-contact gates such as
-`GET /api/dashboard/briefing`, `GET /api/system/egress`, and the exact
-relationship entity read/write set in `dashboard-relationship` Clause 12. Those
-domain assertions continue to run after authentication. They cannot create a
-session or convert the presence of an owner row into caller identity.
+Canonical `dashboard-relationship` Clause 12 adds this exact set. The central
+session boundary runs before its owner-role assertion:
+
+- `POST /api/relationship/entities`
+- `POST /api/relationship/entities/{id}/merge`
+- `POST /api/relationship/entities/{id}/archive`
+- `POST /api/relationship/entities/{id}/promote-tier`
+- `DELETE /api/relationship/entities/{id}`
+- `POST /api/relationship/entities/queue/dismiss`
+- `POST /api/relationship/entities/{id}/contacts`
+- `DELETE /api/relationship/entities/{id}/contacts/{pred}/{valueHash}`
+- `POST /api/relationship/entities/{id}/notes`
+- `POST /api/relationship/entities/{id}/interactions`
+- `POST /api/relationship/entities/{id}/gifts`
+- `POST /api/relationship/entities/{id}/reach-out-drafts`
+- `GET /api/relationship/entities/queue`
+- `GET /api/relationship/entities/search`
+- `GET /api/relationship/entities/{id}/contacts`
+- `GET /api/relationship/entities/{id}/neighbours`
+- `GET /api/relationship/entities/{id}/activity`
+- `GET /api/relationship/plex/halo`
+
+The canonical Secrets surface is owner-operated in v1 and the active
+`generation-fenced-codex-auth-rotation-provenance` delta explicitly treats
+Codex save/rotate, reauthorization/device-auth, probe, and revoke as owner
+operations. Therefore the additional inventory also includes:
+
+- `PUT`, `DELETE /api/butlers/{name}/secrets/{key}`
+- `PUT`, `DELETE /api/oauth/google/credentials`
+- `POST /api/secrets/user/{provider}/reauthorize`
+- `POST /api/secrets/user/{provider}/rotate`
+- `POST /api/secrets/user/{provider}/disconnect`
+- `POST /api/secrets/user/{provider}/probe`
+- `POST /api/secrets/system/{key}`
+- `POST /api/secrets/system/{key}/probe`
+- `DELETE /api/secrets/system/{key}`
+- `POST /api/secrets/cli/{credential_id:path}/rotate`
+- `POST /api/secrets/cli/{credential_id:path}/revoke`
+- `POST /api/secrets/cli/{credential_id:path}/reauthorize`
+- `POST /api/secrets/probe-all`
+
+The CLI rotate path is spelled with `{credential_id:path}` as mounted, not the
+canonical spec's shorthand `{id}`, because credential identifiers contain a
+slash. It retains its separately sanctioned one-time credential response; D7
+distinguishes that response from owner-auth material.
+
+The active deltas listed above, plus
+`generation-fenced-codex-auth-rotation-provenance` and
+`memory-honesty-last-mile`, must be rebuilt after E1/E2 adoption so their
+header-only, unconfigured-503, or implicit-owner language points to the final
+central contract. No such delta may archive afterward from its stale ancestor.
+The domain assertions continue to run after authentication; they cannot create
+a session or convert the presence of an owner row into caller identity.
+
+The rebuild plan is exact and ordered:
+
+| Active change | Requirements/clauses to rebuild against the adopted auth contract |
+| --- | --- |
+| `harden-runtime-auth-and-breaker-attention` | `dashboard-model-settings` REQ-001/002, `dashboard-spend-dashboard` fleet-halt owner-control scenario, and `runtime-attention-outbox` REQ-003 |
+| `specify-home-presence-owner-entity-configuration` | `home-presence-configuration` owner-authenticated surface and its unconfigured/wrong-credential scenarios |
+| `specify-roster-identity-owner-operations-overlay` | `dashboard-butler-management` REQ-001 owner-control prose/scenarios |
+| `durable-dashboard-terminal-action-recovery` | `dashboard-conversations` REQ-006 and `dashboard-terminal-action-recovery` REQ-005 owner-only operations |
+| `generation-fenced-codex-auth-rotation-provenance` | `dashboard-api` Codex save/rotate, reauthorize/device-auth, probe, and revoke owner boundary |
+| `memory-honesty-last-mile` | `dashboard-api` Owner-Scoped Dead-Letter Episode Requeue API |
+
+After the selected E1/E2 amendment is independently reviewed and adopted,
+each owner copies the then-current whole requirement, changes only its
+transport-auth clauses to the central header-or-session contract, preserves all
+domain checks and scenario names, and reruns same-name plus body-overwrite
+checks. No related change may archive while it still carries the stale clauses;
+archive order is coordinated only after every rebuild validates against the
+then-current baseline.
 
 ## Goals and non-goals
 
@@ -113,11 +183,19 @@ The session response also creates a distinct random synchronizer CSRF token.
 The server stores only its digest. The browser may retain the CSRF token in
 memory for the lifetime of the page and sends it in `X-CSRF-Token`; it is not an
 authentication credential and never enters persistent browser storage. After a
-page reload, authenticated `GET /api/auth/owner/csrf` with exact HTTPS Origin
-may issue a replacement token with `Cache-Control: no-store`. The server may
-retain at most four active token digests per session so separate tabs do not
-invalidate one another; each expires within 30 minutes and never outlives the
-session. The response contains only the new token and its expiry.
+page reload, authenticated `GET /api/auth/owner/csrf` may issue a replacement
+token with `Cache-Control: no-store`. This is the sole bounded exception to the
+exact-Origin rule because browsers do not reliably send `Origin` on a
+same-origin GET. It requires the valid Strict session cookie, HTTPS request
+authority exactly matching one configured origin, `Sec-Fetch-Site: same-origin`,
+`Sec-Fetch-Mode: cors`, and `Sec-Fetch-Dest: empty`; it rejects redirects and
+sends no permissive CORS header. Trusted-proxy configuration, not arbitrary
+`Forwarded` or `X-Forwarded-*`, determines the effective HTTPS authority. Its
+only state effect is inserting or replacing a bounded CSRF digest; it reads no
+domain data and performs no owner action. The server may retain at most four
+active token digests per session so separate tabs do not invalidate one
+another; each expires within 30 minutes and never outlives the session. The
+response contains only the new token and its expiry.
 
 Every unsafe request (`POST`, `PUT`, `PATCH`, `DELETE`) authenticated by the
 cookie must pass all of:
@@ -128,10 +206,13 @@ cookie must pass all of:
 3. the normal owner session, route authorization, validation, idempotency, and
    audit checks.
 
-A missing, malformed, `null`, wildcard, HTTP, or mismatched Origin fails
-closed. `SameSite=Strict` and CORS are defense in depth, not substitutes for
-the synchronizer token. Safe cookie-backed reads require the valid session and
-exact origin policy but no CSRF token. Session establishment has no prior
+A missing, malformed, `null`, wildcard, HTTP, or mismatched Origin fails closed
+on every unsafe request. `SameSite=Strict` and CORS are defense in depth, not
+substitutes for the synchronizer token. Safe cookie-backed reads require the
+valid session but do not require an `Origin` or CSRF token because they perform
+no mutation. The CSRF rehydration GET has the additional bounded Fetch-Metadata
+and effective-HTTPS checks above because it issues a mutation capability and
+updates its digest set. Session establishment has no prior
 cookie authority, so it uses the submitted configured key or the eventually
 adopted host proof plus exact HTTPS Origin; it is never exempt from origin
 validation. Logout and session-revocation mutations require CSRF when invoked
@@ -238,6 +319,32 @@ safe. Replays and concurrent losses never show success. The page uses one
 commit action, terse owner-direct copy, canonical status indicators, no
 celebration, and no claim that loading the page enrolled the visitor.
 
+### D7: Issuance output is a closed positive allowlist
+
+Successful configured-key session establishment and the later-selected keyless
+completion may emit owner-auth material in exactly two places: the opaque
+session token in one `Set-Cookie` header and response data containing exactly
+`csrf_token`, `csrf_expires_at`, and `session_expires_at`. Successful
+`GET /api/auth/owner/csrf` response data contains exactly `csrf_token` and
+`csrf_expires_at`. These responses set `Cache-Control: no-store`; no other
+header or field carries owner-auth material. Status and revocation responses
+carry none.
+
+The security test uses distinct, non-secret fixture sentinels for the submitted
+key, host proof/challenge authority, issued session, issued CSRF token, stored
+digests, and owner identity. It positively asserts the session and CSRF token
+only in the exact allowlisted locations above, then proves every other sentinel
+absent from every other response and evidence sink. An empty response or empty
+log capture cannot pass because the test first proves that each sink and both
+positive issuance locations were exercised.
+
+The existing `POST /api/secrets/cli/{credential_id:path}/rotate` contract is a
+separate positive allowlist: only its successful one-time response may contain
+its newly issued credential `value` and display `fingerprint`. That exception
+does not permit a dashboard key, host authority, session, CSRF token, digest, or
+owner identity to appear there, and it does not permit the rotated credential
+to appear in any other response or evidence sink.
+
 ## Remaining owner adoption choices
 
 No option below is selected or recommended by this draft. If unanswered, the
@@ -318,13 +425,20 @@ evidence, with one gate species per invariant:
 4. CSRF tests from the mounted middleware stack for missing/wrong token,
    missing/`null`/wrong/HTTP Origin, cross-origin form and credentialed fetch,
    allowed-origin success, header-auth exemption, and denial before mutation.
+   The selected real HTTPS browser lane must reload, demonstrate its same-origin
+   CSRF fetch omits `Origin` while sending the exact required Fetch Metadata,
+   obtain a usable token, and reject cross-site navigation/fetch plus untrusted
+   forwarded-authority variants.
 5. Configuration/recovery tests for absent key, key addition/removal/rotation,
    malformed and unknown state, unavailable storage, lost-session recovery,
    emergency host revocation, and guarded rollback to the prior image.
-6. Positive allowlist plus absence-sentinel security tests proving that keys,
-   proofs, cookies, CSRF tokens, digests, bodies, and owner identity do not
-   appear in responses, audit, logs, metrics, traces, prompts, MCP, connector,
-   notification, built frontend, source maps, or service-worker caches.
+6. D7 positive-issuance plus absence-sentinel security tests. Positively prove
+   the exact session-cookie and CSRF response locations, then prove distinct
+   key, proof/challenge, session, CSRF, digest, body, and owner-identity
+   sentinels absent everywhere else: responses, audit, logs, metrics, traces,
+   prompts, MCP, connectors, notifications, built frontend, source maps, and
+   service-worker caches. Separately prove the existing CLI rotate one-time
+   `value`/`fingerprint` response and absence everywhere else.
 7. Route-introspection and frontend contract tests proving every inventoried or
    newly tagged owner-only browser route uses the centralized boundary and that
    the shell exposes honest, accessible, repeat-safe states.
