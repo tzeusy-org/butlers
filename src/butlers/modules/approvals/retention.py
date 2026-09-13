@@ -135,15 +135,6 @@ async def cleanup_old_actions(
                              'retry_wait', 'ambiguous'
                          )
                   )
-                  AND NOT EXISTS (
-                      SELECT 1
-                        FROM approval_delivery_intents AS delivery_intent
-                        JOIN approval_delivery_presentations AS delivery_presentation
-                          ON delivery_presentation.intent_id = delivery_intent.id
-                        JOIN approval_delivery_attempts AS delivery_attempt
-                          ON delivery_attempt.presentation_id = delivery_presentation.id
-                       WHERE delivery_intent.action_id = pending_actions.id
-                  )
               )
           )
         """

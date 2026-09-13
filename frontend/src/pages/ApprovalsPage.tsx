@@ -370,7 +370,7 @@ function deliverySummary(delivery: ApprovalDeliveryTruth): string {
       ? `Legacy push evidence: ${delivery.legacy_outcome}`
       : "Legacy delivery evidence unavailable";
   }
-  if (delivery.ambiguous) return "Delivery uncertain — automatic resend is blocked";
+  if (delivery.ambiguous) return "Delivery uncertain; automatic resend is blocked";
   if (delivery.stuck) return `Delivery ${delivery.state ?? "work"} needs attention`;
   switch (delivery.state) {
     case "delivered":

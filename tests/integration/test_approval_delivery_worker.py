@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -17,6 +20,7 @@ from butlers.core.approval_delivery_worker import (
     HandoffResult,
 )
 from butlers.db import register_jsonb_codec
+from butlers.modules.approvals import delivery_lifecycle
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
     transition_pending_action,
@@ -640,6 +644,60 @@ async def test_defer_replaces_prestart_generation_at_database_time(
     assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
 
 
+@pytest.mark.parametrize("operation", ["terminal", "defer"])
+async def test_transaction_exit_failure_emits_no_lifecycle_success(
+    delivery_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    operation: str,
+) -> None:
+    """Rolled-back lifecycle work cannot publish a success metric or log."""
+    admission = await _park(delivery_pool)
+    real_write_transaction = delivery_lifecycle._approval_write_transaction
+
+    @asynccontextmanager
+    async def fail_at_transaction_exit(source: Any):
+        async with real_write_transaction(source) as connection:
+            yield connection
+            raise RuntimeError("synthetic commit boundary failure")
+
+    counter = MagicMock()
+    monkeypatch.setattr(delivery_lifecycle, "_approval_write_transaction", fail_at_transaction_exit)
+    monkeypatch.setattr(delivery_lifecycle, "approval_delivery_lifecycle_total", counter)
+
+    with (
+        caplog.at_level(logging.INFO, logger=delivery_lifecycle.__name__),
+        pytest.raises(RuntimeError, match="synthetic commit boundary failure"),
+    ):
+        if operation == "terminal":
+            await transition_pending_action(
+                delivery_pool,
+                action_id=admission.action_id,
+                target_status=ActionStatus.REJECTED,
+                decided_by="owner",
+                event_actor="owner",
+                event_reason="synthetic rollback",
+            )
+        else:
+            await defer_pending_action(
+                delivery_pool,
+                action_id=admission.action_id,
+                hours=2,
+                actor="owner",
+            )
+
+    counter.labels.assert_not_called()
+    assert "approval delivery terminalized" not in caplog.text
+    assert "approval delivery deferred" not in caplog.text
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT status FROM pending_actions WHERE id = $1",
+            admission.action_id,
+        )
+        == "pending"
+    )
+
+
 async def test_handoff_first_defer_keeps_attempt_and_adds_successor(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -707,4 +765,90 @@ async def test_cohort_member_defer_preserves_other_digest_members(
         "WHERE intent_id = (SELECT id FROM approval_delivery_intents WHERE action_id = $1)",
         fourth.action_id,
     )
-    assert dict(successor) == {"presentation_generation": 2, "state": "ready"}
+    assert dict(successor) == {"presentation_generation": 1, "state": "ready"}
+
+
+async def test_defer_generation_is_independent_of_cohort_replacement_history(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """A cohort's generation cannot skip or exhaust a direct action successor."""
+    admissions = [await _park(delivery_pool, ordinal=index) for index in range(5)]
+    fourth = admissions[3]
+    cohort = await delivery_pool.fetchrow(
+        """
+        SELECT c.id, c.cohort_key
+          FROM approval_delivery_cohort_members AS m
+          JOIN approval_delivery_cohorts AS c ON c.id = m.cohort_id
+          JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+         WHERE i.action_id = $1
+        """,
+        fourth.action_id,
+    )
+    assert cohort is not None
+    await delivery_pool.execute(
+        """
+        UPDATE approval_delivery_presentations
+           SET state = 'cancelled', last_reason_code = 'cohort_empty',
+               next_attempt_at = NULL, updated_at = clock_timestamp()
+         WHERE cohort_id = $1 AND state = 'ready'
+        """,
+        cohort["id"],
+    )
+    await delivery_pool.execute(
+        """
+        INSERT INTO approval_delivery_presentations (
+            cohort_id, subject_key, subject_kind, presentation_mode,
+            presentation_generation, presentation_key, state,
+            last_reason_code, not_before
+        ) VALUES ($1, $2, 'cohort', 'burst_digest', 1000, $2 || ':p:1000',
+                  'delivered', NULL, clock_timestamp())
+        """,
+        cohort["id"],
+        cohort["cohort_key"],
+    )
+
+    first = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=2,
+        actor="owner",
+    )
+    assert first.changed is True
+    first_successor = await delivery_pool.fetchrow(
+        """
+        SELECT presentation_generation, presentation_key
+          FROM approval_delivery_presentations
+         WHERE intent_id = (
+             SELECT id FROM approval_delivery_intents WHERE action_id = $1
+         )
+           AND state = 'ready'
+        """,
+        fourth.action_id,
+    )
+    assert dict(first_successor) == {
+        "presentation_generation": 1,
+        "presentation_key": f"{fourth.action_key}:p:1",
+    }
+
+    second = await defer_pending_action(
+        delivery_pool,
+        action_id=fourth.action_id,
+        hours=3,
+        actor="owner",
+    )
+    assert second.changed is True
+    successor = await delivery_pool.fetchrow(
+        """
+        SELECT presentation_generation, presentation_key
+          FROM approval_delivery_presentations
+         WHERE intent_id = (
+             SELECT id FROM approval_delivery_intents WHERE action_id = $1
+         )
+           AND state = 'ready'
+        """,
+        fourth.action_id,
+    )
+    assert dict(successor) == {
+        "presentation_generation": 2,
+        "presentation_key": f"{fourth.action_key}:p:2",
+    }
