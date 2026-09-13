@@ -823,6 +823,108 @@ class TestSuccessProvenance:
 
 
 # ---------------------------------------------------------------------------
+# Tests: composed-prompt digest + resume_outcome on the ledger row (bu-hz0g0)
+# ---------------------------------------------------------------------------
+
+_LEDGER_INSERT = "INSERT INTO public.token_usage_ledger"
+
+
+class _UsageReportingAdapter(RuntimeAdapter):
+    """Adapter that always succeeds and reports token usage."""
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    async def invoke(self, *args: Any, **kwargs: Any) -> tuple[str, list, dict | None]:
+        return "ok", [], {"input_tokens": 5, "output_tokens": 3}
+
+    async def reset(self) -> None:
+        pass
+
+    def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+        import json
+
+        p = tmp_dir / "cfg.json"
+        p.write_text(json.dumps({"mcpServers": mcp_servers}))
+        return p
+
+    def parse_system_prompt_file(self, config_dir: Path) -> str:
+        return ""
+
+
+class TestComposedPromptLedgerColumns:
+    """A normal spawn's ledger row carries the five per-layer token columns.
+
+    ``read_system_prompt`` on an empty config_dir falls back to the
+    butler-name default template (non-empty), so ``base_prompt_tokens`` is
+    always positive; the other three optional layers are pinned via explicit
+    fetch-function patches so their token counts are exact, not incidental.
+    """
+
+    async def test_composition_columns_land_for_normal_spawn(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        timezone_instruction = "tz" * 10  # 20 chars -> 5 tokens
+        context_preamble = "ctx" * 10  # 30 chars -> 7 tokens
+
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_PRIMARY_RESOLVED,
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.fetch_system_prompt_override",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.fetch_general_timezone_instruction",
+                new_callable=AsyncMock,
+                return_value=timezone_instruction,
+            ),
+            patch(
+                "butlers.core.spawner.fetch_situational_context_preamble",
+                new_callable=AsyncMock,
+                return_value=context_preamble,
+            ),
+        ):
+            mock_create.return_value = _SESSION_ID
+            # trigger_source="tick" (not "route"/switchboard): no routing
+            # instructions layer, no conversation, so no resume_outcome.
+            result = await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=_UsageReportingAdapter(),
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        rows = _execute_calls_with_fragment(mock_pool, _LEDGER_INSERT)
+        assert len(rows) == 1, f"Expected exactly one ledger row, got: {rows}"
+        row = rows[0]
+        # Positional args: 0=SQL, 1=catalog_entry_id, ..., 8=purpose,
+        # 9=base_prompt_tokens, 10=timezone_instruction_tokens,
+        # 11=context_preamble_tokens, 12=routing_instructions_tokens,
+        # 13=memory_context_tokens, 14=resume_outcome.
+        assert isinstance(row[9], int) and row[9] > 0, "base_prompt_tokens must be positive"
+        assert row[10] == len(timezone_instruction) // 4
+        assert row[11] == len(context_preamble) // 4
+        assert row[12] == 0, "no switchboard routing instructions for this butler"
+        assert row[13] == 0, "memory module is disabled for this config"
+        assert row[14] is None, "trigger_source=tick is not a conversational resume turn"
+
+
+# ---------------------------------------------------------------------------
 # Tests: best-effort (insert failure does not propagate)
 # ---------------------------------------------------------------------------
 
