@@ -134,21 +134,25 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
   const onlyInRuntime = (runtimeGroups ?? []).filter(
     (group) => declaredGroups !== null && !declaredGroups.includes(group),
   );
-  const failedModules = (moduleHealth.data?.data ?? []).filter(
-    (module) => module.status === "error",
-  );
-  const registeredNames = (registeredTools.data?.data ?? []).map((tool) => tool.name);
+  const moduleRows = moduleHealth.isError ? null : moduleHealth.data?.data;
+  const failedModules = moduleRows ? moduleRows.filter((module) => module.status === "error") : [];
+  const registeredNames = registeredTools.isError
+    ? null
+    : registeredTools.data?.data.map((tool) => tool.name);
   const declaredToolNames = config.declared_tool_names;
   const effectiveToolNames = config.effective_tool_names;
-  const declaredNotRegistered = (declaredToolNames ?? []).filter(
-    (name) => !registeredNames.includes(name),
-  );
-  const effectiveNotRegistered = (effectiveToolNames ?? []).filter(
-    (name) => !registeredNames.includes(name),
-  );
-  const registeredNotDeclared = registeredNames.filter(
-    (name) => declaredToolNames !== null && !declaredToolNames.includes(name),
-  );
+  const declaredNotRegistered =
+    declaredToolNames && registeredNames
+      ? declaredToolNames.filter((name) => !registeredNames.includes(name))
+      : [];
+  const effectiveNotRegistered =
+    effectiveToolNames && registeredNames
+      ? effectiveToolNames.filter((name) => !registeredNames.includes(name))
+      : [];
+  const registeredNotDeclared =
+    registeredNames && declaredToolNames
+      ? registeredNames.filter((name) => !declaredToolNames.includes(name))
+      : [];
 
   return (
     <Card>
@@ -193,7 +197,9 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
             </div>
             <div className="rounded bg-muted/40 p-2">
               <p className="text-lg font-semibold">
-                {registeredTools.isError ? "—" : (registeredTools.data?.data?.length ?? 0)}
+                {registeredTools.isError || !registeredTools.data
+                  ? "—"
+                  : registeredTools.data.data.length}
               </p>
               <p className="text-[10px] uppercase text-muted-foreground">registered tools</p>
             </div>
@@ -217,6 +223,9 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
             )}
             {registeredTools.isError && (
               <p className="text-destructive">Registered surface unavailable.</p>
+            )}
+            {moduleHealth.isError && (
+              <p className="text-destructive">Module health unavailable.</p>
             )}
             {config.tool_declaration_complete === false && (
               <p className="text-[var(--amber-text)]">
