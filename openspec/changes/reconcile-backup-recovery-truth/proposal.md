@@ -14,12 +14,11 @@ deployment.
   contracts. It does not create a second result authority.
 - Require backup coverage to remain complete for recoverable application data,
   including credential-bearing rows, and closed under schema-qualified foreign
-  keys. Every omission must be reconstructible trusted-bootstrap state with a
-  documented loss statement.
+  keys in the exact exported `pg_dump` snapshot. Every omission must be
+  reconstructible trusted-bootstrap state with a documented loss statement.
 - Preserve ownership and ACL intent in the recovery artifact and require the
-  managed bootstrap-first procedure plus explicit ownership/ACL verification
-  before a restore may be called recovery-ready. An owner-neutral scratch
-  restore alone is not that proof.
+  same protected attempt to run managed bootstrap and complete ownership/ACL
+  verification in a disposable target before a restore is recovery-ready.
 - Keep the adopted filtered-event manifest authoritative only for its named
   scope. A manifest or run receipt does not replace the existing direct,
   memoized artifact-integrity check or manufacture a restore pass.
@@ -29,6 +28,9 @@ deployment.
 - Reuse the existing protected restore ledger and truthful restore-drill
   attention contract. Production evidence remains separately gated by
   `bu-e1410` and deferred owner/operations task `bu-lw18o`.
+- Renumber the colliding active filtered-event authority requirement to
+  `REQ-database-security-011` and qualify cross-change sources so trace identity
+  cannot resolve to the unrelated owner-operations overlay.
 
 ## Capabilities
 
@@ -54,3 +56,5 @@ work in `bu-kqnum.8.4` through `bu-kqnum.8.7` remains the owner of result-aware
 retry, attention, API/UI failure age, real-PostgreSQL proof, and terminal
 reconciliation. This planning change performs no dump, restore, schema change,
 credential access, runtime action, deployment, or production inspection.
+The bounded ID correction also updates the active artifact-bound filtered-event
+spec and its testing reference; it changes no runtime behavior or authority.

@@ -93,110 +93,168 @@ Alternative considered: omit or redact `butler_secrets`. Rejected because it
 silently turns a complete recovery claim into a partial application restore and
 contradicts the current credential authority model.
 
-### 3. Coverage is closed under schema-qualified dependencies
+### 3. Coverage is closed under schema-qualified dependencies in the dump snapshot
 
-The producer computes the recoverable relation set from PostgreSQL catalogs in
-the same captured state as the dump. Every retained foreign-key child requires
-its referenced parent to be retained, or both must be excluded under one
-documented reconstructible-control-plane decision. Fully qualified schema and
-relation identity is mandatory; a matching unqualified name is not evidence.
+The producer opens one repeatable-read, read-only transaction, exports its
+snapshot, enumerates the complete in-scope schema-qualified relation and
+foreign-key graph, acquires `ACCESS SHARE` locks on that ordered relation set,
+and rechecks the graph before starting `pg_dump --snapshot=<snapshot-id>`. It
+keeps the exporting transaction and locks until dump and manifest capture
+finish. Every retained foreign-key child requires its referenced parent in the
+same artifact, or both must share one documented reconstructible-control-plane
+omission. A matching unqualified relation name is never evidence.
+
+A DDL change committed before snapshot acquisition appears in both outputs. An
+`ALTER TABLE`, foreign-key add/drop, or relation drop that arrives after locks
+waits until publication. A new relation committed after snapshot acquisition is
+absent from both outputs. If catalog identity changes, a lock cannot be
+acquired, or the recheck differs, no final pair is published. Real-PostgreSQL
+tests force both orders for foreign-key add/drop and relation create/drop.
 
 The existing bidirectional fenced-object check remains necessary but is not
-sufficient. It proves privilege/exclusion agreement; the new closure check
-proves the resulting artifact is internally restorable. A run with an orphaned
-dependency fails before publication and writes only its existing fixed run
-failure receipt.
+sufficient: it proves privilege/exclusion agreement, while this boundary proves
+the artifact is internally closed. Auto-excluding `fleet_case_evidence` is
+rejected because it is ordinary application evidence, not reconstructible
+trusted-bootstrap state.
 
-Alternative considered: list `fleet_case_evidence` as another exclusion.
-Rejected as an implicit data-loss decision: the table is ordinary application
-evidence, not proven reconstructible trusted-bootstrap state.
-
-### 4. The scoped manifest does not become dashboard health authority
+### 4. One versioned manifest binds coverage without becoming dashboard authority
 
 The adopted `REQ-deployment-hardening-008` manifest stays authoritative for the
-exact `connectors.filtered_events` snapshot, structure, and counts it names. It
-is paired atomically with its artifact and bound by basename, size, SHA-256, and
-capture time as already specified. This change neither creates a second generic
-manifest nor widens that manifest with credentials, row content, or unrelated
-schema inventory.
+exact `connectors.filtered_events` scope. The producer-first rollout advances
+that single sibling to `backup-recovery.v2`, retaining the filtered-event scope
+and adding only a digest of the ordered retained relation/FK graph, a digest of
+the authoritative credential-store inventory, one aggregate credential-row
+count, a digest of normalized ownership/ACL policy, `coverage_complete=true`,
+and the same snapshot capture boundaries.
 
-The API continues to derive artifact health from the existing direct integrity
-check and its bounded memoization. A manifest can make a scoped restore eligible
-and can bind the protected result; it cannot make an unreadable artifact
-healthy, substitute for a restore, or become a public manifest endpoint.
+No per-store count, credential key/value, row content, private identifier,
+owner name, ACL grantee list, function body, or raw catalog output is stored.
+The digests remain private artifact bindings and never public telemetry.
+Unknown fields, a v1-only manifest, invalid digests/counts, or a missing
+completion marker cannot produce full recovery proof. There is exactly one
+sibling manifest, not separate generic and filtered-event files.
 
-Alternative considered: replace API integrity reads with a producer manifest.
-Rejected because it would make producer assertion substitute for independent
-artifact verification and conflict with `REQ-system-overview-page-005`.
+The API still derives artifact health from direct integrity verification and
+bounded memoization. A manifest makes scoped restore eligible and binds the
+protected result; it cannot make an unreadable artifact healthy, substitute for
+a restore, or become a public manifest endpoint.
 
-### 5. Ownership and ACL proof is bootstrap-first and two-part
+### 5. Ownership, ACL, and credential proof runs in the same protected attempt
 
-The canonical recovery artifact retains ownership and ACL intent. The managed
-recovery procedure establishes trusted roles and bootstrap-owned interfaces
-before an artifact is eligible for promotion, restores application data only
-into an isolated target, and then verifies the restored catalog against the
-artifact's declared ownership/ACL intent and the managed bootstrap policy.
+The canonical artifact retains ownership and ACL intent. The protected attempt
+creates a fresh isolated PostgreSQL target with no network path or credential to
+the live database. A per-attempt ephemeral cluster-superuser exists only inside
+that disposable target. The executor may invoke it only through the target-
+local bootstrap/restore/check lifecycle; it receives no live cluster-superuser,
+migration, credential-store, or fenced-owner membership. Target destruction is
+mandatory and a cleanup failure makes the attempt fail.
 
-An owner-neutral scratch technique may be used to exercise data restoration
-only when the original ownership/ACL intent is retained and checked separately.
-It cannot by itself produce `recovery_proof.status="proven"`. The automated
-weekly executor remains least-privileged and receives no cluster-superuser,
-migration, credential-store, or fenced-owner membership. Full promotion-ready
-ownership proof therefore lives in disposable real-PostgreSQL integration
-evidence plus the documented managed recovery procedure; the weekly drill
-records the exact data-restore and scoped-check results it actually performed.
+The target runs managed bootstrap first, restores the exact artifact, and
+verifies its catalog against both the manifest's ownership-policy digest and
+the checked-in bootstrap contract. The normalized check covers every expected
+schema/table/sequence owner; role attributes and memberships; function owner,
+SECURITY DEFINER flag, body digest, and fixed `search_path`; explicit relation,
+schema, function, and sequence ACLs; default ACLs; RLS enable/force flags and
+policy definitions; and absence of unexpected grants, memberships, policies,
+functions, or owner drift. It reads no application row value.
 
-Alternative considered: grant the executor broad role membership or use
-`--no-owner`/`--no-acl` without replacement evidence. Rejected because either
-widens live privilege or discards the provenance the proof needs.
+The producer obtains credential inventory and one aggregate row count through
+a narrow bootstrap-owned coverage function under the exported dump snapshot.
+That function enumerates authoritative Tier-1 stores in every applicable schema
+and Tier-2 secured `public.entity_info` rows, proves the dump identity has
+complete non-RLS-filtered visibility for every store, and returns only an
+inventory digest plus aggregate count. The isolated target recomputes the same
+aggregate after restore. Empty and populated stores are valid; a missing store,
+filtered visibility, inventory mismatch, or aggregate mismatch fails the
+attempt. Per-store counts remain transient and are never persisted or exposed.
 
-### 6. One protected attempt row owns exact-artifact truth
+An owner-neutral scratch technique cannot produce
+`recovery_proof.status="proven"` unless the same protected attempt completes all
+ownership/ACL and credential checks above. CI fixtures and documentation verify
+the path but are not per-artifact result authority. Broad live-role membership
+and `--no-owner`/`--no-acl` without retained intent remain rejected.
 
-The existing executor-owner ledger remains the sole result authority. The
-artifact-bound transition in `REQ-database-security-009` extends the same row
-and transaction; it does not add a receipt table. One attempt binds its overall
-result, scoped result, artifact digest, manifest digest, and capture completion.
-The public audit row is telemetry and the restore-drill attention row is a
-failure signal, never authority.
+### 6. One protected attempt row owns every projected artifact fact
 
-The single executor serializes scratch lifecycle. Repeating the same artifact
-recomputes verification and records a distinct attempt; an exact committed row
-is immutable. A crash before commit leaves no authoritative attempt, a crash
-after commit leaves one complete row, and no retry may reuse an older scoped
-pass or associate it with another artifact. Multi-executor deployment remains
-blocked on the cross-process guard required by `REQ-deployment-hardening-007`.
+The existing executor-owner ledger remains sole authority. The artifact-bound
+transition in `artifact-bound-filtered-event-restore-verification`
+`REQ-database-security-011` extends the same row and transaction; it adds no
+receipt table. The row binds overall/scoped results, exact artifact and manifest
+digests, manifest capture completion, verified artifact completion timestamp
+and byte size, coverage-manifest digest, ownership/ACL result and policy digest,
+credential-coverage result, and fixed overall recovery scope.
 
-### 7. The API adds one content-blind recovery projection
+The protected writer accepts completion/size only with a verified artifact
+digest and enforces all pass/fail/nullability constraints. `latest_result()`
+returns time and size from that row. The API may use a digest-verified internal
+join, but must never combine the row with whichever filesystem artifact is
+newest. Public audit is telemetry and attention is a failure signal, never
+authority.
 
-`GET /api/system/backups` gains an additive `recovery_proof` object:
+The single executor serializes scratch lifecycle. Repeating an artifact
+recomputes verification and creates a distinct immutable attempt. A pre-commit
+crash leaves no row, a post-commit crash leaves one complete row, and retries
+cannot reuse an older scoped pass. Multi-executor operation remains blocked on
+the cross-process guard in `REQ-deployment-hardening-007`.
+
+### 7. The API adds one closed content-blind recovery projection
+
+`GET /api/system/backups` gains additive `recovery_proof` fields:
 
 - `status`: `proven`, `unproven`, `failed`, `stale`, or `degraded`;
-- `verified_at`: UTC timestamp or null;
+- `attempted_at`: UTC timestamp or null;
 - `artifact_completed_at`: UTC timestamp or null;
 - `artifact_size_bytes`: non-negative integer or null;
-- `scope`: fixed `application_data` or `application_data_with_filtered_events`;
-- `failure_code`: fixed low-cardinality code or null.
+- `scope`: `application_data`, `application_data_with_filtered_events`,
+  `full_recovery`, or null;
+- `failure_code`: the fixed value selected below or null.
+
+`failure_code` is exactly one of `authority_unavailable`, `no_attempt`,
+`legacy_unbound_artifact`, `artifact_identity_mismatch`, `manifest_missing`,
+`manifest_malformed`, `manifest_unsupported`, `manifest_incomplete`,
+`capture_consistency_invalid`, `coverage_not_fk_closed`,
+`credential_visibility_incomplete`, `credential_count_mismatch`,
+`restore_failed`, `ownership_acl_mismatch`,
+`filtered_event_verification_failed`, `cleanup_failed`, or `proof_stale`.
+
+| Source condition | Status | attempted_at | artifact time/size | scope | failure_code |
+| --- | --- | --- | --- | --- | --- |
+| protected reader unavailable | `degraded` | null | null | null | `authority_unavailable` |
+| no protected row | `unproven` | null | null | null | `no_attempt` |
+| legacy row or incomplete binding | `unproven` | row time | only when digest-verified | `application_data` or null | `legacy_unbound_artifact` |
+| artifact/manifest binding failed | `failed` | row time | null | null | exact binding/capture code |
+| bound FK/credential visibility failed before restore | `failed` | row time | both non-null | null | exact coverage code |
+| bound restore or scoped check failed | `failed` | row time | both non-null | highest completed scope or null | exact stage code |
+| cleanup failed | `failed` | row time | both non-null | highest completed scope below `full_recovery` | `cleanup_failed` |
+| newest complete pass outside cadence | `stale` | row time | both non-null | `full_recovery` | `proof_stale` |
+| newest complete pass inside cadence | `proven` | row time | both non-null | `full_recovery` | null |
+
+`application_data` is legal only for a non-proven attempt that reached generic
+restore verification. `application_data_with_filtered_events` is legal only
+when exact filtered-event verification completed but ownership/ACL or credential
+coverage did not complete. `full_recovery` requires same-attempt artifact
+identity, FK closure, credential coverage, filtered-event scope, ownership/ACL,
+and cleanup passes. The newest authoritative row wins: a new failure outranks an
+older pass, and no field comes from another row or a newer filesystem artifact.
+Within one row, cleanup failure is terminal; otherwise the first failed ordered
+stage selects its exact code. Artifact/manifest binding failures expose no
+artifact facts; pre-restore coverage failures expose bound facts with null
+scope; restore failure has null scope; credential or filtered-event failure has
+`application_data`; and ownership/ACL failure may use
+`application_data_with_filtered_events` only after that checker passed.
 
 No path, filename, schema/table name, owner/role, digest, credential metadata,
-row count by table, or free-form client output is exposed. Pre-change backends
-omit the field; a new frontend treats omission exactly like `unproven`.
-Rollback removes the field and returns to the existing three-row presentation
-without changing artifacts or protected history.
+per-table/store count, or free-form client output is exposed. `table_count`
+remains absent because the protected writer discards the caller-supplied value.
+Pre-change backends omit `recovery_proof`; new frontends treat omission as
+`unproven`. Rollback removes the projection without changing artifacts/history.
 
-The projection deliberately omits `table_count`. The protected writer already
-discards the executor's caller-supplied count because the executor credential
-must not be able to manufacture authoritative evidence. A count may remain in
-ephemeral scratch diagnostics, but it cannot become owner-facing proof without
-a separately specified authority that derives it rather than trusting the
-caller.
-
-The Backups tile relabels its existing green artifact verdict as `Artifact
-healthy`, then presents `Last proven restore` separately. Only a current
-protected pass within the policy window is green. Pending/missing proof is
-amber and says `No proven restore`; stale is amber with its age; current failure
-is red with a fixed reason and accessible detail disclosure; degraded is an
-unavailable state, never calm. The tile remains useful while loading and
-exposes no run-now control in this change.
+The tile relabels its narrow green verdict `Artifact healthy`, presents `Last
+proven restore` separately, and follows the same precedence matrix. Only current
+`proven` is green. Missing/stale is amber, current failure red, and degraded
+unavailable. Text, not color alone, carries state; detail is keyboard and
+assistive-technology accessible; loading does not block the System page. No
+run-now control is added.
 
 ### 8. Attention reports failure but never claims contact or proof
 
