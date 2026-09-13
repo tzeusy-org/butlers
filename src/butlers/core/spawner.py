@@ -2164,6 +2164,7 @@ class Spawner:
 
                 _attempt_exc: BaseException | None = None
                 _attempt_tool_calls: list[dict[str, Any]] = []
+                _empty_response_usage: dict[str, Any] | None = None
                 dashboard_invoke_claimed = False
                 dashboard_release_event: asyncio.Event | None = None
                 dashboard_cancel_acknowledged_event: asyncio.Event | None = None
@@ -2373,21 +2374,7 @@ class Spawner:
                             and catalog_entry_id is not None
                             and usage.get("input_tokens") is not None
                         ):
-                            await record_token_usage(
-                                self._pool,
-                                catalog_entry_id=catalog_entry_id,
-                                butler_name=self._config.name,
-                                session_id=session_id,
-                                input_tokens=usage["input_tokens"],
-                                output_tokens=usage.get("output_tokens") or 0,
-                                cached_input_tokens=usage.get("cache_read_input_tokens") or 0,
-                                cache_creation_tokens=(
-                                    usage.get("cache_creation_input_tokens") or 0
-                                ),
-                                purpose=trigger_source,
-                                resume_outcome=_resume_outcome,
-                                **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
-                            )
+                            _empty_response_usage = usage
                         _attempt_exc = RuntimeError(
                             "Runtime returned no response: no result text or MCP tool calls"
                         )
@@ -2411,13 +2398,39 @@ class Spawner:
                     )
                 )
 
+                attempted_resume = _attempt_count == 1 and bool(
+                    invoke_kwargs.get("resume_session_id")
+                )
+                if attempted_resume:
+                    _resume_outcome = (
+                        "resume_failed_retried_cold"
+                        if _failover_decision.eligible
+                        else "resume_failed_terminal"
+                    )
+
+                # An empty response can still carry provider-reported usage.
+                # Persist it only after classifying the failed attempt so a
+                # resume attempt never lands as an ambiguous NULL outcome.
+                if _empty_response_usage is not None:
+                    await record_token_usage(
+                        self._pool,
+                        catalog_entry_id=catalog_entry_id,
+                        butler_name=self._config.name,
+                        session_id=session_id,
+                        input_tokens=_empty_response_usage["input_tokens"],
+                        output_tokens=_empty_response_usage.get("output_tokens") or 0,
+                        cached_input_tokens=(
+                            _empty_response_usage.get("cache_read_input_tokens") or 0
+                        ),
+                        cache_creation_tokens=(
+                            _empty_response_usage.get("cache_creation_input_tokens") or 0
+                        ),
+                        purpose=trigger_source,
+                        resume_outcome=_resume_outcome,
+                        **_composed_prompt_ledger_kwargs(_composed_prompt_digest),
+                    )
+
                 if not _failover_decision.eligible:
-                    if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
-                        # The resume attempt itself failed, and confirmed side
-                        # effects make it ineligible for the transparent
-                        # cold-retry below -- terminal, not a health signal
-                        # about the model.
-                        _resume_outcome = "resume_failed_terminal"
                     # Failover suppressed — emit metric and re-raise to the outer handler.
                     self._metrics.record_failover_suppressed(reason=_failover_decision.reason)
                     logger.debug(
@@ -2462,7 +2475,6 @@ class Spawner:
                 # never consume a failover slot or count against the model's
                 # circuit breaker.
                 if _attempt_count == 1 and invoke_kwargs.get("resume_session_id"):
-                    _resume_outcome = "resume_failed_retried_cold"
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
                         "runtime_type=%s (%s); evicting handle and retrying cold",

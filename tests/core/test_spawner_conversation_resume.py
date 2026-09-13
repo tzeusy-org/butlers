@@ -104,11 +104,13 @@ class _ResumeCapableAdapter(RuntimeAdapter):
         self,
         *,
         fail_count: int = 0,
+        empty_result_count: int = 0,
         error: Exception | None = None,
         result_text: str = "ok",
         reported_session_id: str = "new-session-id",
     ) -> None:
         self._fail_count = fail_count
+        self._empty_result_count = empty_result_count
         self._error = error or RuntimeError("connection refused: provider unavailable")
         self._result_text = result_text
         self._reported_session_id = reported_session_id
@@ -140,6 +142,9 @@ class _ResumeCapableAdapter(RuntimeAdapter):
         if len(self.invoke_calls) <= self._fail_count:
             self._last_process_info = {"runtime_type": DEFAULT_RUNTIME_TYPE}
             raise self._error
+        if len(self.invoke_calls) <= self._fail_count + self._empty_result_count:
+            self._last_process_info = {"runtime_type": DEFAULT_RUNTIME_TYPE}
+            return None, [], {"input_tokens": 7, "output_tokens": 0}
         self._last_process_info = {
             "runtime_type": DEFAULT_RUNTIME_TYPE,
             "provider_session_id": self._reported_session_id,
@@ -417,8 +422,7 @@ class TestResumeFailureFallsBackToCold:
         config = _make_config()
         mock_pool = AsyncMock()
         adapter = _ResumeCapableAdapter(
-            fail_count=1,
-            error=RuntimeError("connection refused: provider unavailable"),
+            empty_result_count=1,
             result_text="cold-succeeded",
         )
 
@@ -476,7 +480,12 @@ class TestResumeFailureFallsBackToCold:
         assert outcomes == ["success"]
         # The session's resume_outcome reflects that resume WAS attempted and
         # failed, even though the transparent cold retry then won.
-        assert _resume_outcomes_written(mock_pool) == ["resume_failed_retried_cold"]
+        # Both the usage-bearing failed resume and the successful cold retry
+        # retain the classified resume outcome; neither row is ambiguous NULL.
+        assert _resume_outcomes_written(mock_pool) == [
+            "resume_failed_retried_cold",
+            "resume_failed_retried_cold",
+        ]
 
     async def test_failed_resume_with_confirmed_tool_calls_uses_ordinary_failover(
         self, tmp_path: Path
