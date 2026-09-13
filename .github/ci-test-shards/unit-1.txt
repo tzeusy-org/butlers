@@ -128,6 +128,7 @@ tests/core/qa/test_tool_call_failures.py
 tests/core/qa/test_triage.py
 tests/core/test_active_session_detection.py
 tests/core/test_aes_gcm.py
+tests/core/test_approval_delivery_worker.py
 tests/core/test_approvals_hooks.py
 tests/core/test_attention_ledger.py
 tests/core/test_dashboard_channel_extensions.py

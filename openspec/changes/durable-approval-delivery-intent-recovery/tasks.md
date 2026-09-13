@@ -17,10 +17,10 @@
 
 ## 3. Fenced notification-only recovery worker
 
-- [ ] 3.1 Implement the schema-local root/presentation/cohort repository and state machine with due presentation selection, `FOR UPDATE SKIP LOCKED` claims, token/fence/lease CAS transitions, safe attempt recording, and deterministic database-time backoff.
-- [ ] 3.2 Add a daemon-owned approval-delivery lifecycle loop that starts only for active Approvals schemas and receives a narrow notification runtime, never approval operations, executor, entity/fact, or generic deferred-queue authority.
-- [ ] 3.3 Render `single` and cohort-owned `burst_digest` presentations deterministically at dispatch time using current verified owner resolution and callback-secret lookup in memory only; make collapsed action presentations terminal without a provider call.
-- [ ] 3.4 Implement stale-claim recovery, `handoff_started` reconciliation, derived stuck status, safe no-retry handling for unknown post-start outcomes, and a pre-start-only deferred generation successor; no worker may defer or schedule a new presentation.
+- [x] 3.1 Implement the schema-local root/presentation/cohort repository and state machine with due presentation selection, `FOR UPDATE SKIP LOCKED` claims, token/fence/lease CAS transitions, safe attempt recording, and deterministic database-time backoff.
+- [x] 3.2 Add a daemon-owned approval-delivery lifecycle loop that starts only for active Approvals schemas and receives a narrow notification runtime, never approval operations, executor, entity/fact, or generic deferred-queue authority.
+- [x] 3.3 Render `single` and cohort-owned `burst_digest` presentations deterministically at dispatch time using current verified owner resolution and callback-secret lookup in memory only; make collapsed action presentations terminal without a provider call.
+- [x] 3.4 Implement stale-claim recovery, `handoff_started` reconciliation, derived stuck status, safe no-retry handling for unknown post-start outcomes, and a pre-start-only deferred generation successor; no worker may defer or schedule a new presentation.
 
 ## 4. End-to-end handoff idempotency
 
