@@ -454,27 +454,37 @@ channel-general `check_recipient` guard. Messenger `route.execute` synchronous
 delivery (`_routing.py`) likewise gates email via `check_email_recipient` and
 Telegram, WhatsApp, and future non-email channels via `check_recipient`.
 
+Both layers MUST apply one channel-uniform owner predicate: the normalized
+candidate identifier set must resolve through active literal facts to exactly
+one live, non-merged, non-deleted entity with the `owner` role. Primary and
+secondary identifiers are equivalent for outbound authorization. External,
+unknown, ambiguous, inactive, merged, deleted, malformed, and lookup-error
+identifiers MUST NOT receive the owner bypass.
+
 #### Scenario: route.execute enforces approval gate for email delivery
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="email"`
-- **THEN** it MUST resolve the target contact by email address via `public.contacts`
-- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **THEN** it MUST resolve the normalized email candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check
 
 #### Scenario: route.execute enforces approval gate for telegram delivery
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="telegram"` and `intent` of `"send"` or `"reply"`
-- **THEN** it MUST resolve the target contact by telegram chat ID via `public.contacts`
-- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **THEN** it MUST resolve the normalized Telegram candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check
 
 #### Scenario: route.execute enforces approval gate for WhatsApp delivery
 
 - **WHEN** the Messenger's `route.execute` handler processes a `notify.v1` envelope with `channel="whatsapp"` and `intent` of `"send"` or `"reply"`
-- **THEN** it MUST resolve the target contact by WhatsApp recipient identity via `public.contacts`
-- **AND** if the target contact is NOT an owner, it MUST check standing approval rules
+- **THEN** it MUST resolve the normalized WhatsApp candidate set through active literal `relationship.entity_facts`
+- **AND** if exactly one live owner entity matches, it MUST deliver without a rule regardless of identifier primacy
+- **AND** otherwise it MUST check standing approval rules
 - **AND** if no standing rule matches, delivery MUST be blocked with a descriptive error
 - **AND** if the target is an owner, delivery proceeds without rule check
 
@@ -486,7 +496,9 @@ Telegram, WhatsApp, and future non-email channels via `check_recipient`.
 #### Scenario: All channels have parity
 
 - **WHEN** a new outbound channel is added to the Messenger butler
-- **THEN** the `route.execute` handler MUST include an inline approval gate for that channel matching the email/telegram/WhatsApp pattern
+- **THEN** the `route.execute` handler MUST include an inline approval gate using the same unique-active-live-owner predicate as email, Telegram, and WhatsApp
+- **AND** it MUST treat primary and secondary owner identifiers equivalently
+- **AND** it MUST fail closed for every unsafe association category defined above
 - **AND** the absence of an inline gate for any outbound channel is a spec violation
 
 ### Requirement: Authorization Model
@@ -605,6 +617,12 @@ SHALL remain independent of the deferred push.
 - **THEN** its deferred push is scheduled for that exact local end converted to
   UTC
 - **AND** the pending action does not gain an hour of expiry from push timing
+
+#### Scenario: Approval push uses its owning daemon identity
+- **WHEN** a daemon parks a pending action and dispatches its owner-facing approval push
+- **THEN** the push envelope's `origin_butler` MUST be that daemon's configured name
+- **AND** Messenger MUST use `messenger` even when the routed request that caused the park originated in another domain butler
+- **AND** the routed domain origin MUST remain context on the original request rather than being asserted as the sender of the Messenger-owned push
 
 ### Requirement: Pending Actions Store Replayable Executable Commands
 

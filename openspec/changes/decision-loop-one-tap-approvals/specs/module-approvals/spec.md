@@ -26,10 +26,12 @@ MUST NOT use runtime coercion for invalid or legacy-shaped evidence.
 
 #### Scenario: Owner-target calls are exempt from the dossier requirement
 
-- **WHEN** a gated tool call resolves to a verified owner channel and
-  auto-approves via the owner-role path
+- **WHEN** a gated tool call's normalized candidates resolve through active
+  literal facts to exactly one live owner entity, independent of channel primacy
 - **THEN** the call executes without requiring `why`, `blast_radius`, or
   `reversibility`
+- **AND** external, unknown, ambiguous, inactive, merged, deleted, malformed, or
+  lookup-error identifiers do not receive this exemption
 
 #### Scenario: Dossier fields persist and surface
 

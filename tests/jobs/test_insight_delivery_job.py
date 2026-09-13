@@ -218,9 +218,9 @@ class TestBuildSwitchboardInsightNotifyFn:
         """Regression (bu-1q9wh): when both the numeric chat id and the @username
         handle are stored, notify_fn must deliver to the numeric chat id.
 
-        Sending to a bare @username is undeliverable (Telegram addresses private
-        users by numeric id only) and trips the approval gate's owner-primacy
-        check, parking the owner's own notifications forever.
+        Sending to a bare @username is undeliverable because Telegram addresses
+        private users by numeric id only; choosing the numeric endpoint avoids
+        provider rejection for an otherwise owner-directed notification.
         """
         from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
 

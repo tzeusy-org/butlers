@@ -218,8 +218,7 @@ def _build_switchboard_insight_notify_fn(
 
         if channel == "telegram":
             # Resolve the numeric chat id (telegram_chat_id), not the @username
-            # handle — the username is undeliverable and trips the approval
-            # gate's owner-primacy check, parking owner notifications forever.
+            # handle; the Telegram delivery API requires a numeric identifier.
             recipient = await resolve_owner_telegram_recipient(pool)
             if not recipient:
                 logger.error(

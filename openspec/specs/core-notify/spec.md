@@ -461,11 +461,24 @@ a pending action or owner notification.
 - **AND** that ledger event's metadata MUST NOT contain the notification message content
 
 ### Requirement: Role-Based Approval Gating for Notify
-The `notify` tool SHALL apply approval gating based on whether the target is the owner. Notifications to the owner MUST bypass the approval gate. Notifications to a non-owner entity MUST be subject to the approval gate (checking standing rules, else pending).
+The `notify` tool SHALL apply approval gating based on whether the target
+identifier resolves uniquely to the owner. An outbound communication MUST
+bypass approval exactly when its normalized candidate identifier set resolves
+through active literal facts to one distinct live, non-merged, non-deleted
+entity with the `owner` role. Channel primacy MUST NOT affect this authorization
+decision. Non-owner, unknown, ambiguous, inactive, merged, deleted, malformed,
+or lookup-error targets MUST NOT receive the owner bypass and MUST continue
+through standing-rule or pending-approval handling.
 
 #### Scenario: Notification to owner bypasses approval
 - **WHEN** `notify(channel='telegram', message='Alert')` is called with no entity_id (defaults to owner)
 - **THEN** the notification MUST be delivered without requiring approval
+
+#### Scenario: Primary and secondary owner identifiers bypass approval
+- **WHEN** `notify()` targets a primary or secondary email, Telegram identity, WhatsApp identity, or future communication identifier
+- **AND** the normalized candidate set resolves uniquely through an active literal fact to one live owner entity
+- **THEN** the notification MUST be delivered without requiring approval
+- **AND** the fact's `primary` value MUST NOT affect the authorization decision
 
 #### Scenario: Notification to non-owner requires approval
 - **WHEN** `notify(channel='telegram', message='Reminder', entity_id='abc-123')` is called
@@ -482,6 +495,11 @@ The `notify` tool SHALL apply approval gating based on whether the target is the
 - **WHEN** `notify(channel='telegram', message='Hi', recipient='unknown@example.com')` is called
 - **AND** reverse-lookup of `('email', 'unknown@example.com')` returns no contact
 - **THEN** the notification MUST require approval (conservative default)
+
+#### Scenario: Unsafe owner association receives no bypass
+- **WHEN** a target identifier is external, unknown, ambiguous across entities, inactive, attached to a merged or deleted entity, malformed, or cannot be resolved because the lookup fails
+- **THEN** the notification MUST NOT receive the owner bypass
+- **AND** it MUST continue through standing-rule or pending-approval handling
 
 ### Requirement: [TARGET-STATE] Messenger Routing via Switchboard
 
@@ -511,8 +529,15 @@ This requirement exists because the delivery architecture has two layers: `notif
 
 #### Scenario: Messenger route.execute permits owner delivery without rule
 - **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
-- **AND** the target contact has the `owner` role
+- **AND** the exact target resolves through an active literal identifier to one distinct live contact with the `owner` role
 - **THEN** delivery proceeds immediately without checking standing rules
+- **AND** the identifier's `primary` value does not affect the authorization decision
+
+#### Scenario: Messenger route.execute refuses unsafe owner association
+- **WHEN** the Messenger's `route.execute` processes a `notify.v1` envelope
+- **AND** the channel identifier is external, unknown, ambiguous across entities, inactive, attached to a merged or deleted entity, malformed, or fails lookup
+- **THEN** the target MUST NOT receive the owner bypass
+- **AND** delivery MUST follow the standing-rule or pending-approval path
 
 ### Requirement: [TARGET-STATE] Notify Response Envelope
 

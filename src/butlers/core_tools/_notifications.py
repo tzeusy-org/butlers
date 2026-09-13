@@ -802,11 +802,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         }
 
             # Channel-general role-based approval gating for non-email channels
-            # (telegram, and any future channel).  Owner-directed sends auto-approve
-            # on any active verified owner channel; non-owner recipients require a
-            # standing rule or are parked (fail-closed).  Email is gated above by
-            # check_email_recipient, which additionally enforces the email-only
-            # channel-primacy / context-conflict incident behaviour.
+            # (telegram, and any future channel). Owner-directed sends auto-approve
+            # on any active uniquely verified owner channel; non-owner recipients
+            # require a standing rule or are parked (fail-closed). Email is gated
+            # above by check_email_recipient so non-owner context conflicts retain
+            # their established behavior; owner authorization is channel-uniform.
             if (
                 channel != "email"
                 and resolved_recipient is not None

@@ -1,8 +1,7 @@
 """Incident replay: 2026-04-21 owner-routing safety regression test.
 
 This module replays the original 2026-04-21 incident scenario against the
-integrated gen-1 changes to verify that all four acceptance criteria of the
-bu-7qfrg epic hold together end-to-end.
+integrated gen-1 changes and the current uniform owner-channel amendment.
 
 Scenario:
   The relationship butler ingested an email thread where the user asked
@@ -12,7 +11,8 @@ Scenario:
 
 Covered acceptance criteria
 ---------------------------
-1. bu-jwby9: Non-primary owner-email sends park for approval (not auto-approved).
+1. bu-jwby9: The historical non-primary email gate, superseded by RFC 0017 §2.7;
+   current tests require every uniquely verified owner email to auto-approve.
 2. bu-uv4b4: Context-aware notify() routing — personal message resolves to
    personal address, not work address.
 3. bu-v6ttx: channel_add against the owner contact creates pending_action,
@@ -156,20 +156,15 @@ class TestAC3OwnerGate:
 
 
 # ---------------------------------------------------------------------------
-# AC #1 — non-primary owner email send parks for approval
+# Owner decision amendment — unique owner email association bypasses approval
 # ---------------------------------------------------------------------------
 
 
-class TestAC1EmailGuardNonPrimary:
-    """bu-jwby9: non-primary owner email address is not auto-approved."""
+class TestOwnerEmailAssociation:
+    """The current owner decision supersedes outbound email primacy gating."""
 
-    async def test_non_primary_owner_email_parks(self) -> None:
-        """Owner send to a non-primary email (qube address) must park for approval.
-
-        This is the exact failure mode from the incident: with a qube email and a
-        personal email both is_primary=false on the owner contact, a notify() to
-        the qube address would have auto-approved under the old code.
-        """
+    async def test_secondary_owner_email_auto_approves(self) -> None:
+        """A unique active owner association auto-approves regardless of primacy."""
         from butlers.identity import ResolvedContact
         from butlers.modules.approvals.email_guard import check_email_recipient
 
@@ -180,13 +175,16 @@ class TestAC1EmailGuardNonPrimary:
             roles=["owner"],
         )
         pool = AsyncMock()
-        # Targeted address is NOT primary
         pool.fetchrow = AsyncMock(return_value={"primary": False})
 
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
                 new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             patch(
                 "butlers.modules.approvals.rules.match_rules",
@@ -209,11 +207,8 @@ class TestAC1EmailGuardNonPrimary:
                 butler_name="messenger",
             )
 
-        assert decision.allowed is False, (
-            "Non-primary owner email must be blocked (parked for approval)"
-        )
-        assert decision.reason == "parked"
-        assert decision.action_id is not None
+        assert decision.allowed is True
+        assert decision.reason == "owner"
 
     async def test_primary_owner_email_auto_approves(self) -> None:
         """Owner send to is_primary=True address is still auto-approved (no regression)."""
@@ -229,9 +224,15 @@ class TestAC1EmailGuardNonPrimary:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value={"primary": True})
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=owner),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             decision = await check_email_recipient(
                 pool,
@@ -319,8 +320,7 @@ class TestAC2ContextAwareRouting:
     async def test_context_mismatch_parks_email(self) -> None:
         """When msg_context='personal' but resolved address is tagged 'work', email parks.
 
-        Even if a non-primary owner address somehow resolves, the context mismatch
-        in the email guard should block delivery.
+        A non-owner address with conflicting context remains approval-gated.
         """
         from butlers.identity import ResolvedContact
         from butlers.modules.approvals.email_guard import check_email_recipient

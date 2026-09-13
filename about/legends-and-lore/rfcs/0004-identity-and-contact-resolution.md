@@ -254,11 +254,12 @@ The split axis is **SENSITIVITY**, not TYPE.
 
 **Changes made:**
 
-- `telegram_chat_id` added to all four predicate-mirror constants mapping it to `"has-handle"`:
+- `telegram_chat_id` was added to the predicate-mirror constants mapping it to `"has-handle"`:
   - `src/butlers/identity.py` — `_CHANNEL_TYPE_TO_PREDICATE`
-  - `src/butlers/modules/approvals/_shared.py` — `_CHANNEL_TYPE_TO_PREDICATE`
   - `roster/relationship/tools/relationship_assert_fact.py` — `_CI_TYPE_TO_PREDICATE`
   - `roster/relationship/jobs/relationship_jobs.py` — `_CI_TYPE_TO_PREDICATE`
+- Approval-specific primacy mirrors were retired by RFC 0017 §2.7; outbound
+  owner authorization now uses the canonical identity mapping directly.
 - Write-time guard `assert_entity_info_secured(info_type, secured)` added to
   `src/butlers/credential_store.py`; raises `ValueError` when a non-secret, non-whitelisted
   type is passed. Guard wired at:

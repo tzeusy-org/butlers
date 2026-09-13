@@ -4,13 +4,12 @@ Consolidates the email recipient check used by both the ``notify()`` core
 tool and the ``route.execute`` handler in messenger.  A single implementation
 ensures both gates enforce identical policy:
 
-1. Resolve contact by email address.
-2. Owner contact AND address is primary → auto-approve (no rule needed).
-   Non-primary owner addresses fall through to the rules/parking flow.
-3. Context mismatch: if *msg_context* is provided and the entity_facts triple
-   carrying the resolved address is tagged with a conflicting context, park
-   for approval regardless of owner status.  (Owner primary addresses skip
-   this check — see step 2.)
+1. Resolve contact by email address.  When schema isolation prevents the
+   direct relationship read, use the narrow owner-only SECURITY DEFINER
+   fallback.
+2. Any uniquely resolved active owner address auto-approves without a rule.
+3. For a target without the owner bypass, if *msg_context* is provided and the
+   entity_facts triple is tagged with a conflicting context, park for approval.
 4. Non-owner or unknown → check standing approval rules.
 5. Rule matches → approve, bump ``use_count``.
 6. No rule → park as ``pending_action`` for human review.
@@ -32,7 +31,6 @@ from butlers.core.approvals_hooks import (
     validate_non_owner_dossier,
     validate_owner_dossier,
 )
-from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.park import park_pending_action
 
@@ -165,10 +163,9 @@ async def check_email_recipient(
         The name of the butler that owns this guard (used for WS event
         attribution).  Pass ``None`` when the name is unavailable.
     approval_push_runtime:
-        Deterministic daemon dependencies used to notify the owner when this
-        guard parks an action.  ``None`` preserves the standalone-guard
-        behavior for callers that do not run a Switchboard delivery plane
-        (the action is still parked, just not pushed).
+        Compatibility-only daemon input retained while producers migrate
+        together. Atomic storage admission ignores it; the recovery worker owns
+        approval-request delivery.
 
     Returns
     -------
@@ -200,43 +197,31 @@ async def check_email_recipient(
                 "email guard: publish_fleet_event('approval') failed; ignoring", exc_info=True
             )
 
-    from butlers.identity import resolve_contact_by_channel
+    from butlers.identity import resolve_channel_contact_with_owner_corroboration
 
-    contact = await resolve_contact_by_channel(pool, "email", email_target)
+    contact = await resolve_channel_contact_with_owner_corroboration(pool, "email", email_target)
     dossier = DecisionDossier(None, [], None, None)
 
-    # Owner primary address → always allowed (no further checks needed)
+    # A unique, active owner association is sufficient on every channel.
     if contact is not None and "owner" in contact.roles:
-        if contact.entity_id is None:
-            # Owner contact has no entity_id — cannot check primacy; treat as non-primary
-            # so the address falls through to the rules/parking flow.
-            is_primary = False
-        else:
-            is_primary = await is_primary_contact(
-                pool,
-                contact.entity_id,
-                "email",
-                email_target,
+        if enforce_dossier:
+            dossier_or_error = validate_owner_dossier(
+                raw_why=why,
+                raw_evidence=evidence,
+                raw_blast_radius=blast_radius,
+                raw_reversibility=reversibility,
             )
-        if is_primary:
-            if enforce_dossier:
-                dossier_or_error = validate_owner_dossier(
-                    raw_why=why,
-                    raw_evidence=evidence,
-                    raw_blast_radius=blast_radius,
-                    raw_reversibility=reversibility,
+            if isinstance(dossier_or_error, dict):
+                return EmailGuardDecision(
+                    allowed=False,
+                    reason="dossier_error",
+                    dossier_error=dossier_or_error,
                 )
-                if isinstance(dossier_or_error, dict):
-                    return EmailGuardDecision(
-                        allowed=False,
-                        reason="dossier_error",
-                        dossier_error=dossier_or_error,
-                    )
-            return EmailGuardDecision(allowed=True, reason="owner")
+        return EmailGuardDecision(allowed=True, reason="owner")
 
-    # A non-owner (including a non-primary owner email) must supply its dossier
-    # before any rule lookup or pending-action persistence, including the
-    # email-context mismatch park path below.
+    # A non-owner or unresolved target must supply its dossier before any rule
+    # lookup or pending-action persistence, including the email-context
+    # mismatch park path below.
     if enforce_dossier:
         dossier_or_error = validate_non_owner_dossier(
             raw_why=why,
@@ -252,10 +237,8 @@ async def check_email_recipient(
             )
         dossier = dossier_or_error
 
-    # Context mismatch check: park if the declared message context conflicts
-    # with the address's tagged context.  This applies to non-primary owner
-    # addresses and all non-owner contacts.  Unclassified (NULL) address context
-    # is always compatible — it never forces a park.
+    # Context mismatch check for targets without the owner bypass. Unclassified
+    # (NULL) address context is always compatible; it never forces a park.
     if msg_context is not None:
         address_context = await _get_email_context(pool, email_target)
         if _context_conflicts(msg_context, address_context):
@@ -436,42 +419,25 @@ async def check_recipient(
     (post bu-nd5me) so that the ``notify()`` MCP tool gates every supported
     channel, not just email:
 
-    1. Resolve the contact by ``(channel, target)``.  An ``'owner'`` role match
-       auto-approves on ANY active, verified owner channel — channel resolution
-       only returns a row for an *active* ``relationship.entity_facts`` triple,
-       so an owner-role match is by definition a verified owner channel.  No
-       channel-primacy check is applied (owner self-notification is low-risk).
-    2. Cross-schema owner fallback: a non-relationship butler runs under a
-       schema-isolated role that cannot read ``relationship.entity_facts``
-       directly, so :func:`resolve_contact_by_channel` returns ``None`` even for
-       owner-directed sends.  Recognise the owner via the ``SECURITY DEFINER``
-       :func:`resolve_owner_channel_via_definer` lookup (the reported primacy
-       flag is intentionally discarded — bu-nd5me).
+    1. Resolve the contact by ``(channel, target)``.
+    2. Owner-only corroboration and cross-schema fallback: recognise owner
+       channels through the ambiguity-safe ``SECURITY DEFINER``
+       :func:`resolve_owner_channel_via_definer` lookup both when schema
+       isolation makes direct resolution return ``None`` and when the direct
+       resolver returns an owner-looking normalized candidate. This lookup
+       validates the identifier and evaluates every canonical fact equivalent
+       as one ambiguity decision. The reported primacy flag is intentionally
+       discarded (bu-nd5me).
     3. Non-owner / unresolvable target: check standing approval rules.  A
        matching rule auto-approves (and bumps ``use_count``); otherwise the
        send is parked as a ``pending_action`` for human review (fail-closed).
 
-    Unlike :func:`check_email_recipient`, this guard does NOT apply the
-    email-specific channel-primacy / context-conflict incident behaviour
-    (bu-jwby9 / bu-axdie); that nuance is intentionally email-only.
+    Unlike :func:`check_email_recipient`, this guard has no email-context
+    mismatch branch. Owner authorization itself is identical across channels.
     """
-    from butlers.identity import (
-        resolve_contact_by_channel,
-        resolve_owner_channel_via_definer,
-    )
+    from butlers.identity import resolve_channel_contact_with_owner_corroboration
 
-    contact = await resolve_contact_by_channel(pool, channel, target)
-
-    # Cross-schema owner fallback when direct resolution failed entirely.  A
-    # resolved (non-owner) contact means the butler COULD read the relationship
-    # schema, so the channel demonstrably belongs to a non-owner — no fallback.
-    if contact is None:
-        try:
-            fallback = await resolve_owner_channel_via_definer(pool, channel, target)
-        except Exception:  # noqa: BLE001
-            fallback = None
-        if fallback is not None:
-            contact, _owner_is_primary = fallback
+    contact = await resolve_channel_contact_with_owner_corroboration(pool, channel, target)
 
     # Owner-directed outbound: auto-approve on any active, verified owner channel.
     if contact is not None and "owner" in contact.roles:

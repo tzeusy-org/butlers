@@ -25,6 +25,14 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+# Outbound owner authorization accepts only transport-shaped identifiers. An
+# active fact with malformed content is not sufficient evidence that delivery
+# can reach an owner-controlled endpoint.
+_EMAIL_IDENTIFIER_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
+_TELEGRAM_CHAT_ID_RE = re.compile(r"-?\d+")
+_TELEGRAM_USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
+_WHATSAPP_INDIVIDUAL_IDENTIFIER_RE = re.compile(r"(\d+)(?::\d+)?@(s\.whatsapp\.net|lid)")
+
 # WhatsApp individual-chat JID suffix for s.whatsapp.net domain.
 _WHATSAPP_INDIVIDUAL_JID_SUFFIX = "@s.whatsapp.net"
 # Regex to extract the E.164-prefix phone number from a WhatsApp individual JID.
@@ -235,6 +243,7 @@ _CHANNEL_TYPE_TO_PREDICATE: dict[str, str] = {
 }
 
 _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
+    "whatsapp": "whatsapp_jid",
     "whatsapp_user_client": "whatsapp_jid",
 }
 
@@ -242,6 +251,73 @@ _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
 def canonical_identity_channel_type(channel_type: str) -> str:
     """Return the shared identity channel type for a transport channel."""
     return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
+
+
+OWNER_AUTHORIZED_IDENTITY_CHANNELS: frozenset[str] = frozenset(
+    {"email", "whatsapp_jid", *_TELEGRAM_PREFIX_CHANNEL_TYPES}
+)
+
+
+def is_well_formed_owner_channel_identifier(channel_type: str, channel_value: str) -> bool:
+    """Return whether a channel value is eligible for owner authorization.
+
+    Unknown channel types fail closed. A future communication integration must
+    add its canonical identity mapping and shape validation before an owner fact
+    can bypass approval.
+    """
+    if not isinstance(channel_value, str):
+        return False
+    value = channel_value.strip()
+    if not value:
+        return False
+
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    if canonical_channel not in OWNER_AUTHORIZED_IDENTITY_CHANNELS:
+        return False
+    if canonical_channel == "email":
+        return _EMAIL_IDENTIFIER_RE.fullmatch(value) is not None
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        bare = value.removeprefix("telegram:").removeprefix("@")
+        return bool(_TELEGRAM_CHAT_ID_RE.fullmatch(bare) or _TELEGRAM_USERNAME_RE.fullmatch(bare))
+    if canonical_channel == "whatsapp_jid":
+        return _WHATSAPP_INDIVIDUAL_IDENTIFIER_RE.fullmatch(value) is not None
+    return False
+
+
+def _owner_channel_authorization_candidates(
+    channel_type: str,
+    channel_value: str,
+) -> tuple[str, ...]:
+    """Build typed canonical facts for one ambiguity-safe owner decision."""
+    if not is_well_formed_owner_channel_identifier(channel_type, channel_value):
+        return ()
+
+    canonical_channel = canonical_identity_channel_type(channel_type)
+    if canonical_channel == "email":
+        return (f"has-email:{normalize_email_sender(channel_value)}",)
+
+    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
+        values = _telegram_username_candidates(channel_value)
+        for variant in list(values):
+            prefixed = _telegram_prefixed_value(variant)
+            if prefixed not in values:
+                values.append(prefixed)
+        return tuple(dict.fromkeys(f"has-handle:{value.lower()}" for value in values))
+
+    if canonical_channel == "whatsapp_jid":
+        match = _WHATSAPP_INDIVIDUAL_IDENTIFIER_RE.fullmatch(channel_value.strip())
+        if match is None:
+            return ()
+        digits, service = match.groups()
+        values = [
+            f"has-handle:{channel_value.strip().lower()}",
+            f"has-handle:{digits}@{service}",
+        ]
+        if service == "s.whatsapp.net":
+            values.append(f"phone-digits:{digits}")
+        return tuple(dict.fromkeys(values))
+
+    return ()
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
@@ -272,9 +348,8 @@ def _telegram_username_candidates(value: str) -> list[str]:
     case-insensitive on the platform.
 
     This function generates the candidate set that covers all practical
-    permutations so that ``resolve_contact_by_channel`` and
-    ``approvals._shared.is_primary_contact`` can normalise on the fly without
-    requiring the caller to know the canonical storage form.
+    permutations so that ``resolve_contact_by_channel`` can normalise on the
+    fly without requiring the caller to know the canonical storage form.
 
     The first entry is always the original value (exact-match wins) so that
     numeric chat IDs (``"206570151"``) succeed on the first attempt and never
@@ -848,46 +923,33 @@ async def resolve_owner_channel_via_definer(
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
-    :func:`resolve_contact_by_channel` and :func:`is_primary_contact` read
-    ``relationship.entity_facts`` directly. A non-relationship butler runs under a
-    schema-isolated role (``SET ROLE butler_<schema>_rw``) that cannot read that
-    table, so those helpers return ``None`` even for owner-directed sends, and the
-    approval gate parks the message as "unresolvable target".
+    :func:`resolve_contact_by_channel` reads ``relationship.entity_facts``
+    directly. A non-relationship butler runs under a schema-isolated role
+    (``SET ROLE butler_<schema>_rw``) that cannot read that table, so direct
+    resolution returns ``None`` even for owner-directed sends, and the approval
+    gate parks the message as "unresolvable target".
 
     This helper instead calls the ``SECURITY DEFINER`` lookup added in migration
     ``core_145``, which runs as its owner (a role with relationship-schema read
-    access) and returns only owner matches. The channel-type → predicate mapping
-    and value normalisation live here (mirroring
-    :func:`resolve_contact_by_channel`); the function receives the predicate plus
-    pre-normalised candidate object values.
+    access) and returns only owner matches. Channel-specific validation and
+    normalization live here. The function receives one typed candidate universe
+    spanning every equivalent fact predicate so it can reject ambiguity in one
+    decision, including WhatsApp JID/phone and case-normalized email collisions.
 
-    Returns ``(owner_contact, is_primary)`` when *channel_value* is one of the
-    owner's registered handles for *channel_type*, else ``None`` (not an owner
-    channel, unknown channel type, or the function is unavailable).
+    Returns ``(owner_contact, is_primary)`` when the candidate values resolve
+    to exactly one live entity and that entity is the owner.  Returns ``None``
+    for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
+    channel types, and unavailable lookup infrastructure.
     """
-    canonical_channel = canonical_identity_channel_type(channel_type)
-    predicate = _CHANNEL_TYPE_TO_PREDICATE.get(canonical_channel)
-    if predicate is None:
+    candidates = _owner_channel_authorization_candidates(channel_type, channel_value)
+    if not candidates:
         return None
-
-    # Candidate object values: verbatim, plus telegram canonical-prefix and
-    # username variants — the same normalisation resolve_contact_by_channel applies.
-    candidates: list[str] = [channel_value]
-    if canonical_channel in _TELEGRAM_USERNAME_CHANNEL_TYPES:
-        for variant in _telegram_username_candidates(channel_value):
-            if variant not in candidates:
-                candidates.append(variant)
-    if canonical_channel in _TELEGRAM_PREFIX_CHANNEL_TYPES:
-        for variant in list(candidates):
-            prefixed = _telegram_prefixed_value(variant)
-            if prefixed not in candidates:
-                candidates.append(prefixed)
 
     try:
         row = await pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
-            predicate,
-            candidates,
+            "owner-channel",
+            list(candidates),
         )
     except Exception:  # noqa: BLE001
         logger.debug("identity.owner_channel_resolution_failed")
@@ -912,6 +974,30 @@ async def resolve_owner_channel_via_definer(
         entity_id=entity_id,
     )
     return owner_contact, bool(row["is_primary"])
+
+
+async def resolve_channel_contact_with_owner_corroboration(
+    pool: asyncpg.Pool,
+    channel_type: str,
+    channel_value: str,
+) -> ResolvedContact | None:
+    """Resolve one channel target without trusting an owner-looking direct read.
+
+    A directly resolved non-owner is authoritative. A miss or owner-looking
+    result must pass the ambiguity-safe owner-only definer, which evaluates the
+    full normalized candidate set across schema isolation. This is the single
+    policy seam shared by email, generic recipient, and MCP approval gates.
+    """
+    direct = await resolve_contact_by_channel(pool, channel_type, channel_value)
+    if direct is not None and "owner" not in direct.roles:
+        return direct
+
+    try:
+        owner_result = await resolve_owner_channel_via_definer(pool, channel_type, channel_value)
+    except Exception:  # noqa: BLE001
+        logger.debug("identity.owner_channel_corroboration_failed")
+        return None
+    return owner_result[0] if owner_result is not None else None
 
 
 async def create_temp_contact(
@@ -1390,16 +1476,19 @@ def build_identity_preamble(
 
 __all__ = [
     "ResolvedContact",
+    "OWNER_AUTHORIZED_IDENTITY_CHANNELS",
     "build_identity_preamble",
     "canonical_identity_channel_type",
+    "is_well_formed_owner_channel_identifier",
     "create_temp_contact",
     "normalize_email_sender",
     "parse_email_sender",
     "resolve_contact_by_channel",
+    "resolve_channel_contact_with_owner_corroboration",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",
-    # Telegram normalization helpers — consumed by approvals._shared to keep
-    # is_primary_contact consistent with resolve_contact_by_channel.
+    # Telegram normalization helpers are exported for migration/write-side
+    # normalization callers that share this canonical representation.
     "_telegram_username_candidates",
     "_TELEGRAM_USERNAME_CHANNEL_TYPES",
     "_telegram_prefixed_value",
