@@ -12,12 +12,31 @@ import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
+from fastapi import HTTPException
 
+from butlers.api.read_models.timeline_v1 import (
+    query_timeline_attention_notifications_single,
+    query_timeline_notification_histogram_single,
+    query_timeline_notifications_single,
+)
+from butlers.api.routers.notifications import (
+    _extract_stored_envelope,
+    _fetch_notification_row,
+    _query_notifications,
+    ack_failed_notifications,
+    mark_notification_read,
+    notification_stats,
+)
 from butlers.config import ApprovalRiskTier
+from butlers.core.approval_delivery_transport import (
+    MessengerApprovalHandoffRepository,
+    TrustedRecoveryContext,
+)
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.notifications import (
@@ -25,11 +44,17 @@ from butlers.modules.approvals.notifications import (
     emit_approval_push,
 )
 from butlers.modules.approvals.park import park_pending_action
+from butlers.modules.pipeline import (
+    _load_conversation_history,
+    _load_email_history,
+    _load_realtime_history,
+)
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
     migration_db_name,
 )
+from butlers.tools.switchboard.notification.deliver import deliver as switchboard_deliver
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -68,6 +93,81 @@ async def approval_push_pool(migrated_db_url: str):
         "UPDATE public.approvals_policy "
         "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' "
         "WHERE id = 1"
+    )
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture(scope="module")
+def recovery_transport_db_url(postgres_container) -> str:
+    """Provision real Messenger and Switchboard schemas for recovery isolation."""
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(
+            db_url,
+            chains=["core"],
+            target_schema="switchboard",
+        ),
+        "core@head",
+    )
+    command.upgrade(
+        _build_alembic_config(
+            db_url,
+            chains=["switchboard"],
+            target_schema="switchboard",
+        ),
+        "switchboard@head",
+    )
+    command.upgrade(
+        _build_alembic_config(
+            db_url,
+            chains=["messenger"],
+            target_schema="messenger",
+        ),
+        "messenger@head",
+    )
+    return db_url
+
+
+@pytest.fixture
+async def messenger_handoff_pool(recovery_transport_db_url: str):
+    pool = await asyncpg.create_pool(
+        recovery_transport_db_url,
+        min_size=1,
+        max_size=4,
+        server_settings={"search_path": "messenger,public"},
+    )
+    await pool.execute("TRUNCATE approval_delivery_handoffs")
+    yield pool
+    await pool.close()
+
+
+@pytest.fixture
+async def switchboard_recovery_pool(recovery_transport_db_url: str):
+    pool = await asyncpg.create_pool(
+        recovery_transport_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
+    await pool.execute("TRUNCATE notifications, message_inbox CASCADE")
+    await pool.execute(
+        """
+        INSERT INTO butler_registry (
+            name, endpoint_url, modules, last_seen_at, eligibility_state
+        ) VALUES
+            ('relationship', 'http://relationship.invalid/mcp', '[]'::jsonb,
+             clock_timestamp(), 'active'),
+            ('messenger', 'http://messenger.invalid/mcp', '[\"telegram\"]'::jsonb,
+             clock_timestamp(), 'active')
+        ON CONFLICT (name) DO UPDATE
+        SET last_seen_at = EXCLUDED.last_seen_at,
+            eligibility_state = EXCLUDED.eligibility_state
+        """
     )
     yield pool
     await pool.close()
@@ -637,6 +737,287 @@ def test_messenger_handoff_migration_enforces_binding_and_refuses_data_loss(
             command.downgrade(config, "msg_003")
     finally:
         engine.dispose()
+
+
+def _trusted_recovery_context() -> TrustedRecoveryContext:
+    subject_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    subject_key = f"approval:relationship:{subject_id}"
+    return TrustedRecoveryContext(
+        issuer="relationship",
+        owning_schema="relationship",
+        operation="handoff",
+        subject_kind="action",
+        subject_key=subject_key,
+        presentation_key=f"{subject_key}:p:1",
+        presentation_generation=1,
+        presentation_mode="single",
+    )
+
+
+async def test_messenger_handoff_tuple_suppresses_duplicates_and_reconciles_ambiguity(
+    messenger_handoff_pool: asyncpg.Pool,
+) -> None:
+    repository = MessengerApprovalHandoffRepository(messenger_handoff_pool)
+    context = _trusted_recovery_context()
+    provider = AsyncMock(return_value={"result": {"message_id": "provider-ref-1"}})
+
+    first = await repository.process(context, provider_call=provider)
+    duplicate = await repository.process(context, provider_call=provider)
+
+    assert first == duplicate == HandoffResult("confirmed", provider_reference="provider-ref-1")
+    provider.assert_awaited_once()
+    row = await messenger_handoff_pool.fetchrow(
+        """
+        SELECT issuer, owning_schema, handoff_class, reason_code, provider_reference,
+               subject_key, presentation_key
+        FROM approval_delivery_handoffs
+        """
+    )
+    assert dict(row) == {
+        "issuer": "relationship",
+        "owning_schema": "relationship",
+        "handoff_class": "confirmed",
+        "reason_code": None,
+        "provider_reference": "provider-ref-1",
+        "subject_key": context.subject_key,
+        "presentation_key": context.presentation_key,
+    }
+
+    await messenger_handoff_pool.execute("TRUNCATE approval_delivery_handoffs")
+    uncertain_provider = AsyncMock(side_effect=TimeoutError("synthetic timeout"))
+    ambiguous = await repository.process(context, provider_call=uncertain_provider)
+    repeated = await repository.process(context, provider_call=AsyncMock())
+    assert ambiguous == repeated == HandoffResult("ambiguous", "provider_outcome_unknown")
+    uncertain_provider.assert_awaited_once()
+
+    reconcile_context = TrustedRecoveryContext(
+        **{
+            **context.as_internal_dict(),
+            "operation": "reconcile",
+        }
+    )
+    reconciled = await repository.process(
+        reconcile_context,
+        provider_call=None,
+        reconcile_call=AsyncMock(
+            return_value=HandoffResult("safe_retry", "provider_preflight_failed")
+        ),
+    )
+    assert reconciled.classification == "safe_retry"
+    retry_provider = AsyncMock(return_value={"message_id": "provider-ref-after-reconcile"})
+    confirmed = await repository.process(context, provider_call=retry_provider)
+    assert confirmed.classification == "confirmed"
+    retry_provider.assert_awaited_once()
+
+
+async def test_messenger_safe_retry_never_marks_provider_started_and_reuses_same_key(
+    messenger_handoff_pool: asyncpg.Pool,
+) -> None:
+    repository = MessengerApprovalHandoffRepository(messenger_handoff_pool)
+    context = _trusted_recovery_context()
+
+    safe_retry = await repository.process(context, provider_call=None)
+    assert safe_retry == HandoffResult("safe_retry", "transport_unavailable")
+    assert await messenger_handoff_pool.fetchval(
+        "SELECT provider_started_at IS NULL FROM approval_delivery_handoffs"
+    )
+
+    provider = AsyncMock(return_value={"message_id": "provider-ref-2"})
+    confirmed = await repository.process(context, provider_call=provider)
+    assert confirmed == HandoffResult("confirmed", provider_reference="provider-ref-2")
+    provider.assert_awaited_once()
+    assert (
+        await messenger_handoff_pool.fetchval("SELECT count(*) FROM approval_delivery_handoffs")
+        == 1
+    )
+
+
+async def test_recovery_path_persists_no_generic_or_history_content(
+    switchboard_recovery_pool: asyncpg.Pool,
+) -> None:
+    context = _trusted_recovery_context()
+    message_sentinel = "rendered-message-synthetic-sentinel"
+    recipient_sentinel = "recipient-thread-synthetic-sentinel"
+    callback_sentinel = "callback-material-synthetic-sentinel"
+    notify_request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": message_sentinel,
+            "recipient": recipient_sentinel,
+        },
+        "actions": [
+            {
+                "verb": "approve",
+                "callback_token": callback_sentinel,
+                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
+            },
+            {
+                "verb": "reject",
+                "callback_token": callback_sentinel,
+                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
+            },
+            {
+                "verb": "open_dashboard",
+                "dashboard_url": "https://dashboard.example.test/approvals/synthetic",
+            },
+        ],
+        "recovery": {
+            **context.as_internal_dict(),
+        },
+    }
+    notify_request["recovery"].pop("issuer")
+    notify_request["recovery"].pop("owning_schema")
+
+    route_result = {
+        "result": {
+            "notify_response": {
+                "status": "ok",
+                "handoff": {"classification": "confirmed"},
+            }
+        },
+        "transport": {"outcome": "confirmed", "retryable": False},
+    }
+    with (
+        patch(
+            "butlers.tools.switchboard.notification.deliver.route",
+            new=AsyncMock(return_value=route_result),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.log_notification",
+            new=AsyncMock(),
+        ) as generic_log,
+    ):
+        result = await switchboard_deliver(
+            switchboard_recovery_pool,
+            source_butler="relationship",
+            trusted_source="relationship",
+            notify_request=notify_request,
+        )
+
+    assert result["handoff"]["classification"] == "confirmed"
+    generic_log.assert_not_awaited()
+    assert await switchboard_recovery_pool.fetchval("SELECT count(*) FROM notifications") == 0
+    assert await switchboard_recovery_pool.fetchval("SELECT count(*) FROM message_inbox") == 0
+    now = datetime.now(UTC)
+    assert (
+        await _load_realtime_history(
+            switchboard_recovery_pool,
+            recipient_sentinel,
+            now,
+            source_channel="telegram_bot",
+        )
+        == []
+    )
+    assert await _load_email_history(switchboard_recovery_pool, recipient_sentinel, now) == []
+    assert (
+        await _load_conversation_history(
+            switchboard_recovery_pool,
+            "telegram_bot",
+            recipient_sentinel,
+            now,
+        )
+        == ""
+    )
+
+    recovery_notification_id = await switchboard_recovery_pool.fetchval(
+        """
+        INSERT INTO notifications (
+            source_butler, channel, recipient, message, metadata, status
+        ) VALUES ($1, 'telegram', $2, $3, $4, 'failed')
+        RETURNING id
+        """,
+        "relationship",
+        recipient_sentinel,
+        message_sentinel,
+        {"notify_request": notify_request},
+    )
+    await switchboard_recovery_pool.execute(
+        """
+        INSERT INTO message_inbox (
+            received_at, request_context, raw_payload, normalized_text,
+            direction, lifecycle_state, schema_version
+        ) VALUES (
+            $1, $2, $3, $4, 'outbound', 'completed', 'message_inbox.v2'
+        )
+        """,
+        now - timedelta(seconds=1),
+        {
+            "source_channel": "telegram_bot",
+            "source_sender_identity": "relationship",
+            "source_thread_identity": recipient_sentinel,
+        },
+        {"content": message_sentinel, "metadata": {"approval_recovery": True}},
+        message_sentinel,
+    )
+
+    assert (
+        await _fetch_notification_row(switchboard_recovery_pool, recovery_notification_id) is None
+    )
+    generic_page = await _query_notifications(
+        switchboard_recovery_pool,
+        offset=0,
+        limit=20,
+    )
+    assert generic_page.data == []
+    fake_db = SimpleNamespace(pool=lambda _name: switchboard_recovery_pool)
+    stats = await notification_stats(since=None, until=None, db=fake_db)
+    assert stats.data.total == stats.data.sent == stats.data.failed == 0
+    cache = SimpleNamespace(invalidate=AsyncMock(), invalidate_all=AsyncMock())
+    with pytest.raises(HTTPException) as read_error:
+        await mark_notification_read(
+            recovery_notification_id,
+            db=fake_db,
+            cache=cache,
+        )
+    assert read_error.value.status_code == 404
+    acknowledged = await ack_failed_notifications(db=fake_db, cache=cache)
+    assert acknowledged.data.acknowledged == 0
+    with pytest.raises(ValueError, match="no generic replay envelope"):
+        _extract_stored_envelope({"metadata": {"notify_request": notify_request}})
+
+    assert (
+        await query_timeline_notifications_single(
+            switchboard_recovery_pool,
+            limit=20,
+        )
+        == []
+    )
+    assert (
+        await query_timeline_notification_histogram_single(
+            switchboard_recovery_pool,
+            since=now - timedelta(hours=1),
+            until=now + timedelta(hours=1),
+        )
+        == []
+    )
+    attention, attention_count = await query_timeline_attention_notifications_single(
+        switchboard_recovery_pool,
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+    )
+    assert attention == [] and attention_count == 0
+    assert (
+        await _load_realtime_history(
+            switchboard_recovery_pool,
+            recipient_sentinel,
+            now,
+            source_channel="telegram_bot",
+        )
+        == []
+    )
+    assert await _load_email_history(switchboard_recovery_pool, recipient_sentinel, now) == []
+    assert (
+        await _load_conversation_history(
+            switchboard_recovery_pool,
+            "telegram_bot",
+            recipient_sentinel,
+            now,
+        )
+        == ""
+    )
 
 
 async def test_failed_push_is_retried_once_the_callback_secret_is_fixed(

@@ -17,7 +17,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp.server.dependencies import AccessToken
 
+from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -201,6 +203,43 @@ def _valid_notify_request(*, origin_butler: str = "health") -> dict[str, Any]:
     }
 
 
+def _recovery_notify_request() -> dict[str, Any]:
+    subject = "approval:relationship:00000000-0000-0000-0000-000000000000"
+    return {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Synthetic approval.",
+            "recipient": "owner-synthetic",
+        },
+        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "recovery": {
+            "operation": "handoff",
+            "subject_kind": "action",
+            "subject_key": subject,
+            "presentation_key": f"{subject}:p:1",
+            "presentation_generation": 1,
+            "presentation_mode": "single",
+        },
+    }
+
+
+def _trusted_recovery_context() -> dict[str, Any]:
+    recovery = _recovery_notify_request()["recovery"]
+    return {"issuer": "relationship", "owning_schema": "relationship", **recovery}
+
+
+def _switchboard_recovery_token() -> AccessToken:
+    return AccessToken(
+        token="synthetic",
+        client_id="butler:switchboard",
+        scopes=["approval-recovery:switchboard"],
+        claims={"actor_type": "daemon", "butler_name": "switchboard"},
+    )
+
+
 @pytest.fixture(autouse=True)
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox DB calls so tests don't need a real DB pool."""
@@ -298,6 +337,108 @@ class TestRouteExecuteAuthz:
         )
         tg_mod._send_message.assert_awaited_once()
         assert result_ok["status"] == "ok"
+
+    async def test_recovery_requires_authenticated_switchboard_before_provider(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        daemon, route_execute = await _start_daemon_with_route_execute(
+            _make_butler_toml(
+                tmp_path,
+                butler_name="messenger",
+                modules={"telegram": {}, "email": {}},
+            ),
+            patches,
+        )
+        assert route_execute is not None
+        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        telegram._send_message = AsyncMock(return_value={"message_id": "provider-ref"})
+
+        async def _process(_context, *, provider_call, **_kwargs):
+            assert provider_call is not None
+            await provider_call()
+            return HandoffResult("confirmed", provider_reference="provider-ref")
+
+        repository = MagicMock()
+        repository.process = AsyncMock(side_effect=_process)
+        route_payload = {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(
+                source_endpoint_identity="switchboard",
+                source_sender_identity="relationship",
+            ),
+            "input": {
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": _recovery_notify_request(),
+                    "_trusted_approval_recovery": _trusted_recovery_context(),
+                },
+            },
+        }
+
+        with (
+            patch(
+                "butlers.core_tools._routing.get_access_token",
+                return_value=_switchboard_recovery_token(),
+            ),
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value={"owner": True}),
+            ),
+            patch(
+                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
+                return_value=repository,
+            ),
+        ):
+            accepted = await route_execute(**route_payload)
+
+        assert accepted["status"] == "ok"
+        assert accepted["result"]["notify_response"]["handoff"] == {
+            "classification": "confirmed",
+            "provider_reference": "provider-ref",
+        }
+        telegram._send_message.assert_awaited_once()
+
+        telegram._send_message.reset_mock()
+        with (
+            patch("butlers.core_tools._routing.get_access_token", return_value=None),
+            patch(
+                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
+                return_value=repository,
+            ),
+        ):
+            rejected = await route_execute(**route_payload)
+        assert rejected["status"] == "error"
+        assert rejected["error"]["message"] == "Approval recovery authority rejected."
+        telegram._send_message.assert_not_awaited()
+
+        bad_context = _trusted_recovery_context()
+        bad_context["presentation_mode"] = "burst_digest"
+        bad_payload = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "_trusted_approval_recovery": bad_context,
+                },
+            },
+        }
+        with (
+            patch(
+                "butlers.core_tools._routing.get_access_token",
+                return_value=_switchboard_recovery_token(),
+            ),
+            patch(
+                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
+                return_value=repository,
+            ),
+        ):
+            mismatched = await route_execute(**bad_payload)
+        assert mismatched["status"] == "error"
+        assert mismatched["error"]["message"] == "Approval recovery authority rejected."
+        assert repository.process.await_count == 1
+        telegram._send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

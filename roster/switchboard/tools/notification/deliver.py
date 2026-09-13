@@ -12,6 +12,10 @@ import asyncpg
 from opentelemetry import trace
 from pydantic import ValidationError
 
+from butlers.core.approval_delivery_transport import (
+    RecoveryAuthorityError,
+    recovery_context_from_request,
+)
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.tools.switchboard.notification.log import log_notification
 from butlers.tools.switchboard.routing.contracts import (
@@ -168,6 +172,8 @@ async def _write_outbound_message_inbox(
 
     Errors are logged but never propagate — the delivery has already succeeded.
     """
+    if notify_request.recovery is not None:
+        return
     ctx = notify_request.request_context
     thread_identity = ctx.source_thread_identity if ctx is not None else None
 
@@ -246,6 +252,8 @@ async def _deliver_via_notify_request(
     call_fn: Any | None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
+    if notify_request.recovery is not None:
+        raise RuntimeError("approval recovery cannot enter generic notification delivery")
     channel = notify_request.delivery.channel
     # Prefer explicit delivery recipient; fall back to thread identity from
     # request context (e.g. Telegram chat_id for reply-intent notifications).
@@ -392,6 +400,85 @@ async def _deliver_via_notify_request(
     }
 
 
+def _safe_recovery_result(
+    classification: str,
+    reason_code: str | None = None,
+    provider_reference: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"classification": classification}
+    if reason_code is not None:
+        payload["reason_code"] = reason_code
+    if provider_reference is not None:
+        payload["provider_reference"] = provider_reference
+    return payload
+
+
+async def _deliver_recovery_via_notify_request(
+    pool: asyncpg.Pool,
+    *,
+    notify_request: NotifyRequestV1,
+    request_context: RouteRequestContextV1,
+    source_butler: str,
+    trusted_source: str,
+    call_fn: Any | None,
+) -> dict[str, Any]:
+    """Route recovery without touching generic notification persistence."""
+    recovery = notify_request.recovery
+    if recovery is None:
+        raise RuntimeError("approval recovery request is missing correlation")
+    try:
+        if trusted_source != source_butler or notify_request.origin_butler != trusted_source:
+            raise RecoveryAuthorityError("recovery source principal does not match issuer")
+        registered = await pool.fetchval(
+            """
+            SELECT name FROM switchboard.butler_registry
+            WHERE name = $1 AND eligibility_state = 'active'
+            """,
+            trusted_source,
+        )
+        if registered != trusted_source:
+            raise RecoveryAuthorityError("recovery issuer is not an active registered daemon")
+        trusted = recovery_context_from_request(issuer=trusted_source, recovery=recovery)
+    except Exception:
+        return {
+            "status": "failed",
+            "error": "Approval recovery authority rejected.",
+            "retryable": False,
+        }
+
+    route_context = RouteRequestContextV1.model_validate(
+        {
+            "request_id": str(request_context.request_id),
+            "received_at": (request_context.received_at or datetime.now(UTC)).isoformat(),
+            "source_channel": "mcp",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": trusted_source,
+        }
+    )
+    route_payload = _build_notify_route_envelope(notify_request, request_context=route_context)
+    route_result = await route(
+        pool,
+        target_butler=MESSENGER_BUTLER_NAME,
+        tool_name="route.execute",
+        args=route_payload,
+        source_butler=trusted_source,
+        internal_context={"_trusted_approval_recovery": trusted.as_internal_dict()},
+        call_fn=call_fn,
+    )
+    notify_response = _extract_notify_response(route_result.get("result"))
+    if isinstance(notify_response, dict):
+        handoff = notify_response.get("handoff")
+        if isinstance(handoff, dict):
+            return {"status": "recovery", "handoff": handoff}
+
+    transport = transport_result_from_envelope(route_result)
+    if transport is not None and transport.retryable:
+        handoff = _safe_recovery_result("safe_retry", "transport_unavailable")
+    else:
+        handoff = _safe_recovery_result("ambiguous", "provider_outcome_unknown")
+    return {"status": "recovery", "handoff": handoff}
+
+
 async def deliver(
     pool: asyncpg.Pool,
     channel: str | None = None,
@@ -402,6 +489,7 @@ async def deliver(
     notify_request: dict[str, Any] | None = None,
     *,
     call_fn: Any | None = None,
+    trusted_source: str | None = None,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -457,7 +545,11 @@ async def deliver(
             try:
                 parsed_notify = parse_notify_request(envelope_payload)
             except ValidationError as exc:
-                error_msg = f"Invalid notify.v1 envelope: {exc}"
+                error_msg = (
+                    "Invalid approval recovery request."
+                    if "recovery" in envelope_payload
+                    else f"Invalid notify.v1 envelope: {exc}"
+                )
                 span.set_status(trace.StatusCode.ERROR, error_msg)
                 return {"error": error_msg, "status": "failed"}
 
@@ -473,6 +565,21 @@ async def deliver(
             request_context = parsed_notify.request_context or _default_notify_request_context(
                 source_butler
             )
+            if parsed_notify.recovery is not None:
+                if trusted_source is None:
+                    return {
+                        "status": "failed",
+                        "error": "Approval recovery requires authenticated daemon transport.",
+                        "retryable": False,
+                    }
+                return await _deliver_recovery_via_notify_request(
+                    pool,
+                    notify_request=parsed_notify,
+                    request_context=request_context,
+                    source_butler=source_butler,
+                    trusted_source=trusted_source,
+                    call_fn=call_fn,
+                )
             span.set_attribute("channel", parsed_notify.delivery.channel)
             span.set_attribute("target_butler", MESSENGER_BUTLER_NAME)
 
