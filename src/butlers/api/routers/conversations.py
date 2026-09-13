@@ -24,6 +24,11 @@ GET  /api/conversations/messages/search
     ts_rank ordering and highlight ranges — distinct from the per-butler,
     per-conversation substring search above.
 
+GET  /api/conversations/{conversation_id}
+    Cross-butler conversation identity lookup by id alone, regardless of
+    owning butler_name (bu-0ynlk.11 — the /chat/:conversationId full-page
+    route and cmdk recent-thread recall). 404 when the id is unknown.
+
 GET  /api/butlers/{name}/conversations/summary
     Aggregate statistics for all conversations of a butler.
 
@@ -61,7 +66,24 @@ SSE event types
     streams without an immutable user-message id and terminal-action states
     do not emit this event.
 ``token``
-    Streamed assistant response token. Data: ``{content}``.
+    Streamed assistant response token. Data: ``{content}``. Delivered as one
+    or more events per turn: when the routed runtime cannot stream (every
+    runtime adapter today — see ``butlers.core.runtimes`` and
+    ``butlers.api.chat_stream``), a single event carries the full reply text;
+    a future streaming-capable producer publishing incremental deltas onto
+    the turn's chat-stream NOTIFY channel would instead surface as several
+    ``token`` events whose concatenated ``content`` always equals the
+    persisted reply row's content byte-for-byte (never fabricated, never
+    diverges from the persisted row).
+``phase``
+    Real-time processing status. Data: ``{phase, target?, tool?}`` where
+    ``phase`` is one of ``classifying`` (Switchboard is triaging), ``routed``
+    (``target`` names the butler handling this turn), ``starting_session``
+    (the routed butler's session is about to run — ``target`` names it),
+    ``thinking`` (``tool`` names the tool call in progress — only emitted by
+    a streaming-capable producer, never fabricated), or ``writing`` (the
+    reply is about to stream). Only the phases a given turn's runtime can
+    truthfully observe are emitted; a phase is never guessed.
 ``message_complete``
     The routed butler's ``conversation_reply`` message, with attribution.
     Data: ``{message_id, session_id, model_name, input_tokens, output_tokens,
@@ -119,10 +141,12 @@ from fastmcp.exceptions import ToolError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
+from butlers.api.chat_stream import ChatStreamListener, open_chat_stream_listener
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_create,
     conversation_get,
+    conversation_get_by_id_any_butler,
     conversation_list,
     conversation_message_count_increment,
     conversation_search,
@@ -149,6 +173,7 @@ from butlers.api.models import (
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
+    ConversationDetail,
     ConversationMessage,
     ConversationSearchResult,
     ConversationStats,
@@ -453,6 +478,15 @@ async def _stream_conversation_response(
             {"conversation_id": str(conversation_id), "title": conversation_title},
         )
 
+    # Phase: classifying/routed. A pinned per-butler conversation's routing
+    # is already deterministic (no Switchboard classification happens for
+    # it), so it goes straight to "routed"; only a Switchboard-addressed
+    # (widget) turn is genuinely being classified yet.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "classifying"})
+    else:
+        yield _sse_event("phase", {"phase": "routed", "target": butler_name})
+
     # Step 2: Claim the outbound Switchboard submission immediately before
     # making it. Opening the turn earlier makes Stop addressable before SSE,
     # but only this final claim is the external side-effect boundary.
@@ -651,6 +685,12 @@ async def _stream_conversation_response(
     # turn, otherwise the pinned/addressed butler itself.
     routed_butler = triage_target if routed_this_turn else butler_name
 
+    # Phase: routed. Only for the Switchboard-classified case — a pinned
+    # conversation already emitted "routed" above, before classification
+    # (which never runs for it) could have changed the target.
+    if butler_name == _SWITCHBOARD_BUTLER:
+        yield _sse_event("phase", {"phase": "routed", "target": routed_butler})
+
     # Register this turn as cancellable (POST .../cancel resolves conversation_id
     # -> routed_butler + request_id -> live session, see _resolve_session_id).
     # Cleared in the finally below so a stale entry never outlives the turn it
@@ -669,7 +709,21 @@ async def _stream_conversation_response(
             active_turn["message_id"] = str(message_id)
         _ACTIVE_TURNS[conversation_id] = active_turn
 
+    # Best-effort: open the per-request chat-stream NOTIFY listener (see
+    # butlers.api.chat_stream) so conversation_reply_create's reply_ready
+    # NOTIFY — and any future streaming-capable producer's token/phase
+    # deltas — wake the poll loop below immediately instead of waiting for
+    # the next fixed-interval safety-net check. `None` when the dedicated
+    # LISTEN connection could not be established; the loop degrades to pure
+    # polling in that case, honoring the same fallback contract as a
+    # non-streaming runtime.
+    stream_listener: ChatStreamListener | None = await open_chat_stream_listener(request_id_str)
+    streamed_content_parts: list[str] = []
+    phase_writing_emitted = False
+
     try:
+        yield _sse_event("phase", {"phase": "starting_session", "target": routed_butler})
+
         # A receipt is attributable only to the durable dashboard-turn record,
         # never to an optimistic classification result or sticky conversation
         # history. It is deliberately unavailable for legacy streams that lack
@@ -813,7 +867,37 @@ async def _stream_conversation_response(
                 shared_pool, conversation_id, since=message_created_at
             )
             if reply_row is None:
-                await asyncio.sleep(_POLL_INTERVAL_S)
+                if stream_listener is None:
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                    continue
+                # Wait for a chat-stream NOTIFY (conversation_reply_create's
+                # reply_ready wake, or a future streaming producer's
+                # token/phase delta) instead of blindly sleeping the full
+                # interval — a wake re-checks message_find_reply_since on the
+                # very next loop iteration, well before the safety-net
+                # timeout below would have fired anyway.
+                envelope = await stream_listener.get(timeout=_POLL_INTERVAL_S)
+                if envelope is None:
+                    continue
+                etype = envelope.get("type")
+                edata = envelope.get("data")
+                edata = edata if isinstance(edata, dict) else {}
+                if etype == "token":
+                    content = edata.get("content")
+                    if isinstance(content, str) and content:
+                        if not phase_writing_emitted:
+                            phase_writing_emitted = True
+                            yield _sse_event("phase", {"phase": "writing"})
+                        yield _sse_event("token", {"content": content})
+                        streamed_content_parts.append(content)
+                elif etype == "phase":
+                    phase_name = edata.get("phase")
+                    if phase_name == "writing":
+                        phase_writing_emitted = True
+                    yield _sse_event("phase", edata)
+                # Any other type (including "reply_ready") is just a wake —
+                # message_find_reply_since on the next iteration is the
+                # authoritative check.
 
         # Step 4: Emit the already-persisted conversation_reply — no DB write
         # happens here; conversation_reply_create() did it inside the routed
@@ -835,7 +919,23 @@ async def _stream_conversation_response(
                     shared_pool, reply_row["id"], session_id=reply_session_id
                 )
 
-        yield _sse_event("token", {"content": reply_row["content"]})
+        # Trust boundary: streamed deltas are display-only — the persisted
+        # row is always the source of truth. Emit only whatever content was
+        # NOT already streamed as deltas, so the client's accumulated
+        # content always ends up byte-for-byte identical to the persisted
+        # row regardless of how much (if any) streaming happened. Today no
+        # runtime adapter streams deltas (see butlers.api.chat_stream), so
+        # streamed_content is always "" here and this is exactly the
+        # original single-shot emission.
+        streamed_content = "".join(streamed_content_parts)
+        remainder = reply_row["content"]
+        if streamed_content and reply_row["content"].startswith(streamed_content):
+            remainder = reply_row["content"][len(streamed_content) :]
+        if remainder:
+            if not phase_writing_emitted:
+                phase_writing_emitted = True
+                yield _sse_event("phase", {"phase": "writing"})
+            yield _sse_event("token", {"content": remainder})
         yield _sse_event(
             "message_complete",
             {
@@ -852,6 +952,8 @@ async def _stream_conversation_response(
         yield _sse_done()
     finally:
         _ACTIVE_TURNS.pop(conversation_id, None)
+        if stream_listener is not None:
+            await stream_listener.aclose()
 
 
 async def _persist_dashboard_user_message(
@@ -1492,6 +1594,46 @@ async def search_messages(
         data=[MessageSearchResult(**item) for item in result["items"]],
         meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/conversations/{conversation_id}
+# ---------------------------------------------------------------------------
+
+
+@messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation_by_id(
+    conversation_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ConversationDetail:
+    """Cross-butler conversation lookup by id (bu-0ynlk.11).
+
+    Resolves a conversation regardless of its owning ``butler_name`` — the
+    ``/chat/:conversationId`` full-page route and cmdk recent-thread recall
+    both address a conversation by id alone before they know which butler
+    owns it. ``id`` is a UUID7 primary key on the shared
+    ``public.dashboard_conversations`` table, so this lookup is
+    mount-boundary safe without a butler-scoped filter (see
+    ``conversation_get_by_id_any_butler``). Callers fetch the thread's
+    messages afterward through the existing per-butler
+    ``GET /api/butlers/{name}/conversations/{id}/messages`` route using the
+    ``butler_name`` this response resolves.
+
+    Returns 404 when the id is unknown.
+    """
+    try:
+        pool = db.credential_shared_pool()
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
+
+    conversation = await conversation_get_by_id_any_butler(pool, conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "CONVERSATION_NOT_FOUND", "message": "Conversation not found."},
+        )
+
+    return ConversationDetail(**conversation)
 
 
 # ---------------------------------------------------------------------------

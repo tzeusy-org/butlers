@@ -575,10 +575,9 @@ read-only `archive_candidate` boolean per connector, `true` only for an active
 
 The queue is a SUGGESTION and SHALL NOT change the fleet signal:
 
-- `archive_candidate` SHALL NOT contribute to the fleet-health rollups
-  (`GET /api/ingestion/connectors/cross-summary`,
-  `GET /api/switchboard/connectors/summary`) or to alerting — those exclude only
-  `archived` identities.
+- `archive_candidate` SHALL NOT contribute to the fleet-health rollup
+  `GET /api/ingestion/connectors/cross-summary` or to alerting — those exclude
+  only `archived` identities.
 - A candidate SHALL remain in the active roster with its true (offline) liveness
   and SHALL NOT be filed as merely an archive candidate; a genuinely-failing
   live connector (not offline for 30+ days) SHALL never be flagged.
@@ -611,7 +610,7 @@ human action.
 
 #### Scenario: Review queue does not affect fleet health
 
-- **WHEN** the fleet-health rollup endpoints aggregate connector liveness
+- **WHEN** the fleet-health rollup endpoint aggregates connector liveness
 - **THEN** `archive_candidate` has no effect on the online/stale/offline counts
 - **AND** the degraded-mode envelope flags are unchanged by the candidate
   computation
@@ -635,10 +634,9 @@ ingestion history still references it) but is separated from the active fleet:
   its history stays reachable.
 - Archived identities SHALL NOT contribute to the active roster's attention
   strip or KPI band.
-- The fleet-health rollups (`GET /api/ingestion/connectors/cross-summary` and
-  `GET /api/switchboard/connectors/summary`) SHALL exclude archived identities
-  from their online/stale/offline counts, so a permanently-offline superseded
-  identity stops dragging fleet health down.
+- The fleet-health rollup `GET /api/ingestion/connectors/cross-summary` SHALL
+  exclude archived identities from its online/stale/offline counts, so a
+  permanently-offline superseded identity stops dragging fleet health down.
 - Archiving SHALL be reversible (an unarchive path restores the identity to the
   active roster) and SHALL be a distinct state from `degraded`/`offline`:
   archiving SHALL NOT be applied to, and SHALL NOT mask, a genuinely-failing
@@ -657,7 +655,7 @@ ingestion history still references it) but is separated from the active fleet:
 
 #### Scenario: Archived identities do not drag fleet health down
 
-- **WHEN** the fleet-health rollup endpoints aggregate connector liveness
+- **WHEN** the fleet-health rollup endpoint aggregates connector liveness
 - **THEN** archived identities are excluded from the online/stale/offline counts
 - **AND** a genuinely-failing live connector is NOT archived and still counts
   toward (and surfaces in) the fleet-health signal
@@ -670,6 +668,218 @@ ingestion history still references it) but is separated from the active fleet:
   genuine-failure-only semantics
 - **AND** archiving never causes a genuinely-unreachable source to render as an
   honest empty/all-clear result
+
+### Requirement: Fleet health counts executable runtime instances only
+
+The connectors roster, its attention strip, its fleet-liveness KPIs, and the
+cross-connector rollups SHALL count rows whose persisted `operational_role` is
+`runtime_instance`, and no others.
+
+#### Scenario: Checkpoint rows are not connectors
+
+- **WHEN** the registry holds one online runtime instance and several
+  `checkpoint` rows belonging to it
+- **THEN** the roster SHALL list one connector
+- **AND** the fleet total, online, stale, and offline counts SHALL each reflect
+  that single runtime instance
+- **AND** no checkpoint SHALL appear as an offline connector, contribute message
+  counters to the fleet error rate, or occupy a slot in the attention strip
+
+#### Scenario: A dead runtime instance is still reported
+
+- **WHEN** a `runtime_instance` row has not heartbeated within the offline
+  threshold
+- **THEN** it SHALL be counted offline
+
+Excluding storage rows SHALL NOT suppress a genuinely dead process.
+
+### Requirement: Checkpoint history is inspectable under its parent
+
+Checkpoint records SHALL be returned nested under the runtime instance that owns
+them, labelled by the stream they track, and SHALL carry no liveness, state, or
+health of their own.
+
+#### Scenario: Cursors are nested and labelled
+
+- **WHEN** a connector's checkpoints are returned
+- **THEN** each record SHALL appear under its parent connector
+- **AND** its label SHALL be the part of the cursor key its parent identity does
+  not already account for
+- **AND** the record SHALL carry no liveness or state field
+
+#### Scenario: Two accounts never collect each other's cursors
+
+- **WHEN** two identities of the same `connector_type` each own checkpoints
+- **THEN** grouping SHALL be keyed on
+  `(connector_type, parent_endpoint_identity)`
+- **AND** each account SHALL show only its own records
+
+#### Scenario: A checkpoint with no resolvable parent stays visible
+
+- **WHEN** a checkpoint records no parent, or names a parent with no registry
+  row
+- **THEN** it SHALL be returned in a distinct unparented collection
+- **AND** the dashboard SHALL surface that collection
+
+An orphaned cursor is a real condition. Dropping it would trade one
+invisibility for another.
+
+### Requirement: Unknown classification is a named unavailable state
+
+A row whose `operational_role` is `unknown` SHALL report a distinct
+`unclassified` liveness. It SHALL NOT be reported as active or healthy, and
+SHALL NOT be inferred into `offline`.
+
+#### Scenario: An unclassified record reports its own state
+
+- **WHEN** a registry row's role has not been established
+- **THEN** its `liveness` SHALL be `unclassified`
+- **AND** the roster SHALL render that verdict rather than an online, offline,
+  or healthy one
+
+Nothing has claimed the row as a process, so there is no heartbeat contract to
+measure it against; naming the gap is the only honest verdict.
+
+#### Scenario: Unclassified records are counted apart from the fleet
+
+- **WHEN** unclassified records are present
+- **THEN** they SHALL be reported in their own count
+- **AND** they SHALL NOT be included in the fleet total, online, stale, or
+  offline counts
+- **AND** the roster SHALL still list them, so an unclassified record is
+  investigated rather than silently dropped
+
+#### Scenario: A degraded source never fabricates a classification
+
+- **WHEN** the registry query itself fails
+- **THEN** the response SHALL set `connector_registry_available` to `false`,
+  return an empty connector list, and report zero — including a zero
+  unclassified count — rather than a fabricated roster
+
+### Requirement: Canonical Connector Dashboard API Namespace
+
+Every dashboard connector read or settings update SHALL use the
+`/api/ingestion/connectors` namespace. The role-aware `summaries` response is
+the sole connector-list source for the Timeline, roster, and System topology;
+detail, statistics, and settings use the corresponding canonical connector
+resource routes. The dashboard SHALL NOT fall back to or request
+`/api/switchboard/connectors`.
+
+#### Scenario: Timeline attention uses runtime-authoritative summaries
+
+- **WHEN** the Timeline, its channel picker, or its verdict needs connector
+  state
+- **THEN** it reads `GET /api/ingestion/connectors/summaries`
+- **AND** checkpoint rows and archived identities do not contribute to its
+  attention list or channel choices
+- **AND** an unavailable summaries source is rendered as unavailable rather
+  than replaced by a raw-registry fallback
+
+#### Scenario: Connector detail uses canonical subresources
+
+- **WHEN** the owner opens a connector detail route
+- **THEN** its detail reads use
+  `GET /api/ingestion/connectors/{type}/{identity}`
+- **AND** its histogram reads
+  `GET /api/ingestion/connectors/{type}/{identity}/stats`
+- **AND** a settings update uses
+  `PATCH /api/ingestion/connectors/{type}/{identity}/settings`
+- **AND** the detail, statistics, and settings responses retain their existing
+  envelope, credential-masking, and archived-history semantics
+
+#### Scenario: Legacy connector namespace is absent
+
+- **WHEN** a client requests any `/api/switchboard/connectors` path after the
+  migration
+- **THEN** the dashboard API does not expose a route, redirect, alias, or
+  compatibility wrapper at that path
+- **AND** clients use the canonical ingestion connector routes instead
+
+### Requirement: Bounded Timeline Read Work
+
+Timeline reads SHALL share a bounded admission limit per API application,
+with finite admission and execution deadlines. Exhausted admission or an
+execution deadline SHALL return HTTP 503 with a retry hint. Disconnected
+readers SHALL release their in-flight read work. Replay and other mutations
+SHALL retain their existing transaction and audit lifecycle.
+
+#### Scenario: Timeline readers saturate their admission limit
+
+- **WHEN** concurrent Timeline reads fill the admission limit
+- **THEN** additional readers wait only for the bounded admission interval
+- **AND** exhausted readers receive HTTP 503 with `Retry-After`
+- **AND** unrelated dashboard routes do not queue on the Timeline admission limit
+
+#### Scenario: Abandoned reads release capacity
+
+- **WHEN** a reader disconnects or a read exceeds its execution deadline
+- **THEN** the in-flight read is cancelled and its admission slot is released
+- **AND** categorical outcome, admission-wait and execution-duration metrics are recorded
+- **AND** metrics contain no event IDs, payloads or filter values
+
+### Requirement: Timeline Refresh Does Not Multiply Historical Reads
+
+The live head SHALL refresh independently of already loaded historical pages.
+Paging into history SHALL retain a stable snapshot and retry cursor, while
+new head arrivals remain discoverable. Superseded HTTP work SHALL receive
+cancellation signals. Speculative row hover or focus SHALL NOT invoke an
+audited event-detail read; activating the drawer retains its normal access.
+
+#### Scenario: A reader has loaded several pages
+
+- **WHEN** polling or an ingestion notification refreshes the ledger
+- **THEN** only the live head is automatically fetched
+- **AND** loaded historical pages remain in place
+- **AND** new arrivals can be revealed through an explicit return-to-live action
+
+#### Scenario: A burst of ingestion notifications arrives
+
+- **WHEN** several ingestion notifications arrive in a short fixed window
+- **THEN** the ledger and aggregate refreshes are coalesced
+- **AND** unrelated historical details, replay history and audited payloads are not refetched
+- **AND** session lifecycle notifications still refresh session-dependent evidence
+- **AND** reconnect replay and fallback polling preserve eventual freshness
+
+#### Scenario: Drawer reads only consumed data
+
+- **WHEN** the owner opens the event drawer
+- **THEN** it reads session lineage without an unused duplicate rollup request
+- **AND** changing filters or leaving the view cancels superseded reads
+
+### Requirement: Passive Timeline Refresh Is Non-Disruptive
+The Timeline ledger SHALL distinguish stale placeholder rows during a changed
+filter from a same-query live background refresh.
+
+#### Scenario: Stream-triggered refresh retains ledger focus
+- **WHEN** an active Timeline query is invalidated by a live ingestion event or
+  periodic refresh while it already has current-key data
+- **THEN** the ledger remains fully usable and at normal opacity
+- **AND** the existing freshness/status surface continues to communicate live
+  state without stealing focus or blocking input
+
+#### Scenario: Filter transition marks placeholder rows
+- **WHEN** a changed Timeline filter retains prior rows as placeholder data
+- **THEN** the ledger MAY visibly distinguish those stale rows until the new
+  query resolves
+- **AND** pagination loading remains independently visible without dimming the
+  existing ledger
+
+### Requirement: Replay Controls Respect Server Policy
+Timeline replay controls SHALL require both a replayable status and
+server-derived replay-safety evidence.
+
+#### Scenario: Unsafe event remains visible but cannot be selected
+- **WHEN** a filtered, error, or failed row has a non-actionable replay policy
+- **THEN** its explanatory state remains visible
+- **AND** it is excluded from select-all and bulk replay
+- **AND** row and drawer replay actions are disabled or absent with a concise
+  reason
+
+#### Scenario: Stale replay policy rejection recovers selection
+- **WHEN** a bulk replay request receives a replay-safety HTTP 409 after the
+  selection was made
+- **THEN** the Timeline offers the existing one-click action to deselect
+  exactly the ineligible events
 
 ## Source References
 

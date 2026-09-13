@@ -4,144 +4,24 @@
 
 The Butlers dashboard exposes domain-specific pages that surface data managed by individual butlers through read-only (and occasionally mutating) views. These pages turn raw butler data into actionable surfaces: health measurements become trend charts, contacts become an identity-aware CRM, calendar entries merge into a unified workspace, memory tiers become inspectable knowledge graphs, and session costs become budget visibility.
 
-This spec codifies the requirements for six domain page groups: Health, Relationship/Contacts, General/Entities, Calendar, Memory, and Costs -- plus the cross-butler global search that ties them together.
+This spec codifies the requirements for six domain page groups: Health, Relationship/Contacts, General/Entities, Calendar, Memory, and Spend -- plus the cross-butler global search that ties them together.
+
+## Historical reconciliation disposition
+
+The five deferred findings from the bu-58rlw7 dashboard audit are resolved as documentation drift,
+not new implementation work:
+
+| Historic finding | Current evidence | Disposition |
+|---|---|---|
+| Health identity hue | [Observed] `frontend/src/components/ui/ButlerMark.tsx:56-68`; `dashboard-design-language` Requirement: Butler Category Hues | Health keeps its permanent `--category-5` identity slot. General keeps `--category-4`; no category token is globally replaced. |
+| Measurements route | [Observed] `frontend/src/router-config.tsx:121-127`; `frontend/src/lib/shell-capability.ts:148-165` | The shipped page is `/health/measurements`. The obsolete bare `/measurements` prose is superseded by Requirement: Health measurements page at the canonical route. |
+| Contacts routes | [Observed] `frontend/src/router-config.tsx:111-120`; `dashboard-relationship` Requirement: Entity index page (`/entities/index`) | `/contacts` and `/contacts/:contactId` remain compatibility aliases that replace-navigate to `/entities/index?has=contact`. The entity index and `/entities/:entityId` own the canonical workflows. Contact hook/component imports remain in embedded consumers, but `getContacts`, `getContact`, and `getContactInteractions` target backend-dead paths and are not adopted as supported APIs by this reconciliation. |
+| Costs route | [Observed] `frontend/src/router-config.tsx:128-132`; `frontend/src/lib/shell-capability.ts:156`; `dashboard-spend-dashboard` Requirement: Canonical Spend Dashboard Page | `/costs` remains a compatibility alias that replace-navigates to the canonical `/spend` page. Overview cost components and shared spend hooks remain live consumers. |
+| Memory maturity filter | [Observed] `frontend/src/components/memory/RulesRegister.tsx:284-317`; `frontend/src/components/memory/AttentionRail.tsx:252-264`; `frontend/src/hooks/use-memory-url-state.ts:141-186` | The URL-backed `maturity` query remains part of the rules register. The anti-pattern attention row remains live and opens the filtered rules register; it is not retired by the house-ledger redesign. |
 
 ---
 
 ## Requirements
-
-### Requirement: [TARGET-STATE] Health Overview landing page
-
-The dashboard SHALL render a Health Overview page at `/health` as the health surface's landing
-page (absent today — the bare `/health` URL currently has nowhere to go). The Overview is a
-two-column editorial composition (`grid-template-columns: 1.4fr 1fr`): the left column is the
-Voice briefing plus a KPI strip; the right column is a quiet attention index. On narrow viewports
-the grid MUST collapse to a single column with the attention index below the briefing.
-
-The Overview MUST follow the Dispatch language: Display headline (not bold), the butler hue
-(`ButlerMark` identity hue) only on the health letter-mark, surfaces-not-cards, and state
-color (`--red`/`--amber`/`--green`) reserved for genuine health signal, never decoration.
-
-The Overview MUST contain, in the left column:
-
-- A **DateEyebrow** and a **Display** headline that names the single most important thing about the
-  owner's health right now in one sentence.
-- A **Voice briefing** (serif elaboration) sourced from `GET /api/health/briefing`, carrying a
-  **BriefingStatus pill** that reads `llm · cached` when the line was model-written and `templated`
-  when deterministic, so the owner always knows whether a line was computed or model-written.
-- A **KPI strip** of exactly four structural cells, each a mono eyebrow over the latest value.
-  `GET /api/health/measurements/types` is the observed read-vocabulary authority for selecting
-  those cells. Observed core types `weight`, `blood_pressure`, `heart_rate`, and `blood_sugar` MUST
-  retain their established positions even when an individual response marks them ineligible. An
-  absent core position MAY be filled only by an unused, non-core observed type marked
-  `kpi_eligible`, ordered by `latest_at` descending and then `type` ascending. A dynamic candidate
-  MUST NOT displace an observed core type. If no eligible candidate is available, the position MUST
-  retain its original core label and render a single em-dash, never a fabricated or placeholder
-  value. `GET /api/health/measurements/latest` MUST be requested only for the selected types; the
-  vocabulary response itself MUST NOT be treated as a latest value.
-  Each cell with a reading MUST thread the reading's `measured_at` age into a delta line (e.g.
-  "7d"). The documented per-vital freshness SLAs (`weight` 3 days, `blood_pressure` 3 days,
-  `heart_rate` 2 days, `blood_sugar` 2 days) apply to their respective core readings, whose age
-  MUST render amber (`--amber-text`) once stale. A dynamic fallback MAY show its real reading age
-  but MUST NOT be declared fresh under a guessed SLA. Each cell MUST expose its reading's data
-  source (resolved from the latest entry's metadata) as a hover tooltip when known.
-- A **data-freshness indicator** sourced from `GET /api/health/measurements/sources` (one of the
-  wire-orphaned reads this redesign consumes), shown as a quiet mono chip (e.g. "synced 2h ago" per
-  source). It MUST state real last-sample times only; when no source data exists the chip is omitted,
-  never faked. The source name for each row MUST be resolved as
-  `COALESCE(metadata->>'source', metadata->>'provider')` so facts carrying only the legacy `provider`
-  key are still attributed rather than dropped.
-
-The Overview MUST contain, in the right column, an **AttentionList** sourced from the Switchboard
-insight reader (`GET /api/switchboard/insights?butler=health&status=pending`). Each attention item MUST link to
-the concerning signal (missed doses, severe symptom, drifting measurement) so it is reachable in one
-click. When no insight candidate is pending, the attention index MUST collapse to a single
-serif-italic line, with no empty-state decoration.
-
-A measurement-gap or correlation-drift item MAY become a measurements door only when its metadata
-contains a typed `measurement_door` object with a non-empty `type` and real, ordered date-only
-`since` and `until` bounds. The dashboard MUST construct the destination itself as the fixed
-same-origin `/health/measurements` path plus encoded `type`, `since`, and `until` query keys. It
-MUST NOT navigate to an arbitrary `metadata.href` value. Missing, malformed, reversed, or
-otherwise ineligible door metadata MUST fall back to the fixed measurements path without query
-keys.
-
-#### Scenario: Overview lands the owner on the most important thing
-
-- **WHEN** the owner navigates to `/health`
-- **THEN** the page MUST render the two-column editorial layout with the Voice briefing headline,
-  the four-cell KPI strip, and the attention index
-- **AND** the briefing headline MUST state the single most important current health fact in one
-  sentence
-
-#### Scenario: KPI strip keeps four structural positions from the observed vocabulary
-
-- **WHEN** the Overview renders the KPI strip
-- **THEN** it MUST render exactly four cells
-- **AND** each observed core type (`weight`, `blood_pressure`, `heart_rate`, `blood_sugar`) MUST
-  retain its established position
-- **AND** an absent core position MAY use only an unused non-core type the server marks
-  `kpi_eligible`, selected by newest `latest_at` and then ascending `type`
-- **AND** a position without an eligible selected type MUST retain its core label and render an
-  em-dash, never a fabricated value
-
-#### Scenario: KPI vocabulary or latest read failure is named
-
-- **WHEN** the measurement vocabulary or latest-read query fails
-- **THEN** the four structural cells MUST remain visible with an inline `SourceDegradedNote` naming
-  the failed source
-- **AND** the Overview MUST NOT fabricate a cell selection, a latest value, or a calm no-data state
-
-#### Scenario: KPI cell surfaces reading age and staleness
-
-- **WHEN** a KPI cell has a reading whose `measured_at` age exceeds that vital's freshness SLA
-- **THEN** the cell MUST show the reading's age (e.g. "7d") rendered amber
-- **WHEN** the reading is within the vital's SLA
-- **THEN** the age MUST render in the quiet muted tone, not amber
-- **AND** the cell MUST expose the reading's data source as a hover tooltip when the source is known
-
-#### Scenario: Freshness source name falls back to the legacy provider key
-
-- **WHEN** the data-freshness indicator aggregates measurement sources and a fact carries only the
-  legacy `metadata->>'provider'` key (no canonical `source`)
-- **THEN** that fact MUST still be attributed to its provider via
-  `COALESCE(metadata->>'source', metadata->>'provider')`, never dropped from the source list
-
-#### Scenario: Expected measurement gaps distinguish instrument failure
-
-- **WHEN** the Health expected-signals endpoint returns `unmeasurable`
-- **THEN** the measurements tab SHALL render instrument unavailability and state that owner-behavior nudges are paused
-- **WHEN** the endpoint returns `available=false` with `signals=null`
-- **THEN** the tab SHALL render signal-health degradation, never an empty all-clear
-
-#### Scenario: Voice line carries the honesty pill
-
-- **WHEN** the Voice briefing renders a model-written elaboration served from cache
-- **THEN** the BriefingStatus pill MUST read `llm · cached`
-- **WHEN** the briefing falls back to the deterministic templated paragraph
-- **THEN** the pill MUST read `templated`
-
-#### Scenario: Empty attention index is one quiet line
-
-- **WHEN** `GET /api/switchboard/insights?butler=health&status=pending` returns zero candidates
-- **THEN** the attention index MUST collapse to a single serif-italic line
-- **AND** it MUST NOT render placeholder cards, confetti, or celebratory styling
-
-#### Scenario: Typed measurement insights open a bounded same-origin chart door
-
-- **WHEN** a pending `measurement-gap` or `correlation-drift` insight supplies a typed
-  `measurement_door` with a type and ordered `YYYY-MM-DD` bounds
-- **THEN** its attention row MUST link to `/health/measurements` with encoded `type`, `since`, and
-  `until` query keys
-- **AND** the dashboard MUST build that URL itself, never navigate to `metadata.href`
-
-#### Scenario: Invalid measurement-door metadata cannot control navigation
-
-- **WHEN** a measurement insight omits a typed door or its type, dates, or date ordering are invalid
-- **THEN** its attention row MUST fall back to `/health/measurements` without typed query keys
-- **AND** arbitrary metadata values MUST NOT redirect the owner away from that same-origin route
-
----
 
 ### Requirement: Health read surfaces distinguish a failing source from calm absence
 
@@ -181,121 +61,6 @@ statement and dose history (`GET /api/health/medications/{id}/adherence`,
 - **THEN** the corresponding surface MUST render an inline degraded note naming the failed source
 - **AND** it MUST NOT present an empty tracker, trend, chart, or blank KPI value as calm absence
   without that degraded note
-
----
-
-### Requirement: Health measurements page with trend charting
-
-The dashboard SHALL render a Measurements page at `/measurements` (reachable from the `/health`
-Overview) reframed from "data entry" to "trajectory": the page MUST lead with the trend rule-list
-(mono-time / status-dot / value / `→`), not the input box. It displays health measurement data as
-interactive line charts with a supporting raw-data view.
-
-The page MUST contain:
-- A chart type selector derived from `GET /api/health/measurements/types`. The response is the
-  observed read-vocabulary authority: tabs MUST contain only observed entries with
-  `chart_eligible = true`, using the response's labels, and MUST NOT fall back to a static type
-  list. Clicking a tab SHALL filter the chart and rule-list to that type. If the requested initial
-  type is not chart-eligible, the first returned chart-eligible type becomes active. The reading-log
-  filter MUST include all observed types, not just chartable types, and preserve an unobserved raw
-  `?type=` selection until the owner clears it.
-- The observed vocabulary is read-only. It MUST NOT expand the manual measurement writer: its type
-  choices and write allowlist remain exactly `weight`, `blood_pressure`, `heart_rate`,
-  `blood_sugar`, and `temperature`.
-- Date range filters (`since`/`until`) using date inputs, with a Clear button when any filter is
-  active.
-- The chart's `type`, `since`, and `until` URL keys are authoritative for chart initialization. A
-  supplied type is valid only when it is an observed `chart_eligible` entry; supplied bounds must
-  be real `YYYY-MM-DD` dates and ordered when both are present. A missing type may use the first
-  observed chart-eligible entry as the ordinary default. An unknown or ineligible supplied type,
-  malformed bound, or reversed range MUST NOT trigger a chart, trend, or readings query. The chart
-  MAY show its ordinary first eligible tab as a visual fallback, but it MUST preserve the raw URL
-  selection for the reading-log filter. Selecting a chart tab or editing/clearing chart dates MUST
-  update only those keys with history replacement and preserve unrelated query keys.
-- A Recharts `LineChart` in a `ResponsiveContainer` with explicit value-shape semantics. A scalar
-  type MUST plot only finite values from the normalized `value` key. `blood_pressure` is the sole
-  named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
-  chart-eligible compound type MAY expose its raw data, but it MUST NOT guess a numeric key or invent
-  a line series; it MUST state that no unambiguous series is available instead. The line palette MUST
-  use the direct chart-series CSS custom-property reference `var(--chart-1)` passed to the Recharts
-  SVG `stroke` prop, not a hardcoded hex or computed-style-derived literal. Chromium resolves that
-  CSS custom property in the SVG presentation attribute at paint time. Where two lines are shown
-  (systolic/diastolic), the second line MUST pass the separate `var(--chart-2)` reference to its
-  SVG stroke so the two lines remain visually separable.
-- The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend`
-  (the bucketed mean/min/max aggregation). Only scalar types MAY request or render that scalar
-  aggregation. `blood_pressure` and other compound types MUST state that trend aggregation is
-  unavailable rather than coercing a compound value. The page MUST provide a "Show/Hide raw data"
-  affordance for the full table (Date, Type, Value, Notes); compound table values MUST format as
-  `key: value` pairs.
-
-#### Scenario: Chart tabs use the observed eligible vocabulary
-
-- **WHEN** the measurements page renders the type selector
-- **THEN** it MUST render exactly the observed entries whose `chart_eligible` flag is true
-- **AND** it MUST use each observed entry's returned label
-- **AND** a type absent from the observed response or marked ineligible MUST NOT appear as a chart
-  tab merely because it appears in a static client list
-
-#### Scenario: Vocabulary loading, failure, and empty results stay honest
-
-- **WHEN** the observed vocabulary is loading
-- **THEN** the chart surface MUST render a loading skeleton, not guessed static tabs
-- **WHEN** the observed vocabulary read fails
-- **THEN** the chart surface MUST render a `SourceDegradedNote` naming the type source
-- **WHEN** the observed vocabulary succeeds with zero chart-eligible types
-- **THEN** the chart surface MUST render a single serif-italic no-chartable-types line, not a
-  fabricated tab or chart
-
-#### Scenario: Chart URL initialization accepts only valid observed state
-
-- **WHEN** `/health/measurements` loads with an observed chart-eligible `type` and ordered
-  date-only `since`/`until` query keys
-- **THEN** the matching tab MUST be active and chart reads MUST receive those bounds
-- **AND** changing the tab or bounds MUST retain unrelated query keys
-- **WHEN** the URL type is unknown or not chart-eligible, or either supplied bound is malformed or
-  the range is reversed
-- **THEN** that value MUST NOT become a chart tab or issue a chart query
-- **AND** the chart MUST retain an honest non-data fallback while the owner can select a valid tab
-  or correct the bounds
-
-#### Scenario: Observed types never expand the manual writer
-
-- **WHEN** the observed vocabulary contains an imported or unknown measurement type
-- **THEN** the tracker may display it as a read filter and the chart or KPI may consume it only under
-  their eligibility rules
-- **AND** the manual measurement writer MUST still offer and accept exactly `weight`,
-  `blood_pressure`, `heart_rate`, `blood_sugar`, and `temperature`
-
-#### Scenario: Page leads with the trend, not the form
-
-- **WHEN** the measurements page loads
-- **THEN** the trend rule-list (or chart) MUST be the leading surface
-- **AND** the create/input affordance MUST NOT be the first element
-
-#### Scenario: Blood pressure dual-line chart
-
-- **WHEN** the user selects `blood_pressure` as the measurement type
-- **AND** there are measurements with `value` containing `systolic` and `diastolic` keys
-- **THEN** the chart MUST render two lines for systolic and diastolic
-- **AND** the two lines MUST use distinguishable chart-series tokens (the diastolic line a
-  reduced-opacity or lightened variant) so they are not the same indistinguishable color
-- **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
-
-#### Scenario: Scalar and compound data never create a guessed series
-
-- **WHEN** the active type is scalar and a reading has a finite normalized `value`
-- **THEN** the chart MUST plot that `value` and the trend rule-list MAY use scalar aggregation
-- **WHEN** the active type is a chart-eligible compound type other than `blood_pressure`
-- **THEN** the page MUST NOT choose a numeric key, plot a line, or request scalar trend aggregation
-- **AND** it MUST state that no unambiguous chart series is available while retaining its raw-data
-  view when readings exist
-
-#### Scenario: Empty state for type with no data
-
-- **WHEN** the user selects a measurement type with zero records in the selected date range
-- **THEN** the page MUST display a single serif-italic empty line rather than decorated empty-state
-  chrome
 
 ---
 
@@ -488,54 +253,6 @@ auto-refreshing LLM endpoint would multiply spawn cost.
 
 ---
 
-### Requirement: Contacts page with search, label filtering, and Google sync
-
-The dashboard SHALL render a Contacts page at `/contacts` displaying contacts in a searchable, label-filterable, paginated table with a Google sync action.
-
-The page MUST contain:
-- A heading area with title "Contacts", description, and a "Sync from Google" button that triggers incremental Google Contacts sync. The button MUST be disabled while syncing and display "Syncing..." during the operation.
-- On successful sync, a toast MUST display the sync summary (created, updated, skipped, errors counts). On failure, a toast MUST display the error message.
-- A `ContactTable` component with: search input (placeholder "Search contacts..."), label filter badges (All + one per label, with deterministic hash-based coloring for labels without explicit colors), and a table with columns: Name (with optional nickname in parentheses), Email, Phone, Labels (colored badges), Last Interaction (relative time via `formatDistanceToNow`).
-- Each contact row MUST be clickable, navigating to `/contacts/:id`.
-- Pagination with page size 50.
-
-#### Scenario: Label color determinism
-
-- **WHEN** a label named "family" has no explicit `color` set
-- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the local categorical palette: `var(--categorical-1)` through `var(--categorical-12)` (see `frontend/src/lib/visual-token-roles.ts` `categoricalHueVar()`)
-- **AND** the same label MUST always render with the same color
-
-#### Scenario: Google sync with mixed results
-
-- **WHEN** the user clicks "Sync from Google" and the sync returns `{created: 5, updated: 12, skipped: 3, errors: 1}`
-- **THEN** a success toast MUST display "Google sync complete: 5 created, 12 updated, 3 skipped, 1 errors"
-
----
-
-### Requirement: Contact detail page with tabbed sub-resources
-
-The dashboard SHALL render a contact detail page at `/contacts/:contactId` displaying the full contact record with breadcrumb navigation and tabbed sub-resource views.
-
-The page MUST contain:
-- Breadcrumbs: "Contacts" (linked to `/contacts`) followed by the contact's name.
-- A header card displaying: full name (with nickname in parentheses), job title and company (formatted as "job_title at company"), and colored label badges.
-- An info section with labeled rows for: Email, Phone, Address, Birthday.
-- A tabbed content area with five tabs:
-  - **Notes** -- displaying note cards with content (pre-wrap), and relative timestamp.
-  - **Interactions** -- displaying interaction entries with type badge, date, summary, and optional details, rendered as a timeline with a left border accent.
-  - **Gifts** -- displaying a table with columns: Description, Direction (given/received badge), Occasion, Date, Value (right-aligned currency formatting).
-  - **Loans** -- displaying a table with columns: Description, Direction (lent/borrowed badge), Amount (with currency code), Status (active/repaid/forgiven badge), Date, Due Date.
-  - **Activity** -- displaying a feed of activity entries with action badge, details JSON, and relative timestamp.
-
-Each tab MUST independently fetch its data via dedicated hooks and display loading skeletons or empty states as appropriate.
-
-#### Scenario: Contact not found
-
-- **WHEN** the user navigates to `/contacts/nonexistent-id`
-- **THEN** the page MUST display an error message: "Failed to load contact." with the error details
-
----
-
 ### Requirement: Groups page
 
 The dashboard SHALL render a Groups page at `/groups` displaying contact groups in a paginated table.
@@ -561,28 +278,29 @@ The Groups page MUST NOT be surfaced in the primary sidebar navigation; it remai
 
 ### Requirement: Contact hooks with conditional fetching
 
-Contact-related hooks MUST be provided with the following behaviors:
+The contact hook inventory MUST distinguish exported/imported hooks from backend-supported paths:
 
-| Hook | Conditional | Behavior |
+The `use-contacts.ts` module remains imported by embedded relationship, ingestion-filter, and
+entity-detail consumers. Import presence MUST NOT be treated as proof of backend support. This
+documentation reconciliation neither removes nor repairs the imported dead-path readers:
+
+| Hook | Backend path | Current contract status |
 |---|---|---|
-| `useContacts(params)` | No | Fetch paginated contacts |
-| `useContact(id)` | `enabled: !!contactId` | Fetch single contact detail |
-| `useContactNotes(id)` | `enabled: !!contactId` | Fetch notes for a contact |
-| `useContactInteractions(id)` | `enabled: !!contactId` | Fetch interactions |
-| `useContactGifts(id)` | `enabled: !!contactId` | Fetch gifts |
-| `useContactLoans(id)` | `enabled: !!contactId` | Fetch loans |
-| `useContactFeed(id)` | `enabled: !!contactId` | Fetch activity feed |
-| `useGroups(params)` | No | Fetch paginated groups |
-| `useLabels()` | No | Fetch all labels |
-| `useUpcomingDates(days)` | No | Fetch upcoming important dates |
+| `useContacts(params)` | `GET /api/relationship/contacts` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useContact(id)` | `GET /api/relationship/contacts/:id` | Imported, but backend-dead; no single-contact route exists |
+| `useContactInteractions(id)` | `GET /api/relationship/contacts/:id/interactions` | Imported, but backend-dead; tracked by the client/OpenAPI contract allowlist |
+| `useOverdueContacts(days)` | `GET /api/relationship/contacts/overdue` | Backend-supported |
+| `useGroups(params)` | `GET /api/relationship/groups` | Backend-supported |
+| `useGroupMembers(id)` | `GET /api/relationship/groups/:id/members` | Backend-supported |
+| `useLabels()` | `GET /api/relationship/labels` | Backend-supported |
+| `useUpcomingDates(days)` | `GET /api/relationship/upcoming-dates` | Backend-supported |
 
 #### Scenario: Contact detail hook waits for an ID
 
 - **GIVEN** no contact ID is available
 - **WHEN** `useContact` renders
 - **THEN** its query MUST remain disabled
-
----
+- **AND** that conditional-fetch behavior MUST NOT be described as backend route support
 
 ### Requirement: Entity browser for general butler data
 
@@ -897,6 +615,11 @@ The word `harmful` and its numeral MUST take `--red` only when harmful > 0;
 anti-pattern rules MUST additionally carry a 2px left sliver in `--red`. No
 colored maturity chips or pills.
 
+The standing-orders register MUST expose single-select maturity pills for `all`, `candidate`,
+`established`, `proven`, and `anti_pattern`. The selection MUST be bound to the `maturity` URL
+query key. Selecting a maturity MUST reset the `offset` query key to zero, preserve the other
+memory query keys, and pass the selected non-`all` maturity to the rules read.
+
 **The daybook (Episodes)** — a journal feed grouped by day under mono
 day-header rules (TODAY / YESTERDAY / dated): a 50px mono time gutter, a butler
 letter-mark (the only place butler hue appears in the register), content (sans,
@@ -941,6 +664,13 @@ affordance.
 - **AND** the maturity MUST render as the lowercase mono word "anti_pattern"
   with no colored chip
 
+#### Scenario: Maturity filter is URL-backed
+
+- **WHEN** the owner selects the `anti_pattern` maturity pill
+- **THEN** the URL MUST carry `maturity=anti_pattern` and reset `offset` to its omitted zero default
+- **AND** the rules read MUST request only anti-pattern rules
+- **AND** browser back navigation MUST restore the previous maturity selection
+
 #### Scenario: Episode consolidation state is a glyph
 
 - **WHEN** an episode is pending, consolidated, or dead-lettered
@@ -959,8 +689,6 @@ affordance.
   `unresolved`
 - **THEN** the ledger row MUST render the matching visible source state
 - **AND** it MUST NOT offer a link to `/memory/episodes/{source_episode_id}`
-
----
 
 ### Requirement: Belief typography
 
@@ -1038,7 +766,7 @@ its state exists, each carrying at most one commit-class action:
 |---|---|---|---|
 | dead-letter episodes > 0 | red | "N episodes dead-lettered" | `/memory?register=episodes&status=dead_letter` |
 | consolidation stalled (last run > 2× cadence) | amber | "write-up overdue · last <time>" | **none — action-less** |
-| rule turned anti-pattern / harmful streak | red | "§NN harmful ×N" | rule detail page |
+| one or more anti-pattern rules | red | "N anti-pattern rule(s)" | `/memory?register=rules&maturity=anti_pattern` |
 | high-importance fact entering fading | amber | "N important facts fading" | `/memory?register=facts&validity=fading` |
 | stale embeddings (model drift) | amber | "N rows on old embedding" | housekeeping band |
 
@@ -1067,8 +795,6 @@ summary), with no color, no type badges, and no card chrome. It MUST default to
 - **WHEN** no rail condition holds
 - **THEN** the rail header MUST remain and the body MUST read "Nothing waiting."
   in serif italic
-
----
 
 ### Requirement: MemoryBrowser is the /memory house-ledger registers host
 
@@ -1112,7 +838,7 @@ keeps the butler-scoped tab decoupled, so restyling or relocating
 The redesigned memory domain MUST use TanStack Query hooks for stats, the three
 registers, the unified search, recent activity, and the three detail records.
 Register and stats queries MUST be parameterised by the URL state
-(`register` / `q` / `kind` / `validity` / `status` / `offset`). The fact detail
+(`register` / `q` / `kind` / `validity` / `maturity` / `status` / `offset`). The fact detail
 mutations MUST be exposed as `useConfirmFact()` and `useRetractFact()` hooks
 that invalidate the affected fact and stats query keys on success, and these
 hooks MUST only render their corresponding commit pills when the backend
@@ -1459,73 +1185,6 @@ The memory domain MUST use the following TanStack Query hooks:
 
 ---
 
-### Requirement: Costs page with summary stats and chart
-
-The dashboard SHALL render a Costs page at `/costs` displaying LLM usage costs with summary statistics, a time-series chart, and a per-butler breakdown.
-
-The page MUST contain:
-- A heading "Costs & Usage".
-- A 4-column stats grid (responsive: 2 on `sm`, 4 on `lg`): Total Cost (USD formatted), Total Sessions (count), Input Tokens (abbreviated: K/M), Output Tokens (abbreviated). Loading state MUST show pulsing skeleton placeholders.
-- A 3-column grid (responsive): cost chart spanning 2 columns, breakdown table in the remaining column.
-
-Token abbreviation rules: >= 1M shows "X.YM", >= 1K shows "X.YK", otherwise raw number. Cost formatting: amounts < $0.01 display as "$0.00", otherwise "$X.XX".
-
-#### Scenario: Cost summary with large numbers
-
-- **WHEN** total input tokens are 2,500,000 and output tokens are 150,000
-- **THEN** the Input Tokens stat MUST display "2.5M"
-- **AND** the Output Tokens stat MUST display "150.0K"
-
----
-
-### Requirement: Cost area chart with period selector
-
-The cost chart MUST render an area chart using Recharts `AreaChart` with:
-- A gradient fill from primary color (30% opacity at top, 0% at bottom).
-- X-axis formatted as "MMM d" (short month + day number).
-- Y-axis formatted as "$X.XX".
-- A tooltip showing cost formatted as currency and date formatted as "MMM d".
-- Period selector buttons: "7 days", "30 days", "90 days". The active period MUST use `secondary` variant; inactive periods use `ghost`.
-- Height of 256px in a `ResponsiveContainer`.
-- Empty state: "No cost data available" centered text when no data points exist.
-
-#### Scenario: Period change re-fetches summary
-
-- **WHEN** the user switches from "7 days" to "30 days"
-- **THEN** the cost summary MUST be re-fetched with the new period
-- **AND** the chart MUST update to show 30 days of data
-
----
-
-### Requirement: Cost breakdown table by butler
-
-The dashboard MUST display a "Cost by Butler" table showing each butler's cost contribution. The table MUST display columns: Butler (name, bold), Cost (right-aligned, tabular-nums), % of Total (right-aligned), and a visual proportion bar (progress bar within a muted track).
-
-Rows MUST be sorted by cost descending. Percentage formatting: values < 0.1% display as "<0.1%", otherwise "X.Y%".
-
-#### Scenario: Single dominant butler
-
-- **WHEN** the health butler accounts for $8.50 of $10.00 total cost
-- **THEN** the health butler row MUST show "$8.50", "85.0%", and an 85%-width progress bar
-- **AND** it MUST be the first row in the table
-
----
-
-### Requirement: Cost widget for dashboard overview
-
-The dashboard MUST provide a `CostWidget` component for embedding on the overview page. The widget MUST display:
-- Title "Cost Today" with a "View all" link to `/costs`.
-- Total cost for the day formatted as currency.
-- Top butler name and cost (e.g., "Top: health ($3.50)").
-- A 7-bar sparkline placeholder showing a mock 7-day trend (pending replacement with Recharts).
-
-#### Scenario: Widget with no data
-
-- **WHEN** `totalCostUsd` is 0 and `topButler` is null
-- **THEN** the widget MUST display "$0.00" and no top-butler line
-
----
-
 ### Requirement: Top sessions table
 
 The dashboard MUST provide a `TopSessionsTable` component displaying the most expensive LLM sessions. The table MUST display columns: rank number (#), Butler (secondary badge), Model (muted text), Tokens (input/output formatted as abbreviated counts separated by "/"), Cost (right-aligned, bold, tabular-nums), Time (right-aligned, formatted as "MMM d, HH:mm").
@@ -1535,25 +1194,18 @@ The dashboard MUST provide a `TopSessionsTable` component displaying the most ex
 - **WHEN** a session has 50,000 input tokens and 12,000 output tokens
 - **THEN** the Tokens column MUST display "50.0K / 12.0K"
 
----
+#### Scenario: Direct top-sessions reader failure is unavailable
 
-### Requirement: Cost hooks with 60-second refresh
+- **WHEN** the Overview's direct `useTopSessions()` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `TopSessionsTable`
+- **AND** the table MUST render a named top-sessions-unavailable state before its empty-state branch
+- **AND** it MUST NOT render "No session data available"
 
-The costs domain MUST use the following TanStack Query hooks:
+#### Scenario: Successful empty top sessions remain calm
 
-| Hook | Query Key | Auto-Refresh |
-|---|---|---|
-| `useSpendSummary(period)` | `cost-summary` | 60s |
-| `useDailySpend()` | `daily-costs` | 60s |
-| `useTopSessions(limit)` | `top-sessions` | 60s |
-
-#### Scenario: Spend summary refreshes after one minute
-
-- **GIVEN** `useSpendSummary` has fetched a period
-- **WHEN** 60 seconds elapse
-- **THEN** it MUST refresh that period's cost summary
-
----
+- **WHEN** the direct top-sessions query succeeds with an empty list
+- **THEN** the table MUST render "No session data available"
+- **AND** it MUST NOT render the top-sessions-unavailable state
 
 ### Requirement: Cross-butler global search
 
@@ -1728,6 +1380,389 @@ Scope: v1-mandatory
   elapsed
 - **THEN** the existing overdue KPI, list, and attention-rail behavior MAY render that contact
 - **AND** this source mapping MUST NOT change cadence, priority, ordering, or outreach copy
+
+### Requirement: Health and General retain distinct Butler identity slots
+
+The dashboard MUST resolve the Health butler to `--category-5` and the General butler to
+`--category-4` through the canonical `ButlerMark` roster order. These identity tokens MUST remain
+confined to Butler letter-marks and MUST NOT be globally replaced with one another.
+
+#### Scenario: Health and General marks keep their permanent slots
+
+- **WHEN** `ButlerMark` renders Health and General identity marks
+- **THEN** Health MUST use `--category-5`
+- **AND** General MUST use `--category-4`
+- **AND** neither token may be applied as a global replacement for the other
+
+### Requirement: Health measurements page at the canonical route
+
+The dashboard SHALL render a Measurements page at `/health/measurements` (reachable from the `/health`
+Overview) reframed from "data entry" to "trajectory": the page MUST lead with the trend rule-list
+(mono-time / status-dot / value / `→`), not the input box. It displays health measurement data as
+interactive line charts with a supporting raw-data view.
+
+The page MUST contain:
+- A chart type selector derived from `GET /api/health/measurements/types`. The response is the
+  observed read-vocabulary authority: tabs MUST contain only observed entries with
+  `chart_eligible = true`, using the response's labels, and MUST NOT fall back to a static type
+  list. Clicking a tab SHALL filter the chart and rule-list to that type. If the requested initial
+  type is not chart-eligible, the first returned chart-eligible type becomes active. The reading-log
+  filter MUST include all observed types, not just chartable types, and preserve an unobserved raw
+  `?type=` selection until the owner clears it.
+- The observed vocabulary is read-only. It MUST NOT expand the manual measurement writer: its type
+  choices and write allowlist remain exactly `weight`, `blood_pressure`, `heart_rate`,
+  `blood_sugar`, and `temperature`.
+- Date range filters (`since`/`until`) using date inputs, with a Clear button when any filter is
+  active.
+- The chart's `type`, `since`, and `until` URL keys are authoritative for chart initialization. A
+  supplied type is valid only when it is an observed `chart_eligible` entry; supplied bounds must
+  be real `YYYY-MM-DD` dates and ordered when both are present. A missing type may use the first
+  observed chart-eligible entry as the ordinary default. An unknown or ineligible supplied type,
+  malformed bound, or reversed range MUST NOT trigger a chart, trend, or readings query. The chart
+  MAY show its ordinary first eligible tab as a visual fallback, but it MUST preserve the raw URL
+  selection for the reading-log filter. Selecting a chart tab or editing/clearing chart dates MUST
+  update only those keys with history replacement and preserve unrelated query keys.
+- A Recharts `LineChart` in a `ResponsiveContainer` with explicit value-shape semantics. A scalar
+  type MUST plot only finite values from the normalized `value` key. `blood_pressure` is the sole
+  named compound exception: it MUST render `systolic` and `diastolic` as two lines. Another
+  chart-eligible compound type MAY expose its raw data, but it MUST NOT guess a numeric key or invent
+  a line series; it MUST state that no unambiguous series is available instead. The line palette MUST
+  use the direct chart-series CSS custom-property reference `var(--chart-1)` passed to the Recharts
+  SVG `stroke` prop, not a hardcoded hex or computed-style-derived literal. Chromium resolves that
+  CSS custom property in the SVG presentation attribute at paint time. Where two lines are shown
+  (systolic/diastolic), the second line MUST pass the separate `var(--chart-2)` reference to its
+  SVG stroke so the two lines remain visually separable.
+- The trend rule-list as the primary surface, sourced from `GET /api/health/measurements/trend`
+  (the bucketed mean/min/max aggregation). Only scalar types MAY request or render that scalar
+  aggregation. `blood_pressure` and other compound types MUST state that trend aggregation is
+  unavailable rather than coercing a compound value. The page MUST provide a "Show/Hide raw data"
+  affordance for the full table (Date, Type, Value, Notes); compound table values MUST format as
+  `key: value` pairs.
+
+#### Scenario: Chart tabs use the observed eligible vocabulary
+
+- **WHEN** the measurements page renders the type selector
+- **THEN** it MUST render exactly the observed entries whose `chart_eligible` flag is true
+- **AND** it MUST use each observed entry's returned label
+- **AND** a type absent from the observed response or marked ineligible MUST NOT appear as a chart
+  tab merely because it appears in a static client list
+
+#### Scenario: Vocabulary loading, failure, and empty results stay honest
+
+- **WHEN** the observed vocabulary is loading
+- **THEN** the chart surface MUST render a loading skeleton, not guessed static tabs
+- **WHEN** the observed vocabulary read fails
+- **THEN** the chart surface MUST render a `SourceDegradedNote` naming the type source
+- **WHEN** the observed vocabulary succeeds with zero chart-eligible types
+- **THEN** the chart surface MUST render a single serif-italic no-chartable-types line, not a
+  fabricated tab or chart
+
+#### Scenario: Chart URL initialization accepts only valid observed state
+
+- **WHEN** `/health/measurements` loads with an observed chart-eligible `type` and ordered
+  date-only `since`/`until` query keys
+- **THEN** the matching tab MUST be active and chart reads MUST receive those bounds
+- **AND** changing the tab or bounds MUST retain unrelated query keys
+- **WHEN** the URL type is unknown or not chart-eligible, or either supplied bound is malformed or
+  the range is reversed
+- **THEN** that value MUST NOT become a chart tab or issue a chart query
+- **AND** the chart MUST retain an honest non-data fallback while the owner can select a valid tab
+  or correct the bounds
+
+#### Scenario: Observed types never expand the manual writer
+
+- **WHEN** the observed vocabulary contains an imported or unknown measurement type
+- **THEN** the tracker may display it as a read filter and the chart or KPI may consume it only under
+  their eligibility rules
+- **AND** the manual measurement writer MUST still offer and accept exactly `weight`,
+  `blood_pressure`, `heart_rate`, `blood_sugar`, and `temperature`
+
+#### Scenario: Page leads with the trend, not the form
+
+- **WHEN** the measurements page loads
+- **THEN** the trend rule-list (or chart) MUST be the leading surface
+- **AND** the create/input affordance MUST NOT be the first element
+
+#### Scenario: Blood pressure dual-line chart
+
+- **WHEN** the user selects `blood_pressure` as the measurement type
+- **AND** there are measurements with `value` containing `systolic` and `diastolic` keys
+- **THEN** the chart MUST render two lines for systolic and diastolic
+- **AND** the two lines MUST use distinguishable chart-series tokens (the diastolic line a
+  reduced-opacity or lightened variant) so they are not the same indistinguishable color
+- **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
+
+#### Scenario: Scalar and compound data never create a guessed series
+
+- **WHEN** the active type is scalar and a reading has a finite normalized `value`
+- **THEN** the chart MUST plot that `value` and the trend rule-list MAY use scalar aggregation
+- **WHEN** the active type is a chart-eligible compound type other than `blood_pressure`
+- **THEN** the page MUST NOT choose a numeric key, plot a line, or request scalar trend aggregation
+- **AND** it MUST state that no unambiguous chart series is available while retaining its raw-data
+  view when readings exist
+
+#### Scenario: Empty state for type with no data
+
+- **WHEN** the user selects a measurement type with zero records in the selected date range
+- **THEN** the page MUST display a single serif-italic empty line rather than decorated empty-state
+  chrome
+
+### Requirement: Contacts index compatibility route
+
+The legacy `/contacts` route SHALL remain registered for bookmark compatibility and MUST
+replace-navigate to `/entities/index?has=contact`. The entity index defined by
+`dashboard-relationship` is the canonical list, search, filtering, and curation surface. The
+compatibility route MUST NOT revive the retired standalone contacts page or its page-specific
+table and Google-sync composition.
+
+This route disposition does not itself remove the contact hook module or reusable contact
+components imported by embedded consumers. It also does not make their backend-dead readers live:
+`getContacts`, `getContact`, and `getContactInteractions` still target absent relationship routes,
+as recorded by Requirement: Contact hooks with conditional fetching.
+
+#### Scenario: Contacts bookmark opens the canonical filtered index
+
+- **WHEN** the owner navigates to `/contacts`
+- **THEN** the router MUST replace-navigate to `/entities/index?has=contact`
+- **AND** the entity index MUST own the resulting contact-filtered workflow
+
+### Requirement: Contact detail compatibility route
+
+The legacy `/contacts/:contactId` route SHALL remain registered for bookmark compatibility and
+MUST replace-navigate to `/entities/index?has=contact`. The retired `public.contacts` identity
+cannot be resolved to a canonical entity at this route boundary, so the compatibility route MUST
+NOT fabricate an entity-detail destination or render the retired tabbed contact page. Canonical
+single-record navigation starts from the entity index and opens `/entities/:entityId`.
+
+#### Scenario: Legacy contact detail bookmark falls back to the entity index
+
+- **WHEN** the owner navigates to `/contacts/nonexistent-id` or any other legacy contact ID
+- **THEN** the router MUST replace-navigate to `/entities/index?has=contact`
+- **AND** it MUST NOT claim that the legacy ID resolved to an entity
+
+### Requirement: Costs compatibility route
+
+The legacy `/costs` route SHALL remain registered for bookmark compatibility and MUST
+replace-navigate to `/spend`. The canonical Spend page, its layout, and its API behavior are owned
+by `dashboard-spend-dashboard`; this spec MUST NOT duplicate the retired Costs page's Recharts
+area chart, summary-grid, or per-butler table composition.
+
+#### Scenario: Costs bookmark opens Spend
+
+- **WHEN** the owner navigates to `/costs`
+- **THEN** the router MUST replace-navigate to `/spend`
+- **AND** the canonical Spend page MUST render there
+
+### Requirement: Spend hooks with bus-aware refresh
+
+Shared Spend consumers MUST use the following TanStack Query hooks:
+
+| Hook | Query Key | Refresh behavior |
+|---|---|---|
+| `useSpendSummary(period)` | `cost-summary` | Fleet-event invalidation plus bus-aware polling |
+| `useDailySpend()` | `daily-costs` | Fleet-event invalidation plus bus-aware polling |
+| `useTopSessions(limit)` | `top-sessions` | Fleet-event invalidation plus bus-aware polling |
+| `useCostsBySchedule(from, to)` | `costs-by-schedule` | Fleet-event invalidation plus bus-aware polling |
+
+#### Scenario: Spend summary follows event-bus health
+
+- **GIVEN** `useSpendSummary` has fetched a period
+- **WHEN** a Spend event invalidates `cost-summary`
+- **THEN** it MUST refresh that period's cost summary
+- **AND** its polling interval MUST follow the shared bus-aware poll policy rather than a fixed
+  60-second timer
+
+#### Scenario: Schedule costs follow event-bus health
+
+- **GIVEN** `useCostsBySchedule` has fetched a date range
+- **WHEN** a Spend event invalidates `costs-by-schedule`
+- **THEN** it MUST refresh that range's per-schedule costs
+- **AND** its polling interval MUST follow the shared bus-aware poll policy
+
+### Requirement: Spend widget for dashboard overview
+
+The dashboard MUST provide a `CostWidget` component for embedding on the overview page. The widget MUST display:
+- Title "Cost Today" with a "View all" link to `/spend`.
+- Total cost for the day formatted as currency when its direct summary query succeeds with priced data.
+- Top butler name and cost (e.g., "Top: health ($3.50)") when its direct summary query succeeds with a top butler.
+- A sparkline showing the real trailing 7-day daily spend series.
+
+The widget MUST distinguish a direct Overview summary-query failure from a successful
+compatibility envelope with `source_error` and from a successful zero-cost summary.
+
+#### Scenario: Widget with no data
+
+- **WHEN** `totalCostUsd` is 0 and `topButler` is null
+- **AND** the direct summary query succeeded without `source_error`
+- **THEN** the widget MUST display "$0.00" and no top-butler line
+
+#### Scenario: Direct summary reader failure is unavailable
+
+- **WHEN** the Overview's direct `useSpendSummary("today")` query reports an error
+- **THEN** `DashboardPage` MUST pass an explicit unavailable state to `CostWidget`
+- **AND** the widget MUST render a named cost-summary-unavailable state
+- **AND** it MUST NOT render a formatted cost total or a top-butler claim from fallback or retained data
+
+#### Scenario: Successful compatibility summary remains degraded
+
+- **WHEN** the direct summary request succeeds with `source_error: true`
+- **THEN** the widget MUST render its existing source-degraded state
+- **AND** it MUST NOT render the direct-summary-unavailable state or a calm "$0.00" total
+
+### Requirement: Health Overview landing page
+
+The dashboard SHALL render a Health Overview page at `/health` as the health surface's shipped
+landing page. The Overview is a
+two-column editorial composition (`grid-template-columns: 1.4fr 1fr`): the left column is the
+Voice briefing plus a KPI strip; the right column is a quiet attention index. On narrow viewports
+the grid MUST collapse to a single column with the attention index below the briefing.
+
+The Overview MUST follow the Dispatch language: Display headline (not bold), the health butler's
+`--category-5` identity hue only on the `ButlerMark` letter-mark, surfaces-not-cards, and state
+color (`--red`/`--amber`/`--green`) reserved for genuine health signal, never decoration.
+The General butler's separate `--category-4` identity slot remains unchanged.
+
+The Overview MUST contain, in the left column:
+
+- A **DateEyebrow** and a **Display** headline that names the single most important thing about the
+  owner's health right now in one sentence.
+- A **Voice briefing** (serif elaboration) sourced from `GET /api/health/briefing`, carrying a
+  **BriefingStatus pill** that reads `llm · cached` when the line was model-written and `templated`
+  when deterministic, so the owner always knows whether a line was computed or model-written.
+- A **KPI strip** of exactly four structural cells, each a mono eyebrow over the latest value.
+  `GET /api/health/measurements/types` is the observed read-vocabulary authority for selecting
+  those cells. Observed core types `weight`, `blood_pressure`, `heart_rate`, and `blood_sugar` MUST
+  retain their established positions even when an individual response marks them ineligible. An
+  absent core position MAY be filled only by an unused, non-core observed type marked
+  `kpi_eligible`, ordered by `latest_at` descending and then `type` ascending. A dynamic candidate
+  MUST NOT displace an observed core type. If no eligible candidate is available, the position MUST
+  retain its original core label and render a single em-dash, never a fabricated or placeholder
+  value. `GET /api/health/measurements/latest` MUST be requested only for the selected types; the
+  vocabulary response itself MUST NOT be treated as a latest value.
+  Each cell with a reading MUST thread the reading's `measured_at` age into a delta line (e.g.
+  "7d"). The documented per-vital freshness SLAs (`weight` 3 days, `blood_pressure` 3 days,
+  `heart_rate` 2 days, `blood_sugar` 2 days) apply to their respective core readings, whose age
+  MUST render amber (`--amber-text`) once stale. A dynamic fallback MAY show its real reading age
+  but MUST NOT be declared fresh under a guessed SLA. Each cell MUST expose its reading's data
+  source (resolved from the latest entry's metadata) as a hover tooltip when known.
+- A **data-freshness indicator** sourced from `GET /api/health/measurements/sources` (one of the
+  wire-orphaned reads this redesign consumes), shown as a quiet mono chip (e.g. "synced 2h ago" per
+  source). It MUST state real last-sample times only; when no source data exists the chip is omitted,
+  never faked. The source name for each row MUST be resolved as
+  `COALESCE(metadata->>'source', metadata->>'provider')` so facts carrying only the legacy `provider`
+  key are still attributed rather than dropped.
+
+The Overview MUST contain, in the right column, an **AttentionList** sourced from the Switchboard
+insight reader (`GET /api/switchboard/insights?butler=health&status=pending`). Each attention item MUST link to
+the concerning signal (missed doses, severe symptom, drifting measurement) so it is reachable in one
+click. When no insight candidate is pending, the attention index MUST collapse to a single
+serif-italic line, with no empty-state decoration.
+
+A measurement-gap or correlation-drift item MAY become a measurements door only when its metadata
+contains a typed `measurement_door` object with a non-empty `type` and real, ordered date-only
+`since` and `until` bounds. The dashboard MUST construct the destination itself as the fixed
+same-origin `/health/measurements` path plus encoded `type`, `since`, and `until` query keys. It
+MUST NOT navigate to an arbitrary `metadata.href` value. Missing, malformed, reversed, or
+otherwise ineligible door metadata MUST fall back to the fixed measurements path without query
+keys.
+
+#### Scenario: Overview lands the owner on the most important thing
+
+- **WHEN** the owner navigates to `/health`
+- **THEN** the page MUST render the two-column editorial layout with the Voice briefing headline,
+  the four-cell KPI strip, and the attention index
+- **AND** the briefing headline MUST state the single most important current health fact in one
+  sentence
+
+#### Scenario: KPI strip keeps four structural positions from the observed vocabulary
+
+- **WHEN** the Overview renders the KPI strip
+- **THEN** it MUST render exactly four cells
+- **AND** each observed core type (`weight`, `blood_pressure`, `heart_rate`, `blood_sugar`) MUST
+  retain its established position
+- **AND** an absent core position MAY use only an unused non-core type the server marks
+  `kpi_eligible`, selected by newest `latest_at` and then ascending `type`
+- **AND** a position without an eligible selected type MUST retain its core label and render an
+  em-dash, never a fabricated value
+
+#### Scenario: KPI vocabulary or latest read failure is named
+
+- **WHEN** the measurement vocabulary or latest-read query fails
+- **THEN** the four structural cells MUST remain visible with an inline `SourceDegradedNote` naming
+  the failed source
+- **AND** the Overview MUST NOT fabricate a cell selection, a latest value, or a calm no-data state
+
+#### Scenario: KPI cell surfaces reading age and staleness
+
+- **WHEN** a KPI cell has a reading whose `measured_at` age exceeds that vital's freshness SLA
+- **THEN** the cell MUST show the reading's age (e.g. "7d") rendered amber
+- **WHEN** the reading is within the vital's SLA
+- **THEN** the age MUST render in the quiet muted tone, not amber
+- **AND** the cell MUST expose the reading's data source as a hover tooltip when the source is known
+
+#### Scenario: Freshness source name falls back to the legacy provider key
+
+- **WHEN** the data-freshness indicator aggregates measurement sources and a fact carries only the
+  legacy `metadata->>'provider'` key (no canonical `source`)
+- **THEN** that fact MUST still be attributed to its provider via
+  `COALESCE(metadata->>'source', metadata->>'provider')`, never dropped from the source list
+
+#### Scenario: Expected measurement gaps distinguish instrument failure
+
+- **WHEN** the Health expected-signals endpoint returns `unmeasurable`
+- **THEN** the measurements tab SHALL render instrument unavailability and state that owner-behavior nudges are paused
+- **WHEN** the endpoint returns `available=false` with `signals=null`
+- **THEN** the tab SHALL render signal-health degradation, never an empty all-clear
+
+#### Scenario: Voice line carries the honesty pill
+
+- **WHEN** the Voice briefing renders a model-written elaboration served from cache
+- **THEN** the BriefingStatus pill MUST read `llm · cached`
+- **WHEN** the briefing falls back to the deterministic templated paragraph
+- **THEN** the pill MUST read `templated`
+
+#### Scenario: Empty attention index is one quiet line
+
+- **WHEN** `GET /api/switchboard/insights?butler=health&status=pending` returns zero candidates
+- **THEN** the attention index MUST collapse to a single serif-italic line
+- **AND** it MUST NOT render placeholder cards, confetti, or celebratory styling
+
+#### Scenario: Typed measurement insights open a bounded same-origin chart door
+
+- **WHEN** a pending `measurement-gap` or `correlation-drift` insight supplies a typed
+  `measurement_door` with a type and ordered `YYYY-MM-DD` bounds
+- **THEN** its attention row MUST link to `/health/measurements` with encoded `type`, `since`, and
+  `until` query keys
+- **AND** the dashboard MUST build that URL itself, never navigate to `metadata.href`
+
+#### Scenario: Invalid measurement-door metadata cannot control navigation
+
+- **WHEN** a measurement insight omits a typed door or its type, dates, or date ordering are invalid
+- **THEN** its attention row MUST fall back to `/health/measurements` without typed query keys
+- **AND** arbitrary metadata values MUST NOT redirect the owner away from that same-origin route
+
+### Requirement: Expired Episode Provenance Has No Dangling Door
+
+Memory detail and register surfaces SHALL render a source episode as a
+navigation link only when the typed source state is `available`. An `expired`
+source MUST remain visible as truthful content-free provenance but MUST be
+non-clickable; an `unresolved` source MUST be visibly uncertain and
+non-clickable. The surfaces MUST NOT replace either state with a false
+no-provenance presentation.
+
+#### Scenario: Fact detail renders a deleted source without navigation
+
+- **WHEN** FactDetailPage receives a fact with an `expired` source episode
+- **THEN** it MUST display a visible `Source expired` provenance state
+- **AND** it MUST NOT render a link to `/memory/episodes/:episodeId`
+
+#### Scenario: Rule and register surfaces preserve truthfulness
+
+- **WHEN** RuleDetailPage or a memory register receives an `expired` or
+  `unresolved` source episode state
+- **THEN** it MUST display the matching source state without a live-episode
+  navigation affordance
+- **AND** it MUST retain the durable fact, rule, or link evidence in view
 
 ## Source References
 

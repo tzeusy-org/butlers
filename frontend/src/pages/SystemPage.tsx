@@ -18,6 +18,7 @@ import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
 import { SecurityPostureTile } from "@/components/system/SecurityPostureTile";
 import { StandingConditionsTile } from "@/components/system/StandingConditionsTile";
+import { StoredFunctionsTile } from "@/components/system/StoredFunctionsTile";
 import { SystemVerdictBanner } from "@/components/system/SystemVerdictBanner";
 import { UptimeTile } from "@/components/system/UptimeTile";
 import { VersionTile } from "@/components/system/VersionTile";
@@ -107,7 +108,9 @@ function TopologyTile() {
     status: row.status,
     tone: row.cellTone,
   }));
-  const connectors = connectorsResponse?.data ?? [];
+  const connectors = (connectorsResponse?.data?.connectors ?? []).filter(
+    (connector) => !connector.archived,
+  );
 
   return (
     <TopologyGraph
@@ -146,6 +149,7 @@ function SystemPage() {
         <SecurityPostureTile />
         <InsightDeliveryTile />
         <DriftTile />
+        <StoredFunctionsTile />
         <DeploymentTile />
         <div className="lg:col-span-2 h-full">
           <BackupTile />

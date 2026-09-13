@@ -510,7 +510,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 if isinstance(_raw_attachments, (list, tuple)) and _raw_attachments
                 else None
             )
-            if normalized_text:
+            if normalized_text or _attachments:
                 if buffer is not None:
                     buffer.enqueue(
                         request_id=str(result.request_id),

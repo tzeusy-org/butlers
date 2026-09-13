@@ -70,7 +70,7 @@ _CANCELLED_BY_OWNER_SQL = (
 #: summary DTO or list response.
 SUMMARY_COLUMNS: str = (
     "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms, "
-    "model, complexity, input_tokens, output_tokens, "
+    "model, complexity, input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens, "
     f"{_CANCELLED_BY_OWNER_SQL}"
 )
 
@@ -103,6 +103,8 @@ class SessionSummaryRow:
     complexity: str | None
     input_tokens: int | None
     output_tokens: int | None
+    cached_input_tokens: int | None
+    cache_creation_tokens: int | None
     cancelled_by_owner: bool
 
 
@@ -255,6 +257,8 @@ def row_to_summary(row: asyncpg.Record, *, butler: str | None = None) -> Session
         complexity=row["complexity"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
+        cached_input_tokens=row["cached_input_tokens"],
+        cache_creation_tokens=row["cache_creation_tokens"],
         # The SQL projection is non-null, but fail closed at the read-model
         # boundary if a legacy/mock row still reaches us with NULL.
         cancelled_by_owner=row["cancelled_by_owner"] is True,

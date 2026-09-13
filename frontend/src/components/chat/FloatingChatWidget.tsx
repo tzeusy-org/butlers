@@ -30,12 +30,19 @@
  * no extra persistence needed.
  *
  * Page-context capture and the unread badge (bu-p6ey8.4) hang off two seams
- * left by bu-p6ey8.3: `buildMessagePayload()` is the single choke point both
- * `createConversation`/`sendMessage` calls go through, now taking a
- * `PageContext` snapshot (`usePageContextCapture()`, see
+ * left by bu-p6ey8.3: `buildMessagePayload()` (now inside
+ * `hooks/use-conversation-turn.ts`, shared with `ChatPanel.tsx` — bu-0ynlk.11)
+ * is the single choke point both `createConversation`/`sendMessage` calls go
+ * through, taking a `PageContext` snapshot (`usePageContextCapture()`, see
  * `@/lib/page-context.tsx`) captured fresh at send time; the trigger button
  * renders a badge driven by `useChatUnreadBadge()` (see
  * `@/hooks/use-chat-unread.ts`).
+ *
+ * The send/stream/stop/retry state machine itself lives in
+ * `useConversationTurn()` (`@/hooks/use-conversation-turn.ts`), shared
+ * verbatim with `ChatPanel.tsx`'s `ChatContent` (bu-0ynlk.11) — this file
+ * owns only the popover-specific view (thread/history toggle, jump-to-message
+ * scroll) on top of that shared hook.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,34 +56,14 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  cancelConversationMessageTurn,
-  createConversation,
-  sendMessage,
-} from "@/api/index.ts";
-import type {
-  ConversationSummary,
-  CreateConversationRequest,
-  Message,
-} from "@/api/types.ts";
-import { consumeSseStream } from "./sse-utils.ts";
+import type { ConversationSummary } from "@/api/types.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
 import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
-import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
-import {
-  classifySendError,
-  isConfirmedConversationCancellation,
-  type SendError,
-} from "./send-error-utils.ts";
-import { createClientMessageId, scrollToMessageAnchor } from "./message-id.ts";
-import {
-  optimisticUserMessageId,
-  reconcileConversationMessages,
-} from "./message-reconciliation.ts";
+import { scrollToMessageAnchor } from "./message-id.ts";
 import {
   conversationKeys,
   useConversations,
@@ -85,43 +72,12 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
-import { usePageContextCapture, type PageContextSnapshot } from "@/lib/page-context.tsx";
+import { useVisualViewportHeight } from "@/hooks/use-visual-viewport-height.ts";
+import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** The staffer butler that owns dashboard chat-widget conversations (see
- * design doc § Storage scope — all widget threads live under Switchboard's
- * schema; the routed-to domain butler is metadata, not storage location). */
-const WIDGET_BUTLER = "switchboard";
-
-// ---------------------------------------------------------------------------
-// Send payload builder — the seam bu-p6ey8.4 (page-context capture) extends.
-// ---------------------------------------------------------------------------
-
-/**
- * Builds the outgoing message body for both `createConversation` and
- * `sendMessage`. `snapshot` is captured from `usePageContextCapture()` at
- * the moment of send (see `sendText` below) — the single choke point the
- * widget uses to submit a message, so no call site needed to change when
- * page-context capture was added. `included` is the ContextChip's current
- * state for this message; when false (or the route's contextPolicy is
- * "none", i.e. `snapshot.context === null`), `page_context` is omitted
- * entirely from the payload rather than sent as an empty object.
- */
-function buildMessagePayload(
-  message: string,
-  messageId: string,
-  snapshot: PageContextSnapshot,
-  included: boolean,
-): CreateConversationRequest {
-  if (included && snapshot.context) {
-    return { message, message_id: messageId, page_context: snapshot.context };
-  }
-  return { message, message_id: messageId };
-}
+import { OPEN_CHAT_WIDGET_EVENT } from "@/lib/shortcut-help";
+import { announce } from "@/lib/shell-announcer";
+import { WIDGET_BUTLER } from "./chat-constants.ts";
 
 // ---------------------------------------------------------------------------
 // WidgetPanel — mounted only while the widget is open
@@ -133,13 +89,29 @@ interface WidgetPanelProps {
 
 function WidgetPanel({ onClose }: WidgetPanelProps) {
   const queryClient = useQueryClient();
-  const capturePageContext = usePageContextCapture();
   // This anchored popover deliberately leaves page tab order available, while
   // still following the shared focus-in/Escape/restore choreography.
-  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
+  // Initial focus lands on the composer (not the panel title, bu-0ynlk.13's
+  // wrong-focus-target fix); `obscureGuard` covers WCAG 2.2 2.4.11 for
+  // elements the non-trapping panel could otherwise visually cover.
+  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLTextAreaElement>({
     onClose,
     trapFocus: false,
+    obscureGuard: true,
   });
+  const viewportHeight = useVisualViewportHeight();
+
+  // The global 'c' shortcut (use-keyboard-shortcuts.ts) opens the widget when
+  // closed AND, per the behavior matrix, refocuses the composer when it's
+  // already open — the mount-triggered focus-in above already covers the
+  // "just opened" case, so this listener only needs to matter while mounted.
+  useEffect(() => {
+    function handleOpenChatWidget() {
+      initialFocusRef.current?.focus();
+    }
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+    return () => window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+  }, [initialFocusRef]);
 
   const [viewMode, setViewMode] = useState<"thread" | "history">("thread");
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -147,35 +119,8 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // once that message's bubble has rendered (see the effect below).
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
-  // Per-message opt-out for the ContextChip (bu-0ynlk.4) — resets to true
-  // after every send so removal only ever applies to the one message it was
-  // clicked on.
-  const [includeContext, setIncludeContext] = useState(true);
-  const contextPreview = capturePageContext();
-  const [streaming, setStreaming] = useState<StreamingState | null>(null);
-  const [localMessages, setLocalMessages] = useState<Message[]>([]);
-  const localMessagesConversationIdRef = useRef<string | null>(null);
-  const [sendError, setSendError] = useState<SendError | null>(null);
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
-
-  const abortRef = useRef<AbortController | null>(null);
-  const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeMessageIdRef = useRef<string | null>(null);
-  const confirmedStopMessageIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    return () => {
-      abortRef.current?.abort();
-      abortRef.current = null;
-      activeMessageIdRef.current = null;
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-        interruptedTimeoutRef.current = null;
-      }
-      confirmedStopMessageIdRef.current = null;
-    };
-  }, []);
 
   // Fetch the conversation list once so we can resume the most recently
   // updated *active* (open) conversation on every reopen (list is
@@ -194,27 +139,25 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     refetch: refetchMessages,
   } = useConversationMessages(WIDGET_BUTLER, activeConversationId);
 
-  useEffect(() => {
-    if (streaming) return;
-    // Guard against the transient `messagesData === undefined` window that
-    // TanStack Query passes through while refetching after switching
-    // `activeConversationId` (staleTime: 0 means every switch refetches).
-    // Preserve the previous conversation's cached local state for a
-    // same-thread retry, but never reconcile it into the selected conversation.
-    if (messagesData?.data) {
-      const previousBelongsToActiveConversation =
-        localMessagesConversationIdRef.current === activeConversationId;
-      localMessagesConversationIdRef.current = activeConversationId;
-      setLocalMessages((previous) => {
-        const activeMessages = previousBelongsToActiveConversation ? previous : [];
-        return reconcileConversationMessages(
-          messagesData.data,
-          activeMessages,
-          activeConversationId,
-        );
-      });
-    }
-  }, [activeConversationId, messagesData, streaming]);
+  const {
+    streaming,
+    visibleMessages,
+    sendError,
+    setSendError,
+    hasActiveRuntime,
+    contextPreview,
+    includeContext,
+    toggleIncludeContext,
+    sendText,
+    handleStop,
+    abandonCurrentStream,
+    resetTurnState,
+  } = useConversationTurn({
+    butlerName: WIDGET_BUTLER,
+    activeConversationId,
+    setActiveConversationId,
+    messagesData,
+  });
 
   // Resume the most recent open conversation ONCE per mount (== once per
   // reopen, since WidgetPanel unmounts entirely on close) — gated by
@@ -222,6 +165,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // activeConversationId to null) does not get immediately overridden back
   // to the existing thread by this same effect.
   const hasResumedRef = useRef(false);
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (hasResumedRef.current) return;
     if (conversations.length === 0) return;
@@ -230,288 +174,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       setActiveConversationId(conversations[0].id);
     }
   }, [conversations, activeConversationId]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
-  const isStreaming = streaming !== null;
-  const hasActiveRuntime = isStreaming && !streaming?.cancelled;
-
-  const confirmStoppedTurn = useCallback(
-    (messageId: string, conversationId?: string | null) => {
-      if (activeMessageIdRef.current !== messageId) return;
-      confirmedStopMessageIdRef.current = messageId;
-      // A Stop can win before the first conversation_created SSE event. Keep
-      // the persisted thread addressable instead of letting its optimistic
-      // bubble disappear with a pending local conversation id.
-      void queryClient.invalidateQueries({ queryKey: conversationKeys.all(WIDGET_BUTLER) });
-      if (conversationId) {
-        localMessagesConversationIdRef.current = conversationId;
-        setActiveConversationId(conversationId);
-        setLocalMessages((prev) =>
-          prev.map((message) =>
-            message.id === optimisticUserMessageId(messageId)
-              ? { ...message, conversation_id: conversationId }
-              : message,
-          ),
-        );
-        void queryClient.invalidateQueries({
-          queryKey: conversationKeys.messages(WIDGET_BUTLER, conversationId),
-        });
-      }
-      abortRef.current?.abort();
-      setStreaming((prev) =>
-        prev?.messageId === messageId
-          ? {
-              ...prev,
-              conversationId: conversationId ?? prev.conversationId,
-              cancelling: false,
-              cancelled: true,
-              pending: false,
-              cancelError: null,
-              dispatchReceipt: undefined,
-            }
-          : prev,
-      );
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-      }
-      const timeout = setTimeout(() => {
-        if (interruptedTimeoutRef.current !== timeout) return;
-        if (activeMessageIdRef.current === messageId) {
-          activeMessageIdRef.current = null;
-          abortRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-        }
-        interruptedTimeoutRef.current = null;
-      }, 1500);
-      interruptedTimeoutRef.current = timeout;
-    },
-    [queryClient],
-  );
-
-  const sendText = useCallback(
-    async (text: string, retryMessageId?: string) => {
-      const trimmed = text.trim();
-      if (!trimmed) return;
-
-      setSendError(null);
-      const isNew = activeConversationId == null;
-      const messageId = retryMessageId ?? createClientMessageId();
-      if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
-        abortRef.current?.abort();
-      }
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-        interruptedTimeoutRef.current = null;
-      }
-      const controller = new AbortController();
-      abortRef.current = controller;
-      activeMessageIdRef.current = messageId;
-      confirmedStopMessageIdRef.current = null;
-
-      const userMessage: Message = {
-        // The backend retry identity also identifies this local optimistic
-        // bubble, so retrying one logical message cannot add another bubble.
-        id: optimisticUserMessageId(messageId),
-        conversation_id: activeConversationId ?? "",
-        role: "user",
-        content: trimmed,
-        tool_calls: null,
-        error: null,
-        model: null,
-        input_tokens: null,
-        output_tokens: null,
-        duration_ms: null,
-        session_id: null,
-        request_id: null,
-        created_at: new Date().toISOString(),
-      };
-      const previousBelongsToActiveConversation =
-        localMessagesConversationIdRef.current === activeConversationId;
-      localMessagesConversationIdRef.current = activeConversationId;
-      setLocalMessages((previous) => {
-        const activeMessages = previousBelongsToActiveConversation ? previous : [];
-        return activeMessages.some((message) => message.id === userMessage.id)
-          ? activeMessages
-          : [...activeMessages, userMessage];
-      });
-
-      let currentConversationId = activeConversationId;
-
-      setStreaming({
-        conversationId: currentConversationId ?? "pending",
-        messageId,
-        content: "",
-        pending: true,
-        interrupted: false,
-        stopReady: false,
-      });
-
-      // Snapshot page context NOW, not before — this is the exact moment of
-      // send, so a page navigation or usePageSubject().set() call happening
-      // after this point never mutates the payload already built below.
-      const pageContextSnapshot = capturePageContext();
-      const contextIncludedForThisSend = includeContext;
-      // The chip's opt-out only ever applies to the message it was clicked
-      // on — reset immediately so the next composition defaults back to
-      // attached (behavior matrix: "next send re-attaches").
-      setIncludeContext(true);
-
-      try {
-        const response = isNew
-          ? await createConversation(
-              WIDGET_BUTLER,
-              buildMessagePayload(
-                trimmed,
-                messageId,
-                pageContextSnapshot,
-                contextIncludedForThisSend,
-              ),
-              controller.signal,
-            )
-          : await sendMessage(
-              WIDGET_BUTLER,
-              activeConversationId!,
-              buildMessagePayload(
-                trimmed,
-                messageId,
-                pageContextSnapshot,
-                contextIncludedForThisSend,
-              ),
-              controller.signal,
-            );
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        // The API creates the durable user-message/turn record before it
-        // returns its SSE response. Stop may become actionable now, even
-        // though the first conversation_created event can still be pending.
-        setStreaming((prev) =>
-          prev?.messageId === messageId ? { ...prev, stopReady: true } : prev,
-        );
-
-        await consumeSseStream(response, (event) => {
-          if (
-            activeMessageIdRef.current !== messageId ||
-            confirmedStopMessageIdRef.current === messageId
-          ) {
-            return;
-          }
-          switch (event.event) {
-            case "conversation_created": {
-              // Backend emits `conversation_id` (see routers/conversations.py
-              // _stream_conversation_response) — NOT `id`.
-              const data = event.data as { conversation_id: string; title?: string | null };
-              currentConversationId = data.conversation_id;
-              setActiveConversationId(data.conversation_id);
-              setStreaming((prev) =>
-                prev?.messageId === messageId
-                  ? { ...prev, conversationId: data.conversation_id }
-                  : prev,
-              );
-              localMessagesConversationIdRef.current = data.conversation_id;
-              setLocalMessages((prev) =>
-                prev.map((m) =>
-                  m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
-                ),
-              );
-              break;
-            }
-            case "dispatch_accepted": {
-              const data = event.data as { routed_butler?: unknown };
-              const routedButler =
-                typeof data.routed_butler === "string" ? data.routed_butler : null;
-              setStreaming((prev) =>
-                prev ? { ...prev, dispatchReceipt: { routedButler } } : null,
-              );
-              break;
-            }
-            case "token": {
-              const token =
-                typeof event.data === "string"
-                  ? event.data
-                  : ((event.data as { content?: string })?.content ?? "");
-              setStreaming((prev) =>
-                prev?.messageId === messageId
-                  ? { ...prev, content: prev.content + token, pending: false }
-                  : prev,
-              );
-              break;
-            }
-            case "message_complete": {
-              const cid = currentConversationId;
-              if (cid) {
-                void queryClient.invalidateQueries({
-                  queryKey: conversationKeys.all(WIDGET_BUTLER),
-                });
-                void queryClient.invalidateQueries({
-                  queryKey: conversationKeys.messages(WIDGET_BUTLER, cid),
-                });
-              }
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-            }
-            case "error": {
-              if (isConfirmedConversationCancellation(event.data)) {
-                confirmStoppedTurn(messageId, currentConversationId);
-                break;
-              }
-              setSendError(classifySendError(event.data, trimmed, messageId));
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-            }
-            case "done":
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-          }
-        });
-      } catch (err) {
-        if (activeMessageIdRef.current !== messageId) return;
-        if (err instanceof Error && err.name === "AbortError") {
-          if (confirmedStopMessageIdRef.current === messageId) {
-            // handleStop already rendered the durable confirmation and owns
-            // the short visual handoff; do not overwrite it with a generic
-            // client-side "interrupted" state.
-            return;
-          }
-          setStreaming((prev) =>
-            prev?.messageId === messageId ? { ...prev, interrupted: true, pending: false } : prev,
-          );
-          if (interruptedTimeoutRef.current !== null) {
-            clearTimeout(interruptedTimeoutRef.current);
-          }
-          const timeout = setTimeout(() => {
-            if (interruptedTimeoutRef.current !== timeout) return;
-            if (activeMessageIdRef.current === messageId) {
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-            }
-            interruptedTimeoutRef.current = null;
-          }, 1500);
-          interruptedTimeoutRef.current = timeout;
-        } else {
-          activeMessageIdRef.current = null;
-          abortRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-          setSendError({
-            kind: "generic",
-            message: "Failed to send message.",
-            failedText: trimmed,
-            messageId,
-          });
-        }
-      }
-    },
-    [activeConversationId, capturePageContext, confirmStoppedTurn, includeContext, queryClient],
-  );
 
   function handleSendClick() {
     const text = inputValue.trim();
@@ -520,96 +185,10 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     void sendText(text);
   }
 
-  async function handleStop() {
-    if (!streaming || !streaming.stopReady || streaming.cancelling) return;
-    const messageId = streaming.messageId;
-    if (activeMessageIdRef.current !== messageId) return;
-
-    setStreaming((prev) =>
-      prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
-    );
-    try {
-      const result = await cancelConversationMessageTurn(WIDGET_BUTLER, messageId);
-      if (activeMessageIdRef.current !== messageId) return;
-      if (!result.cancelled) {
-        if (result.already_finished) {
-          if (confirmedStopMessageIdRef.current === messageId) {
-            // The stream already delivered authoritative cancellation for this
-            // exact message while the Stop POST was in flight. Keep that
-            // confirmation visible through its deliberate handoff window.
-            return;
-          }
-          // The turn already finished on its own — quietly stop watching.
-          // Never claim we stopped something that had already ended. Refresh
-          // before aborting the SSE: completion can commit just before this
-          // status read, while its message_complete event is still buffered.
-          const conversationId =
-            result.conversation_id ??
-            (streaming.conversationId === "pending" ? activeConversationId : streaming.conversationId);
-          void queryClient.invalidateQueries({
-            queryKey: conversationKeys.all(WIDGET_BUTLER),
-          });
-          if (conversationId) {
-            localMessagesConversationIdRef.current = conversationId;
-            setActiveConversationId(conversationId);
-            setLocalMessages((prev) =>
-              prev.map((message) =>
-                message.id === optimisticUserMessageId(messageId)
-                  ? { ...message, conversation_id: conversationId }
-                  : message,
-              ),
-            );
-            void queryClient.invalidateQueries({
-              queryKey: conversationKeys.messages(WIDGET_BUTLER, conversationId),
-            });
-          }
-          abortRef.current?.abort();
-          abortRef.current = null;
-          activeMessageIdRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-          return;
-        }
-        setStreaming((prev) =>
-          prev?.messageId === messageId
-            ? {
-                ...prev,
-                cancelling: false,
-                pending: false,
-                cancelError: result.message ?? "Could not stop. Try again.",
-              }
-            : prev,
-        );
-        return;
-      }
-      confirmStoppedTurn(messageId, result.conversation_id);
-    } catch {
-      if (activeMessageIdRef.current !== messageId) return;
-      setStreaming((prev) =>
-        prev?.messageId === messageId
-          ? { ...prev, cancelling: false, pending: false, cancelError: "Could not stop. Try again." }
-          : prev,
-      );
-    }
-  }
-
-  function abandonCurrentStream() {
-    activeMessageIdRef.current = null;
-    confirmedStopMessageIdRef.current = null;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    if (interruptedTimeoutRef.current !== null) {
-      clearTimeout(interruptedTimeoutRef.current);
-      interruptedTimeoutRef.current = null;
-    }
-    setStreaming(null);
-  }
-
   function handleNewConversation() {
     abandonCurrentStream();
     setActiveConversationId(null);
-    localMessagesConversationIdRef.current = null;
-    setLocalMessages([]);
-    setSendError(null);
+    resetTurnState();
     setViewMode("thread");
   }
 
@@ -622,18 +201,17 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     }
   }
 
-  const visibleMessages =
-    localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
-
   // Once the jumped-to conversation's messages have rendered, scroll/focus
   // the anchor message. A miss (bubble not in the DOM yet) just waits for
   // the next render that changes visibleMessages.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!pendingScrollMessageId) return;
     if (scrollToMessageAnchor(pendingScrollMessageId)) {
       setPendingScrollMessageId(null);
     }
   }, [pendingScrollMessageId, visibleMessages.length]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const visibleDispatchReceipt =
     streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
@@ -644,7 +222,8 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown provides the shared Escape/focus choreography; the rule's static role allowlist does not recognize the WAI-ARIA dialog pattern.
     <div
       ref={rootRef}
-      className="fixed bottom-20 right-4 z-40 flex h-[min(560px,70vh)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
+      className="fixed bottom-20 right-4 z-40 flex h-[min(560px,80dvh)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
+      style={viewportHeight != null ? { maxHeight: Math.min(560, viewportHeight - 96) } : undefined}
       role="dialog"
       aria-labelledby="floating-chat-widget-title"
       data-testid="floating-chat-panel"
@@ -653,20 +232,18 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b bg-card/80 px-3 py-2 shrink-0">
         <h2
-          ref={initialFocusRef}
           id="floating-chat-widget-title"
-          tabIndex={-1}
-          className="flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+          className="flex items-center gap-1.5 rounded-sm text-sm font-medium"
         >
           <MessageCircleIcon className="size-4 text-muted-foreground" />
           Talk to Butlers
         </h2>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1.5">
           {viewMode === "thread" ? (
             <>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={() => setViewMode("history")}
                 aria-label="Conversation history"
                 title="History"
@@ -676,7 +253,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               </Button>
               <Button
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 onClick={handleNewConversation}
                 aria-label="New conversation"
                 title="New conversation"
@@ -688,7 +265,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           ) : (
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               onClick={() => setViewMode("thread")}
               aria-label="Back to conversation"
               title="Back"
@@ -699,7 +276,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           )}
           <Button
             variant="ghost"
-            size="icon-xs"
+            size="icon-sm"
             onClick={onClose}
             aria-label="Close chat"
             title="Close"
@@ -765,6 +342,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           )}
 
           <MessageInput
+            ref={initialFocusRef}
             value={inputValue}
             onChange={setInputValue}
             onSend={handleSendClick}
@@ -787,7 +365,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               policy: contextPreview.policy,
               payload: contextPreview.context,
               included: includeContext,
-              onToggleIncluded: () => setIncludeContext((prev) => !prev),
+              onToggleIncluded: toggleIncludeContext,
             }}
           />
         </div>
@@ -800,7 +378,16 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 // FloatingChatWidget — trigger button + panel toggle, mounted in RootLayout
 // ---------------------------------------------------------------------------
 
-export function FloatingChatWidget() {
+export interface FloatingChatWidgetProps {
+  /**
+   * When set (>= xl viewport, dock collapsed — see RootLayout's posture
+   * host), the trigger reopens the docked rail instead of the popover, so
+   * closing the dock is never a one-way trip back to a settings toggle.
+   */
+  onExpandDock?: () => void;
+}
+
+export function FloatingChatWidget({ onExpandDock }: FloatingChatWidgetProps = {}) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreTriggerFocusRef = useRef(false);
@@ -824,6 +411,31 @@ export function FloatingChatWidget() {
   // close) so polling continues regardless of open/closed state.
   const hasUnread = useChatUnreadBadge(WIDGET_BUTLER, open);
 
+  // Route the unread badge through the shell announcer (bu-0ynlk.13) so a
+  // screen-reader user hears about a reply that arrived while the panel was
+  // closed, not just a visual dot. Announce only on the false->true edge —
+  // the badge stays true across every subsequent ~60s poll, and re-announcing
+  // identical text is silent to screen readers anyway (see shell-announcer's
+  // `announce`), but this keeps the intent explicit: once per new reply.
+  const hadUnreadRef = useRef(false);
+  useEffect(() => {
+    if (hasUnread && !hadUnreadRef.current) {
+      announce("New reply from Butlers");
+    }
+    hadUnreadRef.current = hasUnread;
+  }, [hasUnread]);
+
+  // Global 'c' shortcut (use-keyboard-shortcuts.ts): open the widget if it's
+  // closed. WidgetPanel's own listener (mounted only while open) handles
+  // refocusing the composer when it's already open.
+  useEffect(() => {
+    function handleOpenChatWidget() {
+      setOpen(true);
+    }
+    window.addEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+    return () => window.removeEventListener(OPEN_CHAT_WIDGET_EVENT, handleOpenChatWidget);
+  }, []);
+
   // "Talk to Butlers" cmdk command (bu-86c4c.7 command spine) — opens the
   // widget from anywhere, same pattern as GlobalActionsRegistrar.
   const commands = useMemo<PaletteCommand[]>(
@@ -832,10 +444,10 @@ export function FloatingChatWidget() {
         id: "talk-to-butlers",
         label: "Talk to Butlers",
         keywords: ["chat", "switchboard", "message", "conversation"],
-        perform: () => setOpen(true),
+        perform: () => (onExpandDock ? onExpandDock() : setOpen(true)),
       },
     ],
-    [],
+    [onExpandDock],
   );
   useRegisterCommands(commands);
 
@@ -853,7 +465,7 @@ export function FloatingChatWidget() {
           // intercept every click. Stacking above it avoids the collision
           // entirely; the panel anchors to the same spot when open.
           className="fixed bottom-20 right-4 z-40 size-12 rounded-full p-0 shadow-lg"
-          onClick={() => setOpen(true)}
+          onClick={() => (onExpandDock ? onExpandDock() : setOpen(true))}
           aria-label={hasUnread ? "Talk to Butlers (new reply)" : "Talk to Butlers"}
           title="Talk to Butlers"
           data-testid="floating-chat-trigger"

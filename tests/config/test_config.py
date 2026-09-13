@@ -163,6 +163,7 @@ def test_runtime_seed_config(tmp_path: Path):
     assert RuntimeSeedConfig().max_queued_sessions == 10
     assert RuntimeSeedConfig().core_groups is None
     assert RuntimeSeedConfig().catalog_read_sensitivity == "normal"
+    assert RuntimeSeedConfig().tool_exposure_policy == "eager_filtered"
 
     runtime_toml = (
         '[butler]\nname = "m"\nport = 7010\n[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
@@ -183,6 +184,19 @@ def test_runtime_seed_config(tmp_path: Path):
             'catalog_read_sensitivity = "caller-invented"\n'
         )
         load_config(_write_toml(tmp_path, invalid_authority_toml))
+
+    policy_toml = (
+        '[butler]\nname = "m"\nport = 7019\n[butler.runtime_seed]\ntool_exposure_policy = "auto"\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, policy_toml))
+    assert cfg.runtime_seed.tool_exposure_policy == "auto"
+
+    with pytest.raises(ConfigError, match="tool_exposure_policy"):
+        invalid_policy_toml = (
+            '[butler]\nname = "m"\nport = 7020\n[butler.runtime_seed]\n'
+            'tool_exposure_policy = "caller-invented"\n'
+        )
+        load_config(_write_toml(tmp_path, invalid_policy_toml))
 
     with pytest.raises(ConfigError, match="max_queued_sessions"):
         mqs_toml = (
@@ -286,6 +300,7 @@ def test_missing_runtime_seed_section_defaults(tmp_path: Path):
     assert cfg.runtime_seed.max_queued_sessions == 10
     assert cfg.runtime_seed.core_groups is None
     assert cfg.runtime_seed.liveness_ttl_seconds == 300
+    assert cfg.runtime_seed.tool_exposure_policy == "eager_filtered"
     assert cfg.runtime_seed.route_contract_min == 1
     assert cfg.runtime_seed.route_contract_max == 1
 
@@ -524,14 +539,14 @@ def test_oauth_section_valid_parsing(tmp_path: Path):
 
     # Multiple providers each parsed into the oauth dict.
     multiple = (
-        '[butler]\nname = "music"\nport = 41101\n\n'
-        "[oauth.spotify]\n"
-        'scopes = ["user-read-recently-played", "user-top-read"]\n\n'
+        '[butler]\nname = "general"\nport = 41101\n\n'
+        "[oauth.example_provider]\n"
+        'scopes = ["profile.read", "activity.read"]\n\n'
         "[oauth.google]\n"
         'scopes = ["https://www.googleapis.com/auth/calendar"]\n'
     )
     cfg = load_config(_write_toml(tmp_path, multiple))
-    assert set(cfg.oauth["spotify"]) == {"user-read-recently-played", "user-top-read"}
+    assert set(cfg.oauth["example_provider"]) == {"profile.read", "activity.read"}
     assert cfg.oauth["google"] == ["https://www.googleapis.com/auth/calendar"]
 
     # scopes = [] is valid and yields an empty list.

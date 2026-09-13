@@ -92,7 +92,7 @@ butler in the roster runs one daemon instance.
 | **Scheduler** | `core/scheduler.py` | Cron-driven task dispatch. Syncs TOML schedule definitions to DB on startup. Internal asyncio tick loop fires due tasks. | Stable |
 | **State Store** | `core/state.py` | Key-value JSONB store. Arbitrary per-butler state accessible via MCP tools. | Stable |
 | **Session Log** | `core/sessions.py` | Append-only record of every LLM CLI invocation: trigger source, duration, token counts, cost, tool calls. | Stable |
-| **Runtime Config** | `core/runtime_config.py` | Per-butler `runtime_config` DB table and TTL-cached `RuntimeConfigAccessor`. Seeded from `[butler.runtime_seed]` in `butler.toml` on first boot; managed thereafter via dashboard. Holds only cold fields (`core_groups`, `max_concurrent`, `max_queued`) that require a daemon restart to take effect. Model selection fields (`model`, `runtime_type`, `args`, `session_timeout_s`) moved to `public.model_catalog` in migration `core_073`, resolved per complexity tier by `core/model_routing.py`. | Stable |
+| **Runtime Config** | `core/runtime_config.py` | Per-butler `runtime_config` DB table and `RuntimeConfigAccessor`. Seeded from `[butler.runtime_seed]` in `butler.toml` on first boot; managed thereafter via dashboard. Holds cold fields (`core_groups`, `max_concurrent`, `max_queued`, TTL-cached, restart required) alongside hot fields (`catalog_read_sensitivity`, `tool_exposure_policy`) that apply to the next call or planned session without a restart; `tool_exposure_policy` is read per attempt via `get_tool_exposure_policy()`, which bypasses the TTL cache so a committed PATCH is visible even when the API and daemon are separate processes. Model selection fields (`model`, `runtime_type`, `args`, `session_timeout_s`) moved to `public.model_catalog` in migration `core_073`, resolved per complexity tier by `core/model_routing.py`. | Stable |
 | **Route Inbox** | `core/route_inbox.py` | Durable work queue for async route dispatch. Persists `route.execute` payloads before returning `accepted`; fenced claims guard processing and ordinary recovery. Reclaimed dashboard processing work becomes ambiguous rather than automatically replaying an unprovable predecessor. | Stable |
 | **Model Routing** | `core/model_routing.py` | Catalog-based dynamic model selection with per-butler overrides. Complexity tiers (trivial through discretion) map to model/runtime pairs. Token quota enforcement. | Maturing |
 | **Runtime Adapters** | `core/runtimes/` | Pluggable adapters for Claude Code, Codex, Gemini, and OpenCode. Each adapter knows how to build CLI arguments, parse output, and extract cost data. | Maturing |
@@ -279,8 +279,8 @@ time reads and corrections, see §4a) and the QA dashboard routes under `/api/qa
 
 | Route | Component | Capability |
 |---|---|---|
-| `/chronicles` | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
-| `/qa` | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
+| **`/chronicles`** | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
+| **`/qa`** | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
 
 ---
 
@@ -290,11 +290,11 @@ Cross-butler identity resolution lives in the `public` PostgreSQL schema.
 
 | Table | Responsibility |
 |---|---|
-| `public.entities` | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
-| `public.contacts` | Contact records linked to entities. |
-| `public.contact_info` | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
-| `public.model_catalog` | Global model catalog for dynamic model routing. |
-| `public.butler_model_overrides` | Per-butler model selection overrides. |
+| **`public.entities`** | Canonical entity registry. Each row represents a known person/actor with a `roles` array. |
+| **`public.contacts`** | Contact records linked to entities. |
+| **`public.contact_info`** | Per-channel identifiers (telegram_chat_id, email address, etc.). UNIQUE on `(type, value)`. |
+| **`public.model_catalog`** | Global model catalog for dynamic model routing. |
+| **`public.butler_model_overrides`** | Per-butler model selection overrides. |
 
 Resolution flow: channel identifier -> `contact_info` -> `contacts` -> `entities` -> roles.
 

@@ -26,22 +26,23 @@ accepted.  Indexes belong in that set because a unique one is not decoration:
 enforces dedup among active rows, so a stand-in missing it accepts writes the
 real schema rejects (bu-cwv9l).
 
-Two things stay out, on purpose.
+Foreign keys stay out, on purpose, so each table remains independently
+creatable.  ``pending_actions`` and ``approval_rules`` reference each other in
+the real chain via a DEFERRABLE constraint, and mirroring that would leave
+neither table creatable alone -- which is the entire point of a stand-in.
 
-*Foreign keys*, so each table stays independently creatable.  ``pending_actions``
-and ``approval_rules`` reference each other in the real chain via a DEFERRABLE
-constraint, and mirroring that would leave neither table creatable alone --
-which is the entire point of a stand-in.
-
-*Triggers*, because the ones on these tables are mostly foreign keys wearing a
-different hat and inherit that exclusion: ``approvals_008``/``009``/``011``
-replaced dropped FKs with plpgsql guards that read the *sibling* table
-unqualified, so mirroring them into a stand-in's schema would either fail to
-create or silently validate against whatever ``search_path`` reached first.
-The one self-contained trigger, ``approvals_001``'s append-only guard on
-``approval_events``, lives beside the ``ddl()`` call in
-``tests/modules/conftest.py``.  A fixture needing referential integrity or a
-trigger adds it there, or takes the real chain via
+Triggers are excluded by default for the same independence boundary, but the
+one self-contained trigger is an explicit exception:
+``approvals_001``'s append-only guard on ``approval_events`` is declared here,
+including its function body and execution metadata.  ``TableStandin.ddl``
+renders that declaration with schema-qualified table and function identities,
+so a fixture cannot accidentally bind it through a caller-controlled
+``search_path``.  The other approvals triggers are named exclusions below:
+``approvals_008``/``009``/``011`` replaced dropped foreign keys with plpgsql
+guards that read a sibling table.  Installing those guards in an independent
+stand-in would either fail to create or silently validate against whichever
+schema a hostile ``search_path`` reached first.  Tests that need referential
+integrity take the real chain via
 :func:`butlers.testing.migration.create_migrated_test_db`.
 
 Chains may be shared (``core``), roster (``switchboard``, ``relationship``) or
@@ -62,6 +63,84 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TriggerDefinition:
+    """One self-contained trigger and the function it must bind locally.
+
+    The migration parity guard compares the materialised ``pg_trigger`` and
+    ``pg_proc`` records, not this declaration's spelling.  Keeping the
+    execution metadata beside the body makes the mirror DDL explicit and
+    prevents a fixture from quietly growing an unqualified trigger function.
+    ``function_body`` is intentionally kept verbatim apart from PostgreSQL's
+    own outer dollar-quote delimiters; parity only trims harmless outer
+    whitespace and never rewrites SQL inside the body.
+    """
+
+    name: str
+    function_name: str
+    function_body: str
+    timing: str
+    events: tuple[str, ...]
+    level: str = "ROW"
+    when: str | None = None
+    arguments: tuple[str, ...] = ()
+    is_constraint: bool = False
+    deferrable: bool = False
+    initially_deferred: bool = False
+    function_language: str = "plpgsql"
+    security_definer: bool = False
+    function_config: tuple[str, ...] = ()
+
+    @property
+    def function(self) -> str:
+        """Backward-readable alias for the unqualified function name."""
+        return self.function_name
+
+    def ddl(self, *, schema: str, table: str) -> str:
+        """Render schema-qualified function and trigger DDL for *table*."""
+        function = f"{schema}.{self.function_name}"
+        qualified_table = f"{schema}.{table}"
+        function_lines = [
+            f"CREATE OR REPLACE FUNCTION {function}()",
+            "RETURNS trigger",
+            f"LANGUAGE {self.function_language}",
+        ]
+        if self.security_definer:
+            function_lines.append("SECURITY DEFINER")
+        function_lines.extend(f"SET {setting}" for setting in self.function_config)
+        function_lines.append(f"AS $function${self.function_body}$function$")
+
+        trigger_kind = "CREATE CONSTRAINT TRIGGER" if self.is_constraint else "CREATE TRIGGER"
+        events = " OR ".join(self.events)
+        drop_trigger = f"DROP TRIGGER IF EXISTS {self.name} ON {qualified_table};"
+        trigger_lines = [
+            f"{trigger_kind} {self.name}",
+            f"{self.timing} {events} ON {qualified_table}",
+        ]
+        if self.deferrable:
+            trigger_lines.append(
+                "DEFERRABLE INITIALLY DEFERRED" if self.initially_deferred else "DEFERRABLE"
+            )
+        elif self.initially_deferred:
+            raise ValueError(f"{self.name} cannot be initially deferred while not deferrable")
+        trigger_lines.append(f"FOR EACH {self.level}")
+        if self.when is not None:
+            trigger_lines.append(f"WHEN ({self.when})")
+        arguments = ", ".join(self.arguments)
+        trigger_lines.append(f"EXECUTE FUNCTION {function}({arguments})")
+        create_trigger = "\n".join(trigger_lines) + ";"
+        return "\n".join(function_lines) + ";\n" + drop_trigger + "\n" + create_trigger
+
+
+@dataclass(frozen=True)
+class TriggerExclusion:
+    """A named real-chain trigger deliberately absent from a stand-in."""
+
+    name: str
+    migration: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -99,18 +178,34 @@ class TableStandin:
     declaration knows both.
     """
 
-    def ddl(self, *, schema: str | None = None) -> str:
-        """Return the ``CREATE TABLE`` plus index DDL, optionally schema-qualified.
+    triggers: tuple[TriggerDefinition, ...] = ()
+    """Self-contained triggers to render after the table and indexes."""
 
-        The result is a single ``;``-separated script, which both asyncpg's
-        argument-free ``execute`` and psycopg2 run as one call.
+    excluded_triggers: tuple[TriggerExclusion, ...] = ()
+    """Named real-chain triggers intentionally omitted for independence."""
+
+    def ddl(self, *, schema: str | None = None) -> str:
+        """Return table, index and declared-trigger DDL, optionally qualified.
+
+        The result is a single script, which both asyncpg's argument-free
+        ``execute`` and psycopg2 run as one call.  A stand-in with triggers is
+        qualified to its real schema even when the caller omits ``schema``;
+        this keeps its function/table binding deterministic under an altered
+        ``search_path``.  FK-substitute triggers are never rendered: they are
+        recorded in :attr:`excluded_triggers` and owned by real-chain tests.
         """
+        trigger_schema = schema or self.real_schema
         qualified = f"{schema}.{self.table}" if schema else self.table
+        if self.triggers and schema is None:
+            qualified = f"{trigger_schema}.{self.table}"
         clauses = [f"{name} {definition}" for name, definition in self.columns]
         clauses.extend(self.table_constraints)
         body = ",\n    ".join(clauses)
         statements = [f"CREATE TABLE IF NOT EXISTS {qualified} (\n    {body}\n)"]
         statements += [index.replace("{table}", qualified) for index in self.indexes]
+        statements.extend(
+            trigger.ddl(schema=trigger_schema, table=self.table) for trigger in self.triggers
+        )
         return ";\n".join(statements)
 
 
@@ -177,7 +272,7 @@ CONNECTOR_REGISTRY = TableStandin(
 # creates all five, 003 adds fingerprint versions and their CHECKs/indexes, 005
 # adds pending-action blast_radius/reversibility and their CHECKs, 007 adds the
 # suggestion source-action link, 012 adds the 'abandoned' status and
-# 'action_abandoned' event type, and 013 adds deduplication_key.
+# 'action_abandoned' event type, 013 adds deduplication_key, and 014 adds origin.
 PENDING_ACTIONS = TableStandin(
     table="pending_actions",
     chains=("core", "approvals"),
@@ -202,6 +297,7 @@ PENDING_ACTIONS = TableStandin(
         ("blast_radius", "TEXT"),
         ("reversibility", "TEXT"),
         ("deduplication_key", "TEXT"),
+        ("origin", "TEXT"),
     ),
     table_constraints=(
         (
@@ -217,6 +313,10 @@ PENDING_ACTIONS = TableStandin(
             "CONSTRAINT pending_actions_reversibility_check CHECK ("
             "reversibility IS NULL OR reversibility IN "
             "('reversible', 'compensable', 'irreversible'))"
+        ),
+        (
+            "CONSTRAINT pending_actions_origin_check CHECK ("
+            "origin IS NULL OR origin IN ('prepared'))"
         ),
     ),
     # approvals_001 (two lookup indexes), approvals_013 (dedup uniqueness).
@@ -337,6 +437,33 @@ APPROVAL_RULES = TableStandin(
     indexes=(
         "CREATE INDEX IF NOT EXISTS idx_approval_rules_tool_active ON {table} (tool_name, active)",
     ),
+    excluded_triggers=(
+        TriggerExclusion(
+            name="trg_approval_rules_created_from_reference",
+            migration="approvals_009",
+            reason=(
+                "FK substitute reads pending_actions, a sibling omitted so this "
+                "stand-in remains independently creatable"
+            ),
+        ),
+    ),
+)
+
+
+_APPROVAL_EVENTS_IMMUTABILITY_TRIGGER = TriggerDefinition(
+    name="trg_approval_events_immutable",
+    function_name="prevent_approval_events_mutation",
+    # Keep the migration's dollar-quoted body intact.  The parity normalizer
+    # trims only this outer whitespace; it must never rewrite literals or SQL
+    # identifiers inside ``prosrc``.
+    function_body="""
+        BEGIN
+            RAISE EXCEPTION 'approval_events is append-only: % is not allowed', TG_OP;
+        END;
+        """,
+    timing="BEFORE",
+    events=("UPDATE", "DELETE"),
+    level="ROW",
 )
 
 
@@ -379,6 +506,25 @@ APPROVAL_EVENTS = TableStandin(
         "CREATE INDEX IF NOT EXISTS idx_approval_events_rule_id ON {table} (rule_id)",
         "CREATE INDEX IF NOT EXISTS idx_approval_events_occurred_at ON {table} (occurred_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_approval_events_event_type ON {table} (event_type)",
+    ),
+    triggers=(_APPROVAL_EVENTS_IMMUTABILITY_TRIGGER,),
+    excluded_triggers=(
+        TriggerExclusion(
+            name="trg_approval_events_action_reference",
+            migration="approvals_008",
+            reason=(
+                "FK substitute reads pending_actions, a sibling omitted so this "
+                "stand-in remains independently creatable"
+            ),
+        ),
+        TriggerExclusion(
+            name="trg_approval_events_rule_reference",
+            migration="approvals_011",
+            reason=(
+                "FK substitute reads approval_rules, a sibling omitted so this "
+                "stand-in remains independently creatable"
+            ),
+        ),
     ),
 )
 
@@ -513,4 +659,6 @@ __all__ = [
     "PENDING_ACTIONS",
     "STANDINS",
     "TableStandin",
+    "TriggerDefinition",
+    "TriggerExclusion",
 ]

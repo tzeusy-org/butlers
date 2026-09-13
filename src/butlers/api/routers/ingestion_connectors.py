@@ -8,6 +8,9 @@ Endpoints
 ---------
 GET  /api/ingestion/connectors/summaries        — connector list (all fields DB-sourced)
 GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
+GET  /api/ingestion/connectors/{type}/{identity} — connector detail
+GET  /api/ingestion/connectors/{type}/{identity}/stats — filtered-aware history
+PATCH /api/ingestion/connectors/{type}/{identity}/settings — shallow settings merge
 POST /api/ingestion/connectors/{type}/{identity}/pause       — pause a connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/run-now    — resume a paused connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/archive    — soft-archive an id (audit-only)
@@ -20,13 +23,11 @@ GET  /api/ingestion/connectors/{type}/{identity}/events      — recent events [
 GET  /api/ingestion/connectors/{type}/{identity}/incidents   — incident events [bu-5ywn2]
 GET  /api/ingestion/connectors/{type}/{identity}/routing-rules — scoped rules [bu-5ywn2]
 
-The ``summaries`` and ``cross-summary`` endpoints proxy the existing
-``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
-endpoints. ``cross-summary`` adds an ``aggregates_available`` flag reporting
-whether Prometheus actually answered the funnel queries (resolved through the
-pipeline stats cache, which queries on a cold entry rather than assuming);
-``summaries`` does not — every field it returns is DB-sourced, so it carries
-its own genuine-failure-only flags (``hourly_events_available``,
+``cross-summary`` adds an ``aggregates_available`` flag reporting whether
+Prometheus actually answered the funnel queries (resolved through the pipeline
+stats cache, which queries on a cold entry rather than assuming); ``summaries``
+does not — every field it returns is DB-sourced, so it carries its own
+genuine-failure-only flags (``hourly_events_available``,
 ``device_liveness_available``, ``owntracks_cadence_available``) instead.
 
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
@@ -41,13 +42,20 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.oauth_scope_registry import (
+    build_scope_rows,
+    compute_auth_status,
+    get_applicability,
+    get_scope_manifest,
+)
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
 from butlers.connectors.registry_roles import (
@@ -78,6 +86,128 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ingestion/connectors", tags=["ingestion"])
 
 _SWITCHBOARD_BUTLER = "switchboard"
+
+PeriodLiteral = Literal["24h", "7d", "30d"]
+_DB_TRUNC: dict[PeriodLiteral, str] = {"24h": "hour", "7d": "day", "30d": "day"}
+_DB_INTERVAL: dict[PeriodLiteral, str] = {
+    "24h": "24 hours",
+    "7d": "7 days",
+    "30d": "30 days",
+}
+
+
+class ConnectorScopeRow(BaseModel):
+    """One OAuth scope entry in the flat connector-detail response."""
+
+    name: str
+    category: str
+    status: str
+    sensitive_granted: bool = False
+    granted_at: str | None = None
+    required_since: str | None = None
+    serif_note: str = ""
+
+
+ConnectorAuthStatus = Literal[
+    "ok",
+    "degraded",
+    "expired",
+    "rotation-needed",
+    "needs_reauth",
+    "unsupported",
+    "unconfigured",
+]
+
+
+class ConnectorAuthBlock(BaseModel):
+    """Auth state for an OAuth or non-OAuth connector detail response."""
+
+    status: ConnectorAuthStatus
+    type: str
+    note: str | None = None
+    expires_at: str | None = None
+    required_scopes_version: int | None = None
+    manifest_version: int | None = None
+    alt_surface: dict[str, Any] | None = None
+    recovery_reason: Literal["expired", "rotation-needed"] | None = None
+
+
+class ConnectorDetailEntry(BaseModel):
+    """Full dashboard detail projection for one non-deleted connector identity."""
+
+    connector_type: str
+    endpoint_identity: str
+    instance_id: str | None = None
+    version: str | None = None
+    state: str = "unknown"
+    error_message: str | None = None
+    uptime_s: int | None = None
+    last_heartbeat_at: str | None = None
+    first_seen_at: str
+    registered_via: str = "self"
+    counter_messages_ingested: int = 0
+    counter_messages_failed: int = 0
+    counter_source_api_calls: int = 0
+    counter_checkpoint_saves: int = 0
+    counter_dedupe_accepted: int = 0
+    today_messages_ingested: int = 0
+    today_messages_failed: int = 0
+    checkpoint_cursor: str | None = None
+    checkpoint_updated_at: str | None = None
+    operational_role: str = _ROLE_UNKNOWN
+    parent_endpoint_identity: str | None = None
+    settings: dict[str, Any] | None = None
+    auth: ConnectorAuthBlock | None = None
+    scopes: list[ConnectorScopeRow] | None = None
+
+
+class ConnectorStatsHourly(BaseModel):
+    """One hourly bucket in the connector detail history."""
+
+    connector_type: str
+    endpoint_identity: str
+    hour: str
+    messages_ingested: int = 0
+    messages_failed: int = 0
+    messages_filtered: int = 0
+    heartbeat_count: int = 0
+    healthy_count: int = 0
+    degraded_count: int = 0
+    error_count: int = 0
+
+
+class ConnectorStatsDaily(BaseModel):
+    """One daily bucket in the connector detail history."""
+
+    connector_type: str
+    endpoint_identity: str
+    day: str
+    messages_ingested: int = 0
+    messages_failed: int = 0
+    messages_filtered: int = 0
+    heartbeat_count: int = 0
+    healthy_count: int = 0
+    degraded_count: int = 0
+    error_count: int = 0
+    uptime_pct: float | None = None
+
+
+class ConnectorSettingsUpdateRequest(BaseModel):
+    """Partial settings object shallow-merged into the connector registry row."""
+
+    settings: dict[str, Any]
+
+    @field_validator("settings")
+    @classmethod
+    def validate_flush_interval(cls, value: dict[str, Any]) -> dict[str, Any]:
+        flush_interval = value.get("flush_interval_s")
+        if flush_interval is not None:
+            if not isinstance(flush_interval, int) or isinstance(flush_interval, bool):
+                raise ValueError("flush_interval_s must be an integer")
+            if flush_interval < 60 or flush_interval > 7200:
+                raise ValueError("flush_interval_s must be between 60 and 7200 seconds")
+        return value
+
 
 # Per-device liveness staleness threshold (bu-e16to). A multi-device connector
 # (e.g. OwnTracks, where several physical devices post through one shared
@@ -302,6 +432,183 @@ def _pool(db: DatabaseManager):
         )
 
 
+def _build_connector_auth_blocks(
+    connector_type: str,
+    observed_scopes: list[str] | None,
+    required_scopes_version: int | None,
+) -> tuple[ConnectorAuthBlock, list[ConnectorScopeRow]]:
+    """Build the stable auth/scopes additions for a connector detail response."""
+    applicability = get_applicability(connector_type)
+    manifest = get_scope_manifest(connector_type)
+
+    if not applicability.oauth_supported or manifest is None:
+        return (
+            ConnectorAuthBlock(
+                status="unsupported",
+                type=applicability.credential_model,
+                note=applicability.note,
+                alt_surface={
+                    "kind": applicability.alt_surface_kind or "static-token",
+                    "validity_known": False,
+                    "validity_expires_at": None,
+                    "remediation_path": (
+                        applicability.alt_surface_remediation_path or "/settings/connectors"
+                    ),
+                },
+            ),
+            [],
+        )
+
+    auth_status = compute_auth_status(
+        connector_type=connector_type,
+        manifest=manifest,
+        observed_scopes=observed_scopes,
+        required_scopes_version=required_scopes_version,
+    )
+    normalized_status = auth_status
+    recovery_reason: Literal["expired", "rotation-needed"] | None = None
+    if connector_type == "spotify" and auth_status in {"expired", "rotation-needed"}:
+        normalized_status = "needs_reauth"
+        recovery_reason = auth_status
+
+    auth_block = ConnectorAuthBlock(
+        status=normalized_status,
+        type="oauth",
+        note=f"{applicability.credential_model} · oauth refresh",
+        required_scopes_version=required_scopes_version,
+        manifest_version=manifest.version,
+        recovery_reason=recovery_reason,
+    )
+    scope_rows = [
+        ConnectorScopeRow(
+            name=scope.name,
+            category=scope.category,
+            status=scope.status,
+            sensitive_granted=scope.sensitive_granted,
+            granted_at=scope.granted_at,
+            required_since=scope.required_since,
+            serif_note=scope.serif_note,
+        )
+        for scope in build_scope_rows(manifest, observed_scopes)
+    ]
+    return auth_block, scope_rows
+
+
+def _row_to_connector_detail(row: dict[str, Any]) -> ConnectorDetailEntry:
+    """Convert one connector-registry row into the established flat detail shape."""
+    connector_type = str(row["connector_type"])
+    auth, scopes = _build_connector_auth_blocks(
+        connector_type,
+        row.get("observed_scopes"),
+        row.get("required_scopes_version"),
+    )
+    return ConnectorDetailEntry(
+        connector_type=connector_type,
+        endpoint_identity=str(row["endpoint_identity"]),
+        instance_id=str(row["instance_id"]) if row.get("instance_id") else None,
+        version=row.get("version"),
+        state=str(row.get("state") or "unknown"),
+        error_message=row.get("error_message"),
+        uptime_s=row.get("uptime_s"),
+        last_heartbeat_at=(str(row["last_heartbeat_at"]) if row.get("last_heartbeat_at") else None),
+        first_seen_at=str(row["first_seen_at"]),
+        registered_via=str(row.get("registered_via") or "self"),
+        counter_messages_ingested=int(row.get("counter_messages_ingested") or 0),
+        counter_messages_failed=int(row.get("counter_messages_failed") or 0),
+        counter_source_api_calls=int(row.get("counter_source_api_calls") or 0),
+        counter_checkpoint_saves=int(row.get("counter_checkpoint_saves") or 0),
+        counter_dedupe_accepted=int(row.get("counter_dedupe_accepted") or 0),
+        today_messages_ingested=int(row.get("today_messages_ingested") or 0),
+        today_messages_failed=int(row.get("today_messages_failed") or 0),
+        checkpoint_cursor=row.get("checkpoint_cursor"),
+        checkpoint_updated_at=(
+            str(row["checkpoint_updated_at"]) if row.get("checkpoint_updated_at") else None
+        ),
+        operational_role=_normalize_role(row.get("operational_role")),
+        parent_endpoint_identity=row.get("parent_endpoint_identity"),
+        settings=row.get("settings"),
+        auth=auth,
+        scopes=scopes,
+    )
+
+
+async def _connector_stats_from_db(
+    connector_type: str,
+    endpoint_identity: str,
+    period: PeriodLiteral,
+    db: DatabaseManager,
+    *,
+    connection: Any | None = None,
+) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
+    """Build a skip-aware connector histogram from durable event tables."""
+    executor = connection if connection is not None else _pool(db)
+    trunc = _DB_TRUNC[period]
+    interval = _DB_INTERVAL[period]
+    try:
+        rows = await executor.fetch(
+            f"""
+            SELECT bucket,
+                   SUM(ingested)::bigint  AS messages_ingested,
+                   SUM(failed)::bigint    AS messages_failed,
+                   SUM(filtered)::bigint  AS messages_filtered
+            FROM (
+                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
+                           AT TIME ZONE 'UTC' AS bucket,
+                       COUNT(*) FILTER (WHERE status = 'ingested') AS ingested,
+                       COUNT(*) FILTER (WHERE status = 'failed')   AS failed,
+                       0 AS filtered
+                FROM public.ingestion_events
+                WHERE COALESCE(source_provider, source_channel) = $1
+                  AND source_endpoint_identity = $2
+                  AND received_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY 1
+                UNION ALL
+                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
+                           AT TIME ZONE 'UTC' AS bucket,
+                       0 AS ingested, 0 AS failed,
+                       COUNT(*) AS filtered
+                FROM connectors.filtered_events
+                WHERE connector_type = $1
+                  AND endpoint_identity = $2
+                  AND received_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY 1
+            ) combined
+            GROUP BY bucket ORDER BY bucket
+            """,
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning("connector stats DB query failed", exc_info=True)
+        return ApiResponse(data=[], meta=ApiMeta(hourly_events_available=False))
+
+    if period == "24h":
+        data: list[ConnectorStatsHourly] | list[ConnectorStatsDaily] = [
+            ConnectorStatsHourly(
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                hour=row["bucket"].isoformat(),
+                messages_ingested=int(row["messages_ingested"]),
+                messages_failed=int(row["messages_failed"]),
+                messages_filtered=int(row["messages_filtered"]),
+            )
+            for row in rows
+        ]
+    else:
+        data = [
+            ConnectorStatsDaily(
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                day=row["bucket"].date().isoformat(),
+                messages_ingested=int(row["messages_ingested"]),
+                messages_failed=int(row["messages_failed"]),
+                messages_filtered=int(row["messages_filtered"]),
+            )
+            for row in rows
+        ]
+    return ApiResponse(data=data, meta=ApiMeta(hourly_events_available=True))
+
+
 def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
     """Build the park -> Switchboard delivery boundary for a dashboard-API park.
 
@@ -399,7 +706,7 @@ async def list_connector_summaries_with_aggregates(
     to measure it against, and both a healthy read and an ``offline`` verdict
     would be inferences. The top-level ``unclassified_count`` summarises how
     many such rows exist; they are excluded from the fleet health rollups in
-    ``cross-summary`` and ``/api/switchboard/connectors/summary``.
+    ``cross-summary``.
 
     Each connector entry includes ``hourly_events`` — a 24-element array of
     per-hour event counts for the last 24 hours (oldest bucket first, newest
@@ -459,8 +766,8 @@ async def list_connector_summaries_with_aggregates(
     still returned here (so the dashboard can group them into a collapsed
     "archived" section that stays reachable for history), but the frontend
     separates them from the active roster so they never contribute to
-    attention/KPIs, and the fleet-health rollups (``cross-summary`` and the
-    switchboard ``/connectors/summary``) exclude them entirely so a superseded,
+    attention/KPIs, and the canonical ``cross-summary`` fleet-health rollup
+    excludes them entirely so a superseded,
     permanently-offline identity stops dragging fleet health down. Archived
     ``!=`` degraded: archiving never masks a genuinely-failing *live* connector,
     which stays in the active roster.
@@ -813,7 +1120,7 @@ async def list_connector_summaries_with_aggregates(
                 # here so the dashboard can group them into a collapsed "archived"
                 # section (reachable for history), but the FE separates them out
                 # so they never count toward attention/KPIs, and the fleet-health
-                # rollups (cross-summary, /connectors/summary) exclude them
+                # rollups (/api/ingestion/connectors/cross-summary) exclude them
                 # entirely. `archived` is a convenience boolean mirroring whether
                 # `archived_at` is set.
                 "archived": r["archived_at"] is not None,
@@ -1025,6 +1332,196 @@ async def get_cross_connector_summary_with_aggregates(
             "aggregates_available": aggregates_available,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/ingestion/connectors/{type}/{identity}
+# GET /api/ingestion/connectors/{type}/{identity}/stats
+# PATCH /api/ingestion/connectors/{type}/{identity}/settings
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{connector_type}/{endpoint_identity}",
+    response_model=ApiResponse[ConnectorDetailEntry],
+)
+async def get_connector_detail(
+    connector_type: str,
+    endpoint_identity: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorDetailEntry]:
+    """Return the full dashboard detail projection for one connector identity.
+
+    Archived rows remain available for historical inspection. Soft-deleted rows
+    are intentionally absent from this and every other canonical detail route.
+    """
+    pool = _pool(db)
+    try:
+        row = await pool.fetchrow(
+            "SELECT cr.connector_type, cr.endpoint_identity, cr.instance_id,"
+            " cr.version, cr.state, cr.error_message, cr.uptime_s,"
+            " cr.last_heartbeat_at, cr.first_seen_at, cr.registered_via,"
+            " cr.counter_messages_ingested, cr.counter_messages_failed,"
+            " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
+            " cr.counter_dedupe_accepted, cr.checkpoint_cursor,"
+            " cr.checkpoint_updated_at, cr.operational_role,"
+            " cr.parent_endpoint_identity, cr.observed_scopes,"
+            " cr.required_scopes_version, cr.settings,"
+            " COALESCE(today.today_ingested, 0) AS today_messages_ingested,"
+            " COALESCE(today.today_failed, 0) AS today_messages_failed"
+            " FROM connector_registry cr"
+            " LEFT JOIN ("
+            "   SELECT connector_type, endpoint_identity,"
+            "     SUM(delta_ingested) AS today_ingested,"
+            "     SUM(delta_failed) AS today_failed"
+            "   FROM ("
+            "     SELECT connector_type, endpoint_identity, instance_id,"
+            "       GREATEST(0, MAX(counter_messages_ingested)"
+            "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
+            "       GREATEST(0, MAX(counter_messages_failed)"
+            "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
+            "     FROM connector_heartbeat_log"
+            "     WHERE received_at >= CURRENT_DATE"
+            "     GROUP BY connector_type, endpoint_identity, instance_id"
+            "   ) per_instance"
+            "   GROUP BY connector_type, endpoint_identity"
+            " ) today ON cr.connector_type = today.connector_type"
+            "   AND cr.endpoint_identity = today.endpoint_identity"
+            " WHERE cr.connector_type = $1 AND cr.endpoint_identity = $2"
+            "   AND cr.deleted_at IS NULL",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "connector detail lookup failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    return ApiResponse(data=_row_to_connector_detail(dict(row)))
+
+
+@router.get(
+    "/{connector_type}/{endpoint_identity}/stats",
+    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
+)
+async def get_connector_stats(
+    connector_type: str,
+    endpoint_identity: str,
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
+    """Return a durable, filtered-aware time series for a live registry identity."""
+    pool = _pool(db)
+    existing = None
+    stats = None
+    try:
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                existing = await connection.fetchrow(
+                    "SELECT connector_type FROM connector_registry"
+                    " WHERE connector_type = $1 AND endpoint_identity = $2"
+                    "   AND deleted_at IS NULL FOR UPDATE",
+                    connector_type,
+                    endpoint_identity,
+                )
+                if existing is not None:
+                    stats = await _connector_stats_from_db(
+                        connector_type,
+                        endpoint_identity,
+                        period,
+                        db,
+                        connection=connection,
+                    )
+    except Exception:
+        logger.warning(
+            "connector stats registry lookup failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    assert stats is not None
+    return stats
+
+
+@router.patch(
+    "/{connector_type}/{endpoint_identity}/settings",
+    response_model=ApiResponse[ConnectorDetailEntry],
+)
+async def update_connector_settings(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    body: ConnectorSettingsUpdateRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorDetailEntry]:
+    """Shallow-merge dashboard settings and audit only the setting names.
+
+    The settings body remains intentionally generic because individual
+    connectors own their supported configuration. ``flush_interval_s`` keeps
+    its shared validation boundary for the batch-capable connectors.
+    """
+    pool = _pool(db)
+    try:
+        row = await pool.fetchrow(
+            "UPDATE connector_registry"
+            " SET settings = COALESCE(settings, '{}'::jsonb) || $3::jsonb"
+            " WHERE connector_type = $1 AND endpoint_identity = $2"
+            "   AND deleted_at IS NULL"
+            " RETURNING *",
+            connector_type,
+            endpoint_identity,
+            body.settings,
+        )
+    except Exception:
+        logger.warning(
+            "connector settings update failed for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    row_data = dict(row)
+    row_data.setdefault("today_messages_ingested", 0)
+    row_data.setdefault("today_messages_failed", 0)
+
+    await emit_dashboard_audit(
+        db,
+        butler=_SWITCHBOARD_BUTLER,
+        operation="connector_settings_patch",
+        method="PATCH",
+        path=f"/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings",
+        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
+        body={"setting_keys": list(body.settings.keys())},
+        response_status=200,
+        request=request,
+    )
+
+    return ApiResponse(data=_row_to_connector_detail(row_data))
 
 
 # ---------------------------------------------------------------------------

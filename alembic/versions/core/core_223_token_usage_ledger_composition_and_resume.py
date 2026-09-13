@@ -1,16 +1,17 @@
 """token_usage_ledger_composition_and_resume: per-layer prompt digest + resume outcome.
 
 Revision ID: core_223
-Revises: core_222
+Revises: core_231
 Create Date: 2026-09-06 00:00:00.000000
 
 Slice 4 of bu-2jtfw.4 (cache-honest spend epic, PR #4039 covered slices 1-3),
 deferred as bu-hz0g0. No query on main could answer "what did each prompt
 layer cost" -- ``public.token_usage_ledger`` records the merged input/output/
-cache token totals for a spawn, but nothing about the five layers
-``spawner_context._compose_system_prompt`` merges into that prompt (base
-CLAUDE.md, timezone instruction, situational context preamble, owner routing
-instructions, memory context). Nor does it record whether a conversational
+cache token totals for a spawn, but nothing about the five ledger-supported
+layers in ``spawner_context._compose_system_prompt`` (base CLAUDE.md,
+timezone instruction, situational context preamble, owner routing
+instructions, memory context). The separately governed blind-spot preamble
+is outside this schema. Nor does the ledger record whether a conversational
 turn resumed a provider-native session or dispatched cold.
 
 Columns (all additive, nullable -- existing rows keep working; mirrors
@@ -41,7 +42,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "core_223"
-down_revision = "core_222"
+down_revision = "core_231"
 branch_labels = None
 depends_on = None
 

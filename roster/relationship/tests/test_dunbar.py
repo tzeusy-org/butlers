@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
+from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
 
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)
@@ -1818,6 +1818,25 @@ async def simple_pool(provisioned_postgres_pool):
         await p.execute(
             "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_new ON facts (subject, predicate)"
         )
+        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
+        # cascade targets dunbar_tier_set's bulk override retraction disowns/deletes.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.memory_catalog (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_schema TEXT NOT NULL,
+                source_table  TEXT NOT NULL,
+                source_id     UUID NOT NULL,
+                tenant_id     TEXT NOT NULL DEFAULT 'owner',
+                entity_id     UUID,
+                summary       TEXT NOT NULL DEFAULT '',
+                memory_type   TEXT NOT NULL DEFAULT 'fact',
+                confidence    DOUBLE PRECISION,
+                invalid_at    TIMESTAMPTZ,
+                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_schema, source_table, source_id)
+            )
+        """)
+        await p.execute(ENTITY_GRAPH_EDGES.ddl())
         yield p
 
 
@@ -1873,6 +1892,49 @@ async def _log_simple_interaction(pool, contact_id: uuid.UUID, days_ago: float) 
         entity_id,
         valid_at,
     )
+
+
+async def _catalog_fact(pool, fact_id: uuid.UUID) -> None:
+    """Insert a live public.memory_catalog row cataloging *fact_id* (bu-9ltqm)."""
+    await pool.execute(
+        """
+        INSERT INTO public.memory_catalog (source_schema, source_table, source_id, memory_type)
+        VALUES ('public', 'facts', $1, 'fact')
+        """,
+        fact_id,
+    )
+
+
+async def _project_fact_edge(pool, fact_id: uuid.UUID, entity_id: uuid.UUID) -> None:
+    """Insert a live public.entity_graph_edges row projecting *fact_id* (bu-9ltqm)."""
+    await pool.execute(
+        """
+        INSERT INTO public.entity_graph_edges
+            (source_schema, source_table, source_id, subject_entity_id, predicate, object_entity_id)
+        VALUES ('public', 'facts', $1, $2, 'test-predicate', $2)
+        """,
+        fact_id,
+        entity_id,
+    )
+
+
+async def _catalog_is_stale(pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT confidence, invalid_at FROM public.memory_catalog"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    assert row is not None, f"expected a catalog row for fact {fact_id}"
+    return row["confidence"] == 0 and row["invalid_at"] is not None
+
+
+async def _graph_edge_exists(pool, fact_id: uuid.UUID) -> bool:
+    row = await pool.fetchrow(
+        "SELECT 1 FROM public.entity_graph_edges"
+        " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+        fact_id,
+    )
+    return row is not None
 
 
 # ===========================================================================
@@ -1955,7 +2017,9 @@ async def test_dunbar_tier_set_updates_override(simple_pool):
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_dunbar_tier_set_clear(simple_pool):
-    """Passing tier=None retracts the override and returns action='cleared'."""
+    """Passing tier=None retracts the override, cascading the memory_catalog
+    disownment + entity_graph_edges deletion forget_memory() performs (bu-9ltqm),
+    and returns action='cleared'."""
     from butlers.tools.relationship.dunbar import dunbar_tier_set
 
     contact = await _make_simple_contact(simple_pool, "Carol")
@@ -1963,6 +2027,18 @@ async def test_dunbar_tier_set_clear(simple_pool):
     entity_id_str = str(contact["entity_id"])
 
     await dunbar_tier_set(simple_pool, cid, 150)
+    override_fact_id = await simple_pool.fetchval(
+        """
+        SELECT id FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'active'
+        """,
+        entity_id_str,
+    )
+    await _catalog_fact(simple_pool, override_fact_id)
+    await _project_fact_edge(simple_pool, override_fact_id, contact["entity_id"])
+
     result = await dunbar_tier_set(simple_pool, cid, None)
     assert result["action"] == "cleared"
 
@@ -1976,6 +2052,64 @@ async def test_dunbar_tier_set_clear(simple_pool):
         entity_id_str,
     )
     assert len(active_rows) == 0
+    assert await _catalog_is_stale(simple_pool, override_fact_id) is True
+    assert await _graph_edge_exists(simple_pool, override_fact_id) is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_dunbar_tier_set_bulk_retraction_cascades_every_affected_fact(simple_pool):
+    """Multiple active override rows (a corrupted/pre-migration state) are all
+    retracted and cascaded in the single bulk UPDATE, not just the first one
+    (bu-9ltqm acceptance criterion #2: zero-to-many rows, one transaction)."""
+    from butlers.tools.relationship.dunbar import dunbar_tier_set
+
+    contact = await _make_simple_contact(simple_pool, "Dana")
+    cid = uuid.UUID(str(contact["id"]))
+    entity_id = contact["entity_id"]
+
+    # Simulate two active overrides for the same entity by inserting the
+    # second directly, bypassing dunbar_tier_set's own retract-then-insert.
+    fact_id_1 = await simple_pool.fetchval(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, permanence)
+        VALUES ($1, 'dunbar_tier_override', '50', 'relationship', $2::uuid, 'active', 'permanent')
+        RETURNING id
+        """,
+        f"contact:{cid}",
+        str(entity_id),
+    )
+    fact_id_2 = await simple_pool.fetchval(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, permanence)
+        VALUES ($1, 'dunbar_tier_override', '150', 'relationship', $2::uuid, 'active', 'permanent')
+        RETURNING id
+        """,
+        f"contact:{cid}",
+        str(entity_id),
+    )
+    await _catalog_fact(simple_pool, fact_id_1)
+    await _catalog_fact(simple_pool, fact_id_2)
+    await _project_fact_edge(simple_pool, fact_id_1, entity_id)
+    await _project_fact_edge(simple_pool, fact_id_2, entity_id)
+
+    result = await dunbar_tier_set(simple_pool, cid, 5)
+    assert result["action"] == "set"
+
+    retracted_count = await simple_pool.fetchval(
+        """
+        SELECT COUNT(*) FROM facts
+        WHERE predicate = 'dunbar_tier_override'
+          AND entity_id = $1::uuid
+          AND validity = 'retracted'
+        """,
+        str(entity_id),
+    )
+    assert retracted_count == 2
+    for fact_id in (fact_id_1, fact_id_2):
+        assert await _catalog_is_stale(simple_pool, fact_id) is True
+        assert await _graph_edge_exists(simple_pool, fact_id) is False
 
 
 @pytest.mark.integration

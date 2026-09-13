@@ -875,6 +875,75 @@ async def test_active_spoken_playback_keeps_active_poll_cadence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_current_playback_is_not_duplicated_by_later_recently_played_item() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._track_play_reconciled = True
+    connector._resolve_context_name = AsyncMock(return_value=None)
+    connector._persist_open_track_play = AsyncMock()
+    connector._persist_in_progress_session = AsyncMock()
+    connector._submit_envelope = AsyncMock()
+    connector._gap_fill_play_already_observed = AsyncMock(return_value=True)
+    connector._persist_gap_fill_track_play = AsyncMock(return_value=True)
+    payload = {
+        "is_playing": True,
+        "timestamp": 100_000,
+        "progress_ms": 5_000,
+        "item": {
+            "type": "track",
+            "id": "track-1",
+            "uri": "spotify:track:track-1",
+            "name": "Song 1",
+            "duration_ms": 180_000,
+            "album": {"name": "Album 1"},
+            "artists": [{"name": "Artist 1"}],
+        },
+    }
+    await connector._handle_active_playback(payload, payload["item"], _NOW, _OBSERVED)
+
+    played_at = datetime.fromtimestamp(130, tz=UTC).isoformat().replace("+00:00", "Z")
+    connector._get_recently_played = AsyncMock(
+        return_value=[{"track": payload["item"], "played_at": played_at}]
+    )
+    await connector._poll_recently_played(_NOW, _OBSERVED)
+
+    connector._gap_fill_play_already_observed.assert_awaited_once_with(
+        track_uri="spotify:track:track-1", played_at_ms=130_000
+    )
+    connector._persist_gap_fill_track_play.assert_not_awaited()
+    assert connector._last_recently_played_cursor == "130000"
+
+
+@pytest.mark.asyncio
+async def test_failed_track_close_remains_queued_until_retry_succeeds() -> None:
+    from butlers.connectors.spotify import TrackPlayEvidence
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    evidence = TrackPlayEvidence(
+        track_uri="spotify:track:retry",
+        track_name="Retry",
+        first_seen_ms=1_000,
+        last_seen_ms=5_000,
+        duration_ms=200_000,
+        max_progress_ms=5_000,
+        observation_precision="progress_tracked",
+        closed=True,
+    )
+    connector._persist_closed_track_play = AsyncMock(side_effect=[False, True])
+    connector._queue_closed_track_play(evidence)
+
+    await connector._retry_pending_closed_track_plays()
+    assert connector._pending_closed_track_plays
+    await connector._retry_pending_closed_track_plays()
+    assert connector._pending_closed_track_plays == {}
+
+
+@pytest.mark.asyncio
 async def test_poll_cycle_track_after_spoken_closes_then_resumed_episode_opens_new_session() -> (
     None
 ):

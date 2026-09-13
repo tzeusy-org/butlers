@@ -1,15 +1,17 @@
 """Tests for the ``cost_usd`` field on ``SessionSummary`` (bu-ptaub).
 
 GET /api/sessions and GET /api/butlers/{name}/sessions estimate a best-effort
-per-session USD cost from the model + token counts the summary read-model
-already selects (no new SQL column, no migration) via the shared
+per-session USD cost from the model + four token buckets selected by the
+summary read-model (existing schema columns, no migration) via the shared
 ``PricingConfig``/``estimate_session_cost`` primitives.
 
 Verifies:
 - cost_usd is None when pricing is unavailable (default app state).
 - cost_usd is computed from model + tokens when pricing is available.
+- cost_usd includes uncached input, output, cache-read, and cache-write buckets.
 - cost_usd is priced from a single side when only input_tokens or only
   output_tokens is present (each count coalesces independently).
+- cache-only usage requires explicit zero base buckets and complete cache data.
 - cost_usd is None (never 0.0) for a running session with no token data yet.
 - cost_usd is None for a model with no pricing entry.
 - Same behavior holds for the butler-scoped endpoint.
@@ -43,6 +45,28 @@ _PRICING = PricingConfig(
     }
 )
 
+_FOUR_BUCKET_PRICING = PricingConfig(
+    models={
+        "claude-sonnet": ModelPricing(
+            input_price_per_token=0.000003,
+            output_price_per_token=0.000015,
+            cached_input_price_per_token=0.0000003,
+            cache_creation_price_per_token=0.00000375,
+        ),
+    }
+)
+
+_ZERO_RATE_PRICING = PricingConfig(
+    models={
+        "zero-cost-model": ModelPricing(
+            input_price_per_token=0.0,
+            output_price_per_token=0.0,
+            cached_input_price_per_token=0.0,
+            cache_creation_price_per_token=0.0,
+        ),
+    }
+)
+
 
 def _make_session_row(**overrides: object) -> dict:
     row = {
@@ -58,6 +82,8 @@ def _make_session_row(**overrides: object) -> dict:
         "complexity": None,
         "input_tokens": 1000,
         "output_tokens": 1000,
+        "cached_input_tokens": 0,
+        "cache_creation_tokens": 0,
         "cancelled_by_owner": False,
     }
     row.update(overrides)
@@ -120,6 +146,107 @@ async def test_cost_usd_computed_from_model_and_tokens() -> None:
     cost_usd = resp.json()["data"][0]["cost_usd"]
     # 1000 * 0.000003 + 1000 * 0.000015 = 0.018
     assert cost_usd == pytest.approx(0.018)
+
+
+@pytest.mark.parametrize(
+    ("path", "app_factory"),
+    [
+        ("/api/sessions", _make_app_with_sessions),
+        ("/api/butlers/atlas/sessions", _make_butler_app_with_sessions),
+    ],
+)
+async def test_cost_usd_prices_each_disjoint_token_bucket_once(path, app_factory) -> None:
+    """Both list routes price uncached input, output, cache read, and cache write."""
+    app = app_factory(
+        [
+            _make_session_row(
+                input_tokens=1000,
+                output_tokens=1000,
+                cached_input_tokens=2000,
+                cache_creation_tokens=300,
+            )
+        ]
+    )
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _FOUR_BUCKET_PRICING
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["cost_usd"] == pytest.approx(0.019725)
+
+
+async def test_cost_usd_cache_only_requires_explicit_base_zeros() -> None:
+    """Complete positive cache usage is priceable when both base buckets are zero."""
+    app = _make_app_with_sessions(
+        [
+            _make_session_row(
+                input_tokens=0,
+                output_tokens=0,
+                cached_input_tokens=2000,
+                cache_creation_tokens=300,
+            )
+        ]
+    )
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _FOUR_BUCKET_PRICING
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["cost_usd"] == pytest.approx(0.001725)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cached_input_tokens": None},
+        {"cache_creation_tokens": None},
+        {"input_tokens": None, "output_tokens": None, "cached_input_tokens": 2000},
+        {"input_tokens": None, "output_tokens": 0, "cached_input_tokens": 2000},
+        {"input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0},
+    ],
+)
+async def test_cost_usd_is_none_for_incomplete_or_no_usage_evidence(overrides) -> None:
+    """Unknown cache/base evidence and all-zero rows remain unpriced/no-data."""
+    app = _make_app_with_sessions([_make_session_row(**overrides)])
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _FOUR_BUCKET_PRICING
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["cost_usd"] is None
+
+
+async def test_cost_usd_preserves_known_zero_rate() -> None:
+    """Complete nonzero usage with explicit zero rates is numeric zero."""
+    app = _make_app_with_sessions(
+        [
+            _make_session_row(
+                model="zero-cost-model",
+                input_tokens=1000,
+                output_tokens=1000,
+                cached_input_tokens=2000,
+                cache_creation_tokens=300,
+            )
+        ]
+    )
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _ZERO_RATE_PRICING
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["cost_usd"] == 0.0
 
 
 async def test_cost_usd_with_only_input_tokens() -> None:

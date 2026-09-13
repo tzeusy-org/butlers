@@ -8,6 +8,7 @@ roster/finance/tests/test_simplefin_bridge.py
 roster/finance/tests/test_transaction_crud.py
 roster/finance/tests/test_transactions.py
 roster/lifestyle/tests/test_lifestyle_integration.py
+roster/lifestyle/tests/test_taste_ledger.py
 roster/relationship/tests/test_chronicler_boundary.py
 roster/relationship/tests/test_contact_info.py
 roster/relationship/tests/test_contacts_merge_no_stranded_triples.py

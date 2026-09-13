@@ -16,10 +16,10 @@ describe("ingestionKeys", () => {
     expect(ingestionKeys.all).toEqual(["ingestion"]);
   });
 
-  it("connectorsList returns stable key", () => {
-    expect(ingestionKeys.connectorsList()).toEqual([
+  it("connectorSummaries returns stable key", () => {
+    expect(ingestionKeys.connectorSummaries()).toEqual([
       "ingestion",
-      "connectors-list",
+      "connectors-summaries",
     ]);
   });
 
@@ -58,13 +58,13 @@ describe("ingestionKeys", () => {
     expect(k1).not.toEqual(k2);
   });
 
-  it("overview and connectors tabs share connectorsList key by design", () => {
-    // Both tabs call useConnectorSummaries which uses connectorsList key —
-    // this ensures warm-cache reuse when switching tabs (spec §7).
-    const key = ingestionKeys.connectorsList();
+  it("Timeline, System, and connectors views share summaries key by design", () => {
+    // Every connector surface calls useConnectorSummaries, so one role-aware
+    // response stays warm across views (spec §7).
+    const key = ingestionKeys.connectorSummaries();
     expect(key[0]).toBe("ingestion");
     // Key is deterministic — no parameters → same key across callers
-    expect(ingestionKeys.connectorsList()).toEqual(key);
+    expect(ingestionKeys.connectorSummaries()).toEqual(key);
   });
 
 });

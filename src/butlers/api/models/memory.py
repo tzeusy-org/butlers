@@ -138,6 +138,7 @@ class Rule(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    retired_at: str | None = None
 
 
 class MemoryStats(BaseModel):
@@ -153,6 +154,10 @@ class MemoryStats(BaseModel):
     established_rules: int = 0
     proven_rules: int = 0
     anti_pattern_rules: int = 0
+    # Retired rules (bu-6t8ix.3) are excluded from the maturity buckets above
+    # (a retired rule is not a live standing order) and counted separately
+    # here instead of being silently dropped from any total.
+    retired_rules: int = 0
     # Consolidation lifecycle (memory redesign, additive — null/0 when unknown).
     last_consolidation_at: str | None = None
     last_consolidation_facts_produced: int | None = None
@@ -388,6 +393,17 @@ class ReembedRunResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class EntityGraphCoverage(BaseModel):
+    """Relationship coverage for one entity, drawn from public.entity_graph_edges.
+
+    RFC 0031 (Slice 4): counts, never content — ``relationships_withheld``
+    reflects sensitivity-excluded edges without exposing what they are.
+    """
+
+    relationships_known: int
+    relationships_withheld: int
+
+
 class MemoryCatalogSearchResult(BaseModel):
     """One row from a public.memory_catalog cross-butler search.
 
@@ -415,3 +431,5 @@ class MemoryCatalogSearchResult(BaseModel):
     sensitivity: str | None = None
     score: float | None = None
     """Relevance score: similarity (semantic), rank (keyword), or rrf_score (hybrid)."""
+    graph_coverage: EntityGraphCoverage | None = None
+    """Present only when entity_id is set; relationship counts anchored on it (RFC 0031 Slice 4)."""

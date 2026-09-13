@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 /**
- * EntityVerbRail — the three entity operator verbs plus notes (bu-6t8ix.4).
+ * EntityVerbRail — the entity operator verbs plus notes (bu-6t8ix.4).
  *
  * PR #2894 shipped none of these because the backend had no write path, so
  * the thing worth testing is that each chip now reaches a real mutation with
  * the right payload, and that the two states a fact write can land in
  * (already-exists, refused) are visible to the operator rather than silent.
  *
- * The draft-reach-out verb gets its own assertion that nothing in its
- * payload or copy implies a send: "draft" must mean drafted.
+ * A fourth verb, draft-reach-out, shipped alongside these and was retired in
+ * bu-2jtfw.11 (replaced by the prepared-action mechanism); its coverage was
+ * removed along with the component code.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +21,6 @@ vi.mock("@/hooks/use-entities", () => ({
   useCreateEntityNote: vi.fn(),
   useCreateEntityInteraction: vi.fn(),
   useCreateEntityGift: vi.fn(),
-  useCreateEntityReachOutDraft: vi.fn(),
 }));
 
 import { EntityVerbRail } from "./EntityVerbRail";
@@ -29,7 +29,6 @@ import {
   useCreateEntityGift,
   useCreateEntityInteraction,
   useCreateEntityNote,
-  useCreateEntityReachOutDraft,
 } from "@/hooks/use-entities";
 
 const ENTITY_ID = "11111111-2222-3333-4444-555555555555";
@@ -37,7 +36,6 @@ const ENTITY_ID = "11111111-2222-3333-4444-555555555555";
 const noteMutate = vi.fn();
 const interactionMutate = vi.fn();
 const giftMutate = vi.fn();
-const draftMutate = vi.fn();
 
 type MutationState = {
   isPending?: boolean;
@@ -67,18 +65,12 @@ function setMutations(states: Partial<Record<string, MutationState>> = {}) {
   vi.mocked(useCreateEntityGift).mockReturnValue(
     mutationResult(giftMutate, states.gift) as unknown as ReturnType<typeof useCreateEntityGift>,
   );
-  vi.mocked(useCreateEntityReachOutDraft).mockReturnValue(
-    mutationResult(draftMutate, states.draft) as unknown as ReturnType<
-      typeof useCreateEntityReachOutDraft
-    >,
-  );
 }
 
 beforeEach(() => {
   noteMutate.mockClear();
   interactionMutate.mockClear();
   giftMutate.mockClear();
-  draftMutate.mockClear();
   setMutations();
 });
 
@@ -88,17 +80,15 @@ afterEach(() => {
 });
 
 describe("EntityVerbRail — chips", () => {
-  it("renders all four verbs collapsed", () => {
+  it("renders all three verbs collapsed", () => {
     render(<EntityVerbRail entityId={ENTITY_ID} />);
 
     expect(screen.getByTestId("verb-chip-log-interaction")).toBeTruthy();
     expect(screen.getByTestId("verb-chip-gift-idea")).toBeTruthy();
-    expect(screen.getByTestId("verb-chip-draft-reach-out")).toBeTruthy();
     expect(screen.getByTestId("verb-chip-note")).toBeTruthy();
     // Collapsed: no form is mounted until a chip is clicked.
     expect(screen.queryByLabelText("Log an interaction")).toBeNull();
     expect(screen.queryByLabelText("Capture a gift idea")).toBeNull();
-    expect(screen.queryByLabelText("Draft a reach-out")).toBeNull();
   });
 
   it("opens one form at a time and toggles it closed again", () => {
@@ -217,53 +207,6 @@ describe("gift-idea verb", () => {
     fireEvent.click(screen.getByTestId("verb-chip-gift-idea"));
 
     expect(screen.getByTestId("gift-idea-error").textContent).toContain("already on the list");
-  });
-});
-
-describe("draft-reach-out verb", () => {
-  it("submits a message and a channel and says nothing was sent", () => {
-    render(<EntityVerbRail entityId={ENTITY_ID} />);
-    fireEvent.click(screen.getByTestId("verb-chip-draft-reach-out"));
-
-    fireEvent.change(screen.getByLabelText("Draft message"), {
-      target: { value: "Been a while, coffee next week?" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
-
-    expect(draftMutate).toHaveBeenCalledWith(
-      {
-        entityId: ENTITY_ID,
-        request: { message: "Been a while, coffee next week?", channel: "telegram" },
-      },
-      expect.anything(),
-    );
-  });
-
-  it("tells the operator up front that nothing is sent", () => {
-    render(<EntityVerbRail entityId={ENTITY_ID} />);
-    fireEvent.click(screen.getByTestId("verb-chip-draft-reach-out"));
-
-    expect(screen.getByTestId("draft-reach-out-inert-note").textContent).toContain(
-      "Nothing is sent",
-    );
-  });
-
-  it("offers no send affordance anywhere in the form", () => {
-    render(<EntityVerbRail entityId={ENTITY_ID} />);
-    fireEvent.click(screen.getByTestId("verb-chip-draft-reach-out"));
-
-    const buttonLabels = screen
-      .getAllByRole("button")
-      .map((b) => (b.textContent ?? "").toLowerCase());
-    expect(buttonLabels.some((label) => label.includes("send"))).toBe(false);
-  });
-
-  it("confirms on success that the draft was saved and not sent", () => {
-    setMutations({ draft: { isSuccess: true } });
-    render(<EntityVerbRail entityId={ENTITY_ID} />);
-    fireEvent.click(screen.getByTestId("verb-chip-draft-reach-out"));
-
-    expect(screen.getByTestId("draft-reach-out-success").textContent).toContain("Nothing was sent");
   });
 });
 

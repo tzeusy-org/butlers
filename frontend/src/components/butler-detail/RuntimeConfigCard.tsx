@@ -15,6 +15,12 @@ import { Label } from "@/components/ui/label";
 import { usePatchRuntimeConfig, useRuntimeConfig } from "@/hooks/use-butlers";
 import type { RuntimeConfigPatch } from "@/api/index.ts";
 
+// Tool exposure policy choices for the single-select editor.
+const TOOL_EXPOSURE_POLICIES = [
+  { value: "eager_filtered", label: "Eager filtered" },
+  { value: "auto", label: "Automatic verified discovery" },
+] as const;
+
 // Known core groups for the multi-select editor.
 const KNOWN_CORE_GROUPS = [
   "infra",
@@ -23,10 +29,14 @@ const KNOWN_CORE_GROUPS = [
   "sessions",
   "notifications",
   "media",
+  "graph",
   "temporal",
   "module_mgmt",
   "switchboard_routing",
   "switchboard_backfill",
+  "delegation",
+  "domain_events",
+  "fleet_cases",
 ] as const;
 
 interface RuntimeConfigCardProps {
@@ -81,7 +91,15 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
       setRestartFields(result.restart_required);
       setEditState({});
     } catch {
-      // Error handled by mutation state
+      // Failed save: revert the exposure-policy edit so the card never
+      // presents an unconfirmed value as the effective policy. Other
+      // pending edits are left for the user to retry.
+      setEditState((prev) => {
+        if (!("tool_exposure_policy" in prev)) return prev;
+        const next = { ...prev };
+        delete next.tool_exposure_policy;
+        return next;
+      });
     }
   };
 
@@ -93,6 +111,8 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
   const currentMaxConcurrent = editState.max_concurrent ?? config.max_concurrent;
   const currentMaxQueued = editState.max_queued ?? config.max_queued;
   const currentCoreGroups = editState.core_groups ?? config.core_groups ?? [];
+  const currentToolExposurePolicy =
+    editState.tool_exposure_policy ?? config.tool_exposure_policy ?? "eager_filtered";
 
   const hasChanges = Object.keys(editState).length > 0;
 
@@ -152,6 +172,31 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
               className="mt-1"
             />
           </div>
+        </div>
+
+        {/* Tool Exposure Policy single-select */}
+        <div>
+          <Label className="text-xs">
+            Tool Exposure Policy <FieldTierBadge tier={tiers?.tool_exposure_policy ?? "hot"} />
+          </Label>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {TOOL_EXPOSURE_POLICIES.map(({ value, label }) => (
+              <Badge
+                key={value}
+                variant={currentToolExposurePolicy === value ? "default" : "outline"}
+                className="cursor-pointer select-none"
+                onClick={() => updateField("tool_exposure_policy", value)}
+              >
+                {label}
+              </Badge>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Applies to newly planned sessions, no daemon restart needed.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Automatic verified discovery uses native tool search only when verified for the resolved runtime and model, falling back to a separately verified eager profile when one is available; otherwise the session is unavailable rather than guaranteed native discovery.
+          </p>
         </div>
 
         {/* Core Groups multi-select */}

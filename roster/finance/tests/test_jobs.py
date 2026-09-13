@@ -2365,11 +2365,11 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
 def _digest_month_bounds() -> tuple[datetime, datetime]:
     """Return (mid-of-prior-month, mid-of-covered-month) datetimes for inserts.
 
-    The digest covers the calendar month before ``date.today()`` and compares it
-    against the month before that. Day 15 is valid in every month, so it is a
-    safe posting day for both.
+    The digest covers the calendar month before ``datetime.now(UTC).date()`` and
+    compares it against the month before that. Day 15 is valid in every month,
+    so it is a safe posting day for both.
     """
-    today = date.today()
+    today = datetime.now(UTC).date()
     first_of_this_month = today.replace(day=1)
     covered_start = (first_of_this_month - timedelta(days=1)).replace(day=1)
     prior_start = (covered_start - timedelta(days=1)).replace(day=1)

@@ -14,7 +14,7 @@
  * - Loading skeleton while messages fetch
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageSquareIcon } from "lucide-react";
 
@@ -26,30 +26,14 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 
-import {
-  cancelConversationMessageTurn,
-  createConversation,
-  sendMessage,
-} from "@/api/index.ts";
-import type { CreateConversationRequest, Message, ConversationSummary } from "@/api/types.ts";
-import { consumeSseStream } from "./sse-utils.ts";
+import type { ConversationSummary } from "@/api/types.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
 import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
-import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
-import {
-  classifySendError,
-  isConfirmedConversationCancellation,
-  type SendError,
-} from "./send-error-utils.ts";
-import { createClientMessageId } from "./message-id.ts";
-import {
-  optimisticUserMessageId,
-  reconcileConversationMessages,
-} from "./message-reconciliation.ts";
+import { scrollToMessageAnchor } from "./message-id.ts";
 import {
   conversationKeys,
   useConversations,
@@ -57,25 +41,7 @@ import {
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
-import { usePageContextCapture, type PageContextSnapshot } from "@/lib/page-context.tsx";
-
-/**
- * Builds the outgoing message body — mirrors FloatingChatWidget.tsx's
- * `buildMessagePayload` (bu-0ynlk.4). `page_context` is omitted entirely
- * (not sent as an empty object) whenever the ContextChip is detached for
- * this message or the route's contextPolicy resolves to "none".
- */
-function buildMessagePayload(
-  message: string,
-  messageId: string,
-  snapshot: PageContextSnapshot,
-  included: boolean,
-): CreateConversationRequest {
-  if (included && snapshot.context) {
-    return { message, message_id: messageId, page_context: snapshot.context };
-  }
-  return { message, message_id: messageId };
-}
+import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
 
 // ---------------------------------------------------------------------------
 // ChatPanel inner content (mounted once Sheet is open)
@@ -89,49 +55,16 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // Set by a message-search jump-to-message result (bu-qaisp, parity with
+  // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
+  // has rendered (see the effect below).
+  const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
-  // Per-message opt-out for the ContextChip (bu-0ynlk.4) — resets to true
-  // after every send so removal only ever applies to the one message it was
-  // clicked on.
-  const [includeContext, setIncludeContext] = useState(true);
-  const capturePageContext = usePageContextCapture();
-  const contextPreview = capturePageContext();
-
-  // Local streaming state
-  const [streaming, setStreaming] = useState<StreamingState | null>(null);
-  // Local messages during / after stream (committed messages from cache)
-  const [localMessages, setLocalMessages] = useState<Message[]>([]);
-  const localMessagesConversationIdRef = useRef<string | null>(null);
-  // Classified SSE/transport send error (offline / timeout / generic) —
-  // mirrors FloatingChatWidget's sendError seam, see ./send-error.tsx.
-  const [sendError, setSendError] = useState<SendError | null>(null);
 
   // Pricing is optional decoration: keep the existing null behavior while
   // loading or after an error, with a cache shared by both chat surfaces.
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
-
-  // AbortController for the current SSE stream
-  const abortRef = useRef<AbortController | null>(null);
-  const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeMessageIdRef = useRef<string | null>(null);
-  const confirmedStopMessageIdRef = useRef<string | null>(null);
-
-  // Abort any in-flight SSE stream when this component unmounts
-  useEffect(() => {
-    return () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-        abortRef.current = null;
-      }
-      activeMessageIdRef.current = null;
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-        interruptedTimeoutRef.current = null;
-      }
-      confirmedStopMessageIdRef.current = null;
-    };
-  }, []);
 
   // Fetch conversations list
   const { data: conversationsData, isLoading: isLoadingConversations } =
@@ -149,28 +82,25 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     refetch: refetchMessages,
   } = useConversationMessages(butlerName, activeConversationId);
 
-  // Sync server messages into local state
-  // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
-  useEffect(() => {
-    if (streaming) return;
-    // A conversation-key switch can briefly expose `messagesData` as undefined
-    // before the next query result lands. Preserve the previous conversation's
-    // cached local state for a same-thread retry, but never reconcile it into
-    // the newly selected conversation.
-    if (messagesData?.data) {
-      const previousBelongsToActiveConversation =
-        localMessagesConversationIdRef.current === activeConversationId;
-      localMessagesConversationIdRef.current = activeConversationId;
-      setLocalMessages((previous) => {
-        const activeMessages = previousBelongsToActiveConversation ? previous : [];
-        return reconcileConversationMessages(
-          messagesData.data,
-          activeMessages,
-          activeConversationId,
-        );
-      });
-    }
-  }, [activeConversationId, messagesData, streaming]);
+  const {
+    streaming,
+    visibleMessages,
+    sendError,
+    setSendError,
+    hasActiveRuntime,
+    contextPreview,
+    includeContext,
+    toggleIncludeContext,
+    sendText,
+    handleStop,
+    abandonCurrentStream,
+    resetTurnState,
+  } = useConversationTurn({
+    butlerName,
+    activeConversationId,
+    setActiveConversationId,
+    messagesData,
+  });
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
   // onto the shared page-scoped shortcut registry (bu-qvnce.11), which also
@@ -250,320 +180,23 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   useEffect(() => {
     if (previousButlerNameRef.current === butlerName) return;
     previousButlerNameRef.current = butlerName;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    if (interruptedTimeoutRef.current !== null) {
-      clearTimeout(interruptedTimeoutRef.current);
-      interruptedTimeoutRef.current = null;
-    }
-    activeMessageIdRef.current = null;
-    confirmedStopMessageIdRef.current = null;
+    abandonCurrentStream();
     hasResumedRef.current = false;
     setActiveConversationId(null);
-    localMessagesConversationIdRef.current = null;
-    setLocalMessages([]);
-    setStreaming(null);
-    setSendError(null);
-  }, [butlerName]);
+    resetTurnState();
+  }, [butlerName, abandonCurrentStream, resetTurnState]);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
-  const isStreaming = streaming !== null;
-  const hasActiveRuntime = isStreaming && !streaming?.cancelled;
 
-  const confirmStoppedTurn = useCallback(
-    (messageId: string, conversationId?: string | null) => {
-      if (activeMessageIdRef.current !== messageId) return;
-      confirmedStopMessageIdRef.current = messageId;
-      // A Stop can win before the first conversation_created SSE event. Keep
-      // the persisted thread addressable instead of letting its optimistic
-      // bubble disappear with a pending local conversation id.
-      void queryClient.invalidateQueries({ queryKey: conversationKeys.all(butlerName) });
-      if (conversationId) {
-        localMessagesConversationIdRef.current = conversationId;
-        setActiveConversationId(conversationId);
-        setLocalMessages((prev) =>
-          prev.map((message) =>
-            message.id === optimisticUserMessageId(messageId)
-              ? { ...message, conversation_id: conversationId }
-              : message,
-          ),
-        );
-        void queryClient.invalidateQueries({
-          queryKey: conversationKeys.messages(butlerName, conversationId),
-        });
-      }
-      abortRef.current?.abort();
-      setStreaming((prev) =>
-        prev?.messageId === messageId
-          ? {
-              ...prev,
-              conversationId: conversationId ?? prev.conversationId,
-              cancelling: false,
-              cancelled: true,
-              pending: false,
-              cancelError: null,
-              dispatchReceipt: undefined,
-            }
-          : prev,
-      );
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-      }
-      const timeout = setTimeout(() => {
-        if (interruptedTimeoutRef.current !== timeout) return;
-        if (activeMessageIdRef.current === messageId) {
-          activeMessageIdRef.current = null;
-          abortRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-        }
-        interruptedTimeoutRef.current = null;
-      }, 1500);
-      interruptedTimeoutRef.current = timeout;
-    },
-    [butlerName, queryClient],
-  );
-
-  // ---------------------------------------------------------------------------
-  // SSE stream handler
-  // ---------------------------------------------------------------------------
-
-  const sendText = useCallback(
-    async (text: string, retryMessageId?: string) => {
-      const trimmed = text.trim();
-      if (!trimmed) return;
-
-      setSendError(null);
-      const isNew = activeConversationId == null;
-      const messageId = retryMessageId ?? createClientMessageId();
-      if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
-        abortRef.current?.abort();
-      }
-      if (interruptedTimeoutRef.current !== null) {
-        clearTimeout(interruptedTimeoutRef.current);
-        interruptedTimeoutRef.current = null;
-      }
-      const controller = new AbortController();
-      abortRef.current = controller;
-      activeMessageIdRef.current = messageId;
-      confirmedStopMessageIdRef.current = null;
-
-      // Optimistic user message
-      const userMessage: Message = {
-        // The backend retry identity also identifies this local optimistic
-        // bubble, so retrying one logical message cannot add another bubble.
-        id: optimisticUserMessageId(messageId),
-        conversation_id: activeConversationId ?? "",
-        role: "user",
-        content: trimmed,
-        tool_calls: null,
-        error: null,
-        model: null,
-        input_tokens: null,
-        output_tokens: null,
-        duration_ms: null,
-        session_id: null,
-        request_id: null,
-        created_at: new Date().toISOString(),
-      };
-      const previousBelongsToActiveConversation =
-        localMessagesConversationIdRef.current === activeConversationId;
-      localMessagesConversationIdRef.current = activeConversationId;
-      setLocalMessages((previous) => {
-        const activeMessages = previousBelongsToActiveConversation ? previous : [];
-        return activeMessages.some((message) => message.id === userMessage.id)
-          ? activeMessages
-          : [...activeMessages, userMessage];
-      });
-
-      let currentConversationId = activeConversationId;
-
-      setStreaming({
-        conversationId: currentConversationId ?? "pending",
-        messageId,
-        content: "",
-        pending: true,
-        interrupted: false,
-        stopReady: false,
-      });
-
-      // Snapshot page context NOW, not before — this is the exact moment of
-      // send, so a page navigation or usePageSubject().set() call happening
-      // after this point never mutates the payload already built below.
-      const pageContextSnapshot = capturePageContext();
-      const contextIncludedForThisSend = includeContext;
-      // The chip's opt-out only ever applies to the message it was clicked
-      // on — reset immediately so the next composition defaults back to
-      // attached (behavior matrix: "next send re-attaches").
-      setIncludeContext(true);
-
-      try {
-        const response = isNew
-          ? await createConversation(
-              butlerName,
-              buildMessagePayload(
-                trimmed,
-                messageId,
-                pageContextSnapshot,
-                contextIncludedForThisSend,
-              ),
-              controller.signal,
-            )
-          : await sendMessage(
-              butlerName,
-              activeConversationId!,
-              buildMessagePayload(
-                trimmed,
-                messageId,
-                pageContextSnapshot,
-                contextIncludedForThisSend,
-              ),
-              controller.signal,
-            );
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        // The API creates the durable user-message/turn record before it
-        // returns its SSE response. Stop may become actionable now, even
-        // though the first conversation_created event can still be pending.
-        setStreaming((prev) =>
-          prev?.messageId === messageId ? { ...prev, stopReady: true } : prev,
-        );
-
-        await consumeSseStream(response, (event) => {
-          if (
-            activeMessageIdRef.current !== messageId ||
-            confirmedStopMessageIdRef.current === messageId
-          ) {
-            return;
-          }
-          switch (event.event) {
-            case "conversation_created": {
-              // Backend emits `conversation_id` (see routers/conversations.py
-              // _stream_conversation_response) — NOT `id`.
-              const data = event.data as { conversation_id: string; title?: string | null };
-              currentConversationId = data.conversation_id;
-              setActiveConversationId(data.conversation_id);
-              setStreaming((prev) =>
-                prev?.messageId === messageId
-                  ? { ...prev, conversationId: data.conversation_id }
-                  : prev,
-              );
-              // Update optimistic user message with real conversation_id
-              localMessagesConversationIdRef.current = data.conversation_id;
-              setLocalMessages((prev) =>
-                prev.map((m) =>
-                  m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
-                ),
-              );
-              break;
-            }
-            case "dispatch_accepted": {
-              const data = event.data as { routed_butler?: unknown };
-              const routedButler =
-                typeof data.routed_butler === "string" ? data.routed_butler : null;
-              setStreaming((prev) =>
-                prev ? { ...prev, dispatchReceipt: { routedButler } } : null,
-              );
-              break;
-            }
-            case "token": {
-              const token =
-                typeof event.data === "string"
-                  ? event.data
-                  : (event.data as { content?: string })?.content ?? "";
-              setStreaming((prev) =>
-                prev?.messageId === messageId
-                  ? { ...prev, content: prev.content + token, pending: false }
-                  : prev,
-              );
-              break;
-            }
-            case "message_complete": {
-              // Invalidate queries to fetch committed messages
-              const cid = currentConversationId;
-              if (cid) {
-                void queryClient.invalidateQueries({
-                  queryKey: conversationKeys.all(butlerName),
-                });
-                void queryClient.invalidateQueries({
-                  queryKey: conversationKeys.messages(butlerName, cid),
-                });
-              }
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-            }
-            case "error": {
-              if (isConfirmedConversationCancellation(event.data)) {
-                confirmStoppedTurn(messageId, currentConversationId);
-                break;
-              }
-              setSendError(classifySendError(event.data, trimmed, messageId));
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-            }
-            case "done":
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-              break;
-          }
-        });
-      } catch (err) {
-        if (activeMessageIdRef.current !== messageId) return;
-        if (err instanceof Error && err.name === "AbortError") {
-          if (confirmedStopMessageIdRef.current === messageId) {
-            // handleStop already rendered the durable confirmation and owns
-            // the short visual handoff; do not overwrite it with a generic
-            // client-side "interrupted" state.
-            return;
-          }
-          // User cancelled — mark as interrupted
-          setStreaming((prev) =>
-            prev?.messageId === messageId ? { ...prev, interrupted: true, pending: false } : prev,
-          );
-          if (interruptedTimeoutRef.current !== null) {
-            clearTimeout(interruptedTimeoutRef.current);
-          }
-          const timeout = setTimeout(() => {
-            if (interruptedTimeoutRef.current !== timeout) return;
-            if (activeMessageIdRef.current === messageId) {
-              activeMessageIdRef.current = null;
-              abortRef.current = null;
-              setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-            }
-            interruptedTimeoutRef.current = null;
-          }, 1500);
-          interruptedTimeoutRef.current = timeout;
-        } else {
-          // Non-abort error before or during streaming: clear streaming state
-          // and surface the same classified banner FloatingChatWidget shows.
-          activeMessageIdRef.current = null;
-          abortRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-          setSendError({
-            kind: "generic",
-            message: "Failed to send message.",
-            failedText: trimmed,
-            messageId,
-          });
-        }
-      }
-    },
-    [
-      activeConversationId,
-      butlerName,
-      capturePageContext,
-      confirmStoppedTurn,
-      includeContext,
-      queryClient,
-    ],
-  );
+  // Once the jumped-to conversation's messages have rendered, scroll/focus
+  // the anchor message. A miss (bubble not in the DOM yet) just waits for
+  // the next render that changes visibleMessages.
+  useEffect(() => {
+    if (!pendingScrollMessageId) return;
+    if (scrollToMessageAnchor(pendingScrollMessageId)) {
+      setPendingScrollMessageId(null);
+    }
+  }, [pendingScrollMessageId, visibleMessages.length]);
 
   function handleSend() {
     const text = inputValue.trim();
@@ -572,96 +205,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     void sendText(text);
   }
 
-  async function handleStop() {
-    if (!streaming || !streaming.stopReady || streaming.cancelling) return;
-    const messageId = streaming.messageId;
-    if (activeMessageIdRef.current !== messageId) return;
-
-    setStreaming((prev) =>
-      prev?.messageId === messageId ? { ...prev, cancelling: true, cancelError: null } : prev,
-    );
-    try {
-      const result = await cancelConversationMessageTurn(butlerName, messageId);
-      if (activeMessageIdRef.current !== messageId) return;
-      if (!result.cancelled) {
-        if (result.already_finished) {
-          if (confirmedStopMessageIdRef.current === messageId) {
-            // The stream already delivered authoritative cancellation for this
-            // exact message while the Stop POST was in flight. Keep that
-            // confirmation visible through its deliberate handoff window.
-            return;
-          }
-          // The turn already finished on its own — quietly stop watching.
-          // Never claim we stopped something that had already ended. Refresh
-          // before aborting the SSE: completion can commit just before this
-          // status read, while its message_complete event is still buffered.
-          const conversationId =
-            result.conversation_id ??
-            (streaming.conversationId === "pending" ? activeConversationId : streaming.conversationId);
-          void queryClient.invalidateQueries({
-            queryKey: conversationKeys.all(butlerName),
-          });
-          if (conversationId) {
-            localMessagesConversationIdRef.current = conversationId;
-            setActiveConversationId(conversationId);
-            setLocalMessages((prev) =>
-              prev.map((message) =>
-                message.id === optimisticUserMessageId(messageId)
-                  ? { ...message, conversation_id: conversationId }
-                  : message,
-              ),
-            );
-            void queryClient.invalidateQueries({
-              queryKey: conversationKeys.messages(butlerName, conversationId),
-            });
-          }
-          abortRef.current?.abort();
-          abortRef.current = null;
-          activeMessageIdRef.current = null;
-          setStreaming((prev) => (prev?.messageId === messageId ? null : prev));
-          return;
-        }
-        setStreaming((prev) =>
-          prev?.messageId === messageId
-            ? {
-                ...prev,
-                cancelling: false,
-                pending: false,
-                cancelError: result.message ?? "Could not stop. Try again.",
-              }
-            : prev,
-        );
-        return;
-      }
-      confirmStoppedTurn(messageId, result.conversation_id);
-    } catch {
-      if (activeMessageIdRef.current !== messageId) return;
-      setStreaming((prev) =>
-        prev?.messageId === messageId
-          ? { ...prev, cancelling: false, pending: false, cancelError: "Could not stop. Try again." }
-          : prev,
-      );
-    }
-  }
-
-  function abandonCurrentStream() {
-    activeMessageIdRef.current = null;
-    confirmedStopMessageIdRef.current = null;
-    abortRef.current?.abort();
-    abortRef.current = null;
-    if (interruptedTimeoutRef.current !== null) {
-      clearTimeout(interruptedTimeoutRef.current);
-      interruptedTimeoutRef.current = null;
-    }
-    setStreaming(null);
-  }
-
   function handleNewConversation() {
     abandonCurrentStream();
     setActiveConversationId(null);
-    localMessagesConversationIdRef.current = null;
-    setLocalMessages([]);
-    setSendError(null);
+    resetTurnState();
   }
 
   function handleCheckAgain() {
@@ -673,8 +220,6 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     }
   }
 
-  const visibleMessages =
-    localMessagesConversationIdRef.current === activeConversationId ? localMessages : [];
   const visibleDispatchReceipt =
     streaming && !streaming.cancelling && !streaming.cancelled && !streaming.interrupted
       ? streaming.dispatchReceipt
@@ -686,9 +231,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       <ConversationList
         butlerName={butlerName}
         activeConversationId={activeConversationId}
-        onSelectConversation={(id) => {
+        onSelectConversation={(id, messageId) => {
           abandonCurrentStream();
           setActiveConversationId(id);
+          setPendingScrollMessageId(messageId ?? null);
           setSendError(null);
         }}
         onNewConversation={handleNewConversation}
@@ -755,7 +301,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             policy: contextPreview.policy,
             payload: contextPreview.context,
             included: includeContext,
-            onToggleIncluded: () => setIncludeContext((prev) => !prev),
+            onToggleIncluded: toggleIncludeContext,
           }}
         />
       </div>

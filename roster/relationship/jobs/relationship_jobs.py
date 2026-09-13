@@ -25,6 +25,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.identity import resolve_contacts_by_channel_bulk
 from butlers.modules.approvals.command_contracts import MEMORY_RECLASSIFY_COMMAND
+from butlers.modules.approvals.park import park_prepared_action
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +306,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         expires_at: datetime,
         cooldown_days: int | None = None,
         metadata: dict[str, Any] | None = None,
+        prepared_action_id: uuid.UUID | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early-exit signal)."""
         stats["candidates_proposed"] += 1
@@ -318,6 +320,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             expires_at=expires_at,
             cooldown_days=cooldown_days,
             metadata=metadata,
+            prepared_action_id=prepared_action_id,
         )
         status = result.get("status", "error")
         if status == "accepted":
@@ -542,21 +545,75 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             priority = _STALE_PRIORITY_MODERATE  # 1–2x cadence
 
         dedup_key = f"relationship:stale-contact:{contact_id}:{year_week}"
-        message = (
+        why = (
             f"{contact_name} is overdue for a check-in "
             f"({int(days_since)} days since last interaction, "
             f"cadence: {effective_cadence} days)."
         )
 
+        # bu-2jtfw.11: park a prepared reach-out alongside the informational
+        # candidate, so the digest can offer a door instead of only stating
+        # the fact. Deliberately silent (park_prepared_action never pushes) --
+        # the owner sees it only through this candidate's door.
+        #
+        # Idempotent by design: approvals_013's partial unique index rejects a
+        # second INSERT for the same deduplication_key while a prior row is
+        # pending/approved/rejected/abandoned, so a same-week re-run (or a
+        # week where the owner already decided) must reuse that row's id
+        # rather than re-park -- exactly the "re-run re-derives the same key
+        # and no-ops" contract this bead specifies.
+        prepared_dedup_key = f"relationship:prepared-reach-out:{contact_id}:{year_week}"
+        existing_prepared = await db_pool.fetchrow(
+            "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
+            "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
+            prepared_dedup_key,
+        )
+        if existing_prepared is not None:
+            prepared_action_id = existing_prepared["id"]
+        else:
+            prepared_action_id = uuid.uuid4()
+            draft_message = (
+                f"Hey {contact_name}, it's been a while since we caught up -- how have you been?"
+            )
+            try:
+                await park_prepared_action(
+                    db_pool,
+                    action_id=prepared_action_id,
+                    tool_name="notify",
+                    tool_args={
+                        "entity_id": str(entity_id),
+                        "message": draft_message,
+                        "intent": "send",
+                    },
+                    agent_summary=f"Prepared reach-out to {contact_name} (overdue check-in)",
+                    requested_at=now_utc,
+                    expires_at=stale_expires_at,
+                    why=why,
+                    deduplication_key=prepared_dedup_key,
+                )
+            except asyncpg.UniqueViolationError:
+                # A concurrent scan tick won the unique-key race. Resolve the
+                # durable winner rather than treating its benign conflict as
+                # a job error.
+                existing_prepared = await db_pool.fetchrow(
+                    "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
+                    "AND status IN ('pending', 'approved', 'rejected', 'abandoned')",
+                    prepared_dedup_key,
+                )
+                if existing_prepared is None:
+                    raise
+                prepared_action_id = existing_prepared["id"]
+
         should_continue = await _submit(
             priority=priority,
             category="stale-contact",
             dedup_key=dedup_key,
-            message=message,
+            message=why,
             expires_at=stale_expires_at,
             # A stale-contact candidate concerns this entity, but its weekly
             # scan boundary is not an event date and must not drive clustering.
             metadata={"entity_id": str(entity_id)},
+            prepared_action_id=prepared_action_id,
         )
         if not should_continue:
             logger.info(
@@ -2740,14 +2797,25 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
     async def _auto_retract_owner_fact(fact_id: uuid.UUID) -> bool:
         """Soft-retract an owner-entity fact (mark validity='retracted').
 
-        Mirrors the memory_forget tool's retraction SQL. Idempotent: only flips
-        rows still 'active'. Returns True on success, False on DB error.
+        Idempotent: only flips rows still 'active', leaving an already
+        'retracted'/'superseded' row untouched -- unlike memory_forget's
+        unconditional UPDATE, which has no such guard. When a row is actually
+        flipped, cascades the same memory_catalog disownment + entity_graph_edges
+        deletion forget_memory() performs, in the same transaction (bu-9ltqm).
+        Returns True on success, False on DB error.
         """
+        from butlers.modules.memory.storage import cascade_fact_retraction
+
         try:
-            await db_pool.execute(
-                "UPDATE facts SET validity = 'retracted' WHERE id = $1 AND validity = 'active'",
-                fact_id,
-            )
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "UPDATE facts SET validity = 'retracted' "
+                        "WHERE id = $1 AND validity = 'active' RETURNING id",
+                        fact_id,
+                    )
+                    if row is not None:
+                        await cascade_fact_retraction(conn, [row["id"]])
             return True
         except Exception:
             logger.exception(

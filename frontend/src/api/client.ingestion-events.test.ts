@@ -34,7 +34,35 @@ function mockEventsResponse(events: unknown[] = []) {
 // Import the function under test (after mock setup)
 // ---------------------------------------------------------------------------
 
-import { listIngestionEvents } from "./client.ts";
+import {
+  listIngestionEvents, getIngestionEvent, getIngestionEventSessions,
+  getIngestionWindowRollup, getIngestionEventReplays,
+  getIngestionEventSenderContact, getIngestionEventPayload,
+} from "./client.ts";
+
+it("forwards cancellation from each ingestion read to the underlying fetch", async () => {
+  const readers = [
+    (signal: AbortSignal) => listIngestionEvents({}, signal),
+    (signal: AbortSignal) => getIngestionEvent("event", signal),
+    (signal: AbortSignal) => getIngestionEventSessions("event", signal),
+    (signal: AbortSignal) => getIngestionWindowRollup({}, signal),
+    (signal: AbortSignal) => getIngestionEventsHistogram({ trace_id: "trace" }, signal),
+    (signal: AbortSignal) => getIngestionEventReplays("event", signal),
+    (signal: AbortSignal) => getIngestionEventSenderContact("event", signal),
+    (signal: AbortSignal) => getIngestionEventPayload("event", signal),
+  ];
+  for (const read of readers) {
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    );
+    const controller = new AbortController();
+    const request = read(controller.signal);
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // channels= CSV param
@@ -173,7 +201,6 @@ describe("getIngestionEventsHistogram", () => {
 // getIngestionWindowRollup — GET /api/ingestion/rollup (bu-q750c trace_id threading)
 // ---------------------------------------------------------------------------
 
-import { getIngestionWindowRollup } from "./client.ts";
 
 function mockRollupResponse(body: {
   events: number;

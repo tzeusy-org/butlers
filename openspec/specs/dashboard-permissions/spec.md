@@ -19,16 +19,36 @@ The dashboard SHALL have a page at `/settings/permissions` rendered in the Dispa
   - **Webhooks table**: list with add/edit/test/delete actions.
 
 #### Scenario: Matrix cell flip requires reason
-- **WHEN** a user flips a matrix cell from off to on or on to off
-- **THEN** a modal prompts for a `reason` text field
+- **WHEN** a user flips an explicit or inherited matrix cell from off to on or on to off
+- **THEN** the native cell button remains keyboard-operable and opens a modal that prompts for a `reason` text field
+- **AND** inherited cells remain visibly dim before mutation rather than being disabled, while explicit cells render foreground
 - **AND** the modal's submit button is disabled while `reason.trim()` is empty
 - **AND** on submit, `PUT /api/permissions/{butler}/{perm}` is called with `{granted, reason}`.
+
+#### Scenario: First inherited mutation becomes an explicit foreground cell
+- **WHEN** an operator submits a valid first grant or revoke for an inherited cell
+- **THEN** the matrix optimistically renders the requested `granted` value as explicit foreground state
+- **AND** a failed write restores the previous inherited dim state
+- **AND** a successful write retains the explicit state without requiring a new permissions model.
 
 #### Scenario: Audit reel filters operational noise
 - **WHEN** the audit reel loads its last-15 window
 - **THEN** it requests a privileged-action-only view (e.g. `GET /api/audit-log?limit=15&kind=privileged`) so that high-frequency operational rows — butler/switchboard heartbeats and routine GET traffic — are excluded
 - **AND** the rows shown are mutation/security actions (`permission.set`, `data.export`, `webhook.create|update|delete|test`, and similar), so a reader of a security surface sees security-relevant activity rather than heartbeat spam
 - **AND** when no privileged actions exist yet, the reel shows its empty state rather than padding with noise.
+
+#### Scenario: Audit reel distinguishes no history from an unavailable source
+- **WHEN** the privileged audit request succeeds with zero entries
+- **THEN** the reel SHALL show its calm no-history state and SHALL NOT render a degraded or retry state
+- **WHEN** the privileged audit request fails and no cached response is available
+- **THEN** the reel SHALL name the source as unavailable or degraded and provide a retry action that re-queries the privileged audit window
+- **AND** the reel MUST NOT render its no-history state, or imply that the failed request proves an empty audit history.
+
+#### Scenario: Audit reel retains cached rows under a degraded refresh
+- **WHEN** a previously successful privileged audit response is cached and a subsequent refresh fails
+- **THEN** the reel SHALL retain the cached privileged-action rows
+- **AND** it SHALL visibly label the source as unavailable or degraded and provide a retry action
+- **AND** it MUST NOT render its no-history state while the query is errored.
 
 ### Requirement: Permissions Matrix API
 The dashboard SHALL expose CRUD over the permissions matrix.
@@ -40,7 +60,7 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 
 #### Scenario: Inherited vs explicit cells
 - **WHEN** a butler × permission pair has **no explicit row** in `public.permissions`
-- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, so the UI can render it dim/non-editable to distinguish a default from an operator-set value
+- **THEN** that cell is returned with `inherited: true` and `granted` set to the system default for that permission, so the UI can render it dim and allow the owner to create an explicit override
 - **AND** a pair that **does** have a row is returned with `inherited: false` (explicit), rendered foreground.
 
 #### Scenario: Set permission requires reason
@@ -49,6 +69,14 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **AND** if `reason` is empty or missing, the response is `422 Unprocessable Entity` with body `{detail: {error: "reason_required"}}` (FastAPI wraps the `HTTPException.detail` payload; the frontend reads `body.detail.error`)
 - **AND** on success, `audit.append("permission.set", target=f"{butler}.{perm}", note=reason)` is invoked
 - **AND** the response includes the updated cell.
+
+#### Scenario: Mutation rejects values outside the live matrix vocabulary
+- **WHEN** `PUT /api/permissions/{butler}/{perm}` names a permission outside `ENFORCED_PERMISSIONS`
+- **THEN** the response is `422 Unprocessable Entity` with body `{detail: {error: "permission_not_enforced"}}`
+- **AND** no permissions row, `permission.set` audit row, or webhook dispatch is written.
+- **WHEN** the permission is enforced but `butler` has no row in `butler_registry`
+- **THEN** the response is `422 Unprocessable Entity` with body `{detail: {error: "butler_not_registered"}}`
+- **AND** no permissions row, `permission.set` audit row, or webhook dispatch is written.
 
 #### Scenario: Reason field rejects credential patterns
 - **WHEN** `PUT /api/permissions/{butler}/{perm}` is called with a `reason` that matches the case-insensitive pattern `(password|token|secret|api[_-]?key|credential|private[_-]?key)`

@@ -40,6 +40,8 @@ class RuntimeConfig:
     catalog_read_sensitivity: str = "normal"
     max_concurrent: int = 3
     max_queued: int = 10
+    tool_exposure_policy: str = "eager_filtered"
+    blind_spot_preamble_enabled: bool = True
     seeded_at: str | None = None
     updated_at: str | None = None
 
@@ -54,6 +56,20 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
         # Rolling startup can briefly project a pre-core_209 row shape. Missing
         # authority must remain compatible without ever granting more access.
         catalog_read_sensitivity = "normal"
+    try:
+        tool_exposure_policy = row["tool_exposure_policy"]
+    except (KeyError, IndexError):
+        # Rolling startup can briefly project a pre-core_224 row shape. Missing
+        # evidence must preserve the conservative eager behavior, never opt a
+        # butler into native discovery by omission.
+        tool_exposure_policy = "eager_filtered"
+    try:
+        blind_spot_preamble_enabled = bool(row["blind_spot_preamble_enabled"])
+    except (KeyError, IndexError):
+        # Rolling startup can briefly project a pre-core_228 row shape. Default
+        # to the preamble being active — matching the migration's own column
+        # default — never silently opting a butler out by omission.
+        blind_spot_preamble_enabled = True
 
     return RuntimeConfig(
         butler_name=row["butler_name"],
@@ -61,6 +77,8 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
         catalog_read_sensitivity=catalog_read_sensitivity,
         max_concurrent=row["max_concurrent"],
         max_queued=row["max_queued"],
+        tool_exposure_policy=tool_exposure_policy,
+        blind_spot_preamble_enabled=blind_spot_preamble_enabled,
         seeded_at=str(row["seeded_at"]) if row["seeded_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
     )
@@ -139,8 +157,9 @@ class RuntimeConfigAccessor:
         await self._pool.execute(
             f"""
             INSERT INTO {self._schema}.runtime_config
-                (butler_name, core_groups, catalog_read_sensitivity, max_concurrent, max_queued)
-            VALUES ($1, $2, $3, $4, $5)
+                (butler_name, core_groups, catalog_read_sensitivity, max_concurrent, max_queued,
+                 tool_exposure_policy)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (butler_name) DO NOTHING
             """,
             butler_name,
@@ -148,6 +167,7 @@ class RuntimeConfigAccessor:
             seed.catalog_read_sensitivity,
             seed.max_concurrent_sessions,
             seed.max_queued_sessions,
+            seed.tool_exposure_policy,
         )
 
         # Always read back the effective row (may be pre-existing)
@@ -168,3 +188,49 @@ class RuntimeConfigAccessor:
     def invalidate_cache(self) -> None:
         """Force the next ``get()`` call to query the database."""
         self._cache_time = float("-inf")
+
+    async def get_tool_exposure_policy(self) -> str:
+        """Return the current ``tool_exposure_policy``, bypassing the TTL cache.
+
+        This field is hot: the dashboard API writes it directly to the DB in
+        a process that may be separate from the daemon holding this accessor.
+        A cached :meth:`get` result can be up to ``ttl_s`` stale, which is
+        unacceptable for "the first session planned after a committed PATCH
+        must see the new policy". Every per-attempt caller MUST use this
+        method (not :meth:`get`) to resolve the effective exposure policy, so
+        correctness does not depend on any cross-process cache-invalidation
+        signal.
+
+        On DB failure: returns the stale cached policy if a prior ``get()``
+        or ``seed_if_empty()`` populated the cache, otherwise raises.
+        """
+        try:
+            row = await self._pool.fetchrow(
+                f"SELECT tool_exposure_policy FROM {self._schema}.runtime_config LIMIT 1"
+            )
+        except Exception:
+            if self._cache is not None:
+                logger.warning(
+                    "DB query failed for %s.runtime_config.tool_exposure_policy; "
+                    "returning stale cache",
+                    self._schema,
+                    exc_info=True,
+                )
+                return self._cache.tool_exposure_policy
+            raise
+
+        if row is None:
+            if self._cache is not None:
+                logger.warning(
+                    "runtime_config table empty for schema=%s; returning stale cache",
+                    self._schema,
+                )
+                return self._cache.tool_exposure_policy
+            raise RuntimeError(
+                f"No runtime_config row found in schema {self._schema} and no prior cache"
+            )
+
+        try:
+            return row["tool_exposure_policy"]
+        except (KeyError, IndexError):
+            return "eager_filtered"

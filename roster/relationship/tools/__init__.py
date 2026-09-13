@@ -95,9 +95,6 @@ from butlers.tools.relationship.notes import (
     note_list,
     note_search,
 )
-from butlers.tools.relationship.reach_out import (
-    reach_out_draft_create,
-)
 from butlers.tools.relationship.relationship_assert_fact import (
     PREFERS_CHANNEL_PREDICATE,
     AssertOutcome,
@@ -212,7 +209,6 @@ __all__ = [
     "note_create_for_entity",
     "note_list",
     "note_search",
-    "reach_out_draft_create",
     "relationship_add",
     "relationship_list",
     "relationship_remove",

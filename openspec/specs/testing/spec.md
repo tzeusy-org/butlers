@@ -247,6 +247,8 @@ Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with r
 ### Requirement: Pytest Run Verdicts Require a Positive Terminator
 A pytest run's outcome SHALL be established by positive evidence that the run finished — a summary line, or the process exit status — never by the absence of a failure line. A run that produced neither is UNKNOWN, and UNKNOWN SHALL NOT be treated as a pass.
 
+Where both terminators are present and the exit status alone cannot distinguish a failed run from an unfinished one, the verdict SHALL read them together. That is exactly one status: pytest's `2`, the *interrupted* run, which `--maxfail` produces on an ordinary test failure under xdist (the default parallel mode, since `addopts` carries `-n 3`; `make test-qg-serial` explicitly overrides it with `-n 0`). Reading it as UNKNOWN would make UNKNOWN the label on the most common red run there is, and UNKNOWN only carries weight while it stays rare.
+
 #### Scenario: Truncated log has no verdict
 - **WHEN** `scripts/pytest_gate.py verdict LOG` reads a log carrying neither a gate sentinel nor a pytest summary line, including the xdist truncation whose workers report `OSError: cannot send (already closed?)` after their controller is signal-killed
 - **THEN** it reports `UNKNOWN` and exits `2`, so a shell `&&` chain fails closed
@@ -254,8 +256,21 @@ A pytest run's outcome SHALL be established by positive evidence that the run fi
 
 #### Scenario: Sentinel carries the exit status and outranks the log prose
 - **WHEN** a `## pytest-gate exit=N` sentinel is present
-- **THEN** the verdict comes from `N` alone: `0` is PASS, `1` is FAILED, and `2`, `3`, `4`, `5`, or any `128+signal` value is UNKNOWN because the suite rendered no verdict
+- **THEN** the verdict comes from `N` alone for every value except `2`: `0` is PASS, `1` is FAILED, and `3`, `4`, `5`, or any `128+signal` value is UNKNOWN because the suite rendered no verdict
 - **AND** a nonzero sentinel outranks an earlier green summary line in the same log
+- **AND** `N` of `2` is resolved by the interrupted-run scenario below, because that status alone does not say whether the run was stopped by a failure or by something that reached no verdict
+
+#### Scenario: An interrupted run is read against its own counts
+- **WHEN** the sentinel reports exit `2`, the status pytest uses for an interrupted session and therefore the status an xdist `--maxfail` run produces on an ordinary test failure
+- **THEN** the log's last pytest summary line decides it: counts including `failed` or `error` are FAILED
+- **AND** exit `2` with no summary line at all is UNKNOWN, because the run stopped before establishing anything
+- **AND** exit `2` whose last summary line counts no failures — a `Ctrl-C` partway through a green run — is UNKNOWN and SHALL NOT be PASS, because the run never reached the tests it was interrupted before
+- **BECAUSE** the summary line is itself a positive terminator, so consulting it applies the rule twice rather than relaxing it; it may take exit `2` down to FAILED and never up to PASS
+
+#### Scenario: No other nonzero status is softened by a summary line
+- **WHEN** the sentinel reports `3`, `4`, `5`, or any `128+signal` value and the log also carries a pytest summary line
+- **THEN** the verdict is UNKNOWN regardless of what those counts say: exit `5` with a green summary is not a PASS, and a signal exit with a failing summary is not a FAILED
+- **BECAUSE** those statuses do not report an incomplete verdict awaiting corroboration, they report that no verdict exists — nothing was collected, the gate misfired, or the run was killed — and counts printed before that cannot contradict it
 
 #### Scenario: Summary line classified only on positive counts
 - **WHEN** no sentinel is present but a pytest summary line is
@@ -869,6 +884,85 @@ can be tied to concrete operational proof.
   classes (e.g. tests skipped because Docker was unavailable)
 - **AND** the record is captured as a CI artifact or log line that can be
   referenced from release notes
+
+### Requirement: Schema Stand-In Parity Is Complete
+A hand-provisioned table stand-in SHALL mirror the indexes its migration chain
+creates, and the parity guard SHALL diff them against the real table in both
+directions. An index is not decoration: a unique or partial index decides which
+rows the real table accepts, so a stand-in missing one produces a table that
+accepts writes production rejects while every assertion about it passes.
+
+Foreign keys and triggers SHALL remain excluded, and the reason SHALL remain
+documented where an engineer reconciling a stand-in will read it.
+
+A stand-in whose migration chain owns a schema SHALL declare the chain/schema
+pair used to materialise the real table, and the parity guard SHALL fail loudly
+when that metadata does not place the real table in the stand-in's
+`real_schema`.
+
+#### Scenario: An index the chain has and the stand-in lacks fails the guard
+- **WHEN** the migration chain creates an index on a stand-in's table that the
+  stand-in does not declare
+- **THEN** the parity guard fails and names that index, the chain that creates
+  it, and the declaration to reconcile
+- **AND** a unique partial index is reported the same way as any other, because
+  it is the case where a stale stand-in changes which writes succeed
+
+#### Scenario: An index the stand-in has and the chain lacks fails the guard
+- **WHEN** a stand-in declares an index the migration chain does not create
+- **THEN** the parity guard fails and names it as extra
+- **AND** a declared index whose materialised definition differs from the
+  chain's — different columns, order, uniqueness or predicate — is reported as
+  mismatched rather than accepted as present
+
+#### Scenario: The index diff is proven able to fail
+- **WHEN** a copy of a stand-in is deliberately blinded by removing its declared
+  indexes and diffed against the real chain
+- **THEN** a test asserts the guard reports the missing index
+- **AND** that test fails if the index comparison is removed from the guard, so
+  the arm cannot decay into a no-op that reports green
+
+#### Scenario: Foreign keys stay excluded so each table stays creatable alone
+- **WHEN** the real chain relates two stand-in tables through a foreign key
+- **THEN** the stand-in does not mirror it and the parity guard does not diff it
+- **AND** the exclusion's reason is documented: `pending_actions` and
+  `approval_rules` reference each other through a DEFERRABLE constraint, so
+  mirroring foreign keys would leave neither table independently creatable
+
+#### Scenario: Triggers stay excluded and say why
+- **WHEN** the real chain attaches a trigger to a stand-in's table
+- **THEN** the stand-in does not mirror it, and a fixture needing that behaviour
+  adds it beside the `ddl()` call or takes the real chain
+- **AND** the documented reason distinguishes triggers that are foreign keys
+  reimplemented in plpgsql — which read a sibling table unqualified and would
+  resolve against whatever `search_path` reached first — from self-contained
+  ones
+
+#### Scenario: A schema-owning chain is checked in its declared schema
+- **WHEN** a stand-in's migration chain must run under a non-default schema
+- **THEN** the parity fixture migrates that chain under the declared schema and
+  compares the real table there with the stand-in
+- **AND** a wrong chain/schema declaration fails loudly instead of passing with
+  an empty real-table comparison
+
+### Requirement: Quality-Gate Targets State Their Own Execution Mode
+Each quality-gate make target SHALL state its xdist worker count on its own command line rather than inheriting one. `pyproject.toml`'s `addopts` carries `-n 3 --dist loadfile` and is prepended to every pytest invocation in this repository, so an omitted `-n` is not "the default" — it is silently three workers, and a target whose meaning depends on the worker count cannot be read from its recipe.
+
+#### Scenario: The serial gate target really is serial
+- **WHEN** `make test-qg-serial` runs
+- **THEN** the pytest process it launches resolves `-n` to `0`, with `--dist` `no`, an empty `tx` list, and no xdist distributed session registered
+- **AND** the target passes `-n 0` explicitly to reach that state, because `-p no:xdist` would turn the `-n 3` inherited from `addopts` into an unrecognized-argument error instead of disabling it
+- **BECAUSE** the target exists for order-dependent debugging, and parallel workers reshuffle exactly the execution order it is reached for
+
+#### Scenario: The default gate target really is parallel
+- **WHEN** `make test-qg` runs
+- **THEN** the pytest process it launches registers an xdist distributed session with a nonzero worker count
+- **AND** the serial target's explicit `-n 0` does not reach it
+
+#### Scenario: The guard reads the merged value, never either half alone
+- **WHEN** a test pins a gate target's execution mode
+- **THEN** it obtains the target's arguments by expanding the recipe (`make -n`) rather than parsing Makefile variables, and obtains the effective `-n` from a real pytest process rather than from those arguments
+- **BECAUSE** the effective value does not exist until pytest merges `addopts` with argv: a Makefile grep for `-n 0` would pass while `addopts` changed the answer, which is how the serial target's documented meaning was inverted without any diff appearing to touch it
 
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be

@@ -1118,6 +1118,23 @@ async def _run_relationship_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_prepared_action_orphan_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expire stale origin='prepared' pending actions (bu-2jtfw.11).
+
+    Deterministic, zero-LLM. See
+    ``butlers.modules.approvals.operations.sweep_orphaned_prepared_actions``
+    for why this exists as a dedicated sweep rather than relying on the
+    existing on-touch expiry path.
+    """
+    del job_args
+    from butlers.modules.approvals.operations import sweep_orphaned_prepared_actions
+
+    return await sweep_orphaned_prepared_actions(pool)
+
+
 async def _run_relationship_interaction_sync_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1268,6 +1285,28 @@ async def _run_lifestyle_briefing_contribution_job(
     from butlers.jobs.briefing import run_lifestyle_briefing_contribution
 
     return await run_lifestyle_briefing_contribution(pool=pool, job_args=job_args)
+
+
+async def _run_lifestyle_taste_projection_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project connector evidence into Lifestyle's taste ledger without an LLM."""
+    del job_args
+    from butlers.tools.lifestyle import taste_ledger
+
+    sessions = await taste_ledger.backfill_from_listening_sessions(pool)
+    plays = await taste_ledger.backfill_from_track_plays(pool)
+    return {
+        "sessions": {
+            "works_created": sessions.works_created,
+            "signals_created": sessions.signals_created,
+        },
+        "track_plays": {
+            "works_created": plays.works_created,
+            "signals_created": plays.signals_created,
+        },
+    }
 
 
 async def _run_collect_briefing_contributions_job(
@@ -1930,6 +1969,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             "session_process_logs_prune": _run_session_process_logs_prune_job,
+            "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
         },
         "travel": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -2010,6 +2050,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "lifestyle": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
+            "taste_ledger_project": _run_lifestyle_taste_projection_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "switchboard": {

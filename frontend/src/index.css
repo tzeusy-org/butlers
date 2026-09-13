@@ -791,6 +791,25 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+ * Spend routing-rule jump-to flash (bu-lygbct)
+ *
+ * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * routing-rule row when an audit-log "rule:<id>" target is followed to
+ * /spend?rule=<id>.
+ * ---------------------------------------------------------------------------*/
+.spend-rule-highlight {
+  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  position: relative;
+  z-index: 20;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spend-rule-highlight {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--fg);
+  }
+}
+
+/* ---------------------------------------------------------------------------
  * Global prefers-reduced-motion floor (bu-86c4c.16, JARVIS audit move 11)
  *
  * Reduced-motion was previously honored "artisanally": a JS hook

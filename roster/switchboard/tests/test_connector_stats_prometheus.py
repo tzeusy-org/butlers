@@ -1,4 +1,4 @@
-"""Tests for connector stats and fanout endpoints.
+"""Tests for canonical connector stats and Switchboard ingestion fanout.
 
 The FANOUT endpoints remain Prometheus-backed (butlers-ufzc); the connector
 STATS time-series endpoint is now sourced entirely from the database (bu-c48im)
@@ -15,8 +15,6 @@ Tested behaviors:
   series and a meta.hourly_events_available degraded flag. Websocket connectors
   (e.g. home_assistant) that never write heartbeat counter-deltas still show
   non-zero volume via this DB path.
-- get_connector_fanout: queries Prometheus instant API for per-connector fanout;
-  returns empty list when PROMETHEUS_URL is not set (no DB fallback for fanout).
 - get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
   Falls back to DB-backed fan-out when PROMETHEUS_URL is not set or Prometheus
   returns an error.
@@ -28,6 +26,8 @@ import importlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+from butlers.api.routers import ingestion_connectors
 
 # ---------------------------------------------------------------------------
 # Helper: load the router module with a fresh import
@@ -122,16 +122,7 @@ class _FakeDB:
 async def test_get_connector_stats_empty_db_returns_empty():
     """get_connector_stats sources the series from the DB UNION. An empty pool
     (no events) returns an empty list with the degraded flag left honestly True."""
-    import importlib
-    from pathlib import Path
-
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_stats_nourl", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="telegram_bot",
         endpoint_identity="bot@123",
         period="24h",
@@ -146,9 +137,7 @@ async def test_get_connector_stats_empty_db_returns_empty():
 async def test_get_connector_stats_websocket_connector_db_sourced():
     """Websocket connectors (e.g. home_assistant) that never write heartbeat
     counter-deltas correctly show non-zero volume via the DB UNION path."""
-    import importlib
     from datetime import UTC, datetime
-    from pathlib import Path
 
     # Simulate two hours of UNION rows for a websocket connector
     bucket1 = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
@@ -180,13 +169,7 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
         ),
     ]
 
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_ws_test", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="ws://homeassistant.local:8123",
         period="24h",
@@ -237,13 +220,7 @@ async def test_get_connector_stats_7d_returns_daily_rows():
         ),
     ]
 
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_7d_test", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="email",
         endpoint_identity="user@example.com",
         period="7d",
@@ -269,14 +246,8 @@ async def test_get_connector_stats_omits_unrendered_legacy_counters():
     """
     from datetime import UTC, datetime
 
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_legacy_counter_contract", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
     for period in ("24h", "7d"):
-        result = await mod.get_connector_stats(
+        result = await ingestion_connectors._connector_stats_from_db(
             connector_type="telegram_bot",
             endpoint_identity="bot@123",
             period=period,
@@ -328,13 +299,7 @@ async def test_get_connector_stats_db_failure_degrades_honestly():
         ) -> tuple[dict, list[str]]:
             return {}, []
 
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_degrade_test", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    result = await mod.get_connector_stats(
+    result = await ingestion_connectors._connector_stats_from_db(
         connector_type="telegram_bot",
         endpoint_identity="bot@123",
         period="24h",
@@ -343,110 +308,6 @@ async def test_get_connector_stats_db_failure_degrades_honestly():
 
     assert result.data == []
     assert result.meta.hourly_events_available is False
-
-
-# ---------------------------------------------------------------------------
-# Tests: get_connector_fanout — no Prometheus URL → empty list
-# ---------------------------------------------------------------------------
-
-
-async def test_get_connector_fanout_no_prometheus_url():
-    """When PROMETHEUS_URL is not set, get_connector_fanout returns empty list."""
-    import os
-
-    os.environ.pop("PROMETHEUS_URL", None)
-
-    sys.modules.pop("switchboard_api_models", None)
-    import importlib
-    from pathlib import Path
-
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_fanout_nourl", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    result = await mod.get_connector_fanout(
-        connector_type="telegram_bot",
-        endpoint_identity="bot@123",
-        period="24h",
-        db=_FakeDB(),
-    )
-
-    assert result.data == []
-
-
-async def test_get_connector_fanout_returns_rows_from_prometheus():
-    """get_connector_fanout returns FanoutRow list from Prometheus instant query."""
-    fake_instant_result = [
-        {
-            "metric": {"target_butler": "health"},
-            "value": [1740000000, "15"],
-        },
-        {
-            "metric": {"target_butler": "relationship"},
-            "value": [1740000000, "7"],
-        },
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_instant_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
-
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_fanout_ok", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            result = await mod.get_connector_fanout(
-                connector_type="telegram_bot",
-                endpoint_identity="bot@123",
-                period="24h",
-                db=_FakeDB(),
-            )
-
-    assert result.data is not None
-    assert len(result.data) == 2
-    # Sorted by message_count DESC
-    assert result.data[0].target_butler == "health"
-    assert result.data[0].message_count == 15
-    assert result.data[1].target_butler == "relationship"
-    assert result.data[1].message_count == 7
-    for row in result.data:
-        assert row.connector_type == "telegram_bot"
-        assert row.endpoint_identity == "bot@123"
-
-
-async def test_get_connector_fanout_prometheus_error_returns_empty():
-    """When Prometheus returns an error, get_connector_fanout returns empty list."""
-    fake_error_result = [{"error": "timeout"}]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query",
-        new=AsyncMock(return_value=fake_error_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
-
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_fanout_err", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            result = await mod.get_connector_fanout(
-                connector_type="telegram_bot",
-                endpoint_identity="bot@123",
-                period="24h",
-                db=_FakeDB(),
-            )
-
-    assert result.data == []
 
 
 # ---------------------------------------------------------------------------
@@ -616,9 +477,6 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
 
     This test captures the actual SQL sent to the pool and asserts these properties.
     """
-    import importlib
-    from pathlib import Path
-
     captured_sql: list[str] = []
 
     class _CapturingPool:
@@ -645,13 +503,7 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
         ) -> tuple[dict, list[str]]:
             return {}, []
 
-    sys.modules.pop("switchboard_api_models", None)
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("_sw_router_sql_check", router_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    await mod.get_connector_stats(
+    await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="ws://ha.local:8123",
         period="24h",

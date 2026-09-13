@@ -121,11 +121,12 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 
 #### Scenario: Payload with tiered content (IngestPayloadV1)
 - **WHEN** `payload` is populated
-- **THEN** `raw` is the full provider payload dict (required non-None for Tier 1 "full", must be None for Tier 2 "metadata"), `normalized_text` is a non-empty string (the best available human-readable text), and `attachments` is an optional tuple of `IngestAttachment` records
+- **THEN** `raw` is the full provider payload dict (required non-None for Tier 1 "full", must be None for Tier 2 "metadata"), `normalized_text` is the best available human-readable text and is non-empty whenever the message carries text, a caption, or any other author-supplied text content, and `attachments` is an optional tuple of `IngestAttachment` records
+- **AND** `normalized_text` MAY be the empty string only for a captionless media message, per the Media Normalization Obligation below
 
 #### Scenario: Attachment metadata (IngestAttachment)
 - **WHEN** an attachment is included
-- **THEN** it contains: `media_type` (MIME type string), `storage_ref` (storage reference for lazy fetch), `size_bytes` (uncompressed size), `filename` (optional), `width` and `height` (optional, for images)
+- **THEN** it contains: `media_type` (MIME type string), `storage_ref` (storage reference for lazy fetch, `None` when materialization failed or has not yet occurred), `size_bytes` (uncompressed size; `0` when `storage_ref` is `None`, never `None` itself — the field is non-nullable), `filename` (optional), `width` and `height` (optional, for images)
 
 #### Scenario: Control directives (IngestControlV1)
 - **WHEN** `control` is populated
@@ -141,6 +142,25 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 - **WHEN** a message is ingested with `source.channel = "dashboard"`
 - **THEN** the message SHALL bypass discretion evaluation entirely (operator messages are always intentional)
 - **AND** the message proceeds directly to Switchboard classification/routing
+
+### Requirement: Media Normalization Obligation
+
+A connector that receives a message carrying non-text content (an image, document, or other media attachment, as opposed to plain text) MUST materialize an `IngestAttachment` for that content and MUST NOT synthesize a media-type descriptor (e.g. `"Photo"`, `"[Photo]"`, `"[Document]"`) into `normalized_text` as a substitute for the real content. `normalized_text` for such a message is the message's caption verbatim, or the empty string when there is no caption — never a fabricated placeholder that would let an uncaptioned attachment masquerade as text content a downstream consumer already understood.
+
+#### Scenario: Non-text content is materialized, not described
+- **WHEN** a connector receives a message whose content is non-text (e.g. a Telegram photo or document)
+- **THEN** the connector fetches the media bytes and stores them via BlobStore, producing an `IngestAttachment` with a real `storage_ref` on success
+- **AND** `payload.normalized_text` is set to the message's caption (or `""` when the message has no caption) — never a synthesized descriptor string
+
+#### Scenario: Materialization failure preserves the message
+- **WHEN** a connector's attempt to fetch or store the media bytes fails (source API error, expired reference, blob store unavailable)
+- **THEN** the connector still submits the envelope with `payload.normalized_text` set to the caption (or `""`), and an `IngestAttachment` whose `storage_ref` is `None` and `size_bytes` is `0`
+- **AND** the connector records the failure in `connectors.filtered_events` with `status='error'` for operator visibility
+- **AND** the message is NOT dropped solely because attachment materialization failed — a fetch failure degrades the attachment, it does not withhold the message
+
+#### Scenario: Idempotent materialization across replay
+- **WHEN** the same source message is processed more than once (retry, at-least-once redelivery, or an operator-triggered replay)
+- **THEN** the connector puts at most one blob per media id — a prior successful materialization for the same `(endpoint_identity, external_message_id, media_id)` is detected and its existing `storage_ref` is reused rather than re-fetching and re-storing the bytes
 
 ### Requirement: Deduplication Strategy
 The Switchboard SHALL compute a stable deduplication key for each ingest submission using a priority-based strategy. Concurrency control SHALL be enforced to prevent race conditions on concurrent submissions with the same key.
@@ -402,64 +422,33 @@ Connector statistics SHALL be exported via the OTel/Prometheus metrics pipeline.
 
 ---
 
-### Requirement: Dashboard Connector Page
-The dashboard frontend SHALL expose connector fleet monitoring at `/connectors`.
-
-#### Scenario: Connector overview cards
-- **WHEN** the `/connectors` page is loaded
-- **THEN** each registered connector shows: type icon, endpoint identity, liveness badge, health state, uptime percentage, last heartbeat age, today's ingestion count
-
-#### Scenario: Volume time series chart
-- **WHEN** a time period is selected (24h/7d/30d)
-- **THEN** a chart shows ingestion volume per connector
-
-#### Scenario: Fanout distribution matrix
-- **WHEN** fanout data is viewed
-- **THEN** a table/heatmap shows connector × butler routing distribution
-
-#### Scenario: Error log view
-- **WHEN** the error log is viewed
-- **THEN** recent connector errors are shown with timestamp, identity, state, and error message
-
 ### Requirement: Pydantic Response Models
-The system SHALL define core Pydantic response models for the connectors dashboard and API endpoints.
+The system SHALL define explicit Pydantic response models for the connector
+dashboard API. The wire contract SHALL be owned by the canonical
+`/api/ingestion/connectors` routes; frontend display models MAY project that
+wire data but SHALL NOT be presented as a second backend response contract.
 
 #### Scenario: ConnectorSummary model
 - **WHEN** a connector list response is serialized
 - **THEN** each entry includes: `connector_type`, `endpoint_identity`, `liveness`, `state`, `error_message`, `version`, `uptime_s`, `last_heartbeat_at`, `first_seen_at`, and optional `today` summary
 
-#### Scenario: ConnectorDetail model
-- **WHEN** a connector detail response is serialized
-- **THEN** it extends ConnectorSummary with: `instance_id`, `registered_via`, `checkpoint`, `counters`, `settings`
-- **AND** `settings` is an optional JSONB dict containing runtime-configurable connector settings (e.g. discretion thresholds)
+#### Scenario: Connector detail wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` serializes a
+  connector detail response
+- **THEN** it returns one flat detail record with registry identity/health
+  fields, registration metadata, lifetime/today counters, checkpoint fields,
+  settings, and the content-blind `auth` and `scopes` blocks
+- **AND** `settings` is an optional JSONB dict containing runtime-configurable
+  connector settings (e.g. discretion thresholds)
+- **AND** no token, refresh credential, or secret is present in the response
 
-#### Scenario: ConnectorStats model
-- **WHEN** a statistics response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `period`, `summary`, `timeseries`
-
-#### Scenario: ConnectorFanoutEntry model
-- **WHEN** a fanout response is serialized
-- **THEN** it includes: `connector_type`, `endpoint_identity`, `targets` (butler_name → message_count)
-
-### Requirement: Connector Settings API
-Runtime-configurable connector settings SHALL be stored in `connector_registry.settings` (JSONB) and managed via a dashboard API endpoint.
-
-#### Scenario: Settings storage
-- **WHEN** a connector has runtime-configurable settings
-- **THEN** they are stored in the `settings` JSONB column of `connector_registry`
-- **AND** NULL means no settings overrides; non-NULL holds a JSON object
-- **AND** settings are shallow-merged on update (top-level keys replaced, not deep-merged)
-
-#### Scenario: Settings update API
-- **WHEN** a PATCH request is sent to `/connectors/{connector_type}/{endpoint_identity}/settings`
-- **THEN** the body `{"settings": {...}}` is shallow-merged into the existing settings
-- **AND** the updated `ConnectorEntry` is returned
-- **AND** settings take effect on next connector restart (same semantics as cursor updates)
-
-#### Scenario: Discretion settings schema
-- **WHEN** a connector uses the shared discretion layer
-- **THEN** its `settings.discretion` object may contain: `weight_bypass` (float, default 1.0), `weight_fail_open` (float, default 0.5)
-- **AND** these thresholds are editable from the connector detail page in the dashboard
+#### Scenario: Connector statistics wire model
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}/stats` serializes
+  a statistics response
+- **THEN** it returns flat hourly or daily rows with connector identity, bucket,
+  ingested/failed/filtered counts, and health counters
+- **AND** the response metadata reports whether the durable history query was
+  available instead of fabricating a quiet series
 
 ### Requirement: Shared Discretion Layer
 Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
@@ -610,3 +599,206 @@ The architecture SHALL support scaling connectors beyond single-instance deploym
 #### Scenario: Checkpoint storage backends
 - **WHEN** scaling beyond single-instance DB-backed checkpoints
 - **THEN** supported backends include: PostgreSQL via `cursor_store` (v1 default), Redis, etcd, with CAS-based conflict resolution
+
+### Requirement: Persisted operational role on connector_registry
+
+`connector_registry` SHALL record each row's operational role explicitly, in a
+column, rather than leaving it to be inferred by readers.
+
+The role SHALL be one of:
+
+- `runtime_instance` — an executable connector process. The only role that
+  carries runtime-health authority.
+- `checkpoint` — persisted cursor state for one stream of a parent runtime
+  instance. It has no process, therefore no liveness and no health.
+- `unknown` — the role has not been established.
+
+A `checkpoint` row SHALL additionally record `parent_endpoint_identity`: the
+`endpoint_identity` of the runtime instance it belongs to, within the same
+`connector_type`.
+
+#### Scenario: Role column present and constrained
+
+- **WHEN** `connector_registry` is at the most recent migration head
+- **THEN** the table SHALL include `operational_role`, `NOT NULL`, defaulting to
+  `unknown`
+- **AND** the table SHALL include a nullable `parent_endpoint_identity`
+- **AND** a value outside `runtime_instance | checkpoint | unknown` SHALL be
+  rejected by a CHECK constraint
+- **AND** every existing column SHALL be unchanged in type, default, and
+  constraint
+
+#### Scenario: A new row is unclassified, not live
+
+- **WHEN** a row is inserted without an explicit `operational_role`
+- **THEN** its role SHALL be `unknown`
+- **AND** it SHALL NOT be counted as a runtime instance by any read path
+
+### Requirement: Producers write their own operational role
+
+The role SHALL be written from the provenance of the write — which producer
+created or claimed the row — and SHALL NOT be derived from the content or shape
+of the opaque `endpoint_identity` string.
+
+#### Scenario: A heartbeat claims the row
+
+- **WHEN** the `connector.heartbeat` tool persists a heartbeat for
+  `(connector_type, endpoint_identity)`
+- **THEN** that row's `operational_role` SHALL be set to `runtime_instance`,
+  whether the row is newly registered or already existed
+
+#### Scenario: A checkpoint save declares what kind of row it is creating
+
+`save_cursor` SHALL require its caller to declare the cursor's ownership; the
+declaration has no default, so a connector cannot create a row without saying
+which kind it is.
+
+- **WHEN** `save_cursor` inserts a row that did not exist, and the caller names
+  a `parent_endpoint_identity`
+- **THEN** that row's `operational_role` SHALL be `checkpoint`
+- **AND** its `parent_endpoint_identity` SHALL be that identity
+
+- **WHEN** `save_cursor` inserts a row that did not exist, and the caller
+  declares that the cursor key IS the connector's own runtime identity
+- **THEN** that row's `operational_role` SHALL be `unknown` — unclaimed until a
+  heartbeat proves a process owns it
+- **AND** it SHALL NOT be `checkpoint`, because it is not storage state
+  belonging to a parent
+
+- **AND** `save_cursor` SHALL NOT write `runtime_instance` in either case:
+  persisting a cursor is not evidence that a process is running
+
+A row created by `save_cursor` therefore SHALL NOT be a `checkpoint` with a NULL
+`parent_endpoint_identity`. A NULL parent on a `checkpoint` row means the row was
+orphaned before this rule existed, and never that its writer omitted a value.
+
+#### Scenario: A checkpoint save never demotes a runtime instance
+
+- **WHEN** `save_cursor` writes to a row that already exists
+- **THEN** the row's `operational_role` SHALL be left unchanged
+- **AND** a previously recorded `parent_endpoint_identity` SHALL NOT be cleared
+
+Most connectors checkpoint under the same identity they heartbeat with. Were the
+conflict branch to re-stamp the role, a live connector would demote itself out of
+the fleet roster on its next cursor save. Role ownership is therefore one-way: a
+heartbeat promotes, and nothing demotes.
+
+#### Scenario: A connector with multi-dimensional cursor keys names its parent
+
+- **WHEN** a connector persists cursors under a key that carries dimensions
+  beyond its heartbeat identity — for example one cursor per account and per
+  resource
+- **THEN** it SHALL pass its canonical heartbeat identity as the cursor's
+  `parent_endpoint_identity`
+
+#### Scenario: A heartbeat written by SQL claims the role like any other
+
+- **WHEN** a connector keeps a registry row's `last_heartbeat_at` current by
+  writing the column directly rather than through the `connector.heartbeat` tool
+- **THEN** that write SHALL also set `operational_role` to `runtime_instance`
+
+Writing a heartbeat is what claims a row, regardless of which code path writes
+it. A producer that refreshes liveness but leaves the role alone strands its own
+identities in whatever state something else happened to create them in.
+
+### Requirement: Backfill classifies existing rows from persisted evidence
+
+The migration that introduces the role SHALL classify pre-existing rows from
+evidence already stored on them, deterministically and idempotently.
+
+#### Scenario: Evidence of a process means runtime instance
+
+- **WHEN** an existing row carries a process identity or any heartbeat
+  timestamp
+- **THEN** the backfill SHALL classify it `runtime_instance`
+
+Both facts can only be written by the heartbeat producer.
+
+#### Scenario: A cursor with no process is storage
+
+- **WHEN** an existing row has no process identity, no heartbeat, and a
+  persisted cursor
+- **THEN** the backfill SHALL classify it `checkpoint`
+
+#### Scenario: No evidence stays unknown
+
+- **WHEN** an existing row has no process identity, no heartbeat, and no cursor
+- **THEN** it SHALL remain `unknown`
+- **AND** the backfill SHALL NOT guess a role for it
+
+#### Scenario: Parent attachment reads the registry's own runtime rows
+
+- **WHEN** the backfill attaches a checkpoint to a parent
+- **THEN** it SHALL select the longest `runtime_instance` identity of the same
+  `connector_type` that the checkpoint's identity extends by a `:`-delimited
+  suffix
+- **AND** a checkpoint with no such runtime instance SHALL be left with a NULL
+  parent rather than attached to an approximate one
+
+This is connector-agnostic: it matches against identities the registry already
+holds instead of pattern-matching one connector's key shape.
+
+### Requirement: Canonical Connector Settings API
+
+Runtime-configurable connector settings SHALL be stored in
+`connector_registry.settings` (JSONB) and managed through
+`PATCH /api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`.
+
+#### Scenario: Settings storage
+
+- **WHEN** a connector has runtime-configurable settings
+- **THEN** they are stored in the `settings` JSONB column of
+  `connector_registry`
+- **AND** NULL means no settings overrides; non-NULL holds a JSON object
+- **AND** settings are shallow-merged on update (top-level keys replaced, not
+  deep-merged)
+
+#### Scenario: Settings update API
+
+- **WHEN** a PATCH request is sent to
+  `/api/ingestion/connectors/{connector_type}/{endpoint_identity}/settings`
+- **THEN** the body `{"settings": {...}}` is shallow-merged into the existing
+  settings
+- **AND** the updated `ConnectorDetailEntry` is returned
+- **AND** each setting takes effect at its documented connector reload boundary
+- **AND** `flush_interval_s` takes effect on the next flush scanner cycle
+  without a connector restart
+
+#### Scenario: Discretion settings schema
+
+- **WHEN** a connector uses the shared discretion layer
+- **THEN** its `settings.discretion` object may contain: `weight_bypass` (float,
+  default 1.0), `weight_fail_open` (float, default 0.5)
+- **AND** these thresholds are editable from the connector detail page in the
+  dashboard
+
+### Requirement: Available connector discovery catalog
+
+`GET /api/ingestion/connectors/available` SHALL return the connector types the
+framework can deploy independently of `connector_registry` rows.  Each profile
+is a deployability descriptor, not an orchestration-capability advertisement.
+
+#### Scenario: Profile has the exact discovery shape
+
+- **WHEN** a client successfully requests
+  `GET /api/ingestion/connectors/available`
+- **THEN** every item in the response `data` array SHALL contain exactly
+  `connector_type`, `channel`, `provider`, and `display_name`
+- **AND** every item SHALL contain no additional fields
+- **AND** the response model and dashboard API type SHALL represent that same
+  four-field shape
+
+#### Scenario: Catalog does not depend on deployed instances
+
+- **WHEN** no connector instance is registered in `connector_registry`
+- **THEN** `GET /api/ingestion/connectors/available` SHALL still return the
+  framework's deployable connector catalog
+- **AND** the request SHALL not require a connector-registry database read
+
+#### Scenario: Backfill orchestration remains an internal protocol
+
+- **WHEN** a connector participates in backfill orchestration
+- **THEN** it SHALL use the Switchboard-owned `backfill.poll` and
+  `backfill.progress` MCP tools defined by the connector protocol
+- **AND** the available-connector discovery response SHALL not advertise
+  backfill support or infer backfill behavior for any connector type

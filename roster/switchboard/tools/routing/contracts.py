@@ -250,8 +250,29 @@ class IngestPayloadV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     raw: dict[str, Any] | None = None
-    normalized_text: NonEmptyStr
+    # Not a NonEmptyStr: a captioned-media message's normalized_text is the
+    # caption, which is legitimately "" when the sender attached media with no
+    # caption. The connector must never synthesize a placeholder like "Photo"
+    # to satisfy a non-empty constraint (bu-2jtfw.7) — the real content lives
+    # in `attachments`, not in this field.
+    normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
     attachments: tuple[IngestAttachment, ...] | None = None
+
+    @model_validator(mode="after")
+    def _validate_normalized_text_or_attachments(self) -> IngestPayloadV1:
+        """normalized_text stays non-empty for text/caption content.
+
+        It MAY be empty only for a captionless media message, i.e. when
+        `attachments` carries the real content instead (bu-2jtfw.7).
+        """
+        if not self.normalized_text and not self.attachments:
+            raise PydanticCustomError(
+                "normalized_text_or_attachments_required",
+                "payload.normalized_text must be non-empty unless payload.attachments "
+                "is non-empty.",
+                {},
+            )
+        return self
 
 
 PayloadType = Literal["conversation_history"]

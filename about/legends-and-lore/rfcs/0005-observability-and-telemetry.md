@@ -197,7 +197,7 @@ On startup, `ButlerMetrics.ensure_registered()` emits zero-value adds on key UpD
 ## Integration
 
 - **RFC 0001:** Telemetry initialized at phase 2. Spawner metrics track concurrency and session lifecycle.
-- **RFC 0002:** All tool registrations pass through the logging proxy, which creates OTel spans via `tool_span`.
+- **RFC 0002:** Core tool registrations pass through `_ToolCallLoggingMCP`, which logs and captures calls without creating spans; module tool registrations pass through `_SpanWrappingMCP`, which creates `butler.tool.<name>` spans via `tool_span` in addition to logging and capturing.
 - **RFC 0003:** Trace context propagates through route envelopes. Switchboard metrics cover ingestion, triage, and thread affinity.
 - **RFC 0007:** The dashboard traces page provides a distributed trace index and span waterfall visualization.
 

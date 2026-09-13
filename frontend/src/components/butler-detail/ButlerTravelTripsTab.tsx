@@ -455,7 +455,7 @@ interface TripRosterProps {
 function TripRoster({ onTripClick }: TripRosterProps) {
   const [page, setPage] = useState(0);
 
-  const { data: tripsResp, isLoading } = useTravelTrips({
+  const { data: tripsResp, isLoading, refetch } = useTravelTrips({
     offset: page * TRIPS_PAGE_SIZE,
     limit: TRIPS_PAGE_SIZE,
   });
@@ -463,11 +463,25 @@ function TripRoster({ onTripClick }: TripRosterProps) {
   const trips = tripsResp?.data ?? [];
   const total = tripsResp?.meta?.total ?? 0;
   const hasMore = tripsResp?.meta?.has_more ?? false;
+  // Trip ids excluded from `trips` because their row could not be normalized —
+  // disclose rather than let the roster read as a complete, truthful list
+  // (mirrors the KPI strip's unreadable_trip_ids treatment, bu-2jtfw.1).
+  const unreadableTripIds = tripsResp?.meta?.unreadable_trip_ids ?? [];
   const totalPages = Math.max(1, Math.ceil(total / TRIPS_PAGE_SIZE));
   const currentPage = page + 1;
 
   return (
     <Panel title="Trips roster" sub="all trips" span={4}>
+      {unreadableTripIds.length > 0 && (
+        <div className="pb-3">
+          <SourceDegradedNote
+            label="Trips roster"
+            detail={`partial: ${unreadableTripIds.length} trip${unreadableTripIds.length === 1 ? "" : "s"} excluded (unreadable)`}
+            onRetry={() => void refetch()}
+            testId="trip-roster-partial-degraded"
+          />
+        </div>
+      )}
       {isLoading ? (
         <div className="space-y-2" data-testid="trip-roster-loading">
           {Array.from({ length: 3 }, (_, i) => (
@@ -544,8 +558,34 @@ interface TripDetailDrawerProps {
   onClose: () => void;
 }
 
+/** Builds the disclosure detail line for the drawer's excluded-rows note. */
+function buildUnreadableDetail(counts: { label: string; count: number }[]): string {
+  const parts = counts
+    .filter((c) => c.count > 0)
+    .map((c) => `${c.count} ${c.label}${c.count === 1 ? "" : "s"}`);
+  return `partial: ${parts.join(", ")} excluded (unreadable)`;
+}
+
 function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
-  const { data: summary, isLoading } = useTravelTripSummary(tripId);
+  const { data: summary, isLoading, refetch } = useTravelTripSummary(tripId);
+
+  // Sub-collection ids excluded from the summary because their row could not
+  // be normalized — never render the drawer's lists as truthfully complete
+  // over a real partial failure (mirrors /upcoming's unreadable_trip_ids,
+  // bu-2jtfw.1 / bu-kvaxq).
+  const unreadableLegIds = summary?.unreadable_leg_ids ?? [];
+  const unreadableAccommodationIds = summary?.unreadable_accommodation_ids ?? [];
+  const unreadableReservationIds = summary?.unreadable_reservation_ids ?? [];
+  const unreadableDocumentIds = summary?.unreadable_document_ids ?? [];
+  const unreadablePartyIds = summary?.unreadable_party_ids ?? [];
+  const unreadableConnectionIds = summary?.unreadable_connection_ids ?? [];
+  const unreadableCount =
+    unreadableLegIds.length +
+    unreadableAccommodationIds.length +
+    unreadableReservationIds.length +
+    unreadableDocumentIds.length +
+    unreadablePartyIds.length +
+    unreadableConnectionIds.length;
 
   return (
     <Sheet open={tripId != null} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -560,7 +600,7 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
             {isLoading ? "Loading…" : (summary?.trip.name ?? "Trip")}
           </SheetTitle>
           <SheetDescription className="sr-only">
-            Trip detail, including timeline, alerts, and accommodations.
+            Trip detail, including traveller party, connection integrity, timeline, alerts, and accommodations.
           </SheetDescription>
         </SheetHeader>
 
@@ -585,6 +625,21 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
             </p>
           ) : (
             <>
+              {unreadableCount > 0 && (
+                <SourceDegradedNote
+                  label="Trip detail"
+                  detail={buildUnreadableDetail([
+                    { label: "leg", count: unreadableLegIds.length },
+                    { label: "accommodation", count: unreadableAccommodationIds.length },
+                    { label: "reservation", count: unreadableReservationIds.length },
+                    { label: "document", count: unreadableDocumentIds.length },
+                    { label: "traveller", count: unreadablePartyIds.length },
+                    { label: "connection", count: unreadableConnectionIds.length },
+                  ])}
+                  onRetry={() => void refetch()}
+                  testId="trip-drawer-partial-degraded"
+                />
+              )}
               {/* Trip meta */}
               <div data-testid="drawer-trip-meta">
                 <p className="text-xs text-muted-foreground mb-1">Destination</p>
@@ -596,6 +651,58 @@ function TripDetailDrawer({ tripId, onClose }: TripDetailDrawerProps) {
                 <div className="mt-2">
                   <StatusBadge status={summary.trip.status} />
                 </div>
+              </div>
+
+              {/* Traveller party */}
+              <div data-testid="drawer-party">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Traveller party</p>
+                {summary.party.length === 0 ? (
+                  <EmptyStateLine>No travellers recorded.</EmptyStateLine>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {summary.party.map((traveller) => (
+                      <Badge key={traveller.id} variant="outline" className="text-xs">
+                        {traveller.display_name ?? "Unnamed traveller"}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Connection integrity */}
+              <div data-testid="drawer-connections">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Connections</p>
+                {summary.connections.length === 0 && unreadableConnectionIds.length > 0 ? (
+                  <EmptyStateLine>Connection data unavailable.</EmptyStateLine>
+                ) : summary.connections.length === 0 &&
+                  summary.connection_reason === "no_connection_on_journey" ? (
+                  <EmptyStateLine>No connection on this journey.</EmptyStateLine>
+                ) : summary.connections.length === 0 ? (
+                  <EmptyStateLine>Connection data unavailable.</EmptyStateLine>
+                ) : (
+                  <ul className="divide-y divide-border/60">
+                    {summary.connections.map((connection) => {
+                      const airport = connection.evidence.connecting_airport;
+                      return (
+                        <li
+                          key={`${connection.inbound_leg_id}-${connection.outbound_leg_id}`}
+                          className="py-2 flex items-baseline justify-between gap-3 text-sm"
+                          data-testid="drawer-connection-row"
+                        >
+                          <span>
+                            {typeof airport === "string" ? airport : "Transfer"}
+                            {connection.available_minutes != null && (
+                              <span className="text-muted-foreground ml-2 font-mono tnum">
+                                {connection.available_minutes} min
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-xs font-mono">{connection.verdict}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
 
               {/* Alerts */}

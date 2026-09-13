@@ -32,6 +32,7 @@ from butlers.api.models.memory import (
     CompactionLogEntry,
     ConsolidationStatus,
     EntityDetail,
+    EntityGraphCoverage,
     EntityInfoEntry,
     EntitySummary,
     Episode,
@@ -470,27 +471,37 @@ async def get_memory_stats(
             "total_rules": await pool.fetchval(f"SELECT count(*) FROM {rules_relation}") or 0,
             # Maturity buckets exclude forgotten rules (metadata->>'forgotten' —
             # rules have no validity column, so this JSONB flag is the sole
-            # soft-delete signal; see forget_memory/run_decay_sweep in storage.py).
-            # A forgotten rule is not a live belief and must not inflate any
+            # soft-delete signal; see forget_memory/run_decay_sweep in storage.py)
+            # and retired rules (retired_at IS NOT NULL, bu-6t8ix.3 — a
+            # deliberately decommissioned rule that stays on the books but no
+            # longer fires). Neither is a live belief and must not inflate any
             # maturity count, matching the memory_stats MCP tool's convention.
             "candidate_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'candidate'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "established_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'established'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "proven_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'proven'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
             )
             or 0,
             "anti_pattern_rules": await pool.fetchval(
                 f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'anti_pattern'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
+                " AND retired_at IS NULL"
+            )
+            or 0,
+            "retired_rules": await pool.fetchval(
+                f"SELECT count(*) FROM {rules_relation} WHERE retired_at IS NOT NULL"
             )
             or 0,
             "last_consolidation_at": last_run["consolidated_at"] if last_run else None,
@@ -574,6 +585,7 @@ async def get_memory_stats(
         totals.established_rules += row["established_rules"]
         totals.proven_rules += row["proven_rules"]
         totals.anti_pattern_rules += row["anti_pattern_rules"]
+        totals.retired_rules += row["retired_rules"]
 
         run_at = row["last_consolidation_at"]
         if run_at is not None and (
@@ -1273,7 +1285,7 @@ async def list_rules(
             f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
-            f" last_evaluated_at, tags, metadata"
+            f" last_evaluated_at, tags, metadata, retired_at"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1333,7 +1345,7 @@ async def get_rule(
                 "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                 " effectiveness_score, applied_count, success_count, harmful_count,"
                 " source_episode_id, source_butler, created_at, last_applied_at,"
-                " last_evaluated_at, tags, metadata"
+                " last_evaluated_at, tags, metadata, retired_at"
                 f" FROM {relation} WHERE id = $1",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
@@ -1355,17 +1367,108 @@ async def get_rule(
 
 
 # ---------------------------------------------------------------------------
+# PATCH /api/memory/rules/{rule_id}/retire
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/rules/{rule_id}/retire", response_model=ApiResponse[Rule])
+async def retire_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Rule]:
+    """Retire a rule: it stops firing but stays on the books (sets retired_at).
+
+    Distinct from ``POST /facts/{id}/retract``: a retired rule may still be
+    correct — the owner has just decided it no longer needs enforcing.
+    ``metadata->>'forgotten'`` remains the "this rule was wrong" signal;
+    ``retired_at`` is "this is deliberately decommissioned". Delegates to
+    ``storage.retire_rule`` on whichever butler pool owns the rule, then
+    returns the updated row so the rule-detail commit footer can reflect the
+    retirement immediately. Idempotent: retiring an already-retired rule
+    keeps its original ``retired_at``.
+
+    Errors:
+    - 400: ``rule_id`` is not a valid UUID.
+    - 404: no memory pool holds a rule with this id.
+    - 503: no database pools are available.
+    """
+    from butlers.modules.memory import storage as _storage
+
+    try:
+        rule_uuid = _uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid rule id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    # Locate the pool that owns this rule, retire it there, and re-fetch the
+    # updated row. See confirm_fact for the schema-loss classification rule.
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
+        try:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "rules")
+            episodes_relation = _memory_relation(db, name, "episodes")
+            tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            retired = await _storage.retire_rule(
+                pool,
+                rule_uuid,
+                memory_schema=memory_schema,
+            )
+            if not retired:
+                continue
+            row = await pool.fetchrow(
+                _with_source_episode_status(
+                    "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+                    " effectiveness_score, applied_count, success_count, harmful_count,"
+                    " source_episode_id, source_butler, created_at, last_applied_at,"
+                    " last_evaluated_at, tags, metadata, retired_at"
+                    f" FROM {relation} WHERE id = $1",
+                    episodes_relation=episodes_relation,
+                    tombstones_relation=tombstones_relation,
+                ),
+                rule_uuid,
+            )
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="rule retirement source unavailable")
+            logger.debug(
+                "Skipping pool %s while retiring rule %s (pool lacks memory tables or failed)",
+                name,
+                rule_id,
+                exc_info=True,
+            )
+            continue
+        if row is None:
+            continue
+        return ApiResponse[Rule](data=_row_to_rule(row))
+
+    _raise_memory_detail_miss(resource="Rule", tracker=tracker)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/memory/catalog/search — fleet-knowledge cross-butler discovery
 # ---------------------------------------------------------------------------
 
 
-def _row_to_catalog_result(r: dict, *, mode: str) -> MemoryCatalogSearchResult:
+def _row_to_catalog_result(
+    r: dict, *, mode: str, coverage: dict[_uuid.UUID, tuple[int, int]]
+) -> MemoryCatalogSearchResult:
     """Convert a public.memory_catalog search result dict to the API model.
 
     ``r`` is a plain dict (``dict(asyncpg.Record)``, per ``search_catalog``)
     carrying the catalog's raw columns plus a mode-specific score key
     (``similarity``, ``rank``, or ``rrf_score``) — normalized here to a single
     ``score`` field regardless of which search mode produced the row.
+
+    ``coverage`` is the ``entity_id -> (known, withheld)`` mapping from
+    ``coverage_for_entities`` (RFC 0031 Slice 4); a row with no ``entity_id``
+    or no edges of its own gets ``graph_coverage=None``.
     """
     if mode == "semantic":
         score = r.get("similarity")
@@ -1375,6 +1478,15 @@ def _row_to_catalog_result(r: dict, *, mode: str) -> MemoryCatalogSearchResult:
         score = r.get("rrf_score")
 
     valid_at = r.get("valid_at")
+    entity_id_val = r.get("entity_id")
+    graph_coverage = None
+    if entity_id_val:
+        counts = coverage.get(_uuid.UUID(str(entity_id_val)))
+        if counts is not None:
+            graph_coverage = EntityGraphCoverage(
+                relationships_known=counts[0], relationships_withheld=counts[1]
+            )
+
     return MemoryCatalogSearchResult(
         id=str(r["id"]),
         source_schema=r["source_schema"],
@@ -1386,7 +1498,7 @@ def _row_to_catalog_result(r: dict, *, mode: str) -> MemoryCatalogSearchResult:
         summary=r.get("summary") or "",
         predicate=r.get("predicate"),
         scope=r.get("scope"),
-        entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
+        entity_id=str(entity_id_val) if entity_id_val else None,
         object_entity_id=str(r["object_entity_id"]) if r.get("object_entity_id") else None,
         valid_at=valid_at.isoformat() if hasattr(valid_at, "isoformat") else valid_at,
         confidence=float(r["confidence"]) if r.get("confidence") is not None else None,
@@ -1394,6 +1506,7 @@ def _row_to_catalog_result(r: dict, *, mode: str) -> MemoryCatalogSearchResult:
         retention_class=r.get("retention_class"),
         sensitivity=r.get("sensitivity"),
         score=float(score) if score is not None else None,
+        graph_coverage=graph_coverage,
     )
 
 
@@ -1424,7 +1537,13 @@ async def search_memory_catalog(
     Results are provenance pointers, not canonical memories — use
     ``source_schema``/``source_table``/``source_id`` to fetch the full record
     from the owning butler's own schema if the full item is needed.
+
+    Each result anchored on an entity (``entity_id`` set) also carries
+    ``graph_coverage`` — the entity's live/withheld relationship counts from
+    ``public.entity_graph_edges`` (RFC 0031 Slice 4), computed on the same
+    authoritative Switchboard pool as the catalog query itself.
     """
+    from butlers.core.entity_graph_edges import coverage_for_entities
     from butlers.modules.memory.search import load_catalog_read_policy, search_catalog
     from butlers.modules.memory.tools import get_embedding_engine
 
@@ -1450,7 +1569,10 @@ async def search_memory_catalog(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    results = [_row_to_catalog_result(r, mode=mode) for r in rows]
+    entity_ids = {_uuid.UUID(str(r["entity_id"])) for r in rows if r.get("entity_id")}
+    coverage = await coverage_for_entities(pool, list(entity_ids)) if entity_ids else {}
+
+    results = [_row_to_catalog_result(r, mode=mode, coverage=coverage) for r in rows]
     return ApiResponse[list[MemoryCatalogSearchResult]](data=results)
 
 
@@ -2464,6 +2586,7 @@ def _row_to_rule(r) -> Rule:
         last_evaluated_at=str(r["last_evaluated_at"]) if r["last_evaluated_at"] else None,
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
+        retired_at=str(r["retired_at"]) if r.get("retired_at") else None,
     )
 
 
@@ -2574,6 +2697,70 @@ async def get_butler_memory_stats(
     )
 
     return ApiResponse[ButlerMemoryStats](data=stats)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/butlers/{name}/memory/episodes/{episode_id}/retry-consolidation
+# ---------------------------------------------------------------------------
+
+
+@butler_memory_router.post(
+    "/{name}/memory/episodes/{episode_id}/retry-consolidation",
+    response_model=ApiResponse[Episode],
+)
+async def retry_episode_consolidation(
+    name: str,
+    episode_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Episode]:
+    """Reset a dead_letter episode to 'pending' so it is reconsolidated.
+
+    Delegates to ``storage.retry_dead_letter_episode`` on the named butler's
+    own pool — backs the daybook register's per-episode retry-consolidation
+    verb (the dead-letter action the memory attention rail card links to).
+    The reset clears the terminal retry state (attempts, dead_letter_reason,
+    lease) so the episode is unconditionally eligible for the next scheduled
+    ``run_consolidation`` sweep, not merely relabelled.
+
+    Errors:
+    - 404: Butler is not registered, or no episode with this id exists on it.
+    - 400: ``episode_id`` is not a valid UUID.
+    - 409: The episode exists but is not in dead_letter state.
+    - 503: The butler has no reachable memory pool.
+    """
+    from butlers.modules.memory import storage as _storage
+
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    try:
+        eid = _uuid.UUID(episode_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid episode id (must be a UUID)") from exc
+
+    try:
+        pool = db.pool(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    memory_schema = _memory_source_schema(db, name)
+    try:
+        updated = await _storage.retry_dead_letter_episode(pool, eid, memory_schema=memory_schema)
+    except _storage.EpisodeNotDeadLetterError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    except Exception as exc:
+        if _is_missing_memory_schema_error(
+            exc, schema_absent_at_start=_memory_schema_absent_at_start(db, name)
+        ):
+            raise HTTPException(
+                status_code=503, detail=f"Memory tables unavailable for butler '{name}'"
+            ) from exc
+        raise
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    return ApiResponse[Episode](data=_row_to_episode(updated))
 
 
 # ---------------------------------------------------------------------------
@@ -2840,7 +3027,10 @@ async def inspect_memory(
             # Forgotten rules are excluded unconditionally here (no override,
             # unlike GET /rules) — this is the inspect search bar, and the MCP
             # recall/keyword_search paths (search.py) already hard-exclude
-            # forgotten rules from search results the same way.
+            # forgotten rules from search results the same way. Retired rules
+            # (retired_at, bu-6t8ix.3) are NOT excluded — operators still need
+            # to find them here — but retired_at is selected so the caller can
+            # tell them apart from live rules.
             forgotten_clause = "(metadata->>'forgotten')::boolean IS NOT TRUE"
             rule_args: list[object] = []
             idx = 1
@@ -2858,7 +3048,7 @@ async def inspect_memory(
                     f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                     f" effectiveness_score, applied_count, success_count, harmful_count,"
                     f" source_episode_id, source_butler, created_at, last_applied_at,"
-                    f" last_evaluated_at, tags, metadata"
+                    f" last_evaluated_at, tags, metadata, retired_at"
                     f" FROM {rules_relation}{rule_cond}"
                     f" ORDER BY created_at DESC"
                     f" LIMIT ${idx}",

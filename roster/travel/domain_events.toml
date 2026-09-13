@@ -14,7 +14,7 @@
 
 [[event]]
 type = "travel.trip_booked"
-schema_version = 1
+schema_version = 2
 summary = "record_booking created a brand-new trip container from an ingested booking."
 retention_policy = "standard"
 reaction_expectation = "expected"
@@ -29,7 +29,7 @@ optional_fields = ["name", "destination", "start_date", "end_date"]
 
 [[event]]
 type = "travel.trip_active"
-schema_version = 1
+schema_version = 2
 summary = "The travel context producer observed a trip transition into its active window."
 retention_policy = "standard"
 reaction_expectation = "expected"

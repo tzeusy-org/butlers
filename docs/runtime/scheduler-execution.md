@@ -48,6 +48,12 @@ The daemon calls `tick()` at a regular interval. Each tick:
 
 Dispatch failures are logged but do not prevent subsequent tasks from running. The error is stored in `last_result` for operator visibility.
 
+## Task Continuity (opt-in)
+
+A prompt-mode task can set `continuity = true` (per-task, defaulting to `false` --- a task without it behaves exactly as before this existed) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.
+
+At the next opted-in dispatch, `tick()` reads that live row and appends a `## Task Continuity — <task_name>` block naming the previous session, its age, and its content --- or, if the task has run under continuity but never called `carry_forward`, an honest "the last run recorded no carry-forward" block, never silence. This is a general primitive for the pattern the chronicler's day-close cache implements bespoke (`src/butlers/chronicler/day_close_writer.py`); migrating that hook onto this layer is a deliberate non-goal until a regression test proves equivalence (bu-2jtfw.13).
+
 ## Staggering
 
 When multiple butler instances share the same cron schedule, simultaneous dispatch would create a thundering herd. The scheduler applies deterministic staggering:
@@ -79,6 +85,7 @@ Each scheduled task can specify a `complexity` value that influences model selec
 | `last_run_at` | timestamptz | Most recent execution time |
 | `last_result` | jsonb | Result or error from last dispatch |
 | `until_at` | timestamptz | Auto-disable after this time |
+| `continuity` | bool | Opt in to task-continuity injection (default `false`) |
 
 ## Verification
 

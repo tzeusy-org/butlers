@@ -3,8 +3,9 @@
 No connector observes any computer today. For a 10-12h weekday of desktop
 work, the Chronicler's day reconstruction shows nothing — the single
 largest coverage gap identified in the 2026-07-05 Chronicler workday-
-visibility deep dive (`docs/plans/2026-07-05-chronicler-time-inference-
-deep-dive.md`, epic bu-whhll, Tier 1 "gold standard" signal). ActivityWatch
+visibility deep dive (retired; see the [successor map](../../../docs/archive/README.md),
+epic bu-whhll, Tier 1 "gold standard" signal). The maintained layer contract is
+[chronicler-intent-evidence-activity](../../specs/chronicler-intent-evidence-activity/spec.md). ActivityWatch
 is an open-source, local-first active-window/AFK tracker already suited to
 this: it runs on the owner's machine(s) and exposes a local REST API with
 window-focus and AFK-status history.

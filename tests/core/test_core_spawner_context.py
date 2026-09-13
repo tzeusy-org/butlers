@@ -14,7 +14,11 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
-from butlers.core.spawner_context import ComposedPrompt, compose_prompt_digest
+from butlers.core.spawner_context import (
+    ComposedPrompt,
+    _compose_system_prompt,
+    compose_prompt_digest,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -185,11 +189,11 @@ class TestSpawnedPromptParityAcrossRuntimes:
 class TestComposePromptDigest:
     """bu-hz0g0: per-layer token digest for the composed system prompt.
 
-    ``compose_prompt_digest`` mirrors ``_compose_system_prompt``'s parameters
-    exactly so the two are always called with identical inputs at the spawn
-    seam; it estimates each layer's token count at chars/4 (the same
-    heuristic ``butlers.modules.pipeline._load_email_history`` uses) rather
-    than requiring a tokenizer on the spawn hot path.
+    ``compose_prompt_digest`` measures the five layers represented by the
+    ledger schema at the spawn seam. It estimates each layer's token count at
+    chars/4 (the same heuristic
+    ``butlers.modules.pipeline._load_email_history`` uses) rather than
+    requiring a tokenizer on the spawn hot path.
     """
 
     def test_all_layers_present_estimates_chars_over_four(self) -> None:
@@ -222,3 +226,35 @@ class TestComposePromptDigest:
         digest = compose_prompt_digest("base", "", general_timezone_instruction="")
         assert digest.memory_context_tokens == 0
         assert digest.timezone_instruction_tokens == 0
+
+
+class TestBlindSpotPreambleComposition:
+    """bu-2jtfw.13 AC1: a blind-spot-free composition is byte-identical to today's."""
+
+    def test_none_blind_spot_preamble_leaves_composition_unchanged(self) -> None:
+        without_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+        )
+        with_none_param = _compose_system_prompt(
+            "base",
+            "memory",
+            general_timezone_instruction="tz",
+            routing_instructions="routing",
+            context_preamble="context",
+            blind_spot_preamble=None,
+        )
+        assert without_param == with_none_param
+
+    def test_blind_spot_preamble_layers_between_context_and_routing(self) -> None:
+        composed = _compose_system_prompt(
+            "base",
+            None,
+            context_preamble="context",
+            blind_spot_preamble="blind-spot-block",
+            routing_instructions="routing",
+        )
+        assert composed == "base\n\ncontext\n\nblind-spot-block\n\nrouting"

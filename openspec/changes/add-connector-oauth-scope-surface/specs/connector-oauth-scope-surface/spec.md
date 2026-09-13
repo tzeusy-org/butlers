@@ -318,10 +318,10 @@ a second recovery state machine.
 #### Scenario: Stored status is normalized for typed recovery
 
 - **WHEN** the stored `auth_status` is `expired` or `rotation-needed`
-- **THEN** `ConnectorDetail.auth.status` and any summary recovery field SHALL
+- **THEN** `ConnectorDetailEntry.auth.status` and any summary recovery field SHALL
   be `needs_reauth`
-- **AND** `ConnectorDetail.auth.recovery_reason` SHALL retain the exact stored
-  value
+- **AND** `ConnectorDetailEntry.auth.recovery_reason` SHALL retain the exact
+  stored value
 - **AND** the typed recovery resolver SHALL then select generic Google OAuth,
   connector-owned Spotify Passport/PKCE, or unsupported behavior by connector
   type
@@ -330,7 +330,11 @@ a second recovery state machine.
 
 ### Requirement: Dashboard API response shape for auth and scopes blocks
 
-The connector-detail API response SHALL include an `auth` block and a `scopes` block under additive fields, with a stable shape across OAuth and non-OAuth connectors. The endpoint is `GET /api/ingestion/connectors/{type}/{identity}`, owned by `connector-base-spec` per spec.md:388-392.
+The flat `ConnectorDetailEntry` connector-detail API response SHALL include an
+`auth` block and a `scopes` block under additive fields, with a stable shape
+across OAuth and non-OAuth connectors. The endpoint is
+`GET /api/ingestion/connectors/{type}/{identity}`, owned by
+`connector-base-spec` per spec.md:435-443.
 
 #### Scenario: `auth` block for OAuth connectors
 
@@ -408,12 +412,23 @@ The connector-detail API response SHALL include an `auth` block and a `scopes` b
 - **AND** this requirement SHALL preserve the credential-masking boundary in
   `core-credentials/spec.md`
 
+#### Scenario: Opaque observed values are omitted from the public projection
+
+- **WHEN** a persisted `observed_scopes` value matches the case-insensitive
+  predicate `^(?:[A-Za-z0-9._~+/=-]{40,}|Bearer\s+\S+)$`
+- **THEN** the dashboard projection SHALL omit that value entirely from
+  `scopes[]` and from public auth-status classification
+- **AND** it SHALL NOT emit a replacement scope row, error row, or error field
+- **AND** well-formed non-opaque scope identifiers, including structured
+  provider scope URLs and legitimate `extra` scopes, SHALL remain eligible for
+  their ordinary public projection
+
 #### Scenario: Additive field rule
 
 - **WHEN** this capability is implemented
 - **THEN** the addition of `auth` and `scopes` blocks SHALL be purely
-  additive to the existing `ConnectorDetail` response model from
-  `connector-base-spec/spec.md:388-392`
+  additive to the existing flat `ConnectorDetailEntry` response model from
+  `connector-base-spec/spec.md:435-443`
 - **AND** no existing field shape SHALL change
 
 ### Requirement: Spotify connector authority and Passport projection
@@ -974,7 +989,7 @@ SHALL be uniform regardless of provider.
 - Reference token-introspection implementation —
   `src/butlers/api/routers/oauth.py:164,1547-1620`
 - Connector base spec (extension target for additive columns + Pydantic) —
-  `openspec/specs/connector-base-spec/spec.md:319-348,381-419`
+  `openspec/specs/connector-base-spec/spec.md:425-451`
 - Spotify connector OAuth scope declaration —
   `openspec/specs/connector-spotify/spec.md:229-247`
 - Spotify connector PKCE and Passport projection authority —

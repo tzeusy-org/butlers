@@ -47,12 +47,21 @@ As of migration `core_073`, `model`, `runtime_type`, `args`, and `session_timeou
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` retains only the cold operational fields --- `core_groups`,
-`max_concurrent`, `max_queued` --- which are seeded from `[butler.runtime_seed]` in `butler.toml` on
-first boot, read through the 30s TTL cache in `RuntimeConfigAccessor`
-(`src/butlers/core/runtime_config.py`), edited via `GET/PATCH /api/butlers/{name}/runtime-config`,
-and require a daemon restart to take effect. Do not look for model settings on the runtime-config
-surface, and do not add operational limits to the catalog.
+`{schema}.runtime_config` is no longer cold-only. It holds `core_groups`, `max_concurrent`, and
+`max_queued` (cold: require a daemon restart to take effect) alongside `catalog_read_sensitivity`
+and, as of migration `core_224`, `tool_exposure_policy` (hot: a PATCH takes effect for the next
+planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
+`butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
+(`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
+`field_tiers` map.
+
+Cold fields are read through the 30s TTL cache in `RuntimeConfigAccessor`
+(`src/butlers/core/runtime_config.py`). `tool_exposure_policy` is closed to `eager_filtered` (default,
+conservative) or `auto`, and every per-attempt caller MUST resolve it through
+`RuntimeConfigAccessor.get_tool_exposure_policy()`, which always reads the DB directly instead of the
+TTL cache --- the dashboard API and the butler daemon can be separate processes, so a cached read
+cannot guarantee the first session planned after a committed PATCH sees the new policy. Do not look
+for model settings on the runtime-config surface, and do not add operational limits to the catalog.
 
 ### Verification evidence is not routing evidence
 
@@ -164,7 +173,7 @@ The quota system prevents runaway costs by limiting token consumption per model 
 
 `record_token_usage()` writes to `public.token_usage_ledger` after each session completes. This is best-effort: errors are logged and never propagate to the caller.
 
-The ledger also carries a per-layer token digest of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). Both are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
+The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
 
 ## Resolution Flow in the Spawner
 

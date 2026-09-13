@@ -612,12 +612,14 @@ async def test_callback_provider_error_redirects_with_state_context(app, monkeyp
     assert _validate_and_consume_state(state) is None
 
 
-async def test_callback_provider_error_persists_observable_audit_outcome(app, monkeypatch):
+async def test_callback_provider_error_persists_observable_audit_outcome(
+    app, monkeypatch, synthetic_oauth_provider
+):
     """A callback failure must remain visible to the audit-derived Issues feed."""
     monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
     _make_app(app)
     state = _generate_state()
-    _store_state(state, provider="spotify", page_of_origin="secrets")
+    _store_state(state, provider=synthetic_oauth_provider, page_of_origin="secrets")
     append = AsyncMock(return_value=1)
     monkeypatch.setattr(oauth_module._audit, "append", append)
 
@@ -625,7 +627,8 @@ async def test_callback_provider_error_persists_observable_audit_outcome(app, mo
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(
-            "/api/oauth/spotify/callback", params={"error": "access_denied", "state": state}
+            f"/api/oauth/{synthetic_oauth_provider}/callback",
+            params={"error": "access_denied", "state": state},
         )
 
     assert resp.status_code == 302
