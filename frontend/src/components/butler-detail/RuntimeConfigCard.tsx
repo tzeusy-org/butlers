@@ -13,7 +13,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  useButlerMcpTools,
   useButlerModules,
   usePatchRuntimeConfig,
   useRuntimeConfig,
@@ -58,7 +57,6 @@ function FieldTierBadge({ tier }: { tier: "hot" | "cold" }) {
 
 export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps) {
   const { data, isLoading, isError, error } = useRuntimeConfig(butlerName);
-  const registeredTools = useButlerMcpTools(butlerName);
   const moduleHealth = useButlerModules(butlerName);
   const patchMutation = usePatchRuntimeConfig(butlerName);
   const [editState, setEditState] = useState<RuntimeConfigPatch>({});
@@ -136,11 +134,9 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
   );
   const moduleRows = moduleHealth.isError ? null : moduleHealth.data?.data;
   const failedModules = moduleRows ? moduleRows.filter((module) => module.status === "error") : [];
-  const registeredNames = registeredTools.isError
-    ? null
-    : registeredTools.data?.data.map((tool) => tool.name);
   const declaredToolNames = config.declared_tool_names;
   const effectiveToolNames = config.effective_tool_names;
+  const registeredNames = config.registered_tool_names;
   const registrationFailures = config.tool_registration_failures ?? [];
   const failedRegistrationNames = new Set(
     registrationFailures.map((failure) => failure.tool_name),
@@ -202,9 +198,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
             </div>
             <div className="rounded bg-muted/40 p-2">
               <p className="text-lg font-semibold">
-                {registeredTools.isError || !registeredTools.data
-                  ? "—"
-                  : registeredTools.data.data.length}
+                {registeredNames?.length ?? "—"}
               </p>
               <p className="text-[10px] uppercase text-muted-foreground">registered tools</p>
             </div>
@@ -225,9 +219,6 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
                   </p>
                 ))}
               </>
-            )}
-            {registeredTools.isError && (
-              <p className="text-destructive">Registered surface unavailable.</p>
             )}
             {toolSnapshotUnavailable && (
               <p className="text-destructive">Declaration snapshot unavailable.</p>
