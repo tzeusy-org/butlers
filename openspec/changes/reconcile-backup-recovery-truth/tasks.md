@@ -12,8 +12,10 @@
   duplicate whole-requirement block.
 - [ ] 1.3 Obtain fresh independent security, database, API, and UX review of the
   exact spec head. Any semantic correction invalidates that review.
-- [ ] 1.4 After review passes, obtain separate owner adoption naming the exact
-  reviewed artifact. Do not treat review, PR state, or merge as adoption.
+- [ ] 1.4 After review passes, obtain owner adoption naming this exact reviewed
+  umbrella artifact and, if its scope will govern implementation, separately
+  naming the exact reviewed `artifact-bound-filtered-event-restore-verification`
+  artifact. Do not treat review, CI, PR state, or merge as adoption of either.
 
 ## 2. Future producer and coverage work after adoption
 
@@ -28,7 +30,8 @@
   verify every expected schema/table/sequence owner, role attribute/membership,
   function owner/definer/body/search path, explicit/default ACL, RLS flag/policy,
   and absence of unexpected privilege state before cleanup.
-- [ ] 2.3 Reuse the exact artifact/filtered-event manifest pair from
+- [ ] 2.3 Only after separate exact-artifact review and owner adoption, reuse the
+  proposed artifact/filtered-event manifest pair from
   `artifact-bound-filtered-event-restore-verification` and advance that one
   sibling to `backup-recovery.v2`. Bind the FK-graph, credential-inventory, and
   ownership-policy digests plus one aggregate credential count; do not add a

@@ -119,8 +119,10 @@ trusted-bootstrap state.
 
 ### 4. One versioned manifest binds coverage without becoming dashboard authority
 
-The adopted `REQ-deployment-hardening-008` manifest stays authoritative for the
-exact `connectors.filtered_events` scope. The producer-first rollout advances
+The proposed `REQ-deployment-hardening-008` manifest remains unapproved and
+cannot govern implementation until its exact artifact receives separate review
+and owner adoption. If adopted, it is authoritative only for the exact
+`connectors.filtered_events` scope. The producer-first rollout then advances
 that single sibling to `backup-recovery.v2`, retaining the filtered-event scope
 and adding only a digest of the ordered retained relation/FK graph, a digest of
 the authoritative credential-store inventory, one aggregate credential-row
@@ -300,9 +302,11 @@ are separate gates.
 2. Repair producer coverage first: schema-qualified foreign-key closure,
    credential inclusion assertions, fixed failure classification, and no
    partial publication. Preserve current artifact consumers.
-3. Implement the already-adopted artifact/manifest pair and protected attempt
-   transition, then prove bootstrap-first ownership/ACL recovery and real
-   dump-to-scratch behavior in disposable PostgreSQL.
+3. Only after the owner separately adopts the exact proposed
+   `artifact-bound-filtered-event-restore-verification` artifact, implement its
+   artifact/manifest pair and protected attempt transition, then prove
+   bootstrap-first ownership/ACL recovery and real dump-to-scratch behavior in
+   disposable PostgreSQL.
 4. Extend the existing API and frontend additively. Old frontends ignore
    `recovery_proof`; new frontends treat an absent field as `unproven`.
 5. Complete result-aware retry and attention work through the existing active
