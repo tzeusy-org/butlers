@@ -269,47 +269,14 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
     from butlers.testing.migration import create_migrated_test_pool
 
     pool = await create_migrated_test_pool(postgres_container, chains=["core"])
-    clear_read = asyncio.Event()
-    groups_read = asyncio.Event()
-    clear_written = asyncio.Event()
     clear_row_locked = asyncio.Event()
     groups_lock_attempted = asyncio.Event()
 
     class InterleavingPool:
-        """Force the historical pool-level read/write race against real PostgreSQL."""
-
-        def __init__(self) -> None:
-            self.initial_reads: set[str] = set()
+        """Provide instrumented connections for the competing PATCHes."""
 
         def acquire(self):
             return AcquiredConnection()
-
-        async def fetchrow(self, query, *args):
-            row = await pool.fetchrow(query, *args)
-            task = asyncio.current_task()
-            task_name = task.get_name() if task is not None else ""
-            if (
-                task_name in {"clear-reason", "change-groups"}
-                and task_name not in self.initial_reads
-            ):
-                self.initial_reads.add(task_name)
-                if task_name == "clear-reason":
-                    clear_read.set()
-                    await asyncio.wait_for(groups_read.wait(), timeout=5)
-                else:
-                    groups_read.set()
-                    await asyncio.wait_for(clear_read.wait(), timeout=5)
-            return row
-
-        async def execute(self, query, *args):
-            task = asyncio.current_task()
-            task_name = task.get_name() if task is not None else ""
-            if task_name == "change-groups":
-                await asyncio.wait_for(clear_written.wait(), timeout=5)
-            result = await pool.execute(query, *args)
-            if task_name == "clear-reason":
-                clear_written.set()
-            return result
 
     class AcquiredConnection:
         async def __aenter__(self):
@@ -324,12 +291,15 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
 
         def __init__(self, connection) -> None:
             self.connection = connection
+            self.first_read = True
 
         def transaction(self):
             return self.connection.transaction()
 
         async def fetchrow(self, query, *args):
-            if "FOR UPDATE" in query:
+            if self.first_read:
+                self.first_read = False
+                assert "FOR UPDATE" in query, "the authoritative read must lock runtime_config"
                 task = asyncio.current_task()
                 task_name = task.get_name() if task is not None else ""
                 if task_name == "clear-reason":
@@ -417,9 +387,6 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
             reason is not None and set(groups) < set(declared_groups)
         )
     finally:
-        clear_read.set()
-        groups_read.set()
-        clear_written.set()
         clear_row_locked.set()
         groups_lock_attempted.set()
         await pool.close()

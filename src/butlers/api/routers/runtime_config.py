@@ -337,7 +337,7 @@ async def patch_runtime_config(
 
         declared_groups = _declared_core_groups(roster_dir, name)
 
-        # Build SET clauses from supplied patch fields.
+        # Collect supplied patch fields.
         if "core_groups" in patch.model_fields_set:
             updates["core_groups"] = patch.core_groups
         if "core_groups_narrowing_reason" in patch.model_fields_set:
