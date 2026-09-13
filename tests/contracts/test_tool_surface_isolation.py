@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from butlers.config import ButlerType
+from butlers.config import ButlerType, load_config
 from butlers.core_tools import ToolContext, register_all_core_tools
 
 pytestmark = pytest.mark.contract
@@ -141,6 +142,27 @@ class TestEphemeralMcpConfig:
         }.isdisjoint(domain_tools)
         assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(switchboard_tools)
         assert {"deadline_create", "delegate_wake", "notify"}.isdisjoint(messenger_tools)
+
+    async def test_roster_authority_registers_cross_butler_and_fleet_case_tools(self):
+        """The three affected roster declarations reach the real dispatcher seam."""
+        roster = Path(__file__).resolve().parents[2] / "roster"
+        for butler_name in ("finance", "relationship"):
+            config = load_config(roster / butler_name)
+            registrations = await _record_core_registrations(
+                butler_name,
+                ButlerType.BUTLER,
+                core_groups=frozenset(config.runtime_seed.core_groups or ()),
+            )
+            names = {name for name, _group in registrations}
+            assert {"delegate_ask", "delegate_receive", "open_case"} <= names
+
+        switchboard = load_config(roster / "switchboard")
+        registrations = await _record_core_registrations(
+            "switchboard",
+            ButlerType.STAFFER,
+            core_groups=frozenset(switchboard.runtime_seed.core_groups or ()),
+        )
+        assert "open_case" in {name for name, _group in registrations}
 
     def test_spawner_generates_single_butler_mcp_url(self):
         """RFC 0002: runtime_mcp_url generates a URL for exactly one butler.
