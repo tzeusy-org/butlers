@@ -177,7 +177,20 @@ enabled = true
 risk_tier = "medium"
 
 [modules.relationship]
-groups = ["contacts", "interactions", "management", "tracking"]
+# The full relationship surface is manifesto-owned: richer contact context,
+# social dates/gifts/groups, notes, relationship edges, and entity resolution
+# are all part of the personal-CRM promise rather than optional integrations.
+groups = [
+    "contacts",
+    "contacts_extended",
+    "interactions",
+    "relationships",
+    "social",
+    "notes",
+    "tracking",
+    "management",
+    "entity",
+]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

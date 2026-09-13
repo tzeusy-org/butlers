@@ -9,6 +9,7 @@ import {
   getButler,
   getButlerConfig,
   getButlerModules,
+  getButlerMcpTools,
   getButlerSkills,
   getButlers,
   getButlersBoard,
@@ -83,6 +84,16 @@ export function useButlerModules(name: string) {
   return useQuery({
     queryKey: ["butlers", name, "modules"],
     queryFn: () => getButlerModules(name),
+    enabled: !!name,
+    refetchInterval: BUTLERS_POLL_MS,
+  });
+}
+
+/** Fetch the handler names actually registered on a butler's live MCP server. */
+export function useButlerMcpTools(name: string) {
+  return useQuery({
+    queryKey: ["butlers", name, "mcp", "tools"],
+    queryFn: () => getButlerMcpTools(name),
     enabled: !!name,
     refetchInterval: BUTLERS_POLL_MS,
   });
