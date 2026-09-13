@@ -16,7 +16,8 @@ mapping.
 
 ## What Changes
 
-- Add one future endpoint, `POST /api/home/person-mappings`, accepting a bounded
+- Add one future endpoint, `POST /api/home/person-mappings`, accepting a raw
+  encoded request body bounded to 32,768 octets before JSON decoding and a
   batch of exact, already-observed `person.<slug>` IDs and existing live person
   entity UUIDs. Neither identifier appears in the URL.
 - Require the existing fail-closed `require_dashboard_owner_control` boundary

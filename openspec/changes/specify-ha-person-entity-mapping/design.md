@@ -76,8 +76,15 @@ byte-for-byte Home Assistant ID and then canonical UUID, so batch order does
 not change request identity. Neither digest leaves the server-side receipt
 record.
 
-The body is limited to 32 KiB and one through 50 mappings. Each object permits
-only the two named fields. `ha_person_id` is accepted byte-for-byte only when it
+The raw encoded HTTP request body is limited to exactly 32,768 octets and the
+decoded object to one through 50 mappings. After owner authentication but before
+UTF-8 or JSON decoding, a bounded reader counts the actual streamed octets and
+stops on octet 32,769, retains at most those first 32,769 octets, and reads no
+later chunks. `Content-Length` is neither required nor trusted to accept or
+reject the request, so an absent, understated, overstated, or conflicting header
+and chunked delivery follow the same measured-body rule. JSON whitespace and
+escape spellings count exactly as transmitted. Each object permits only the two
+named fields. `ha_person_id` is accepted byte-for-byte only when it
 matches `\Aperson\.[a-z0-9_]+\Z` and is at most 255 UTF-8 bytes; it is never
 trimmed, case-folded, normalized, completed, or resolved from a name.
 `entity_id` must be a lowercase hyphenated RFC 4122 UUID string. A repeated
@@ -219,9 +226,13 @@ set is already present after the transaction. On success,
 zero.
 
 Non-2xx responses use RFC 0007's standard error envelope and a fixed code and
-message. Every post-authentication terminal response includes a receipt; its
-structured `error.details` contains only that receipt, the completeness flag,
-and aggregate count fields. A mapping or
+message. An authenticated encoded body over 32,768 octets is the sole pre-decode
+exception: it returns `413` with fixed code `REQUEST_BODY_TOO_LARGE`, fixed
+message `Request body exceeds 32 KiB.`, no `details`, and no receipt. It performs
+no JSON decode, actor derivation, pool acquisition, protected-state read, or
+generic/explicit audit operation. Every later post-authentication terminal
+response includes a receipt; its structured `error.details` contains only that
+receipt, the completeness flag, and aggregate count fields. A mapping or
 idempotency conflict is `409`; structural/duplicate input or an invalid entity
 reference is `422`; an unavailable database is `503`. Errors never identify the
 offending member, distinguish missing from wrong-type references, echo a value,
@@ -255,6 +266,8 @@ absent. Success audit evidence participates in the mapping transaction. A
 refusal may commit its receipt/idempotency and content-blind audit evidence while
 committing zero mapping rows; inability to audit must never turn a refusal into
 permission or a partial write.
+The pre-decode oversize result emits no explicit audit event and never reaches
+the generic audit middleware body-capture path.
 
 Application and access logs use only the route template, fixed outcome/failure
 category, and aggregate counts. They never log the request URL as supplied,
