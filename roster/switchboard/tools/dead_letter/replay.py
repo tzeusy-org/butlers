@@ -46,6 +46,7 @@ async def replay_dead_letter_request(
             replayed_at
         FROM dead_letter_queue
         WHERE id = $1
+        FOR UPDATE
         """,
         dead_letter_id,
     )
@@ -114,7 +115,7 @@ async def replay_dead_letter_request(
             new_request_id,
             json.dumps(request_context),
             json.dumps(original_payload),
-            original_payload.get("content", ""),
+            original_payload.get("message_text") or original_payload.get("content", ""),
             json.dumps(
                 {
                     "replayed_from_dead_letter": str(dead_letter_id),
@@ -133,6 +134,7 @@ async def replay_dead_letter_request(
                 replay_outcome = 'success',
                 updated_at = now()
             WHERE id = $2
+              AND replayed_at IS NULL
             """,
             new_request_id,
             dead_letter_id,
