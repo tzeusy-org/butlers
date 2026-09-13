@@ -256,12 +256,12 @@ class TestResolveOwnerChannelViaDefiner:
         assert contact.entity_id == entity_id
         assert is_primary is True
 
-        # The candidate array must include both the verbatim and telegram-prefixed forms.
+        # One typed universe includes both verbatim and prefixed handle forms.
         call = pool.fetchrow.await_args
         predicate, candidates = call.args[1], call.args[2]
-        assert predicate == "has-handle"
-        assert "206570151" in candidates
-        assert "telegram:206570151" in candidates
+        assert predicate == "owner-channel"
+        assert "has-handle:206570151" in candidates
+        assert "has-handle:telegram:206570151" in candidates
 
     async def test_no_match_returns_none(self):
         from unittest.mock import AsyncMock
