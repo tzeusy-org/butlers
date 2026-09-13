@@ -66,6 +66,7 @@ BEGIN
                                     SELECT substring(candidate.value FROM 14) AS digits
                                 ) AS normalized
                                 WHERE candidate.value LIKE 'phone-digits:%'
+                                  AND normalized.digits ~ '^[0-9]+$'
                                   AND length(normalized.digits) >= 8
                                   AND length(regexp_replace(ef.object, '\\D', '', 'g')) >= 8
                                   AND abs(

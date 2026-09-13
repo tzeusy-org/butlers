@@ -198,6 +198,15 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, "primary", validity)
+        VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+        """,
+        owner_id,
+        "+1 (555) 111-2222",
+    )
+    await migration_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, "primary", validity)
         VALUES ($1, 'has-email', $2, 'literal', 'test', true, 'retracted')
         """,
         owner_id,
@@ -579,6 +588,13 @@ class TestSchemaIsolation:
         assert await messenger_role_pool.fetchval("SELECT current_user") == "butler_messenger_rw"
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await messenger_role_pool.fetchval("SELECT count(*) FROM relationship.entity_facts")
+
+        wildcard_phone = await messenger_role_pool.fetchrow(
+            "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
+            "owner-channel",
+            ["phone-digits:1555111____"],
+        )
+        assert wildcard_phone is None
 
         async def email_decision(target: str):
             return await check_email_recipient(
