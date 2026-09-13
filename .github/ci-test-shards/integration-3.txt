@@ -28,6 +28,7 @@ tests/api/test_relationship_narrative_scope_parity.py
 tests/api/test_steam_account_config_jsonb_integration.py
 tests/config/test_education_curriculum_receipt_db.py
 tests/config/test_migrations.py
+tests/config/test_schema_matrix_migrations.py
 tests/config/test_switchboard_connector_heartbeat_migration.py
 tests/core/healing/test_tracking.py
 tests/core/qa/test_case_helpers.py

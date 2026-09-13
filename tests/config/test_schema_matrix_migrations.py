@@ -17,7 +17,6 @@ from butlers.testing.migration import create_migration_db, migration_db_name
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.nightly,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
