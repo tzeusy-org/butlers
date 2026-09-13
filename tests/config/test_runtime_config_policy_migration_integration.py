@@ -155,6 +155,42 @@ async def test_concurrent_seed_produces_one_row_with_the_seeded_policy(postgres_
 
 @_skip_without_docker
 @pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_git_reconciliation_writes_one_audit_row(postgres_container) -> None:
+    """Two restarts converge on Git authority with one durable audit receipt."""
+    from butlers.testing.migration import create_migrated_test_pool
+
+    pool = await create_migrated_test_pool(postgres_container, chains=["core"])
+    try:
+        await pool.execute(
+            "INSERT INTO public.runtime_config (butler_name, core_groups) VALUES ($1, $2)",
+            "reconcile-butler",
+            ["infra"],
+        )
+        seed = RuntimeSeedConfig(core_groups=("infra", "delegation", "fleet_cases"))
+        accessor_a = RuntimeConfigAccessor(pool, "public")
+        accessor_b = RuntimeConfigAccessor(pool, "public")
+
+        results = await asyncio.gather(
+            accessor_a.seed_if_empty(seed, "reconcile-butler"),
+            accessor_b.seed_if_empty(seed, "reconcile-butler"),
+        )
+
+        assert all(
+            result.core_groups == ("infra", "delegation", "fleet_cases") for result in results
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.audit_log "
+                "WHERE action = 'core_groups_reconciled' AND target = 'reconcile-butler'"
+            )
+            == 1
+        )
+    finally:
+        await pool.close()
+
+
+@_skip_without_docker
+@pytest.mark.asyncio(loop_scope="session")
 async def test_committed_patch_reaches_a_separate_process_accessor_without_restart(
     postgres_container,
 ) -> None:

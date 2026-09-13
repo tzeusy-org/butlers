@@ -34,7 +34,7 @@ def _make_module(name: str, extra_fields: dict | None = None, raises: bool = Fal
     return SimpleNamespace(name=name, extra_status_fields=extra_status_fields)
 
 
-def _register_and_grab_status(modules, module_statuses=None):
+def _register_and_grab_status(modules, module_statuses=None, tool_surface=None):
     """Register infra tools on a minimal daemon and return the status() function."""
     registered: dict = {}
 
@@ -59,6 +59,7 @@ def _register_and_grab_status(modules, module_statuses=None):
             _modules=modules,
             _module_statuses=module_statuses or {},
             config=SimpleNamespace(name="messenger", description="test", port=41104),
+            **(tool_surface or {}),
         )
         ctx = ToolContext(
             daemon=daemon,
@@ -164,3 +165,23 @@ async def test_status_failed_module_does_not_call_extra_fields():
     assert result["modules"]["email"]["status"] == "failed"
     assert result["modules"]["email"]["error"] == "boom"
     assert calls == [], "extra_status_fields should not be called for failed modules"
+
+
+async def test_status_exposes_content_blind_tool_surface_snapshot():
+    status = _register_and_grab_status(
+        [],
+        tool_surface={
+            "_declared_tool_names": {"delegate_ask", "status"},
+            "_effective_tool_names": {"status"},
+            "_registered_tool_names": {"status"},
+        },
+    )
+
+    result = await status()
+
+    assert result["tool_surface"] == {
+        "declared_names": ["delegate_ask", "status"],
+        "effective_names": ["status"],
+        "registered_names": ["status"],
+        "declaration_complete": True,
+    }

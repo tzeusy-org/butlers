@@ -89,9 +89,9 @@ class RuntimeSeedConfig:
     """Sole butler-scoped runtime configuration from ``[butler.runtime_seed]``.
 
     Used on first boot to seed the per-schema ``runtime_config`` DB table and,
-    thereafter, as the in-memory fallback when the ``RuntimeConfigAccessor``
-    is unavailable or its cache is empty. This is the only butler-scoped
-    runtime config source in git.
+    thereafter, as the Git authority for ``core_groups`` plus the in-memory
+    fallback when the ``RuntimeConfigAccessor`` is unavailable or its cache is
+    empty. This is the only butler-scoped runtime config source in git.
 
     Fields:
 
@@ -99,7 +99,7 @@ class RuntimeSeedConfig:
       ``max_concurrent_sessions`` / ``max_queued_sessions`` /
       ``tool_exposure_policy`` are the operational
       tuning knobs that map to the DB-backed
-      ``runtime_config`` row. The Spawner prefers the DB row via
+      ``runtime_config`` row. Operational fields prefer the DB row via
       :class:`RuntimeConfigAccessor` and falls back to the values here when
       no accessor is wired. ``tool_exposure_policy`` is hot: the DB-backed
       row is authoritative per invocation, and this seed value only applies

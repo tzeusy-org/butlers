@@ -35,6 +35,8 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
 vi.mock("@/hooks/use-butlers", () => ({
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
   usePatchRuntimeConfig: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
+  useButlerMcpTools: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
+  useButlerModules: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-butler-management", () => ({
@@ -59,7 +61,12 @@ import {
   useKillButler,
 } from "@/hooks/use-butler-management";
 import { useResolveModel } from "@/hooks/use-model-catalog";
-import { useRuntimeConfig, usePatchRuntimeConfig } from "@/hooks/use-butlers";
+import {
+  useButlerMcpTools,
+  useButlerModules,
+  usePatchRuntimeConfig,
+  useRuntimeConfig,
+} from "@/hooks/use-butlers";
 import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
@@ -284,6 +291,14 @@ describe("PromptEditModal — mutation wiring", () => {
 const RUNTIME_CONFIG = {
   butler_name: "general",
   core_groups: ["infra"] as string[] | null,
+  declared_core_groups: ["infra", "delegation"],
+  effective_core_groups: ["infra", "delegation"],
+  core_groups_source: "git" as const,
+  core_groups_narrowing_reason: null,
+  declared_tool_names: ["status", "delegate_ask"],
+  effective_tool_names: ["status", "delegate_ask"],
+  tool_declaration_complete: true,
+  catalog_read_sensitivity: "normal" as const,
   max_concurrent: 3,
   max_queued: 10,
   tool_exposure_policy: "eager_filtered" as "eager_filtered" | "auto",
@@ -307,6 +322,16 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof useRuntimeConfig>);
+    vi.mocked(useButlerMcpTools).mockReturnValue({
+      data: { data: [{ name: "status", description: null, input_schema: null }] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerMcpTools>);
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
   });
   afterEach(() => cleanup());
 
@@ -321,6 +346,10 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
 
     // The orphaned read-only ConfigRows are gone; the editable card title is present.
     expect(screen.getByText("Runtime Config")).toBeTruthy();
+    expect(screen.getByText("Tool surface")).toBeTruthy();
+    expect(screen.getByText("Git only: delegation")).toBeTruthy();
+    expect(screen.getByText("Declared, not registered: delegate_ask")).toBeTruthy();
+    expect(screen.getByText("registered tools")).toBeTruthy();
     expect(screen.getByText("Save")).toBeTruthy();
     for (const group of ["graph", "delegation", "domain_events", "fleet_cases"]) {
       expect(screen.getByText(group)).toBeTruthy();
@@ -331,6 +360,37 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
     expect(screen.getByText("Automatic verified discovery")).toBeTruthy();
     expect(
       screen.getByText("Applies to newly planned sessions, no daemon restart needed."),
+    ).toBeTruthy();
+  });
+
+  it("keeps partial module registration failures visible", () => {
+    vi.mocked(usePatchRuntimeConfig).mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+      isError: false,
+    } as unknown as ReturnType<typeof usePatchRuntimeConfig>);
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: {
+        data: [
+          {
+            name: "relationship",
+            enabled: true,
+            status: "error",
+            phase: "tools",
+            error: "optional import unavailable",
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
+
+    renderTab("relationship");
+
+    expect(
+      screen.getByText(
+        "Declared, not registered: relationship (tools) — optional import unavailable",
+      ),
     ).toBeTruthy();
   });
 
