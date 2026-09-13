@@ -31,7 +31,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
-from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 from butlers.testing.migration import (
     assert_at_chain_head,
     create_migration_db,
@@ -1530,18 +1530,13 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     try:
         with engine.connect() as conn:
             for target_schema in target_schemas:
-                # core_231 owns an autocommit boundary. Entering its downgrade
-                # commits any newer downgrade and its version stamp before
-                # core_198 later refuses to remove the protected interface.
-                # pinned-revision: core_231 is the durable autocommit boundary under test
-                assert (
-                    conn.execute(
-                        text(
-                            f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version"
-                        )
-                    ).scalar_one()
-                    == "core_231"
-                )
+                # The current-head preflight must refuse before core_231's
+                # autocommit downgrade can commit any newer migration or stamp.
+                # Derive the head so a later serial migration does not turn this
+                # rollback-safety assertion into a stale revision literal.
+                assert conn.execute(
+                    text(f"SELECT version_num FROM {_quote_ident(target_schema)}.alembic_version")
+                ).scalar_one() == get_chain_head("core")
             for relation in (
                 "public.runtime_attention_outbox",
                 "public.runtime_attention_delivery_lease",
