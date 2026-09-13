@@ -22,6 +22,7 @@
  *     (read-only) dossier via /approvals/:id.
  *   - Attention Ledger section: delivery-vs-suppression per source, with any
  *     suppressed-but-never-delivered source flagged loudly (bu-tdd4k.4).
+ *   - Unroutable messages: typed routing failures with an idempotent Retry.
  *
  * Every approval has a URL (/approvals/:id) so a notification, a history
  * row, or a bookmark can land the owner directly on the decision.
@@ -76,6 +77,7 @@ import {
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
+import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { TONE_COLORS } from "@/components/ui/StateDot";
@@ -2028,6 +2030,8 @@ export default function ApprovalsPage() {
           historySourcesDegraded={historySourcesDegraded}
         />
       </div>
+
+      <UnroutableAttentionPanel />
 
       {(metricsIsError ||
         pendingMetricSourcesDegraded.length > 0 ||

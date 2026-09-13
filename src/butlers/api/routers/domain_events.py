@@ -1,4 +1,4 @@
-"""Domain-event bus — read-only dashboard discovery endpoints.
+"""Domain-event bus dashboard discovery and recovery endpoints.
 
 bu-317s5 (domain-event bus slice 2). Exposes ``public.butler_subscriptions``
 and ``public.domain_event_deliveries`` so a butler's standing subscriptions
@@ -7,6 +7,9 @@ previously only reachable via ``list_my_subscriptions()`` from inside the
 subscribing butler itself, or a direct psql query. See
 ``src/butlers/core/domain_events.py`` for the writer/reader this router
 delegates to.
+
+Permanently failed deliveries remain visible on the existing butler console;
+the replay endpoint atomically returns one to the reconciliation queue.
 
 Mirrors ``butlers.api.routers.delegation``'s shape exactly: both
 ``public.butler_subscriptions``/``public.domain_event_deliveries`` and
@@ -28,6 +31,7 @@ from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.domain_events import (
     ContractEntry,
     DeliveryEntry,
+    DeliveryReplayResult,
     ReactionEntry,
     ReactionSummary,
     SubscriptionEntry,
@@ -40,6 +44,7 @@ from butlers.core.domain_events import (
     VALID_DELIVERY_STATUSES,
     list_recent_deliveries,
     list_subscriptions,
+    requeue_failed_delivery,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +211,37 @@ async def list_domain_event_deliveries(
             for r in rows
         ],
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+@router.post(
+    "/deliveries/{delivery_id}/replay",
+    response_model=ApiResponse[DeliveryReplayResult],
+)
+async def replay_domain_event_delivery(
+    delivery_id: str = PathParam(..., description="The failed delivery row id."),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DeliveryReplayResult]:
+    """Requeue one ``failed_permanent`` delivery exactly once.
+
+    The reconciliation worker owns the actual dispatch. This endpoint only
+    performs the atomic queue transition; a second or concurrent call returns
+    409 because the row is no longer terminal and therefore cannot be queued
+    twice.
+    """
+    try:
+        parsed_id = uuid.UUID(delivery_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid delivery id {delivery_id!r}") from exc
+
+    status = await requeue_failed_delivery(_any_pool(db), parsed_id)
+    if status is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Delivery is not failed_permanent or was already replayed.",
+        )
+    return ApiResponse[DeliveryReplayResult](
+        data=DeliveryReplayResult(delivery_id=str(parsed_id), status=status)
     )
 
 
