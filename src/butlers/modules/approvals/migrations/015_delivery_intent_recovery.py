@@ -270,9 +270,6 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION prevent_approval_delivery_attempts_mutation()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-            IF TG_OP = 'DELETE' AND pg_trigger_depth() > 1 THEN
-                RETURN OLD;
-            END IF;
             RAISE EXCEPTION 'approval_delivery_attempts is append-only: % is not allowed', TG_OP;
         END $$;
         DROP TRIGGER IF EXISTS trg_approval_delivery_attempts_immutable
