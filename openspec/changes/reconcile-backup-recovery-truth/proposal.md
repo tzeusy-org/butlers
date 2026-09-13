@@ -19,9 +19,10 @@ deployment.
 - Preserve ownership and ACL intent in the recovery artifact and require the
   same protected attempt to run managed bootstrap and complete ownership/ACL
   verification in a disposable target before a restore is recovery-ready.
-- Keep the adopted filtered-event manifest authoritative only for its named
-  scope. A manifest or run receipt does not replace the existing direct,
-  memoized artifact-integrity check or manufacture a restore pass.
+- Keep the proposed, unapproved filtered-event manifest limited to its named
+  scope. It becomes a prerequisite only after separate exact-artifact review
+  and owner adoption; neither it nor a run receipt can replace direct,
+  memoized artifact-integrity checks or manufacture a restore pass.
 - Add an additive, content-blind `recovery_proof` projection to
   `GET /api/system/backups` and a matching System-page presentation. Artifact
   health, last-run outcome, and recovery proof remain visibly distinct.
@@ -31,6 +32,9 @@ deployment.
 - Renumber the colliding active filtered-event authority requirement to
   `REQ-database-security-011` and qualify cross-change sources so trace identity
   cannot resolve to the unrelated owner-operations overlay.
+- Require the future owner decision to name this umbrella and the exact
+  `artifact-bound-filtered-event-restore-verification` artifact if both are to
+  govern implementation. Review, CI, PR state, or merge adopts neither.
 
 ## Capabilities
 

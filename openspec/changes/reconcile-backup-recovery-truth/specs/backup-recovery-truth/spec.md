@@ -83,7 +83,7 @@ artifact, verifies the complete ownership/privilege policy, and durably records
 that scoped result beside the artifact binding before destroying the target.
 
 ID: REQ-backup-recovery-truth-002
-Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; artifact-bound-filtered-event-restore-verification REQ-database-security-011
+Source: Non-Negotiable Rules 1 and 4; RFC 0006 Database Connection Scoping; restore-drill-recovery-truthfulness REQ-database-security-006; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-011
 Scope: v1-mandatory
 
 #### Scenario: Managed bootstrap precedes promotion-ready verification
@@ -145,17 +145,27 @@ A public audit, attention row, filesystem timestamp, filename, run receipt, or
 manifest alone SHALL NOT authorize or manufacture a recovery pass.
 
 ID: REQ-backup-recovery-truth-003
-Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; artifact-bound-filtered-event-restore-verification REQ-database-security-011
+Source: Non-Negotiable Rule 4; RFC 0005 Workflow and Recovery Telemetry; proposed artifact-bound-filtered-event-restore-verification REQ-database-security-011
 Scope: v1-mandatory
 
-#### Scenario: Scoped manifest binds only the scope it describes
+#### Scenario: Separately adopted scoped manifest binds only its named scope
 
-- **WHEN** the selected artifact carries the adopted filtered-event manifest
+- **WHEN** the owner has separately adopted the exact proposed filtered-event
+  artifact and a selected backup carries its implemented manifest
 - **THEN** its exact basename, byte length, SHA-256, manifest SHA-256, and
   capture completion bind the filtered-event verdict as required by
   `REQ-deployment-hardening-008` and `REQ-deployment-hardening-009`
 - **AND** the manifest cannot substitute for direct artifact integrity,
   application-data restoration, ownership/ACL verification, or cleanup
+
+#### Scenario: Unapproved sibling supplies no implementation authority
+
+- **WHEN** `artifact-bound-filtered-event-restore-verification` has not received
+  exact-artifact independent review and explicit owner adoption
+- **THEN** no implementation or recovery proof may rely on its manifest,
+  checker, protected transition, or requirement IDs as adopted behavior
+- **AND** review, CI, PR state, merge, or adoption of this umbrella alone cannot
+  satisfy that sibling gate
 
 #### Scenario: Projected artifact facts share the attempt binding
 
@@ -369,7 +379,7 @@ Scope: v1-mandatory
 - **WHEN** recovery succeeds or fails
 - **THEN** the protected result and owner-facing projection contain only fixed
   status/stage/code/scope values, UTC timestamps, non-negative artifact size,
-  and the exact private-ledger bindings required by adopted scoped verification
+  and private-ledger bindings required by separately adopted scoped verification
 - **AND** public metrics exclude digests, paths, filenames, role/object names,
   receipts, and any dynamic error text
 
