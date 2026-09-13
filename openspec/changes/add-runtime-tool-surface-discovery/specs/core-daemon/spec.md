@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Core Tool Surface
-Every butler daemon SHALL register core MCP tools from the effective `core_groups` allowlist and the butler's type/name. Git-owned `[butler.runtime_seed].core_groups` defines the declared capability surface. A DB `runtime_config.core_groups` value may narrow that declaration only when `core_groups_narrowing_reason` is non-empty; an unreasoned stale value is reconciled to Git at startup. When the effective `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
+Every butler daemon registers core MCP tools based on the `core_groups` allowlist from `runtime_config` (DB) and the butler's type/name. The daemon SHALL treat that stored allowlist as a projection, not independent capability authority: Git-owned `[butler.runtime_seed].core_groups` defines the declared surface, and a DB value may narrow it only when `core_groups_narrowing_reason` is non-empty. An unreasoned stale value is reconciled to Git at startup. When the effective `core_groups` is NULL, all groups are enabled (backward compat). When set, only tools in the listed groups are registered.
 
 This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD constants and the `_tools_to_remove` post-registration pruning) documented in RFC 0002 §Tool Budget Discipline. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) are removed. RFC 0002 §Tool Budget Discipline requires amendment to reflect the `core_groups` mechanism. The target removal SHALL also include `CHRONICLER_CORE_TOOL_NAMES`, the combined `CORE_TOOL_NAMES` catalog, and every same-repository compatibility alias for those catalogs; actual registration behavior and a mechanically derived inventory SHALL replace circular catalog assertions.
 
@@ -32,7 +32,8 @@ Source: RFC 0002 §Core Tools, §Tool Budget Discipline (superseded by this chan
 Scope: v1-mandatory
 
 #### Scenario: core_groups filters tool registration
-- **WHEN** a non-Messenger domain butler daemon's Git declaration includes additional groups but runtime_config stores `core_groups = ['infra', 'notifications']` with a non-empty narrowing reason
+- **WHEN** a butler daemon starts with `core_groups = ['infra', 'notifications']` in runtime_config
+- **AND** it is a non-Messenger domain butler whose set is a strict subset of the Git declaration carrying a non-empty narrowing reason
 - **THEN** only tools in the `infra` and `notifications` groups SHALL be registered on the MCP server (plus `route.execute` and `cancel_session`, which are always registered)
 - **AND** tools in other groups (state, scheduling, sessions, media, temporal) SHALL NOT be registered
 - **AND** tools in the additional current groups (`graph`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`) SHALL NOT be registered
