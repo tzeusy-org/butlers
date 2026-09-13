@@ -540,9 +540,16 @@ class TestNotifyRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.modules.approvals.email_guard.is_primary_contact",
+                new=AsyncMock(return_value=True),
+            ),
         ):
             result = await notify_fn(
                 channel="email",
@@ -562,6 +569,8 @@ class TestNotifyRecipientValidation:
         assert notify_fn is not None
 
         daemon.switchboard_client = _mock_switchboard_client()
+        daemon._approval_push_runtime = object()
+        push = AsyncMock(return_value="delivered")
 
         with (
             patch(
@@ -572,6 +581,7 @@ class TestNotifyRecipientValidation:
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
+            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
         ):
             result = await notify_fn(
                 channel="email",
@@ -584,6 +594,7 @@ class TestNotifyRecipientValidation:
             f"Known non-owner email '{KNOWN_NON_OWNER_EMAIL}' MUST be blocked "
             f"without a standing rule, got status={result.get('status')}"
         )
+        assert push.await_args.kwargs["origin_butler"] == "test-butler"
 
     async def test_standing_rule_permits_known_non_owner_email(self, butler_dir: Path) -> None:
         """A known non-owner contact WITH a matching standing rule MUST be allowed."""
@@ -744,9 +755,16 @@ class TestNotifyTelegramRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
+            ),
         ):
             result = await notify_fn(
                 channel="telegram",
@@ -915,9 +933,16 @@ class TestNotifyTelegramRecipientValidation:
 
         daemon.switchboard_client = _mock_switchboard_client()
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
+            ),
         ):
             tg_result = await notify_fn(
                 channel="telegram",
@@ -1031,7 +1056,11 @@ class TestMessengerApprovalGate:
         await apply_approval_gates(mcp, config, pool)
 
         tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
+        with patch(
+            "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+            new=AsyncMock(return_value=(_owner_contact(), True)),
+        ):
+            result = await tool.fn(to=OWNER_EMAIL, subject="Report", body="Weekly summary")
 
         assert result.get("status") == "sent", (
             f"email_send_message to owner MUST be auto-approved, got: {result}"
@@ -1525,10 +1554,15 @@ class TestRouteExecuteApprovalGate:
             origin_butler="finance",
         )
 
+        owner = _owner_contact()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             # Mock SMTP to prevent real email delivery
             patch.object(
@@ -1557,6 +1591,8 @@ class TestRouteExecuteApprovalGate:
             origin_butler="relationship",
             decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
+        daemon._approval_push_runtime = object()
+        push = AsyncMock(return_value="delivered")
 
         with (
             patch(
@@ -1567,6 +1603,7 @@ class TestRouteExecuteApprovalGate:
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
+            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1575,6 +1612,7 @@ class TestRouteExecuteApprovalGate:
         )
         assert "blocked" in result["error"]["message"].lower()
         assert result["error"]["retryable"] is False
+        assert push.await_args.kwargs["origin_butler"] == "messenger"
         assert _parked_route_command(daemon) == (
             "email_send_message",
             {
@@ -1699,6 +1737,8 @@ class TestRouteExecuteTelegramApprovalGate:
 
         # Spy on the real delivery method to prove it is NEVER reached when blocked.
         send_spy = AsyncMock(return_value={"status": "sent"})
+        daemon._approval_push_runtime = object()
+        push = AsyncMock(return_value="delivered")
 
         with (
             patch(
@@ -1710,6 +1750,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 new=AsyncMock(return_value=None),
             ),
             patch.object(TelegramModule, "_send_message", new=send_spy),
+            patch("butlers.modules.approvals.park.emit_approval_push", new=push),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1721,6 +1762,7 @@ class TestRouteExecuteTelegramApprovalGate:
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
         assert result["error"]["retryable"] is False
+        assert push.await_args.kwargs["origin_butler"] == "messenger"
         pending_inserts = [
             call
             for call in daemon.db.pool.execute.await_args_list
@@ -1752,10 +1794,15 @@ class TestRouteExecuteTelegramApprovalGate:
 
         send_spy = AsyncMock(return_value={"status": "sent", "message_id": 1})
 
+        owner = _owner_contact()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             patch.object(TelegramModule, "_send_message", new=send_spy),
         ):
@@ -1910,10 +1957,15 @@ class TestRouteExecuteWhatsAppApprovalGate:
         )
         send_spy = AsyncMock(return_value={"status": "sent"})
 
+        owner = _owner_contact()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
-                new=AsyncMock(return_value=_owner_contact()),
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
             ),
             patch.object(WhatsAppModule, "_send_message", new=send_spy),
         ):

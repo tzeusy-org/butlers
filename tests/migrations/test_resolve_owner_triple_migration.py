@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145/core_233).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -15,8 +15,10 @@ Verified:
    the EXECUTE grant added in core_145 and receives correct owner-only results.
    Crucially, that same role is blocked from reading the underlying table
    directly, proving the SECURITY DEFINER boundary holds.
+5. Ambiguity safety — an identifier shared by owner and external entities
+   returns no owner authorization.
 
-Issue: bu-6ui2o
+Issues: bu-6ui2o, bu-rp2ie7
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 
+from butlers.db import Database
+from butlers.modules.approvals.email_guard import check_email_recipient
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -91,6 +95,9 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     owner_primary_handle = "telegram:owner-primary-12345"
     owner_secondary_handle = "telegram:owner-secondary-54321"
     non_owner_handle = "telegram:non-owner-99999"
+    owner_primary_email = "owner-primary@example.test"
+    ambiguous_email = "ambiguous@example.test"
+    ambiguous_handle = "telegram:ambiguous-11111"
 
     # Owner primary handle
     await migration_pool.execute(
@@ -122,6 +129,29 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         non_owner_id,
         non_owner_handle,
     )
+    await migration_pool.executemany(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, "primary", validity)
+        VALUES ($1, 'has-email', $2, 'literal', 'test', $3, 'active')
+        """,
+        [
+            (owner_id, owner_primary_email, True),
+            (owner_id, ambiguous_email, True),
+            (non_owner_id, ambiguous_email, False),
+        ],
+    )
+    await migration_pool.executemany(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, "primary", validity)
+        VALUES ($1, 'has-handle', $2, 'literal', 'test', $3, 'active')
+        """,
+        [
+            (owner_id, ambiguous_handle, True),
+            (non_owner_id, ambiguous_handle, False),
+        ],
+    )
 
     return {
         "owner_id": owner_id,
@@ -129,6 +159,9 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
         "owner_primary_handle": owner_primary_handle,
         "owner_secondary_handle": owner_secondary_handle,
         "non_owner_handle": non_owner_handle,
+        "owner_primary_email": owner_primary_email,
+        "ambiguous_email": ambiguous_email,
+        "ambiguous_handle": ambiguous_handle,
     }
 
 
@@ -199,6 +232,27 @@ async def isolated_role_pool(
     )
     yield pool
     await pool.close()
+
+
+@pytest.fixture(scope="module")
+async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
+    """Production Database pool constrained by the real Messenger runtime role."""
+    parsed = urlparse(migrated_db_url)
+    database = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="messenger",
+        role="butler_messenger_rw",
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "",
+        strict_role_enforcement=True,
+        min_pool_size=1,
+        max_pool_size=2,
+    )
+    pool = await database.connect()
+    yield pool
+    await database.close()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -287,22 +341,34 @@ class TestOwnerOnlyScoping:
             f"got entity_id={row['entity_id'] if row else None}"
         )
 
-    async def test_mixed_candidates_excludes_non_owner(
+    async def test_owner_and_external_channel_collisions_return_nothing(
         self, migration_pool: asyncpg.Pool, seeded_data: dict
     ) -> None:
-        """When the candidates list includes both owner and non-owner handles,
-        only the owner handle produces a result.
+        """Email and Telegram collisions are ambiguous, not owner-safe."""
+        for predicate, value in (
+            ("has-email", seeded_data["ambiguous_email"]),
+            ("has-handle", seeded_data["ambiguous_handle"]),
+        ):
+            row = await migration_pool.fetchrow(
+                "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
+                predicate,
+                [value],
+            )
+            assert row is None, (
+                f"A {predicate} identifier attached to owner and external entities must "
+                "fail closed; owner-only filtering must not erase the ambiguity"
+            )
 
-        This ensures the WHERE clause on e.roles is applied even when a matching
-        object value exists for a non-owner entity.
-        """
-        # Providing non-owner handle only among candidates → must return NULL
+    async def test_mixed_owner_and_non_owner_candidates_are_ambiguous(
+        self, migration_pool: asyncpg.Pool, seeded_data: dict
+    ) -> None:
+        """Distinct owner/external normalized candidates fail closed as ambiguous."""
         row = await migration_pool.fetchrow(
             "SELECT entity_id, is_primary FROM public.resolve_owner_triple($1, $2)",
             "has-handle",
-            [seeded_data["non_owner_handle"]],
+            [seeded_data["owner_primary_handle"], seeded_data["non_owner_handle"]],
         )
-        assert row is None, "Non-owner handle must be excluded even in a mixed candidate list"
+        assert row is None, "Owner and external candidates must not collapse to an owner match"
 
     async def test_empty_candidates_returns_nothing(self, migration_pool: asyncpg.Pool) -> None:
         """Empty candidates array must return no rows."""
@@ -412,6 +478,27 @@ class TestSchemaIsolation:
             "SECURITY DEFINER must return the owner entity"
         )
         assert row["is_primary"] is True
+
+    async def test_messenger_role_email_guard_allows_only_primary_owner_fallback(
+        self, messenger_role_pool: asyncpg.Pool, seeded_data: dict
+    ) -> None:
+        """The real Messenger role can authorize an exact primary owner email only."""
+        assert await messenger_role_pool.fetchval("SELECT current_user") == "butler_messenger_rw"
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await messenger_role_pool.fetchval("SELECT count(*) FROM relationship.entity_facts")
+
+        decision = await check_email_recipient(
+            messenger_role_pool,
+            email_target=seeded_data["owner_primary_email"],
+            rule_tool_name="email_send_message",
+            rule_match_args={"to": seeded_data["owner_primary_email"]},
+            park_tool_name="email_send_message",
+            park_tool_args={"to": seeded_data["owner_primary_email"]},
+            park_summary="primary owner email",
+        )
+
+        assert decision.allowed is True
+        assert decision.reason == "owner"
 
     async def test_isolated_role_owner_only_scoping_still_enforced(
         self, isolated_role_pool: asyncpg.Pool, seeded_data: dict

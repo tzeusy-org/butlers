@@ -1360,7 +1360,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
-                            butler_name=origin,
+                            # The pending row and push runtime belong to Messenger.
+                            # The originating domain butler remains in the routed
+                            # request, but cannot be asserted as the sender of a
+                            # second Messenger-owned approval notification.
+                            butler_name=daemon.config.name,
                             **dossier_kwargs,
                             enforce_dossier=True,
                             approval_push_runtime=daemon._approval_push_runtime,
@@ -1456,7 +1460,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
-                            butler_name=origin,
+                            butler_name=daemon.config.name,
                             **dossier_kwargs,
                             enforce_dossier=True,
                             approval_push_runtime=daemon._approval_push_runtime,

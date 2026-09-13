@@ -147,6 +147,14 @@ async def _call_gate(
             new=AsyncMock(return_value=resolved_contact),
         ),
         patch(
+            "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+            new=AsyncMock(
+                return_value=(resolved_contact, True)
+                if resolved_contact is not None and "owner" in resolved_contact.roles
+                else None
+            ),
+        ),
+        patch(
             "butlers.modules.approvals.gate.record_approval_event",
             new=AsyncMock(),
         ),
@@ -632,6 +640,14 @@ class TestGateEmitsCreatedEvent:
                 new=AsyncMock(return_value=resolved_contact),
             ),
             patch(
+                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                new=AsyncMock(
+                    return_value=(resolved_contact, True)
+                    if resolved_contact is not None and "owner" in resolved_contact.roles
+                    else None
+                ),
+            ),
+            patch(
                 "butlers.modules.approvals.gate.record_approval_event",
                 new=AsyncMock(),
             ),
@@ -736,6 +752,10 @@ class TestGateEmitsCreatedEvent:
                 "butlers.modules.approvals.gate._resolve_target_contact",
                 new=AsyncMock(return_value=owner),
             ),
+            patch(
+                "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
             patch(
                 "butlers.modules.approvals.gate.execute_approved_action",
@@ -833,6 +853,14 @@ class TestOwnerCrossSchemaFallback:
     async def test_definer_no_match_keeps_parking(self) -> None:
         result, _pool, exec_mock = await self._run(
             resolve_return=None, definer_return=None, fetch_return=[]
+        )
+        assert result["status"] == "pending_approval"
+        exec_mock.assert_not_awaited()
+
+    async def test_direct_owner_without_unambiguous_corroboration_keeps_parking(self) -> None:
+        """A first-match owner result cannot bypass a cross-variant collision."""
+        result, _pool, exec_mock = await self._run(
+            resolve_return=_owner_contact(), definer_return=None, fetch_return=[]
         )
         assert result["status"] == "pending_approval"
         exec_mock.assert_not_awaited()

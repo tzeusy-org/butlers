@@ -230,6 +230,10 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
             "butlers.modules.approvals.email_guard.is_primary_contact",
             new=AsyncMock(return_value=True),
         ),
+        patch(
+            "butlers.identity.resolve_owner_channel_via_definer",
+            new=AsyncMock(return_value=(contact, True)),
+        ),
     ):
         yield
 

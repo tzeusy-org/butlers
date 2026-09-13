@@ -4,7 +4,9 @@ Consolidates the email recipient check used by both the ``notify()`` core
 tool and the ``route.execute`` handler in messenger.  A single implementation
 ensures both gates enforce identical policy:
 
-1. Resolve contact by email address.
+1. Resolve contact by email address.  When schema isolation prevents the
+   direct relationship read, use the narrow owner-only SECURITY DEFINER
+   fallback and preserve its reported primacy.
 2. Owner contact AND address is primary → auto-approve (no rule needed).
    Non-primary owner addresses fall through to the rules/parking flow.
 3. Context mismatch: if *msg_context* is provided and the entity_facts triple
@@ -200,14 +202,28 @@ async def check_email_recipient(
                 "email guard: publish_fleet_event('approval') failed; ignoring", exc_info=True
             )
 
-    from butlers.identity import resolve_contact_by_channel
+    from butlers.identity import (
+        resolve_contact_by_channel,
+        resolve_owner_channel_via_definer,
+    )
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
+    fallback_is_primary: bool | None = None
+    if contact is None:
+        try:
+            fallback = await resolve_owner_channel_via_definer(pool, "email", email_target)
+        except Exception:  # noqa: BLE001
+            logger.debug("email guard: owner-channel fallback failed", exc_info=True)
+            fallback = None
+        if fallback is not None:
+            contact, fallback_is_primary = fallback
     dossier = DecisionDossier(None, [], None, None)
 
     # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
-        if contact.entity_id is None:
+        if fallback_is_primary is not None:
+            is_primary = fallback_is_primary
+        elif contact.entity_id is None:
             # Owner contact has no entity_id — cannot check primacy; treat as non-primary
             # so the address falls through to the rules/parking flow.
             is_primary = False
@@ -433,12 +449,12 @@ async def check_recipient(
        only returns a row for an *active* ``relationship.entity_facts`` triple,
        so an owner-role match is by definition a verified owner channel.  No
        channel-primacy check is applied (owner self-notification is low-risk).
-    2. Cross-schema owner fallback: a non-relationship butler runs under a
-       schema-isolated role that cannot read ``relationship.entity_facts``
-       directly, so :func:`resolve_contact_by_channel` returns ``None`` even for
-       owner-directed sends.  Recognise the owner via the ``SECURITY DEFINER``
-       :func:`resolve_owner_channel_via_definer` lookup (the reported primacy
-       flag is intentionally discarded — bu-nd5me).
+    2. Owner-only corroboration and cross-schema fallback: recognise owner
+       channels through the ambiguity-safe ``SECURITY DEFINER``
+       :func:`resolve_owner_channel_via_definer` lookup both when schema
+       isolation makes direct resolution return ``None`` and when the direct
+       resolver returns an owner-looking normalized candidate.  The reported
+       primacy flag is intentionally discarded here (bu-nd5me).
     3. Non-owner / unresolvable target: check standing approval rules.  A
        matching rule auto-approves (and bumps ``use_count``); otherwise the
        send is parked as a ``pending_action`` for human review (fail-closed).
@@ -454,16 +470,19 @@ async def check_recipient(
 
     contact = await resolve_contact_by_channel(pool, channel, target)
 
-    # Cross-schema owner fallback when direct resolution failed entirely.  A
-    # resolved (non-owner) contact means the butler COULD read the relationship
-    # schema, so the channel demonstrably belongs to a non-owner — no fallback.
-    if contact is None:
+    # A resolved non-owner is authoritative and never enters the owner-only
+    # fallback.  A direct owner-looking result still needs corroboration because
+    # Telegram normalization can produce multiple candidate identifiers; the
+    # definer evaluates them together and rejects owner/external ambiguity.
+    if contact is None or "owner" in contact.roles:
         try:
             fallback = await resolve_owner_channel_via_definer(pool, channel, target)
         except Exception:  # noqa: BLE001
             fallback = None
         if fallback is not None:
             contact, _owner_is_primary = fallback
+        else:
+            contact = None
 
     # Owner-directed outbound: auto-approve on any active, verified owner channel.
     if contact is not None and "owner" in contact.roles:
