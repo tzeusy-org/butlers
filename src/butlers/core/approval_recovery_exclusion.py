@@ -31,9 +31,10 @@ def message_inbox_recovery_exclusion_sql(alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
     raw_payload = f"{prefix}raw_payload"
     return (
-        "NOT ("
-        f"jsonb_typeof(COALESCE({raw_payload} -> 'metadata', '{{}}'::jsonb)) = 'object' "
-        f"AND ({raw_payload} -> 'metadata') ? 'approval_recovery'"
+        "NOT COALESCE("
+        f"jsonb_typeof({raw_payload}) = 'object' "
+        f"AND jsonb_typeof({raw_payload} -> 'metadata') = 'object' "
+        f"AND ({raw_payload} -> 'metadata') ? 'approval_recovery', FALSE"
         ")"
     )
 

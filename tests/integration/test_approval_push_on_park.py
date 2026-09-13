@@ -948,6 +948,66 @@ async def test_recovery_path_persists_no_generic_or_history_content(
         == ""
     )
 
+    ordinary_payloads = [
+        {"content": "ordinary-absent-metadata"},
+        {"content": "ordinary-null-metadata", "metadata": None},
+        {"content": "ordinary-scalar-metadata", "metadata": "synthetic"},
+        {"content": "ordinary-array-metadata", "metadata": ["synthetic"]},
+    ]
+    expected_content = [payload["content"] for payload in ordinary_payloads]
+    for channel, thread in (
+        ("telegram_bot", "ordinary-realtime-thread"),
+        ("email", "ordinary-email-thread"),
+    ):
+        for index, payload in enumerate(ordinary_payloads, start=1):
+            await switchboard_recovery_pool.execute(
+                """
+                INSERT INTO message_inbox (
+                    received_at, request_context, raw_payload, normalized_text,
+                    direction, lifecycle_state, schema_version
+                ) VALUES (
+                    $1, $2, $3, $4, 'inbound', 'completed', 'message_inbox.v2'
+                )
+                """,
+                now - timedelta(seconds=10 - index),
+                {
+                    "source_channel": channel,
+                    "source_sender_identity": "ordinary-synthetic-sender",
+                    "source_thread_identity": thread,
+                },
+                payload,
+                payload["content"],
+            )
+
+    realtime = await _load_realtime_history(
+        switchboard_recovery_pool,
+        "ordinary-realtime-thread",
+        now,
+        source_channel="telegram_bot",
+    )
+    email = await _load_email_history(
+        switchboard_recovery_pool,
+        "ordinary-email-thread",
+        now,
+    )
+    assert [row["raw_content"] for row in realtime] == expected_content
+    assert [row["raw_content"] for row in email] == expected_content
+    realtime_context = await _load_conversation_history(
+        switchboard_recovery_pool,
+        "telegram_bot",
+        "ordinary-realtime-thread",
+        now,
+    )
+    email_context = await _load_conversation_history(
+        switchboard_recovery_pool,
+        "email",
+        "ordinary-email-thread",
+        now,
+    )
+    for content in expected_content:
+        assert content in realtime_context
+        assert content in email_context
+
     recovery_notification_id = await switchboard_recovery_pool.fetchval(
         """
         INSERT INTO notifications (

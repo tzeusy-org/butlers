@@ -339,7 +339,7 @@ class TestRouteExecuteAuthz:
         assert result_ok["status"] == "ok"
 
     async def test_recovery_requires_authenticated_switchboard_before_provider(
-        self, tmp_path: Path
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         patches = _patch_infra()
         daemon, route_execute = await _start_daemon_with_route_execute(
@@ -399,45 +399,105 @@ class TestRouteExecuteAuthz:
         }
         telegram._send_message.assert_awaited_once()
 
-        telegram._send_message.reset_mock()
-        with (
-            patch("butlers.core_tools._routing.get_access_token", return_value=None),
-            patch(
-                "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
-                return_value=repository,
-            ),
-        ):
-            rejected = await route_execute(**route_payload)
-        assert rejected["status"] == "error"
-        assert rejected["error"]["message"] == "Approval recovery authority rejected."
-        telegram._send_message.assert_not_awaited()
-
-        bad_context = _trusted_recovery_context()
-        bad_context["presentation_mode"] = "burst_digest"
-        bad_payload = {
+        wrong_scope = AccessToken(
+            token="synthetic",
+            client_id="butler:switchboard",
+            scopes=["unrelated"],
+            claims={"actor_type": "daemon", "butler_name": "switchboard"},
+        )
+        malformed = {
             **route_payload,
             "input": {
                 **route_payload["input"],
                 "context": {
                     **route_payload["input"]["context"],
-                    "_trusted_approval_recovery": bad_context,
+                    "notify_request": {
+                        **_recovery_notify_request(),
+                        "recovery": {"operation": "handoff"},
+                    },
                 },
             },
         }
+        origin_mismatch = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "notify_request": {
+                        **_recovery_notify_request(),
+                        "origin_butler": "private-origin-sentinel",
+                    },
+                },
+            },
+        }
+        missing_attestation = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {"notify_request": _recovery_notify_request()},
+            },
+        }
+        mismatched_attestation = _trusted_recovery_context()
+        mismatched_attestation["presentation_mode"] = "burst_digest"
+        mismatch = {
+            **route_payload,
+            "input": {
+                **route_payload["input"],
+                "context": {
+                    **route_payload["input"]["context"],
+                    "_trusted_approval_recovery": mismatched_attestation,
+                },
+            },
+        }
+        cases = [
+            (None, route_payload),
+            (wrong_scope, route_payload),
+            (_switchboard_recovery_token(), malformed),
+            (_switchboard_recovery_token(), origin_mismatch),
+            (_switchboard_recovery_token(), missing_attestation),
+            (_switchboard_recovery_token(), mismatch),
+        ]
+        telegram._send_message.reset_mock()
+        repository.process.reset_mock()
+        patches["mock_pool"].reset_mock()
+        caplog.clear()
         with (
-            patch(
-                "butlers.core_tools._routing.get_access_token",
-                return_value=_switchboard_recovery_token(),
-            ),
+            patch("butlers.core_tools._routing.get_access_token") as access_token,
             patch(
                 "butlers.core_tools._routing.MessengerApprovalHandoffRepository",
                 return_value=repository,
             ),
+            patch("butlers.core_tools._routing.trace.get_tracer") as get_tracer,
+            patch("butlers.core_tools._routing.extract_trace_context") as extract_context,
+            patch("butlers.core_tools._routing.logger") as route_logger,
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(),
+            ) as owner_lookup,
         ):
-            mismatched = await route_execute(**bad_payload)
-        assert mismatched["status"] == "error"
-        assert mismatched["error"]["message"] == "Approval recovery authority rejected."
-        assert repository.process.await_count == 1
+            refusals = []
+            for token, payload in cases:
+                access_token.return_value = token
+                refusals.append(await route_execute(**payload))
+
+        assert all(result == refusals[0] for result in refusals)
+        assert refusals[0] == {
+            "schema_version": "route_response.v1",
+            "status": "error",
+            "error": {
+                "class": "validation_error",
+                "message": "Approval recovery authority rejected.",
+                "retryable": False,
+            },
+        }
+        assert "private-origin-sentinel" not in caplog.text
+        get_tracer.assert_not_called()
+        extract_context.assert_not_called()
+        assert route_logger.method_calls == []
+        owner_lookup.assert_not_awaited()
+        repository.process.assert_not_awaited()
+        assert patches["mock_pool"].method_calls == []
         telegram._send_message.assert_not_awaited()
 
 
