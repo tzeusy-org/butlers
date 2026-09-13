@@ -1245,6 +1245,14 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
 
+        # Registration owns this snapshot state. Some focused integration
+        # seams construct a daemon without calling __init__, so initialise it
+        # at the boundary instead of requiring callers to reproduce private
+        # constructor internals.
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+
         butler_name = self.config.name
         butler_type = self.config.type
         mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
@@ -1370,6 +1378,10 @@ class ButlerDaemon:
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
         """
+        self._declared_tool_names = getattr(self, "_declared_tool_names", set())
+        self._effective_tool_names = getattr(self, "_effective_tool_names", set())
+        self._registered_tool_names = getattr(self, "_registered_tool_names", set())
+
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
             if mod_status is not None and mod_status.status != "active":
