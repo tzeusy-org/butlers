@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 logger = logging.getLogger(__name__)
 
 HandoffClass = Literal["confirmed", "safe_retry", "ambiguous"]
+
+
+class ClaimLeaseLost(RuntimeError):
+    """The worker no longer owns the generation and must not write its result."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,13 +107,42 @@ class ApprovalDeliveryWorker:
         runtime: ApprovalDeliveryRuntime,
         *,
         poll_interval_s: float = 5.0,
+        heartbeat_interval_s: float = 10.0,
     ) -> None:
         if poll_interval_s <= 0:
             raise ValueError("poll_interval_s must be positive")
+        if heartbeat_interval_s <= 0:
+            raise ValueError("heartbeat_interval_s must be positive")
         self._repository = repository
         self._renderer = renderer
         self._runtime = runtime
         self._poll_interval_s = poll_interval_s
+        self._heartbeat_interval_s = heartbeat_interval_s
+
+    async def _await_with_heartbeat(self, claim: DeliveryClaim, operation: Awaitable[Any]) -> Any:
+        """Keep authority live during an external await and renew before CAS."""
+        task = asyncio.ensure_future(operation)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self._heartbeat_interval_s)
+                if done:
+                    if not await self._repository.heartbeat(claim):
+                        try:
+                            task.result()
+                        except BaseException:
+                            pass
+                        raise ClaimLeaseLost
+                    return await task
+                if not await self._repository.heartbeat(claim):
+                    raise ClaimLeaseLost
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            raise
 
     async def process_one(self) -> bool:
         """Process at most one presentation; return whether work was claimed."""
@@ -119,7 +153,9 @@ class ApprovalDeliveryWorker:
 
         if claim.reconcile_only:
             try:
-                result = await self._runtime.reconcile(claim)
+                result = await self._await_with_heartbeat(claim, self._runtime.reconcile(claim))
+            except ClaimLeaseLost:
+                return True
             except Exception:  # an unknown post-start result is never retry permission
                 result = HandoffResult(
                     classification="ambiguous",
@@ -170,7 +206,9 @@ class ApprovalDeliveryWorker:
             return True
 
         try:
-            result = await self._runtime.handoff(claim, envelope)
+            result = await self._await_with_heartbeat(claim, self._runtime.handoff(claim, envelope))
+        except ClaimLeaseLost:
+            return True
         except Exception:
             result = HandoffResult(
                 classification="ambiguous",
@@ -202,6 +240,7 @@ __all__ = [
     "ApprovalDeliveryRepository",
     "ApprovalDeliveryRuntime",
     "ApprovalDeliveryWorker",
+    "ClaimLeaseLost",
     "DeliveryClaim",
     "HandoffClass",
     "HandoffResult",

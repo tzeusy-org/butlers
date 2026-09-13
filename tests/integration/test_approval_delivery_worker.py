@@ -117,6 +117,32 @@ class _Runtime:
         return self.reconcile_result
 
 
+class _SlowRuntime(_Runtime):
+    """Hold one external operation beyond a test lease until explicitly released."""
+
+    def __init__(self, operation: str) -> None:
+        super().__init__()
+        self.operation = operation
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handoff(self, claim: DeliveryClaim, envelope: dict[str, Any]) -> HandoffResult:
+        if self.operation != "handoff":
+            return await super().handoff(claim, envelope)
+        self.handoffs.append((claim, envelope))
+        self.started.set()
+        await self.release.wait()
+        return HandoffResult("confirmed")
+
+    async def reconcile(self, claim: DeliveryClaim) -> HandoffResult:
+        if self.operation != "reconcile":
+            return await super().reconcile(claim)
+        self.reconciliations.append(claim)
+        self.started.set()
+        await self.release.wait()
+        return HandoffResult("confirmed")
+
+
 async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
     delivery_pool: asyncpg.Pool,
 ) -> None:
@@ -260,6 +286,47 @@ async def test_expired_handoff_reconciles_once_then_ambiguous_never_resends(
     )
     snapshot = await repository.backlog_snapshot()
     assert snapshot.ambiguous_count == snapshot.stuck_count == 1
+
+
+@pytest.mark.parametrize("operation", ["handoff", "reconcile"])
+async def test_slow_external_await_renews_lease_and_prevents_claim_succession(
+    delivery_pool: asyncpg.Pool,
+    operation: str,
+) -> None:
+    """A live owner retains its fence beyond one lease and commits confirmed truth."""
+    admission = await _park(delivery_pool)
+    repository = ApprovalDeliveryRepository(delivery_pool, lease_seconds=1)
+    if operation == "reconcile":
+        original = await repository.claim_next()
+        assert original is not None
+        assert await repository.mark_handoff_started(original) is True
+        await delivery_pool.execute(
+            "UPDATE approval_delivery_presentations "
+            "SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+            original.presentation_id,
+        )
+    runtime = _SlowRuntime(operation)
+    worker = ApprovalDeliveryWorker(
+        repository,
+        ApprovalDeliveryRenderer(),
+        runtime,
+        heartbeat_interval_s=0.2,
+    )
+
+    processing = asyncio.create_task(worker.process_one())
+    await asyncio.wait_for(runtime.started.wait(), timeout=2)
+    await asyncio.sleep(1.2)
+    assert await ApprovalDeliveryRepository(delivery_pool, lease_seconds=1).claim_next() is None
+    runtime.release.set()
+
+    assert await asyncio.wait_for(processing, timeout=2) is True
+    assert (
+        await delivery_pool.fetchval(
+            "SELECT state FROM approval_delivery_presentations WHERE presentation_key = $1",
+            admission.presentation_key,
+        )
+        == "delivered"
+    )
 
 
 async def test_unknown_post_start_handoff_is_ambiguous_without_resend(
@@ -445,3 +512,42 @@ async def test_worker_processes_existing_successor_without_advancing_generation(
     assert runtime.handoffs[0][0].presentation_generation == 2
     assert runtime.handoffs[0][0].presentation_key.endswith(":p:2")
     assert await delivery_pool.fetchval("SELECT count(*) FROM approval_delivery_presentations") == 2
+
+
+async def test_stuck_age_starts_at_due_time_not_presentation_creation(
+    delivery_pool: asyncpg.Pool,
+) -> None:
+    """Long-held quiet work is fresh when released and stuck only after 15 due minutes."""
+    admission = await _park(delivery_pool)
+    await delivery_pool.execute(
+        """
+        UPDATE approval_delivery_presentations
+           SET created_at = clock_timestamp() - interval '2 hours',
+               not_before = clock_timestamp() - interval '1 second',
+               next_attempt_at = clock_timestamp() - interval '1 second'
+         WHERE presentation_key = $1
+        """,
+        admission.presentation_key,
+    )
+    repository = ApprovalDeliveryRepository(delivery_pool)
+
+    fresh = await repository.backlog_snapshot()
+    assert fresh.due_count == 1
+    assert fresh.stuck_count == 0
+    assert fresh.oldest_due_age_seconds is not None
+    assert fresh.oldest_due_age_seconds < 15 * 60
+
+    await delivery_pool.execute(
+        """
+        UPDATE approval_delivery_presentations
+           SET not_before = clock_timestamp() - interval '16 minutes',
+               next_attempt_at = clock_timestamp() - interval '16 minutes'
+         WHERE presentation_key = $1
+        """,
+        admission.presentation_key,
+    )
+    overdue = await repository.backlog_snapshot()
+    assert overdue.due_count == 1
+    assert overdue.stuck_count == 1
+    assert overdue.oldest_due_age_seconds is not None
+    assert overdue.oldest_due_age_seconds >= 16 * 60

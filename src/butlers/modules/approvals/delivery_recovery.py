@@ -516,7 +516,6 @@ class ApprovalDeliveryRepository:
                            AND claim_expires_at <= clock_timestamp())
                        OR (state IN ('ready', 'retry_wait')
                            AND next_attempt_at <= clock_timestamp()
-                           AND created_at <= clock_timestamp()
                                - make_interval(secs => $1))
                 )::integer AS stuck_count,
                 EXTRACT(EPOCH FROM (
