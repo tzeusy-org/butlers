@@ -828,10 +828,28 @@ async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
     ("dead_letter_id", "eligible", "replay_result", "expected_status", "expected_calls"),
     [
         ("not-a-uuid", True, {"success": True}, 400, 0),
-        (str(uuid4()), False, {"success": True}, 404, 0),
-        (str(uuid4()), True, {"success": False, "error": "not_replay_eligible"}, 409, 1),
-        (str(uuid4()), True, {"success": False, "error": "dead_letter_not_found"}, 404, 1),
-        (str(uuid4()), True, {"success": False, "error": "storage_failure"}, 500, 1),
+        ("11111111-1111-4111-8111-111111111111", False, {"success": True}, 404, 0),
+        (
+            "22222222-2222-4222-8222-222222222222",
+            True,
+            {"success": False, "error": "not_replay_eligible"},
+            409,
+            1,
+        ),
+        (
+            "33333333-3333-4333-8333-333333333333",
+            True,
+            {"success": False, "error": "dead_letter_not_found"},
+            404,
+            1,
+        ),
+        (
+            "44444444-4444-4444-8444-444444444444",
+            True,
+            {"success": False, "error": "storage_failure"},
+            500,
+            1,
+        ),
     ],
 )
 async def test_retry_unroutable_failures_remain_typed_and_fail_closed(
