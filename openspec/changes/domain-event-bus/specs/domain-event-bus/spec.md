@@ -141,6 +141,22 @@ error text, honor the existing backoff and maximum-attempt bound, and become
 - **THEN** the final failed attempt transitions it to `failed_permanent`, and
   later reconciliation sweeps do not dispatch it again
 
+### Requirement: Explicit Owner Delivery Replay
+
+`failed_permanent` SHALL remain terminal for automatic reconciliation. The dashboard SHALL nevertheless offer an explicit owner recovery verb that atomically returns the existing delivery row to `pending`; it SHALL not mint a second delivery identity or dispatch directly from the API process.
+
+#### Scenario: Owner replays a permanently failed delivery
+
+- **WHEN** the owner invokes `POST /api/domain-events/deliveries/{delivery_id}/replay` for a `failed_permanent` row
+- **THEN** one atomic transition SHALL set the row to `pending` and clear stale attempt, error, task, and delivery-result fields
+- **AND** the ordinary delivery worker SHALL own the subsequent attempt
+
+#### Scenario: Repeated or concurrent replay is idempotent
+
+- **WHEN** another replay request targets the same delivery after the first transition wins
+- **THEN** the API SHALL return HTTP 409 Conflict
+- **AND** it SHALL not perform a second transition or enqueue duplicate delivery work
+
 ### Requirement: Subscriber-Local Wake Reconciliation
 
 A butler receiving a fanned-out event via `receive_domain_event` SHALL
@@ -199,6 +215,7 @@ empty result (the fleet-wide degraded-source honesty convention).
 - **THEN** the response lists `public.domain_event_deliveries` rows for
   `finance` joined with each delivery's `event_type`/`source_butler`/
   `occurred_at`, most-recent first, paginated
+- **AND** a `failed_permanent` row remains visibly failed and carries an explicit Replay verb on the butler detail panel
 
 #### Scenario: A degraded read never renders as a truthful empty list
 
