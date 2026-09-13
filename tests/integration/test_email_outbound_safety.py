@@ -556,9 +556,15 @@ class TestNotifyRecipientValidation:
         daemon.switchboard_client = _mock_switchboard_client()
 
         owner = _owner_contact()
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=owner),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             result = await notify_fn(
                 channel="email",

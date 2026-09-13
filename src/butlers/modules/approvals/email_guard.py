@@ -204,7 +204,7 @@ async def check_email_recipient(
     )
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
-    if contact is None:
+    if contact is None or "owner" in contact.roles:
         try:
             fallback = await resolve_owner_channel_via_definer(pool, "email", email_target)
         except Exception:  # noqa: BLE001
@@ -212,6 +212,8 @@ async def check_email_recipient(
             fallback = None
         if fallback is not None:
             contact, _is_primary = fallback
+        elif contact is not None and "owner" in contact.roles:
+            contact = None
     dossier = DecisionDossier(None, [], None, None)
 
     # A unique, active owner association is sufficient on every channel.
@@ -431,24 +433,21 @@ async def check_recipient(
     (post bu-nd5me) so that the ``notify()`` MCP tool gates every supported
     channel, not just email:
 
-    1. Resolve the contact by ``(channel, target)``.  An ``'owner'`` role match
-       auto-approves on ANY active, verified owner channel — channel resolution
-       only returns a row for an *active* ``relationship.entity_facts`` triple,
-       so an owner-role match is by definition a verified owner channel.  No
-       channel-primacy check is applied (owner self-notification is low-risk).
+    1. Resolve the contact by ``(channel, target)``.
     2. Owner-only corroboration and cross-schema fallback: recognise owner
        channels through the ambiguity-safe ``SECURITY DEFINER``
        :func:`resolve_owner_channel_via_definer` lookup both when schema
        isolation makes direct resolution return ``None`` and when the direct
-       resolver returns an owner-looking normalized candidate.  The reported
-       primacy flag is intentionally discarded here (bu-nd5me).
+       resolver returns an owner-looking normalized candidate. This lookup
+       validates the identifier and evaluates every canonical fact equivalent
+       as one ambiguity decision. The reported primacy flag is intentionally
+       discarded (bu-nd5me).
     3. Non-owner / unresolvable target: check standing approval rules.  A
        matching rule auto-approves (and bumps ``use_count``); otherwise the
        send is parked as a ``pending_action`` for human review (fail-closed).
 
-    Unlike :func:`check_email_recipient`, this guard does NOT apply the
-    email-specific channel-primacy / context-conflict incident behaviour
-    (bu-jwby9 / bu-axdie); that nuance is intentionally email-only.
+    Unlike :func:`check_email_recipient`, this guard has no email-context
+    mismatch branch. Owner authorization itself is identical across channels.
     """
     from butlers.identity import (
         resolve_contact_by_channel,

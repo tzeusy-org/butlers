@@ -69,11 +69,16 @@ class TestCheckEmailRecipient:
     async def test_owner_primary_email_auto_approves(self) -> None:
         """Owner send to primary email address is auto-approved."""
         pool = AsyncMock()
-        # is_primary=True for the targeted address
-        pool.fetchrow = AsyncMock(return_value={"primary": True})
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
+        owner = _owner_contact()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             decision = await check_email_recipient(pool, **_COMMON_KWARGS)
 

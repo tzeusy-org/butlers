@@ -183,6 +183,10 @@ class TestOwnerEmailAssociation:
                 new=AsyncMock(return_value=owner),
             ),
             patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, False)),
+            ),
+            patch(
                 "butlers.modules.approvals.rules.match_rules",
                 new=AsyncMock(return_value=None),
             ),
@@ -220,9 +224,15 @@ class TestOwnerEmailAssociation:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value={"primary": True})
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=owner),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.identity.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(owner, True)),
+            ),
         ):
             decision = await check_email_recipient(
                 pool,

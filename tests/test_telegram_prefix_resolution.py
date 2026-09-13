@@ -13,9 +13,11 @@ import uuid
 from typing import Any
 from unittest.mock import AsyncMock
 
+from butlers.core_tools._routing import ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES
 from butlers.identity import (
     _CHANNEL_TYPE_TO_PREDICATE,
     _TELEGRAM_PREFIX_CHANNEL_TYPES,
+    OWNER_AUTHORIZED_IDENTITY_CHANNELS,
     canonical_identity_channel_type,
     resolve_contact_by_channel,
 )
@@ -35,12 +37,18 @@ def _resolve_pool(stored_object: str, *, roles: list[str]) -> Any:
     return pool
 
 
-class TestChannelMap:
-    def test_telegram_bot_mapped_and_in_prefix_set(self) -> None:
+class TestCommunicationChannelMap:
+    def test_routed_channels_have_owner_identity_authorization(self) -> None:
         assert _CHANNEL_TYPE_TO_PREDICATE.get("telegram_bot") == "has-handle"
         assert "telegram_bot" in _TELEGRAM_PREFIX_CHANNEL_TYPES
         assert "telegram" in _TELEGRAM_PREFIX_CHANNEL_TYPES
-        assert canonical_identity_channel_type("whatsapp") == "whatsapp_jid"
+        for (
+            transport_channel,
+            identity_channel,
+        ) in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES.items():
+            assert canonical_identity_channel_type(transport_channel) == identity_channel
+            assert identity_channel in OWNER_AUTHORIZED_IDENTITY_CHANNELS
+            assert _CHANNEL_TYPE_TO_PREDICATE.get(identity_channel) is not None
 
 
 class TestResolveTelegramPrefix:
