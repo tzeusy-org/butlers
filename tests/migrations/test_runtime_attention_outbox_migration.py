@@ -1522,7 +1522,7 @@ def test_core_chain_serializes_global_runtime_attention_downgrade_and_reapply_ac
     }
     assert set(failed_downgrades) == set(target_schemas)
     assert all(
-        "core_198 downgrade requires trusted bootstrap rollback interface" in stderr
+        "protected core_198 rollback preflight failed" in stderr
         for stderr in failed_downgrades.values()
     )
 
@@ -2103,14 +2103,24 @@ def test_nonempty_outbox_survives_a_refused_core_197_downgrade(
         engine.dispose()
 
     config = _build_alembic_config(bootstrap_url, chains=["core"])
-    with pytest.raises(DBAPIError, match="trusted bootstrap rollback interface"):
+    with pytest.raises(RuntimeError, match="protected core_198 rollback preflight failed"):
         command.downgrade(config, "core_197")
 
-    _upgrade_to_core_head(db_url)
     engine = create_engine(bootstrap_url)
     try:
         with engine.connect() as conn:
+            assert_at_chain_head(conn)
             assert conn.execute(text(f"SELECT count(*) FROM {_OUTBOX}")).scalar_one() == 1
+            assert conn.execute(
+                text(
+                    "SELECT EXISTS ("
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'runtime_config' "
+                    "AND column_name = 'core_groups_narrowing_reason'"
+                    ")"
+                )
+            ).scalar_one()
     finally:
         engine.dispose()
 

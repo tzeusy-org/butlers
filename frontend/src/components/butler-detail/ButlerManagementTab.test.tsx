@@ -35,7 +35,6 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
 vi.mock("@/hooks/use-butlers", () => ({
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
   usePatchRuntimeConfig: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
-  useButlerMcpTools: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
   useButlerModules: vi.fn(() => ({ data: { data: [] }, isLoading: false, isError: false })),
 }));
 
@@ -62,7 +61,6 @@ import {
 } from "@/hooks/use-butler-management";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import {
-  useButlerMcpTools,
   useButlerModules,
   usePatchRuntimeConfig,
   useRuntimeConfig,
@@ -297,6 +295,7 @@ const RUNTIME_CONFIG = {
   core_groups_narrowing_reason: null,
   declared_tool_names: ["status", "delegate_ask"],
   effective_tool_names: ["status", "delegate_ask"],
+  registered_tool_names: ["status"],
   tool_registration_failures: null,
   tool_declaration_complete: true,
   tool_snapshot_status: "available" as const,
@@ -324,11 +323,6 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof useRuntimeConfig>);
-    vi.mocked(useButlerMcpTools).mockReturnValue({
-      data: { data: [{ name: "status", description: null, input_schema: null }] },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useButlerMcpTools>);
     vi.mocked(useButlerModules).mockReturnValue({
       data: { data: [] },
       isLoading: false,
@@ -407,6 +401,7 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
         ...RUNTIME_CONFIG,
         declared_tool_names: ["status", "calendar_get_events"],
         effective_tool_names: ["status", "calendar_get_events"],
+        registered_tool_names: ["status"],
         tool_registration_failures: [
           {
             tool_name: "calendar_get_events",
@@ -441,6 +436,7 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
         ...RUNTIME_CONFIG,
         declared_tool_names: null,
         effective_tool_names: null,
+        registered_tool_names: null,
         tool_declaration_complete: null,
         tool_snapshot_status: "unavailable",
       },

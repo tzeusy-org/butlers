@@ -52,7 +52,7 @@ def _mock_row(
     return row
 
 
-def _make_app(db_manager: MagicMock, roster_dir: Path):
+def _make_app(db_manager: MagicMock, roster_dir: Path, mcp_manager=None):
     from fastapi import FastAPI
 
     from butlers.api.routers import runtime_config
@@ -61,7 +61,7 @@ def _make_app(db_manager: MagicMock, roster_dir: Path):
     app.include_router(runtime_config.router)
     app.dependency_overrides[runtime_config._get_db_manager] = lambda: db_manager
     app.dependency_overrides[runtime_config._get_roster_dir] = lambda: roster_dir
-    app.dependency_overrides[runtime_config._get_mcp_client_manager] = lambda: None
+    app.dependency_overrides[runtime_config._get_mcp_client_manager] = lambda: mcp_manager
     return app
 
 
@@ -96,28 +96,6 @@ def _make_db_manager(pool=None, butler_name="test", known=True):
 def test_get_success_returns_field_tiers(tmp_path: Path):
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=_mock_row())
-    app = _make_app(_make_db_manager(pool=pool), _write_roster(tmp_path))
-    resp = TestClient(app).get("/api/butlers/test/runtime-config")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["butler_name"] == "test"
-    assert "field_tiers" in data
-    assert data["field_tiers"]["core_groups"] == "cold"
-    assert data["field_tiers"]["catalog_read_sensitivity"] == "hot"
-    assert data["field_tiers"]["tool_exposure_policy"] == "hot"
-    assert data["tool_exposure_policy"] == "eager_filtered"
-    assert data["declared_core_groups"] == ["infra", "delegation", "graph"]
-    assert data["effective_core_groups"] == ["infra", "delegation", "graph"]
-    assert data["core_groups_source"] == "git"
-    assert data["tool_snapshot_status"] == "unavailable"
-    # Hot runtime-selection fields removed from this endpoint
-    for field in ("model", "runtime_type", "args", "session_timeout_s"):
-        assert field not in data
-
-
-async def test_tool_surface_snapshot_preserves_comparable_tool_names():
-    from butlers.api.routers.runtime_config import _tool_surface_snapshot
-
     client = AsyncMock()
     client.call_tool.return_value = SimpleNamespace(
         content=[
@@ -134,22 +112,33 @@ async def test_tool_surface_snapshot_preserves_comparable_tool_names():
     )
     manager = AsyncMock()
     manager.get_client.return_value = client
-
-    snapshot = await _tool_surface_snapshot(manager, "relationship")
-
-    assert snapshot == {
-        "declared_tool_names": ["delegate_ask", "status"],
-        "effective_tool_names": ["status"],
-        "tool_registration_failures": [
-            {
-                "tool_name": "delegate_ask",
-                "module_name": "pipeline",
-                "error_type": "RuntimeError",
-            }
-        ],
-        "tool_declaration_complete": False,
-        "tool_snapshot_status": "available",
-    }
+    app = _make_app(_make_db_manager(pool=pool), _write_roster(tmp_path), manager)
+    resp = TestClient(app).get("/api/butlers/test/runtime-config")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["butler_name"] == "test"
+    assert "field_tiers" in data
+    assert data["field_tiers"]["core_groups"] == "cold"
+    assert data["field_tiers"]["catalog_read_sensitivity"] == "hot"
+    assert data["field_tiers"]["tool_exposure_policy"] == "hot"
+    assert data["tool_exposure_policy"] == "eager_filtered"
+    assert data["declared_core_groups"] == ["infra", "delegation", "graph"]
+    assert data["effective_core_groups"] == ["infra", "delegation", "graph"]
+    assert data["core_groups_source"] == "git"
+    assert data["tool_snapshot_status"] == "available"
+    assert data["declared_tool_names"] == ["delegate_ask", "status"]
+    assert data["effective_tool_names"] == ["status"]
+    assert data["registered_tool_names"] == ["status"]
+    assert data["tool_registration_failures"] == [
+        {
+            "tool_name": "delegate_ask",
+            "module_name": "pipeline",
+            "error_type": "RuntimeError",
+        }
+    ]
+    # Hot runtime-selection fields removed from this endpoint
+    for field in ("model", "runtime_type", "args", "session_timeout_s"):
+        assert field not in data
 
 
 async def test_tool_surface_snapshot_names_unavailable_evidence():

@@ -1867,7 +1867,6 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - runtime tools
 - registered tools
 - No core-group drift.
-- Registered surface unavailable.
 - Declaration snapshot unavailable.
 - Module health unavailable.
 - Declaration snapshot incomplete; module registration failed partway.
@@ -4283,4 +4282,4 @@ files under `frontend/src/pages` and `frontend/src/components`.
 - Preset windows
 
 ---
-*Total strings: 3358*
+*Total strings: 3357*
