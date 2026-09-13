@@ -28,7 +28,7 @@ Scope: v1-mandatory
 - **THEN** the partial content uses the same sanitized renderer as the stored answer and cannot create raw HTML, an executable element, or an unsafe link
 - **AND** an unterminated fence renders as code without breaking the surrounding layout
 - **AND** when later tokens close the construct, the answer re-renders into its completed structure without duplicated or lost text
-- **AND** `message_complete` reconciliation leaves the visible text byte-for-byte equivalent to the persisted message content
+- **AND** `message_complete` renders the persisted content byte-for-byte as renderer input, with no duplicated, lost, or synthetic fence text; rendered semantics remain governed by the allowed-markdown clauses above
 
 #### Scenario: Internal citation navigation
 
