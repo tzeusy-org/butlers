@@ -7,11 +7,14 @@ Create Date: 2026-09-13 00:00:00.000000
 The columns are nullable as a group so historical sessions retain their
 original meaning. New Spawner-created sessions populate all three atomically.
 Rollback refuses to discard any captured receipt evidence.
+When a requested target crosses the protected core_198 boundary, downgrade
+preflights that boundary before changing this revision's schema.
 """
 
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
+from butlers.migration_preflight import preflight_runtime_attention_downgrade
 
 revision = "core_232"
 down_revision = "core_231"
@@ -64,6 +67,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    preflight_runtime_attention_downgrade(op, context)
     op.execute(
         """
         DO $$

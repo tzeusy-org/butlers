@@ -34,7 +34,10 @@ async def _run_migration(pool, direction: str) -> None:
     module = _load_migration()
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
-    with patch.object(module, "op", mocked_op):
+    with (
+        patch.object(module, "op", mocked_op),
+        patch.object(module, "preflight_runtime_attention_downgrade"),
+    ):
         getattr(module, direction)()
     for statement in statements:
         await pool.execute(statement)
@@ -113,7 +116,10 @@ async def test_purpose_lane_is_closed_additive_and_rollback_safe(
         spec.loader.exec_module(module)
         mocked_op = MagicMock()
         mocked_op.execute.side_effect = statements.append
-        with patch.object(module, "op", mocked_op):
+        with (
+            patch.object(module, "op", mocked_op),
+            patch.object(module, "preflight_runtime_attention_downgrade"),
+        ):
             module.upgrade()
         for statement in statements:
             await pool.execute(statement)
@@ -134,7 +140,10 @@ async def test_purpose_lane_is_closed_additive_and_rollback_safe(
             )
 
         statements.clear()
-        with patch.object(module, "op", mocked_op):
+        with (
+            patch.object(module, "op", mocked_op),
+            patch.object(module, "preflight_runtime_attention_downgrade"),
+        ):
             module.downgrade()
         with pytest.raises(asyncpg.RaiseError, match="session purpose evidence exists"):
             for statement in statements:

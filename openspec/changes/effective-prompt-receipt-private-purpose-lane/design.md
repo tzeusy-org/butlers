@@ -81,6 +81,9 @@ back remotely. Audit write failure does not turn refusal into permission.
 ## Rollback
 
 The schema additions are nullable and downgrade only removes the new columns when no new receipt
-data exists. Removing the UI projections falls back to existing session and prompt displays.
+data exists. A requested downgrade that crosses the protected runtime-attention boundary preflights
+that boundary before either newer revision changes schema or its version stamp; refusal preserves
+the original head and all receipt/purpose evidence. Removing the UI projections falls back to
+existing session and prompt displays.
 Removing lane enforcement requires reverting source and migration together; stored lane values are
 non-secret evidence and need no replay or reinterpretation.

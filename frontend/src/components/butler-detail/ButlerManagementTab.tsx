@@ -252,13 +252,26 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
   const prompt = pv?.prompt ?? "";
   const updatedBy = pv?.updated_by ?? "—";
   const effective = effectiveData?.data;
-  const composedPrompt = effective?.effective_prompt ?? prompt;
-  const driftHint =
-    effective?.drift_status === "matches_git" && effective.roster_digest
-      ? `Prompt: matches git @${effective.roster_digest.slice(0, 12)}`
-      : effective?.drift_status === "drifted"
-        ? `Prompt: drifted since ${effective.drifted_since ?? "last receipt"}`
-        : "Prompt: receipt pending";
+  const composedPrompt = effective?.effective_prompt ?? "";
+  let driftHint = "Prompt: receipt pending";
+  if (effectiveError) {
+    driftHint = "Prompt: receipt unavailable";
+  } else if (effective?.status === "corrupt") {
+    driftHint = "Prompt: corrupt receipt";
+  } else if (effective?.drift_status === "matches_git" && effective.roster_digest) {
+    driftHint = `Prompt: matches git @${effective.roster_digest.slice(0, 12)}`;
+  } else if (effective?.drift_status === "drifted") {
+    driftHint = `Prompt: drifted since ${effective.drifted_since ?? "last receipt"}`;
+  }
+  let promptExplanation =
+    "Preview shows composed runtime instructions. The existing editor changes the mutable base prompt; it does not edit roster files or this receipt.";
+  if (effective?.status === "corrupt") {
+    promptExplanation =
+      "Stored receipt verification failed, so runtime prompt content is withheld. The existing authoring prompt remains separately editable.";
+  } else if (effectiveError || !composedPrompt) {
+    promptExplanation =
+      "No verified composed runtime prompt is available. The existing authoring prompt remains separately editable and is not shown as a runtime receipt.";
+  }
 
   return (
     <Section
@@ -331,8 +344,7 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
             </p>
           )}
           <p className="mt-2 max-w-[72ch] text-[11px] text-muted-foreground">
-            Preview shows composed runtime instructions. The existing editor changes the mutable
-            base prompt; it does not edit roster files or this receipt.
+            {promptExplanation}
           </p>
         </>
       )}

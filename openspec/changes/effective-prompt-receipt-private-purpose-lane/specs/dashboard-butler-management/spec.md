@@ -22,6 +22,12 @@ claim about dynamic-layer equality.
 - **WHEN** no session prompt receipt exists for the butler
 - **THEN** the drift projection is `unknown`, never a green match
 
+#### Scenario: Unavailable or corrupt receipt remains explicit
+- **WHEN** the effective-prompt query fails or returns a corrupt receipt without verified prompt bytes
+- **THEN** the Configuration section renders an explicit unavailable or corrupt receipt state
+- **AND** it does not substitute or label the mutable authoring prompt as composed runtime instructions
+- **AND** the separate prompt edit control remains available
+
 ### Requirement: Prompt preview does not expand authoring authority
 
 The composed preview and drift projection SHALL be read-only additions. They SHALL NOT add a new

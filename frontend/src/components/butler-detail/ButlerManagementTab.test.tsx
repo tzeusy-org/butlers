@@ -185,6 +185,51 @@ describe("Effective prompt preview", () => {
     expect(screen.getByText(/Prompt: matches git @/)).toBeTruthy();
     expect(screen.queryByText("No system prompt configured.")).toBeNull();
   });
+
+  it.each(["error", "corrupt"] as const)(
+    "keeps the mutable authoring prompt out of an unavailable %s receipt",
+    (state) => {
+      vi.mocked(useButlerPrompt).mockReturnValue({
+        data: { data: { version: 3, prompt: "Mutable authoring prompt", updated_by: "owner" } },
+        isLoading: false,
+      } as ReturnType<typeof useButlerPrompt>);
+      vi.mocked(useButlerEffectivePrompt).mockReturnValue(
+        state === "error"
+          ? ({
+              data: undefined,
+              isLoading: false,
+              isError: true,
+              error: new Error("receipt unavailable"),
+            } as unknown as ReturnType<typeof useButlerEffectivePrompt>)
+          : ({
+              data: {
+                data: {
+                  butler_name: "general",
+                  status: "corrupt",
+                  effective_prompt: null,
+                  prompt_digest: null,
+                  prompt_provenance: [],
+                  total_bytes: null,
+                  roster_digest: null,
+                  drift_status: "unknown",
+                  drifted_since: null,
+                  changed_sources: [],
+                },
+              },
+              isLoading: false,
+              isError: false,
+              error: null,
+            } as unknown as ReturnType<typeof useButlerEffectivePrompt>),
+      );
+
+      renderTab();
+
+      expect(screen.queryByText("Mutable authoring prompt")).toBeNull();
+      expect(screen.getByText("Effective prompt unavailable.")).toBeTruthy();
+      expect(screen.getByText(/authoring prompt remains separately editable/i)).toBeTruthy();
+      expect(screen.queryByText(/Preview shows composed runtime instructions/)).toBeNull();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
