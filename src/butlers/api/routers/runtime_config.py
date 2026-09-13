@@ -316,6 +316,13 @@ async def patch_runtime_config(
         updates["core_groups"] = patch.core_groups
     if "core_groups_narrowing_reason" in patch.model_fields_set:
         updates["core_groups_narrowing_reason"] = patch.core_groups_narrowing_reason
+        # Clearing the reason revokes the runtime override immediately. Do not
+        # leave a stale subset in the row until some future daemon restart.
+        if (
+            patch.core_groups_narrowing_reason is None
+            and "core_groups" not in patch.model_fields_set
+        ):
+            updates["core_groups"] = None if declared_groups is None else list(declared_groups)
     if patch.catalog_read_sensitivity is not None:
         updates["catalog_read_sensitivity"] = patch.catalog_read_sensitivity
     if patch.max_concurrent is not None:
