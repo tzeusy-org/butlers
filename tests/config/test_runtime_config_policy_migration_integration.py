@@ -39,8 +39,9 @@ _skip_without_docker = pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker 
 def _prepare_core_222(postgres_container) -> str:
     """Create a real core database at core_222, immediately before core_224.
 
-    core_223 is claimed by a different, still-open PR (#4043) that has not
-    landed on main, so this migration chains directly after core_222.
+    The merged graph uses a non-monotonic identifier later in the chain:
+    core_223 follows core_231. This helper deliberately tests core_224's
+    core_222 predecessor rather than assuming numeric order means graph order.
     """
     from alembic import command
     from butlers.migrations import _build_alembic_config

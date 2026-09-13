@@ -442,6 +442,67 @@ describe("ApprovalsPage — load-more", () => {
     expect(vi.mocked(retryUnroutableAttention).mock.calls[0]?.[0]).toBe("dead-letter-1");
   });
 
+  it("names an unroutable-source failure and recovers through its retry", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention)
+      .mockRejectedValueOnce(new Error("unroutable source offline"))
+      .mockReturnValueOnce(
+        makeApiResponse([
+          {
+            id: "dead-letter-recovered",
+            question: "Can this route now?",
+            failure_reason: "No target acknowledged the first attempt",
+            created_at: "2026-09-13T01:00:00Z",
+          },
+        ]) as AnyMock,
+      );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="unroutable-attention-degraded"]') !== null,
+    );
+
+    const degraded = container.querySelector(
+      '[data-testid="unroutable-attention-degraded"]',
+    );
+    expect(degraded?.textContent).toContain("Unroutable messages: unavailable");
+    await act(async () => {
+      degraded?.querySelector("button")?.click();
+      await flush();
+    });
+    await flushUntil(() => container.textContent?.includes("Can this route now?") === true);
+
+    expect(getUnroutableAttention).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-testid="unroutable-attention-list"]')).not.toBeNull();
+  });
+
+  it("retains an unroutable row and re-enables Retry when replay fails", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getUnroutableAttention).mockReturnValue(
+      makeApiResponse([
+        {
+          id: "dead-letter-failed-retry",
+          question: "Please try me again",
+          failure_reason: "No target acknowledged the route",
+          created_at: "2026-09-13T01:00:00Z",
+        },
+      ]) as AnyMock,
+    );
+    vi.mocked(retryUnroutableAttention).mockRejectedValue(new Error("Retry unavailable"));
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Retry") !== undefined);
+    await act(async () => {
+      findButton(container, "Retry")?.click();
+      await flush();
+    });
+    await flushUntil(() => vi.mocked(toast.error).mock.calls.length === 1);
+
+    expect(toast.error).toHaveBeenCalledWith("Retry unavailable");
+    expect(container.textContent).toContain("Unroutable: Please try me again");
+    expect(findButton(container, "Retry")).toHaveProperty("disabled", false);
+  });
+
   it("labels the shared policy and rejects an incomplete quiet-hour pair locally", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
 

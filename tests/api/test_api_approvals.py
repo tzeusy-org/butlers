@@ -809,6 +809,41 @@ async def test_retry_unroutable_is_idempotent_and_second_call_conflicts(app):
     assert replay.await_args_list[0].kwargs["operator_identity"] == "owner"
 
 
+@pytest.mark.parametrize(
+    ("dead_letter_id", "eligible", "replay_result", "expected_status", "expected_calls"),
+    [
+        ("not-a-uuid", True, {"success": True}, 400, 0),
+        (str(uuid4()), False, {"success": True}, 404, 0),
+        (str(uuid4()), True, {"success": False, "error": "not_replay_eligible"}, 409, 1),
+        (str(uuid4()), True, {"success": False, "error": "dead_letter_not_found"}, 404, 1),
+        (str(uuid4()), True, {"success": False, "error": "storage_failure"}, 500, 1),
+    ],
+)
+async def test_retry_unroutable_failures_remain_typed_and_fail_closed(
+    app,
+    dead_letter_id,
+    eligible,
+    replay_result,
+    expected_status,
+    expected_calls,
+):
+    wired_app, conn = _app_with_mock_db(app)
+    conn.fetchval = AsyncMock(return_value=eligible)
+    replay = AsyncMock(return_value=replay_result)
+
+    with patch(
+        "butlers.tools.switchboard.dead_letter.replay_dead_letter_request",
+        new=replay,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=wired_app), base_url="http://test"
+        ) as client:
+            response = await client.post(f"/api/approvals/unroutable/{dead_letter_id}/retry")
+
+    assert response.status_code == expected_status
+    assert replay.await_count == expected_calls
+
+
 # ---------------------------------------------------------------------------
 # butler filter param + butler field (bu-d3fhz)
 # ---------------------------------------------------------------------------

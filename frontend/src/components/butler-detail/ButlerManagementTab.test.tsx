@@ -444,10 +444,16 @@ describe("RuntimeConfigCard — mounted on Manage tab", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof useRuntimeConfig>);
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useButlerModules>);
 
     renderTab();
 
     expect(screen.getByText("Declaration snapshot unavailable.")).toBeTruthy();
+    expect(screen.getByText("Module health unavailable.")).toBeTruthy();
   });
 
   it("surfaces the cold (restart required) tier badge for ceiling fields", () => {

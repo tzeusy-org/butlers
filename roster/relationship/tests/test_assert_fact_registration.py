@@ -51,7 +51,7 @@ async def _register(groups: list[str]) -> set[str]:
 
 
 async def test_assert_fact_registered_on_production_surface():
-    """The central writer registers on the full manifesto-owned surface."""
+    """The central writer registers on the current approved production surface."""
     names = await _register(_PRODUCTION_GROUPS)
     assert "relationship_assert_fact" in names, (
         "relationship_assert_fact must stay registered for approval dispatch "

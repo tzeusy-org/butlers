@@ -20,23 +20,6 @@ The relationship butler maintains personal CRM context with 40+ domain tools.
 - **WHEN** the relationship butler starts
 - **THEN** it loads modules: `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), and `memory`
 
-### Requirement: Relationship Butler Tool Surface
-
-The implementation SHALL provide the behavior described by this requirement.
-The relationship butler exposes its currently approved manifesto-owned personal CRM tool set. Its eight configured relationship-module groups (`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`, `notes`, `tracking`, and `management`) own 58 tools. The mandatory `relationship_assert_fact` approval-dispatch handler registers unconditionally, for 59 relationship-module handlers in total. The mixed `entity` group remains disabled until the adopted six-read/two-write split is implemented; it SHALL NOT be activated while it still exposes both reads and writes.
-
-#### Scenario: Tool inventory
-- **WHEN** a runtime instance is spawned for the relationship butler
-- **THEN** it has access to 40+ tools including: contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), the registry-relational edge writer/reader (`relationship_assert_fact`, `relationship_lookup`), feed (`feed_get`), entity resolution (`entity_resolve`, `entity_create`), memory (`memory_store_fact`), and calendar tools
-- **THEN** all 58 tools owned by the eight configured groups SHALL be registered, including contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), and feed (`feed_get`)
-- **AND** `relationship_assert_fact` SHALL be the additional mandatory unconditional handler, making 59 relationship-module handlers total
-- **AND** every grouped `entity` read and write SHALL remain absent until the read-only split is implemented
-- **AND** the legacy entity labels in the broad capability inventory SHALL NOT register a bare `entity_create` alias or any Relationship `entity` handler before that split
-
-> NOTE: `feed_get` is implemented and registered by the relationship module's `interactions` group; the grouped inventory count includes it.
->
-> The first inventory clause is the archived broad capability taxonomy. The exact grouped inventory clauses govern literal Relationship-module registration names.
-
 ### Requirement: Relationship Butler Tool Surface — Dunbar Tier
 The relationship butler SHALL expose Dunbar tier management and group interaction tools.
 
@@ -52,8 +35,9 @@ The implementation SHALL provide the behavior described by this requirement.
 The relationship butler follows a 7-step entity resolution pipeline for person mentions.
 
 #### Scenario: Entity resolution flow
-- **WHEN** the relationship butler processes a message mentioning a person
+- **WHEN** the relationship butler processes a message mentioning a person AND the separately adopted read-only Relationship entity group is implemented and active
 - **THEN** it follows a 7-step pipeline: (1) identify person mentions, (2) resolve each via `entity_resolve` with context hints, (3) apply disambiguation policy (zero candidates: create entity; single candidate or top leads by 30+ points: use entity_id; multiple candidates with gap less than 30 points: ask user), (4) handle new people, (5) store facts with entity_id, (6) log interactions, (7) update domain records
+- **AND** before that activation the runtime MUST NOT claim `entity_resolve` as a registered callable tool
 
 ### Requirement: Relationship Butler Schedules
 
@@ -87,7 +71,7 @@ The relationship butler uses a person-centric memory taxonomy.
 The implementation SHALL provide the behavior described by this requirement.
 The relationship butler migrates 9 dedicated CRUD tables to temporal SPO facts. All facts use `scope='relationship'` and `entity_id = contact_entity_id` (resolved from `public.contacts.entity_id` for each contact). Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
 
-The relationship butler maintains TWO temporal fact stores that the CRUD-to-SPO tools route between by predicate kind. Narrative triples (interactions, notes, gifts, loans, tasks, reminders, life events, quick facts) are written to the `memory.facts` store (snake_case predicates, `scope='relationship'`) via `memory_store_fact` and the CRUD wrappers. Registry-relational edges and identity-contact predicates are written to the `relationship.entity_facts` store (kebab-case RDF-style predicates) via the central writer `relationship_assert_fact` and read via `relationship_lookup`; this store powers the relational columns and Dunbar concentration views.
+The relationship butler maintains TWO temporal fact stores that the CRUD-to-SPO tools route between by predicate kind. Narrative triples (interactions, notes, gifts, loans, tasks, reminders, life events, quick facts) are written to the `memory.facts` store (snake_case predicates, `scope='relationship'`) via `memory_store_fact` and the CRUD wrappers. Registry-relational edges and identity-contact predicates are written to the `relationship.entity_facts` store (kebab-case RDF-style predicates) via the central writer `relationship_assert_fact`; this store powers the relational columns and Dunbar concentration views. After the separately adopted read-only entity group is implemented and active, `relationship_lookup` SHALL expose the corresponding read surface. Before that activation, the runtime MUST NOT claim `relationship_lookup` as a registered callable tool.
 
 #### Scenario: Contact entity resolution before fact storage
 - **WHEN** any relationship CRUD-migrated tool stores a fact for a contact
@@ -264,3 +248,33 @@ Scope: v1-mandatory
 - **THEN** the stale-contact signal MUST remain `unmeasurable`
 - **AND** current contact identity alone MUST NOT backfill the legacy observation's producer
 - **AND** a later server-attested observation MAY establish a new trustworthy baseline
+
+### Requirement: Relationship Butler Registered Tool Surface
+
+The relationship butler SHALL expose its currently approved manifesto-owned
+personal CRM tool set. Its eight configured relationship-module groups
+(`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`,
+`notes`, `tracking`, and `management`) own 58 tools. The mandatory
+`relationship_assert_fact` approval-dispatch handler registers unconditionally,
+for 59 relationship-module handlers in total. The mixed `entity` group SHALL
+remain disabled until the adopted six-read/two-write split is implemented; it
+MUST NOT be activated while it still exposes both reads and writes.
+
+#### Scenario: Exact current registered inventory
+
+- **WHEN** a runtime instance is spawned for the relationship butler
+- **THEN** all 58 tools owned by the eight configured groups SHALL be registered
+- **AND** the inventory SHALL include `contact_create`, `contact_update`,
+  `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`,
+  `relationship_add`, `relationship_list`, `relationship_remove`, `date_add`,
+  `date_list`, `upcoming_dates`, `note_create`, `note_list`, `note_search`,
+  `interaction_log`, `interaction_list`, `fact_set`, `fact_list`, and `feed_get`
+- **AND** `relationship_assert_fact` SHALL be the additional mandatory
+  unconditional handler, making 59 relationship-module handlers total
+- **AND** `entity_resolve`, `entity_get`, `entity_neighbors`,
+  `relationship_fact_evidence`, `relationship_predicate_coverage`,
+  `relationship_lookup`, `entity_update`, and `relationship_record_coverage`
+  SHALL all be absent
+- **AND** no bare `entity_create` MCP tool or alias SHALL be registered
+- **AND** the separately configured memory module MAY expose
+  `memory_entity_create` under that canonical prefixed name

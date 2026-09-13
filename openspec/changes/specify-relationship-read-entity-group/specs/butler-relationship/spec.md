@@ -1,9 +1,15 @@
 ## MODIFIED Requirements
 
-### Requirement: Relationship Butler Tool Surface
+### Requirement: Relationship Butler Registered Tool Surface
 
-The implementation SHALL provide the behavior described by this requirement.
-The relationship butler exposes its currently approved manifesto-owned personal CRM tool set. Its eight configured relationship-module groups (`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`, `notes`, `tracking`, and `management`) own 58 tools. The mandatory `relationship_assert_fact` approval-dispatch handler registers unconditionally, for 59 relationship-module handlers in total. The mixed `entity` group remains disabled until the adopted six-read/two-write split is implemented; it SHALL NOT be activated while it still exposes both reads and writes.
+The relationship butler SHALL expose its currently approved manifesto-owned
+personal CRM tool set. Its eight configured relationship-module groups
+(`contacts`, `contacts_extended`, `interactions`, `relationships`, `social`,
+`notes`, `tracking`, and `management`) own 58 tools. The mandatory
+`relationship_assert_fact` approval-dispatch handler registers unconditionally,
+for 59 relationship-module handlers in total. The mixed `entity` group SHALL
+remain disabled until the adopted six-read/two-write split is implemented; it
+MUST NOT be activated while it still exposes both reads and writes.
 
 The separately approved implementation SHALL replace that current inventory
 with nine configured groups owning 64 tools, while the mandatory unconditional
@@ -11,17 +17,23 @@ handler makes 65 relationship-module handlers in total. The ninth group SHALL
 be the read-only `entity` group; the two `entity_write` tools SHALL remain
 inactive.
 
-#### Scenario: Tool inventory
-- **WHEN** a runtime instance is spawned for the relationship butler
-- **THEN** it has access to 40+ tools including: contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), the registry-relational edge writer/reader (`relationship_assert_fact`, `relationship_lookup`), feed (`feed_get`), entity resolution (`entity_resolve`, `entity_create`), memory (`memory_store_fact`), and calendar tools
-- **THEN** all 58 tools owned by the eight configured groups SHALL be registered, including contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), and feed (`feed_get`)
-- **AND** `relationship_assert_fact` SHALL be the additional mandatory unconditional handler, making 59 relationship-module handlers total
-- **AND** every grouped `entity` read and write SHALL remain absent until the read-only split is implemented
-- **AND** the legacy entity labels in the broad capability inventory SHALL NOT register a bare `entity_create` alias or any Relationship `entity` handler before that split
+#### Scenario: Exact current registered inventory
 
-> NOTE: `feed_get` is implemented and registered by the relationship module's `interactions` group; the grouped inventory count includes it.
->
-> The first inventory clause is the archived broad capability taxonomy. The exact grouped inventory clauses govern literal Relationship-module registration names.
+- **WHEN** a runtime instance is spawned for the relationship butler
+- **THEN** all 58 tools owned by the eight configured groups SHALL be registered
+- **AND** the inventory SHALL include `contact_create`, `contact_update`,
+  `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`,
+  `relationship_add`, `relationship_list`, `relationship_remove`, `date_add`,
+  `date_list`, `upcoming_dates`, `note_create`, `note_list`, `note_search`,
+  `interaction_log`, `interaction_list`, `fact_set`, `fact_list`, and `feed_get`
+- **AND** `relationship_assert_fact` SHALL be the additional mandatory unconditional handler, making 59 relationship-module handlers total
+- **AND** `entity_resolve`, `entity_get`, `entity_neighbors`,
+  `relationship_fact_evidence`, `relationship_predicate_coverage`,
+  `relationship_lookup`, `entity_update`, and `relationship_record_coverage`
+  SHALL all be absent
+- **AND** no bare `entity_create` MCP tool or alias SHALL be registered
+- **AND** the separately configured memory module MAY expose
+  `memory_entity_create` under that canonical prefixed name
 
 #### Scenario: Tool inventory after the read-only split
 
