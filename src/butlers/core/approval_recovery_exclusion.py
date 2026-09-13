@@ -11,10 +11,9 @@ def notification_recovery_exclusion_sql(alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
     metadata = f"{prefix}metadata"
     return (
-        "NOT ("
-        f"jsonb_typeof(COALESCE({metadata}, '{{}}'::jsonb)) = 'object' "
-        f"AND jsonb_typeof({metadata} -> 'notify_request') = 'object' "
-        f"AND ({metadata} -> 'notify_request') ? 'recovery'"
+        "NOT COALESCE("
+        f"jsonb_typeof({metadata} -> 'notify_request') = 'object' "
+        f"AND ({metadata} -> 'notify_request') ? 'recovery', FALSE"
         ")"
     )
 

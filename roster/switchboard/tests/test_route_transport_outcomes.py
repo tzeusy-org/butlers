@@ -13,7 +13,7 @@ import asyncio
 import errno
 import sys
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
@@ -503,25 +503,58 @@ class TestDeliverPostSendBookkeeping:
         assert trusted["issuer"] == trusted["owning_schema"] == "relationship"
         assert "claim_token" not in trusted and "claim_fence" not in trusted
 
-    async def test_recovery_rejects_untrusted_or_mismatched_source_before_route(self) -> None:
+    async def test_recovery_rejects_untrusted_or_malformed_source_before_observability(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         pool = _mock_pool(fetchval=AsyncMock(return_value="relationship"))
-        with patch(
-            "butlers.tools.switchboard.notification.deliver.route", new=AsyncMock()
-        ) as mock_route:
-            unauthenticated = await deliver(
-                pool,
-                notify_request=_recovery_envelope(),
-                source_butler="relationship",
-            )
-            mismatched = await deliver(
-                pool,
-                notify_request=_recovery_envelope(),
-                source_butler="relationship",
-                trusted_source="general",
-            )
+        tracer = MagicMock()
+        malformed = _recovery_envelope()
+        malformed["recovery"]["presentation_key"] += ":private_payload_sentinel"
+        mismatched_origin = _recovery_envelope()
+        mismatched_origin["origin_butler"] = "caller_secret_sentinel"
+        cases = (
+            (_recovery_envelope(), "relationship", None),
+            (_recovery_envelope(), "relationship", "general"),
+            (_recovery_envelope(), "caller_source_sentinel", "relationship"),
+            (mismatched_origin, "relationship", "relationship"),
+            (malformed, "relationship", "relationship"),
+        )
 
-        assert unauthenticated["status"] == mismatched["status"] == "failed"
-        assert unauthenticated["retryable"] is mismatched["retryable"] is False
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route", new=AsyncMock()
+            ) as mock_route,
+            patch(
+                "butlers.tools.switchboard.notification.deliver.trace.get_tracer",
+                return_value=tracer,
+            ),
+            caplog.at_level("DEBUG"),
+        ):
+            results = [
+                await deliver(
+                    pool,
+                    notify_request=envelope,
+                    source_butler=source,
+                    trusted_source=trusted,
+                )
+                for envelope, source, trusted in cases
+            ]
+
+        assert results == [
+            {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+        ] * len(cases)
+        assert "private_payload_sentinel" not in caplog.text
+        assert "caller_secret_sentinel" not in caplog.text
+        assert "caller_source_sentinel" not in caplog.text
+        assert all("private_payload_sentinel" not in repr(result) for result in results)
+        assert all("caller_secret_sentinel" not in repr(result) for result in results)
+        assert all("caller_source_sentinel" not in repr(result) for result in results)
+        tracer.start_as_current_span.assert_not_called()
+        assert pool.method_calls == []
         mock_route.assert_not_awaited()
 
     async def test_confirmed_delivery_survives_notification_log_failure(self) -> None:

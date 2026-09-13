@@ -266,10 +266,7 @@ class MessengerApprovalHandoffRepository:
         except Exception:
             result = HandoffResult("ambiguous", "provider_outcome_unknown")
         else:
-            result = HandoffResult(
-                "confirmed",
-                provider_reference=_provider_reference(provider_result),
-            )
+            result = _classify_provider_result(provider_result)
         return await self._store_result(context, result)
 
     async def _admit_or_classify(
@@ -470,6 +467,29 @@ def _provider_reference(provider_result: Any) -> str | None:
         if _OPAQUE_REFERENCE.fullmatch(normalized):
             return normalized
     return None
+
+
+def _classify_provider_result(provider_result: Any) -> HandoffResult:
+    """Require affirmative adapter acceptance after the provider-start marker."""
+    if not isinstance(provider_result, Mapping):
+        return HandoffResult("ambiguous", "provider_outcome_unknown")
+
+    reference = _provider_reference(provider_result)
+    accepted = (
+        reference is not None
+        or provider_result.get("ok") is True
+        or provider_result.get("success") is True
+        or provider_result.get("status") == "sent"
+    )
+    explicit_failure = (
+        provider_result.get("error") not in (None, "", False)
+        or provider_result.get("ok") is False
+        or provider_result.get("success") is False
+        or provider_result.get("status") in {"error", "failed", "rejected"}
+    )
+    if explicit_failure or not accepted:
+        return HandoffResult("ambiguous", "provider_outcome_unknown")
+    return HandoffResult("confirmed", provider_reference=reference)
 
 
 __all__ = [

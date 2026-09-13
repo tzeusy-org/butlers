@@ -790,6 +790,32 @@ async def test_messenger_handoff_tuple_suppresses_duplicates_and_reconciles_ambi
     assert ambiguous == repeated == HandoffResult("ambiguous", "provider_outcome_unknown")
     uncertain_provider.assert_awaited_once()
 
+    await messenger_handoff_pool.execute("TRUNCATE approval_delivery_handoffs")
+    whatsapp_failure = AsyncMock(return_value={"error": "synthetic bridge unavailable"})
+    explicit_failure = await repository.process(context, provider_call=whatsapp_failure)
+    suppressed_provider = AsyncMock(return_value={"message_id": "must-not-send"})
+    failure_duplicate = await repository.process(context, provider_call=suppressed_provider)
+    assert (
+        explicit_failure
+        == failure_duplicate
+        == HandoffResult("ambiguous", "provider_outcome_unknown")
+    )
+    whatsapp_failure.assert_awaited_once()
+    suppressed_provider.assert_not_awaited()
+    assert (
+        await messenger_handoff_pool.fetchval(
+            "SELECT handoff_class FROM approval_delivery_handoffs"
+        )
+        == "ambiguous"
+    )
+
+    await messenger_handoff_pool.execute("TRUNCATE approval_delivery_handoffs")
+    email_success = AsyncMock(return_value={"status": "sent"})
+    email_confirmed = await repository.process(context, provider_call=email_success)
+    assert email_confirmed == HandoffResult("confirmed")
+    email_success.assert_awaited_once()
+
+    await messenger_handoff_pool.execute("TRUNCATE approval_delivery_handoffs")
     reconcile_context = TrustedRecoveryContext(
         **{
             **context.as_internal_dict(),
