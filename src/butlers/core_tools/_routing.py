@@ -1561,7 +1561,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     raise ValueError(
                         "approval_request owner validation requires an initialized database pool."
                     )
-                owner_channel_type = "whatsapp_jid" if channel == "whatsapp" else channel
+                try:
+                    owner_channel_type = ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES[channel]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"approval_request uses unsupported channel: {channel}"
+                    ) from exc
                 owner_channel = await resolve_owner_channel_via_definer(
                     approval_pool,
                     owner_channel_type,

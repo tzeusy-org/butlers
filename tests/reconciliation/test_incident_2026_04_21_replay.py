@@ -1,8 +1,7 @@
 """Incident replay: 2026-04-21 owner-routing safety regression test.
 
 This module replays the original 2026-04-21 incident scenario against the
-integrated gen-1 changes to verify that all four acceptance criteria of the
-bu-7qfrg epic hold together end-to-end.
+integrated gen-1 changes and the current uniform owner-channel amendment.
 
 Scenario:
   The relationship butler ingested an email thread where the user asked
@@ -12,7 +11,8 @@ Scenario:
 
 Covered acceptance criteria
 ---------------------------
-1. bu-jwby9: Non-primary owner-email sends park for approval (not auto-approved).
+1. bu-jwby9: The historical non-primary email gate, superseded by RFC 0017 §2.7;
+   current tests require every uniquely verified owner email to auto-approve.
 2. bu-uv4b4: Context-aware notify() routing — personal message resolves to
    personal address, not work address.
 3. bu-v6ttx: channel_add against the owner contact creates pending_action,
